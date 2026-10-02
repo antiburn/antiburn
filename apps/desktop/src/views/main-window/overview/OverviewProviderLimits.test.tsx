@@ -1,13 +1,20 @@
 import { fireEvent, render, screen, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { noteInteraction } from "../../../lib/ipc"
 import type {
   LiveProviderUsagePayload,
   LiveUsageSourceErrorPayload,
   LiveUsageSummaryPayload,
   LiveUsageWindowPayload,
 } from "../../../lib/ipc"
+import type * as IpcModule from "../../../lib/ipc"
 import { OverviewProviderLimits, meterSegmentsForWidth } from "./OverviewProviderLimits"
+
+vi.mock("../../../lib/ipc", async (importOriginal) => {
+  const actual = await importOriginal<typeof IpcModule>()
+  return { ...actual, noteInteraction: vi.fn() }
+})
 
 const FORECAST = {
   unavailableReason: "sparseHistory",
@@ -247,8 +254,14 @@ describe("OverviewProviderLimits before live usage starts", () => {
     expect(screen.queryByText(/No providers set up for limits yet/)).toBeNull()
   })
 
-  it("starts live usage from the prompt's button", () => {
+  it("starts live usage from the prompt's button and reports it once started", async () => {
     render(<OverviewProviderLimits live={null} liveUsageStarted={false} />)
     fireEvent.click(screen.getByRole("button", { name: "Show live limits" }))
+    await vi.waitFor(() =>
+      expect(noteInteraction).toHaveBeenCalledWith({
+        kind: "firstRunAction",
+        action: "live_usage_started",
+      }),
+    )
   })
 })

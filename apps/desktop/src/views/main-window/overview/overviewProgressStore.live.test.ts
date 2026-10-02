@@ -204,6 +204,8 @@ beforeEach(() => {
         return { deferred: [], granted: [], supported: true }
       case "finish_first_run":
         return { ...DEFAULT_TEST_SETTINGS, onboardingCompleted: true }
+      case "note_interaction":
+        return undefined
       default:
         throw new Error(`Unexpected command: ${command}`)
     }
@@ -449,6 +451,120 @@ describe("overviewProgressStore's dock sequence", () => {
       stepsOpen: false,
       fixesDocked: false,
     })
+  })
+})
+
+describe("overviewProgressStore's first-run analytics", () => {
+  function noteInteractionCalls(): { interaction: Record<string, unknown> }[] {
+    return mocks.invoke.mock.calls
+      .filter(([command]) => command === "note_interaction")
+      .map(([, args]) => args as { interaction: Record<string, unknown> })
+  }
+
+  it("reports each funnel step once, then the result and the finish", async () => {
+    mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      switch (command) {
+        case "get_scan_status":
+          return controller.statusCommand()
+        case "get_checks_report":
+          return SETTLED_REPORT
+        case "cancel_checks_report":
+          return undefined
+        case "get_settings":
+          return { ...DEFAULT_TEST_SETTINGS, onboardingCompleted: false }
+        case "set_settings":
+          return { ...DEFAULT_TEST_SETTINGS, ...(args?.settings as object) }
+        case "get_folder_permissions":
+          return { deferred: [], granted: [], supported: true }
+        case "finish_first_run":
+          return { ...DEFAULT_TEST_SETTINGS, onboardingCompleted: true }
+        case "note_interaction":
+          return undefined
+        default:
+          throw new Error(`Unexpected command: ${command}`)
+      }
+    })
+
+    const { subscribeOverviewProgress, overviewProgress } =
+      await import("./overviewProgressStore")
+    stops.push(subscribeOverviewProgress(() => undefined))
+    await waitForListener("scan:finished")
+
+    runLaunchPass()
+
+    await vi.waitFor(() => expect(overviewProgress().mode).toBe("firstRun"))
+    await vi.waitFor(() => expect(overviewProgress().stepsDone).toBe(true))
+    await vi.waitFor(() => expect(overviewProgress().dock.stepsDocked).toBe(1), {
+      timeout: 2000,
+    })
+    await vi.waitFor(() => expect(overviewProgress().dock.stepsDocked).toBe(2), {
+      timeout: 2000,
+    })
+    await vi.waitFor(() => expect(overviewProgress().dock.stepsDocked).toBe(3), {
+      timeout: 2000,
+    })
+    await vi.waitFor(() => expect(overviewProgress().resultReady).toBe(true))
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("finish_first_run"))
+
+    const steps = noteInteractionCalls().filter(
+      ({ interaction }) => interaction.kind === "firstRunStepReached",
+    )
+    expect(steps.filter((call) => call.interaction.step === "started")).toHaveLength(1)
+    const found = steps.filter((call) => call.interaction.step === "found")
+    expect(found).toHaveLength(1)
+    expect(found[0]?.interaction.sessions).toBe(49)
+    expect(steps.filter((call) => call.interaction.step === "read")).toHaveLength(1)
+    expect(steps.filter((call) => call.interaction.step === "checked")).toHaveLength(1)
+    const result = steps.filter((call) => call.interaction.step === "result")
+    expect(result).toHaveLength(1)
+    expect(result[0]?.interaction.result).toBe("clean")
+    expect(
+      noteInteractionCalls().filter(
+        ({ interaction }) => interaction.kind === "firstRunFinished",
+      ),
+    ).toHaveLength(1)
+  })
+
+  it("reports nothing in steady mode, where the funnel never shows", async () => {
+    // onboardingCompleted stays true (the default fixture), so the device
+    // never enters firstRun mode and the funnel events have nothing to fire.
+    runLaunchPass()
+
+    const { subscribeOverviewProgress, overviewProgress } =
+      await import("./overviewProgressStore")
+    stops.push(subscribeOverviewProgress(() => undefined))
+
+    await vi.waitFor(() => expect(overviewProgress().mode).toBe("steady"))
+    await vi.waitFor(() => expect(overviewProgress().check.done).toBe(true))
+    expect(noteInteractionCalls()).toHaveLength(0)
+    expect(mocks.invoke).not.toHaveBeenCalledWith("finish_first_run")
+  })
+})
+
+describe("overviewProgressStore's enableNonRepoFolders", () => {
+  it("fires include_non_repo_folders only on an actual transition", async () => {
+    const { subscribeOverviewProgress, enableNonRepoFolders } =
+      await import("./overviewProgressStore")
+    stops.push(subscribeOverviewProgress(() => undefined))
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("get_settings"))
+
+    await enableNonRepoFolders()
+    expect(mocks.invoke).toHaveBeenCalledWith("note_interaction", {
+      interaction: { kind: "firstRunAction", action: "include_non_repo_folders" },
+    })
+
+    mocks.invoke.mockClear()
+    // A device that already has the setting on must skip both the write and
+    // the event. Simulated by answering get_settings with it already true.
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "get_settings") {
+        return { ...DEFAULT_TEST_SETTINGS, includeNonRepoFolders: true }
+      }
+      throw new Error(`Unexpected command: ${command}`)
+    })
+    await enableNonRepoFolders()
+    expect(mocks.invoke).not.toHaveBeenCalledWith("set_settings", expect.anything())
+    expect(mocks.invoke).not.toHaveBeenCalledWith("note_interaction", expect.anything())
   })
 })
 

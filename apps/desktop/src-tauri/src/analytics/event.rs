@@ -29,9 +29,6 @@ use serde::Serialize;
 pub enum EventName {
     /// The application started.
     AppLaunched,
-    /// A new or explicitly restarted setup flow finished.
-    #[cfg(feature = "analytics")]
-    OnboardingFinished,
     /// A new or explicitly restarted setup flow became visible.
     #[cfg(feature = "analytics")]
     OnboardingStarted,
@@ -135,6 +132,15 @@ pub enum EventName {
     AppSearchResultOpened,
     /// The reader saved a different application interface size preset.
     InterfaceScaleChanged,
+    /// The first-run Overview reached a fixed funnel step.
+    #[cfg(feature = "analytics")]
+    FirstRunStepReached,
+    /// A deliberate action in the first-run Overview completed.
+    #[cfg(feature = "analytics")]
+    FirstRunAction,
+    /// The first-run Overview's result first showed.
+    #[cfg(feature = "analytics")]
+    FirstRunFinished,
 }
 
 /// Every event this application may send.
@@ -148,7 +154,6 @@ pub enum EventName {
 #[cfg(all(test, feature = "analytics"))]
 pub const EVERY_EVENT: &[EventName] = &[
     EventName::AppLaunched,
-    EventName::OnboardingFinished,
     EventName::OnboardingStarted,
     EventName::OnboardingStepViewed,
     EventName::ScanCompleted,
@@ -185,6 +190,9 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::AppSearchOpened,
     EventName::AppSearchResultOpened,
     EventName::InterfaceScaleChanged,
+    EventName::FirstRunStepReached,
+    EventName::FirstRunAction,
+    EventName::FirstRunFinished,
 ];
 
 #[cfg(feature = "analytics")]
@@ -192,7 +200,6 @@ impl EventName {
     pub fn as_str(self) -> &'static str {
         match self {
             EventName::AppLaunched => "antiburn.app_launched",
-            EventName::OnboardingFinished => "antiburn.onboarding_finished",
             EventName::OnboardingStarted => "antiburn.onboarding_started",
             EventName::OnboardingStepViewed => "antiburn.onboarding_step_viewed",
             EventName::ScanCompleted => "antiburn.scan_completed",
@@ -229,6 +236,9 @@ impl EventName {
             EventName::AppSearchOpened => "antiburn.app_search_opened",
             EventName::AppSearchResultOpened => "antiburn.app_search_result_opened",
             EventName::InterfaceScaleChanged => "antiburn.interface_scale_changed",
+            EventName::FirstRunStepReached => "antiburn.first_run_step_reached",
+            EventName::FirstRunAction => "antiburn.first_run_action",
+            EventName::FirstRunFinished => "antiburn.first_run_finished",
         }
     }
 }
@@ -524,6 +534,21 @@ pub enum Interaction {
         action: SessionFilterAction,
         agent: Option<AgentKind>,
     },
+    /// The first-run Overview reached a fixed funnel step.
+    FirstRunStepReached {
+        step: FirstRunStep,
+        /// The discovery pass's total session count. Present only when
+        /// `step` is `found`; bucketed before it reaches [`Facts`].
+        sessions: Option<u32>,
+        /// Which result first showed. Present only when `step` is `result`.
+        result: Option<FirstRunResult>,
+    },
+    /// A deliberate action in the first-run Overview completed.
+    FirstRunAction {
+        action: FirstRunActionKind,
+    },
+    /// The first-run Overview's result first showed.
+    FirstRunFinished {},
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -755,6 +780,37 @@ pub enum SessionFilterAction {
     ClearedAll,
 }
 
+/// A fixed step in the first-run Overview's funnel.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FirstRunStep {
+    Started,
+    Found,
+    Read,
+    Checked,
+    Result,
+}
+
+/// Which result the first-run Overview showed. Present only alongside
+/// [`FirstRunStep::Result`].
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FirstRunResult {
+    Empty,
+    Clean,
+    FixesFound,
+}
+
+/// A deliberate action the first-run Overview can report.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FirstRunActionKind {
+    FolderAccessRequested,
+    FolderAccessGranted,
+    IncludeNonRepoFolders,
+    LiveUsageStarted,
+}
+
 /// A privacy-safe result from checking one remote host connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteConnectionOutcome {
@@ -934,6 +990,27 @@ impl Interaction {
                     ..Facts::default()
                 },
             ),
+            Interaction::FirstRunStepReached {
+                step,
+                sessions,
+                result,
+            } => (
+                EventName::FirstRunStepReached,
+                Facts {
+                    label: Some(step.as_str()),
+                    bucket: sessions.map(|count| bucket(count as u64)),
+                    detail: result.map(FirstRunResult::as_str),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::FirstRunAction { action } => (
+                EventName::FirstRunAction,
+                Facts {
+                    label: Some(action.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::FirstRunFinished {} => (EventName::FirstRunFinished, Facts::default()),
         }
     }
 }
@@ -1010,6 +1087,30 @@ wire_values!(SessionFilterAction, {
     SessionFilterAction::SourceRemoteHostAdded => "source_remote_host_added",
     SessionFilterAction::SourceRemoteHostRemoved => "source_remote_host_removed",
     SessionFilterAction::ClearedAll => "cleared_all",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(FirstRunStep, {
+    FirstRunStep::Started => "started",
+    FirstRunStep::Found => "found",
+    FirstRunStep::Read => "read",
+    FirstRunStep::Checked => "checked",
+    FirstRunStep::Result => "result",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(FirstRunResult, {
+    FirstRunResult::Empty => "empty",
+    FirstRunResult::Clean => "clean",
+    FirstRunResult::FixesFound => "fixes_found",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(FirstRunActionKind, {
+    FirstRunActionKind::FolderAccessRequested => "folder_access_requested",
+    FirstRunActionKind::FolderAccessGranted => "folder_access_granted",
+    FirstRunActionKind::IncludeNonRepoFolders => "include_non_repo_folders",
+    FirstRunActionKind::LiveUsageStarted => "live_usage_started",
 });
 
 #[cfg(feature = "analytics")]
@@ -1790,7 +1891,6 @@ mod tests {
         fn listed(event: EventName) -> bool {
             match event {
                 EventName::AppLaunched
-                | EventName::OnboardingFinished
                 | EventName::OnboardingStepViewed
                 | EventName::ScanCompleted
                 | EventName::SettingToggled
@@ -1826,12 +1926,15 @@ mod tests {
                 | EventName::NavigationHistoryMoved
                 | EventName::AppSearchOpened
                 | EventName::AppSearchResultOpened
-                | EventName::InterfaceScaleChanged => true,
+                | EventName::InterfaceScaleChanged
+                | EventName::FirstRunStepReached
+                | EventName::FirstRunAction
+                | EventName::FirstRunFinished => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            38,
+            40,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -2243,6 +2346,120 @@ mod tests {
             serde_json::json!({"kind":"appSearchResultOpened","category":"session"}),
         ] {
             assert!(serde_json::from_value::<Interaction>(value).is_err());
+        }
+    }
+
+    /// Each fixed funnel step carries only the facts the catalog documents
+    /// for it: `found` buckets its raw session count rather than sending it
+    /// exact, and `result` carries the closed result vocabulary. The other
+    /// steps carry neither.
+    #[test]
+    fn first_run_step_reached_carries_only_the_facts_its_own_step_defines() {
+        let (name, facts) = Interaction::FirstRunStepReached {
+            step: FirstRunStep::Started,
+            sessions: None,
+            result: None,
+        }
+        .resolve();
+        assert_eq!(name, EventName::FirstRunStepReached);
+        assert_eq!(facts.label, Some("started"));
+        assert_eq!(facts.bucket, None);
+        assert_eq!(facts.detail, None);
+
+        let (_, facts) = Interaction::FirstRunStepReached {
+            step: FirstRunStep::Found,
+            sessions: Some(49),
+            result: None,
+        }
+        .resolve();
+        assert_eq!(facts.label, Some("found"));
+        assert_eq!(facts.bucket, Some(bucket(49)));
+        assert_eq!(facts.bucket, Some("10-49"));
+        assert_eq!(facts.detail, None);
+
+        let (_, facts) = Interaction::FirstRunStepReached {
+            step: FirstRunStep::Read,
+            sessions: None,
+            result: None,
+        }
+        .resolve();
+        assert_eq!(facts.label, Some("read"));
+        assert_eq!(facts.bucket, None);
+
+        let (_, facts) = Interaction::FirstRunStepReached {
+            step: FirstRunStep::Checked,
+            sessions: None,
+            result: None,
+        }
+        .resolve();
+        assert_eq!(facts.label, Some("checked"));
+        assert_eq!(facts.bucket, None);
+
+        for (result, expected) in [
+            (FirstRunResult::Empty, "empty"),
+            (FirstRunResult::Clean, "clean"),
+            (FirstRunResult::FixesFound, "fixes_found"),
+        ] {
+            let (_, facts) = Interaction::FirstRunStepReached {
+                step: FirstRunStep::Result,
+                sessions: None,
+                result: Some(result),
+            }
+            .resolve();
+            assert_eq!(facts.label, Some("result"));
+            assert_eq!(facts.bucket, None);
+            assert_eq!(facts.detail, Some(expected));
+        }
+    }
+
+    #[test]
+    fn first_run_action_uses_closed_vocabulary() {
+        for (action, expected) in [
+            (
+                FirstRunActionKind::FolderAccessRequested,
+                "folder_access_requested",
+            ),
+            (
+                FirstRunActionKind::FolderAccessGranted,
+                "folder_access_granted",
+            ),
+            (
+                FirstRunActionKind::IncludeNonRepoFolders,
+                "include_non_repo_folders",
+            ),
+            (FirstRunActionKind::LiveUsageStarted, "live_usage_started"),
+        ] {
+            let (name, facts) = Interaction::FirstRunAction { action }.resolve();
+            assert_eq!(name, EventName::FirstRunAction);
+            assert_eq!(facts.label, Some(expected));
+        }
+    }
+
+    #[test]
+    fn first_run_finished_carries_no_properties() {
+        let (name, facts) = Interaction::FirstRunFinished {}.resolve();
+        assert_eq!(name, EventName::FirstRunFinished);
+        assert_eq!(facts.label, None);
+        assert_eq!(facts.bucket, None);
+        assert_eq!(facts.detail, None);
+    }
+
+    /// The renderer cannot send an unlisted step, action, or result, and
+    /// cannot attach a property the schema does not define for that shape.
+    #[test]
+    fn first_run_interactions_are_refused_at_the_boundary_for_unknown_values() {
+        for value in [
+            serde_json::json!({"kind":"firstRunStepReached","step":"welcome"}),
+            serde_json::json!({"kind":"firstRunStepReached","step":"result","result":"broken"}),
+            serde_json::json!({"kind":"firstRunStepReached","step":"started","path":"/private"}),
+            serde_json::json!({"kind":"firstRunAction","action":"folder_opened"}),
+            serde_json::json!({"kind":"firstRunAction"}),
+            serde_json::json!({"kind":"firstRunFinished","result":"clean"}),
+        ] {
+            assert!(
+                serde_json::from_value::<Interaction>(value.clone()).is_err(),
+                "{value}"
+            );
         }
     }
 }

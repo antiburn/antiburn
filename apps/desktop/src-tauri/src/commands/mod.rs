@@ -584,9 +584,6 @@ pub async fn finish_onboarding(
     let analytics_saved = saved.clone();
     run_blocking(move || {
         record_settings_transition(&analytics_app, &analytics_previous, &analytics_saved);
-        if !analytics_previous.onboarding_completed && analytics_saved.onboarding_completed {
-            crate::analytics::record_onboarding_finished(&analytics_app);
-        }
         Ok(())
     })
     .await?;

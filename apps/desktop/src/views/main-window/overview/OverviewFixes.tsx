@@ -3,7 +3,7 @@ import { Circle, CircleAlert, CircleCheck } from "lucide-react"
 
 import { renderAgentIcon } from "../../../lib/agentIcon"
 import { cn } from "../../../lib/cn"
-import { scanNow } from "../../../lib/ipc"
+import { noteInteraction, scanNow } from "../../../lib/ipc"
 import { CHECK_PROBLEM_PHRASES } from "../../../lib/presentation/checkDefinitions"
 import {
   useFolderPermissionFlow,
@@ -90,6 +90,7 @@ export function OverviewFixes() {
   // scan-status subscription, which refreshes `read.deferred` once that pass
   // finishes.
   const permissionFlow = useFolderPermissionFlow(progress.read.deferred, () => {
+    noteInteraction({ kind: "firstRunAction", action: "folder_access_granted" })
     void scanNow()
   })
 
@@ -533,7 +534,10 @@ function ReadFolderPermissionNotice({
       permission before antiburn can read {pluralize(deferredCount, "it", "them")}.{" "}
       <button
         type="button"
-        onClick={permissionFlow.start}
+        onClick={() => {
+          noteInteraction({ kind: "firstRunAction", action: "folder_access_requested" })
+          permissionFlow.start()
+        }}
         disabled={asking}
         className="underline underline-offset-[3px] hover:text-label-secondary disabled:opacity-50"
       >

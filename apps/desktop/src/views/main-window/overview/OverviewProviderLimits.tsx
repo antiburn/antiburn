@@ -18,7 +18,7 @@ import {
 import { WindowMeterRow } from "../../../components/providerUsage/UsageLimitsBar"
 import { useStableAccountNumbers } from "../../../components/providerUsage/useStableAccountNumbers"
 import { Skeleton } from "../../../components/ui/Skeleton"
-import { startLiveUsage } from "../../../lib/ipc"
+import { noteInteraction, startLiveUsage } from "../../../lib/ipc"
 import { useElementWidth } from "../../../lib/useElementWidth"
 
 /**
@@ -33,7 +33,11 @@ function LiveUsageEmptyState() {
       </p>
       <button
         type="button"
-        onClick={() => void startLiveUsage()}
+        onClick={() => {
+          void startLiveUsage().then(() => {
+            noteInteraction({ kind: "firstRunAction", action: "live_usage_started" })
+          })
+        }}
         className="rounded-control bg-brand-tint px-4 py-1.5 type-footnote font-semibold! text-white shadow-[var(--shadow-raised)] transition-[filter] duration-fast hover:brightness-110 active:brightness-95"
       >
         Show live limits

@@ -3,7 +3,7 @@
 //! This is the one place antiburn sends anything of its own beyond the update
 //! check. The properties below define its privacy boundary.
 //!
-//! - **Official builds start enabled.** App launch and fixed onboarding-step
+//! - **Official builds start enabled.** App launch and fixed first-run-step
 //!   events can be sent before setup finishes. Settings and
 //!   `ANTIBURN_ANALYTICS_ENABLED=false` provide independent opt-outs.
 //! - **A build with no endpoint sends nothing.** See [`config`]; every build
@@ -136,6 +136,17 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::SessionFiltersChanged { action, agent } => {
             let _ = (action, agent);
         }
+        event::Interaction::FirstRunStepReached {
+            step,
+            sessions,
+            result,
+        } => {
+            let _ = (step, sessions, result);
+        }
+        event::Interaction::FirstRunAction { action } => {
+            let _ = action;
+        }
+        event::Interaction::FirstRunFinished {} => {}
     }
 }
 
@@ -168,9 +179,6 @@ pub fn prepare_onboarding_restart() {}
 
 #[cfg(not(feature = "analytics"))]
 pub fn record_onboarding_started(_app: &tauri::AppHandle) {}
-
-#[cfg(not(feature = "analytics"))]
-pub fn record_onboarding_finished(_app: &tauri::AppHandle) {}
 
 #[cfg(not(feature = "analytics"))]
 pub fn prepare_hud_exposure(_origin: event::Origin) {}
@@ -1214,14 +1222,12 @@ mod enabled {
     struct OnboardingCapture {
         flow: Option<OnboardingFlow>,
         started: bool,
-        finished: bool,
     }
 
     static ONBOARDING_CAPTURE: std::sync::Mutex<OnboardingCapture> =
         std::sync::Mutex::new(OnboardingCapture {
             flow: None,
             started: false,
-            finished: false,
         });
 
     static HUD_EXPOSURE_ORIGIN: std::sync::Mutex<Option<Origin>> = std::sync::Mutex::new(None);
@@ -1233,7 +1239,6 @@ mod enabled {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = OnboardingCapture {
             flow: Some(OnboardingFlow::Restart),
             started: false,
-            finished: false,
         };
     }
 
@@ -1259,7 +1264,6 @@ mod enabled {
             *capture = OnboardingCapture {
                 flow: Some(flow),
                 started: false,
-                finished: false,
             };
         }
         if capture.started {
@@ -1277,38 +1281,6 @@ mod enabled {
             },
         ) {
             capture.started = true;
-        }
-    }
-
-    /// Record the committed completion of the active setup flow once.
-    pub fn record_onboarding_finished(app: &tauri::AppHandle) {
-        let _lifecycle = lock_settings_transition();
-        let flow = onboarding_flow(app);
-        let mut capture = ONBOARDING_CAPTURE
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if capture.flow != Some(flow) {
-            *capture = OnboardingCapture {
-                flow: Some(flow),
-                started: false,
-                finished: false,
-            };
-        }
-        if capture.finished {
-            return;
-        }
-        let _capture = CAPTURE_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if record_event_locked(
-            app,
-            EventName::OnboardingFinished,
-            Facts {
-                label: Some(flow.as_str()),
-                ..Facts::default()
-            },
-        ) {
-            capture.finished = true;
         }
     }
 

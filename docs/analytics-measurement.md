@@ -68,7 +68,7 @@ buckets; the Claude diagnostic had nine additional optional fields.
 | `antiburn.onboarding_step_viewed`        | `OnboardingSession.noteOnboardingStep`; four fixed steps, once per step per flow instance.                                                                                                                                                                  | Shows setup progress. Has no new-versus-restarted flow distinction or failure reason.                                                                                              |
 | `antiburn.onboarding_finished`           | After the finish command saves settings. Explicit setup restarts can emit another completion.                                                                                                                                                               | Shows completed setup, not first useful data or unique new installations.                                                                                                          |
 | `antiburn.scan_completed`                | Full discovery pass; first outcome or changed count bucket relative to the previous reported outcome. Scoped passes emit nothing.                                                                                                                           | Shows coarse discovery health and inventory. Is not an interaction or a scan-attempt counter.                                                                                      |
-| `antiburn.setting_toggled`               | Saved changes to `live_usage`, `notifications`, `launch_at_login`, `tray_icon`, `dock_icon`, `discovery_paused`, or `include_non_repo_folders`; key only.                                                                                                                               | Shows use of seven controls. Does not show direction, current adoption, other settings, or success of OS integration.                                                                |
+| `antiburn.setting_toggled`               | Saved changes to `live_usage`, `notifications`, `launch_at_login`, `tray_icon`, `dock_icon`, `discovery_paused`, or `include_non_repo_folders`; key only.                                                                                                   | Shows use of seven controls. Does not show direction, current adoption, other settings, or success of OS integration.                                                              |
 | `antiburn.session_opened`                | Activity-card handler before analysis loads; agent category and native/WSL.                                                                                                                                                                                 | Measures list-to-detail intent. Does not establish that detail loaded, or cover related sessions, subagents, or newer/older navigation.                                            |
 | `antiburn.error_occurred`                | Full scan failure, with `scan_failed`; repeated identical outcomes suppressed.                                                                                                                                                                              | Shows some discovery failures. Misses scoped failures and other feature failures; cannot supply an operation failure rate.                                                         |
 | `antiburn.unrecognized_records_observed` | Nonempty unknown-record summary returned to Settings Insights; changed category/count bucket within the process. Clean results reset suppression without an event.                                                                                          | Diagnoses reader-selected cohorts. Does not count all Insights visits or population parser failure rates.                                                                          |
@@ -714,3 +714,78 @@ Each interaction emits at most one event of its type. Closing or canceling searc
 These events measure navigation, not execution, time spent, successful data loading, or changed
 settings. Test user paths, rejected navigation, boundary no-ops, and strict Rust
 property validation. Queries and session data never enter the analytics payload.
+
+## First-run Overview funnel (2026-10-02)
+
+The onboarding window no longer collects the first run on a new install; the
+main window's Overview does, as the pitch line, the Find→Read→Check steps, and
+the fixes result. `antiburn.onboarding_step_viewed` and
+`antiburn.onboarding_finished` are retired: the renderer that sent them
+(`OnboardingSession.noteOnboardingStep`, the `finish_onboarding` command) no
+longer does. `antiburn.onboarding_started` is unchanged — the onboarding
+window still exists behind an explicit "Restart setup" action and still
+reports its own start.
+
+Question: where does a new install's first run lose readers — never starting,
+or dropping between Find, Read, Check, and the result — and which result
+(empty, clean, fixes found) do readers who finish actually land on? Metric:
+reporting installations reaching each `antiburn.first_run_step_reached` label,
+as a funnel with `started` at the base, divided by reporting installations
+overall in the same app-version cohort. This decides whether the steps block's
+pacing or copy needs work before the result shows; it does not measure time
+spent on any step, or distinguish a slow pass from a fast one.
+
+`overviewProgressStore.ts` owns the trigger. One flag per step
+(`started`/`found`/`read`/`checked`), set the first time that step's own
+latched `done` flag turns true while the store is in `firstRun` mode;
+`steady`-mode installations — a device that already finished a first run —
+never enter this mode and never report any of it. `result` and
+`antiburn.first_run_finished` fire together, once, the instant the result
+first becomes showable (`resultReady`), immediately before the store commits
+`onboardingCompleted` through `finish_first_run`. A wipe
+(`ftue:reset`) clears every flag, because it starts a genuinely new first run
+that must report its own funnel.
+
+Properties: `label` is `started`, `found`, `read`, `checked`, or `result` —
+the step. `bucket` is the discovery pass's session count, bucketed, present
+only with `found`. `detail` is `empty`, `clean`, or `fixes_found`, present
+only with `result`, derived the same way the Overview's own headline is:
+`empty` when the window has no sessions, `clean` when it has sessions and no
+finding, `fixes_found` otherwise. `antiburn.first_run_action` reports one of
+four closed labels — `folder_access_requested`, `folder_access_granted`,
+`include_non_repo_folders`, `live_usage_started` — each only after its action
+actually fires: a real "Allow access" click, a folder the permission queue
+actually granted, a settings write that actually flipped
+`includeNonRepoFolders` from false to true, and a `start_live_usage` command
+that actually resolved. No folder path, session identity, finding detail, or
+account identity reaches any of these three events. The Rust boundary rejects
+an unlisted step, action, or result, and rejects any extra field on any of the
+three shapes, the same way every other closed `Interaction` variant does.
+
+This is new instrumentation, not a reused name, so `docs/analytics.md` lists
+all three events fresh and marks the two retired ones legacy — mirroring the
+existing `antiburn.session_filter_selected` precedent — rather than deleting
+their rows. Segment reports at the first app version that ships this change;
+earlier versions have no `first_run_step_reached`/`first_run_action`/
+`first_run_finished` events to compare against, and a `first_run` funnel
+cannot be joined against the retired step-viewed event's four-step vocabulary,
+which had no `found`/`checked` distinction and no result step at all.
+
+Tests: `event.rs` proves each step's facts are scoped to that step alone
+(`first_run_step_reached_carries_only_the_facts_its_own_step_defines`), the
+action vocabulary resolves to its four labels
+(`first_run_action_uses_closed_vocabulary`), the finished event carries no
+properties (`first_run_finished_carries_no_properties`), and the Rust boundary
+rejects an unknown step, action, or result and an extra field on any of the
+three shapes (`first_run_interactions_are_refused_at_the_boundary_for_unknown_values`).
+`overviewProgressStore.live.test.ts` drives the real store through a full
+first-run pass and asserts each step fires exactly once, in order, with the
+right `sessions`/`result` payload, that `steady` mode reports nothing, and
+that `enableNonRepoFolders` reports only on an actual transition.
+`OverviewFixes.test.tsx` proves `folder_access_requested` fires on the click
+and `folder_access_granted` fires only once the flow actually grants a folder.
+`OverviewProviderLimits.test.tsx` proves `live_usage_started` fires only after
+`start_live_usage` resolves. `OnboardingView.test.tsx` proves the onboarding
+window itself now sends no `note_interaction` call while stepping through its
+screens, confirming the retired step-viewed event is actually gone rather than
+merely undocumented.

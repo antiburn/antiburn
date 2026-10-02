@@ -465,38 +465,13 @@ describe("OnboardingView", () => {
     expect(screen.queryByRole("button", { name: "Copy prompt" })).not.toBeInTheDocument()
   })
 
-  it("records each onboarding step once", async () => {
+  it("sends no step analytics; the retired onboarding_step_viewed event is gone", async () => {
+    // The Overview's own first-run funnel reports firstRunStepReached
+    // instead, so this window must send nothing through note_interaction.
     render(<OnboardingView />)
     await advanceToReady()
     fireEvent.click(screen.getByRole("button", { name: "Back" }))
     await screen.findByRole("heading", { name: "Scan Locations: Repos" })
-
-    for (const step of ["welcome", "agents_detected", "sources_and_repos", "ready"]) {
-      expect(invoke).toHaveBeenCalledWith("note_interaction", {
-        interaction: { kind: "onboardingStepViewed", step },
-      })
-    }
-    expect(
-      invoke.mock.calls.filter(([command]) => command === "note_interaction"),
-    ).toHaveLength(4)
-  })
-
-  it("skips step analytics for a build without analytics", async () => {
-    mockCommands({ app_info: { ...APP_INFO, analyticsSupported: false } })
-    render(<OnboardingView />)
-
-    await advanceToReady()
-
-    expect(
-      invoke.mock.calls.filter(([command]) => command === "note_interaction"),
-    ).toHaveLength(0)
-  })
-
-  it("skips step analytics when the environment disables analytics", async () => {
-    mockCommands({ app_info: { ...APP_INFO, analyticsEnvironmentDisabled: true } })
-    render(<OnboardingView />)
-
-    await advanceToReady()
 
     expect(
       invoke.mock.calls.filter(([command]) => command === "note_interaction"),

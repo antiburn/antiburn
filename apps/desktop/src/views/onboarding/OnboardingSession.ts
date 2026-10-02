@@ -12,7 +12,6 @@ import {
   getSettings,
   listRepositories,
   listScanRoots,
-  noteInteraction,
   onScanEvent,
   recheckFolderPermissions,
   removeScanRoot,
@@ -115,7 +114,6 @@ export class OnboardingSession {
   private rescanQueued = false
   private agentChoicesTouched = false
   private hygieneTimer: ReturnType<typeof setInterval> | null = null
-  private analyticsSteps = new Set<OnboardingStep>()
   private nonRepoSaves: Promise<void> = Promise.resolve()
   private nonRepoGesture = 0
   private savedIncludeNonRepoFolders = false
@@ -231,15 +229,14 @@ export class OnboardingSession {
     this.update({ disabledAgents: [...disabled].sort(), finishError: null })
   }
 
-  noteOnboardingStep = (step: OnboardingStep): void => {
-    if (
-      !this.snapshot.analyticsSupported ||
-      this.snapshot.analyticsEnvironmentDisabled ||
-      this.analyticsSteps.has(step)
-    )
-      return
-    this.analyticsSteps.add(step)
-    noteInteraction({ kind: "onboardingStepViewed", step })
+  /**
+   * No-op. `antiburn.onboarding_step_viewed` is retired; the Overview's own
+   * first-run funnel reports `firstRunStepReached` instead. The method and
+   * its prop stay so `OnboardingFlow` needs no change before this window is
+   * removed.
+   */
+  noteOnboardingStep = (_step: OnboardingStep): void => {
+    // Deliberately empty. See the doc comment above.
   }
 
   addScanRoot = async (): Promise<void> => {

@@ -366,6 +366,16 @@ export type Interaction =
        */
       agent?: string
     }
+  | {
+      kind: "firstRunStepReached"
+      step: FirstRunStep
+      /** The discovery pass's total session count. Only with `step: "found"`. */
+      sessions?: number
+      /** Which result first showed. Only with `step: "result"`. */
+      result?: FirstRunResult
+    }
+  | { kind: "firstRunAction"; action: FirstRunActionKind }
+  | { kind: "firstRunFinished" }
 
 export type Surface =
   | "activity"
@@ -418,6 +428,17 @@ export type SessionFilterAction =
   | "source_remote_host_added"
   | "source_remote_host_removed"
   | "cleared_all"
+
+/** A fixed step in the first-run Overview's funnel. */
+type FirstRunStep = "started" | "found" | "read" | "checked" | "result"
+/** Which result the first-run Overview showed. Only with `FirstRunStep` `"result"`. */
+export type FirstRunResult = "empty" | "clean" | "fixes_found"
+/** A deliberate action the first-run Overview can report. */
+type FirstRunActionKind =
+  | "folder_access_requested"
+  | "folder_access_granted"
+  | "include_non_repo_folders"
+  | "live_usage_started"
 
 function isNativePeekInteraction(interaction: Interaction): boolean {
   switch (interaction.kind) {

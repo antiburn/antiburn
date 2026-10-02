@@ -23,7 +23,7 @@ credentials, or other user data to the project or to an unrelated third party.
 The update check and anonymised application analytics are the only
 project-operated network channels. Neither is required for the app to work.
 Analytics must keep all properties documented in [docs/analytics.md](docs/analytics.md):
-official configured builds can record launch and onboarding progress before
+official configured builds can record launch and first-run progress before
 setup completes, Settings → Privacy provides the opt-out, payloads contain no
 work or credentials, identifiers
 rotate, and builds without a configured endpoint send nothing.

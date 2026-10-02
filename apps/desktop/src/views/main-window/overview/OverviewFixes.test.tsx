@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { noteInteraction, requestFolderAccess, scanNow } from "../../../lib/ipc"
+import type * as IpcModule from "../../../lib/ipc"
 import { OverviewFixes } from "./OverviewFixes"
 import { openFixes, openSteps, shrinkFixes } from "./overviewProgressStore"
 import type { OverviewProgress } from "./overviewProgressStore"
@@ -16,6 +18,21 @@ vi.mock("./overviewProgressStore", () => ({
   openFixes: vi.fn(),
   shrinkFixes: vi.fn(),
 }))
+
+// `requestFolderAccess` wraps the real implementation (denied without a
+// shell) so most tests see today's behavior; a granted-folder test overrides
+// it with `mockResolvedValueOnce`.
+vi.mock("../../../lib/ipc", async (importOriginal) => {
+  const actual = await importOriginal<typeof IpcModule>()
+  return {
+    ...actual,
+    noteInteraction: vi.fn(),
+    scanNow: vi.fn().mockResolvedValue(undefined),
+    requestFolderAccess: vi.fn(actual.requestFolderAccess),
+  }
+})
+
+afterEach(() => vi.clearAllMocks())
 
 function progress(overrides: Partial<OverviewProgress> = {}): OverviewProgress {
   const merged = {
@@ -359,5 +376,47 @@ describe("OverviewFixes's read step folder permission notice", () => {
     ).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Allow access" }))
     expect(screen.getByRole("button", { name: "Asking…" })).toBeInTheDocument()
+  })
+
+  it("fires folder_access_requested the moment Allow access is clicked", () => {
+    snapshot = progress({
+      read: {
+        done: false,
+        completed: 0,
+        total: 0,
+        gate: null,
+        includeNonRepoFolders: false,
+        deferred: [{ dir: "/Users/dave/work", pathCount: 3 }],
+      },
+    })
+    render(<OverviewFixes />)
+    fireEvent.click(screen.getByRole("button", { name: "Allow access" }))
+    expect(noteInteraction).toHaveBeenCalledWith({
+      kind: "firstRunAction",
+      action: "folder_access_requested",
+    })
+  })
+
+  it("fires folder_access_granted and rescans once the flow grants a folder", async () => {
+    vi.mocked(requestFolderAccess).mockResolvedValueOnce({ outcome: "granted", elapsedMs: 5 })
+    snapshot = progress({
+      read: {
+        done: false,
+        completed: 0,
+        total: 0,
+        gate: null,
+        includeNonRepoFolders: false,
+        deferred: [{ dir: "/Users/dave/work", pathCount: 3 }],
+      },
+    })
+    render(<OverviewFixes />)
+    fireEvent.click(screen.getByRole("button", { name: "Allow access" }))
+    await vi.waitFor(() =>
+      expect(noteInteraction).toHaveBeenCalledWith({
+        kind: "firstRunAction",
+        action: "folder_access_granted",
+      }),
+    )
+    expect(scanNow).toHaveBeenCalled()
   })
 })

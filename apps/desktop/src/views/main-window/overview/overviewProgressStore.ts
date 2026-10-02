@@ -21,11 +21,13 @@ import {
   ftueDiag, // TEMP ftue-diag
   getFolderPermissions,
   getSettings,
+  noteInteraction,
   onFtueReset,
   onSettingsChanged,
   setSettings,
   type AgentFoundCount,
   type AppSettings,
+  type FirstRunResult,
   type ReadGateCounts,
   type ScanHistoryProgress,
   type ScanStatus,
@@ -318,6 +320,12 @@ let dock: ProgressDock = INITIAL_DOCK
 let dockTimer: ReturnType<typeof setTimeout> | null = null
 // Set once, the first time the result shows — see `maybeFinishFirstRun`.
 let firstRunFinished = false
+// One-shot flags for `antiburn.first_run_step_reached`. Reset alongside
+// `firstRunFinished` whenever a wipe starts a new first run.
+let reportedFirstRunStarted = false
+let reportedFirstRunFound = false
+let reportedFirstRunRead = false
+let reportedFirstRunChecked = false
 
 function currentInputs(): ProgressInputs {
   return {
@@ -337,7 +345,41 @@ function recompute(): void {
   snapshot = deriveOverviewProgress(latch, currentInputs(), dock, lastPass)
   for (const listener of listeners) listener()
   scheduleDocking()
+  maybeReportFirstRunSteps()
   maybeFinishFirstRun()
+}
+
+/** Which result the finished check step shows, for `first_run_step_reached`. */
+function firstRunResult(progress: OverviewProgress): FirstRunResult {
+  if (progress.check.windowSessions === 0) return "empty"
+  return progress.failingCount === 0 ? "clean" : "fixes_found"
+}
+
+/**
+ * Report each fixed first-run funnel step the first time it is reached.
+ *
+ * One flag per step, so a later re-render of the same finished step reports
+ * nothing. Only in `firstRun` mode; a steady-state device never reaches this.
+ */
+function maybeReportFirstRunSteps(): void {
+  if (snapshot.mode !== "firstRun") return
+  if (!reportedFirstRunStarted) {
+    reportedFirstRunStarted = true
+    noteInteraction({ kind: "firstRunStepReached", step: "started" })
+  }
+  if (!reportedFirstRunFound && snapshot.find.done) {
+    reportedFirstRunFound = true
+    const sessions = snapshot.find.rows.reduce((sum, row) => sum + row.sessions, 0)
+    noteInteraction({ kind: "firstRunStepReached", step: "found", sessions })
+  }
+  if (!reportedFirstRunRead && snapshot.read.done) {
+    reportedFirstRunRead = true
+    noteInteraction({ kind: "firstRunStepReached", step: "read" })
+  }
+  if (!reportedFirstRunChecked && snapshot.check.done) {
+    reportedFirstRunChecked = true
+    noteInteraction({ kind: "firstRunStepReached", step: "checked" })
+  }
 }
 
 /**
@@ -351,6 +393,12 @@ function recompute(): void {
 function maybeFinishFirstRun(): void {
   if (firstRunFinished || snapshot.mode !== "firstRun" || !snapshot.resultReady) return
   firstRunFinished = true
+  noteInteraction({
+    kind: "firstRunStepReached",
+    step: "result",
+    result: firstRunResult(snapshot),
+  })
+  noteInteraction({ kind: "firstRunFinished" })
   void finishFirstRun().catch((error: unknown) => {
     console.error("finishFirstRun failed", error)
   })
@@ -458,6 +506,10 @@ function onReset(): void {
   // The reset starts a new first run, so its result must call
   // `finish_first_run` again once it shows.
   firstRunFinished = false
+  reportedFirstRunStarted = false
+  reportedFirstRunFound = false
+  reportedFirstRunRead = false
+  reportedFirstRunChecked = false
   void ftueDiag("onReset", { generation, listeners: listeners.size }) // TEMP ftue-diag
   recompute()
 }
@@ -494,6 +546,7 @@ export async function enableNonRepoFolders(): Promise<void> {
   const current = await getSettings()
   if (current.includeNonRepoFolders) return
   await setSettings({ ...current, includeNonRepoFolders: true })
+  noteInteraction({ kind: "firstRunAction", action: "include_non_repo_folders" })
   latch = unlatchReadOutcome(latch)
   recompute()
 }
