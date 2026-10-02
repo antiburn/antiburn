@@ -525,6 +525,7 @@ mod tests {
             plan: None,
             account_uuid: None,
             account_email: None,
+            account_label: None,
         }
     }
 
@@ -535,6 +536,8 @@ mod tests {
             display_name: provider.to_string(),
             category: "unavailable".to_string(),
             detail: None,
+            account_label: None,
+            retry_at: None,
         }
     }
 

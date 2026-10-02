@@ -655,6 +655,8 @@ pub struct QuotaAccountPayload {
     pub provider: String,
     pub display_name: String,
     pub account_key: String,
+    /// The profile label the account was last read under, when it has one.
+    pub account_label: Option<String>,
     pub lanes: Vec<QuotaLanePayload>,
 }
 
@@ -2884,6 +2886,9 @@ pub struct LiveProviderUsage {
     /// The provider's account email for local display.
     #[serde(default)]
     pub account_email: Option<String>,
+    /// The reader's own name for the login, such as a Claude profile label.
+    #[serde(default)]
+    pub account_label: Option<String>,
 }
 
 /// The provider's own plan label, raw. The frontend maps these strings to
@@ -2941,6 +2946,15 @@ pub struct LiveUsageSourceError {
     pub category: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<SourceErrorDetail>,
+    /// The reader's name for the login that failed, matching
+    /// `LiveProviderUsage::account_label`. A reading takes only the error
+    /// with its own provider and label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_label: Option<String>,
+    /// ISO-8601 time when the provider accepts the next request, when it
+    /// said so with `Retry-After`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<String>,
 }
 
 /// One provider antiburn can meter, and whether the reader shows it.

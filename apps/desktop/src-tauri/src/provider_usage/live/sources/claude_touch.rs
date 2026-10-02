@@ -315,6 +315,13 @@ pub struct CliTouchEnvironment {
     /// The `.credentials.json` carrier this environment fingerprints,
     /// matching the path the owning source reads.
     credentials_path: Option<std::path::PathBuf>,
+    /// The `CLAUDE_CONFIG_DIR` the CLI runs with. `None` keeps the CLI's
+    /// default directory.
+    config_dir: Option<std::path::PathBuf>,
+    /// The Keychain item this environment fingerprints, matching the item
+    /// the owning source reads.
+    #[cfg(target_os = "macos")]
+    keychain_service: String,
 }
 
 /// The binary the touch spawns — the CLI that owns the credential.
@@ -326,8 +333,19 @@ pub(super) const CLAUDE_BINARY: &str = "claude";
 const STATUS_DELAY: Duration = Duration::from_secs(3);
 
 impl CliTouchEnvironment {
-    pub fn new(credentials_path: Option<std::path::PathBuf>) -> CliTouchEnvironment {
-        CliTouchEnvironment { credentials_path }
+    pub fn new(
+        credentials_path: Option<std::path::PathBuf>,
+        config_dir: Option<std::path::PathBuf>,
+        keychain_service: String,
+    ) -> CliTouchEnvironment {
+        #[cfg(not(target_os = "macos"))]
+        let _ = keychain_service;
+        CliTouchEnvironment {
+            credentials_path,
+            config_dir,
+            #[cfg(target_os = "macos")]
+            keychain_service,
+        }
     }
 }
 
@@ -339,7 +357,7 @@ impl TouchEnvironment for CliTouchEnvironment {
     fn fingerprint(&self) -> Option<Fingerprint> {
         let mut parts = Vec::new();
         #[cfg(target_os = "macos")]
-        match keychain_metadata() {
+        match keychain_metadata_for(&self.keychain_service, None) {
             KeychainMetadata::Found(text) => parts.push(format!("keychain:{:016x}", hash(&text))),
             KeychainMetadata::Absent => parts.push("keychain:absent".to_owned()),
             KeychainMetadata::Unreadable => return None,
@@ -360,6 +378,9 @@ impl TouchEnvironment for CliTouchEnvironment {
         let pty = native_pty_system().openpty(PtySize::default()).ok()?;
         let mut command = CommandBuilder::new(&binary);
         command.env("TERM", "xterm-256color");
+        if let Some(config_dir) = &self.config_dir {
+            command.env("CLAUDE_CONFIG_DIR", config_dir);
+        }
         // An app started from Finder has a thin `PATH`. The CLI and any
         // `node` it needs must resolve without the reader's shell profile.
         if let Some(path) = cli_locator::child_path(&binary, &dirs) {
@@ -432,19 +453,14 @@ pub(super) enum KeychainMetadata {
     Unreadable,
 }
 
-/// Read the Keychain item's attributes — never its secret.
+/// Read attributes for the selected service and account without requesting
+/// the secret.
 ///
 /// `security find-generic-password` without `-w` prints the item's
 /// attributes, including its modification date, and does not touch the
 /// item's access-control list — so this read can never raise a prompt. The
 /// same bounded-subprocess shape as `anthropic_fetch::macos_keychain::read`:
 /// a reader thread, a hard deadline, and a kill on timeout.
-#[cfg(target_os = "macos")]
-pub(super) fn keychain_metadata() -> KeychainMetadata {
-    keychain_metadata_for("Claude Code-credentials", None)
-}
-
-/// Read attributes for the selected service and account without requesting the secret.
 #[cfg(target_os = "macos")]
 pub(super) fn keychain_metadata_for(service: &str, account: Option<&str>) -> KeychainMetadata {
     use std::io::Read as _;

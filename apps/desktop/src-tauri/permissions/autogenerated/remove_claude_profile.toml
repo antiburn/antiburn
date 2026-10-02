@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-remove-claude-profile"
+description = "Enables the remove_claude_profile command without any pre-configured scope."
+commands.allow = ["remove_claude_profile"]
+
+[[permission]]
+identifier = "deny-remove-claude-profile"
+description = "Denies the remove_claude_profile command without any pre-configured scope."
+commands.deny = ["remove_claude_profile"]

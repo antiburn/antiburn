@@ -55,6 +55,7 @@ mod agents;
 mod analysis;
 mod analytics;
 mod app_presence;
+mod claude_profiles;
 mod commands;
 mod consent;
 mod diagnostics_export;
@@ -397,6 +398,10 @@ pub fn run() {
         // a populated registry rather than an empty one.
         let live_usage = {
             let store = app.state::<store::Store>();
+            // The Claude profiles reach session discovery and the live usage
+            // source through this registry, so load it before either starts.
+            claude_profiles::load(&store);
+            claude_profiles::refresh_account_labels_in_background(&store);
             usage_alerts::LiveUsage::from_store(&store)
         };
         app.manage(live_usage);

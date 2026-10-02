@@ -1416,6 +1416,20 @@ async fn prepare_selected_input_with_home(
     if !ignored_instructions::source_supported(format) {
         return Ok(PrepareInputOutcome::Unsupported);
     }
+    // Claude Code reads user instructions from the session's configuration
+    // directory, and discovery reads only `~/.claude`. A profile session
+    // gets no assessment, so the default instructions never stand in for
+    // its own.
+    if crate::agents::kind_from_slug(&candidate.session.key.agent).is_some_and(|agent| {
+        crate::remediation::claude_profile_source_at(
+            agent,
+            &candidate.session.key.environment_key,
+            &candidate.session.source_label,
+            home,
+        )
+    }) {
+        return Ok(PrepareInputOutcome::Unsupported);
+    }
     #[cfg(test)]
     {
         preparation_timings.evidence_read_us = stage_started.elapsed().as_micros();

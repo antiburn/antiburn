@@ -1409,6 +1409,8 @@ mod tests {
                 display_name: "Codex".to_string(),
                 category: "unavailable".to_string(),
                 detail: None,
+                account_label: None,
+                retry_at: None,
             }],
             generated_at: "2026-09-04T12:20:01Z".to_string(),
             ..Default::default()
@@ -1436,6 +1438,7 @@ mod tests {
             plan: None,
             account_uuid: None,
             account_email: None,
+            account_label: None,
         }
     }
 

@@ -160,6 +160,8 @@ pub enum ScanTrigger {
     RepositoryToggle,
     /// A scan root was added.
     ScanRootAdded,
+    /// A Claude profile directory was added or removed.
+    ClaudeProfilesChanged,
     /// A protected folder's access was granted or discovered.
     FolderAccessGranted,
     /// The local index was cleared.
@@ -179,6 +181,7 @@ impl ScanTrigger {
             ScanTrigger::SettingsTransition => "settings_transition",
             ScanTrigger::RepositoryToggle => "repository_toggle",
             ScanTrigger::ScanRootAdded => "scan_root_added",
+            ScanTrigger::ClaudeProfilesChanged => "claude_profiles_changed",
             ScanTrigger::FolderAccessGranted => "folder_access_granted",
             ScanTrigger::IndexCleared => "index_cleared",
             ScanTrigger::ManualRescan => "manual_rescan",
@@ -205,6 +208,7 @@ impl ScanTrigger {
             | ScanTrigger::SettingsTransition
             | ScanTrigger::RepositoryToggle
             | ScanTrigger::ScanRootAdded
+            | ScanTrigger::ClaudeProfilesChanged
             | ScanTrigger::FolderAccessGranted
             | ScanTrigger::IndexCleared
             | ScanTrigger::ManualRescan => true,

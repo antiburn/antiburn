@@ -182,9 +182,28 @@ pub fn default_credentials_path() -> Option<PathBuf> {
     Some(dir.join(".credentials.json"))
 }
 
-/// The Keychain item the Claude CLI keeps its login in.
-#[cfg(target_os = "macos")]
+/// The Keychain item the Claude CLI keeps its login in, for the default
+/// configuration directory.
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+
+/// The Keychain item name the Claude CLI uses for a configuration directory.
+///
+/// Without `CLAUDE_CONFIG_DIR`, the CLI uses [`KEYCHAIN_SERVICE`]. With it, the
+/// CLI adds `-` and the first eight hex digits of the SHA-256 of the
+/// directory path.
+pub(crate) fn keychain_service_for(config_dir: Option<&Path>) -> String {
+    use sha2::Digest as _;
+    let Some(config_dir) = config_dir else {
+        return KEYCHAIN_SERVICE.to_owned();
+    };
+    let digest = sha2::Sha256::digest(config_dir.to_string_lossy().as_bytes());
+    let suffix: String = digest
+        .iter()
+        .take(4)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("{KEYCHAIN_SERVICE}-{suffix}")
+}
 
 /// The CLI's own executable name. See [`super::cli_locator`] for where it is searched.
 const BINARY: &str = "claude";
@@ -196,10 +215,13 @@ const BINARY: &str = "claude";
 /// install.
 fn detect_presence(
     probe: &impl PresenceProbe,
+    keychain_service: &str,
     credentials_path: Option<&Path>,
     pi_auth_path: Option<&Path>,
     pi_status: impl FnOnce() -> PiStatus,
 ) -> Presence {
+    #[cfg(not(target_os = "macos"))]
+    let _ = keychain_service;
     let Some(credentials_path) = credentials_path else {
         return Presence::UNKNOWN;
     };
@@ -211,7 +233,7 @@ fn detect_presence(
         Err(_) => return Presence::UNKNOWN,
     }
     #[cfg(target_os = "macos")]
-    match probe.keychain_metadata(KEYCHAIN_SERVICE, None) {
+    match probe.keychain_metadata(keychain_service, None) {
         KeychainMetadata::Found(_) => {
             return Presence::via(Detection::SignedIn, LoginCarrier::ClaudeKeychain);
         }
@@ -336,8 +358,6 @@ mod macos_keychain {
     /// wherever it lives, not a reason to trust an unbounded read.
     const MAX_BYTES: usize = super::MAX_CREDENTIAL_BYTES as usize;
 
-    const SERVICE_NAME: &str = "Claude Code-credentials";
-
     /// The exit code `security find-generic-password` returns when the named
     /// item does not exist in the keychain — `errSecItemNotFound`.
     const ITEM_NOT_FOUND_EXIT_CODE: i32 = 44;
@@ -374,9 +394,9 @@ mod macos_keychain {
 
     /// Reads one Keychain item. See [`KeychainRead`] for what each outcome
     /// means.
-    pub fn read() -> KeychainRead {
+    pub fn read(service: &str) -> KeychainRead {
         let mut child = match antiburn_local::platform::process::headless_std_command("security")
-            .args(["find-generic-password", "-s", SERVICE_NAME, "-w"])
+            .args(["find-generic-password", "-s", service, "-w"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -482,6 +502,8 @@ pub struct ClaudeDirectFetch {
     /// to hold. Unused, and absent from the struct, on every other platform.
     #[cfg(target_os = "macos")]
     try_keychain: bool,
+    /// The Keychain item this source reads. See [`keychain_service_for`].
+    keychain_service: String,
     /// Where the Claude CLI's own cached usage reading lives. `None` means
     /// no cache is consulted — the ordinary state for a test that has no
     /// reason to exercise it, not a special mode.
@@ -505,6 +527,12 @@ pub struct ClaudeDirectFetch {
     /// twice — see the module doc's "Delegating refresh to the CLI" section.
     #[cfg(target_os = "macos")]
     keychain_credentials: std::sync::Mutex<Option<ClaudeCredentials>>,
+    /// The Keychain item's attributes at the time this source read
+    /// `keychain_credentials`.
+    /// A sign-in writes the item again, so changed attributes make the next
+    /// fetch read the new secret instead of the cached one.
+    #[cfg(target_os = "macos")]
+    keychain_attributes: std::sync::Mutex<Option<Vec<u8>>>,
     #[cfg(feature = "analytics")]
     limit_reset_diagnostic: LimitResetDiagnosticState,
 }
@@ -587,16 +615,55 @@ impl ClaudeDirectFetch {
             claude_json_path: default_claude_json_path(),
             #[cfg(target_os = "macos")]
             try_keychain: true,
+            keychain_service: KEYCHAIN_SERVICE.to_owned(),
             config_cache_path: claude_config_cache::default_config_path(),
-            transport: Box::new(LiveAnthropicTransport),
+            transport: Box::new(LiveAnthropicTransport::default()),
             cooldown: Cooldown::new(),
             pi_refresh: PiRefresher::new(),
             touch_env: Some(Box::new(claude_touch::CliTouchEnvironment::new(
                 default_credentials_path(),
+                None,
+                KEYCHAIN_SERVICE.to_owned(),
             ))),
             touch_gate: claude_touch::TouchGate::new(),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            keychain_attributes: std::sync::Mutex::new(None),
+            #[cfg(feature = "analytics")]
+            limit_reset_diagnostic: LimitResetDiagnosticState::default(),
+        }
+    }
+
+    /// A source for one Claude Code configuration directory that the reader
+    /// added as a profile. It reads that directory's Keychain item,
+    /// credentials file, and usage cache, and runs the CLI refresh with
+    /// `CLAUDE_CONFIG_DIR` set to it. Pi's shared login belongs to the
+    /// default source only.
+    pub fn for_profile(config_dir: PathBuf) -> ClaudeDirectFetch {
+        let credentials_path = config_dir.join(".credentials.json");
+        let keychain_service = keychain_service_for(Some(&config_dir));
+        ClaudeDirectFetch {
+            credentials_path: Some(credentials_path.clone()),
+            pi_auth_path: None,
+            claude_json_path: Some(config_dir.join(".claude.json")),
+            #[cfg(target_os = "macos")]
+            try_keychain: true,
+            keychain_service: keychain_service.clone(),
+            config_cache_path: Some(config_dir.join(".claude.json")),
+            transport: Box::new(LiveAnthropicTransport::default()),
+            cooldown: Cooldown::new(),
+            pi_refresh: PiRefresher::new(),
+            touch_env: Some(Box::new(claude_touch::CliTouchEnvironment::new(
+                Some(credentials_path),
+                Some(config_dir),
+                keychain_service,
+            ))),
+            touch_gate: claude_touch::TouchGate::new(),
+            #[cfg(target_os = "macos")]
+            keychain_credentials: std::sync::Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            keychain_attributes: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
             limit_reset_diagnostic: LimitResetDiagnosticState::default(),
         }
@@ -614,14 +681,17 @@ impl ClaudeDirectFetch {
             claude_json_path: None,
             #[cfg(target_os = "macos")]
             try_keychain: false,
+            keychain_service: KEYCHAIN_SERVICE.to_owned(),
             config_cache_path: None,
-            transport: Box::new(LiveAnthropicTransport),
+            transport: Box::new(LiveAnthropicTransport::default()),
             cooldown: Cooldown::new(),
             pi_refresh: PiRefresher::unavailable(),
             touch_env: None,
             touch_gate: claude_touch::TouchGate::new(),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            keychain_attributes: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
             limit_reset_diagnostic: LimitResetDiagnosticState::default(),
         }
@@ -642,6 +712,7 @@ impl ClaudeDirectFetch {
             claude_json_path: None,
             #[cfg(target_os = "macos")]
             try_keychain: false,
+            keychain_service: KEYCHAIN_SERVICE.to_owned(),
             config_cache_path: None,
             transport,
             cooldown: Cooldown::new(),
@@ -650,6 +721,8 @@ impl ClaudeDirectFetch {
             touch_gate: claude_touch::TouchGate::new(),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            keychain_attributes: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
             limit_reset_diagnostic: LimitResetDiagnosticState::default(),
         }
@@ -669,6 +742,7 @@ impl ClaudeDirectFetch {
             claude_json_path: None,
             #[cfg(target_os = "macos")]
             try_keychain: false,
+            keychain_service: KEYCHAIN_SERVICE.to_owned(),
             config_cache_path: None,
             transport,
             cooldown: Cooldown::new(),
@@ -677,6 +751,8 @@ impl ClaudeDirectFetch {
             touch_gate: claude_touch::TouchGate::new(),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            keychain_attributes: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
             limit_reset_diagnostic: LimitResetDiagnosticState::default(),
         }
@@ -701,6 +777,7 @@ impl ClaudeDirectFetch {
             claude_json_path: None,
             #[cfg(target_os = "macos")]
             try_keychain: false,
+            keychain_service: KEYCHAIN_SERVICE.to_owned(),
             config_cache_path: Some(config_cache_path),
             transport,
             cooldown: Cooldown::new(),
@@ -709,6 +786,8 @@ impl ClaudeDirectFetch {
             touch_gate: claude_touch::TouchGate::new(),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            keychain_attributes: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
             limit_reset_diagnostic: LimitResetDiagnosticState::default(),
         }
@@ -728,6 +807,7 @@ impl ClaudeDirectFetch {
             claude_json_path: None,
             #[cfg(target_os = "macos")]
             try_keychain: false,
+            keychain_service: KEYCHAIN_SERVICE.to_owned(),
             config_cache_path: None,
             transport,
             cooldown: Cooldown::new(),
@@ -736,6 +816,8 @@ impl ClaudeDirectFetch {
             touch_gate: claude_touch::TouchGate::new(),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            keychain_attributes: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
             limit_reset_diagnostic: LimitResetDiagnosticState::default(),
         }
@@ -803,7 +885,7 @@ impl ClaudeDirectFetch {
         #[cfg(target_os = "macos")]
         if self.try_keychain {
             match self.read_keychain_credentials(refresh_keychain, || {
-                macos_keychain::read().credentials()
+                macos_keychain::read(&self.keychain_service).credentials()
             }) {
                 Ok(Some(credentials)) => {
                     carriers.push(credentials);
@@ -830,7 +912,23 @@ impl ClaudeDirectFetch {
         force_read: bool,
         read: impl FnOnce() -> Result<Option<ClaudeCredentials>, FetchFailure>,
     ) -> Result<Option<ClaudeCredentials>, FetchFailure> {
-        if !force_read {
+        // Attributes only, never the secret, so this read cannot raise a
+        // prompt. An unreadable or absent item keeps the cache.
+        let attributes = if self.try_keychain {
+            match claude_touch::keychain_metadata_for(&self.keychain_service, None) {
+                claude_touch::KeychainMetadata::Found(bytes) => Some(bytes),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let item_changed = attributes.is_some()
+            && *self
+                .keychain_attributes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                != attributes;
+        if !force_read && !item_changed {
             let cached = self
                 .keychain_credentials
                 .lock()
@@ -848,6 +946,12 @@ impl ClaudeDirectFetch {
             .keychain_credentials
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = current.clone();
+        if attributes.is_some() {
+            *self
+                .keychain_attributes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = attributes;
+        }
         Ok(current)
     }
 
@@ -955,6 +1059,7 @@ impl LiveUsageSource for ClaudeDirectFetch {
                 #[cfg(target_os = "macos")]
                 try_keychain: self.try_keychain,
             },
+            &self.keychain_service,
             self.credentials_path.as_deref(),
             self.pi_auth_path.as_deref(),
             || match (online, self.pi_auth_path.as_deref()) {
@@ -971,7 +1076,7 @@ impl LiveUsageSource for ClaudeDirectFetch {
         // `security` subprocess, and a poll that the cooldown is going to
         // skip anyway should not pay for either — nor re-raise a Keychain
         // access prompt the reader has already seen.
-        let outcome = self.cooldown.poll(now, max_age, || {
+        let mut outcome = self.cooldown.poll(now, max_age, || {
             let (carriers, mut carrier_error, native_carriers) = self.read_carriers();
             // The touch below requires a *native* carrier: Pi's read-only
             // entry alone never triggers one — see the module doc's
@@ -1069,6 +1174,20 @@ impl LiveUsageSource for ClaudeDirectFetch {
                 failure
             })
         });
+        // The provider said when to ask again. No request goes out before
+        // then, a Retry included, because a request inside the window only
+        // returns the same refusal.
+        if let Some(delay) = self.transport.take_usage_retry_after() {
+            ::tracing::debug!(
+                event = "claude_usage_rate_limit_hold",
+                keychain_service = %self.keychain_service,
+                delay_secs = delay.as_secs()
+            );
+            self.cooldown.hold_off(delay);
+        }
+        if outcome.error.is_some() {
+            outcome.retry_at = self.cooldown.retry_at();
+        }
         #[cfg(feature = "analytics")]
         if let Some(delay) = self.cooldown.rate_limit_retry_after(max_age) {
             self.limit_reset_diagnostic.defer(delay);
@@ -1126,9 +1245,17 @@ trait AnthropicTransport: Send + Sync {
     }
     /// The profile body, or `None` when enrichment fails.
     fn profile(&self, access_token: &str) -> Option<String>;
+    /// The `Retry-After` delay of the last rate-limited usage response,
+    /// taken once.
+    fn take_usage_retry_after(&self) -> Option<std::time::Duration> {
+        None
+    }
 }
 
-struct LiveAnthropicTransport;
+#[derive(Default)]
+struct LiveAnthropicTransport {
+    usage_retry_after: std::sync::Mutex<Option<std::time::Duration>>,
+}
 
 impl AnthropicTransport for LiveAnthropicTransport {
     fn usage(&self, access_token: &str) -> Result<String, ProviderUsageError> {
@@ -1136,6 +1263,12 @@ impl AnthropicTransport for LiveAnthropicTransport {
             .send()
             .map_err(|_| ProviderUsageError::Unavailable)?;
         if let Some(error) = http::status_error(response.status()) {
+            if error == ProviderUsageError::RateLimited {
+                *self
+                    .usage_retry_after
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = retry_after(&response);
+            }
             return Err(error);
         }
         http::read_capped_body(response)
@@ -1175,6 +1308,13 @@ impl AnthropicTransport for LiveAnthropicTransport {
         }
     }
 
+    fn take_usage_retry_after(&self) -> Option<std::time::Duration> {
+        self.usage_retry_after
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+
     fn profile(&self, access_token: &str) -> Option<String> {
         let response = claude_request(PROFILE_ENDPOINT, access_token).send().ok()?;
         if http::status_error(response.status()).is_some() {
@@ -1184,8 +1324,9 @@ impl AnthropicTransport for LiveAnthropicTransport {
     }
 }
 
-#[cfg(feature = "analytics")]
-fn retry_after(response: &reqwest::blocking::Response) -> Option<Duration> {
+/// A response's `Retry-After` as delta-seconds. The HTTP-date form reads as
+/// absent.
+fn retry_after(response: &reqwest::blocking::Response) -> Option<std::time::Duration> {
     response
         .headers()
         .get(reqwest::header::RETRY_AFTER)?
@@ -1194,7 +1335,7 @@ fn retry_after(response: &reqwest::blocking::Response) -> Option<Duration> {
         .trim()
         .parse::<u64>()
         .ok()
-        .map(Duration::from_secs)
+        .map(std::time::Duration::from_secs)
 }
 
 fn claude_request(endpoint: &str, access_token: &str) -> reqwest::blocking::RequestBuilder {
@@ -1354,6 +1495,7 @@ fn snapshot_from_cache(
     credentials: &ClaudeCredentials,
 ) -> ProviderUsageSnapshot {
     ProviderUsageSnapshot {
+        account_label: None,
         refusal_kind: None,
         provider: crate::provider_usage::providers::ANTHROPIC,
         account: Some(cached.account.clone()),
@@ -1385,6 +1527,7 @@ fn fetch_live(
     let identity = resolve_identity(transport, &credentials.access_token, claude_json_path);
 
     Ok(ProviderUsageSnapshot {
+        account_label: None,
         refusal_kind: None,
         provider: crate::provider_usage::providers::ANTHROPIC,
         account: identity.uuid.clone(),
@@ -1457,6 +1600,38 @@ fn parse_profile(body: &str) -> Option<ClaudeIdentity> {
     })
 }
 
+/// The account UUID the Claude CLI records for the login in one
+/// configuration directory's `.claude.json`. `None` for the default
+/// directory reads `~/.claude.json`.
+pub(crate) fn claude_json_account_uuid(config_dir: Option<&Path>) -> Option<String> {
+    let path = match config_dir {
+        Some(dir) => dir.join(".claude.json"),
+        None => default_claude_json_path()?,
+    };
+    read_claude_json_identity(&path)?.uuid
+}
+
+/// Whether one configuration directory holds a subscription login: its
+/// credentials file, or on macOS its own Keychain item, read by attributes
+/// only. A directory that a wrapper points at an API-key provider has
+/// neither.
+pub(crate) fn claude_login_present(config_dir: &Path) -> bool {
+    if config_dir.join(".credentials.json").is_file() {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        matches!(
+            claude_touch::keychain_metadata_for(&keychain_service_for(Some(config_dir)), None),
+            claude_touch::KeychainMetadata::Found(_)
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 fn read_claude_json_identity(path: &Path) -> Option<ClaudeIdentity> {
     let metadata = fs::metadata(path).ok()?;
     if metadata.len() > MAX_CLAUDE_JSON_BYTES {
@@ -1501,6 +1676,7 @@ mod tests {
     fn presence(probe: &impl PresenceProbe) -> Presence {
         detect_presence(
             probe,
+            KEYCHAIN_SERVICE,
             Some(Path::new(PRESENCE_CREDENTIALS)),
             Some(Path::new(PRESENCE_PI)),
             || PiStatus::Unknown,
@@ -1599,6 +1775,7 @@ mod tests {
             assert_eq!(
                 detect_presence(
                     &probe,
+                    KEYCHAIN_SERVICE,
                     Some(Path::new(PRESENCE_CREDENTIALS)),
                     Some(Path::new(PRESENCE_PI)),
                     || status,
@@ -1615,6 +1792,7 @@ mod tests {
         probe.paths.insert(PRESENCE_PI.into(), Ok(false));
         detect_presence(
             &probe,
+            KEYCHAIN_SERVICE,
             Some(Path::new(PRESENCE_CREDENTIALS)),
             Some(Path::new(PRESENCE_PI)),
             || {
@@ -1779,7 +1957,7 @@ mod tests {
     fn detection_keeps_an_unresolved_credentials_path_unknown() {
         let probe = RecordingPresence::default();
         assert_eq!(
-            detect_presence(&probe, None, None, || PiStatus::Ready),
+            detect_presence(&probe, KEYCHAIN_SERVICE, None, None, || PiStatus::Ready),
             Presence::UNKNOWN
         );
         assert!(probe.calls.borrow().is_empty());
@@ -1989,6 +2167,50 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
+    struct RetryAfterTransport {
+        usage_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl AnthropicTransport for RetryAfterTransport {
+        fn usage(&self, _access_token: &str) -> Result<String, ProviderUsageError> {
+            self.usage_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(ProviderUsageError::RateLimited)
+        }
+
+        fn profile(&self, _access_token: &str) -> Option<String> {
+            None
+        }
+
+        fn take_usage_retry_after(&self) -> Option<std::time::Duration> {
+            Some(std::time::Duration::from_secs(600))
+        }
+    }
+
+    #[test]
+    fn a_retry_after_holds_even_a_forced_fetch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".credentials.json");
+        let expires_at_ms = (OffsetDateTime::now_utc().unix_timestamp() + 3_600) * 1_000;
+        fs::write(&path, credentials_file(expires_at_ms, "max")).expect("write");
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut source = ClaudeDirectFetch::at(path);
+        source.transport = Box::new(RetryAfterTransport {
+            usage_calls: std::sync::Arc::clone(&calls),
+        });
+
+        let first = source.fetch(std::time::Duration::ZERO);
+        source.cooldown.open_for_test();
+        let second = source.fetch(std::time::Duration::ZERO);
+
+        assert_eq!(first.error, Some(ProviderUsageError::RateLimited));
+        assert_eq!(second.error, Some(ProviderUsageError::RateLimited));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let retry_at = second.retry_at.expect("the hold names its end");
+        let wait = retry_at - OffsetDateTime::now_utc();
+        assert!(wait > time::Duration::minutes(9) && wait <= time::Duration::minutes(10));
+    }
+
     #[test]
     fn a_fresh_cache_pre_empts_the_network() {
         let cached = cached_usage(now() - time::Duration::seconds(10));
@@ -2144,6 +2366,35 @@ mod tests {
             ))
             .and_then(|identity| identity.uuid),
             None
+        );
+    }
+
+    #[test]
+    fn keychain_service_names_follow_the_cli_scheme() {
+        assert_eq!(keychain_service_for(None), "Claude Code-credentials");
+        // `printf %s /Users/avery/.claude-work | shasum -a 256` starts
+        // with `6abacc42`.
+        assert_eq!(
+            keychain_service_for(Some(Path::new("/Users/avery/.claude-work"))),
+            "Claude Code-credentials-6abacc42"
+        );
+    }
+
+    #[test]
+    fn a_profile_source_reads_its_own_directory() {
+        let source = ClaudeDirectFetch::for_profile(PathBuf::from("/work/.claude-work"));
+        assert_eq!(
+            source.credentials_path.as_deref(),
+            Some(Path::new("/work/.claude-work/.credentials.json"))
+        );
+        assert_eq!(
+            source.config_cache_path.as_deref(),
+            Some(Path::new("/work/.claude-work/.claude.json"))
+        );
+        assert_eq!(source.pi_auth_path, None);
+        assert_eq!(
+            source.keychain_service,
+            keychain_service_for(Some(Path::new("/work/.claude-work")))
         );
     }
 

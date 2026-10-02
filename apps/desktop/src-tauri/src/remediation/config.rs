@@ -76,6 +76,9 @@ pub(crate) fn publication_config_attribution_with_home(
     let Some(session) = store.session(key)? else {
         return Ok(PublicationConfigAttribution::default());
     };
+    if claude_profile_session(agent, &key.environment_key, &session) {
+        return Ok(PublicationConfigAttribution::default());
+    }
     let workspace_candidate = session.cwd.as_deref().map(Path::new);
     let workspace =
         workspace_candidate.and_then(|path| trusted_workspace(store, path).ok().flatten());
@@ -413,4 +416,89 @@ pub(crate) fn runtime_override_present(agent: AgentKind) -> bool {
 
 pub(crate) fn managed_configuration_present(agent: AgentKind, home: &Path) -> bool {
     vendor_policy(agent).is_some_and(|policy| policy.managed_configuration_present(home))
+}
+
+/// Whether a Claude session ran with a configuration directory other than
+/// `~/.claude`, such as a profile the reader added. The editor and resource
+/// inventory read only `~/.claude`, so a finding from such a session gets no
+/// config attribution, no Auto Fix, no verification, and no resource
+/// assessment. The prompt stays available.
+///
+/// The test uses the transcript path, so it holds for fork-job sessions and
+/// after the reader removes the profile.
+pub(crate) fn claude_profile_session(
+    agent: AgentKind,
+    environment_key: &str,
+    session: &crate::store::SessionRecord,
+) -> bool {
+    claude_profile_source(agent, environment_key, &session.source_label)
+}
+
+/// [`claude_profile_session`] for a session's environment and source label.
+/// Only native sessions qualify: remote and WSL copies keep their own rules.
+pub(crate) fn claude_profile_source(
+    agent: AgentKind,
+    environment_key: &str,
+    source_label: &str,
+) -> bool {
+    antiburn_local::paths::home_dir()
+        .is_some_and(|home| claude_profile_source_at(agent, environment_key, source_label, &home))
+}
+
+/// [`claude_profile_source`] against an explicit home directory.
+pub(crate) fn claude_profile_source_at(
+    agent: AgentKind,
+    environment_key: &str,
+    source_label: &str,
+    home: &Path,
+) -> bool {
+    environment_key == "native" && claude_profile_source_in(agent, source_label, home)
+}
+
+fn claude_profile_source_in(agent: AgentKind, source_label: &str, home: &Path) -> bool {
+    agent == AgentKind::Claude
+        && antiburn_local::discovery::agents::claude::non_default_config_dir(
+            Path::new(source_label),
+            home,
+        )
+        .is_some()
+}
+
+#[cfg(test)]
+mod profile_session_tests {
+    use super::*;
+
+    #[test]
+    fn claude_transcripts_outside_the_default_dir_are_profile_sessions() {
+        let home = Path::new("/Users/avery");
+        let in_profile = "/Users/avery/.claude-work/projects/-demo/session.jsonl";
+        let removed_profile = "/Volumes/old/claude-side/projects/-demo/session.jsonl";
+        let in_default = "/Users/avery/.claude/projects/-demo/session.jsonl";
+
+        assert!(claude_profile_source_in(
+            AgentKind::Claude,
+            in_profile,
+            home
+        ));
+        assert!(claude_profile_source_in(
+            AgentKind::Claude,
+            removed_profile,
+            home
+        ));
+        assert!(!claude_profile_source_in(
+            AgentKind::Claude,
+            in_default,
+            home
+        ));
+        assert!(!claude_profile_source_in(
+            AgentKind::Claude,
+            "claude-desktop:abc",
+            home
+        ));
+        assert!(!claude_profile_source_in(
+            AgentKind::Codex,
+            in_profile,
+            home
+        ));
+    }
 }
