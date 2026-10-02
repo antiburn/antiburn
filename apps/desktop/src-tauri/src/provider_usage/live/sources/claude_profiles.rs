@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::claude_profiles;
-use crate::provider_usage::live::model::Presence;
+use crate::provider_usage::live::model::{Detection, Presence};
 use crate::provider_usage::live::{AccountFailure, LiveUsageSource, SourceOutcome};
 
 use super::anthropic_fetch::ClaudeDirectFetch;
@@ -97,6 +97,17 @@ impl ClaudeProfilesFetch {
     }
 }
 
+/// `default` when it is signed in. Otherwise the strongest of `default` and
+/// the profiles' presences, which this reads only in that case.
+fn strongest_presence(default: Presence, profiles: impl FnOnce() -> Vec<Presence>) -> Presence {
+    if default.detection == Detection::SignedIn {
+        return default;
+    }
+    profiles()
+        .into_iter()
+        .fold(default, |best, presence| best.strongest(presence))
+}
+
 impl Default for ClaudeProfilesFetch {
     fn default() -> ClaudeProfilesFetch {
         ClaudeProfilesFetch::new()
@@ -116,8 +127,16 @@ impl LiveUsageSource for ClaudeProfilesFetch {
         true
     }
 
+    /// The default login's presence. When the default folder holds no
+    /// login, a profile's login counts too, so a reader who signs in only in
+    /// a profile reads as signed in before the first reading.
     fn detect(&self, online: bool) -> Presence {
-        self.default.detect(online)
+        strongest_presence(self.default.detect(online), || {
+            self.current_profiles()
+                .into_iter()
+                .map(|(profile, _)| profile.fetch.detect(online))
+                .collect()
+        })
     }
 
     fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome {
@@ -158,6 +177,26 @@ impl LiveUsageSource for ClaudeProfilesFetch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_profile_login_counts_only_when_the_default_has_none() {
+        let signed_in = Presence::new(Detection::SignedIn);
+        let installed = Presence::new(Detection::InstalledNotSignedIn);
+        let missing = Presence::new(Detection::NotInstalled);
+
+        assert_eq!(
+            strongest_presence(missing, || vec![installed, signed_in]).detection,
+            Detection::SignedIn
+        );
+        assert_eq!(
+            strongest_presence(signed_in, || panic!("profiles are not read")).detection,
+            Detection::SignedIn
+        );
+        assert_eq!(
+            strongest_presence(missing, Vec::new).detection,
+            Detection::NotInstalled
+        );
+    }
 
     #[test]
     fn profile_fetches_follow_the_registry_and_survive_between_passes() {

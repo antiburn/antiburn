@@ -601,6 +601,7 @@ fn apply_change(
     store: &Store,
     home: Option<&Path>,
     apply: impl FnOnce(&mut StoredProfiles, Option<&Path>) -> Result<(), String>,
+    install: impl FnOnce(&StoredProfiles),
 ) -> Result<Applied, String> {
     let (stored, unused, changed) = {
         let _guard = write_lock();
@@ -648,7 +649,7 @@ async fn change(
     let label_store = store.clone();
     let applied = run_blocking(move || {
         let home = antiburn_local::paths::home_dir();
-        apply_change(&store, home.as_deref(), apply)
+        apply_change(&store, home.as_deref(), apply, install)
     })
     .await?;
     // A rename to the same name changes nothing. Record nothing for it.
@@ -1014,24 +1015,36 @@ mod tests {
         let home = TempDir::new().unwrap();
         let work = profile_dir(home.path(), ".claude-work");
         let work_path = work.to_string_lossy().to_string();
+        // Record installs instead of touching the process-wide registry.
+        let installed = std::cell::RefCell::new(Vec::<Vec<String>>::new());
+        let install = |stored: &StoredProfiles| installed.borrow_mut().push(stored_labels(stored));
 
-        let added = apply_change(&store, Some(home.path()), |stored, home| {
-            add(stored, "Work", &work_path, home)
-        })
+        let added = apply_change(
+            &store,
+            Some(home.path()),
+            |stored, home| add(stored, "Work", &work_path, home),
+            install,
+        )
         .unwrap();
         assert!(added.changed);
         assert_eq!(added.count, 1);
         assert_eq!(read(&store).profiles.len(), 1);
 
-        let duplicate = apply_change(&store, Some(home.path()), |stored, home| {
-            add(stored, "work", &work_path, home)
-        });
+        let duplicate = apply_change(
+            &store,
+            Some(home.path()),
+            |stored, home| add(stored, "work", &work_path, home),
+            install,
+        );
         assert_eq!(duplicate.unwrap_err(), DUPLICATE_LABEL);
 
         let id = read(&store).profiles[0].id.clone();
-        let same = apply_change(&store, Some(home.path()), |stored, _| {
-            rename(stored, &id, "Work")
-        })
+        let same = apply_change(
+            &store,
+            Some(home.path()),
+            |stored, _| rename(stored, &id, "Work"),
+            install,
+        )
         .unwrap();
         assert!(!same.changed);
 
@@ -1043,14 +1056,19 @@ mod tests {
                    BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END;",
             )
             .unwrap();
-        let failed = apply_change(&store, Some(home.path()), |stored, _| {
-            rename(stored, &id, "Office")
-        });
+        let failed = apply_change(
+            &store,
+            Some(home.path()),
+            |stored, _| rename(stored, &id, "Office"),
+            install,
+        );
         assert!(failed.unwrap_err().contains("synthetic write failure"));
         assert_eq!(read(&store).profiles[0].label, "Work");
-        assert_eq!(registered_profiles()[0].label, "Work");
-
-        install(&StoredProfiles::default());
+        // Only the successful add installed a registry.
+        assert_eq!(
+            *installed.borrow(),
+            vec![vec!["Claude".to_owned(), "Work".to_owned()]]
+        );
     }
 
     #[test]
