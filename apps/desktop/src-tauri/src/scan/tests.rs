@@ -1129,6 +1129,58 @@ async fn the_current_window_filter_always_keeps_an_unknown_activity_source() {
 }
 
 #[tokio::test]
+async fn the_found_counts_report_each_agent_once_after_the_current_window_filter() {
+    let home = tempfile::TempDir::new().unwrap();
+    let activity = time::OffsetDateTime::parse(
+        "2026-08-01T10:01:00Z",
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap()
+    .unix_timestamp();
+    let now = activity + 60 * 86_400;
+    let stale = |id: &str| {
+        log(
+            AgentKind::Claude,
+            write_claude_session(home.path(), id),
+            now,
+        )
+    };
+    let inline = |label: &str| SessionLog {
+        agent_type: AgentKind::OpenCode,
+        source: SessionSource::Inline {
+            label: label.into(),
+            content: String::new(),
+        },
+        updated_at: Some(now),
+        environment: DiscoveryEnvironment::Native,
+    };
+    let logs = vec![stale("stale-a"), inline("a"), stale("stale-b"), inline("b")];
+
+    let mut reported = Vec::new();
+    let (kept, _) = current_window_candidates_with_progress(
+        logs,
+        &std::collections::HashMap::new(),
+        now,
+        &mut |agent, sessions| reported.push((agent, sessions)),
+    )
+    .await;
+
+    assert_eq!(kept.len(), 2);
+    assert_eq!(reported.len(), AgentKind::ALL.len(), "one report per agent");
+    for agent in AgentKind::ALL {
+        let expected = if *agent == AgentKind::OpenCode { 2 } else { 0 };
+        assert_eq!(
+            reported
+                .iter()
+                .filter(|(found, _)| found == agent)
+                .collect::<Vec<_>>(),
+            [&(*agent, expected)],
+            "{agent:?} reports its count after the filter, not before"
+        );
+    }
+}
+
+#[tokio::test]
 async fn describe_trusts_precomputed_activity_instead_of_recomputing_it() {
     let home = tempfile::TempDir::new().unwrap();
     let path = write_claude_session(home.path(), "precomputed-activity");

@@ -1118,23 +1118,12 @@ async fn pass(
                 .discover_recent_sessions_with_progress(
                     now,
                     since_secs,
-                    move |agent, found, completed, total| {
+                    move |_agent, found, completed, total| {
                         let controller = progress_app.state::<ScanController>();
                         let status = controller.update(|status| {
                             status.completed_agents = completed;
                             status.total_agents = total;
                             status.sessions += found;
-                            if !full_pass {
-                                return;
-                            }
-                            if let Some(entry) = status
-                                .found_by_agent
-                                .iter_mut()
-                                .find(|entry| entry.agent == agent.slug())
-                            {
-                                entry.sessions = found;
-                                entry.done = true;
-                            }
                         });
                         let _ = progress_app.emit(EVENT_PROGRESS, status);
                     },
@@ -1161,7 +1150,30 @@ async fn pass(
     let (logs, precomputed) = if is_history_pass {
         (logs, std::collections::HashMap::new())
     } else {
-        current_window_candidates(logs, &previous_records, now).await
+        let found_app = app.clone();
+        current_window_candidates_with_progress(
+            logs,
+            &previous_records,
+            now,
+            &mut |agent, sessions| {
+                if !full_pass {
+                    return;
+                }
+                let controller = found_app.state::<ScanController>();
+                let status = controller.update(|status| {
+                    if let Some(entry) = status
+                        .found_by_agent
+                        .iter_mut()
+                        .find(|entry| entry.agent == agent.slug())
+                    {
+                        entry.sessions = sessions;
+                        entry.done = true;
+                    }
+                });
+                let _ = found_app.emit(EVENT_PROGRESS, status);
+            },
+        )
+        .await
     };
     let include_non_repo_folders = store.settings_snapshot().include_non_repo_folders;
 
@@ -1800,14 +1812,38 @@ async fn current_window_candidates(
     Vec<SessionLog>,
     std::collections::HashMap<SessionActivityKey, CandidateActivity>,
 ) {
+    current_window_candidates_with_progress(logs, previous_records, now, &mut |_, _| {}).await
+}
+
+/// [`current_window_candidates`], and `on_found` gets each agent's count of
+/// current sessions when the filter finishes that agent. An agent that
+/// discovery found nothing for gets 0 before the filter starts. The Find step
+/// shows these counts, so its total agrees with the sessions that the Read
+/// step reads.
+async fn current_window_candidates_with_progress(
+    logs: Vec<SessionLog>,
+    previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
+    now: i64,
+    on_found: &mut (dyn FnMut(AgentKind, usize) + Send),
+) -> (
+    Vec<SessionLog>,
+    std::collections::HashMap<SessionActivityKey, CandidateActivity>,
+) {
     let cutoff = now - CURRENT_WINDOW_SECS;
     let mut by_agent: BTreeMap<AgentKind, Vec<SessionLog>> = BTreeMap::new();
     for log in logs {
         by_agent.entry(log.agent_type).or_default().push(log);
     }
+    for agent in AgentKind::ALL {
+        if !by_agent.contains_key(agent) {
+            on_found(*agent, 0);
+        }
+    }
     let mut survivors = Vec::new();
-    for agent_logs in by_agent.into_values() {
-        survivors.extend(filter_current_window(agent_logs, previous_records, cutoff).await);
+    for (agent, agent_logs) in by_agent {
+        let kept = filter_current_window(agent_logs, previous_records, cutoff).await;
+        on_found(agent, kept.len());
+        survivors.extend(kept);
     }
     let mut logs = Vec::with_capacity(survivors.len());
     let mut precomputed = std::collections::HashMap::with_capacity(survivors.len());
