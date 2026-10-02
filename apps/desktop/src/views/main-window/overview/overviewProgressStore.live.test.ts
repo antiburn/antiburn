@@ -518,11 +518,12 @@ describe("overviewProgressStore's first-run analytics", () => {
     const result = steps.filter((call) => call.interaction.step === "result")
     expect(result).toHaveLength(1)
     expect(result[0]?.interaction.result).toBe("clean")
+    // The shell command records `first_run_finished` after it saves.
     expect(
       noteInteractionCalls().filter(
         ({ interaction }) => interaction.kind === "firstRunFinished",
       ),
-    ).toHaveLength(1)
+    ).toHaveLength(0)
   })
 
   it("reports nothing in steady mode, where the funnel never shows", async () => {

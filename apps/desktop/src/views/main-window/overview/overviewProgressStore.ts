@@ -398,7 +398,8 @@ function maybeFinishFirstRun(): void {
     step: "result",
     result: firstRunResult(snapshot),
   })
-  noteInteraction({ kind: "firstRunFinished" })
+  // `finish_first_run` records `first_run_finished` itself, only when it
+  // saves the change.
   void finishFirstRun().catch((error: unknown) => {
     console.error("finishFirstRun failed", error)
   })

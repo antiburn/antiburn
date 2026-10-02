@@ -530,6 +530,19 @@ pub async fn finish_first_run(app: tauri::AppHandle) -> CommandResult<AppSetting
     })
     .await?;
     apply_settings_transition_on_main(&app, &previous, &saved).await?;
+    // Only the save that finishes the first run records it, so a repeated
+    // call or a failed save never reports a finish.
+    if !previous.onboarding_completed && saved.onboarding_completed {
+        let analytics_app = app.clone();
+        run_blocking(move || {
+            crate::analytics::record_interaction(
+                &analytics_app,
+                crate::analytics::event::Interaction::FirstRunFinished {},
+            );
+            Ok(())
+        })
+        .await?;
+    }
     Ok(saved)
 }
 

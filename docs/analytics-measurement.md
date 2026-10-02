@@ -739,10 +739,12 @@ spent on any step, or distinguish a slow pass from a fast one.
 (`started`/`found`/`read`/`checked`), set the first time that step's own
 latched `done` flag turns true while the store is in `firstRun` mode;
 `steady`-mode installations — a device that already finished a first run —
-never enter this mode and never report any of it. `result` and
-`antiburn.first_run_finished` fire together, once, the instant the result
-first becomes showable (`resultReady`), immediately before the store commits
-`onboardingCompleted` through `finish_first_run`. A wipe
+never enter this mode and never report any of it. `result` fires once, the instant the result first becomes showable
+(`resultReady`), immediately before the store commits `onboardingCompleted`
+through `finish_first_run`. The shell's `finish_first_run` records
+`antiburn.first_run_finished` itself, only when its save turns
+`onboardingCompleted` from false to true, so a failed save reports no
+finish. A wipe
 (`ftue:reset`) clears every flag, because it starts a genuinely new first run
 that must report its own funnel.
 

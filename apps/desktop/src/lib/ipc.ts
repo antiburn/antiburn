@@ -365,7 +365,6 @@ export type Interaction =
       result?: FirstRunResult
     }
   | { kind: "firstRunAction"; action: FirstRunActionKind }
-  | { kind: "firstRunFinished" }
 
 export type Surface =
   | "activity"
