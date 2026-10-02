@@ -683,6 +683,16 @@ export async function scanNow(activityWindowDays?: number): Promise<ScanStatus |
     : invoke<ScanStatus>("scan_now", { activityWindowDays })
 }
 
+/**
+ * Run the dedicated historical pass now (Settings > General > Historical
+ * scan). Widens discovery past the current window, up to the retention
+ * limit, instead of {@link scanNow}'s current-window-only rescan.
+ */
+export async function scanHistory(): Promise<ScanStatus | null> {
+  if (!hasShell()) return null
+  return invoke<ScanStatus>("scan_history")
+}
+
 /** What the current or last scan is doing. */
 export async function getScanStatus(): Promise<ScanStatus | null> {
   if (!hasShell()) return null

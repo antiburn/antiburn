@@ -294,6 +294,43 @@ pub struct ScanStatus {
     /// R5: how many session rows the last pass added or refreshed.
     /// This lets a reader detect a productive pass without `list_changed`.
     pub re_described: usize,
+    /// Progress of the dedicated historical pass, under the current
+    /// retention. `None` only before the first status computation; once set,
+    /// it stays `Some` for the rest of the run.
+    pub history: Option<ScanHistoryProgress>,
+}
+
+/// Progress of the dedicated historical pass, which widens discovery past
+/// [`crate::store::model::CURRENT_WINDOW_DAYS`] up to the retention limit.
+///
+/// `total` and `completed` count indexed sessions whose last activity is
+/// older than the current window: `total` is how many the historical pass
+/// has found so far, `completed` is how many of those have settled evidence
+/// (ready, failed, or unsupported).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanHistoryProgress {
+    pub state: ScanHistoryState,
+    pub completed: usize,
+    pub total: usize,
+}
+
+/// One state in [`ScanHistoryProgress`]. See each variant for what a reader
+/// should take it to mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScanHistoryState {
+    /// The current retention keeps only the current window: there is no
+    /// older history to find.
+    None,
+    /// History is not done yet, and the pass has not started — it is
+    /// waiting for the current work to finish first.
+    Pending,
+    /// The historical pass is discovering or reading, or its sessions still
+    /// wait for analysis.
+    Running,
+    /// Complete for the current retention.
+    Done,
 }
 
 /* -------------------------------------------------------------------------

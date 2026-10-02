@@ -104,6 +104,7 @@ macro_rules! with_app_commands {
             commands::reveal_source => "reveal_source",
             commands::open_project_folder => "open_project_folder",
             commands::scan_now => "scan_now",
+            commands::scan_history => "scan_history",
             remote_sessions::set_remote_host_sync_enabled => "set_remote_host_sync_enabled",
             remote_sessions::scan_remote_host => "scan_remote_host",
             hud_commands::set_hud_detail_size => "set_hud_detail_size",

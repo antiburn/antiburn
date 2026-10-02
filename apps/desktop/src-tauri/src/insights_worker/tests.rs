@@ -514,6 +514,49 @@ async fn a_hot_source_does_not_starve_a_stable_session() {
 }
 
 #[test]
+fn claim_next_evidence_by_recency_prefers_the_most_recently_active_session() {
+    let store = store();
+    store
+        .upsert_sessions(
+            &[
+                SessionRecord {
+                    updated_at_epoch: Some(50),
+                    ..record("old")
+                },
+                SessionRecord {
+                    updated_at_epoch: Some(500),
+                    ..record("new")
+                },
+                SessionRecord {
+                    updated_at_epoch: None,
+                    ..record("unknown-activity")
+                },
+            ],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+
+    let first = store
+        .claim_next_evidence_by_recency(&crate::agents::evidence_cohort(), 1_000, LEASE_SECS)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.key.session_id, "new");
+
+    let second = store
+        .claim_next_evidence_by_recency(&crate::agents::evidence_cohort(), 1_000, LEASE_SECS)
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.key.session_id, "old");
+
+    // Unknown activity never jumps ahead of a known one: it claims last.
+    let third = store
+        .claim_next_evidence_by_recency(&crate::agents::evidence_cohort(), 1_000, LEASE_SECS)
+        .unwrap()
+        .unwrap();
+    assert_eq!(third.key.session_id, "unknown-activity");
+}
+
+#[test]
 fn an_un_stat_able_source_stops_being_claimed() {
     let store = store();
     let claim = claim(&store, "missing", 100);
@@ -1799,6 +1842,9 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
     pi.key.agent = "pi".to_owned();
     pi.source_label = source_path.to_string_lossy().into_owned();
     pi.source_fingerprint = Some("sv1:synthetic-pi-worker".to_owned());
+    // The report below windows by last activity now, not by start time, so
+    // this fixture's activity must fall inside the window it queries.
+    pi.updated_at_epoch = Some(1_767_225_610);
     store
         .upsert_sessions(std::slice::from_ref(&pi), &crate::agents::evidence_cohort())
         .unwrap();

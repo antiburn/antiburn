@@ -29,8 +29,8 @@ fn has_published_sampled_instruction_assessment_in(
             AND a.source_fingerprint IS s.source_fingerprint
             AND a.published_fence = e.published_fence
             AND a.input_revision = a.result_revision
-          WHERE s.environment_key = ?1 AND s.started_at_epoch >= ?2
-            AND s.started_at_epoch < ?3 AND e.status = 'ready'
+          WHERE s.environment_key = ?1 AND COALESCE(s.updated_at_epoch, s.started_at_epoch) >= ?2
+            AND COALESCE(s.updated_at_epoch, s.started_at_epoch) < ?3 AND e.status = 'ready'
             AND e.analyzed_generation = s.source_generation
             AND e.parser_revision = ?4 AND e.analyzer_revision = ?5
             AND e.evidence_schema_revision = ?6",
@@ -804,7 +804,8 @@ mod tests {
                 "CREATE TABLE session (
                     environment_key TEXT, agent TEXT, session_id TEXT,
                     incarnation INTEGER, source_generation INTEGER,
-                    source_fingerprint TEXT, started_at_epoch INTEGER);
+                    source_fingerprint TEXT, started_at_epoch INTEGER,
+                    updated_at_epoch INTEGER);
                  CREATE TABLE session_evidence (
                     environment_key TEXT, agent TEXT, session_id TEXT,
                     evidence_json TEXT, published_fence INTEGER, status TEXT,
@@ -816,7 +817,7 @@ mod tests {
                     published_fence INTEGER, status TEXT, input_revision TEXT,
                     result_revision TEXT, result_json TEXT);
                  INSERT INTO session VALUES
-                    ('native', 'claude-code', 'sampled', 1, 1, 'fingerprint', 120);",
+                    ('native', 'claude-code', 'sampled', 1, 1, 'fingerprint', 120, NULL);",
             )
             .unwrap();
         let evidence = SessionEvidenceAccumulator::new(EvidenceSource {

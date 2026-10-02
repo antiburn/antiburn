@@ -80,6 +80,7 @@ pub const MIGRATIONS: &[&str] = &[
     V67,
     V68,
     V69,
+    V70,
 ];
 
 const V69: &str = r#"
@@ -1525,3 +1526,20 @@ ON CONFLICT(key) DO NOTHING;
 
 /// v63 stores normalized tool-input fields for bounded check projection.
 const V63: &str = antiburn_local::analysis::TURN_SCHEMA_V10_SQL;
+
+/// v70 replaces [`V31`]'s Insights window index with one on last activity.
+///
+/// The Insights cohort, denominator, resource-use, and current-findings
+/// queries used to select their report window by `started_at_epoch`. They
+/// now select by last activity — `COALESCE(updated_at_epoch,
+/// started_at_epoch)`, falling back only when activity is unknown — so the
+/// report covers the same sessions discovery does. SQLite only matches an
+/// index to an expression named verbatim ([`V23`] established the same
+/// pattern), so the query's `WHERE` and `ORDER BY` both name this exact
+/// expression, and `session_insights_window` serves no query after this.
+const V70: &str = r#"
+DROP INDEX session_insights_window;
+CREATE INDEX session_insights_window_activity
+    ON session (environment_key, COALESCE(updated_at_epoch, started_at_epoch) DESC,
+                session_id DESC);
+"#;

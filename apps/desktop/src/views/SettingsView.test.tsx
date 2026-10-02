@@ -156,6 +156,7 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
         return Promise.resolve(null)
       case "get_scan_status":
       case "scan_now":
+      case "scan_history":
       case "cancel_scan":
         return Promise.resolve(SCAN_STATUS)
       case "list_repositories":
@@ -373,7 +374,7 @@ describe("SettingsView", () => {
     expect(screen.getByText(/Last scanned 5m ago/)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "Scan now" }))
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("scan_now"))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("scan_history"))
   })
 
   it("persists the activity window", async () => {

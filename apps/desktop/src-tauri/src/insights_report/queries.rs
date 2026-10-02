@@ -27,9 +27,8 @@ SELECT bucket, COUNT(*), SUM(awaiting_provider_support), SUM(evidence_pending)
        AND e.agent = s.agent
        AND e.session_id = s.session_id
      WHERE s.environment_key = ?1
-       AND ((s.started_at_epoch >= ?2 AND s.started_at_epoch < ?3)
-         OR (s.started_at_epoch IS NULL
-             AND s.updated_at_epoch >= ?2 AND s.updated_at_epoch < ?3))
+       AND COALESCE(s.updated_at_epoch, s.started_at_epoch) >= ?2
+       AND COALESCE(s.updated_at_epoch, s.started_at_epoch) < ?3
   )
  GROUP BY bucket
  ORDER BY bucket";
@@ -51,10 +50,10 @@ SELECT e.evidence_json, s.agent, s.session_id, e.published_fence, a.initial_cont
    AND NOT (a.analyzer_revision IS NOT ?5)
    AND NOT (a.metrics_schema_revision IS NOT ?7)
  WHERE s.environment_key = ?1
-   AND s.started_at_epoch >= ?2
-   AND s.started_at_epoch < ?3
+   AND COALESCE(s.updated_at_epoch, s.started_at_epoch) >= ?2
+   AND COALESCE(s.updated_at_epoch, s.started_at_epoch) < ?3
    AND {current}
-   ORDER BY s.started_at_epoch DESC, s.session_id DESC";
+   ORDER BY COALESCE(s.updated_at_epoch, s.started_at_epoch) DESC, s.session_id DESC";
 
 pub(super) const RESOURCE_USE_SQL: &str = "
 SELECT e.evidence_json, s.agent, s.session_id, a.initial_context_json, s.cwd
@@ -72,14 +71,14 @@ SELECT e.evidence_json, s.agent, s.session_id, a.initial_context_json, s.cwd
    AND NOT (a.analyzer_revision IS NOT ?5)
    AND NOT (a.metrics_schema_revision IS NOT ?7)
  WHERE s.environment_key = ?1
-   AND s.started_at_epoch >= ?2
-   AND s.started_at_epoch < ?3
+   AND COALESCE(s.updated_at_epoch, s.started_at_epoch) >= ?2
+   AND COALESCE(s.updated_at_epoch, s.started_at_epoch) < ?3
    AND e.status = 'unsupported'
    AND NOT (e.analyzed_generation IS NOT s.source_generation)
    AND NOT (e.parser_revision IS NOT ?4)
    AND NOT (e.analyzer_revision IS NOT ?5)
    AND NOT (e.evidence_schema_revision IS NOT ?6)
- ORDER BY s.started_at_epoch DESC, s.session_id DESC";
+ ORDER BY COALESCE(s.updated_at_epoch, s.started_at_epoch) DESC, s.session_id DESC";
 
 pub(super) const TOKEN_BURN_TURNS_SQL: &str = "
 SELECT scope, model, effort, speed, ts_ms, input_tokens, output_tokens,
@@ -114,10 +113,10 @@ SELECT e.evidence_json, s.environment_key, s.agent, s.session_id,
    AND NOT (a.analyzer_revision IS NOT ?5)
    AND NOT (a.metrics_schema_revision IS NOT ?7)
  WHERE s.environment_key = ?1
-   AND s.started_at_epoch >= ?2
-   AND s.started_at_epoch < ?3
+   AND COALESCE(s.updated_at_epoch, s.started_at_epoch) >= ?2
+   AND COALESCE(s.updated_at_epoch, s.started_at_epoch) < ?3
     AND {current}
-  ORDER BY s.started_at_epoch DESC, s.agent DESC, s.session_id DESC
+  ORDER BY COALESCE(s.updated_at_epoch, s.started_at_epoch) DESC, s.agent DESC, s.session_id DESC
   LIMIT ?8";
 
 pub(super) const CURRENT_FINDING_BY_KEY_SQL: &str = "

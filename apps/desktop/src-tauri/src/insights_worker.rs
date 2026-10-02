@@ -300,6 +300,10 @@ async fn run_worker(app: tauri::AppHandle) {
             source = "insights_worker_batch"
         );
         let _ = report_app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
+        // Catches up the history progress indicator while the worker
+        // settles history evidence after the historical pass itself has
+        // already finished. `push_progress` throttles this call.
+        crate::scan::history::push_progress(&report_app, false, false);
     };
     let backlog_app = app.clone();
     let announce_backlog = move |active: bool| {
@@ -307,6 +311,13 @@ async fn run_worker(app: tauri::AppHandle) {
             commands::INSIGHTS_BACKLOG_CHANGED_EVENT,
             crate::dto::InsightsBacklog { active },
         );
+        // The automatic historical pass's other prerequisite (see
+        // `scan::history::maybe_start_automatic_pass`) is the backlog
+        // draining; check it on every drain, not only after a scan pass.
+        if !active {
+            crate::scan::history::push_progress(&backlog_app, false, true);
+            crate::scan::history::maybe_start_automatic_pass(&backlog_app);
+        }
     };
     let analytics_app = app.clone();
     let report_ingested = move |agent: AgentKind, ingested: IngestedIncidents| {
@@ -552,8 +563,13 @@ pub(crate) async fn process_next(
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
     on_claimed: &(dyn Fn() + Send + Sync),
 ) -> anyhow::Result<bool> {
-    let Some(claim) =
-        store.claim_next_evidence(&crate::agents::evidence_cohort(), clock(), LEASE_SECS)?
+    // Newest-active session first, so a current session never waits behind
+    // a history one in the same backlog.
+    let Some(claim) = store.claim_next_evidence_by_recency(
+        &crate::agents::evidence_cohort(),
+        clock(),
+        LEASE_SECS,
+    )?
     else {
         return Ok(false);
     };

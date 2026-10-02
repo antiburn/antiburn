@@ -71,6 +71,7 @@ permissions = [
   "allow-reveal-source",
   "allow-open-project-folder",
   "allow-scan-now",
+  "allow-scan-history",
   "allow-scan-remote-host",
   "allow-set-remote-host-sync-enabled",
   "allow-set-hud-detail-size",
