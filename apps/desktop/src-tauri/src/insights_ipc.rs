@@ -1,8 +1,13 @@
 //! Deduplicates and cancels insights report reductions for the IPC surface.
 //!
-//! One report reduction runs at a time. A request that arrives while a
-//! reduction runs awaits that same reduction; it never starts a second
-//! one and it never cancels the first. Cancellation is a separate,
+//! One report reduction runs at a time. A reduction reads one database
+//! snapshot when it starts, so a request joins a run only before that run
+//! starts to read. A request that arrives while a reduction reads queues one
+//! follow-up reduction, which starts when the first one finishes. Every
+//! request that arrives before the follow-up starts shares it. So each caller
+//! gets a snapshot from after its request, and a change that lands during a
+//! reduction is never hidden behind that reduction's older answer. A request
+//! never cancels a run. Cancellation is a separate,
 //! explicit signal — [`InsightsController::cancel`] — because request
 //! identity must not stand in for it. The reduction reads one database
 //! snapshot and writes nothing, so a cancelled run cannot corrupt the
@@ -25,6 +30,9 @@ const NO_RESULT_ERROR: &str = "insights report task ended without a result";
 /// One in-flight or finished report run.
 struct Run {
     cancel: Arc<AtomicBool>,
+    /// Set when the reduction starts to read its snapshot. A request joins
+    /// the run only before this.
+    started: Arc<AtomicBool>,
     done: watch::Receiver<bool>,
     outcome: OnceLock<Result<ReducedReport, String>>,
 }
@@ -120,26 +128,46 @@ impl InsightsController {
     {
         let run = {
             let mut slot = self.lock_slot();
-            match slot.as_ref() {
-                // Deduplication: this request awaits the reduction that
-                // already runs. Its own reducer is never invoked. A run
-                // with the cancel flag set is not joined: that flag came
-                // from a caller that already left, and a fresh request
-                // must not inherit its cancellation.
-                Some(run) if !run.finished() && !run.cancel.load(Ordering::SeqCst) => {
-                    Arc::clone(run)
-                }
-                _ => {
+            // Deduplication: this request awaits a run that has not started
+            // to read yet. Its own reducer is never invoked. A run with the
+            // cancel flag set is not joined: that flag came from a caller
+            // that already left, and a fresh request must not inherit its
+            // cancellation.
+            let joinable = slot
+                .as_ref()
+                .filter(|run| {
+                    !run.finished()
+                        && !run.cancel.load(Ordering::SeqCst)
+                        && !run.started.load(Ordering::SeqCst)
+                })
+                .cloned();
+            match joinable {
+                Some(run) => run,
+                None => {
+                    // A run that already reads cannot see changes made after
+                    // it started. Queue behind it instead of joining it. Do
+                    // not queue behind a cancelled run: it stops soon and
+                    // its answer has no reader.
+                    let previous = slot
+                        .as_ref()
+                        .filter(|run| !run.finished() && !run.cancel.load(Ordering::SeqCst))
+                        .map(|run| run.done.clone());
                     let cancel = Arc::new(AtomicBool::new(false));
+                    let started = Arc::new(AtomicBool::new(false));
                     let (done_tx, done_rx) = watch::channel(false);
                     let run = Arc::new(Run {
                         cancel: Arc::clone(&cancel),
+                        started: Arc::clone(&started),
                         done: done_rx,
                         outcome: OnceLock::new(),
                     });
                     let task_run = Arc::clone(&run);
                     let future = reduce(request, cancel);
                     tokio::spawn(async move {
+                        if let Some(mut previous) = previous {
+                            let _ = previous.wait_for(|finished| *finished).await;
+                        }
+                        started.store(true, Ordering::SeqCst);
                         let result = future.await.map_err(|error| {
                             if insights_report::is_cancelled(&error) {
                                 REPORT_CANCELLED_ERROR.to_string()
@@ -214,12 +242,13 @@ mod tests {
             }),
             evidence_settled: true,
             pending_evidence: 0,
+            deferred_evidence: 0,
             resources: crate::insights_report::ResourceAssessment::default(),
         }
     }
 
     #[tokio::test]
-    async fn concurrent_requests_share_one_reduction_and_do_not_cancel_it() {
+    async fn a_request_during_a_reduction_queues_one_fresh_reduction_and_cancels_nothing() {
         let controller = Arc::new(InsightsController::default());
         let reductions = Arc::new(AtomicUsize::new(0));
         let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
@@ -245,30 +274,42 @@ mod tests {
         }
         assert!(controller.is_calculating());
 
-        let second = {
-            let controller = Arc::clone(&controller);
-            let reductions = Arc::clone(&reductions);
-            tokio::spawn(async move {
-                controller
-                    .report_with(request(), move |request, cancel| async move {
-                        reductions.fetch_add(1, Ordering::SeqCst);
-                        assert!(!cancel.load(Ordering::SeqCst));
-                        Ok(empty_report(&request))
-                    })
-                    .await
+        // Two requests arrive while the first reduction reads. Its snapshot
+        // predates them, so they share one follow-up reduction instead.
+        let later = (0..2)
+            .map(|_| {
+                let controller = Arc::clone(&controller);
+                let reductions = Arc::clone(&reductions);
+                tokio::spawn(async move {
+                    controller
+                        .report_with(request(), move |request, cancel| async move {
+                            reductions.fetch_add(1, Ordering::SeqCst);
+                            assert!(!cancel.load(Ordering::SeqCst));
+                            Ok(empty_report(&request))
+                        })
+                        .await
+                })
             })
-        };
-        // Let the second request reach the slot while the first still
-        // holds it open, then release the shared reduction.
+            .collect::<Vec<_>>();
         for _ in 0..16 {
             tokio::task::yield_now().await;
         }
+        assert_eq!(
+            reductions.load(Ordering::SeqCst),
+            1,
+            "the follow-up waits for the running reduction"
+        );
         release_tx.send(()).unwrap();
 
-        let first = first.await.unwrap().unwrap();
-        let second = second.await.unwrap().unwrap();
-        assert_eq!(first, second);
-        assert_eq!(reductions.load(Ordering::SeqCst), 1, "one shared reduction");
+        first.await.unwrap().unwrap();
+        for task in later {
+            task.await.unwrap().unwrap();
+        }
+        assert_eq!(
+            reductions.load(Ordering::SeqCst),
+            2,
+            "one running reduction plus one shared follow-up"
+        );
         assert!(!controller.is_calculating());
     }
 
