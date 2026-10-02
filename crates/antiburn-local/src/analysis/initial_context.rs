@@ -507,9 +507,20 @@ pub(crate) struct ClaudeContextAccumulator {
     /// Tool names the harness has deferred at least once this session,
     /// unioned from every `deferred_tools_delta` attachment.
     deferred_tools: HashSet<String>,
+    /// The Claude Code configuration directory the session's transcript
+    /// lives in, such as an added profile directory. `None` means
+    /// `~/.claude`. Set from the source path before [`Self::finish`], so the
+    /// resume snapshot does not carry it.
+    #[serde(skip)]
+    config_dir: Option<String>,
 }
 
 impl ClaudeContextAccumulator {
+    /// Read user-scoped skills from `config_dir` instead of `~/.claude`.
+    pub(crate) fn set_config_dir(&mut self, config_dir: Option<String>) {
+        self.config_dir = config_dir;
+    }
+
     pub(crate) fn observe(&mut self, value: &Value) {
         if self.cwd.is_none()
             && let Some(cwd) = value
@@ -753,7 +764,9 @@ impl ClaudeContextAccumulator {
         probe: &dyn Fn(&str) -> bool,
         catalog: &ToolCatalog,
     ) -> (Option<InitialContextBreakdown>, HashMap<String, String>) {
-        let home = crate::paths::home_dir().map(|path| path.to_string_lossy().into_owned());
+        let user_root = self.config_dir.clone().or_else(|| {
+            crate::paths::home_dir().map(|path| path.join(".claude").to_string_lossy().into_owned())
+        });
         for row in &mut self.source_rows {
             if row.source != InitialContextTokenSource::Skill {
                 continue;
@@ -765,7 +778,7 @@ impl ClaudeContextAccumulator {
                 name,
                 &self.skill_origin_evidence,
                 self.cwd.as_deref(),
-                home.as_deref(),
+                user_root.as_deref(),
                 probe,
             );
         }
@@ -823,18 +836,20 @@ fn classify_claude_invoked_skill_path(path: &str, cwd: Option<&str>) -> SourceOr
 }
 
 /// Resolve one skill's origin: transcript evidence wins outright; otherwise,
-/// probe the filesystem for a `SKILL.md` under the project or the user's home.
+/// probe the filesystem for a `SKILL.md` under the project or the user's
+/// Claude configuration directory, `user_root`: `~/.claude`, or the added
+/// profile directory the session ran in.
 ///
 /// The project probe needs the session's `cwd` to exist on this machine. The
-/// user probe does not: a user skill lives under the home directory, so the
-/// answer stays correct after the session's directory is deleted. When both
+/// user probe does not: a user skill lives under `user_root`, so the answer
+/// stays correct after the session's directory is deleted. When both
 /// probes miss and the `cwd` exists, a bare name (no `:`) resolves to
 /// `Bundled` — see [`SourceOrigin::Unknown`] for the reasoning.
 fn resolve_claude_skill_origin(
     name: &str,
     evidence: &HashMap<String, (u8, SourceOrigin)>,
     cwd: Option<&str>,
-    home: Option<&str>,
+    user_root: Option<&str>,
     probe: &dyn Fn(&str) -> bool,
 ) -> SourceOrigin {
     if let Some(&(_, origin)) = evidence.get(name) {
@@ -849,8 +864,8 @@ fn resolve_claude_skill_origin(
     if !cwd.is_empty() && probe(&format!("{cwd}/.claude/skills/{name}/SKILL.md")) {
         return SourceOrigin::Project;
     }
-    if let Some(home) = home.filter(|home| !home.is_empty())
-        && probe(&format!("{home}/.claude/skills/{name}/SKILL.md"))
+    if let Some(user_root) = user_root.filter(|root| !root.is_empty())
+        && probe(&format!("{user_root}/skills/{name}/SKILL.md"))
     {
         return SourceOrigin::User;
     }
@@ -1442,6 +1457,29 @@ mod tests {
     }
 
     #[test]
+    fn claude_probes_the_profile_directory_for_a_profile_session() {
+        let cwd = "/home/avery/projects/demo-app";
+        let profile_skill = "/home/avery/.claude-work/skills/work-skill/SKILL.md";
+        let payload = format!(
+            r#"{{"type":"attachment","cwd":"{cwd}","attachment":{{"type":"skill_listing","content":"- work-skill: Loaded for the profile."}}}}"#
+        );
+        let probe = move |path: &str| -> bool { path == cwd || path == profile_skill };
+
+        let mut accumulator = ClaudeContextAccumulator::default();
+        for value in parse_json_lines(&payload) {
+            accumulator.observe(&value);
+        }
+        accumulator.set_config_dir(Some("/home/avery/.claude-work".into()));
+        let (breakdown, _) = accumulator.finish_with_probe(&probe, &test_catalog());
+        let breakdown = breakdown.expect("expected supported Claude breakdown");
+
+        assert_eq!(
+            skill_origin(&breakdown, "work-skill"),
+            Some(SourceOrigin::User)
+        );
+    }
+
+    #[test]
     fn claude_probes_the_user_directory_when_the_cwd_is_gone() {
         // The session ran in a git worktree that is now deleted. A user skill
         // lives under the home directory, so its origin is still knowable.
@@ -1558,7 +1596,7 @@ mod tests {
                 "plugin:bare-skill",
                 &evidence,
                 Some(cwd),
-                Some("/home/avery"),
+                Some("/home/avery/.claude"),
                 &probe
             ),
             SourceOrigin::Unknown
