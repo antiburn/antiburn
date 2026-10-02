@@ -192,7 +192,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # `--target all` covers every platform's conditional dependencies, so one
-      # inventory describes all five release targets rather than the host's.
+      # inventory describes all six release targets rather than the host's.
       # The engine appears in here as a component: it is a path dependency of
       # the shell, which is what actually ships.
       - name: Inventory the Rust dependency tree
@@ -277,6 +277,13 @@ jobs:
             artifact: windows-x64
             arch_label: x64
             updater_platform: windows-x86_64
+          - name: Windows ARM64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            bundles: nsis
+            artifact: windows-arm64
+            arch_label: arm64
+            updater_platform: windows-aarch64
           # Pinned rather than `ubuntu-latest`: the build host's glibc is the
           # floor for every Linux user, so it is a release decision and not a
           # thing that should move when GitHub rolls a new default.
@@ -848,9 +855,9 @@ jobs:
   remote-helper:
     name: Package Linux remote helpers
     needs: [verify, trusted-main-ci]
+    # No version input: the helper names its archive from its own manifest, and
+    # `verify` has already refused the tag if that manifest disagrees with it.
     uses: ./.github/workflows/build-remote-helper.yml
-    with:
-      version: ${{ needs.verify.outputs.version }}
 
   draft:
     name: Draft the release
@@ -905,19 +912,19 @@ jobs:
           cp install.sh install.ps1 dist/
 
           mapfile -t manifests < <(find incoming -type f -name 'updater-*.json' | sort)
-          if [[ "${#manifests[@]}" -ne 5 ]]; then
-            echo "::error::Expected 5 updater manifest fragments, found ${#manifests[@]}. A release ships every target or none."
+          if [[ "${#manifests[@]}" -ne 6 ]]; then
+            echo "::error::Expected 6 updater manifest fragments, found ${#manifests[@]}. A release ships every target or none."
             exit 1
           fi
 
           mapfile -t evidence < <(find incoming -type f -name 'evidence-*.json' | sort)
-          if [[ "${#evidence[@]}" -ne 5 ]]; then
-            echo "::error::Expected 5 build-evidence records, found ${#evidence[@]}."
+          if [[ "${#evidence[@]}" -ne 6 ]]; then
+            echo "::error::Expected 6 build-evidence records, found ${#evidence[@]}."
             exit 1
           fi
           jq -e -s '
             (map(.platform) | sort) ==
-              ["darwin-aarch64", "darwin-x86_64", "linux-aarch64-appimage", "linux-x86_64-appimage", "windows-x86_64"] and
+              ["darwin-aarch64", "darwin-x86_64", "linux-aarch64-appimage", "linux-x86_64-appimage", "windows-aarch64", "windows-x86_64"] and
             all(.[]; (.signing | length) > 0 and (.files | length) >= 2)
           ' "${evidence[@]}" > /dev/null
           require_count() {
@@ -929,11 +936,13 @@ jobs:
             fi
           }
           require_count '*.dmg' 2
-          require_count '*.exe' 1
+          require_count '*.exe' 2
+          require_count "antiburn_${VERSION}_x64-setup.exe" 1
+          require_count "antiburn_${VERSION}_arm64-setup.exe" 1
           require_count '*.AppImage' 2
           require_count '*.deb' 2
           require_count '*.app.tar.gz' 2
-          require_count '*.sig' 5
+          require_count '*.sig' 6
           require_count '*.cdx.json' 2
           require_count 'install.sh' 1
           require_count 'install.ps1' 1
@@ -951,7 +960,7 @@ jobs:
 
           jq -e '
             (.platforms | keys | sort) ==
-              ["darwin-aarch64", "darwin-x86_64", "linux-aarch64-appimage", "linux-x86_64-appimage", "windows-x86_64"]
+              ["darwin-aarch64", "darwin-x86_64", "linux-aarch64-appimage", "linux-x86_64-appimage", "windows-aarch64", "windows-x86_64"]
           ' dist/latest.json > /dev/null
 
           # Every URL the manifest advertises must be immutable, point at this
@@ -1072,7 +1081,7 @@ jobs:
             echo
             echo "### Automated evidence"
             echo
-            echo "The workflow verified the exact main CI SHA, five updater platforms, immutable URLs, detached signatures, asset presence, checksums, and the signing mode reported by every build."
+            echo "The workflow verified the exact main CI SHA, six updater platforms, immutable URLs, detached signatures, asset presence, checksums, and the signing mode reported by every build."
             echo
             echo "| Platform | Target | Signing mode |"
             echo "| --- | --- | --- |"

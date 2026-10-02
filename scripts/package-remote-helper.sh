@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version=${1:?usage: package-remote-helper.sh VERSION TARGET OUTPUT_DIRECTORY}
-target=${2:?missing target}
-output=${3:?missing output directory}
+target=${1:?usage: package-remote-helper.sh TARGET OUTPUT_DIRECTORY}
+output=${2:?missing output directory}
+
+# The crate manifest is the only version source. The archive name, `--version`
+# and the `hello` response all come from it, so they cannot disagree. The
+# release tag gate (scripts/verify-release-version.mjs) holds it equal to the
+# application version.
+version=$(cargo metadata --format-version 1 --no-deps \
+  --manifest-path crates/antiburn-remote/Cargo.toml \
+  | jq -r '.packages[] | select(.name == "antiburn-remote") | .version')
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
   echo "Invalid helper archive version" >&2
   exit 1
@@ -42,4 +49,12 @@ mkdir "$stage/extracted"
 tar -xzf "$output/$name.tar.gz" -C "$stage/extracted"
 cmp "$binary" "$stage/extracted/$name/antiburn-remote"
 test -x "$stage/extracted/$name/antiburn-remote"
-"$stage/extracted/$name/antiburn-remote" --version
+
+# The packaged binary must report the version in its own archive name. This
+# proves the build used the manifest that named the archive.
+reported=$("$stage/extracted/$name/antiburn-remote" --version)
+if [[ "$reported" != "antiburn-remote $version" ]]; then
+  echo "The helper reports '$reported' but its archive claims version $version" >&2
+  exit 1
+fi
+echo "$reported"

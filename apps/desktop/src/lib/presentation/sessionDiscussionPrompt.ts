@@ -95,6 +95,10 @@ export function sessionDiscussionPrompt({
       otherChecks.push(`- Not assessed — ${check.name} (${reason}).`)
     } else if (badge.status === "clean") {
       otherChecks.push(`- Passed — ${check.name}.`)
+    } else if (badge.status === "checking" || badge.status === "couldntCheck") {
+      const status = badge.status === "checking" ? "Checking" : "Couldn't check"
+      const reason = badge.checkReason ? ` (${text(badge.checkReason)})` : ""
+      otherChecks.push(`- ${status} — ${check.name}${reason}.`)
     } else {
       const details = sessionHygieneDocumentation(check).findingDetails
       findings.push(

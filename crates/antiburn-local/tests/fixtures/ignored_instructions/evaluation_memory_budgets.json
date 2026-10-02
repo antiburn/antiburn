@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "scope": "Synthetic release test-harness assessment, excluding prebuilt raw source input. These are evaluation gates, not new production scheduler limits.",
+  "basis": "The 14-workload pilot measured at most 10,511,371 transient live bytes, 11,561 result bytes, and zero bytes retained after teardown. Use 32 MiB transient headroom and a 256 KiB result cap. Recheck changed workloads; do not call this a desktop idle-memory bound.",
+  "selected_page_bytes": 1179648,
+  "serialized_request_bytes": 61440,
+  "transient_live_heap_bytes": 33554432,
+  "retained_after_teardown_bytes": 0,
+  "serialized_result_bytes": 262144,
+  "unmeasured": ["Populated durable progress", "SQLite writes", "Warm desktop cache", "Multiple desktop checks", "Worker pending pages"]
+}

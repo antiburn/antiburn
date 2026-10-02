@@ -468,7 +468,8 @@ function FirstRunWelcome() {
       <p className="type-title-3 text-label">Stop hitting your token limits.</p>
       <p className="type-footnote text-label-secondary">
         antiburn reads your coding agent session logs and analyses them locally. No account
-        needed, and your session content is never uploaded.
+        needed. Session analysis stays local unless you enable the optional Ignored Instructions
+        check with a TypeSafe API key in Settings.
       </p>
     </div>
   )

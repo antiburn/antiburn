@@ -2,7 +2,7 @@
 
 [package]
 name = "antiburn-remote"
-version = "0.1.0"
+version = "0.9.0"
 edition = "2024"
 description = "Bounded, read-only Linux helper for importing Antiburn sessions over SSH."
 license = "MIT"

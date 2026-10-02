@@ -241,17 +241,6 @@ export interface ReadGateCounts {
   unreadable: number
 }
 
-/**
- * Progress on the planned background history pass (PR #678). Optional and
- * not yet produced by the backend: the Overview renders this line only when
- * it is present and `state` is `"pending"` or `"running"`.
- */
-export interface ScanHistoryProgress {
-  state: "none" | "pending" | "running" | "done"
-  completed: number
-  total: number
-}
-
 /** What a scan is doing, or last did. Mirrors Rust `ScanStatus`. */
 export interface ScanStatus {
   running: boolean
@@ -281,9 +270,19 @@ export interface ScanStatus {
   /** The read stage's repository gate outcome. `null` until a pass has
    *  completed that stage at least once. */
   gate: ReadGateCounts | null
-  /** The planned background history pass's progress. Not produced by the
-   *  backend yet — see {@link ScanHistoryProgress}. */
+  /** Progress of the dedicated historical pass, under the current retention. */
   history?: ScanHistoryProgress
+}
+
+/**
+ * Progress of the dedicated historical pass, which widens discovery past
+ * the current window up to the retention limit. Mirrors Rust
+ * `ScanHistoryProgress`.
+ */
+export interface ScanHistoryProgress {
+  state: "none" | "pending" | "running" | "done"
+  completed: number
+  total: number
 }
 
 /** Whether the insights worker pool has a backlog to drain right now.

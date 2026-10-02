@@ -22,6 +22,10 @@ license = "MIT"
 repository = "https://github.com/antiburn/antiburn"
 publish = false
 
+[[test]]
+name = "ignored_instructions"
+path = "eval/ignored_instructions/ignored_instructions.rs"
+
 [lib]
 # The Tauri entry point lives in the library so the binary is a thin launcher.
 name = "antiburn_desktop"
@@ -97,6 +101,8 @@ hmac = "0.13"
 # resolves rustls to below; the explicit `rustls` dependency installs that
 # same provider instead of a competing one.
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
+# Store the optional TypeSafe key in the user's native credential vault.
+keyring = { version = "3.6.3", default-features = false }
 # The app-owned local database. `bundled` compiles SQLite from source, so the
 # app never depends on a system library and CI needs no extra packages.
 # Held at 0.32 to match `antiburn-local`: `libsqlite3-sys` sets
@@ -161,6 +167,7 @@ portable-pty = "0.9.0"
 tauri-plugin-clipboard-manager = "2.3.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
 # Reads clock-tick and page-size units for the bounded analytics process sample.
 libc = { version = "0.2", optional = true }
 # Direct GTK access for one repair. `wayland_titlebar` clears the
@@ -176,6 +183,7 @@ gtk = "0.18"
 tauri-plugin-updater = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
 # macOS 13+ login-item registration for the main application. Unlike the
 # cross-platform plugin, this uses Apple's current System Settings-visible API.
 smappservice-rs = "0.1"
@@ -200,6 +208,7 @@ tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e
 window-vibrancy = "0.8"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 # Per-user Run-key registration. Kept in Rust so executable paths are quoted
 # correctly and stale entries can be refreshed after an update.
 winreg = "0.56"

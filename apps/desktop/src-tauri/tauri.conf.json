@@ -14,7 +14,15 @@
     "macOSPrivateApi": true,
     "windows": [],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost",
+      "capabilities": [
+        "default",
+        "main-window",
+        "popover-peek",
+        "popover-peek-anchor",
+        "checks-remediation",
+        "checks-settings"
+      ]
     }
   },
   "bundle": {

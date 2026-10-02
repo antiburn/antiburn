@@ -243,6 +243,7 @@ fn burn_check_payload_keeps_check_samples_diverse_and_target_samples_independent
             agent: record.key.agent,
             session_id: record.key.session_id,
             observed_at_ms: 990_000 - index as i64,
+            incarnation: None,
         });
     }
     let target = BurnCheckTarget {
@@ -253,6 +254,8 @@ fn burn_check_payload_keeps_check_samples_diverse_and_target_samples_independent
             agent: AgentKind::Claude,
             source_format: SourceFormat::ClaudeJsonl,
             observation: "Long session".into(),
+            certainty: None,
+            instruction_provenance: None,
             facts: DisplayFacts {
                 labels: Vec::new(),
                 omitted: 0,
@@ -261,6 +264,7 @@ fn burn_check_payload_keeps_check_samples_diverse_and_target_samples_independent
         display: BurnCheckDisplayFacts {
             resource_kind: BurnCheckResourceKind::Session,
             resource_identity: None,
+            instruction_title: None,
             current_value: None,
             replacement_value: None,
             scope_kind: BurnCheckScopeKind::Session,
@@ -285,6 +289,7 @@ fn burn_check_payload_keeps_check_samples_diverse_and_target_samples_independent
         ),
         prompt_fix: PromptFixAvailability::Available,
         watch: None,
+        evidence_available: false,
         coverage_limits: Vec::new(),
         sample_sessions: samples[..3].to_vec(),
         expires_at_epoch: 1600,
@@ -743,7 +748,7 @@ fn synthetic_evidence_accumulator() -> antiburn_local::analysis::SessionEvidence
     )
 }
 
-fn synthetic_evidence() -> SessionEvidence {
+pub(super) fn synthetic_evidence() -> SessionEvidence {
     synthetic_evidence_accumulator().evidence(&antiburn_local::analysis::TurnFacts::default())
 }
 

@@ -107,7 +107,16 @@ pub struct TurnContent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentPart {
     pub kind: ContentKind,
+    /// The source role for this part when the adapter can prove it.
+    pub authority: ContentAuthority,
     pub text: String,
+    /// Native tool identity, when the source records it.
+    pub tool_name: Option<String>,
+    /// Native call/result join identity, when the source records it.
+    pub tool_call_id: Option<String>,
+    /// Check-neutral semantic tool fields, normalized once before storage.
+    pub normalized_fields: Option<crate::analysis::jev::JevNormalizedFields>,
+    pub metadata: crate::analysis::jev_evidence::JevOperationMetadata,
     /// True when `text` was cut short at [`MAX_CONTENT_PART_BYTES`].
     pub truncated: bool,
 }
@@ -128,8 +137,105 @@ impl ContentPart {
         }
         Self {
             kind,
+            authority: ContentAuthority::for_kind(kind),
             text,
+            tool_name: None,
+            tool_call_id: None,
+            normalized_fields: None,
+            metadata: Default::default(),
             truncated,
+        }
+    }
+
+    pub fn with_authority(mut self, authority: ContentAuthority) -> Self {
+        self.authority = authority;
+        self
+    }
+
+    pub(crate) fn with_native_input_fields(
+        mut self,
+        input: &serde_json::Value,
+        pointer: &str,
+        container: crate::analysis::jev_evidence::JevNativeFieldContainer,
+    ) -> Self {
+        if !self.truncated
+            && let Some(fields) = &self.normalized_fields
+        {
+            self.metadata.bindings = crate::analysis::jev_evidence::native_input_bindings(
+                input, pointer, fields, container,
+            );
+        }
+        self
+    }
+
+    pub fn with_tool_identity(
+        mut self,
+        tool_name: Option<String>,
+        tool_call_id: Option<String>,
+    ) -> Self {
+        self.tool_name = tool_name;
+        self.tool_call_id = tool_call_id;
+        if self.kind == ContentKind::ToolInput
+            && let Some(tool_name) = self.tool_name.as_deref()
+        {
+            self.normalized_fields = Some(crate::analysis::jev_evidence::normalize_tool_input(
+                tool_name, &self.text,
+            ));
+            if self.truncated
+                && let Some(fields) = &mut self.normalized_fields
+                && fields.category != Some(crate::analysis::jev::JevNormalizedCategory::OtherTool)
+            {
+                fields.values.clear();
+                fields.malformed = true;
+            }
+        }
+        self
+    }
+}
+
+/// Source authority for one private content part. `Unknown` means the source
+/// did not establish who supplied the text; consumers must not infer it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentAuthority {
+    User,
+    Assistant,
+    System,
+    Developer,
+    Tool,
+    Unknown,
+}
+
+impl ContentAuthority {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+            Self::System => "system",
+            Self::Developer => "developer",
+            Self::Tool => "tool",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "user" => Some(Self::User),
+            "assistant" => Some(Self::Assistant),
+            "system" => Some(Self::System),
+            "developer" => Some(Self::Developer),
+            "tool" => Some(Self::Tool),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+
+    const fn for_kind(kind: ContentKind) -> Self {
+        match kind {
+            ContentKind::UserText => Self::User,
+            ContentKind::AssistantText | ContentKind::Thinking | ContentKind::ToolInput => {
+                Self::Assistant
+            }
+            ContentKind::ToolResult => Self::Tool,
         }
     }
 }
@@ -152,6 +258,17 @@ impl ContentKind {
             ContentKind::Thinking => "thinking",
             ContentKind::ToolInput => "tool_input",
             ContentKind::ToolResult => "tool_result",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "user" => Some(Self::UserText),
+            "assistant" => Some(Self::AssistantText),
+            "thinking" => Some(Self::Thinking),
+            "tool_input" => Some(Self::ToolInput),
+            "tool_result" => Some(Self::ToolResult),
+            _ => None,
         }
     }
 }

@@ -930,12 +930,19 @@ impl DisabledAgents {
 }
 
 /// Narrowest and widest activity windows the settings pane offers, in days.
-/// These control presentation and recent discovery, not storage: sessions
-/// already indexed follow the separate retention setting.
+/// These control presentation only: sessions already indexed follow the
+/// separate retention setting.
 pub const MIN_ACTIVITY_DAYS: u32 = 1;
 pub const MAX_ACTIVITY_DAYS: u32 = 14;
 /// Days of activity a fresh install shows.
 pub const DEFAULT_ACTIVITY_DAYS: u32 = 7;
+
+/// "Current" means last activity inside this many days. A routine scan pass
+/// discovers exactly this window, and the checks report covers the same
+/// window, so the number of sessions a pass reads equals the number the
+/// report checks. [`MAX_ACTIVITY_DAYS`] is a separate, narrower number: the
+/// display slider's ceiling, not a discovery or report bound.
+pub const CURRENT_WINDOW_DAYS: u32 = 30;
 
 /// Supported local session-data retention periods, in days.
 pub const SESSION_DATA_RETENTION_DAYS_30: i32 = 30;

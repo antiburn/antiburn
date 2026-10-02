@@ -35,6 +35,7 @@
     "allow-get-checks-report",
     "allow-get-allowance-usage",
     "allow-get-burn-check-aggregate-wins",
+    "allow-get-burn-check-target-evidence",
     "allow-get-burn-check-remediation-progress",
     "allow-ftue-diag",
     "allow-get-main-window-visible",

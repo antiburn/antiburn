@@ -2,10 +2,6 @@ name: Build remote helper
 
 on:
   workflow_call:
-    inputs:
-      version:
-        type: string
-        default: "0.0.0-ci"
 
 permissions:
   contents: read
@@ -59,7 +55,6 @@ jobs:
       - name: Build and package the static helper
         env:
           TARGET: ${{ matrix.target }}
-          VERSION: ${{ inputs.version }}
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: "-C target-feature=+crt-static -C link-self-contained=yes"
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           CC_x86_64_unknown_linux_musl: musl-gcc
@@ -68,7 +63,7 @@ jobs:
           set -euo pipefail
           cargo build --manifest-path crates/antiburn-remote/Cargo.toml \
             --locked --release --target "$TARGET"
-          bash scripts/package-remote-helper.sh "$VERSION" "$TARGET" dist
+          bash scripts/package-remote-helper.sh "$TARGET" dist
 
       - name: Upload the helper archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -1,0 +1,20 @@
+{"timestamp":"2026-09-30T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"synthetic user text"}]}}
+{"timestamp":"2026-09-30T10:00:01Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"synthetic assistant text"}]}}
+{"timestamp":"2026-09-30T10:00:02Z","type":"response_item","payload":{"type":"message","role":"system","content":[{"type":"input_text","text":"synthetic system policy"}]}}
+{"timestamp":"2026-09-30T10:00:03Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"synthetic developer policy"}]}}
+{"timestamp":"2026-09-30T10:00:04Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"printf synthetic\"}","call_id":"fn-exact-1"}}
+{"timestamp":"2026-09-30T10:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"fn-exact-1","output":"synthetic command output"}}
+{"timestamp":"2026-09-30T10:00:06Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"tools.apply_patch(\"*** Begin Patch\\n*** Add File: synthetic.txt\\n+synthetic body\\n*** End Patch\")","call_id":"custom-exact-2"}}
+{"timestamp":"2026-09-30T10:00:07Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"custom-exact-2","output":"synthetic patch result"}}
+{"timestamp":"2026-09-30T10:00:08Z","type":"response_item","payload":{"type":"local_shell_call","call_id":"shell-exact-3","status":"completed","action":{"type":"exec","command":["printf","synthetic shell"]}}}
+{"timestamp":"2026-09-30T10:00:09Z","type":"response_item","payload":{"type":"tool_search_call","call_id":"search-exact-4","arguments":{"query":"synthetic tool query"}}}
+{"timestamp":"2026-09-30T10:00:10Z","type":"response_item","payload":{"type":"tool_search_output","call_id":"search-exact-4","output":"synthetic tool result"}}
+{"timestamp":"2026-09-30T10:00:11Z","type":"response_item","payload":{"type":"web_search_call","call_id":"web-exact-5","query":"synthetic web query"}}
+{"timestamp":"2026-09-30T10:00:12Z","type":"response_item","payload":{"type":"web_search_output","call_id":"web-exact-5","output":"synthetic web result"}}
+{"timestamp":"2026-09-30T10:00:13Z","type":"event_msg","payload":{"type":"user_message","message":"synthetic user text"}}
+{"timestamp":"2026-09-30T10:00:14Z","type":"event_msg","payload":{"type":"agent_message","message":"synthetic assistant text"}}
+{"timestamp":"2026-09-30T10:00:15Z","type":"response_item","payload":{"type":"compaction","encrypted_content":"synthetic-compaction-marker"}}
+{"timestamp":"2026-09-30T10:00:17Z","type":"response_item","payload":{"type":"function_call","name":"mcp__Calendar__read","arguments":{"query":{"range":{"start":"synthetic-start","end":"synthetic-end"}}},"call_id":"mcp-object-6"}}
+{"timestamp":"2026-09-30T10:00:18Z","type":"response_item","payload":{"type":"function_call_output","call_id":"mcp-object-6","content":[{"type":"output_text","text":"synthetic calendar result"}]}}
+{"timestamp":"2026-09-30T10:00:19Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":{"cmd":"printf nested-object","workdir":"/synthetic"},"call_id":"fn-object-7"}}
+{"timestamp":"2026-09-30T10:00:20Z","type":"response_item","payload":{"type":"function_call_output","call_id":"fn-object-7","output":"synthetic nested command output"}}

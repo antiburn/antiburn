@@ -135,6 +135,12 @@ pub enum EventName {
     /// The first-run Overview's result first showed.
     #[cfg(feature = "analytics")]
     FirstRunFinished,
+    /// A reader viewed an Ignored Instructions finding or acted on its evidence or prompt.
+    #[cfg(feature = "analytics")]
+    IgnoredInstructionObserved,
+    /// A saved TypeSafe setting, a history run request, or a terminal check result.
+    #[cfg(feature = "analytics")]
+    IgnoredInstructionLifecycle,
 }
 
 /// Every event this application may send.
@@ -185,6 +191,8 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::FirstRunStepReached,
     EventName::FirstRunAction,
     EventName::FirstRunFinished,
+    EventName::IgnoredInstructionObserved,
+    EventName::IgnoredInstructionLifecycle,
 ];
 
 #[cfg(feature = "analytics")]
@@ -229,6 +237,8 @@ impl EventName {
             EventName::FirstRunStepReached => "antiburn.first_run_step_reached",
             EventName::FirstRunAction => "antiburn.first_run_action",
             EventName::FirstRunFinished => "antiburn.first_run_finished",
+            EventName::IgnoredInstructionObserved => "antiburn.ignored_instruction_observed",
+            EventName::IgnoredInstructionLifecycle => "antiburn.ignored_instruction_lifecycle",
         }
     }
 }
@@ -515,6 +525,10 @@ pub enum Interaction {
     AppSearchResultOpened {
         category: SearchCategory,
     },
+    IgnoredInstructionObserved {
+        stage: IgnoredInstructionStage,
+        outcome: IgnoredInstructionOutcome,
+    },
     /// The contextual Sessions filters changed.
     SessionFiltersChanged {
         action: SessionFilterAction,
@@ -535,6 +549,24 @@ pub enum Interaction {
     },
     /// The first-run Overview's result first showed.
     FirstRunFinished {},
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IgnoredInstructionStage {
+    Finding,
+    Evidence,
+    Prompt,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IgnoredInstructionOutcome {
+    Visible,
+    Available,
+    Unavailable,
+    Failed,
+    Copied,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -938,6 +970,14 @@ impl Interaction {
                     ..Facts::default()
                 },
             ),
+            Interaction::IgnoredInstructionObserved { stage, outcome } => (
+                EventName::IgnoredInstructionObserved,
+                Facts {
+                    label: Some(stage.as_str()),
+                    detail: Some(outcome.as_str()),
+                    ..Facts::default()
+                },
+            ),
             Interaction::SessionFiltersChanged { action, agent } => (
                 EventName::SessionFiltersChanged,
                 Facts {
@@ -1028,6 +1068,20 @@ wire_values!(SessionFilterKind, {
 wire_values!(HistoryDirection, { HistoryDirection::Back => "back", HistoryDirection::Forward => "forward" });
 #[cfg(feature = "analytics")]
 wire_values!(SearchCategory, { SearchCategory::View => "view", SearchCategory::Setting => "setting", SearchCategory::Check => "check" });
+#[cfg(feature = "analytics")]
+wire_values!(IgnoredInstructionStage, {
+    IgnoredInstructionStage::Finding => "finding",
+    IgnoredInstructionStage::Evidence => "evidence",
+    IgnoredInstructionStage::Prompt => "prompt",
+});
+#[cfg(feature = "analytics")]
+wire_values!(IgnoredInstructionOutcome, {
+    IgnoredInstructionOutcome::Visible => "visible",
+    IgnoredInstructionOutcome::Available => "available",
+    IgnoredInstructionOutcome::Unavailable => "unavailable",
+    IgnoredInstructionOutcome::Failed => "failed",
+    IgnoredInstructionOutcome::Copied => "copied",
+});
 
 #[cfg(feature = "analytics")]
 wire_values!(SessionFilterAction, {
@@ -1409,6 +1463,27 @@ mod tests {
         CoverageBand, CpuBand, IoRateBand, MemoryBand, ResourceUsageSummary,
     };
     use super::*;
+
+    #[test]
+    fn ignored_instruction_interactions_accept_only_closed_statuses() {
+        let interaction: Interaction = serde_json::from_str(
+            r#"{"kind":"ignoredInstructionObserved","stage":"evidence","outcome":"available"}"#,
+        )
+        .unwrap();
+        let (name, facts) = interaction.resolve();
+        assert_eq!(name.as_str(), "antiburn.ignored_instruction_observed");
+        assert_eq!(facts.label, Some("evidence"));
+        assert_eq!(facts.detail, Some("available"));
+        assert!(facts.unrecognized_types.is_none());
+        assert!(serde_json::from_str::<Interaction>(
+            r#"{"kind":"ignoredInstructionObserved","stage":"evidence","outcome":"private_text"}"#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<Interaction>(
+            r#"{"kind":"ignoredInstructionObserved","stage":"evidence","outcome":"available","excerpt":"private"}"#
+        )
+        .is_err());
+    }
 
     fn resource_summary() -> ResourceUsageSummary {
         ResourceUsageSummary {
@@ -1871,11 +1946,14 @@ mod tests {
                 | EventName::FirstRunStepReached
                 | EventName::FirstRunAction
                 | EventName::FirstRunFinished => true,
+                EventName::IgnoredInstructionObserved | EventName::IgnoredInstructionLifecycle => {
+                    true
+                }
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            38,
+            40,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));

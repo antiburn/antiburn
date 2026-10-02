@@ -1,7 +1,10 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { ChecksReportPayload } from "../../../../lib/insightsIpc"
+import type {
+  BurnCheckTargetEvidencePayload,
+  ChecksReportPayload,
+} from "../../../../lib/insightsIpc"
 import type * as ClipboardModule from "../../../../lib/clipboard"
 import type * as InsightsIpcModule from "../../../../lib/insightsIpc"
 import type * as IpcModule from "../../../../lib/ipc"
@@ -27,6 +30,7 @@ const commands = vi.hoisted(() => ({
   writeClipboardText: vi.fn(),
   openSample: vi.fn(),
   noteInteraction: vi.fn(),
+  evidence: vi.fn(),
 }))
 
 vi.mock("../../../../lib/insightsIpc", async (importOriginal) => ({
@@ -37,6 +41,7 @@ vi.mock("../../../../lib/insightsIpc", async (importOriginal) => ({
   copyPromptFixBurnCheck: commands.copyFallback,
   copyPromptFixBurnCheckTargets: commands.copyBatch,
   openBurnCheckSample: commands.openSample,
+  getBurnCheckTargetEvidence: commands.evidence,
 }))
 
 vi.mock("../../../../lib/ipc", async (importOriginal) => ({
@@ -63,6 +68,192 @@ afterEach(() => {
 // one test can take five times its local run time. 15 s is the bound, not a
 // target.
 describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
+  it("opens each ignored-instruction finding with instruction and action evidence", async () => {
+    const items: BurnCheckTargetEvidencePayload["items"] = [
+      {
+        label: "context",
+        sourceLabel: "Context",
+        reference: "later",
+        observedAtMs: 800,
+        startLine: null,
+        endLine: null,
+        excerpt: "Later context",
+        explanation: "",
+        limitation: null,
+      },
+      {
+        label: "observedAction",
+        sourceLabel: "Session action",
+        reference: "action",
+        observedAtMs: 1000,
+        startLine: null,
+        endLine: null,
+        excerpt: "Delivered without tests",
+        explanation: "",
+        limitation: null,
+      },
+      {
+        label: "context",
+        sourceLabel: "Context",
+        reference: "earlier",
+        observedAtMs: 500,
+        startLine: null,
+        endLine: null,
+        excerpt: "Earlier event",
+        explanation: "",
+        limitation: null,
+      },
+      {
+        label: "instruction",
+        sourceLabel: "AGENTS.md · Testing",
+        reference: "rule",
+        observedAtMs: null,
+        startLine: 24,
+        endLine: 27,
+        excerpt: "Run tests before delivery.",
+        explanation: "",
+        limitation: null,
+      },
+    ]
+    commands.evidence.mockResolvedValue({ status: "available", items })
+    const sample = {
+      ...target.samples[0]!,
+      hygiene: {
+        evidenceState: "ready" as const,
+        unusedResources: null,
+        badges: [
+          {
+            id: "ignoredInstructions" as const,
+            status: "finding" as const,
+            notAssessedReason: null,
+          },
+        ],
+      },
+    }
+    setup(
+      [
+        {
+          ...target,
+          findingId: "first",
+          actionId: "first-action",
+          finding: { ...target.finding, detector: "ignoredInstructions" },
+          evidenceAvailable: true,
+          autoFix: { status: "unavailable", reason: "unsupportedOrUnprovenTarget" },
+          samples: [sample],
+        },
+        {
+          ...target,
+          findingId: "second",
+          actionId: "second-action",
+          finding: { ...target.finding, detector: "ignoredInstructions" },
+          evidenceAvailable: true,
+          autoFix: { status: "unavailable", reason: "unsupportedOrUnprovenTarget" },
+          samples: [sample],
+        },
+      ],
+      false,
+      aggregate,
+      {
+        ...report,
+        categories: [
+          {
+            ...report.categories[0]!,
+            id: "ignoredInstructions",
+            finding: 1,
+            clean: 0,
+            estimatedTokenBurnBasisPoints: null,
+          },
+        ],
+      },
+    )
+    expect(await screen.findAllByText("Run tests before delivery.")).toHaveLength(2)
+    expect(screen.getAllByText("Delivered without tests")).toHaveLength(2)
+    expect(
+      screen.getByRole("button", { name: /Ignored Instructions, 1 failed/ }),
+    ).toHaveAttribute("aria-pressed", "true")
+    expect(screen.getAllByText("1/1 failed").length).toBeGreaterThan(0)
+    expect(
+      screen
+        .getAllByText("Run tests before delivery.")[0]!
+        .compareDocumentPosition(screen.getAllByText("Delivered without tests")[0]!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(screen.queryByRole("button", { name: "Show evidence" })).not.toBeInTheDocument()
+    expect(screen.queryByText("Earlier event")).not.toBeInTheDocument()
+    expect(commands.evidence).toHaveBeenCalledWith("first-action")
+    expect(commands.evidence).toHaveBeenCalledWith("second-action")
+    expect(
+      commands.noteInteraction.mock.calls.filter(
+        ([event]) => event.kind === "ignoredInstructionObserved" && event.stage === "evidence",
+      ),
+    ).toEqual([
+      [{ kind: "ignoredInstructionObserved", stage: "evidence", outcome: "available" }],
+      [{ kind: "ignoredInstructionObserved", stage: "evidence", outcome: "available" }],
+    ])
+    expect(screen.queryByRole("button", { name: "Show context" })).not.toBeInTheDocument()
+    expect(screen.queryByText("Earlier event")).not.toBeInTheDocument()
+    expect(screen.queryByText("Later context")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
+  })
+
+  it("retries evidence reads and discards responses after leaving the selected check", async () => {
+    let resolveLate!: (evidence: BurnCheckTargetEvidencePayload) => void
+    commands.evidence.mockRejectedValueOnce(new Error("offline")).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveLate = resolve
+        }),
+    )
+    setup(
+      {
+        ...target,
+        finding: { ...target.finding, detector: "ignoredInstructions" },
+        evidenceAvailable: true,
+      },
+      false,
+      aggregate,
+      {
+        ...report,
+        categories: [
+          { ...report.categories[0]!, id: "ignoredInstructions", clean: 0 },
+          report.categories[1]!,
+        ],
+      },
+    )
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not load the saved excerpts.",
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    fireEvent.click(screen.getByRole("button", { name: "Passed checks 1" }))
+    fireEvent.click(screen.getByRole("button", { name: /Unused skills, Passed/ }))
+    await act(async () =>
+      resolveLate({
+        status: "available",
+        items: [
+          {
+            label: "observedAction",
+            sourceLabel: "Session action",
+            reference: "action",
+            observedAtMs: null,
+            startLine: null,
+            endLine: null,
+            excerpt: "private late action",
+            explanation: "",
+            limitation: null,
+          },
+        ],
+      }),
+    )
+    expect(screen.queryByText("private late action")).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("alert", { name: "Could not load the saved excerpts." }),
+    ).not.toBeInTheDocument()
+    expect(
+      commands.noteInteraction.mock.calls.filter(
+        ([event]) => event.kind === "ignoredInstructionObserved" && event.stage === "evidence",
+      ),
+    ).toEqual([[{ kind: "ignoredInstructionObserved", stage: "evidence", outcome: "failed" }]])
+  })
   it("uses the backend's mixed-agent selection instead of the first target's samples", async () => {
     const first = target.samples[0]!
     const codex = {
@@ -99,7 +290,7 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
     const snooze = screen.getByRole("button", { name: "Snooze" })
     const fix = screen.getByRole("button", { name: "Fix" })
     const heading = screen.getByRole("heading", { name: "Old model usage", level: 2 })
-    const titleRow = heading.parentElement
+    const titleRow = heading.parentElement?.parentElement
     const failedCount = within(action.closest("header")!).getByText("1 failed")
     expect(action).toBeEnabled()
     expect(description).toHaveClass("w-full")

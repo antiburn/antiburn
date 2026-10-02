@@ -40,6 +40,7 @@ fn session(session_id: &str, updated_at: i64) -> SessionRecord {
 }
 
 fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> AnalysisRecord {
+    let revisions = crate::analysis::projection_revisions();
     AnalysisRecord {
         key,
         model_breakdown_json: "{}".into(),
@@ -51,9 +52,9 @@ fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> Ana
         source_fingerprint: fingerprint.into(),
         pricing_generation: 1,
         analyzed_generation: generation,
-        parser_revision: 1,
-        analyzer_revision: 1,
-        metrics_schema_revision: 1,
+        parser_revision: revisions.parser_revision,
+        analyzer_revision: revisions.analyzer_revision,
+        metrics_schema_revision: revisions.metrics_schema_revision,
     }
 }
 
@@ -90,7 +91,7 @@ fn evidence_completion(
     EvidenceCompletion {
         claim_fence: claim.claim_fence,
         status,
-        evidence_schema_revision: 1,
+        evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
         evidence_json,
     }
 }
@@ -128,12 +129,250 @@ fn turn_row(turn_index: u64) -> TurnRow {
     }
 }
 
+fn turn_row_for(source_key: &str, turn_index: u64) -> TurnRow {
+    TurnRow {
+        source_key: source_key.to_owned(),
+        thread_id: source_key.to_owned(),
+        ..turn_row(turn_index)
+    }
+}
+
+fn resume_snapshot(source_fingerprint: &str) -> StoredResume {
+    let revisions = crate::analysis::resume_revisions();
+    StoredResume {
+        snapshot: vec![1, 2, 3],
+        snapshot_revision: revisions.snapshot_revision,
+        parser_revision: revisions.parser_revision,
+        analyzer_revision: revisions.analyzer_revision,
+        metrics_schema_revision: revisions.metrics_schema_revision,
+        evidence_schema_revision: revisions.evidence_schema_revision,
+        coverage_schema_revision: revisions.coverage_schema_revision,
+        source_fingerprint: source_fingerprint.to_owned(),
+    }
+}
+
 fn user_turn_with_content(turn_index: u64, content: &str) -> TurnRow {
     TurnRow {
         role: "user",
         content: vec![ContentPart::new(ContentKind::UserText, content)],
         ..turn_row(turn_index)
     }
+}
+
+#[test]
+fn instruction_epoch_survives_appends_and_resets_for_source_replacement() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "instruction-epoch-publication", 100, 60);
+    let key = record.key.clone();
+    FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence)
+        .write_turn_rows(&[turn_row(1), turn_row_for("second", 0)])
+        .unwrap();
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
+    let initial_sources = ["s1", "second"]
+        .into_iter()
+        .map(|source_key| SourcePublishOutcome {
+            source_key: source_key.into(),
+            mode: SourcePublishMode::Full,
+            resume: Some(resume_snapshot("fp-initial")),
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &initial_sources)
+            .unwrap()
+    );
+    let (initial_positions, initial_at) = store
+        .observe_burn_check_instruction_epoch(&key, 1, claim.source_generation, "rules-v1", 10_000)
+        .unwrap();
+    assert_eq!(initial_positions.get("s1"), Some(&1));
+    assert_eq!(initial_positions.get("second"), Some(&0));
+
+    let mut appended_session = session("instruction-epoch-publication", 1_000);
+    appended_session.source_fingerprint = Some("sv1:instruction-epoch-append".into());
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&appended_session),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let append_claim = store
+        .claim_next_evidence(&["claude-code"], 200, 60)
+        .unwrap()
+        .expect("append is pending");
+    let append_record = projection_record(
+        key.clone(),
+        appended_session.source_fingerprint.as_deref().unwrap(),
+        append_claim.source_generation,
+    );
+    FencedTurnRowStore::new(store.clone(), key.clone(), append_claim.claim_fence)
+        .write_turn_rows(&[turn_row(2), turn_row_for("new-source", 0)])
+        .unwrap();
+    let append_completion = evidence_completion(
+        &append_claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&append_claim.key),
+    );
+    let append_sources = [
+        SourcePublishOutcome {
+            source_key: "s1".into(),
+            mode: SourcePublishMode::Resumed,
+            resume: Some(resume_snapshot("fp-append")),
+        },
+        SourcePublishOutcome {
+            source_key: "second".into(),
+            mode: SourcePublishMode::Resumed,
+            resume: Some(resume_snapshot("fp-append")),
+        },
+        SourcePublishOutcome {
+            source_key: "new-source".into(),
+            mode: SourcePublishMode::Full,
+            resume: Some(resume_snapshot("fp-new")),
+        },
+    ];
+    assert!(
+        store
+            .publish_projections(
+                &append_record,
+                None,
+                &append_completion,
+                &[],
+                &append_sources,
+            )
+            .unwrap()
+    );
+    let (appended_positions, appended_at) = store
+        .observe_burn_check_instruction_epoch(
+            &key,
+            1,
+            append_claim.source_generation,
+            "rules-v1",
+            20_000,
+        )
+        .unwrap();
+    assert_eq!(appended_at, initial_at);
+    assert_eq!(appended_positions.get("s1"), Some(&1));
+    assert_eq!(appended_positions.get("second"), Some(&0));
+    assert_eq!(appended_positions.get("new-source"), Some(&0));
+
+    let mut replaced_session = appended_session;
+    replaced_session.source_fingerprint = Some("sv1:instruction-epoch-rewrite".into());
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&replaced_session),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let replacement_claim = store
+        .claim_next_evidence(&["claude-code"], 300, 60)
+        .unwrap()
+        .expect("replacement is pending");
+    let replacement_record = projection_record(
+        key.clone(),
+        replaced_session.source_fingerprint.as_deref().unwrap(),
+        replacement_claim.source_generation,
+    );
+    FencedTurnRowStore::new(store.clone(), key.clone(), replacement_claim.claim_fence)
+        .write_turn_rows(&[turn_row(3)])
+        .unwrap();
+    let replacement_completion = evidence_completion(
+        &replacement_claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&replacement_claim.key),
+    );
+    let replacement_sources = [
+        SourcePublishOutcome {
+            source_key: "s1".into(),
+            mode: SourcePublishMode::Full,
+            resume: Some(resume_snapshot("fp-rewrite")),
+        },
+        SourcePublishOutcome {
+            source_key: "second".into(),
+            mode: SourcePublishMode::Resumed,
+            resume: Some(resume_snapshot("fp-append")),
+        },
+        SourcePublishOutcome {
+            source_key: "new-source".into(),
+            mode: SourcePublishMode::Resumed,
+            resume: Some(resume_snapshot("fp-new")),
+        },
+    ];
+    assert!(
+        store
+            .publish_projections(
+                &replacement_record,
+                None,
+                &replacement_completion,
+                &[],
+                &replacement_sources,
+            )
+            .unwrap()
+    );
+    let (replacement_positions, replacement_at) = store
+        .observe_burn_check_instruction_epoch(
+            &key,
+            1,
+            replacement_claim.source_generation,
+            "rules-v1",
+            30_000,
+        )
+        .unwrap();
+    assert!(replacement_at > initial_at);
+    assert_eq!(replacement_positions.get("s1"), Some(&3));
+
+    let mut removed_session = replaced_session;
+    removed_session.source_fingerprint = Some("sv1:instruction-epoch-source-removed".into());
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&removed_session),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let removal_claim = store
+        .claim_next_evidence(&["claude-code"], 400, 60)
+        .unwrap()
+        .expect("source removal is pending");
+    let removal_record = projection_record(
+        key.clone(),
+        removed_session.source_fingerprint.as_deref().unwrap(),
+        removal_claim.source_generation,
+    );
+    let removal_completion = evidence_completion(
+        &removal_claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&removal_claim.key),
+    );
+    let remaining_sources = [SourcePublishOutcome {
+        source_key: "s1".into(),
+        mode: SourcePublishMode::Resumed,
+        resume: Some(resume_snapshot("fp-rewrite")),
+    }];
+    assert!(
+        store
+            .publish_projections(
+                &removal_record,
+                None,
+                &removal_completion,
+                &[],
+                &remaining_sources,
+            )
+            .unwrap()
+    );
+    let (remaining_positions, removed_at) = store
+        .observe_burn_check_instruction_epoch(
+            &key,
+            1,
+            removal_claim.source_generation,
+            "rules-v1",
+            40_000,
+        )
+        .unwrap();
+    assert!(removed_at > replacement_at);
+    assert_eq!(remaining_positions.len(), 1);
+    assert_eq!(remaining_positions.get("s1"), Some(&3));
 }
 
 fn insert_waiting_prompt(store: &Store, remediation_id: &str, target_key: &str) {
@@ -433,6 +672,60 @@ fn published_turn_rows_serves_the_last_published_fence_while_a_newer_claim_is_in
         store.published_turn_rows(&key).unwrap(),
         published,
         "an in-flight claim's partial rows must never leak into a published_fence read"
+    );
+}
+
+#[test]
+fn published_turn_content_requires_a_fresh_winning_fence() {
+    let store = store();
+    let (mut record, claim) = claimed_projection(&store, "published-content", 100, 60);
+    record.parser_revision = PARSER_REVISION;
+    record.analyzer_revision = ANALYZER_REVISION;
+    let key = record.key.clone();
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+    let mut published_row = turn_row(0);
+    published_row.content = vec![ContentPart::new(ContentKind::UserText, "published text")];
+    writer.write_turn_rows(&[published_row]).unwrap();
+    let mut completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
+    completion.evidence_schema_revision = EVIDENCE_SCHEMA_REVISION;
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
+
+    let published = store
+        .published_turn_content(&key)
+        .unwrap()
+        .expect("published content");
+    assert_eq!(published.parts.len(), 1);
+    assert_eq!(published.parts[0].part.text, "published text");
+
+    advance_source_generation_past(&store, &key);
+    assert_eq!(
+        store.published_turn_content(&key).unwrap(),
+        None,
+        "a publication from an older source generation is stale"
+    );
+
+    mark_evidence_pending_in(&store.lock(), &key).unwrap();
+    let next_claim = store
+        .claim_next_evidence(&["claude-code"], 200, 60)
+        .unwrap()
+        .expect("reclaimable");
+    let next_writer = FencedTurnRowStore::new(store.clone(), key.clone(), next_claim.claim_fence);
+    let mut in_flight_row = turn_row(0);
+    in_flight_row.content = vec![ContentPart::new(ContentKind::UserText, "in flight text")];
+    next_writer.write_turn_rows(&[in_flight_row]).unwrap();
+
+    assert_eq!(
+        store.published_turn_content(&key).unwrap(),
+        None,
+        "a previous publication must not be used while a newer claim is in flight"
     );
 }
 

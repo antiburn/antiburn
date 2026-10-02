@@ -1,8 +1,8 @@
 use crate::analysis::{EvidenceCoverage, SessionEvidence};
 
 use super::DetectorId;
-use super::detectors::{self, NotAssessedReason, Observation, ReportCatalogs};
-use super::report::{clean_fact_unsupported, clean_facts_complete, eligible};
+use crate::checks::requirements::{clean_fact_unsupported, clean_facts_complete, eligible};
+use crate::checks::{self as detectors, NotAssessedReason, Observation, ReportCatalogs};
 
 /// Identifies one session-level hygiene badge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -103,7 +103,7 @@ mod tests {
         SessionEvidenceAccumulator, SourceCapabilities, SourceKind, SubagentChild, TurnCounts,
         TurnFacts,
     };
-    use crate::insights::detectors::test_support::claude_evidence;
+    use crate::checks::test_support::claude_evidence;
     use crate::insights::{
         CoverageCounts, DetectorStatus, EfficiencyReportAccumulator, ReportContext, ReportWindow,
     };
@@ -250,7 +250,7 @@ mod tests {
         let mut catalogs = ReportCatalogs::default();
         catalogs.model_replacements.entries.insert(
             "old-model".to_owned(),
-            super::super::detectors::ModelReplacementEntry {
+            crate::checks::ModelReplacementEntry {
                 replacement: "new-model".to_owned(),
                 available_since_ts_ms: 0,
                 rationale: "test rule".to_owned(),

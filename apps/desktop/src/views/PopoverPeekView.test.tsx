@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { PopoverPeekData } from "../lib/popoverPeekIpc"
-import { aggregateBurnCheckPresentation } from "../lib/presentation/burnChecks"
+import { aggregateBurnCheckPresentation } from "../lib/presentation/checkStatus"
 import * as SnoozedBurnChecks from "../lib/snoozedBurnChecks"
 import { PopoverPeekView } from "./PopoverPeekView"
 

@@ -36,7 +36,7 @@ repository cannot produce something that looks like a signed release.
 Create an environment named exactly **`release`** (Settings → Environments).
 Every signing credential lives here rather than in repository secrets, so the
 only jobs that can reach them are the ones that ask for the environment by name
-— in this repository, the five `build` jobs of `release-app.yml`.
+— in this repository, the six `build` jobs of `release-app.yml`.
 
 Configure it as:
 
@@ -194,20 +194,34 @@ release, and a draft can simply be deleted afterwards.
 
 ### 2.2 Bump every manifest, in one commit
 
-Four files state the version and all four must agree, or the tag is refused:
+Six files state the version and all six must agree, or the tag is refused:
 
 ```text
 apps/desktop/package.json                  "version"
 apps/desktop/src-tauri/tauri.conf.json     "version"
 apps/desktop/src-tauri/Cargo.toml          [package] version
 apps/desktop/src-tauri/Cargo.lock          the `antiburn` package entry
+crates/antiburn-remote/Cargo.toml          [package] version
+crates/antiburn-remote/Cargo.lock          the `antiburn-remote` package entry
 ```
 
-The lockfile is the one people forget. Refresh it after editing `Cargo.toml`:
+The remote helper is in the set because it ships as an asset of this release.
+Its archive name, its `--version` output and its `hello` response all come from
+its manifest, so a reader who holds a helper can name the release it came from.
+The helper bumps with the application even when its code does not change.
+
+The lockfiles are the ones people forget. Refresh them after editing the
+manifests. The desktop lockfile records both crates:
 
 ```bash
 cargo update --manifest-path apps/desktop/src-tauri/Cargo.toml --package antiburn
+cargo update --manifest-path apps/desktop/src-tauri/Cargo.toml --package antiburn-remote
+cargo update --manifest-path crates/antiburn-remote/Cargo.toml --package antiburn-remote
 ```
+
+If `cargo update` also moves unrelated entries in a lockfile, edit only the
+version line by hand instead. Do not pass `--offline`: it resolves from the
+local cache and moves unrelated entries.
 
 Check the whole set locally before pushing anything:
 
@@ -240,12 +254,12 @@ nobody acts on stay out.
 
 The version bump and the changelog entry go through the same review as anything
 else. A pure release bump gets the narrow release-metadata gate only when all
-three executable manifests changed **only** their package version, the lockfile
-changed only the `antiburn` package entry, and the changelog is the only other
-changed file. Any dependency or other content change falls back to the full
+four executable manifests changed **only** their package version, each lockfile
+changed only the package entries those manifests name, and the changelog is the
+only other changed file. Any dependency or other content change falls back to the full
 platform matrix. Merge to `main`.
 
-The resulting main run compiles all five release targets with `tauri build
+The resulting main run compiles all six release targets with `tauri build
 --no-bundle`, in parallel with its required metadata and boundary checks. It has
 no release environment and no signing secret; its only durable output is a
 dependency cache that the tag build can restore. The cache is saved only by a
@@ -272,8 +286,8 @@ tag only after the commit is on `main`.
    matrix.
 3. **sbom** — CycloneDX inventories of the Rust tree (all targets) and of the
    frontend's production dependencies. No credentials are in scope for this job.
-4. **build** — five jobs (macOS ARM64, macOS x64, Windows x64, Linux x64,
-   Linux ARM64), each
+4. **build** — six jobs (macOS ARM64, macOS x64, Windows x64, Windows ARM64,
+   Linux x64, Linux ARM64), each
    restoring the dependency cache prepared by main and then entering the
    `release` environment to package and sign. Each produces an installer, an
    updater bundle, a detached signature, and a fragment of `latest.json`. These
@@ -284,7 +298,7 @@ tag only after the commit is on `main`.
    extraction. It has no signing or repository-write credentials.
 6. **draft** — requires both helper archives, adds the root `install.sh` and `install.ps1`, then merges the
    fragments into `latest.json` with immutable
-   tag-specific URLs; verifies all five platform keys, asset presence, detached
+   tag-specific URLs; verifies all six platform keys, asset presence, detached
    signatures, reported signing modes, and `SHA256SUMS`; attests provenance over
    every asset; and creates the draft.
 
@@ -296,7 +310,7 @@ matrix followed by a cold compile. Any failure still leaves nothing published.
 
 The workflow summary contains the exact main CI run, the signing mode reported
 by each target, and the complete checksum table. Before the draft exists, the
-workflow has already required the five platform keys, immutable URLs, matching
+workflow has already required the six platform keys, immutable URLs, matching
 detached signatures, present assets, and a successful `sha256sum --check`.
 Those are machine gates, not boxes for a person to repeat.
 
@@ -304,9 +318,19 @@ The release includes `antiburn-remote-<version>-x86_64-unknown-linux-musl.tar.gz
 and `antiburn-remote-<version>-aarch64-unknown-linux-musl.tar.gz`. Both are covered
 by `SHA256SUMS`. Build provenance is included when the public-repository
 attestation steps run; private-repository releases skip those steps. Their archive version follows the application
-release; the helper's wire protocol version is a separate compatibility check.
+release, and §2.2 holds the helper's manifest to it, so `antiburn-remote --version`
+on an installed helper reports the release that shipped it. The helper's wire
+protocol version is a separate compatibility check.
 Follow [remote host setup](../remote-sessions.md) to exercise SSH discovery and
 offline cached analysis on a Linux host before publishing.
+
+Windows ships `antiburn_<version>_x64-setup.exe` and
+`antiburn_<version>_arm64-setup.exe`. The ARM64 job uses the native
+`windows-11-arm` runner and the `aarch64-pc-windows-msvc` Rust target.
+`install.ps1` reads `Win32_Processor.Architecture` to select the package even
+when PowerShell runs under emulation. The updater uses `windows-x86_64` and
+`windows-aarch64` respectively. The NSIS installer runs under x86 emulation
+on ARM64; the installed application runs natively.
 
 Open the draft release and perform the checks that need a real reader or
 installed operating system:
@@ -320,6 +344,8 @@ work, but it does not replace these signed-artifact checks.
       popover, and check that Settings → About shows the new version. On macOS,
       confirm it opens without a Gatekeeper prompt (which is what notarization
       buys); on Windows, note whether SmartScreen warns.
+      Check both Windows architectures, including an ARM64 install from
+      Windows PowerShell 5.1 and an emulated x64 PowerShell 7 session.
 - [ ] **The previous version can update to this one.** The real test of a
       release: install the previous version, point it at the draft only after
       publishing (drafts are not reachable), or rehearse with a pre-release tag.

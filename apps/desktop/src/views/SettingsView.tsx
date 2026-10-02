@@ -8,6 +8,7 @@ import {
   SlidersHorizontal,
   FolderGit2,
   Gauge,
+  ListChecks,
 } from "lucide-react"
 import { useState, useSyncExternalStore, type ReactNode } from "react"
 
@@ -21,6 +22,7 @@ import { useViewportWidth } from "../lib/viewport"
 import { SETTINGS_PANES, isSettingsPane, type SettingsPane } from "../lib/settingsPanes"
 import { AboutPane } from "./settings/AboutPane"
 import { AppearancePane } from "./settings/AppearancePane"
+import { ChecksPane } from "./settings/ChecksPane"
 import { GeneralPane } from "./settings/GeneralPane"
 import { NotificationsPane } from "./settings/NotificationsPane"
 import { PrivacyPane } from "./settings/PrivacyPane"
@@ -56,6 +58,7 @@ import { useAppSettings } from "./settings/useAppSettings"
 const PANE_ICONS: Record<SettingsPane, LucideIcon> = {
   general: SlidersHorizontal,
   sources: FolderGit2,
+  checks: ListChecks,
   notifications: Bell,
   usage: Gauge,
   appearance: Palette,
@@ -83,6 +86,7 @@ export function SettingsView() {
         appVersion={info?.appVersion ?? "VERSION"}
       />
     ),
+    checks: () => <ChecksPane />,
     privacy: () => <PrivacyPane {...controller} info={info} />,
     notifications: () => <NotificationsPane {...controller} />,
     usage: () => <UsagePane {...controller} />,

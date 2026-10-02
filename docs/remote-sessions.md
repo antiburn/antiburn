@@ -34,6 +34,10 @@ and [check coverage](check-coverage.md) for the evidence limits.
    install -m 755 antiburn-remote ~/.local/bin/antiburn-remote
    ```
 
+   `antiburn-remote --version` reports the release the helper came from. It
+   matches the version in the archive name. Use it to identify a helper that is
+   already installed.
+
 5. In Antiburn, choose **Add host**, enter the SSH alias and an optional display
    name, then check the connection. If setup is incomplete, follow the displayed
    guidance and check again. Save after the check succeeds.
@@ -112,9 +116,12 @@ The helper has a standalone Cargo workspace:
 cargo build --manifest-path crates/antiburn-remote/Cargo.toml --release --locked
 ```
 
-Build on the target Linux architecture. The release workflow produces static
+Build on the target Linux architecture. A build from source reports the version
+in `crates/antiburn-remote/Cargo.toml`, which a release holds equal to the
+application version. The release workflow produces static
 musl binaries for both architectures, tests the native helper, rejects binaries
-that require a dynamic loader or shared libraries, and includes the archives
+that require a dynamic loader or shared libraries, names each archive from that
+same manifest, and includes the archives
 in the application release's `SHA256SUMS`. Public-repository releases also include
 build provenance; private-repository releases skip attestation. Running local builds
 or tests does not create or publish a release.

@@ -32,6 +32,8 @@ export interface ChecksCategoryPayload {
   clean: number
   /** Sessions without enough evidence for a finding or clean result. */
   unavailable: number
+  /** True when Ignored Instructions published a priority-sampled assessment. */
+  sampled?: boolean
   /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 10000. */
   estimatedTokenBurnBasisPoints: number | null
 }
@@ -68,6 +70,7 @@ export type BurnCheckDetectorId =
   | "oldModelUsage"
   | "overuseOfFastMode"
   | "cacheChurn"
+  | "ignoredInstructions"
 
 export type BurnCheckEstimateMethod =
   | "repeatedContextAboveDepthCap"
@@ -146,6 +149,7 @@ export interface BurnCheckDisplayFactsPayload {
     | "speed"
     | "cache"
   resourceIdentity: string | null
+  instructionTitle?: string | null
   currentValue: string | null
   replacementValue: string | null
   scopeKind: "global" | "project" | "session" | "worker"
@@ -250,9 +254,27 @@ export interface BurnCheckTargetPayload {
   autoFix: AutoFixAvailabilityPayload
   promptFix: PromptFixAvailabilityPayload
   watch: BurnCheckWatchPayload | null
+  evidenceAvailable: boolean
   coverageLimits: "currentPublishedEvidenceOnly"[]
   samples: BurnCheckSamplePayload[]
   expiresAtEpoch: number
+}
+
+export interface BurnCheckEvidenceItemPayload {
+  label: "instruction" | "observedAction" | "context"
+  sourceLabel: string
+  reference: string
+  observedAtMs: number | null
+  startLine: number | null
+  endLine: number | null
+  excerpt: string
+  explanation: string
+  limitation: string | null
+}
+
+export interface BurnCheckTargetEvidencePayload {
+  status: "available" | "unavailable"
+  items: BurnCheckEvidenceItemPayload[]
 }
 
 /** Bounded display metadata plus an opaque, expiring route to one local session. */
@@ -405,6 +427,7 @@ export type SessionHygieneBadgeId =
   | "obsoleteModel"
   | "fastModeOveruse"
   | "excessCacheRehydration"
+  | "ignoredInstructions"
 
 export type SessionHygieneFindingEvidence =
   | {
@@ -445,8 +468,9 @@ export type SessionHygieneFindingEvidence =
 
 export interface SessionHygieneBadgePayload {
   id: SessionHygieneBadgeId
-  status: "finding" | "clean" | "notAssessed"
+  status: "finding" | "clean" | "checking" | "couldntCheck" | "notAssessed"
   notAssessedReason: InsightsNotAssessedReason | null
+  checkReason?: string
   /** Which vendor billing mechanism backs an `excessCacheRehydration`
    *  verdict. Absent for every other badge and for old evidence with no
    *  `repeated_context` marker. */
@@ -491,6 +515,14 @@ export async function listBurnCheckTargets(
   return invoke<BurnCheckTargetListPayload>("list_burn_check_targets", {
     detector,
   })
+}
+
+/** Loads private evidence for one current target after native revalidation. */
+export async function getBurnCheckTargetEvidence(
+  actionId: string,
+): Promise<BurnCheckTargetEvidencePayload | null> {
+  if (!hasShell()) return null
+  return invoke<BurnCheckTargetEvidencePayload>("get_burn_check_target_evidence", { actionId })
 }
 
 /** Reads the bounded remediation progress retained for each detector. */

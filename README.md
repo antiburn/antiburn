@@ -40,7 +40,7 @@ macOS or Linux:
 curl -fsSL https://antiburn.com/install.sh | sh
 ```
 
-Windows 11 PowerShell:
+Windows 11 PowerShell (x64 and ARM64):
 
 ```powershell
 irm https://antiburn.com/install.ps1 | iex

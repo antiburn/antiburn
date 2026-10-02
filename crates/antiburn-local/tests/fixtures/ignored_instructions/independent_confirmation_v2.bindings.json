@@ -1,0 +1,384 @@
+{
+  "binding_status": "resolved",
+  "cases": [
+    {
+      "bindings": [
+        "e1f378da765b237de727fb1df08561d3b528529d94d6a1f657e35ea4a30fe77d/e0"
+      ],
+      "citation_ids": [
+        "e0"
+      ],
+      "id": "IC2-001",
+      "input_hash": "6e19bf27c6ad8ce450f544e23a8a6ba11c1c086839879b0d8e7649091b92d742",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [
+        "f4d231941b2d97922de67d6d6c7db4733460904d5cc375ee02e924c308481c10/e0"
+      ],
+      "citation_ids": [
+        "e0"
+      ],
+      "id": "IC2-002",
+      "input_hash": "7ac6e6829c6f50e26cc92a755c4ea7f8b764af109b8556ff11795a5e9c6e2aa8",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [
+        "a2626d7a8d65dcb9ffc398978e980d0c8147be79d21cd1ff006c2408a888b21d/e0"
+      ],
+      "citation_ids": [
+        "e0"
+      ],
+      "id": "IC2-003",
+      "input_hash": "640105991ff4c93841eff5b2b5d9ee4ed2dd923ded77b5d396e6b23f010e93a9",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [
+        "ea0e8c1054c4e5bb262c52eb30d7a0c048b1557cf8bf068c2d410e541fc30524/e1"
+      ],
+      "citation_ids": [
+        "e1"
+      ],
+      "id": "IC2-004",
+      "input_hash": "a723c2f7a58a7a6149b31ea914a2d43b983071793c17babbb53d0de2700d24fe",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [
+        "a4f8d909b460938bde986743dfd3c2266f3eca5f14a43b232120e41e480d13d1/e0"
+      ],
+      "citation_ids": [
+        "e0"
+      ],
+      "id": "IC2-005",
+      "input_hash": "dea53b2125d94b24cf2a0de0685020a395b877432139419d90630a6dcc91abe0",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [
+        "eb14519dfe196821c81abb4bf4b7bb639b5137227436b8386f881e64519d6b00/e0"
+      ],
+      "citation_ids": [
+        "e0"
+      ],
+      "id": "IC2-006",
+      "input_hash": "63782c01d53d595cf3c46fec8d51f38e9a128f41812f8c41c0ef8c9a7f3f7f3c",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [
+        "7900870d59de1bc97a54d9acc2ac190b177985aaf2676889df7c49c4d10c1845/e1"
+      ],
+      "citation_ids": [
+        "e1"
+      ],
+      "id": "IC2-007",
+      "input_hash": "215f09da010a44979e2ea9a4aa4d5d4c4bf034881ebedac089695a9831f70ece",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-008",
+      "input_hash": "663df268c53a1bb323d7384bd64bd32fe5eef2aa90701e8f1d95bf81900578bb",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-009",
+      "input_hash": "743d33ff60524028fc3d0008c3e2ccf2b1a86c7cec07781f3aa335fae2b7e4d1",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [
+        "14808bfd8ee25a92ee3ff3785243b726c989dcd8f80653465ae0fb940de0349e/e0"
+      ],
+      "citation_ids": [
+        "e0"
+      ],
+      "id": "IC2-010",
+      "input_hash": "c5ce4c448e0ccc58ffe4101910b34968c80b1e044c2e087a8fcad38d9f556060",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-011",
+      "input_hash": "5f000e2b29c5d2ccceecb983ff31c17aa6fa3729a1b4e07f174a1c42043d749a",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-012",
+      "input_hash": "967ebf7d4ca608b79b355651c8041f96f93d0b183917fe001a662853cc757bd8",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-013",
+      "input_hash": "8541ca42e9053b0ab33227a37b53e7311700ea0aeca3fbc7fc6348276fa8845b",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-014",
+      "input_hash": "6cf2b323dcb24b79ec0d58f69709c860dc2baccb1daccaf9af48d689ede138ed",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-015",
+      "input_hash": "5b5680079cf9f7c20d8968f9dc5652ba3e83731494c79b53f852497bf6d5ed4c",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-016",
+      "input_hash": "19feb6d304cdfe962066593636b9b3ddd7acf55870852453f8497e9773bda0e5",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-017",
+      "input_hash": "812b91c477fb51498076879fdbf8bdae824a77fc744a9ebebb65d6cc8c33a380",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-018",
+      "input_hash": "c069cb21d797c5174115bff26887f590bc3bbcb561ca73e9f879f0168a9a8364",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-019",
+      "input_hash": "e8a0a51a9ced1b2d159ffa0b74c5d28ed79ae9e4b2f6bc35df248588baefc124",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-020",
+      "input_hash": "34fed7fa23371696274463211b9b7f28019dc7cbcc778ede27d4a1b9d6dd4930",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-021",
+      "input_hash": "784fa487b70dff75add9ac5d394a4eb29586bad9f6b37c2870ab2d083b058674",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [
+        "82a3cd2b48e32407cea031d24f0975c53dfd295e53ce4f21ee0f2a59f84da965/e0"
+      ],
+      "citation_ids": [
+        "e0"
+      ],
+      "id": "IC2-022",
+      "input_hash": "894b334a2d5bb124a7be7a6d6b1482b7368e5a71598582a8505b4648070725a5",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [
+        "29b3f887f594ab83f28c5237fac74cb42b92dccb15ca7a140d3534e0309d2c8a/e0"
+      ],
+      "citation_ids": [
+        "e0"
+      ],
+      "id": "IC2-023",
+      "input_hash": "164726a013bcbddecd8bd2829d21ee27a78b31520d23720457e92706d8a812d1",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-024",
+      "input_hash": "0694362e87c0f983c14f30789a0b6950bc0ba66027c78a8c4cf960cb1a88578d",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-025",
+      "input_hash": "e9213511796ff642a3f0849659380ed2358a81ae270459377e99f012b01c4b05",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-026",
+      "input_hash": "9ec31110f2a4ed6ac9fa792b96cfd06816895c4ec344086def16100cf5c4fef0",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-027",
+      "input_hash": "34b604f63f3b268daa49af5a660bd37076c38ac14e470ed899e5cbcbe6eea48a",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-028",
+      "input_hash": "e4ed33815aaaccf284a3b37a1f1adcda31435b965daf31fabf9a3a9dd5147969",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-029",
+      "input_hash": "fb80e6211fcfcf7eeeb26999cd17c79d4af2884fef6a21d384eff3a6b9b9c04a",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-030",
+      "input_hash": "c8fd205cf482982ed4181746f2f9d7691a93a8a9c0370ccbcdb3f98365a98cb8",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-031",
+      "input_hash": "c98cda4b5092caa0ec42ae3d97ebf60f3aa50a4bd9cf22f7d56dfebdb67bd3ef",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-032",
+      "input_hash": "8371d5d4342129ac82cb903e4c24d2bd6575cbdc039dfe82a8b21a2c0ecdcb26",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-033",
+      "input_hash": "22f137e17ec1d562a9e14689057196a6755bba1fee7148f61a9af982c872313f",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-034",
+      "input_hash": "6e027a5e43d1da24f4e5e1eeec18ff23fa9c95ac38fc30379851d158655ab7be",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-035",
+      "input_hash": "8398515db875138c3fdd5cb651f6549fd859722c58c1f5b2df8ab943d1a98ef7",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-036",
+      "input_hash": "8c26e54ab3e2f5f69ce58314d5696c810a9277d08ee18c5de0fa293077566743",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-037",
+      "input_hash": "24dae85a31354465663659fd4f2760aa4d9a1d4bd322d75d80c476b212d43861",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-038",
+      "input_hash": "ca4a091457838e2068561420a9cc21baf9c4aad67a46e938efb71af5fe81c1e8",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-039",
+      "input_hash": "fb8e472f45cf01d0b2ac7d6cdb65b5f8c4fc3a989797c4fd97cbc905266898fe",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-040",
+      "input_hash": "29bac6ee3ed82615e12f4508b949beaf63b636cfce42a0b53c3001abf1471da1",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-041",
+      "input_hash": "f006bb2474029440a87a7017f5bf50982f757dd57294ab6187b16f41673aefb5",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-042",
+      "input_hash": "2c9ae3295a53458bf2851c8ddad576fa9915ebfddf4879278d5e416b1e0458c9",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-043",
+      "input_hash": "5f2d26b90e5fd8284141e67b3023fa86487eb5b781695dfbd75e95d58f1621a4",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-044",
+      "input_hash": "09c6c401c7a8c76bdb5c121d11a9f1c01acd2859dd41b747d539ac802f1e7b11",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-045",
+      "input_hash": "704f312cac7f491a4ccd02eba6f07948daeca91e7873ec9273633185a39d05e7",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-046",
+      "input_hash": "6217b433b03a0e0b5026c8505cfda07a5c5e784fd18c6a502fed40a1376a427d",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-047",
+      "input_hash": "ca97f8894ec71f7a14807c60848ed99c763ffeb7578e78db3be8ec77882327cc",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    },
+    {
+      "bindings": [],
+      "citation_ids": [],
+      "id": "IC2-048",
+      "input_hash": "e6bcd17f2ac08f22b4f2aa47ac52981a955f5138eb765bd2c31bc7b3607cee49",
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27"
+    }
+  ],
+  "schema_version": 1,
+  "semantic_sha256": "26e7e230f09550ab74c3b70e4b76c089c45fa4d6af11db2f09e3eb9f4faed9d5",
+  "suite": "independent_confirmation_v2"
+}

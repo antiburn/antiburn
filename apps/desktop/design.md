@@ -205,6 +205,9 @@ colors:
   check-depth:
     light: "hsl(158 89% 39.6%)"
     dark: "hsl(156 75% 47.2%)"
+  check-instructions:
+    light: "hsl(287 65% 52%)"
+    dark: "hsl(287 75% 68%)"
   # Floating-HUD sub-palette only (src/styles/hud.css)
   burn:
     light: "hsl(18 100% 50%)"
@@ -705,6 +708,18 @@ Notes for what isn't expressible as a token:
   denominator. Failure wording uses semibold weight. Compact Lucide indicators use a
   15px visual size. Compact segmented dials remain 14px with a 1.5px optical stroke and 14-degree requested
   gaps. A text-bearing indicator shifts down 1px for optical alignment with the monospace verdict.
+  Main collection rows that are not assessed form an 8px grid. When an assessed group follows,
+  leave an 8px gap without a divider or top inset.
+  In the main report, show actual failures first. Keep awaiting, passed, and
+  snoozed checks in their own groups. Show all active checks without a lifecycle
+  in a neutral `Not assessed (N)` disclosure only when N is at least one. Keep
+  these rows hidden by default; the disclosure makes them reachable when needed.
+  Start it collapsed; search opens and focuses its target. Collapsing a focused row
+  returns focus to the disclosure. Never describe an unassessed row as failed.
+  When Ignored Instructions reports priority sampling, place a small tertiary
+  information icon next to its detail title. Its shared tooltip explains that
+  likely conflicts are checked first and later checks can reduce the remaining
+  unassessed gap. The icon is a keyboard-focusable 24px target.
   Session-card rows use a 2px interline gap inside unchanged 12px vertical card padding. A zero-failure result with at least one assessed check uses an outlined ring and tick, even
   when some checks are not assessed. Session cards keep the passing verdict visible above the title.
   Failed and non-result states keep their explicit verdict wording. Session cards use
@@ -1132,7 +1147,7 @@ Project context appears once below the title and actions, using the full text-co
 Keep it on one line, truncating overflow while retaining the inline folder control.
 The folder hover panel reveals the full recorded local path and supports open/copy actions
 on pointer hover or keyboard focus.
-Failed sessions use the shared session cards without a separate heading, count badge, or disclosure.
+Related sessions use the shared session cards without a separate count badge or disclosure.
 Show all available cards. Lists longer than five cards scroll within the measured height of the
 first five cards. Counts and dates use tabular numerals.
 The project row keeps a bare 14px folder icon in a 20px target and a `mt-1` count gap.
@@ -1144,6 +1159,15 @@ The actions align with that first line and wrap without negative vertical offset
 Every finding explanation appears below the header metrics.
 All check actions sit at the header’s right edge. Named resource cards contain evidence only.
 Do not repeat explanations or check-level actions in the body.
+An Ignored Instructions finding shows the same two sections in every detail state: “Instruction”
+and “Where it was ignored”. Load bounded saved excerpts when the detail opens, without another
+disclosure. Include the instruction source and line range, plus the cited action and its available
+time. Show each complete bounded excerpt with its source and a short explanation. Keep surrounding
+events chronological behind “Show context”. Keep the finding summary visible while excerpts load
+or fail; offer Retry after a failed read. New assessments save the compared excerpts with the finding so later session changes
+do not hide the example. For older findings without saved excerpts, show the instruction location
+and action summary, then state that exact text was not saved. Closing or changing the selected
+detail discards late responses. Other session findings may load bounded evidence on demand.
 The collection and detail panes start at the top of the workspace. The collection docks directly to
 the sidebar and uses the same `--main-window-collection-width` geometry as Sessions. Its 340px width
 does not change by breakpoint. The detail pane remains flexible, and both panes own independent scroll
@@ -1152,8 +1176,9 @@ gutter separates the collection from the sidebar. Both surfaces use the same che
 counts, order, token-burn percentages, summaries, and semantic status colors. This parity comes from
 shared presentation helpers. Do not copy labels or calculate percentages in either surface. Do not
 sum category percentages. Use color only for the compact status icon and metric. Other text and
-surfaces stay neutral. The main view shows failed and passed groups. It hides not-assessed rows;
-settled historical coverage gaps use a not-assessed count, not a processing state. Category rows use
+surfaces stay neutral. The main view shows failed and passed groups. It hides not-assessed rows
+by default; show a `Not assessed (N)` disclosure when those rows need to be reachable.
+Settled historical coverage gaps use a not-assessed count, not a processing state. Category rows use
 separate `session-card` rounded controls and accessible selection buttons. The selected detail uses one short, check-specific
 finding sentence below the heading. The prompt action sits at the heading’s right edge. Do not show internal target identities,
 repeated observations, repeated guidance, or detail refresh and bounded-list notices. Unused MCP servers, skills, and built-in tools show

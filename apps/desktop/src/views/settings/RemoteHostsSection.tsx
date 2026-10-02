@@ -302,7 +302,11 @@ function RemoteHostEditor({
         </label>
         {ready && currentPreflight ? (
           <p role="status" className="mt-3 type-footnote text-label-secondary">
-            Linux {currentPreflight.architecture === "aarch64" ? "ARM64" : "x64"} · Found{" "}
+            Linux {currentPreflight.architecture === "aarch64" ? "ARM64" : "x64"}
+            {currentPreflight.helperVersion
+              ? ` · Helper ${currentPreflight.helperVersion}`
+              : ""}{" "}
+            · Found{" "}
             {currentPreflight.supportedAgents.map(agentDisplayName).join(" and ") ||
               "supported agents"}
           </p>

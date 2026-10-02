@@ -117,7 +117,10 @@ describe("BurnChecksView grouping", { timeout: 15_000 }, () => {
       categories: [report.categories[2]!],
     })
 
-    expect(screen.queryByText("1 check not assessed.")).not.toBeInTheDocument()
+    expect(await screen.findByRole("button", { name: "Not assessed (1)" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    )
     vi.mocked(adapter.getReport).mockResolvedValue({
       ...report,
       categories: [{ ...report.categories[1]!, finding: 0, clean: 3, lifecycle: "passing" }],
@@ -272,7 +275,9 @@ describe("BurnChecksView grouping", { timeout: 15_000 }, () => {
       const row = screen.getByRole("button", { name: /Old model usage, Awaiting verification/ })
       expect(row).toHaveAttribute("aria-pressed", "true")
       expect(row).toHaveFocus()
-      expect(screen.queryByText("Not assessed")).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole("button", { name: /Old model usage, Not assessed/ }),
+      ).not.toBeInTheDocument()
       expect(
         screen.queryByText("This check has not been assessed for the available sessions."),
       ).not.toBeInTheDocument()
@@ -499,8 +504,13 @@ describe("BurnChecksView grouping", { timeout: 15_000 }, () => {
     expect(screen.getByRole("heading", { name: "Failed checks 1" })).toBeVisible()
     expect(screen.queryByText(/More evidence is needed/)).not.toBeInTheDocument()
     expect(screen.getByRole("heading", { name: /Passed checks/ })).toBeVisible()
-    expect(screen.queryByRole("heading", { name: "Not assessed" })).not.toBeInTheDocument()
-    expect(screen.queryByText("Excess cache rehydration")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Not assessed (1)" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    )
+    expect(
+      screen.queryByRole("button", { name: /Excess cache rehydration/ }),
+    ).not.toBeInTheDocument()
     expect(screen.queryByText(/check results are assessed/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Evidence work is still in progress/)).not.toBeInTheDocument()
     expect(screen.queryByRole("region", { name: "Your savings" })).not.toBeInTheDocument()
@@ -518,6 +528,75 @@ describe("BurnChecksView grouping", { timeout: 15_000 }, () => {
     expect(screen.queryByText("Why it matters")).not.toBeInTheDocument()
     expect(screen.queryByText("Suggested change")).not.toBeInTheDocument()
     expect(screen.queryByText(/Verification requires fresh evidence/)).not.toBeInTheDocument()
+  })
+
+  it("groups every active unassessed check after failures and keeps snoozed separate", async () => {
+    setup(null, false, aggregate, {
+      ...report,
+      categories: [
+        { ...report.categories[2]!, id: "ignoredInstructions" },
+        report.categories[0]!,
+        report.categories[2]!,
+      ],
+    })
+
+    const disclosure = await screen.findByRole("button", { name: "Not assessed (2)" })
+    expect(disclosure).toHaveAttribute("aria-expanded", "false")
+    expect(
+      screen.queryByRole("button", { name: /Ignored Instructions/ }),
+    ).not.toBeInTheDocument()
+    const failed = screen.getByRole("button", { name: /Old model usage/ })
+    expect(
+      failed.compareDocumentPosition(disclosure) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0)
+    fireEvent.click(disclosure)
+    const ignored = screen.getByRole("button", { name: "Ignored Instructions, Not assessed" })
+    expect(ignored).toBeVisible()
+    expect(
+      screen.getByRole("button", { name: "Excess cache rehydration, Not assessed" }),
+    ).toBeVisible()
+    ignored.focus()
+    fireEvent.click(disclosure)
+    await waitFor(() => expect(disclosure).toHaveFocus())
+    expect(ignored).not.toBeVisible()
+    expect(screen.getByRole("button", { name: "Snoozed 0" })).toBeVisible()
+  })
+
+  it("opens the unassessed group from the keyboard and focuses its first check", async () => {
+    setup(null, false, aggregate, { ...report, categories: [report.categories[2]!] })
+    const disclosure = await screen.findByRole("button", { name: "Not assessed (1)" })
+    disclosure.focus()
+    fireEvent.keyDown(disclosure, { key: "ArrowDown" })
+    const row = screen.getByRole("button", { name: "Excess cache rehydration, Not assessed" })
+    await waitFor(() => expect(row).toHaveFocus())
+    expect(disclosure).toHaveAttribute("aria-expanded", "true")
+    expect(row).toHaveAttribute("aria-pressed", "true")
+  })
+
+  it("does not show an empty disclosure or call active unassessed checks inactive", async () => {
+    const { view } = setup(null, false, aggregate, {
+      ...report,
+      evidenceSettled: true,
+      categories: [report.categories[2]!],
+    })
+    expect(await screen.findByRole("button", { name: "Not assessed (1)" })).toBeVisible()
+    expect(screen.queryByText("No active checks.")).not.toBeInTheDocument()
+    expect(screen.queryByText("Checks have not been assessed.")).not.toBeInTheDocument()
+    view.unmount()
+    setup(null, false, aggregate, { ...report, evidenceSettled: true, categories: [] })
+    expect(await screen.findByText("No active checks.")).toBeVisible()
+    expect(screen.queryByRole("button", { name: /Not assessed \d/ })).not.toBeInTheDocument()
+  })
+
+  it("shows findings without an extra running message", async () => {
+    setup(target, false, aggregate, report)
+    expect(
+      await screen.findByRole("button", { name: /Old model usage.*1 failed/ }),
+    ).toBeVisible()
+    expect(
+      document.querySelector(".burn-checks-collection-content > [role='status']"),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText("No active checks.")).not.toBeInTheDocument()
   })
 
   it("groups wide check rows and exposes the selected outcome state", async () => {

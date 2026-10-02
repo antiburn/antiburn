@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { SessionHygienePayload } from "./insightsIpc"
 import type * as Ipc from "./ipc"
+import type * as InsightsIpc from "./insightsIpc"
 import type { LocalSessionIdentity } from "./types/session"
 import { sessionHygieneFor, useSessionHygiene } from "./useSessionHygiene"
 
@@ -10,6 +11,7 @@ const ipcMocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   onSessionIndexChanged: vi.fn(),
   onSessionUpdated: vi.fn(),
+  onChecksReportChanged: vi.fn(),
 }))
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -21,6 +23,11 @@ vi.mock("./ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof Ipc>()),
   onSessionIndexChanged: ipcMocks.onSessionIndexChanged,
   onSessionUpdated: ipcMocks.onSessionUpdated,
+}))
+
+vi.mock("./insightsIpc", async (importOriginal) => ({
+  ...(await importOriginal<typeof InsightsIpc>()),
+  onChecksReportChanged: ipcMocks.onChecksReportChanged,
 }))
 
 const FIRST: LocalSessionIdentity = {
@@ -114,9 +121,11 @@ beforeEach(() => {
   ipcMocks.invoke.mockReset()
   ipcMocks.onSessionIndexChanged.mockReset()
   ipcMocks.onSessionUpdated.mockReset()
+  ipcMocks.onChecksReportChanged.mockReset()
   ipcMocks.invoke.mockResolvedValue(null)
   ipcMocks.onSessionIndexChanged.mockResolvedValue(vi.fn())
   ipcMocks.onSessionUpdated.mockResolvedValue(vi.fn())
+  ipcMocks.onChecksReportChanged.mockResolvedValue(vi.fn())
 })
 
 afterEach(() => {
@@ -160,6 +169,22 @@ describe("useSessionHygiene", () => {
     })
     expect(sessionHygieneFor(result.current, FIRST).badges[0]?.status).toBe("finding")
     expect(sessionHygieneFor(result.current, SECOND).badges[0]?.status).toBe("clean")
+  })
+
+  it("refreshes requested sessions when a remote check result publishes", async () => {
+    ipcMocks.invoke.mockResolvedValueOnce([payload("clean")]).mockResolvedValueOnce([
+      {
+        ...payload("clean"),
+        badges: [
+          ...payload("clean").badges,
+          { id: "ignoredInstructions", status: "finding", notAssessedReason: null },
+        ],
+      },
+    ])
+    const { result } = renderHook(() => useSessionHygiene([FIRST]))
+    await waitFor(() => expect(ipcMocks.onChecksReportChanged).toHaveBeenCalledTimes(1))
+    await act(async () => ipcMocks.onChecksReportChanged.mock.calls[0]?.[0]())
+    await waitFor(() => expect(sessionHygieneFor(result.current, FIRST).badges).toHaveLength(7))
   })
 
   it("ignores an update whose facets cannot move hygiene", async () => {

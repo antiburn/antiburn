@@ -28,6 +28,10 @@ export const CHECK_DEFINITIONS = {
     label: "Excess cache rehydration",
     aliases: ["prompt cache", "rehydration", "cache misses"],
   },
+  ignoredInstructions: {
+    label: "Ignored Instructions",
+    aliases: ["instruction conflicts", "missed agent rules", "AGENTS.md", "CLAUDE.md"],
+  },
 } as const satisfies Record<BurnCheckDetectorId, { label: string; aliases: readonly string[] }>
 
 export const CHECK_LABELS = Object.fromEntries(
@@ -47,4 +51,5 @@ export const CHECK_PROBLEM_PHRASES: Record<BurnCheckDetectorId, string> = {
   oldModelUsage: "sessions use old model versions",
   overuseOfFastMode: "fast mode runs where it doesn't pay off",
   cacheChurn: "cache is rehydrated more than it needs to be",
+  ignoredInstructions: "agents go against your AGENTS.md or CLAUDE.md rules",
 }

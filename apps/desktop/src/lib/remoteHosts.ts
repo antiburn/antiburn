@@ -38,6 +38,8 @@ export interface RemoteHostPreflight {
   supportedAgents: ("claude-code" | "codex")[]
   platform: "linux" | null
   architecture: "x86_64" | "aarch64" | null
+  /** The release that shipped the installed helper. Null when it did not answer. */
+  helperVersion: string | null
   message: string | null
 }
 
@@ -71,6 +73,7 @@ export async function checkRemoteHost(sshAlias: string): Promise<RemoteHostPrefl
       supportedAgents: ["claude-code", "codex"],
       platform: "linux",
       architecture: "x86_64",
+      helperVersion: null,
       message: null,
     }
   return invoke<RemoteHostPreflight>("check_remote_host", { sshAlias })

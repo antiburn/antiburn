@@ -10,7 +10,7 @@ listed here is not claimed — a cell that is absent means "not supported", not
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | macOS 13 or later (Apple silicon and Intel)                              | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | macOS 12 or earlier                                                      | Not supported; the bundle declares macOS 13 as its minimum                                                                                                                                                                                                                                                                                                                                                                                 |
-| Windows 11 (x86-64)                                                      | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Windows 11 (x86-64 and ARM64)                                            | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Windows 10                                                               | Not tested; no support claimed                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Linux, mainstream x86-64 and ARM64 (aarch64) desktops with a system tray | Supported; it runs on the X11 backend there — through XWayland on a Wayland session — because it places its own popover and notification windows; a session-wide `GDK_BACKEND` that only restates the Wayland default (plain `wayland`, or a wayland-first list naming `x11`) is overridden for antiburn alone, `ANTIBURN_GDK_BACKEND` forces a backend explicitly, and a session with no X server leaves that placement to the compositor |
 | Linux without a system tray (or an AppIndicator host)                    | Not supported — antiburn is a tray application                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -171,6 +171,22 @@ history after providers' 30-day retention window. A shorter period keeps the loc
 index lighter. Deleting a transcript from disk does not immediately delete what
 antiburn derived from it; that data follows the selected retention period unless the
 session or local index is deleted first. The agents' own files are never touched.
+
+**Discovery and the checks report share one current window.** Every recurring pass —
+launch, the periodic tick, a watcher burst, a settings change, an explicit rescan —
+discovers sessions last active within 30 days, the same window the checks report
+covers, so the number of sessions a pass reads always equals the number the report
+checks. Settings → General › Show the last changes a shorter display window on top
+of that; it does not change what is indexed.
+
+**A separate historical pass covers retention beyond the current window.** A 90-day
+or forever retention setting keeps more than the current window can show on its own,
+so a dedicated pass widens discovery to the retention limit: 90 days for a 90-day
+setting, every age the app can reach for forever. Settings → General › Historical
+scan runs this pass on demand; antiburn also runs it once automatically, after the
+first current-window pass and its analysis have settled, for a retention that has not
+had its history read yet. A 30-day retention keeps only what the current window
+already covers, so there is no historical pass to run.
 
 **Deletion.** antiburn removes only records it created itself. It cannot and will not
 delete a coding agent's own transcript — that is the agent's file, and removing a

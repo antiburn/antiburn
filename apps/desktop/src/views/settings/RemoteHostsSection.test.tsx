@@ -263,6 +263,7 @@ describe("RemoteHostsSection", () => {
         supportedAgents: [],
         platform: "linux",
         architecture: "aarch64",
+        helperVersion: null,
         message: "Install the remote helper.",
       })
       .mockResolvedValueOnce({
@@ -270,6 +271,7 @@ describe("RemoteHostsSection", () => {
         supportedAgents: ["claude-code", "codex"],
         platform: "linux",
         architecture: "aarch64",
+        helperVersion: null,
         message: null,
       })
     const addRemoteHost = vi.fn(async () => host())
@@ -338,6 +340,7 @@ describe("RemoteHostsSection", () => {
       supportedAgents: [],
       platform: "linux" as const,
       architecture: null,
+      helperVersion: null,
       message: "Install the remote helper.",
     }))
     render(
@@ -375,6 +378,7 @@ describe("RemoteHostsSection", () => {
           supportedAgents: ["codex"]
           platform: "linux"
           architecture: "x86_64"
+          helperVersion: null
           message: null
         }) => void)
       | undefined
@@ -385,6 +389,7 @@ describe("RemoteHostsSection", () => {
           supportedAgents: ["codex"]
           platform: "linux"
           architecture: "x86_64"
+          helperVersion: null
           message: null
         }>((resolve) => {
           finishCheck = resolve
@@ -413,9 +418,39 @@ describe("RemoteHostsSection", () => {
       supportedAgents: ["codex"],
       platform: "linux",
       architecture: "x86_64",
+      helperVersion: null,
       message: null,
     })
     expect(await within(dialog).findByText(/Linux x64 · Found Codex/)).toBeVisible()
+  })
+
+  it("names the helper version the host reports", async () => {
+    const checkRemoteHost = vi.fn(async () => ({
+      status: "ready" as const,
+      supportedAgents: ["codex" as const],
+      platform: "linux" as const,
+      architecture: "x86_64" as const,
+      helperVersion: "0.9.0",
+      message: null,
+    }))
+    render(
+      <RemoteHostsSection
+        remote={snapshot()}
+        session={fakeSession({ checkRemoteHost })}
+        appVersion="0.8.0"
+      />,
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Add host" }))
+    const dialog = screen.getByRole("dialog", { name: "Add remote host" })
+    fireEvent.change(within(dialog).getByLabelText("SSH host alias"), {
+      target: { value: "alpha" },
+    })
+    fireEvent.click(within(dialog).getByRole("button", { name: "Check connection" }))
+
+    expect(
+      await within(dialog).findByText(/Linux x64 · Helper 0\.9\.0 · Found Codex/),
+    ).toBeVisible()
   })
 
   it.each(["add", "remove"])(

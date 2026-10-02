@@ -50,6 +50,226 @@ fn sqlite_input(path: &std::path::Path, session_id: &str) -> SessionInput {
     }
 }
 
+#[test]
+fn opencode_formats_keep_distinct_native_source_contracts() {
+    use antiburn_local::analysis::SourceFormat;
+
+    let (_directory, path) = create_database();
+    let sqlite = sqlite_input(&path, "root");
+    assert_eq!(
+        reader_for("opencode").capabilities(&sqlite).source_format,
+        SourceFormat::OpenCodeSqliteV2
+    );
+
+    let jsonl = SessionInput {
+        agent: "opencode".to_owned(),
+        session_id: "root".to_owned(),
+        source: RawSource::Jsonl(
+            r#"{"type":"message","sessionID":"root","messageID":"m1","time":{"created":1000},"payload":{"role":"assistant","modelID":"model-a","tokens":{"input":2,"output":3}}}
+{"type":"part","messageID":"m1","payload":{"type":"text","text":"response"}}"#.to_owned(),
+        ),
+        fork_parent_session_id: None,
+        source_format: SourceFormat::OpenCodeJsonl,
+    };
+    assert_eq!(
+        reader_for("opencode").capabilities(&jsonl).source_format,
+        SourceFormat::OpenCodeJsonl
+    );
+    let session = reader_for("opencode")
+        .normalize(&jsonl)
+        .expect("normalize exported JSONL");
+    assert_eq!(session.events.len(), 1);
+    assert_eq!(session.events[0].usage.input_tokens, 2);
+
+    let message_jsonl = SessionInput {
+        source: RawSource::Jsonl(
+            r#"{"role":"assistant","time":{"created":1000},"modelID":"model-a"}"#.to_owned(),
+        ),
+        ..jsonl
+    };
+    let session = reader_for("opencode")
+        .normalize(&message_jsonl)
+        .expect("normalize unsupported shape as partial evidence");
+    assert!(session.events.is_empty());
+}
+
+#[test]
+fn sqlite_tool_lifecycle_keeps_requests_distinct_from_results() {
+    let (_directory, path) = create_database();
+    let connection = Connection::open(&path).expect("database");
+    insert_session(&connection, "root", None, None, 1_000);
+    let records = include_str!("fixtures/opencode_characterization/tool_lifecycle_native.jsonl");
+    for line in records.lines() {
+        let record: serde_json::Value = serde_json::from_str(line).expect("native record");
+        match record["type"].as_str().expect("record type") {
+            "message" => insert_message(
+                &connection,
+                record["messageID"].as_str().expect("message id"),
+                "root",
+                1_000,
+                &record["payload"].to_string(),
+            ),
+            "part" => insert_part(
+                &connection,
+                record["payload"]["callID"].as_str().expect("call id"),
+                record["messageID"].as_str().expect("message id"),
+                "root",
+                1_001,
+                &record["payload"].to_string(),
+            ),
+            _ => panic!("unexpected native record"),
+        }
+    }
+    drop(connection);
+
+    let session = reader_for("opencode")
+        .normalize(&sqlite_input(&path, "root"))
+        .expect("normalize native SQLite fixture");
+    let calls = &session.events[0].tools;
+    assert_eq!(calls.len(), 4);
+    assert!(calls.iter().all(|call| call.name == "bash"));
+
+    let input = sqlite_input(&path, "root");
+    let mut capture = ContentCapturingSink::default();
+    reader_for("opencode")
+        .visit(&input, &mut capture)
+        .expect("capture lifecycle content");
+    let parts = &capture.contents[0].parts;
+    let inputs: Vec<_> = parts
+        .iter()
+        .filter(|part| part.kind == antiburn_local::analysis::ContentKind::ToolInput)
+        .collect();
+    let outputs: Vec<_> = parts
+        .iter()
+        .filter(|part| part.kind == antiburn_local::analysis::ContentKind::ToolResult)
+        .collect();
+    assert_eq!(inputs.len(), 4);
+    assert_eq!(outputs.len(), 2);
+    for (call, command) in [
+        ("call-completed", "printf completed"),
+        ("call-running", "printf running"),
+        ("call-error", "printf error"),
+        ("call-pending", "printf pending"),
+    ] {
+        let part = inputs
+            .iter()
+            .find(|part| part.tool_call_id.as_deref() == Some(call))
+            .expect("exact call identity");
+        assert_eq!(
+            part.authority,
+            antiburn_local::analysis::ContentAuthority::Assistant
+        );
+        assert_eq!(
+            part.normalized_fields.as_ref().unwrap().values
+                [&antiburn_local::analysis::jev::JevInputField::BashCommandInput],
+            command
+        );
+    }
+    assert_eq!(outputs[0].tool_call_id.as_deref(), Some("call-completed"));
+    assert_eq!(outputs[0].text, "completed output");
+    assert_eq!(outputs[1].tool_call_id.as_deref(), Some("call-error"));
+    assert_eq!(outputs[1].text, "command failed");
+    use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
+    use antiburn_local::analysis::jev_evidence::JevOperationState;
+    let (_, store) = evidence_and_rows(&input);
+    store.with_connection(|connection| {
+        let selection = JevInputSelection::from_fields(&[JevInputField::BashCommandInput]);
+        let published = antiburn_local::analysis::query_turn_content_offset_selected(
+            connection,
+            &antiburn_local::analysis::TurnSessionKey {
+                environment_key: "native",
+                agent: "opencode",
+                session_id: "root",
+            },
+            &antiburn_local::analysis::FenceScope::single(1),
+            None,
+            &Default::default(),
+            0,
+            selection,
+        )
+        .unwrap();
+        let selected = antiburn_local::analysis::jev_evidence::select_session_content(
+            &antiburn_local::analysis::jev_evidence::prepare_session_content(
+                "root",
+                antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+                published,
+                Vec::new(),
+            ),
+            selection,
+        );
+        assert_eq!(selected.actions.len(), 4);
+        for (call, expected) in [
+            ("call-completed", JevOperationState::Completed),
+            ("call-running", JevOperationState::Running),
+            ("call-error", JevOperationState::Error),
+            ("call-pending", JevOperationState::Pending),
+        ] {
+            let action = selected
+                .actions
+                .iter()
+                .find(|action| action.tool_call_id.as_deref() == Some(call))
+                .unwrap();
+            assert_eq!(action.metadata.state, expected);
+            assert_eq!(action.metadata.bindings.len(), 1);
+            let binding = &action.metadata.bindings[0];
+            assert_eq!(binding.field, JevInputField::BashCommandInput);
+            assert_eq!(binding.pointer, "/state/input/command");
+            assert_eq!((binding.start, binding.end), (0, action.text.len()));
+            assert!(!action.truncated);
+            assert!(!action.text.contains("output"));
+            assert!(!action.text.contains("failed"));
+        }
+    });
+    assert!(
+        outputs
+            .iter()
+            .all(|part| part.authority == antiburn_local::analysis::ContentAuthority::Tool)
+    );
+
+    let (_, store) = evidence_and_rows(&input);
+    store.with_connection(|connection| {
+        use antiburn_local::analysis::ignored_instructions::{
+            INPUT_SELECTION, prepare_session_content, select_session_content,
+        };
+        use antiburn_local::analysis::{
+            FenceScope, TurnSessionKey, query_turn_content_offset_selected,
+        };
+        let published = query_turn_content_offset_selected(
+            connection,
+            &TurnSessionKey {
+                environment_key: "native",
+                agent: "opencode",
+                session_id: "root",
+            },
+            &FenceScope::single(1),
+            None,
+            &std::collections::BTreeMap::new(),
+            0,
+            INPUT_SELECTION,
+        )
+        .unwrap();
+        let selected = select_session_content(
+            &prepare_session_content(
+                "root",
+                antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+                published,
+                Vec::new(),
+            ),
+            INPUT_SELECTION,
+        );
+        assert_eq!(selected.actions.len(), 4);
+        assert!(
+            selected
+                .actions
+                .iter()
+                .all(|action| action.kind == "tool_input")
+        );
+        let retained = serde_json::to_string(&selected).unwrap();
+        assert!(!retained.contains("completed output"));
+        assert!(!retained.contains("command failed"));
+    });
+}
+
 fn insert_session(
     connection: &Connection,
     id: &str,
@@ -1576,4 +1796,121 @@ fn tool_error_parts_retain_the_error_as_result_content() {
         antiburn_local::analysis::ContentKind::ToolResult
     );
     assert_eq!(parts[1].text, "command failed");
+}
+
+#[test]
+fn native_edit_ranges_and_partial_requests_survive_selected_storage() {
+    use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
+    use antiburn_local::analysis::jev_evidence::JevOperationState;
+    let (_directory, path) = create_database();
+    let connection = Connection::open(&path).unwrap();
+    insert_session(&connection, "root", None, None, 1000);
+    insert_message(
+        &connection,
+        "m1",
+        "root",
+        1000,
+        &json!({"role":"assistant"}).to_string(),
+    );
+    for (index, part) in [
+        json!({"type":"tool","tool":"edit","callID":"edit","state":{"status":"completed","input":{"filePath":"src/é.rs","cwd":"/repo","oldString":"old","newString":"PRIVATE_EDIT_BODY"}}}),
+        json!({"type":"tool","tool":"bash","callID":"partial","state":{"status":"running","input":{"command":"x".repeat(antiburn_local::analysis::MAX_CONTENT_PART_BYTES + 1)}}}),
+        json!({"type":"tool","tool":"apply_patch","callID":"patch","state":{"status":"future-state","input":{"patchText":"*** Begin Patch\n*** Update File: src/a.rs\n+text\n*** End Patch"}}}),
+    ].iter().enumerate() {
+        insert_part(&connection, &format!("p{index}"), "m1", "root", 1001 + index as i64, &part.to_string());
+    }
+    drop(connection);
+    let (_, store) = evidence_and_rows(&sqlite_input(&path, "root"));
+    store.with_connection(|connection| {
+        for field in [
+            JevInputField::FileEditPath,
+            JevInputField::FileEditContent,
+            JevInputField::BashCommandInput,
+        ] {
+            let selection = JevInputSelection::from_fields(&[field]);
+            let published = antiburn_local::analysis::query_turn_content_offset_selected(
+                connection,
+                &antiburn_local::analysis::TurnSessionKey {
+                    environment_key: "native",
+                    agent: "opencode",
+                    session_id: "root",
+                },
+                &antiburn_local::analysis::FenceScope::single(1),
+                None,
+                &Default::default(),
+                0,
+                selection,
+            )
+            .unwrap();
+            if field == JevInputField::BashCommandInput {
+                let partial = &published.parts[0].part;
+                assert!(partial.truncated);
+                assert_eq!(partial.metadata.state, JevOperationState::Running);
+                assert!(partial.metadata.bindings.is_empty());
+                assert!(partial.normalized_fields.as_ref().unwrap().malformed);
+                continue;
+            }
+            let edit = published
+                .parts
+                .iter()
+                .find(|part| part.part.tool_call_id.as_deref() == Some("edit"))
+                .unwrap();
+            assert_eq!(edit.part.metadata.state, JevOperationState::Completed);
+            assert!(
+                edit.part
+                    .metadata
+                    .bindings
+                    .iter()
+                    .all(|binding| binding.field == field)
+            );
+            if field == JevInputField::FileEditPath {
+                assert_eq!(
+                    edit.part
+                        .metadata
+                        .bindings
+                        .iter()
+                        .find(|binding| binding.pointer.ends_with("/filePath"))
+                        .unwrap()
+                        .end,
+                    "src/é.rs".len()
+                );
+                let facts =
+                    antiburn_local::analysis::jev_evidence::JevRecordedPathFacts::from_selected(
+                        field,
+                        &edit.part.normalized_fields.as_ref().unwrap().values[&field],
+                        None,
+                    );
+                assert_eq!(facts.cwd.as_deref(), Some("/repo"));
+                assert_eq!(facts.paths, ["src/é.rs"]);
+                assert_eq!(facts.resolve("src/é.rs"), None);
+                assert!(!format!("{:?}", published).contains("PRIVATE_EDIT_BODY"));
+            } else {
+                assert_eq!(edit.part.metadata.bindings.len(), 2);
+            }
+            let patch = published
+                .parts
+                .iter()
+                .find(|part| part.part.tool_call_id.as_deref() == Some("patch"))
+                .unwrap();
+            assert_eq!(patch.part.metadata.state, JevOperationState::Unknown);
+            assert_eq!(patch.part.metadata.bindings.len(), 1);
+            assert_eq!(patch.part.metadata.bindings[0].field, field);
+            assert!(
+                patch.part.metadata.bindings[0]
+                    .pointer
+                    .ends_with("/patchText")
+            );
+            assert!(!patch.part.normalized_fields.as_ref().unwrap().malformed);
+            let selected = &patch.part.normalized_fields.as_ref().unwrap().values[&field];
+            if field == JevInputField::FileEditPath {
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(selected).unwrap()["paths"],
+                    json!(["src/a.rs"])
+                );
+                assert!(!selected.contains("+text"));
+            } else {
+                assert!(selected.contains("+text"));
+            }
+        }
+    });
 }

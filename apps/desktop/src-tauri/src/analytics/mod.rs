@@ -130,6 +130,9 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::AppSearchResultOpened { category } => {
             let _ = category;
         }
+        event::Interaction::IgnoredInstructionObserved { stage, outcome } => {
+            let _ = (stage, outcome);
+        }
         event::Interaction::SessionFiltersChanged { action, agent } => {
             let _ = (action, agent);
         }
@@ -1056,6 +1059,10 @@ mod enabled {
     ///
     /// The renderer names a shape, not an event. See [`Interaction`] for why.
     pub fn record_interaction(app: &tauri::AppHandle, interaction: Interaction) {
+        #[cfg(debug_assertions)]
+        if matches!(interaction, Interaction::IgnoredInstructionObserved { .. }) {
+            return;
+        }
         if let Some((provider, state)) = deliberate_live_usage_observation(interaction) {
             record_live_usage_state(app, provider, state);
             return;

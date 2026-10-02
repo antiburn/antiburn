@@ -49,6 +49,36 @@ pub(super) fn publish_turn_rows(
     target_fence: i64,
     source_sets: &SourceSets,
 ) -> Result<()> {
+    if target_fence != claim_fence {
+        let replaces_published_source = transaction.query_row(
+            "SELECT EXISTS (
+                 SELECT source_key FROM turn
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                    AND claim_fence = ?4
+                    AND source_key NOT IN (SELECT value FROM json_each(?5))
+                 UNION
+                 SELECT source_key FROM source_resume
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                    AND source_key NOT IN (SELECT value FROM json_each(?5))
+             )",
+            params![
+                key.environment_key,
+                key.agent,
+                key.session_id,
+                target_fence,
+                source_sets.resumed
+            ],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if replaces_published_source {
+            transaction.execute(
+                "DELETE FROM burn_check_instruction_epoch
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![key.environment_key, key.agent, key.session_id],
+            )?;
+        }
+    }
+
     // The claim-fence rows still identify unnamed sources at this point.
     // Named sources also cover full reads that produced no rows.
     transaction.execute(

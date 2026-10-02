@@ -17,6 +17,7 @@ pub const LOOKBACK_SECS: i64 = 7 * 24 * 60 * 60;
 pub const SUPPORTED_AGENTS: &[&str] = &["claude-code", "codex"];
 pub const MAX_TITLE_CHARS: usize = 200;
 pub const MAX_CWD_CHARS: usize = 1024;
+pub const MAX_HELPER_VERSION_CHARS: usize = 64;
 /// A valid stdio export request exits with this code when its evidence is rejected.
 pub const SESSION_REJECTED_EXIT_CODE: i32 = 65;
 
@@ -152,6 +153,21 @@ impl Hello {
         anyhow::ensure!(
             self.limits == Hello::current().limits,
             "Helper limits do not match the protocol"
+        );
+        // The desktop shows this version to the reader. The host account owner
+        // controls the helper binary, so bound it like the other remote text.
+        anyhow::ensure!(
+            !self.helper_version.is_empty()
+                && self
+                    .helper_version
+                    .chars()
+                    .nth(MAX_HELPER_VERSION_CHARS)
+                    .is_none()
+                && self
+                    .helper_version
+                    .chars()
+                    .all(|character| character.is_ascii_graphic()),
+            "Helper reported an unusable version"
         );
         Ok(())
     }
@@ -316,6 +332,28 @@ mod tests {
             })
             .collect();
         assert!(oversized.validate().is_err());
+    }
+
+    #[test]
+    fn hello_validation_rejects_an_unusable_helper_version() {
+        // The desktop renders this string, and the remote host supplies it.
+        let mut compatible = Hello::current();
+        compatible.platform = "linux".to_owned();
+        compatible.architecture = "x86_64".to_owned();
+        assert!(compatible.validate_compatibility().is_ok());
+
+        for unusable in [
+            String::new(),
+            "x".repeat(MAX_HELPER_VERSION_CHARS + 1),
+            "0.9.0\ninjected".to_owned(),
+            "0.9.0\u{7f}".to_owned(),
+        ] {
+            let hello = Hello {
+                helper_version: unusable,
+                ..compatible.clone()
+            };
+            assert!(hello.validate_compatibility().is_err());
+        }
     }
 
     #[test]

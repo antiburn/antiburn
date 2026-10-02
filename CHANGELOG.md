@@ -20,6 +20,12 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Added
+
+- Native Windows 11 ARM64 builds. The PowerShell installer selects the ARM64
+  package, including when PowerShell runs under emulation, and the app receives
+  native ARM64 updates.
+
 ## [0.9.0] - 2026-09-29
 
 This release also contains the changes from 0.8.0 and 0.8.1, which were tagged

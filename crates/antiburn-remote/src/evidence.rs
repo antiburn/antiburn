@@ -223,7 +223,7 @@ fn read_prefix(file: &File, maximum: u64) -> Result<Vec<u8>> {
 
 #[cfg(not(unix))]
 fn read_prefix(file: &File, maximum: u64) -> Result<Vec<u8>> {
-    let mut reader = file.try_clone()?;
+    let reader = file.try_clone()?;
     let mut bytes = Vec::with_capacity(usize::try_from(maximum.min(1024 * 1024))?);
     reader.take(maximum).read_to_end(&mut bytes)?;
     Ok(bytes)

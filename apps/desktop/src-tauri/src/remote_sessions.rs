@@ -89,6 +89,8 @@ pub struct RemoteHostPreflight {
     pub supported_agents: Vec<String>,
     pub platform: Option<String>,
     pub architecture: Option<String>,
+    /// The release that shipped the installed helper. None when it did not answer.
+    pub helper_version: Option<String>,
     pub message: Option<String>,
 }
 
@@ -340,6 +342,7 @@ fn preflight_error(error: &antiburn_remote::transport::PrerequisiteError) -> Rem
         supported_agents: Vec::new(),
         platform: None,
         architecture: None,
+        helper_version: None,
         message: Some(message.into()),
     }
 }
@@ -355,6 +358,7 @@ async fn run_preflight(app: &AppHandle, ssh_alias: &str) -> RemoteHostPreflight 
                     supported_agents: Vec::new(),
                     platform: Some(platform),
                     architecture: Some(architecture),
+                    helper_version: Some(hello.helper_version),
                     message: Some("Currently supports Linux x64 and ARM64 hosts".into()),
                 }
             } else {
@@ -363,6 +367,7 @@ async fn run_preflight(app: &AppHandle, ssh_alias: &str) -> RemoteHostPreflight 
                     supported_agents: hello.supported_agents,
                     platform: Some(platform),
                     architecture: Some(architecture),
+                    helper_version: Some(hello.helper_version),
                     message: None,
                 }
             }
@@ -1200,5 +1205,24 @@ mod tests {
             }
         }
         assert!(read_records_from(&path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_preflight_reports_the_helper_version_to_the_interface() {
+        // Two contracts in one assertion. The interface reads `helperVersion`,
+        // so a renamed field serializes to null and fails here. The helper also
+        // ships as an asset of this release, so its version must equal this
+        // crate's; a drifted manifest fails here instead of at the release tag.
+        let hello = antiburn_remote::Hello::current();
+        let ready = RemoteHostPreflight {
+            status: "ready".into(),
+            supported_agents: hello.supported_agents,
+            platform: Some(hello.platform),
+            architecture: Some(hello.architecture),
+            helper_version: Some(hello.helper_version),
+            message: None,
+        };
+        let encoded = serde_json::to_value(&ready).unwrap();
+        assert_eq!(encoded["helperVersion"], env!("CARGO_PKG_VERSION"));
     }
 }

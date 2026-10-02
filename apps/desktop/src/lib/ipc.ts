@@ -335,6 +335,11 @@ export type Interaction =
   | { kind: "burnCheckPromptPrepared"; outcome: PromptPreparationAnalyticsOutcome }
   | { kind: "burnCheckPromptCopied" }
   | {
+      kind: "ignoredInstructionObserved"
+      stage: "finding" | "evidence" | "prompt"
+      outcome: "visible" | "available" | "unavailable" | "failed" | "copied"
+    }
+  | {
       kind: "burnCheckOutcomeObserved"
       outcome: "verified" | "recurred"
       origin: "passive" | "action"
@@ -689,6 +694,16 @@ export async function ftueDiag(message: string, data: unknown): Promise<void> {
   await invoke("ftue_diag", { message, data }).catch((error: unknown) => {
     console.error("ftue_diag failed", error)
   })
+}
+
+/**
+ * Run the dedicated historical pass now (Settings > General > Historical
+ * scan). Widens discovery past the current window, up to the retention
+ * limit, instead of {@link scanNow}'s current-window-only rescan.
+ */
+export async function scanHistory(): Promise<ScanStatus | null> {
+  if (!hasShell()) return null
+  return invoke<ScanStatus>("scan_history")
 }
 
 /** What the current or last scan is doing. */

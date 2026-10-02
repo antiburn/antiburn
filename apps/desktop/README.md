@@ -3,21 +3,33 @@
 The antiburn desktop application: a main window and menu-bar / system-tray
 companion around the local [`antiburn-local`](../../crates/antiburn-local) engine.
 
-The app discovers the coding-agent sessions already on this machine, analyzes
-them with the engine, and shows activity, per-session analysis, and
-API-equivalent cost estimates. Settings → Sources can also sync supported sessions
-from configured Linux SSH hosts into a private local cache; see
-[remote sessions](../../docs/remote-sessions.md). Analysis runs on this device, as you: antiburn
-needs no antiburn account, server, or backend of any kind, and nothing about
-your sessions is uploaded. It downloads public model prices from models.dev at
-startup and hourly while running; the request contains no session data or
-credentials. It also makes two calls to a service of ours, neither of which it
-depends on: the updater plugin, registered in release builds only, asking
-whether a newer version exists; and the anonymised analytics
-channel in [`src-tauri/src/analytics`](src-tauri/src/analytics),
-which reports the documented product events in official release builds. The Ready
-screen explains it, and Settings → Privacy provides the opt-out. The analytics
-client is excluded from default source and development builds.
+The app finds coding-agent sessions on this machine, analyzes them with the
+local engine, and shows activity, session findings, and API-equivalent cost
+estimates. Settings → Sources can sync supported sessions from configured Linux
+SSH hosts to a private local cache; see [remote sessions](../../docs/remote-sessions.md).
+The session index stays on this device. The app needs no antiburn account,
+server, or backend.
+
+## Data and network requests
+
+- **TypeSafe assessments:** Smart Burn Checks currently includes Ignored
+  Instructions. When enabled with a TypeSafe API key in Settings → Checks, it
+  sends selected instruction text, assistant excerpts, Bash command input,
+  file-edit and read paths, search queries with scope filters, and other-tool
+  input. A valid OpenCode `apply_patch` request can expose its paths. Dedicated
+  edit-tool content, messages from the user, and tool output stay excluded.
+  Inline scripts, heredocs, and patches recorded in Bash input can be sent.
+  Selected paths can leave the device. TypeSafe usage charges can apply.
+- **Model prices:** The app downloads public prices from models.dev at startup
+  and once an hour while it runs. The request contains no session data or
+  credentials.
+- **Updates:** Release builds register an updater that checks for a newer
+  version. Development builds do not register it.
+- **Analytics:** Official release builds send closed product events through the
+  [analytics channel](src-tauri/src/analytics). Events contain no session or
+  instruction content. The Ready screen explains analytics, and Settings →
+  Privacy provides the opt-out. Default source and development builds exclude
+  the analytics client.
 
 ## Layout
 
@@ -59,6 +71,11 @@ shell's app-framework dependencies must not leak into that resolution.
 - Node 22+ and pnpm (via Corepack: `corepack enable`)
 - Platform dependencies for Tauri 2 — on Debian/Ubuntu:
   `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev`
+
+Windows ARM64 builds use the `aarch64-pc-windows-msvc` Rust target. Install the
+Visual Studio C++ ARM64 build tools and LLVM, and make `clang` available on
+`PATH`; the `ring` dependency needs Clang for this target. CI builds and tests
+on the native `windows-11-arm` runner, which includes LLVM.
 
 ## Commands
 
@@ -131,6 +148,33 @@ The Tauri content security policy limits renderer connections to the local app
 and IPC. The Rust analytics module tests consent, endpoint injection, and the
 payload schema. `cargo-deny` rejects known telemetry dependencies in the local
 engine. Release and dependency checks run through the required CI gate.
+
+Ignored Instructions uses separate paid TypeSafe requests, not the analytics
+channel. Its default sample is 256 high-priority rule/action pairs per review;
+it is not exhaustive or a spending cap.
+Meaningful word overlap, tool names, literal paths, risk, and recency help rank
+pairs; rule and source diversity and low-overlap probes keep the sample from
+depending only on matching words. New activity leads the next review, followed
+by older pairs not yet sampled. The remaining sampling gap decreases over
+reviews without new work; an append can increase it. Compatible typed answers
+persist across appends, completed reviews, and restarts when their source
+bindings and input still match. A changed instruction file applies only to
+later actions. The first file observation and a read path cannot prove what
+instructions governed older actions; historical evidence remains unavailable
+without an authoritative snapshot. Clean means no finding among sampled
+comparisons, not that all content is safe. Evidence gaps and provider errors
+have separate outcomes and do not count as Clean. About 60 seconds after worker
+start for an ordinary session is a goal, not a guarantee. Each pass may use
+several paid requests; 256 pairs is not a cost cap. A dispatched request with
+an unknown outcome can trigger up to three total dispatch attempts while Antiburn
+tries to recover the result. An earlier attempt may already have incurred a
+charge. If the result remains unknown after those attempts, Antiburn blocks
+further dispatch of that work.
+The source and finding limits are in
+[`session-coverage.md`](../../docs/session-coverage.md) and
+[`check-coverage.md`](../../docs/check-coverage.md). The
+[Smart Burn Checks guide](../../docs/smart-burn-checks.md) explains how the
+check divides and assesses session data.
 
 Burn Check remediation stays local. After a separate review and confirmation,
 each Auto Fix changes one winning control. It uses the global or user control

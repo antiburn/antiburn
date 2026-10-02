@@ -129,6 +129,9 @@ pub enum PassOutcome {
 
 pub struct EvidencePass {
     pub analysis: SessionAnalysis,
+    /// Verified fingerprint of the parent source, separate from the combined
+    /// fingerprint used by the analysis projection.
+    pub source_fingerprint: Option<String>,
     pub evidence: Option<SessionEvidence>,
     pub outcome: PassOutcome,
     /// Each source this pass read, and how — see [`StreamedSession::
@@ -1007,18 +1010,7 @@ fn claim_file(path: &std::path::Path) -> anyhow::Result<SourceClaim> {
 }
 
 fn inline_fingerprint(content: &str) -> String {
-    FingerprintInputs {
-        stat: SourceStat {
-            identity: None,
-            size: content.len() as u64,
-            modified_nanos: None,
-            changed_nanos: None,
-        },
-        head_hash: Some(antiburn_local::discovery::source_version::head_hash_of(
-            content.as_bytes(),
-        )),
-    }
-    .fingerprint()
+    antiburn_local::discovery::source_version::inline_source_fingerprint(content)
 }
 
 /// No-op `after_claim` hook for [`stream_vendor_with_hooks`]. Production
@@ -2113,6 +2105,7 @@ pub async fn analyze_located_for_evidence(
                     source_changed: true,
                     ..SessionAnalysis::unavailable()
                 },
+                source_fingerprint: None,
                 evidence: None,
                 outcome: PassOutcome::SourceChanged,
                 source_outcomes: Vec::new(),
@@ -2140,6 +2133,24 @@ pub async fn analyze_located_for_evidence(
             );
         }
     };
+    if claimed
+        .fingerprint
+        .as_deref()
+        .is_some_and(|expected| parent_fingerprint.as_deref() != Some(expected))
+    {
+        return EvidencePass {
+            analysis: SessionAnalysis {
+                source_path,
+                fingerprint,
+                source_changed: true,
+                ..SessionAnalysis::unavailable()
+            },
+            source_fingerprint: None,
+            evidence: None,
+            outcome: PassOutcome::SourceChanged,
+            source_outcomes: Vec::new(),
+        };
+    }
     let analyzed_generation = attributed_generation(&claimed, parent_fingerprint.as_deref());
     let by_id: HashMap<String, (SessionMetrics, Option<i64>)> = subagents
         .into_iter()
@@ -2163,6 +2174,7 @@ pub async fn analyze_located_for_evidence(
     });
     EvidencePass {
         analysis,
+        source_fingerprint: parent_fingerprint,
         evidence,
         outcome: PassOutcome::Published,
         source_outcomes,
@@ -2493,6 +2505,7 @@ pub(crate) fn unavailable_evidence_pass(
             fingerprint: fingerprint.unwrap_or_else(|| MISSING_FINGERPRINT.to_string()),
             ..SessionAnalysis::unavailable()
         },
+        source_fingerprint: None,
         evidence: None,
         outcome,
         source_outcomes: Vec::new(),
@@ -2525,7 +2538,10 @@ fn evidence_pass_with_hook(
     turn_row_store: Option<Arc<dyn TurnRowStore>>,
 ) -> EvidencePass {
     match stream_vendor_with_hooks(inputs, cancelled, after_claim, None, turn_row_store) {
-        StreamOutcome::Published { session, .. } => {
+        StreamOutcome::Published {
+            session,
+            parent_fingerprint,
+        } => {
             let StreamedSession {
                 merged,
                 evidence,
@@ -2541,6 +2557,7 @@ fn evidence_pass_with_hook(
                     source_summaries,
                     ..SessionAnalysis::unavailable()
                 },
+                source_fingerprint: parent_fingerprint,
                 evidence,
                 outcome: PassOutcome::Published,
                 source_outcomes,

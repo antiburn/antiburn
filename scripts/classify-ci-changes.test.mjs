@@ -21,6 +21,48 @@ function cargoLock(packageName, version, dependencyVersion = "1.0.0") {
   return `version = 4\n\n[[package]]\nname = "${packageName}"\nversion = "${version}"\ndependencies = [\n "serde",\n]\n\n[[package]]\nname = "serde"\nversion = "${dependencyVersion}"\n`;
 }
 
+// The desktop lockfile records the application and the remote helper, and a
+// release bumps both. A fixture with one of them cannot show that.
+function appCargoLock(appVersion, helperVersion, dependencyVersion = "1.0.0") {
+  return `version = 4\n\n[[package]]\nname = "antiburn"\nversion = "${appVersion}"\ndependencies = [\n "antiburn-remote",\n "serde",\n]\n\n[[package]]\nname = "antiburn-remote"\nversion = "${helperVersion}"\ndependencies = [\n "serde",\n]\n\n[[package]]\nname = "serde"\nversion = "${dependencyVersion}"\n`;
+}
+
+function remoteCargoToml(version, dependency = "1") {
+  return `[workspace]\n\n[package]\nname = "antiburn-remote"\nversion = "${version}"\n\n[dependencies]\nserde = "${dependency}"\n`;
+}
+
+const APP_RELEASE_FILES = [
+  "CHANGELOG.md",
+  "apps/desktop/package.json",
+  "apps/desktop/src-tauri/Cargo.lock",
+  "apps/desktop/src-tauri/Cargo.toml",
+  "apps/desktop/src-tauri/tauri.conf.json",
+  "crates/antiburn-remote/Cargo.lock",
+  "crates/antiburn-remote/Cargo.toml",
+];
+
+/** Every manifest of an app release bumped from `from` to `to`, and nothing else. */
+function appReleaseValues(from, to) {
+  return {
+    "base:apps/desktop/package.json": json(from, { private: true }),
+    "head:apps/desktop/package.json": json(to, { private: true }),
+    "base:apps/desktop/src-tauri/tauri.conf.json": json(from, {
+      productName: "antiburn",
+    }),
+    "head:apps/desktop/src-tauri/tauri.conf.json": json(to, {
+      productName: "antiburn",
+    }),
+    "base:apps/desktop/src-tauri/Cargo.toml": cargoToml(from),
+    "head:apps/desktop/src-tauri/Cargo.toml": cargoToml(to),
+    "base:apps/desktop/src-tauri/Cargo.lock": appCargoLock(from, from),
+    "head:apps/desktop/src-tauri/Cargo.lock": appCargoLock(to, to),
+    "base:crates/antiburn-remote/Cargo.toml": remoteCargoToml(from),
+    "head:crates/antiburn-remote/Cargo.toml": remoteCargoToml(to),
+    "base:crates/antiburn-remote/Cargo.lock": cargoLock("antiburn-remote", from),
+    "head:crates/antiburn-remote/Cargo.lock": cargoLock("antiburn-remote", to),
+  };
+}
+
 function reader(values) {
   return (ref, file) => values[`${ref}:${file}`];
 }
@@ -78,55 +120,42 @@ test("includes deleted paths in routing instead of silently skipping them", () =
 });
 
 test("recognizes an app release when every executable manifest changes only version", () => {
-  const files = [
-    "CHANGELOG.md",
-    "apps/desktop/package.json",
-    "apps/desktop/src-tauri/Cargo.lock",
-    "apps/desktop/src-tauri/Cargo.toml",
-    "apps/desktop/src-tauri/tauri.conf.json",
-  ];
+  const values = appReleaseValues("1.0.0", "1.0.1");
+  assert.equal(isPureAppReleaseChange(APP_RELEASE_FILES, reader(values)), true);
+  assert.equal(
+    classifyChanges(APP_RELEASE_FILES, reader(values)).release_app,
+    true,
+  );
+});
+
+test("rejects an app release that leaves the remote helper behind", () => {
   const values = {
-    "base:apps/desktop/package.json": json("1.0.0", { private: true }),
-    "head:apps/desktop/package.json": json("1.0.1", { private: true }),
-    "base:apps/desktop/src-tauri/tauri.conf.json": json("1.0.0", {
-      productName: "antiburn",
-    }),
-    "head:apps/desktop/src-tauri/tauri.conf.json": json("1.0.1", {
-      productName: "antiburn",
-    }),
-    "base:apps/desktop/src-tauri/Cargo.toml": cargoToml("1.0.0"),
-    "head:apps/desktop/src-tauri/Cargo.toml": cargoToml("1.0.1"),
-    "base:apps/desktop/src-tauri/Cargo.lock": cargoLock("antiburn", "1.0.0"),
-    "head:apps/desktop/src-tauri/Cargo.lock": cargoLock("antiburn", "1.0.1"),
+    ...appReleaseValues("1.0.0", "1.0.1"),
+    "head:crates/antiburn-remote/Cargo.toml": remoteCargoToml("1.0.0"),
+    "head:crates/antiburn-remote/Cargo.lock": cargoLock(
+      "antiburn-remote",
+      "1.0.0",
+    ),
+    "head:apps/desktop/src-tauri/Cargo.lock": appCargoLock("1.0.1", "1.0.0"),
   };
-  assert.equal(isPureAppReleaseChange(files, reader(values)), true);
-  assert.equal(classifyChanges(files, reader(values)).release_app, true);
+  assert.equal(isPureAppReleaseChange(APP_RELEASE_FILES, reader(values)), false);
 });
 
 test("rejects an app release that smuggles a dependency change into Cargo files", () => {
-  const files = [
-    "CHANGELOG.md",
-    "apps/desktop/package.json",
-    "apps/desktop/src-tauri/Cargo.lock",
-    "apps/desktop/src-tauri/Cargo.toml",
-    "apps/desktop/src-tauri/tauri.conf.json",
-  ];
   const values = {
-    "base:apps/desktop/package.json": json("1.0.0"),
-    "head:apps/desktop/package.json": json("1.0.1"),
-    "base:apps/desktop/src-tauri/tauri.conf.json": json("1.0.0"),
-    "head:apps/desktop/src-tauri/tauri.conf.json": json("1.0.1"),
-    "base:apps/desktop/src-tauri/Cargo.toml": cargoToml("1.0.0", "1"),
+    ...appReleaseValues("1.0.0", "1.0.1"),
     "head:apps/desktop/src-tauri/Cargo.toml": cargoToml("1.0.1", "2"),
-    "base:apps/desktop/src-tauri/Cargo.lock": cargoLock("antiburn", "1.0.0"),
-    "head:apps/desktop/src-tauri/Cargo.lock": cargoLock(
-      "antiburn",
+    "head:apps/desktop/src-tauri/Cargo.lock": appCargoLock(
+      "1.0.1",
       "1.0.1",
       "2.0.0",
     ),
   };
-  assert.equal(isPureAppReleaseChange(files, reader(values)), false);
-  assert.equal(classifyChanges(files, reader(values)).desktop_backend, true);
+  assert.equal(isPureAppReleaseChange(APP_RELEASE_FILES, reader(values)), false);
+  assert.equal(
+    classifyChanges(APP_RELEASE_FILES, reader(values)).desktop_backend,
+    true,
+  );
 });
 
 test("recognizes an engine release across both lockfiles", () => {

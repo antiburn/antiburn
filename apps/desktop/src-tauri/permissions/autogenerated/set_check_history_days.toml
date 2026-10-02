@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-check-history-days"
+description = "Enables the set_check_history_days command without any pre-configured scope."
+commands.allow = ["set_check_history_days"]
+
+[[permission]]
+identifier = "deny-set-check-history-days"
+description = "Denies the set_check_history_days command without any pre-configured scope."
+commands.deny = ["set_check_history_days"]

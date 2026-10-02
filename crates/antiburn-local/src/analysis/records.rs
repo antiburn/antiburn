@@ -456,14 +456,95 @@ pub(super) fn extract_content_parts_from_container(
         .and_then(|m| m.get("content"))
         .or_else(|| container.get("content"));
     if role == Role::Tool {
-        return tool_result_parts(content);
+        let metadata = container
+            .get("message")
+            .and_then(Value::as_object)
+            .unwrap_or(container);
+        let tool_name = metadata
+            .get("toolName")
+            .or_else(|| container.get("tool_name"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let tool_call_id = metadata
+            .get("toolCallId")
+            .or_else(|| container.get("tool_call_id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let has_recorded_tool_identity = tool_name.is_some() || tool_call_id.is_some();
+        if !has_recorded_tool_identity && let Some(Value::Array(items)) = content {
+            let mut parts = Vec::new();
+            for item in items {
+                match item.get("type").and_then(Value::as_str).unwrap_or("") {
+                    "tool_result" | "toolResult" | "function_call_output" => {
+                        if let Some(text) = tool_result_text(item) {
+                            let name = item
+                                .get("name")
+                                .or_else(|| item.get("tool_name"))
+                                .and_then(Value::as_str)
+                                .map(str::to_owned);
+                            let id = item
+                                .get("tool_use_id")
+                                .or_else(|| item.get("toolCallId"))
+                                .or_else(|| item.get("call_id"))
+                                .and_then(Value::as_str)
+                                .map(str::to_owned);
+                            parts.push(
+                                ContentPart::new(ContentKind::ToolResult, text)
+                                    .with_tool_identity(name, id),
+                            );
+                        }
+                    }
+                    "text" | "input_text" | "output_text" => {
+                        if let Some(text) = item.get("text").and_then(Value::as_str) {
+                            push_text(text, Role::User, &mut parts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            return parts;
+        }
+        return tool_result_parts(content)
+            .into_iter()
+            .map(|part| part.with_tool_identity(tool_name.clone(), tool_call_id.clone()))
+            .collect();
     }
     let mut parts = Vec::new();
     match content {
         Some(Value::String(text)) => push_text(text, role, &mut parts),
         Some(Value::Array(items)) => {
-            for item in items {
+            for (index, item) in items.iter().enumerate() {
+                let start = parts.len();
                 push_content_block(item, role, &mut parts);
+                let prefix = if container
+                    .get("message")
+                    .and_then(|message| message.get("content"))
+                    .is_some()
+                {
+                    "/message/content"
+                } else {
+                    "/content"
+                };
+                let key = if item.get("input").is_some() {
+                    "input"
+                } else {
+                    "arguments"
+                };
+                if let Some(input) = item.get(key) {
+                    for part in &mut parts[start..] {
+                        if !part.truncated
+                            && let Some(fields) = &part.normalized_fields
+                        {
+                            part.metadata.bindings =
+                                crate::analysis::jev_evidence::native_input_bindings(
+                                    input,
+                                    &format!("{prefix}/{index}/{key}"),
+                                    fields,
+                                    crate::analysis::jev_evidence::JevNativeFieldContainer::Record,
+                                );
+                        }
+                    }
+                }
             }
         }
         _ => {}
@@ -479,10 +560,18 @@ fn text_kind(role: Role) -> ContentKind {
     }
 }
 
-fn push_text(text: &str, role: Role, parts: &mut Vec<ContentPart>) {
-    if !text.is_empty() {
-        parts.push(ContentPart::new(text_kind(role), text));
+fn content_authority(role: Role) -> crate::analysis::interface::ContentAuthority {
+    use crate::analysis::interface::ContentAuthority;
+    match role {
+        Role::User => ContentAuthority::User,
+        Role::Assistant => ContentAuthority::Assistant,
+        Role::System => ContentAuthority::System,
+        Role::Tool => ContentAuthority::Tool,
     }
+}
+
+fn push_text(text: &str, role: Role, parts: &mut Vec<ContentPart>) {
+    parts.push(ContentPart::new(text_kind(role), text).with_authority(content_authority(role)));
 }
 
 fn push_content_block(item: &Value, role: Role, parts: &mut Vec<ContentPart>) {
@@ -501,18 +590,43 @@ fn push_content_block(item: &Value, role: Role, parts: &mut Vec<ContentPart>) {
                 .and_then(Value::as_str)
                 .filter(|text| !text.is_empty())
             {
-                parts.push(ContentPart::new(ContentKind::Thinking, text));
+                parts.push(
+                    ContentPart::new(ContentKind::Thinking, text)
+                        .with_authority(content_authority(role)),
+                );
             }
         }
         "tool_use" | "toolCall" => {
             let input = item.get("input").or_else(|| item.get("arguments"));
             if let Some(text) = input.and_then(compact_json_text) {
-                parts.push(ContentPart::new(ContentKind::ToolInput, text));
+                let name = item.get("name").and_then(Value::as_str).map(str::to_owned);
+                let id = item
+                    .get("id")
+                    .or_else(|| item.get("tool_use_id"))
+                    .or_else(|| item.get("tool_call_id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                parts.push(
+                    ContentPart::new(ContentKind::ToolInput, text).with_tool_identity(name, id),
+                );
             }
         }
         "tool_result" | "toolResult" | "function_call_output" => {
             if let Some(text) = tool_result_text(item) {
-                parts.push(ContentPart::new(ContentKind::ToolResult, text));
+                let name = item
+                    .get("name")
+                    .or_else(|| item.get("tool_name"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                let id = item
+                    .get("tool_use_id")
+                    .or_else(|| item.get("toolCallId"))
+                    .or_else(|| item.get("call_id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                parts.push(
+                    ContentPart::new(ContentKind::ToolResult, text).with_tool_identity(name, id),
+                );
             }
         }
         _ => {}
@@ -529,18 +643,24 @@ fn tool_result_text(item: &Value) -> Option<String> {
 /// of each item in a content-block array (non-text items skipped).
 pub(super) fn concatenated_text(content: Option<&Value>) -> Option<String> {
     match content? {
-        Value::String(text) => (!text.is_empty()).then(|| text.clone()),
+        Value::String(text) => Some(text.clone()),
         Value::Array(items) => {
             let mut out = String::new();
+            let mut has_text = items.is_empty();
             for item in items {
-                if let Some(text) = item.get("text").and_then(Value::as_str) {
+                if matches!(
+                    item.get("type").and_then(Value::as_str),
+                    Some("text" | "input_text" | "output_text")
+                ) && let Some(text) = item.get("text").and_then(Value::as_str)
+                {
+                    has_text = true;
                     if !out.is_empty() {
                         out.push('\n');
                     }
                     out.push_str(text);
                 }
             }
-            (!out.is_empty()).then_some(out)
+            has_text.then_some(out)
         }
         _ => None,
     }
@@ -555,6 +675,7 @@ fn tool_result_parts(content: Option<&Value>) -> Vec<ContentPart> {
     let text = match content {
         Some(Value::Array(items)) => {
             let mut out = String::new();
+            let mut has_text = items.is_empty();
             for item in items {
                 let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
                 let text = if matches!(
@@ -562,17 +683,20 @@ fn tool_result_parts(content: Option<&Value>) -> Vec<ContentPart> {
                     "tool_result" | "toolResult" | "function_call_output"
                 ) {
                     tool_result_text(item)
-                } else {
+                } else if matches!(item_type, "text" | "input_text" | "output_text") {
                     item.get("text").and_then(Value::as_str).map(str::to_owned)
+                } else {
+                    None
                 };
                 if let Some(text) = text {
+                    has_text = true;
                     if !out.is_empty() {
                         out.push('\n');
                     }
                     out.push_str(&text);
                 }
             }
-            (!out.is_empty()).then_some(out)
+            has_text.then_some(out)
         }
         _ => concatenated_text(content),
     };
