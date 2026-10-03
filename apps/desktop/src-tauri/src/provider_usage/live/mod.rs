@@ -300,6 +300,9 @@ pub fn roster(
                 carrier_label: presence
                     .carrier
                     .map(|carrier| carrier.display_name().to_string()),
+                desktop_app_label: presence
+                    .desktop_app
+                    .map(|app| app.display_name().to_string()),
             }
         })
         .collect();

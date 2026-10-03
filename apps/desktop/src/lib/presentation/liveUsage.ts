@@ -651,9 +651,19 @@ export function liveDetectionNote(
   detection: LiveUsageDetection | undefined,
   shown: boolean,
   carrierLabel?: string,
+  desktopAppLabel?: string,
 ): string {
   if (!shown) return "Turn the switch above back on to ask for current plan limits."
   const tool = LIVE_TOOLS[provider]?.tool ?? "this tool"
+  // The desktop app keeps its own sign-in, which antiburn does not read.
+  // Name what was found, and the login the limits need.
+  if (
+    desktopAppLabel &&
+    carrierLabel !== "Pi" &&
+    (detection === "notInstalled" || detection === "installedNotSignedIn")
+  ) {
+    return `Found ${desktopAppLabel}. Limits need ${tool} signed in on this computer.`
+  }
   switch (detection) {
     case "signedIn":
       return carrierLabel ? `Signed in through ${carrierLabel}.` : "Signed in."

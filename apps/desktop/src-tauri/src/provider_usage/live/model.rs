@@ -64,6 +64,25 @@ impl LoginCarrier {
     }
 }
 
+/// A provider's desktop app, found by file metadata alone. The app keeps
+/// its own sign-in, which antiburn does not read, so finding it never makes
+/// a meter signed in. It only lets the note say what was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DesktopApp {
+    /// Anthropic's Claude Desktop app.
+    ClaudeDesktop,
+}
+
+impl DesktopApp {
+    /// The app's name, as the reader knows it.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            DesktopApp::ClaudeDesktop => "Claude Desktop",
+        }
+    }
+}
+
 /// What one source's `detect()` found: a rank, and where it looked when it
 /// found a carrier.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -72,18 +91,24 @@ pub struct Presence {
     /// Set when `detection` rests on a carrier, including the inconclusive
     /// Pi file. `None` when nothing was found or nothing could be checked.
     pub carrier: Option<LoginCarrier>,
+    /// The provider's desktop app, when detection found no login and the
+    /// app is installed.
+    #[serde(default)]
+    pub desktop_app: Option<DesktopApp>,
 }
 
 impl Presence {
     pub const UNKNOWN: Presence = Presence {
         detection: Detection::Unknown,
         carrier: None,
+        desktop_app: None,
     };
 
     pub fn new(detection: Detection) -> Presence {
         Presence {
             detection,
             carrier: None,
+            desktop_app: None,
         }
     }
 
@@ -91,17 +116,29 @@ impl Presence {
         Presence {
             detection,
             carrier: Some(carrier),
+            desktop_app: None,
+        }
+    }
+
+    /// This presence, noting that the provider's desktop app is installed.
+    pub fn with_desktop_app(self, app: Option<DesktopApp>) -> Presence {
+        Presence {
+            desktop_app: app,
+            ..self
         }
     }
 
     /// The stronger of two, by rank. A tie keeps `self`, so the first
-    /// source registered for a provider names the carrier.
+    /// source registered for a provider names the carrier. A desktop app
+    /// either one found is kept.
     pub fn strongest(self, other: Presence) -> Presence {
-        if other.detection > self.detection {
+        let desktop_app = self.desktop_app.or(other.desktop_app);
+        let stronger = if other.detection > self.detection {
             other
         } else {
             self
-        }
+        };
+        stronger.with_desktop_app(desktop_app)
     }
 }
 

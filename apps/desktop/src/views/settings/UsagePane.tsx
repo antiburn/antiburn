@@ -361,5 +361,11 @@ function meterNote({
       ? "Signed in · rate limited · retrying"
       : liveErrorNote(failure.category, provider, failure.detail)
   }
-  return liveDetectionNote(provider, meter.detection ?? "unknown", on, meter.carrierLabel)
+  return liveDetectionNote(
+    provider,
+    meter.detection ?? "unknown",
+    on,
+    meter.carrierLabel,
+    meter.desktopAppLabel,
+  )
 }
