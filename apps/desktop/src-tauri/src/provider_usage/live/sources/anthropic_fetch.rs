@@ -357,6 +357,15 @@ mod macos_keychain {
     }
 
     impl KeychainRead {
+        /// A fixed name for this outcome. It contains no secret.
+        pub(super) fn outcome(&self) -> &'static str {
+            match self {
+                Self::Absent => "absent",
+                Self::Unreadable => "unreadable",
+                Self::Found(_) => "found",
+            }
+        }
+
         pub(super) fn credentials(
             self,
         ) -> Result<Option<super::ClaudeCredentials>, super::FetchFailure> {
@@ -373,8 +382,19 @@ mod macos_keychain {
     }
 
     /// Reads one Keychain item. See [`KeychainRead`] for what each outcome
-    /// means.
+    /// means. Every outcome is logged once, with the `security` exit code
+    /// when the process reported one. The log never contains the secret.
     pub fn read() -> KeychainRead {
+        let (read, exit_code) = read_with_exit_code();
+        ::tracing::debug!(
+            event = "claude_keychain_read",
+            outcome = read.outcome(),
+            exit_code
+        );
+        read
+    }
+
+    fn read_with_exit_code() -> (KeychainRead, Option<i32>) {
         let mut child = match antiburn_local::platform::process::headless_std_command("security")
             .args(["find-generic-password", "-s", SERVICE_NAME, "-w"])
             .stdin(Stdio::null())
@@ -383,11 +403,11 @@ mod macos_keychain {
             .spawn()
         {
             Ok(child) => child,
-            Err(_) => return KeychainRead::Unreadable,
+            Err(_) => return (KeychainRead::Unreadable, None),
         };
 
         let Some(mut stdout) = child.stdout.take() else {
-            return KeychainRead::Unreadable;
+            return (KeychainRead::Unreadable, None);
         };
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -415,23 +435,24 @@ mod macos_keychain {
                 // for the reader thread — it will unblock on its own once
                 // the pipe closes and simply have nowhere left to send.
                 let _ = child.kill();
-                let _ = child.wait();
-                return KeychainRead::Unreadable;
+                let exit_code = child.wait().ok().and_then(|status| status.code());
+                return (KeychainRead::Unreadable, exit_code);
             }
         };
         let Ok(status) = child.wait() else {
-            return KeychainRead::Unreadable;
+            return (KeychainRead::Unreadable, None);
         };
         if !status.success() {
-            return classify_failed_exit(status.code());
+            return (classify_failed_exit(status.code()), status.code());
         }
         if bytes.is_empty() || bytes.len() > MAX_BYTES {
-            return KeychainRead::Unreadable;
+            return (KeychainRead::Unreadable, status.code());
         }
-        match String::from_utf8(bytes) {
+        let read = match String::from_utf8(bytes) {
             Ok(text) => KeychainRead::Found(text),
             Err(_) => KeychainRead::Unreadable,
-        }
+        };
+        (read, status.code())
     }
 
     /// Whether a nonzero exit from `security find-generic-password` means
@@ -803,7 +824,7 @@ impl ClaudeDirectFetch {
         #[cfg(target_os = "macos")]
         if self.try_keychain {
             match self.read_keychain_credentials(refresh_keychain, || {
-                macos_keychain::read().credentials()
+                keychain_carrier(macos_keychain::read(), claude_touch::keychain_metadata)
             }) {
                 Ok(Some(credentials)) => {
                     carriers.push(credentials);
@@ -917,6 +938,44 @@ impl ClaudeDirectFetch {
             Err(error) => Err(error.into()),
         }
     }
+}
+
+/// The Keychain carrier from one secret read.
+///
+/// The secret read can report the item as absent while the attribute read
+/// finds it, or while the attribute read fails. Detection uses the attribute read, so the meter then says
+/// "Signed in". Without this check the source reports no carrier, the
+/// provider has no reading and no error, and every usage surface drops it
+/// without a log line. This function reports that state as a Keychain read
+/// failure instead. The attribute read raises no prompt and runs only when
+/// the secret read found nothing.
+///
+/// An item that exists but holds no `claudeAiOauth` login stays "no
+/// carrier", as the module doc describes.
+#[cfg(target_os = "macos")]
+fn keychain_carrier(
+    read: macos_keychain::KeychainRead,
+    metadata: impl FnOnce() -> KeychainMetadata,
+) -> Result<Option<ClaudeCredentials>, FetchFailure> {
+    let secret_absent = read == macos_keychain::KeychainRead::Absent;
+    let found = matches!(read, macos_keychain::KeychainRead::Found(_));
+    let credentials = read.credentials()?;
+    if found && credentials.is_none() {
+        ::tracing::debug!(
+            event = "claude_keychain_read",
+            outcome = "found_without_login"
+        );
+    }
+    // Only an attribute read that also finds no item confirms "no login".
+    if secret_absent && !matches!(metadata(), KeychainMetadata::Absent) {
+        ::tracing::warn!(event = "claude_keychain_secret_missing");
+        return Err(FetchFailure {
+            error: ProviderUsageError::Unavailable,
+            detail: Some(SourceErrorDetail::KeychainUnreadable),
+            last_known: None,
+        });
+    }
+    Ok(credentials)
 }
 
 /// An authentication failure qualified by which sign-in state it is.
@@ -2515,6 +2574,56 @@ mod tests {
         assert_eq!(outcome.error, None);
         assert_eq!(outcome.detail, None);
         assert_eq!(outcome.snapshots.len(), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_listed_item_whose_secret_reads_as_absent_is_a_keychain_failure() {
+        let failure = keychain_carrier(macos_keychain::KeychainRead::Absent, || {
+            KeychainMetadata::Found(b"attributes".to_vec())
+        })
+        .err()
+        .expect("a visible failure, not a silent absence");
+        assert_eq!(failure.error, ProviderUsageError::Unavailable);
+        assert_eq!(failure.detail, Some(SourceErrorDetail::KeychainUnreadable));
+
+        // With no other carrier, the failure reaches the outcome instead of
+        // an empty success that removes the provider.
+        let outcome = with_carrier_error(Ok(None), Some(failure)).unwrap_err();
+        assert_eq!(outcome.detail, Some(SourceErrorDetail::KeychainUnreadable));
+
+        // An attribute read that fails cannot confirm "no login" either.
+        let unconfirmed = keychain_carrier(macos_keychain::KeychainRead::Absent, || {
+            KeychainMetadata::Unreadable
+        })
+        .err()
+        .expect("an unconfirmed absence is a Keychain failure");
+        assert_eq!(
+            unconfirmed.detail,
+            Some(SourceErrorDetail::KeychainUnreadable)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_absent_item_stays_absent_and_a_present_secret_skips_the_attribute_read() {
+        let absent = keychain_carrier(macos_keychain::KeychainRead::Absent, || {
+            KeychainMetadata::Absent
+        });
+        assert!(absent.expect("no failure").is_none());
+
+        let found = keychain_carrier(
+            macos_keychain::KeychainRead::Found(credentials_file(i64::MAX, "max")),
+            || panic!("a found secret needs no attribute read"),
+        );
+        assert!(found.expect("no failure").is_some());
+
+        // An item without a Claude login is not a Keychain failure.
+        let no_login = keychain_carrier(
+            macos_keychain::KeychainRead::Found(r#"{"mcpOAuth": {}}"#.into()),
+            || panic!("a found secret needs no attribute read"),
+        );
+        assert!(no_login.expect("no failure").is_none());
     }
 
     #[cfg(target_os = "macos")]

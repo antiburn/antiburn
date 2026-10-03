@@ -67,6 +67,15 @@ metadata failures, launch failures, verification timeouts, and settled refreshes
 no credentials or CLI output. A settled refresh means the credential carrier
 changed; the subsequent usage request still determines whether recovery worked.
 
+The `claude_keychain_read` debug event records each Keychain secret read as
+`absent`, `unreadable`, `found`, or `found_without_login`, with the `security`
+exit code when the process reports one. The `warn` event `claude_keychain_secret_missing`
+means that the secret read found no `Claude Code-credentials` item but the
+attribute read found it or failed. The meter then shows a Keychain read
+failure, unless another credential carrier returns a reading. The debug
+event `live_source_absent` records a source that returned no reading and no
+error; that provider shows no usage.
+
 At launch, the `info` event `cli_located` records where antiburn finds the
 `claude` CLI: `process_path`, `install_dir` (an install directory outside the
 process `PATH`), or `none`. It contains no path. Release logs include it.
