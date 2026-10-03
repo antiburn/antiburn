@@ -604,6 +604,7 @@ impl LiveUsageSource for CodexDirectFetch {
                         self.rollout_reading(now)
                             .map(|reading| Box::new(rollout_snapshot(reading, auth)))
                     }),
+                    retry_after: None,
                 }),
             }
         })

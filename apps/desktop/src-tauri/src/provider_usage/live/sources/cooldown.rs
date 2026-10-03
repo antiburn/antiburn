@@ -22,6 +22,13 @@
 //! attempt's error if that attempt failed. Never a blank while a good
 //! reading exists, and never one pretending to be fresher than it is.
 //!
+//! A rate limit is different from other failures. It applies to the whole
+//! account, and other clients of the same account share it, so a retry every
+//! minute can keep the account limited. After a rate limit no caller fetches
+//! until a backoff ends, whatever `max_age` it asks for. The backoff doubles
+//! with each rate limit in a row, honours the provider's `Retry-After`, and
+//! stops at [`MAX_RATE_LIMIT_BACKOFF`]. See [`rate_limit_backoff`].
+//!
 //! A failed attempt can still carry a reading. A source that finds a copy
 //! of the provider's own figures on disk — the one the reader's CLI cached
 //! for itself — hands it over as [`FetchFailure::last_known`]. It stands in
@@ -56,6 +63,12 @@ const MIN_FAILURE_COOLDOWN: Duration = Duration::from_secs(60);
 /// a retry after a failure either.
 pub const FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
 
+/// The longest wait after repeated rate limits. The wait doubles from
+/// [`MIN_FAILURE_COOLDOWN`] after each consecutive rate limit and stops here.
+/// A provider's `Retry-After` longer than this is also cut to this value, so a
+/// reader who waits half an hour always gets one more attempt.
+pub const MAX_RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(30 * 60);
+
 /// How old a cached reading must be before a failed attempt's
 /// [`FetchFailure::last_known`] replaces it.
 ///
@@ -88,6 +101,11 @@ struct Inner {
     error: Option<ProviderUsageError>,
     detail: Option<SourceErrorDetail>,
     last_attempt: Option<(Instant, bool)>,
+    /// Consecutive attempts that ended in a rate limit.
+    rate_limits: u32,
+    /// No attempt runs before this instant, whatever `max_age` a caller asks
+    /// for. Set only after a rate limit.
+    retry_at: Option<Instant>,
 }
 
 impl Cooldown {
@@ -135,13 +153,18 @@ impl Cooldown {
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if off_cooldown(inner.last_attempt, max_age) {
+        let backing_off = inner
+            .retry_at
+            .is_some_and(|retry_at| Instant::now() < retry_at);
+        if !backing_off && off_cooldown(inner.last_attempt, max_age) {
             match fetch() {
                 Ok(snapshot) => {
                     inner.snapshot = snapshot;
                     inner.error = None;
                     inner.detail = None;
                     inner.last_attempt = Some((Instant::now(), true));
+                    inner.rate_limits = 0;
+                    inner.retry_at = None;
                 }
                 Err(failure) => {
                     if let Some(known) = failure.last_known
@@ -149,9 +172,24 @@ impl Cooldown {
                     {
                         inner.snapshot = Some(*known);
                     }
+                    let attempted = Instant::now();
+                    if failure.error == ProviderUsageError::RateLimited {
+                        inner.rate_limits = inner.rate_limits.saturating_add(1);
+                        let wait = rate_limit_backoff(inner.rate_limits, failure.retry_after);
+                        inner.retry_at = attempted.checked_add(wait);
+                        ::tracing::debug!(
+                            event = "live_usage_rate_limit_backoff",
+                            consecutive = inner.rate_limits,
+                            wait_seconds = wait.as_secs(),
+                            retry_after_seconds = failure.retry_after.map(|delay| delay.as_secs())
+                        );
+                    } else {
+                        inner.rate_limits = 0;
+                        inner.retry_at = None;
+                    }
                     inner.error = Some(failure.error);
                     inner.detail = failure.detail;
-                    inner.last_attempt = Some((Instant::now(), false));
+                    inner.last_attempt = Some((attempted, false));
                 }
             }
         }
@@ -185,6 +223,29 @@ impl Cooldown {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner.last_attempt = None;
+        inner.retry_at = None;
+    }
+
+    /// End a rate-limit backoff early without forgetting how many rate
+    /// limits came in a row, so a test can observe the next, longer wait.
+    #[cfg(test)]
+    fn end_backoff_for_test(&self) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        inner.retry_at = None;
+        inner.last_attempt = None;
+    }
+
+    /// The time left in the current rate-limit backoff.
+    #[cfg(test)]
+    pub(super) fn backoff_left_for_test(&self) -> Option<Duration> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retry_at
+            .and_then(|retry_at| retry_at.checked_duration_since(Instant::now()))
     }
 
     /// Return the remaining provider retry delay after a rate limit.
@@ -197,9 +258,27 @@ impl Cooldown {
         if !matches!(inner.error, Some(ProviderUsageError::RateLimited)) {
             return None;
         }
+        if let Some(retry_at) = inner.retry_at {
+            return retry_at.checked_duration_since(Instant::now());
+        }
         let (at, _) = inner.last_attempt?;
         failure_cooldown(max_age).checked_sub(at.elapsed())
     }
+}
+
+/// How long to wait after the `consecutive`-th rate limit in a row.
+///
+/// The wait doubles from [`MIN_FAILURE_COOLDOWN`] and stops at
+/// [`MAX_RATE_LIMIT_BACKOFF`]. A provider's `Retry-After` wins when it asks
+/// for longer, up to the same ceiling. A `Retry-After` of zero or less than
+/// the doubled wait does not shorten it: providers are known to send `0`
+/// while they keep refusing.
+fn rate_limit_backoff(consecutive: u32, retry_after: Option<Duration>) -> Duration {
+    let doublings = consecutive.saturating_sub(1).min(16);
+    let doubled = MIN_FAILURE_COOLDOWN.saturating_mul(1 << doublings);
+    doubled
+        .max(retry_after.unwrap_or_default())
+        .min(MAX_RATE_LIMIT_BACKOFF)
 }
 
 fn failure_cooldown(max_age: Duration) -> Duration {
@@ -218,6 +297,8 @@ pub struct FetchFailure {
     pub detail: Option<SourceErrorDetail>,
     /// Boxed so that a failure stays small on the `Err` path.
     pub last_known: Option<Box<ProviderUsageSnapshot>>,
+    /// The provider's `Retry-After`, when a rate limit sent one.
+    pub retry_after: Option<Duration>,
 }
 
 impl From<ProviderUsageError> for FetchFailure {
@@ -226,6 +307,7 @@ impl From<ProviderUsageError> for FetchFailure {
             error,
             detail: None,
             last_known: None,
+            retry_after: None,
         }
     }
 }
@@ -354,6 +436,7 @@ mod tests {
                             error,
                             detail: Some(detail),
                             last_known: has_snapshot.then(|| Box::new(snapshot(at(1_000), 40.0))),
+                            retry_after: None,
                         })
                     });
                     assert_eq!(outcome.detail, Some(detail));
@@ -388,6 +471,7 @@ mod tests {
                 error: ProviderUsageError::Unavailable,
                 detail: Some(SourceErrorDetail::KeychainUnreadable),
                 last_known: None,
+                retry_after: None,
             })
         });
         cooldown.open_for_test();
@@ -515,6 +599,7 @@ mod tests {
                 error: ProviderUsageError::RateLimited,
                 detail: None,
                 last_known: Some(Box::new(snapshot(at(700), 55.0))),
+                retry_after: None,
             })
         });
 
@@ -537,6 +622,7 @@ mod tests {
                 error: ProviderUsageError::RateLimited,
                 detail: None,
                 last_known: Some(Box::new(snapshot(at(1_200), 55.0))),
+                retry_after: None,
             })
         });
 
@@ -558,6 +644,7 @@ mod tests {
                 error: ProviderUsageError::RateLimited,
                 detail: None,
                 last_known: Some(Box::new(snapshot(at(1_500), 55.0))),
+                retry_after: None,
             })
         });
 
@@ -578,6 +665,7 @@ mod tests {
                 error: ProviderUsageError::Unavailable,
                 detail: None,
                 last_known: Some(Box::new(snapshot(at(900), 55.0))),
+                retry_after: None,
             })
         });
 
@@ -683,5 +771,112 @@ mod tests {
             Some((Instant::now() - FAILURE_COOLDOWN, false)),
             patient
         ));
+    }
+
+    #[test]
+    fn rate_limit_backoff_doubles_honours_retry_after_and_stops_at_the_ceiling() {
+        let minute = MIN_FAILURE_COOLDOWN;
+        assert_eq!(rate_limit_backoff(1, None), minute);
+        assert_eq!(rate_limit_backoff(2, None), minute * 2);
+        assert_eq!(rate_limit_backoff(3, None), minute * 4);
+        // A zero or short `Retry-After` does not shorten the wait.
+        assert_eq!(rate_limit_backoff(3, Some(Duration::ZERO)), minute * 4);
+        assert_eq!(
+            rate_limit_backoff(3, Some(Duration::from_secs(5))),
+            minute * 4
+        );
+        // A longer `Retry-After` wins.
+        assert_eq!(
+            rate_limit_backoff(1, Some(Duration::from_secs(348))),
+            Duration::from_secs(348)
+        );
+        // Both stop at the ceiling.
+        assert_eq!(rate_limit_backoff(40, None), MAX_RATE_LIMIT_BACKOFF);
+        assert_eq!(
+            rate_limit_backoff(1, Some(Duration::from_secs(3 * 3_600))),
+            MAX_RATE_LIMIT_BACKOFF
+        );
+    }
+
+    fn rate_limited(
+        retry_after: Option<Duration>,
+    ) -> Result<Option<ProviderUsageSnapshot>, FetchFailure> {
+        Err(FetchFailure {
+            error: ProviderUsageError::RateLimited,
+            detail: None,
+            last_known: None,
+            retry_after,
+        })
+    }
+
+    #[test]
+    fn a_rate_limit_blocks_even_an_eager_caller_until_the_backoff_ends() {
+        let cooldown = Cooldown::new();
+        cooldown.poll(at(1_000), DEFAULT_MAX_AGE, || {
+            Ok(Some(snapshot(at(1_000), 30.0)))
+        });
+        cooldown.open_for_test();
+        let limited = cooldown.poll(at(1_100), Duration::ZERO, || rate_limited(None));
+
+        // The last good reading stays, next to the error.
+        assert_eq!(limited.error, Some(ProviderUsageError::RateLimited));
+        assert_eq!(limited.snapshots[0].windows[0].used_percent, Some(30.0));
+
+        // Concurrent surfaces asking with any `max_age` do not send requests.
+        for max_age in [Duration::ZERO, Duration::from_secs(50), DEFAULT_MAX_AGE] {
+            let again = cooldown.poll(at(1_101), max_age, || {
+                panic!("a rate-limit backoff must skip the fetch")
+            });
+            assert_eq!(again.error, Some(ProviderUsageError::RateLimited));
+            assert_eq!(again.snapshots.len(), 1);
+        }
+        let left = cooldown.backoff_left_for_test().expect("a backoff");
+        assert!(left <= MIN_FAILURE_COOLDOWN && left > MIN_FAILURE_COOLDOWN / 2);
+    }
+
+    #[test]
+    fn repeated_rate_limits_wait_longer_and_a_success_resets_the_wait() {
+        let cooldown = Cooldown::new();
+        cooldown.poll(at(1_000), Duration::ZERO, || rate_limited(None));
+        cooldown.end_backoff_for_test();
+        cooldown.poll(at(1_100), Duration::ZERO, || {
+            rate_limited(Some(Duration::ZERO))
+        });
+        let second = cooldown.backoff_left_for_test().expect("a backoff");
+        assert!(second > MIN_FAILURE_COOLDOWN && second <= MIN_FAILURE_COOLDOWN * 2);
+
+        cooldown.end_backoff_for_test();
+        let recovered = cooldown.poll(at(1_300), Duration::ZERO, || {
+            Ok(Some(snapshot(at(1_300), 45.0)))
+        });
+        assert_eq!(recovered.error, None);
+        assert_eq!(cooldown.backoff_left_for_test(), None);
+
+        // The count starts again after a success.
+        cooldown.open_for_test();
+        cooldown.poll(at(1_400), Duration::ZERO, || rate_limited(None));
+        let fresh = cooldown.backoff_left_for_test().expect("a backoff");
+        assert!(fresh <= MIN_FAILURE_COOLDOWN);
+    }
+
+    #[test]
+    fn a_provider_retry_after_sets_the_first_wait() {
+        let cooldown = Cooldown::new();
+        cooldown.poll(at(1_000), Duration::ZERO, || {
+            rate_limited(Some(Duration::from_secs(600)))
+        });
+        let left = cooldown.backoff_left_for_test().expect("a backoff");
+        assert!(left > Duration::from_secs(590) && left <= Duration::from_secs(600));
+    }
+
+    #[test]
+    fn another_failure_clears_a_rate_limit_backoff() {
+        let cooldown = Cooldown::new();
+        cooldown.poll(at(1_000), Duration::ZERO, || rate_limited(None));
+        cooldown.end_backoff_for_test();
+        cooldown.poll(at(1_100), Duration::ZERO, || {
+            Err(ProviderUsageError::Unavailable.into())
+        });
+        assert_eq!(cooldown.backoff_left_for_test(), None);
     }
 }
