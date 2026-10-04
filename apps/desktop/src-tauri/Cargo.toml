@@ -131,7 +131,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 # The plugin prevents browser-only menus and shortcuts in application webviews.
 # The explicit policy in `src/webview_defaults.rs` keeps focus traversal intact.
-tauri-plugin-prevent-default = "5"
+tauri-plugin-prevent-default = "6"
 # Must be registered before other plugins so a repeated launch exits before it
 # can start another background scan scheduler.
 tauri-plugin-single-instance = "2"
