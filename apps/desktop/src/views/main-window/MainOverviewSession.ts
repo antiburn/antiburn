@@ -6,6 +6,7 @@ import {
   getProviderUsage,
   getSessionLimitAllocations,
   mainWindowContentReady,
+  onLimitEstimatesChanged,
   onLiveUsageChanged,
   onMainWindowVisibilityChanged,
   onSessionIndexChanged,
@@ -31,6 +32,7 @@ export interface MainOverviewAdapter {
   getVisible(): Promise<boolean>
   onVisible(handler: (visible: boolean) => void): Promise<() => void>
   onLiveUsageChanged(handler: (usage: LiveUsageSummaryPayload) => void): Promise<() => void>
+  onLimitEstimatesChanged(handler: () => void): Promise<() => void>
   onSessionIndexChanged(
     handler: (change: SessionIndexChangedPayload) => void,
   ): Promise<() => void>
@@ -135,6 +137,7 @@ const productionAdapter: MainOverviewAdapter = {
   getVisible: () => getMainWindowVisible(),
   onVisible: (handler) => onMainWindowVisibilityChanged(handler),
   onLiveUsageChanged: (handler) => onLiveUsageChanged(handler),
+  onLimitEstimatesChanged: (handler) => onLimitEstimatesChanged(handler),
   onSessionIndexChanged: (handler) => onSessionIndexChanged(handler),
   onSessionUpdated: (handler) => onSessionUpdated(handler),
 }
@@ -394,6 +397,17 @@ export class MainOverviewSession {
           this.scheduleRead("allowance")
           this.scheduleRead("allocations")
         }),
+      ),
+      this.listen(
+        generation,
+        // New limit factors change the allowance figures and the session
+        // shares, with no new reading behind them.
+        this.adapter.onLimitEstimatesChanged(
+          whenCurrent(() => {
+            this.scheduleRead("allowance")
+            this.scheduleRead("allocations")
+          }),
+        ),
       ),
       this.listen(
         generation,

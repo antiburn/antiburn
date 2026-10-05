@@ -166,6 +166,7 @@ function setup(
   let indexChangedHandler: (change: SessionIndexChangedPayload) => void = () => undefined
   let updated: (change: SessionUpdatedPayload) => void = () => undefined
   let liveUsageChanged: (value: LiveUsageSummaryPayload) => void = () => undefined
+  let limitEstimatesChanged: () => void = () => undefined
   let entries: SessionListEntry[] = [
     entry("b", "2026-09-13T10:00:00Z"),
     entry("d", "2026-09-14T08:00:00Z"),
@@ -194,6 +195,10 @@ function setup(
     }),
     onLiveUsageChanged: vi.fn(async (handler) => {
       liveUsageChanged = handler
+      return vi.fn()
+    }),
+    onLimitEstimatesChanged: vi.fn(async (handler) => {
+      limitEstimatesChanged = handler
       return vi.fn()
     }),
     onSessionIndexChanged: vi.fn(async (handler) => {
@@ -250,6 +255,7 @@ function setup(
       indexChangedHandler(indexChanged(cause)),
     meterChanged: (value: LiveUsageSummaryPayload = liveUsage("live-pushed")) =>
       liveUsageChanged(value),
+    estimatesChanged: () => limitEstimatesChanged(),
     entryChanged: (facets?: Partial<SessionUpdatedPayload["facets"]>) =>
       updated(update(entry("e", "2026-09-14T09:00:00Z"), facets)),
     setEntries: (next: ActivityEntryPayload[]) => {
@@ -433,6 +439,22 @@ describe("MainOverviewSession", () => {
     await vi.waitFor(() =>
       expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-first"),
     )
+    stop()
+  })
+
+  it("reads the allowance and the allocations again when the limit estimates change", async () => {
+    const { adapter, session, estimatesChanged } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(adapter.getAllowanceUsage).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(adapter.getSessionLimitAllocations).toHaveBeenCalledTimes(1))
+    vi.mocked(adapter.getAllowanceUsage).mockResolvedValueOnce(allowance("allowance-learned"))
+    estimatesChanged()
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().allowance?.generatedAt).toBe("allowance-learned"),
+    )
+    await vi.waitFor(() => expect(adapter.getSessionLimitAllocations).toHaveBeenCalledTimes(2))
+    expect(adapter.getUsage).toHaveBeenCalledTimes(1)
     stop()
   })
 

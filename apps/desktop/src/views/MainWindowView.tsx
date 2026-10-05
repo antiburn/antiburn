@@ -3,6 +3,7 @@ import { useState, useSyncExternalStore, type ReactNode } from "react"
 import { flushSync } from "react-dom"
 
 import { SidebarNav, type SidebarNavItem } from "../components/ui/SidebarNav"
+import type { BurnCheckDetectorId } from "../lib/insightsIpc"
 import { noteInteraction, openSettingsWindow } from "../lib/ipc"
 import { MAIN_VIEWS, isMainViewId, type MainViewId } from "../lib/navigation/mainViews"
 import { useGlobalKeydown } from "../lib/useGlobalKeydown"
@@ -17,6 +18,11 @@ import { MainWindowLayout } from "./main-window/MainWindowLayout"
 import { MainWindowNavigationSession } from "./main-window/MainWindowNavigationSession"
 import { MainOverviewSession } from "./main-window/MainOverviewSession"
 import { OverviewView } from "./main-window/OverviewView"
+import {
+  overviewProgress,
+  subscribeOverviewProgress,
+} from "./main-window/overview/overviewProgressStore"
+import { ProgressNav } from "./main-window/overview/ProgressNav"
 import { QuotaSession } from "./main-window/quota/QuotaSession"
 import { QuotaView } from "./main-window/quota/QuotaView"
 
@@ -79,6 +85,20 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   )
   // Use the full list so facet selection does not change the hygiene request key.
   const hygieneBySession = useSessionHygiene(sessionHygieneIdentities(activity.entries ?? []))
+  const overview = useSyncExternalStore(
+    subscribeOverviewProgress,
+    overviewProgress,
+    overviewProgress,
+  )
+  // While the first run takes over the Overview, every other main section is
+  // inert and the workspace stays on Overview. A `sections` override (tests,
+  // and a future embedding) keeps its own panes and is never gated.
+  const takeoverActive = !sections && overview.mode === "firstRun" && overview.flow !== "done"
+  // The fixes step's Enhance: Burn Checks, at the first check that needs a fix.
+  const openChecks = (check: BurnCheckDetectorId | undefined) =>
+    navigationSession.navigate(
+      check ? { section: "burnChecks", check } : { section: "burnChecks" },
+    )
   const viewBindings: Record<MainViewId, ViewBinding> = {
     overview: {
       icon: House,
@@ -87,6 +107,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
           active={active}
           session={overviewSession}
           onOpenSessions={() => selectSection("activity")}
+          onOpenChecks={openChecks}
           onSelectSession={(entry) => {
             if (!entry.sessionId) return
             navigationSession.navigate({
@@ -144,7 +165,13 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     },
   }
   const availableSections: readonly MainWindowSection[] =
-    sections ?? MAIN_VIEWS.map(({ id, label }) => ({ id, label, ...viewBindings[id] }))
+    sections ??
+    MAIN_VIEWS.map(({ id, label }) => ({
+      id,
+      label,
+      disabled: takeoverActive,
+      ...viewBindings[id],
+    }))
   const [customSelectedId, setCustomSelectedId] = useState(() => availableSections[0]?.id ?? "")
   const [customVisited, setCustomVisited] = useState(
     () => new Set(availableSections.slice(0, 1).map((section) => section.id)),
@@ -163,8 +190,9 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
       return
     }
   }
-  const selected =
-    availableSections.find((section) => section.id === selectedId) ?? availableSections[0]
+  const selected = takeoverActive
+    ? (availableSections.find((section) => section.id === "overview") ?? availableSections[0])
+    : (availableSections.find((section) => section.id === selectedId) ?? availableSections[0])
   async function chooseSearchResult(result: AppSearchResult): Promise<void> {
     const target = result.target
     if (target.kind === "setting") {
@@ -197,16 +225,20 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
         <AppSearch onChoose={chooseSearchResult} onClose={() => setSearchOpen(false)} />
       )}
       <MainWindowLayout
-        canBack={navigation.canBack}
-        canForward={navigation.canForward}
+        canBack={!takeoverActive && navigation.canBack}
+        canForward={!takeoverActive && navigation.canForward}
         onBack={navigationSession.back}
         onForward={navigationSession.forward}
-        onSearch={() => {
-          if (!searchOpen) {
-            setSearchOpen(true)
-            noteInteraction({ kind: "appSearchOpened" })
-          }
-        }}
+        {...(takeoverActive
+          ? {}
+          : {
+              onSearch: () => {
+                if (!searchOpen) {
+                  setSearchOpen(true)
+                  noteInteraction({ kind: "appSearchOpened" })
+                }
+              },
+            })}
         searchOpen={searchOpen}
         sidebar={(closeNavigation) => (
           <SidebarNav
@@ -218,11 +250,16 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
             className="main-window-sidebar min-h-0 flex-1"
             footer={
               <>
+                <div className="mb-2 h-px bg-separator" />
+
+                <ProgressNav onOpenChecks={openChecks} />
+
                 {settingsError && (
                   <p role="alert" className="px-2 pb-2 type-caption text-label-secondary">
                     Could not open Settings. Try again.
                   </p>
                 )}
+
                 <button
                   type="button"
                   onClick={() => {

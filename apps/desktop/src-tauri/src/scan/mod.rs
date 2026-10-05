@@ -106,6 +106,7 @@ use tokio::task::JoinSet;
 use crate::agents;
 use crate::analysis;
 use crate::dto::{AgentFoundCount, ReadGateCounts, ReadProgress, ScanPhase, ScanStatus};
+use crate::first_run_gate::{FirstRunGate, FirstRunStage};
 use crate::repositories;
 use crate::session_lifecycle::{self, AnonymousCover, AnonymousGen};
 use crate::storage_health::{self, checked};
@@ -1076,6 +1077,38 @@ fn progress_pass(trigger: &ScanTrigger, scope: &PassScope) -> bool {
     matches!(scope, PassScope::Full) && !matches!(trigger, ScanTrigger::HistoricalScan)
 }
 
+/// The first-run takeover's own gate on a full pass: wait for `stage`
+/// before letting the pass continue. A pass [`progress_pass`] says is not
+/// gated (a scoped watcher pass, or the dedicated historical pass) returns
+/// `true` at once.
+///
+/// While the first run is still at an earlier stage, this is also what the
+/// launch pass holds the scan slot on: no other full pass can start until
+/// it returns, which keeps a scoped watcher pass (T3/T5) from writing
+/// sessions before the reader's own Sessions step starts.
+///
+/// Returns `false` only when the wait is itself cancelled first, which the
+/// caller must treat as an ordinary cancel: end the pass with no writes.
+async fn wait_for_first_run_stage(app: &AppHandle, full_pass: bool, stage: FirstRunStage) -> bool {
+    if !full_pass {
+        return true;
+    }
+    let controller = app.state::<ScanController>();
+    let gate = app.state::<FirstRunGate>();
+    gate.wait_until(stage, || controller.cancelled()).await
+}
+
+/// The summary [`pass`] returns when a first-run gate wait ends as
+/// cancelled: the same empty, uncovering outcome a plain scan cancel gives
+/// today, because nothing has been discovered or written yet.
+fn gate_cancelled_summary() -> PassSummary {
+    PassSummary {
+        sessions: 0,
+        list_changed: false,
+        re_described: 0,
+    }
+}
+
 /// The body of one pass. Split out so [`run_pass`] owns only the in-flight
 /// bookkeeping and the events.
 ///
@@ -1110,6 +1143,12 @@ async fn pass(
 
     let ignored = ignored_paths::load_ignored(store.state_dir(), IGNORE_SCOPE);
     let home = home_dir().unwrap_or_default();
+
+    // The first-run takeover's "Agents" step: discovery does not
+    // start until the reader leaves the welcome step.
+    if !wait_for_first_run_stage(app, full_pass, FirstRunStage::Agents).await {
+        return Ok(gate_cancelled_summary());
+    }
 
     let logs = match scope {
         PassScope::Full => {
@@ -1176,6 +1215,14 @@ async fn pass(
         .await
     };
     let include_non_repo_folders = store.settings_snapshot().include_non_repo_folders;
+
+    // The first-run takeover's "Sessions" step: reading does not
+    // start until the reader leaves the live limits step. `found_by_agent` is
+    // already every entry `done` at this point, with `phase` still
+    // `Finding` — the shared contract the frontend reads "the Agents step is done" by.
+    if !wait_for_first_run_stage(app, full_pass, FirstRunStage::Sessions).await {
+        return Ok(gate_cancelled_summary());
+    }
 
     // The read stage's total starts at every file discovery found. A
     // sub-agent transcript can only be told apart from a session by reading
@@ -1817,7 +1864,7 @@ async fn current_window_candidates(
 
 /// [`current_window_candidates`], and `on_found` gets each agent's count of
 /// current sessions when the filter finishes that agent. An agent that
-/// discovery found nothing for gets 0 before the filter starts. The Find step
+/// discovery found nothing for gets 0 before the filter starts. The Agents step
 /// shows these counts, so its total agrees with the sessions that the Read
 /// step reads.
 async fn current_window_candidates_with_progress(

@@ -3,10 +3,10 @@
 // component needs an effect. Replaces the fake-timer prototype
 // (`ftuePrototype.ts`) with the real scan and check pipeline.
 //
-// Feeds the row of compact cells above Recent sessions. During the first run
-// the row shows the find/read/check steps as they finish; afterwards it is
-// a permanent status row for the current 30 days. The first-run-only latch
-// lives in `firstRun.ts`; this module adds the steady state on top of it.
+// Drives the first-run takeover (one step at a time, each gated on the
+// reader's own Next) and the permanent side-nav status rows. The
+// first-run-only latch lives in `firstRun.ts`; this module adds the flow
+// and the steady state on top of it.
 
 import {
   cancelChecksReport,
@@ -17,6 +17,7 @@ import {
   type ChecksReportPayload,
 } from "../../../lib/insightsIpc"
 import {
+  advanceFirstRun,
   finishFirstRun,
   ftueDiag, // TEMP ftue-diag
   getFolderPermissions,
@@ -24,7 +25,9 @@ import {
   noteInteraction,
   onFtueReset,
   onSettingsChanged,
+  refreshLiveUsage,
   setSettings,
+  startLiveUsage,
   type AgentFoundCount,
   type AppSettings,
   type FirstRunResult,
@@ -38,12 +41,10 @@ import { scanStatusStore } from "../../../lib/scanStatusStore"
 import type { DeferredPermissionDir } from "../../../lib/types/repository"
 import { withViewTransition } from "../../../lib/viewTransition"
 import {
-  DOCK_START_DELAY_MS,
-  DOCK_STEP_PAUSE_MS,
   INITIAL_FIRST_RUN_LATCH,
   advanceFirstRunLatch,
   resetFirstRunLatch,
-  unlatchReadOutcome,
+  unlatchSessionsOutcome,
   type FirstRunInputs,
   type FirstRunLatch,
 } from "./firstRun"
@@ -62,12 +63,12 @@ interface FindRow {
   done: boolean
 }
 
-interface FindStep {
+interface AgentsStep {
   done: boolean
   rows: FindRow[]
 }
 
-interface ReadStep {
+interface SessionsStep {
   done: boolean
   completed: number
   total: number
@@ -75,11 +76,11 @@ interface ReadStep {
   gate: ReadGateCounts | null
   includeNonRepoFolders: boolean
   /** Protected folders the last pass declined to read. Shown in the Read
-   *  step, in `firstRun` mode and whenever the opened steps show outside it. */
+   *  step, wherever that step's content shows. */
   deferred: DeferredPermissionDir[]
 }
 
-interface CheckStep {
+interface ChecksStep {
   done: boolean
   windowSessions: number
   pendingEvidence: number
@@ -102,52 +103,119 @@ interface HistoryProgress {
   total: number
 }
 
+/**
+ * Where the first-run takeover is, in order. Meaningful only in `firstRun`
+ * mode: a new first run starts at `"welcome"`, and `steady` mode behaves as
+ * `"done"`.
+ */
+export type FlowStep =
+  "welcome" | "agents" | "limits" | "sessions" | "checks" | "fixes" | "done"
+
+/** A step with its own nav row and modal. `"limits"` and `"done"` have
+ *  neither: the live limits step moves into the right-hand pane instead, and
+ *  `"done"` is the takeover's end, not a step. */
+export type ProgressStepKey = "agents" | "sessions" | "checks" | "fixes"
+
+const FLOW_ORDER: readonly FlowStep[] = [
+  "welcome",
+  "agents",
+  "limits",
+  "sessions",
+  "checks",
+  "fixes",
+  "done",
+]
+
+function flowIndex(step: FlowStep): number {
+  return FLOW_ORDER.indexOf(step)
+}
+
+/** The flow stage reached once a step's own card has moved down to its nav
+ *  row — the stage `nextStep` advances *to* when that step's Next (or the
+ *  fixes step's Done) is pressed. */
+const STEP_DOCKED_AT: Record<ProgressStepKey, FlowStep> = {
+  agents: "limits",
+  sessions: "checks",
+  checks: "fixes",
+  fixes: "done",
+}
+
+/** Whether the fixes step has fixes to show: the window has sessions, and
+ *  at least one check fails. */
+export function fixesFound(progress: OverviewProgress): boolean {
+  return progress.checks.windowSessions > 0 && progress.failingCount > 0
+}
+
+/** The first check the fixes step lists as needing a fix: where Enhance
+ *  takes the reader in Burn Checks. */
+export function firstFailingCheck(progress: OverviewProgress): BurnCheckDetectorId | undefined {
+  return progress.categories.find((category) => category.status === "needsFix")?.id
+}
+
+/** Where `flow` moves on this step's Next (or the fixes step's Done). The
+ *  live limits step shows only while live usage is off: a reader who went
+ *  back to the agents step after Show live limits has nothing to do there. */
+function nextFlow(from: ProgressStepKey, liveUsageOn: boolean): FlowStep {
+  if (from === "agents" && liveUsageOn) return "sessions"
+  return STEP_DOCKED_AT[from]
+}
+
+/**
+ * Whether `step`'s card has already moved down to its nav row, at `flow`.
+ *
+ * Exported so a test, and `ProgressNav`, can derive row visibility from the
+ * same rule the store uses for its own values: `steady`'s `flow` is always
+ * `"done"` (see {@link deriveOverviewProgress}), so every step reads as
+ * docked there without a separate steady-mode branch.
+ */
+export function stepDocked(flow: FlowStep, step: ProgressStepKey): boolean {
+  return flowIndex(flow) >= flowIndex(STEP_DOCKED_AT[step])
+}
+
+/** Shared by a step's takeover card and its nav row — or its open modal, see
+ *  `ProgressNav.tsx` — so a view transition moves the one element between
+ *  wherever it currently lives. */
+export function progressStepTransitionName(step: ProgressStepKey): string {
+  return `progress-step-${step}`
+}
+
+/** Shared by the live limits card and the right-hand pane, so "Show live
+ *  limits" moves the card into the pane as it appears. */
+export const LIVE_LIMITS_TRANSITION_NAME = "progress-live-limits"
+
+/** Shared by Recent sessions under the takeover and in the finished
+ *  Overview, so the card moves to its place when the first run ends. */
+export const RECENT_SESSIONS_TRANSITION_NAME = "overview-recent-sessions"
+
+/** The same as {@link RECENT_SESSIONS_TRANSITION_NAME}, for the usage card. */
+export const USAGE_TRANSITION_NAME = "overview-usage"
+
 export interface OverviewProgress {
   /**
-   * `pending`: the first-run latch has not decided yet. Render no row and no
-   * middle overlay. `firstRun`: the steps block shows this session, as it
-   * always has. `steady`: the device has scanned before; the row is a
+   * `pending`: the first-run latch has not decided yet. Render nothing.
+   * `firstRun`: this session shows the takeover and the docking steps, as it
+   * always has. `steady`: the device has scanned before; the nav rows are a
    * permanent status row for the current 30 days.
    */
   mode: "pending" | "firstRun" | "steady"
-  find: FindStep
-  read: ReadStep
-  check: CheckStep
+  /** The takeover's current stage. `"done"` in every mode but `firstRun`. */
+  flow: FlowStep
+  /** The step whose modal is open, if any. */
+  openStep: ProgressStepKey | null
+  /**
+   * Whether the takeover shows the card for `flow`. False while the previous
+   * card moves to its place, so the next card appears only after it lands.
+   */
+  stepShown: boolean
+  agents: AgentsStep
+  sessions: SessionsStep
+  checks: ChecksStep
   /** Every category in the checks report, for the persistent checklist. */
   categories: FixCategory[]
   failingCount: number
   /** The planned background history pass's progress. Null unless the
    *  backend reports it and it is still under way. */
   history: HistoryProgress | null
-  /** Whether the find, read and check steps have all finished. */
-  stepsDone: boolean
-  dock: ProgressDock
-  /**
-   * Whether the check result (fixes found, clean, or empty) is on screen:
-   * the check step is done, and, in `firstRun` mode, every step has docked.
-   * `maybeFinishFirstRun` calls `finish_first_run` the moment this turns
-   * true.
-   */
-  resultReady: boolean
-}
-
-/**
- * Where the steps and the fixes callout show: in the middle of the Fixes
- * section, or as compact cells in the row above Recent sessions.
- */
-export interface ProgressDock {
-  /** How many steps moved down to the row, in step order (0 to 3). */
-  stepsDocked: number
-  /** The reader opened the docked steps again. They show in the middle. */
-  stepsOpen: boolean
-  /** The fixes callout is in the row. */
-  fixesDocked: boolean
-}
-
-export const INITIAL_DOCK: ProgressDock = {
-  stepsDocked: 0,
-  stepsOpen: false,
-  fixesDocked: false,
 }
 
 /* -------------------------------------------------------------------------
@@ -160,10 +228,10 @@ export interface ProgressInputs extends FirstRunInputs {
 }
 
 /**
- * The last finished pass's find and read numbers. Every full scan pass
+ * The last finished pass's agents and read numbers. Every full scan pass
  * resets `ScanStatus.foundByAgent` and `read` at the start of the pass, so a
  * row that read them live would pulse and count up every 5 minutes. The
- * store keeps these instead, and only the steady values read them (see
+ * store keeps these instead, and only a docked row reads them (see
  * {@link advanceLastPass}).
  */
 export interface LastPass {
@@ -174,7 +242,7 @@ export interface LastPass {
 export const INITIAL_LAST_PASS: LastPass = { lastFound: null, lastRead: null }
 
 /**
- * Keeps the last finished pass's find and read numbers across a routine
+ * Keeps the last finished pass's agents and read numbers across a routine
  * pass that resets the live status to zero. `lastFound` updates once a
  * pass's discovery is entirely done; `lastRead` updates once a pass has
  * left the read stage, whether it is still saving or has finished.
@@ -205,7 +273,9 @@ function toFixCategory(category: ChecksCategoryPayload): FixCategory {
 
 function deriveHistory(history: ScanHistoryProgress | undefined): HistoryProgress | null {
   if (!history) return null
-  if (history.state !== "pending" && history.state !== "running") return null
+  // A pending pass has found nothing yet, and during a first run it waits
+  // for the first run to finish. Show only a pass with sessions to report.
+  if (history.state !== "running" || history.total === 0) return null
   return { completed: history.completed, total: history.total }
 }
 
@@ -217,25 +287,28 @@ function deriveMode(latch: FirstRunLatch): OverviewProgress["mode"] {
 export function deriveOverviewProgress(
   latch: FirstRunLatch,
   inputs: ProgressInputs,
-  dock: ProgressDock,
+  flow: FlowStep,
+  openStep: ProgressStepKey | null,
+  stepShown: boolean,
   lastPass: LastPass,
 ): OverviewProgress {
   const mode = deriveMode(latch)
-  const stepsDone = latch.step1Done && latch.step2Done && latch.step3Done
-  // The switch from latched to steady values happens right after the third
-  // step lands in the row — the numbers are the same at that moment, so the
-  // switch shows no jump.
-  const useSteadyValues =
-    mode === "steady" || (mode === "firstRun" && stepsDone && dock.stepsDocked >= 3)
+  // Steady behaves as "done": every step reads as docked, so the row always
+  // shows the live/last-pass numbers rather than a one-time latch.
+  const exposedFlow: FlowStep = mode === "steady" ? "done" : flow
 
-  const findRows = useSteadyValues
+  const agentsDocked = stepDocked(exposedFlow, "agents")
+  const sessionsDocked = stepDocked(exposedFlow, "sessions")
+  const checksDocked = stepDocked(exposedFlow, "checks")
+
+  const agentsRows = agentsDocked
     ? (lastPass.lastFound ?? inputs.scanStatus?.foundByAgent ?? [])
-    : latch.step1Done
-      ? latch.step1Rows
+    : latch.agentsDone
+      ? latch.agentsFound
       : (inputs.scanStatus?.foundByAgent ?? [])
-  const find: FindStep = {
-    done: latch.step1Done,
-    rows: findRows.map((row) => ({
+  const agents: AgentsStep = {
+    done: latch.agentsDone,
+    rows: agentsRows.map((row) => ({
       agent: row.agent,
       label: agentDisplayName(row.agent),
       sessions: row.sessions,
@@ -243,33 +316,33 @@ export function deriveOverviewProgress(
     })),
   }
 
-  const readSource = useSteadyValues
+  const sessionsSource = sessionsDocked
     ? (lastPass.lastRead ?? inputs.scanStatus?.read ?? { completed: 0, total: 0 })
-    : latch.step2Done
-      ? latch.step2Read
+    : latch.sessionsDone
+      ? latch.sessionsRead
       : (inputs.scanStatus?.read ?? { completed: 0, total: 0 })
-  const read: ReadStep = {
-    done: latch.step2Done,
-    completed: readSource.completed,
-    total: readSource.total,
-    gate: latch.step2Done ? latch.step2Gate : null,
+  const sessions: SessionsStep = {
+    done: latch.sessionsDone,
+    completed: sessionsSource.completed,
+    total: sessionsSource.total,
+    gate: latch.sessionsDone ? latch.sessionsGate : null,
     includeNonRepoFolders: inputs.includeNonRepoFolders,
     deferred: inputs.deferred,
   }
 
-  const check: CheckStep = useSteadyValues
+  const checks: ChecksStep = checksDocked
     ? {
-        done: latch.step3Done,
+        done: latch.checksDone,
         windowSessions: inputs.checksReport?.windowSessions ?? 0,
         pendingEvidence: inputs.checksReport?.pendingEvidence ?? 0,
         deferredEvidence: inputs.checksReport?.deferredEvidence ?? 0,
       }
-    : latch.step3Done
+    : latch.checksDone
       ? {
           done: true,
-          windowSessions: latch.step3Check.windowSessions,
-          pendingEvidence: latch.step3Check.deferredEvidence,
-          deferredEvidence: latch.step3Check.deferredEvidence,
+          windowSessions: latch.checksResult.windowSessions,
+          pendingEvidence: latch.checksResult.deferredEvidence,
+          deferredEvidence: latch.checksResult.deferredEvidence,
         }
       : {
           done: false,
@@ -280,33 +353,34 @@ export function deriveOverviewProgress(
 
   const categories = (inputs.checksReport?.categories ?? []).map(toFixCategory)
   const failingCount = categories.filter((category) => category.status === "needsFix").length
-  // Exhaustive once `check.done`: a done check is empty, clean, or has fixes,
-  // so "the result is known" collapses to `check.done` itself. 3 is find,
-  // read and check — the steps `dock.stepsDocked` counts.
-  const resultReady = check.done && (mode !== "firstRun" || dock.stepsDocked >= 3)
+
   return {
     mode,
-    find,
-    read,
-    check,
+    flow: exposedFlow,
+    openStep,
+    stepShown,
+    agents,
+    sessions,
+    checks,
     categories,
     failingCount,
     history: deriveHistory(inputs.scanStatus?.history),
-    stepsDone,
-    resultReady,
-    dock,
   }
 }
 
 /* -------------------------------------------------------------------------
- * The live store: latch state plus the IPC boundary that feeds it.
+ * The live store: latch and flow state plus the IPC boundary that feeds it.
  * ---------------------------------------------------------------------- */
 
 let latch: FirstRunLatch = INITIAL_FIRST_RUN_LATCH
+let flow: FlowStep = "welcome"
+let openStep: ProgressStepKey | null = null
+let stepShown = true
 let liveScanStatus: ScanStatus | null = null
 let liveChecksReport: ChecksReportPayload | null = null
 let liveIncludeNonRepoFolders = false
 let liveOnboardingCompleted: boolean | null = null
+let liveUsageOn = false
 let liveDeferred: DeferredPermissionDir[] = []
 let liveChecksReportCurrent = false
 let lastPass: LastPass = INITIAL_LAST_PASS
@@ -316,16 +390,13 @@ let lastPass: LastPass = INITIAL_LAST_PASS
 let scanRunsSeen = 0
 let requestChecks: (() => void) | null = null
 let refreshFolderPermissions: (() => void) | null = null
-let dock: ProgressDock = INITIAL_DOCK
-let dockTimer: ReturnType<typeof setTimeout> | null = null
-// Set once, the first time the result shows — see `maybeFinishFirstRun`.
-let firstRunFinished = false
-// One-shot flags for `antiburn.first_run_step_reached`. Reset alongside
-// `firstRunFinished` whenever a wipe starts a new first run.
+// One-shot flags for `antiburn.first_run_step_reached`. Reset alongside the
+// latch whenever a wipe starts a new first run.
 let reportedFirstRunStarted = false
 let reportedFirstRunFound = false
 let reportedFirstRunRead = false
 let reportedFirstRunChecked = false
+let reportedFirstRunResult = false
 
 function currentInputs(): ProgressInputs {
   return {
@@ -338,28 +409,36 @@ function currentInputs(): ProgressInputs {
   }
 }
 
-let snapshot: OverviewProgress = deriveOverviewProgress(latch, currentInputs(), dock, lastPass)
+let snapshot: OverviewProgress = deriveOverviewProgress(
+  latch,
+  currentInputs(),
+  flow,
+  openStep,
+  stepShown,
+  lastPass,
+)
 const listeners = new Set<() => void>()
 
 function recompute(): void {
-  snapshot = deriveOverviewProgress(latch, currentInputs(), dock, lastPass)
+  snapshot = deriveOverviewProgress(latch, currentInputs(), flow, openStep, stepShown, lastPass)
   for (const listener of listeners) listener()
-  scheduleDocking()
   maybeReportFirstRunSteps()
-  maybeFinishFirstRun()
 }
 
 /** Which result the finished check step shows, for `first_run_step_reached`. */
 function firstRunResult(progress: OverviewProgress): FirstRunResult {
-  if (progress.check.windowSessions === 0) return "empty"
+  if (progress.checks.windowSessions === 0) return "empty"
   return progress.failingCount === 0 ? "clean" : "fixes_found"
 }
 
 /**
- * Report each fixed first-run funnel step the first time it is reached.
+ * Report each fixed first-run funnel step the first time its work is done.
  *
  * One flag per step, so a later re-render of the same finished step reports
  * nothing. Only in `firstRun` mode; a steady-state device never reaches this.
+ * The `result` step is reported separately, from {@link nextStep}, the
+ * moment the fixes step first shows — not from here, since a step's work can
+ * finish well before the reader presses its Next.
  */
 function maybeReportFirstRunSteps(): void {
   if (snapshot.mode !== "firstRun") return
@@ -367,70 +446,19 @@ function maybeReportFirstRunSteps(): void {
     reportedFirstRunStarted = true
     noteInteraction({ kind: "firstRunStepReached", step: "started" })
   }
-  if (!reportedFirstRunFound && snapshot.find.done) {
+  if (!reportedFirstRunFound && snapshot.agents.done) {
     reportedFirstRunFound = true
-    const sessions = snapshot.find.rows.reduce((sum, row) => sum + row.sessions, 0)
+    const sessions = snapshot.agents.rows.reduce((sum, row) => sum + row.sessions, 0)
     noteInteraction({ kind: "firstRunStepReached", step: "found", sessions })
   }
-  if (!reportedFirstRunRead && snapshot.read.done) {
+  if (!reportedFirstRunRead && snapshot.sessions.done) {
     reportedFirstRunRead = true
     noteInteraction({ kind: "firstRunStepReached", step: "read" })
   }
-  if (!reportedFirstRunChecked && snapshot.check.done) {
+  if (!reportedFirstRunChecked && snapshot.checks.done) {
     reportedFirstRunChecked = true
     noteInteraction({ kind: "firstRunStepReached", step: "checked" })
   }
-}
-
-/**
- * Commit the first run the moment its result first shows.
- *
- * Fires once per store generation, only in `firstRun` mode. A failure is
- * logged rather than retried: the next launch reads `onboardingCompleted`
- * still false and shows the first run again, which is an acceptable retry on
- * its own.
- */
-function maybeFinishFirstRun(): void {
-  if (firstRunFinished || snapshot.mode !== "firstRun" || !snapshot.resultReady) return
-  firstRunFinished = true
-  noteInteraction({
-    kind: "firstRunStepReached",
-    step: "result",
-    result: firstRunResult(snapshot),
-  })
-  // `finish_first_run` records `first_run_finished` itself, only when it
-  // saves the change.
-  void finishFirstRun().catch((error: unknown) => {
-    console.error("finishFirstRun failed", error)
-  })
-}
-
-/**
- * Move the finished steps down to the row one at a time. Each move runs
- * in its own view transition, so the reader sees each step travel. The
- * chain stops while the reader has the steps open. Only the first run docks
- * this way; the steady row's cells show docked from the start.
- */
-function scheduleDocking(): void {
-  if (dockTimer != null || snapshot.mode !== "firstRun" || !snapshot.stepsDone) return
-  if (dock.stepsOpen || dock.stepsDocked >= 3) return
-  const delay = dock.stepsDocked === 0 ? DOCK_START_DELAY_MS : DOCK_STEP_PAUSE_MS
-  dockTimer = setTimeout(() => {
-    dockTimer = null
-    updateDock({ stepsDocked: dock.stepsDocked + 1 })
-  }, delay)
-}
-
-function clearDockTimer(): void {
-  if (dockTimer != null) clearTimeout(dockTimer)
-  dockTimer = null
-}
-
-function updateDock(change: Partial<ProgressDock>): void {
-  withViewTransition(() => {
-    dock = { ...dock, ...change }
-    recompute()
-  })
 }
 
 function onScanStatus(status: ScanStatus | null): void {
@@ -480,15 +508,16 @@ function logLatch(): void {
   void ftueDiag("latch", {
     decided: latch.decided,
     showSteps: latch.showSteps,
-    step1Done: latch.step1Done,
-    step2Done: latch.step2Done,
-    step3Done: latch.step3Done,
+    agentsDone: latch.agentsDone,
+    sessionsDone: latch.sessionsDone,
+    checksDone: latch.checksDone,
   })
 }
 
 function onSettings(settings: AppSettings): void {
   liveIncludeNonRepoFolders = settings.includeNonRepoFolders
   liveOnboardingCompleted = settings.onboardingCompleted
+  liveUsageOn = settings.liveUsageEnabled && settings.liveUsageStarted
   latch = advanceFirstRunLatch(latch, currentInputs())
   logLatch() // TEMP ftue-diag
   recompute()
@@ -496,50 +525,167 @@ function onSettings(settings: AppSettings): void {
 
 function onReset(): void {
   latch = resetFirstRunLatch()
-  clearDockTimer()
-  dock = INITIAL_DOCK
+  flow = "welcome"
+  openStep = null
+  stepShown = true
   // The wipe clears `onboardingCompleted`, so this device is a first run
   // again until the pass the reset triggers finishes it.
   liveOnboardingCompleted = false
   liveChecksReportCurrent = false
   // The wipe also clears every session the last pass found and read.
   lastPass = INITIAL_LAST_PASS
-  // The reset starts a new first run, so its result must call
-  // `finish_first_run` again once it shows.
-  firstRunFinished = false
+  // The reset starts a new first run, so its funnel must report again.
   reportedFirstRunStarted = false
   reportedFirstRunFound = false
   reportedFirstRunRead = false
   reportedFirstRunChecked = false
+  reportedFirstRunResult = false
   void ftueDiag("onReset", { generation, listeners: listeners.size }) // TEMP ftue-diag
   recompute()
 }
 
-/** Bring the docked steps back up to the middle, as a group. */
-export function openSteps(): void {
-  clearDockTimer()
-  updateDock({ stepsOpen: true })
+/**
+ * Start live usage from the live limits step. On success, moves to the read
+ * step and opens the backend's sessions gate. On failure, the flow stays on the
+ * live limits step — nothing here mutates state before `startLiveUsage`
+ * settles — so the caller's own catch can show an error line beside the
+ * button.
+ */
+export async function showLiveLimits(): Promise<void> {
+  if (flow !== "limits" || !stepShown) return
+  await startLiveUsage()
+  // Starting collects nothing. Ask for the first reading now, as Settings →
+  // Usage does, so the pane does not wait for the next background pass.
+  void refreshLiveUsage().catch(() => undefined)
+  noteInteraction({ kind: "firstRunAction", action: "live_usage_started" })
+  await moveTo("sessions")
 }
 
-/** Move the open steps back down to the row, as a group. */
-export function shrinkSteps(): void {
-  updateDock({ stepsOpen: false, stepsDocked: 3 })
+/** Skip live usage and move to the Sessions step. Starts no live usage. */
+export function skipLiveLimits(): void {
+  if (flow !== "limits" || !stepShown) return
+  noteInteraction({ kind: "firstRunAction", action: "live_usage_skipped" })
+  void moveTo("sessions")
 }
 
-/** Move the fixes callout down to the row. */
-export function shrinkFixes(): void {
-  updateDock({ fixesDocked: true })
+/**
+ * Move the takeover to `to` in two view transitions. The first moves the
+ * current card to its place and shows no card. The work of `to` starts when
+ * that card lands. The second transition then shows the card for `to`.
+ */
+async function moveTo(to: FlowStep): Promise<void> {
+  await withViewTransition(() => {
+    flow = to
+    openStep = null
+    stepShown = false
+    recompute()
+  })
+  if (to === "agents" || to === "sessions" || to === "checks") {
+    void advanceFirstRun(to)
+  } else if (to === "fixes" && !reportedFirstRunResult) {
+    reportedFirstRunResult = true
+    noteInteraction({
+      kind: "firstRunStepReached",
+      step: "result",
+      result: firstRunResult(snapshot),
+    })
+  } else if (to === "done") {
+    // `finish_first_run` records `first_run_finished` itself, only when it
+    // saves the change.
+    void finishFirstRun().catch((error: unknown) => {
+      console.error("finishFirstRun failed", error)
+    })
+  }
+  await withViewTransition(() => {
+    stepShown = true
+    recompute()
+  })
 }
 
-/** Bring the fixes callout back up to the middle. */
-export function openFixes(): void {
-  updateDock({ fixesDocked: false })
+/** Whether the step the takeover currently shows has finished its work. */
+function currentStepDone(step: FlowStep): boolean {
+  switch (step) {
+    case "agents":
+      return snapshot.agents.done
+    case "sessions":
+      return snapshot.sessions.done
+    case "checks":
+      return snapshot.checks.done
+    case "fixes":
+      return true
+    default:
+      return false
+  }
+}
+
+/**
+ * Move the takeover to its next stage, from the reader's Next (or the fixes
+ * step's Done). Refused while the current step's work is not done yet.
+ *
+ * Each move runs its own view transition, carrying the finished step's card
+ * down into its nav row. `fixes` → `done` ends the first run.
+ */
+export async function nextStep(): Promise<void> {
+  const from = flow
+  // `stepShown` is false while a move runs, so a second press cannot skip a
+  // step.
+  if (!stepShown) return
+  if (from === "welcome") {
+    await moveTo("agents")
+    return
+  }
+  if (from !== "agents" && from !== "sessions" && from !== "checks" && from !== "fixes") return
+  if (!currentStepDone(from)) return
+  await moveTo(nextFlow(from, liveUsageOn))
+}
+
+/**
+ * Enhance on the fixes step: records the choice, then finishes the first run
+ * the same way Done does.
+ */
+export async function enhanceFixes(): Promise<void> {
+  if (flow !== "fixes" || !stepShown) return
+  noteInteraction({ kind: "firstRunAction", action: "enhance_opened" })
+  await moveTo("done")
+}
+
+/**
+ * Take the first run back to a step whose card is in the nav, from a click
+ * on its row. The row's card moves back up into the takeover, and the rows
+ * of the later steps leave the nav. The backend gate stays where it is:
+ * work that a step already started keeps running, and the step's Next
+ * moves forward again without a new wait.
+ */
+export function rewindTo(step: ProgressStepKey): void {
+  if (snapshot.mode !== "firstRun" || flow === "done" || !stepShown) return
+  if (!stepDocked(flow, step)) return
+  void withViewTransition(() => {
+    flow = step
+    openStep = null
+    recompute()
+  })
+}
+
+/** Open one step's modal over the current view. */
+export function openProgressStep(key: ProgressStepKey): void {
+  void withViewTransition(() => {
+    openStep = key
+    recompute()
+  })
+}
+
+/** Close the open step modal. */
+export function closeProgressStep(): void {
+  void withViewTransition(() => {
+    openStep = null
+    recompute()
+  })
 }
 
 /**
  * Turn on `includeNonRepoFolders`, so sessions outside a git repository are
  * kept. Reuses the Sources pane's own settings write (PR #661: changing this
- * setting already triggers a rescan). Un-latches step 2's outcome, so that
+ * setting already triggers a rescan). Un-latches the Sessions step's outcome, so that
  * rescan's gate counts — the ones the reader is waiting on — replace the
  * stale ones instead of being ignored like a routine pass.
  */
@@ -548,7 +694,7 @@ export async function enableNonRepoFolders(): Promise<void> {
   if (current.includeNonRepoFolders) return
   await setSettings({ ...current, includeNonRepoFolders: true })
   noteInteraction({ kind: "firstRunAction", action: "include_non_repo_folders" })
-  latch = unlatchReadOutcome(latch)
+  latch = unlatchSessionsOutcome(latch)
   recompute()
 }
 
@@ -671,7 +817,6 @@ function stop(): void {
   generation += 1
   requestChecks = null
   refreshFolderPermissions = null
-  clearDockTimer()
   // TEMP ftue-diag
   void ftueDiag("stop", { generation })
   for (const detach of stops.splice(0)) detach()

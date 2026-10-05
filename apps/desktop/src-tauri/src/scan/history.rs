@@ -126,6 +126,14 @@ pub(crate) fn push_progress(app: &AppHandle, pass_running: bool, force: bool) {
 /// retention in a launch, so a failed or cancelled pass waits for the next
 /// launch or the reader's own Historical scan.
 pub(crate) fn maybe_start_automatic_pass(app: &AppHandle) {
+    // The first run's own steps own discovery until it finishes. The
+    // reader's own Historical scan button is not gated — see
+    // `crate::commands::scan_history`, which calls `run_pass` directly.
+    if app.state::<crate::first_run_gate::FirstRunGate>().stage()
+        != crate::first_run_gate::FirstRunStage::Done
+    {
+        return;
+    }
     let controller = app.state::<ScanController>();
     if !controller.first_current_pass_done() {
         return;

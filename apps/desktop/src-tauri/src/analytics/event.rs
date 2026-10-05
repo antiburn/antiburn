@@ -809,6 +809,8 @@ pub enum FirstRunActionKind {
     FolderAccessGranted,
     IncludeNonRepoFolders,
     LiveUsageStarted,
+    LiveUsageSkipped,
+    EnhanceOpened,
 }
 
 /// A privacy-safe result from checking one remote host connection.
@@ -1126,6 +1128,8 @@ wire_values!(FirstRunActionKind, {
     FirstRunActionKind::FolderAccessGranted => "folder_access_granted",
     FirstRunActionKind::IncludeNonRepoFolders => "include_non_repo_folders",
     FirstRunActionKind::LiveUsageStarted => "live_usage_started",
+    FirstRunActionKind::LiveUsageSkipped => "live_usage_skipped",
+    FirstRunActionKind::EnhanceOpened => "enhance_opened",
 });
 
 #[cfg(feature = "analytics")]
@@ -2440,6 +2444,8 @@ mod tests {
                 "include_non_repo_folders",
             ),
             (FirstRunActionKind::LiveUsageStarted, "live_usage_started"),
+            (FirstRunActionKind::LiveUsageSkipped, "live_usage_skipped"),
+            (FirstRunActionKind::EnhanceOpened, "enhance_opened"),
         ] {
             let (name, facts) = Interaction::FirstRunAction { action }.resolve();
             assert_eq!(name, EventName::FirstRunAction);
@@ -2465,6 +2471,7 @@ mod tests {
             serde_json::json!({"kind":"firstRunStepReached","step":"result","result":"broken"}),
             serde_json::json!({"kind":"firstRunStepReached","step":"started","path":"/private"}),
             serde_json::json!({"kind":"firstRunAction","action":"folder_opened"}),
+            serde_json::json!({"kind":"firstRunAction","action":"live_usage_stopped"}),
             serde_json::json!({"kind":"firstRunAction"}),
             serde_json::json!({"kind":"firstRunFinished","result":"clean"}),
         ] {

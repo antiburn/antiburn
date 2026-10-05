@@ -59,6 +59,7 @@ mod consent;
 mod diagnostics_export;
 mod disk_monitor;
 mod dto;
+mod first_run_gate;
 mod fork_lineage;
 mod global_click;
 mod hud;
@@ -329,6 +330,16 @@ pub fn run() {
                 startup_registration::reconcile(app.handle(), settings.launch_at_login);
             }
         }
+        // In memory only: a relaunch during a first run starts the gate,
+        // and the frontend, over from the live-limits step. A failed read
+        // opens the gate, so it cannot stop the scan and the checks on an
+        // existing install.
+        let onboarding_completed = app
+            .state::<store::Store>()
+            .settings()
+            .map(|settings| settings.onboarding_completed)
+            .unwrap_or(true);
+        app.manage(first_run_gate::FirstRunGate::new(onboarding_completed));
         app.manage(scan::ScanController::default());
         app.manage(session_lifecycle::SessionEvents::default());
         app.manage(Schedulers::default());
@@ -789,6 +800,8 @@ mod tests {
             "\"allow-get-session-analysis\"",
             "\"allow-get-subagent-analysis\"",
             "\"allow-get-live-usage\"",
+            "\"allow-start-live-usage\"",
+            "\"allow-refresh-live-usage\"",
             "\"allow-get-live-sessions\"",
             "\"allow-get-live-sessions-for\"",
             "\"allow-get-session-limit-allocations\"",
@@ -847,7 +860,9 @@ mod tests {
         use std::time::Duration;
 
         use crate::analysis::{EvidencePass, PassOutcome, PassSignal, SessionAnalysis};
-        use crate::insights_worker::{PassFuture, WorkerHandle, WorkerLoopSignals, worker_loop};
+        use crate::insights_worker::{
+            PassFuture, WorkerHandle, WorkerLoopSignals, always_open_gate, worker_loop,
+        };
         use crate::store::{EvidenceStatus, SessionKey, SessionRecord, Store};
 
         let store = Arc::new(
@@ -930,6 +945,7 @@ mod tests {
                 &WorkerLoopSignals {
                     report_changed: &|| {},
                     backlog: &|_| {},
+                    gate: &always_open_gate,
                 },
                 &|_, _| {},
             )

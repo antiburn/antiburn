@@ -127,6 +127,32 @@ describe("SidebarNav", () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
+  it("skips a disabled row with the keyboard and ignores a click on it", () => {
+    const onChange = vi.fn()
+    const disabledItems: SidebarNavItem[] = [
+      { id: "first", label: "First", icon: Circle },
+      { id: "second", label: "Second", icon: Square, disabled: true },
+      { id: "third", label: "Third", icon: Triangle },
+    ]
+    render(
+      <SidebarNav
+        items={disabledItems}
+        value="first"
+        onChange={onChange}
+        ariaLabel="Sections"
+      />,
+    )
+
+    expect(tab("Second")).toHaveAttribute("aria-disabled", "true")
+    expect(tab("Second")).toHaveAttribute("tabindex", "-1")
+
+    fireEvent.click(tab("Second"))
+    expect(onChange).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(tab("First"), { key: "ArrowDown" })
+    expect(onChange).toHaveBeenCalledWith("third")
+  })
+
   it("renders a footer node outside the tablist", () => {
     render(
       <SidebarNav

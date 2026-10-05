@@ -23,6 +23,7 @@ import {
   getLiveUsage,
   onLiveUsageChanged,
   refreshLiveUsage,
+  startLiveUsage,
   type AppSettings,
   type LiveUsageMeterPayload,
   type LiveUsageSummaryPayload,
@@ -135,8 +136,34 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
   )
   const island = useSyncExternalStore(islandStore.subscribe, islandStore.getSnapshot)
   const on = settings?.liveUsageEnabled ?? false
+  // Live usage never ran at all until a reader passed the first-run gate (or
+  // skipped it, which also leaves it unstarted). The switch must read as off
+  // then, even though `liveUsageEnabled` defaults to true, or a Skip in the
+  // takeover would show it on with nothing behind it.
+  const liveUsageStarted = settings?.liveUsageStarted ?? false
+  const planLimitsOn = on && liveUsageStarted
   const hidden = settings?.liveUsageHiddenProviders ?? []
   const meters = roster(live)
+
+  // Turning the switch on starts live usage first, the same gate the
+  // first-run takeover uses, so the Keychain prompt it can trigger on macOS
+  // only ever follows a deliberate click. A failed start leaves the switch
+  // off, since it derives from `liveUsageStarted` rather than its own state.
+  async function handlePlanLimitsChange(next: boolean): Promise<void> {
+    if (!next) {
+      await update({ liveUsageEnabled: false })
+      return
+    }
+    if (!liveUsageStarted) {
+      try {
+        await startLiveUsage()
+      } catch {
+        return
+      }
+    }
+    if (!on) await update({ liveUsageEnabled: true })
+    void refreshLiveUsage().catch(() => undefined)
+  }
 
   const [tokenMapShown, setTokenMapShown] = useState(isHudTokenMapEnabled)
   function handleTokenMapChange(next: boolean) {
@@ -182,12 +209,8 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
           <SettingsToggleRow
             searchId="planLimits"
             description="Asks each provider directly for your current usage every five minutes in the background, and more often while visible, using the credentials your own coding tools already have — that's your own connection, made as you; no antiburn server is involved. When a provider can't be reached directly, antiburn falls back to asking your coding tool's own local process the same question. Turning this off also stops usage milestone notifications, since they need readings that keep moving."
-            checked={on}
-            onChange={(next) =>
-              void Promise.resolve(update({ liveUsageEnabled: next })).then(() => {
-                void refreshLiveUsage().catch(() => undefined)
-              })
-            }
+            checked={planLimitsOn}
+            onChange={(next) => void handlePlanLimitsChange(next)}
           />
           <Row
             label="With this off"

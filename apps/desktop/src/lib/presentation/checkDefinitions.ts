@@ -34,6 +34,17 @@ export const CHECK_DEFINITIONS = {
   },
 } as const satisfies Record<BurnCheckDetectorId, { label: string; aliases: readonly string[] }>
 
+/** The checks that run only after the reader sets them up in Settings →
+ *  Checks. Every other check always runs. */
+const SET_UP_CHECKS: readonly BurnCheckDetectorId[] = ["ignoredInstructions"]
+
+/** How many checks run. `setUpChecksConfigured` is the Checks pane's
+ *  `configured` state. A snoozed check still runs, so it counts. */
+export function enabledCheckCount(setUpChecksConfigured: boolean): number {
+  const all = Object.keys(CHECK_DEFINITIONS).length
+  return setUpChecksConfigured ? all : all - SET_UP_CHECKS.length
+}
+
 export const CHECK_LABELS = Object.fromEntries(
   Object.entries(CHECK_DEFINITIONS).map(([id, definition]) => [id, definition.label]),
 ) as Record<BurnCheckDetectorId, string>

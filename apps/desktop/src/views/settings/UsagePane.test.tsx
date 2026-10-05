@@ -14,6 +14,7 @@ import { UsagePane } from "./UsagePane"
 const getLiveUsage = vi.hoisted(() => vi.fn())
 const refreshLiveUsage = vi.hoisted(() => vi.fn())
 const onLiveUsageChanged = vi.hoisted(() => vi.fn(async () => () => {}))
+const startLiveUsage = vi.hoisted(() => vi.fn(async () => ({}) as AppSettings))
 
 const platform = vi.hoisted(() => ({ mac: false }))
 vi.mock("../../lib/platform", async (importOriginal) => {
@@ -58,6 +59,7 @@ vi.mock("../../lib/ipc", async () => {
     getLiveUsage,
     refreshLiveUsage,
     onLiveUsageChanged,
+    startLiveUsage,
   }
 })
 
@@ -86,6 +88,8 @@ describe("UsagePane", () => {
     refreshLiveUsage.mockReset()
     refreshLiveUsage.mockResolvedValue(summary())
     onLiveUsageChanged.mockClear()
+    startLiveUsage.mockClear()
+    startLiveUsage.mockResolvedValue({} as AppSettings)
     platform.mac = false
   })
 
@@ -135,10 +139,34 @@ describe("UsagePane", () => {
   })
 
   it("writes the preference through when the switch moves", async () => {
-    const update = pane()
+    const update = pane({ liveUsageStarted: true })
     fireEvent.click(screen.getByRole("switch", { name: /keep my plan limits current/i }))
-    expect(update).toHaveBeenCalledWith({ liveUsageEnabled: true })
+    await waitFor(() => expect(update).toHaveBeenCalledWith({ liveUsageEnabled: true }))
     await waitFor(() => expect(refreshLiveUsage).toHaveBeenCalled())
+  })
+
+  it("shows the switch off when enabled but not yet started", () => {
+    // `liveUsageEnabled` defaults to true, but nothing has run until a reader
+    // passes the first-run gate (or skips it). The switch must read as off,
+    // not on with nothing behind it.
+    pane({ liveUsageEnabled: true, liveUsageStarted: false })
+    expect(
+      screen.getByRole("switch", { name: /keep my plan limits current/i }),
+    ).not.toBeChecked()
+  })
+
+  it("starts live usage once when turning the switch on before it has started", async () => {
+    const update = pane({ liveUsageEnabled: false, liveUsageStarted: false })
+    fireEvent.click(screen.getByRole("switch", { name: /keep my plan limits current/i }))
+    await waitFor(() => expect(startLiveUsage).toHaveBeenCalledTimes(1))
+    expect(update).toHaveBeenCalledWith({ liveUsageEnabled: true })
+  })
+
+  it("does not start live usage again when turning the switch on after it has already started", async () => {
+    const update = pane({ liveUsageEnabled: false, liveUsageStarted: true })
+    fireEvent.click(screen.getByRole("switch", { name: /keep my plan limits current/i }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith({ liveUsageEnabled: true }))
+    expect(startLiveUsage).not.toHaveBeenCalled()
   })
 
   it("says the switches show meters and that sign-in happens in the tool", () => {

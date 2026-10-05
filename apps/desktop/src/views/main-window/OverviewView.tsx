@@ -1,13 +1,21 @@
 import { useState, useSyncExternalStore } from "react"
 
 import { cn } from "../../lib/cn"
+import type { BurnCheckDetectorId } from "../../lib/insightsIpc"
 
 import type { SessionListEntry } from "../../components/session/SessionList"
 import { ScrollPane } from "../../components/ui/ScrollPane"
 import { useAppSettings } from "../settings/useAppSettings"
+import { FirstRunTakeover } from "./overview/FirstRunTakeover"
 import { type MainOverviewSession } from "./MainOverviewSession"
 import { OverviewFixes } from "./overview/OverviewFixes"
-import { overviewProgress, subscribeOverviewProgress } from "./overview/overviewProgressStore"
+import {
+  overviewProgress,
+  RECENT_SESSIONS_TRANSITION_NAME,
+  stepDocked,
+  USAGE_TRANSITION_NAME,
+  subscribeOverviewProgress,
+} from "./overview/overviewProgressStore"
 import { OverviewProviderLimits } from "./overview/OverviewProviderLimits"
 import { OverviewRecentSessions } from "./overview/OverviewRecentSessions"
 import { OverviewUsage, type OverviewMetric } from "./overview/OverviewUsage"
@@ -20,29 +28,33 @@ export function OverviewView({
   session,
   onOpenSessions,
   onSelectSession,
+  onOpenChecks,
 }: {
   active: boolean
   session: MainOverviewSession
   onOpenSessions: () => void
   onSelectSession: (entry: SessionListEntry) => void
+  onOpenChecks: (check: BurnCheckDetectorId | undefined) => void
 }) {
   const state = useSyncExternalStore(
     active ? session.subscribe : session.subscribeInactive,
     session.getSnapshot,
     session.getSnapshot,
   )
-  // The first-run scan reveals these cards as each real stage ends. Outside
-  // first run (`mode` not `"firstRun"`) both cards show at once, same as the
-  // rest of the page.
   const progress = useSyncExternalStore(
     subscribeOverviewProgress,
     overviewProgress,
     overviewProgress,
   )
   const isFirstRun = progress.mode === "firstRun"
-  const readingDone = !isFirstRun || progress.read.done
-  const analysisDone = !isFirstRun || progress.check.done
+  // The takeover owns the main column until the fixes step is done, in
+  // place of the usage card, the checks list and Recent sessions.
+  const showTakeover = isFirstRun && progress.flow !== "done"
   const { settings } = useAppSettings()
+  // The right-hand pane only exists once live usage is both enabled and
+  // started; turning either off in Settings takes it away, and the grid
+  // drops its column so the remaining columns keep their width.
+  const showProviderLimits = settings.liveUsageEnabled && settings.liveUsageStarted
   const [selectedMetric, setMetric] = useState<OverviewMetric | null>(() => {
     const saved = readOverviewViewPrefs().metric
     return saved === "cost" || saved === "allowance" ? saved : null
@@ -72,11 +84,58 @@ export function OverviewView({
   const usage = state.usage
   const loading = (!usage && !state.usageError) || !metricSettled
 
+  const usageCard = (
+    <div
+      style={{ viewTransitionName: USAGE_TRANSITION_NAME }}
+      className="rounded-(--radius-popover) shadow-[var(--shadow-raised),var(--shadow-stats-card)] bg-surface-sidebar p-(--space-lg)"
+    >
+      <OverviewUsage
+        metric={metric}
+        onMetricChange={(next) => {
+          setMetric(next)
+          writeOverviewViewPrefs({ metric: next })
+        }}
+        totals={usage?.totals ?? null}
+        days={usage?.days ?? []}
+        allowance={state.allowance}
+        allowanceLoading={state.allowanceLoading || !metricSettled}
+        allowanceError={state.allowanceError}
+        allowanceCollecting={isFirstRun}
+        usageError={state.usageError}
+        onRetryUsage={session.refresh}
+        loading={loading}
+      />
+    </div>
+  )
+
+  const recentSessions = (
+    <div
+      style={{ viewTransitionName: RECENT_SESSIONS_TRANSITION_NAME }}
+      className="mt-auto rounded-(--radius-popover) shadow-[var(--shadow-raised),var(--shadow-stats-card)] bg-surface-sidebar p-(--space-lg)"
+    >
+      <OverviewRecentSessions
+        active={active && state.active}
+        entries={state.recentSessions}
+        loading={loading && !state.recentSessions}
+        onSelect={onSelectSession}
+        onOpenAll={onOpenSessions}
+        metric={metric}
+        liveUsage={state.liveUsage ?? undefined}
+        sessionLimitAllocations={state.sessionLimitAllocations}
+        showChecks={!showTakeover || stepDocked(progress.flow, "checks")}
+        showOpenAll={!showTakeover}
+      />
+    </div>
+  )
+
   return (
     <div
       className={cn(
         "overview-layout min-h-0 min-w-0 flex-1 bg-surface-window",
-        "grid grid-cols-[auto_minmax(0,1fr)_clamp(206px,21%,316px)_auto] grid-rows-[minmax(0,1fr)] gap-x-(--space-2xl) pt-(--space-2xl) mb-(--space-2xl)",
+        "grid grid-rows-[minmax(0,1fr)] gap-x-(--space-2xl) pt-(--space-2xl) mb-(--space-2xl)",
+        showProviderLimits
+          ? "grid-cols-[auto_minmax(0,1fr)_clamp(206px,21%,316px)_auto]"
+          : "grid-cols-[auto_minmax(0,1fr)_auto]",
       )}
       data-overview-active={active ? "" : undefined}
     >
@@ -87,82 +146,51 @@ export function OverviewView({
         className="col-2 overview-viewport"
         viewportClassName="[&>div]:flex! [&>div]:min-block-full"
       >
-        <div
-          role="region"
-          aria-label={loading ? "Loading Overview" : "Overview"}
-          aria-busy={loading || undefined}
-          className="@container grow shrink-0 flex w-full flex-col gap-(--space-2xl)"
-        >
-          {loading && (
-            <p role="status" className="sr-only">
-              Loading Overview
-            </p>
-          )}
-
-          <div
-            inert={!analysisDone}
-            className={cn(
-              "rounded-(--radius-popover) shadow-[var(--shadow-raised),var(--shadow-stats-card)] bg-surface-sidebar p-(--space-lg) transition-[opacity,translate] duration-slow",
-              !analysisDone && "translate-y-2 opacity-0",
-            )}
-          >
-            <OverviewUsage
-              metric={metric}
-              onMetricChange={(next) => {
-                setMetric(next)
-                writeOverviewViewPrefs({ metric: next })
-              }}
-              totals={usage?.totals ?? null}
-              days={usage?.days ?? []}
-              allowance={state.allowance}
-              allowanceLoading={state.allowanceLoading || !metricSettled}
-              allowanceError={state.allowanceError}
-              allowanceCollecting={isFirstRun}
-              usageError={state.usageError}
-              onRetryUsage={session.refresh}
-              loading={loading}
-            />
+        {showTakeover ? (
+          // The usage card and Recent sessions fade in around the takeover
+          // once the Sessions step is done: the sessions are read, only
+          // their checks wait.
+          <div className="flex grow flex-col gap-(--space-2xl)">
+            {stepDocked(progress.flow, "sessions") && usageCard}
+            <FirstRunTakeover onOpenChecks={onOpenChecks} />
+            {stepDocked(progress.flow, "sessions") && recentSessions}
           </div>
-
-          <OverviewFixes />
-
+        ) : (
           <div
-            inert={!readingDone}
-            className={cn(
-              "rounded-(--radius-popover) shadow-[var(--shadow-raised),var(--shadow-stats-card)] bg-surface-sidebar p-(--space-lg) transition-[opacity,translate] duration-slow",
-              !readingDone && "translate-y-2 opacity-0",
-            )}
+            role="region"
+            aria-label={loading ? "Loading Overview" : "Overview"}
+            aria-busy={loading || undefined}
+            className="@container grow shrink-0 flex w-full flex-col gap-(--space-2xl)"
           >
-            <OverviewRecentSessions
-              active={active && state.active}
-              entries={state.recentSessions}
-              loading={loading && !state.recentSessions}
-              onSelect={onSelectSession}
-              onOpenAll={onOpenSessions}
-              metric={metric}
-              liveUsage={state.liveUsage ?? undefined}
-              sessionLimitAllocations={state.sessionLimitAllocations}
-            />
-          </div>
-        </div>
-      </ScrollPane>
+            {loading && (
+              <p role="status" className="sr-only">
+                Loading Overview
+              </p>
+            )}
 
-      <ScrollPane
-        className={cn(
-          "overview-provider-limits min-h-0 min-w-0",
-          "rounded-(--radius-popover) shadow-[var(--shadow-raised),var(--shadow-stats-card)]",
-          "bg-(--color-surface-window) bg-gradient-to-b from-(--color-surface-sidebar) to-(--color-surface-sidebar)",
+            {usageCard}
+
+            <OverviewFixes />
+
+            {recentSessions}
+          </div>
         )}
-        viewportTabIndex={0}
-        viewportLabel="Provider limits card"
-        topEdgeFade
-      >
-        <OverviewProviderLimits
-          live={state.liveUsage}
-          loading={!state.liveUsageSettled}
-          liveUsageStarted={settings.liveUsageStarted}
-        />
       </ScrollPane>
+
+      {showProviderLimits && (
+        <ScrollPane
+          className={cn(
+            "overview-provider-limits min-h-0 min-w-0",
+            "rounded-(--radius-popover) shadow-[var(--shadow-raised),var(--shadow-stats-card)]",
+            "bg-(--color-surface-window) bg-gradient-to-b from-(--color-surface-sidebar) to-(--color-surface-sidebar)",
+          )}
+          viewportTabIndex={0}
+          viewportLabel="Provider limits card"
+          topEdgeFade
+        >
+          <OverviewProviderLimits live={state.liveUsage} loading={!state.liveUsageSettled} />
+        </ScrollPane>
+      )}
     </div>
   )
 }

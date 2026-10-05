@@ -2596,6 +2596,61 @@ fn assert_scheduler_source_contract(source: &str) {
     assert_eq!(production.matches("Observation::Anonymous {").count(), 1);
 }
 
+/// The first-run takeover's gates: a full pass waits at the agents gate
+/// before discovery, and at the sessions gate after discovery and before
+/// `phase` moves to `Reading`, ahead of the pass's first write. There is no Tauri `AppHandle` test harness in this crate to
+/// run a real pass end to end (the same limit `assert_scheduler_source_contract`
+/// above works around), so this pins the gate placement at the source
+/// instead of covering it by execution.
+#[test]
+fn a_full_pass_waits_at_the_agents_gate_then_the_read_gate_before_any_write() {
+    let source = include_str!("mod.rs");
+    let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+    let start = production
+        .find("async fn pass(\n")
+        .expect("the pass function exists");
+    let body = &production[start..];
+
+    let agents_gate = body
+        .find("wait_for_first_run_stage(app, full_pass, FirstRunStage::Agents)")
+        .expect("the pass waits at the agents gate");
+    let discovery = body
+        .find("let logs = match scope {")
+        .expect("discovery asks every explorer");
+    let sessions_gate = body
+        .find("wait_for_first_run_stage(app, full_pass, FirstRunStage::Sessions)")
+        .expect("the pass waits at the sessions gate");
+    let reading_phase = body
+        .find("status.phase = ScanPhase::Reading;")
+        .expect("the reading phase starts");
+    let persist = body
+        .find("persist_changed_records(")
+        .expect("the pass writes changed records");
+
+    assert!(
+        agents_gate < discovery,
+        "the agents gate opens before discovery"
+    );
+    assert!(
+        discovery < sessions_gate,
+        "discovery runs before the sessions gate"
+    );
+    assert!(
+        sessions_gate < reading_phase,
+        "the sessions gate opens before the reading phase starts"
+    );
+    assert!(
+        reading_phase < persist,
+        "reading starts before the pass's first write"
+    );
+    // A cancelled wait ends the pass the way a plain cancel does: an early
+    // return with nothing written.
+    assert_eq!(
+        body.matches("return Ok(gate_cancelled_summary());").count(),
+        2
+    );
+}
+
 mod producers;
 
 fn git_init(dir: &std::path::Path) {

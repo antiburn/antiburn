@@ -760,19 +760,29 @@ property validation. Queries and session data never enter the analytics payload.
 ## First-run Overview funnel (2026-10-02)
 
 The onboarding window is gone. The main window's Overview now runs the first
-run on a new install: the pitch line, the Find→Read→Check steps, and the fixes
+run on a new install: the pitch line, the Agents→Sessions→Checks steps, and the fixes
 result. `antiburn.onboarding_started`, `antiburn.onboarding_step_viewed`, and
 `antiburn.onboarding_finished` are retired. Earlier app versions still send
 them, so a funnel across versions must keep the two event families apart.
 
 Question: where does a new install's first run lose readers — never starting,
-or dropping between Find, Read, Check, and the result — and which result
+or dropping between Agents, Read, Check, and the result — and which result
 (empty, clean, fixes found) do readers who finish actually land on? Metric:
 reporting installations reaching each `antiburn.first_run_step_reached` label,
 as a funnel with `started` at the base, divided by reporting installations
 overall in the same app-version cohort. This decides whether the steps block's
 pacing or copy needs work before the result shows; it does not measure time
 spent on any step, or distinguish a slow pass from a fast one.
+
+Each step's own work now waits for the reader's Next or Show/Skip press
+before it starts (the backend first-run gate: discovery waits for the welcome
+step's Next, reading waits for the live limits step that follows Agents, and
+checks wait for Sessions' Next). The elapsed time between two `first_run_step_reached` events therefore
+includes however long the reader spent reading that step's card, not only
+the work's own running time. A funnel built from this event was always a
+step-reached count, never a timing metric, so this does not change what the
+metric answers — it only means a time-between-steps figure computed from
+raw event timestamps is reading time plus work time, not work time alone.
 
 `overviewProgressStore.ts` owns the trigger. One flag per step
 (`started`/`found`/`read`/`checked`), set the first time that step's own
@@ -793,15 +803,21 @@ only with `found`. `detail` is `empty`, `clean`, or `fixes_found`, present
 only with `result`, derived the same way the Overview's own headline is:
 `empty` when the window has no sessions, `clean` when it has sessions and no
 finding, `fixes_found` otherwise. `antiburn.first_run_action` reports one of
-four closed labels — `folder_access_requested`, `folder_access_granted`,
-`include_non_repo_folders`, `live_usage_started` — each only after its action
-actually fires: a real "Allow access" click, a folder the permission queue
-actually granted, a settings write that actually flipped
-`includeNonRepoFolders` from false to true, and a `start_live_usage` command
-that actually resolved. No folder path, session identity, finding detail, or
-account identity reaches any of these three events. The Rust boundary rejects
-an unlisted step, action, or result, and rejects any extra field on any of the
-three shapes, the same way every other closed `Interaction` variant does.
+six closed labels — `folder_access_requested`, `folder_access_granted`,
+`include_non_repo_folders`, `live_usage_started`, `live_usage_skipped`,
+`enhance_opened` — each
+only after its action actually fires: a real "Allow access" click, a folder
+the permission queue actually granted, a settings write that actually
+flipped `includeNonRepoFolders` from false to true, a `start_live_usage`
+command that actually resolved, the live-limits step's Skip link, which
+starts no live usage at all, and the fixes step's Enhance, which finishes
+the first run and opens Burn Checks. The fixes step's Skip link finishes the
+first run without a `first_run_action`, so `first_run_finished` minus
+`enhance_opened` counts the readers who skipped. No folder path, session identity, finding
+detail, or account identity reaches any of these three events. The Rust
+boundary rejects an unlisted step, action, or result, and rejects any extra
+field on any of the three shapes, the same way every other closed
+`Interaction` variant does.
 
 This is new instrumentation, not a reused name, so `docs/analytics.md` lists
 all three events fresh and marks the two retired ones legacy — mirroring the
@@ -814,7 +830,7 @@ which had no `found`/`checked` distinction and no result step at all.
 
 Tests: `event.rs` proves each step's facts are scoped to that step alone
 (`first_run_step_reached_carries_only_the_facts_its_own_step_defines`), the
-action vocabulary resolves to its four labels
+action vocabulary resolves to its five labels
 (`first_run_action_uses_closed_vocabulary`), the finished event carries no
 properties (`first_run_finished_carries_no_properties`), and the Rust boundary
 rejects an unknown step, action, or result and an extra field on any of the

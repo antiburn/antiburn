@@ -9,7 +9,6 @@ import {
   type FirstRunLatch,
 } from "./firstRun"
 import {
-  INITIAL_DOCK,
   INITIAL_LAST_PASS,
   advanceLastPass,
   deriveOverviewProgress,
@@ -88,7 +87,7 @@ describe("advanceLastPass", () => {
     expect(advanceLastPass(previous, midPass)).toEqual(previous)
   })
 
-  it("takes the new find values once every agent's search is done", () => {
+  it("takes the new Agents values once every agent's search is done", () => {
     const next = advanceLastPass(
       INITIAL_LAST_PASS,
       status({
@@ -100,7 +99,7 @@ describe("advanceLastPass", () => {
     expect(next.lastFound).toEqual([{ agent: "claude-code", sessions: 49, done: true }])
   })
 
-  it("does not take find values while an agent is still searching", () => {
+  it("does not take Agents values while an agent is still searching", () => {
     const next = advanceLastPass(
       INITIAL_LAST_PASS,
       status({
@@ -137,7 +136,9 @@ describe("deriveOverviewProgress's mode", () => {
     const snapshot = deriveOverviewProgress(
       INITIAL_FIRST_RUN_LATCH,
       inputs(),
-      INITIAL_DOCK,
+      "agents",
+      null,
+      true,
       INITIAL_LAST_PASS,
     )
     expect(snapshot.mode).toBe("pending")
@@ -145,13 +146,27 @@ describe("deriveOverviewProgress's mode", () => {
 
   it("is firstRun once the latch decides to show the steps block", () => {
     const latch = resetFirstRunLatch()
-    const snapshot = deriveOverviewProgress(latch, inputs(), INITIAL_DOCK, INITIAL_LAST_PASS)
+    const snapshot = deriveOverviewProgress(
+      latch,
+      inputs(),
+      "agents",
+      null,
+      true,
+      INITIAL_LAST_PASS,
+    )
     expect(snapshot.mode).toBe("firstRun")
   })
 
   it("is steady once the latch decides the device has scanned before", () => {
     const latch: FirstRunLatch = { ...INITIAL_FIRST_RUN_LATCH, decided: true, showSteps: false }
-    const snapshot = deriveOverviewProgress(latch, inputs(), INITIAL_DOCK, INITIAL_LAST_PASS)
+    const snapshot = deriveOverviewProgress(
+      latch,
+      inputs(),
+      "agents",
+      null,
+      true,
+      INITIAL_LAST_PASS,
+    )
     expect(snapshot.mode).toBe("steady")
   })
 })
@@ -161,13 +176,13 @@ describe("deriveOverviewProgress in steady mode", () => {
     ...INITIAL_FIRST_RUN_LATCH,
     decided: true,
     showSteps: false,
-    step1Done: true,
-    step2Done: true,
-    step2Read: { completed: 1, total: 1 },
-    step3Done: true,
+    agentsDone: true,
+    sessionsDone: true,
+    sessionsRead: { completed: 1, total: 1 },
+    checksDone: true,
   }
 
-  it("shows the last finished pass's Find rows, not the live reset ones", () => {
+  it("shows the last finished pass's Agents rows, not the live reset ones", () => {
     const lastPass: LastPass = {
       lastFound: [{ agent: "claude-code", sessions: 49, done: true }],
       lastRead: { completed: 49, total: 49 },
@@ -176,18 +191,32 @@ describe("deriveOverviewProgress in steady mode", () => {
     const liveReset = inputs({
       scanStatus: status({ running: true, phase: "finding", foundByAgent: [] }),
     })
-    const snapshot = deriveOverviewProgress(steadyLatch, liveReset, INITIAL_DOCK, lastPass)
-    expect(snapshot.find.rows).toEqual([
+    const snapshot = deriveOverviewProgress(
+      steadyLatch,
+      liveReset,
+      "agents",
+      null,
+      true,
+      lastPass,
+    )
+    expect(snapshot.agents.rows).toEqual([
       { agent: "claude-code", label: "Claude Code", sessions: 49, done: true },
     ])
   })
 
-  it("falls back to the live Find status when no pass has finished yet", () => {
+  it("falls back to the live Agents status when no pass has finished yet", () => {
     const live = inputs({
       scanStatus: status({ foundByAgent: [{ agent: "codex", sessions: 3, done: true }] }),
     })
-    const snapshot = deriveOverviewProgress(steadyLatch, live, INITIAL_DOCK, INITIAL_LAST_PASS)
-    expect(snapshot.find.rows).toEqual([
+    const snapshot = deriveOverviewProgress(
+      steadyLatch,
+      live,
+      "agents",
+      null,
+      true,
+      INITIAL_LAST_PASS,
+    )
+    expect(snapshot.agents.rows).toEqual([
       { agent: "codex", label: "Codex", sessions: 3, done: true },
     ])
   })
@@ -196,8 +225,15 @@ describe("deriveOverviewProgress in steady mode", () => {
     const live = inputs({
       checksReport: report({ windowSessions: 42, pendingEvidence: 1, deferredEvidence: 0 }),
     })
-    const snapshot = deriveOverviewProgress(steadyLatch, live, INITIAL_DOCK, INITIAL_LAST_PASS)
-    expect(snapshot.check).toEqual({
+    const snapshot = deriveOverviewProgress(
+      steadyLatch,
+      live,
+      "agents",
+      null,
+      true,
+      INITIAL_LAST_PASS,
+    )
+    expect(snapshot.checks).toEqual({
       done: true,
       windowSessions: 42,
       pendingEvidence: 1,
@@ -209,26 +245,28 @@ describe("deriveOverviewProgress in steady mode", () => {
 describe("deriveOverviewProgress in first-run mode", () => {
   const firstRunLatch: FirstRunLatch = {
     ...resetFirstRunLatch(),
-    step1Done: true,
-    step1Rows: [{ agent: "claude-code", sessions: 49, done: true }],
-    step2Done: true,
-    step2Read: { completed: 49, total: 49 },
-    step2Gate: { kept: 49, outsideRepository: 0, excluded: 0, unreadable: 0 },
-    step3Done: true,
-    step3Check: { windowSessions: 49, deferredEvidence: 0 },
+    agentsDone: true,
+    agentsFound: [{ agent: "claude-code", sessions: 49, done: true }],
+    sessionsDone: true,
+    sessionsRead: { completed: 49, total: 49 },
+    sessionsGate: { kept: 49, outsideRepository: 0, excluded: 0, unreadable: 0 },
+    checksDone: true,
+    checksResult: { windowSessions: 49, deferredEvidence: 0 },
   }
 
   it("uses the latched values while the steps have not all docked", () => {
     const snapshot = deriveOverviewProgress(
       firstRunLatch,
       inputs(),
-      { ...INITIAL_DOCK, stepsDocked: 2 },
+      "agents",
+      null,
+      true,
       INITIAL_LAST_PASS,
     )
-    expect(snapshot.find.rows).toEqual([
+    expect(snapshot.agents.rows).toEqual([
       { agent: "claude-code", label: "Claude Code", sessions: 49, done: true },
     ])
-    expect(snapshot.check).toEqual({
+    expect(snapshot.checks).toEqual({
       done: true,
       windowSessions: 49,
       pendingEvidence: 0,
@@ -242,14 +280,9 @@ describe("deriveOverviewProgress in first-run mode", () => {
       lastRead: { completed: 49, total: 49 },
     }
     const live = inputs({ checksReport: report({ windowSessions: 49, pendingEvidence: 1 }) })
-    const snapshot = deriveOverviewProgress(
-      firstRunLatch,
-      live,
-      { ...INITIAL_DOCK, stepsDocked: 3 },
-      lastPass,
-    )
+    const snapshot = deriveOverviewProgress(firstRunLatch, live, "fixes", null, true, lastPass)
     // The numbers are the same at the moment of the switch, so no jump.
-    expect(snapshot.check).toEqual({
+    expect(snapshot.checks).toEqual({
       done: true,
       windowSessions: 49,
       pendingEvidence: 1,
@@ -257,31 +290,35 @@ describe("deriveOverviewProgress in first-run mode", () => {
     })
   })
 
-  it("keeps find.done, read.done and check.done at the latch's own meaning", () => {
+  it("keeps agents.done, read.done and check.done at the latch's own meaning", () => {
     const snapshot = deriveOverviewProgress(
       firstRunLatch,
       inputs(),
-      { ...INITIAL_DOCK, stepsDocked: 3 },
+      "fixes",
+      null,
+      true,
       INITIAL_LAST_PASS,
     )
-    expect(snapshot.find.done).toBe(true)
-    expect(snapshot.read.done).toBe(true)
-    expect(snapshot.check.done).toBe(true)
+    expect(snapshot.agents.done).toBe(true)
+    expect(snapshot.sessions.done).toBe(true)
+    expect(snapshot.checks.done).toBe(true)
   })
 
-  it("finishes the check step when every pending session is deferred, such as a live session", () => {
+  it("finishes the Checks step when every pending session is deferred, such as a live session", () => {
     const latch: FirstRunLatch = {
       ...firstRunLatch,
-      step3Done: true,
-      step3Check: { windowSessions: 44, deferredEvidence: 1 },
+      checksDone: true,
+      checksResult: { windowSessions: 44, deferredEvidence: 1 },
     }
     const snapshot = deriveOverviewProgress(
       latch,
       inputs(),
-      { ...INITIAL_DOCK, stepsDocked: 2 },
+      "agents",
+      null,
+      true,
       INITIAL_LAST_PASS,
     )
-    expect(snapshot.check).toEqual({
+    expect(snapshot.checks).toEqual({
       done: true,
       windowSessions: 44,
       pendingEvidence: 1,
@@ -292,8 +329,8 @@ describe("deriveOverviewProgress in first-run mode", () => {
   it("stays done when a live session goes pending again after a turn", () => {
     const latch: FirstRunLatch = {
       ...firstRunLatch,
-      step3Done: true,
-      step3Check: { windowSessions: 44, deferredEvidence: 0 },
+      checksDone: true,
+      checksResult: { windowSessions: 44, deferredEvidence: 0 },
     }
     const requeued = inputs({
       checksReport: report({ evidenceSettled: false, windowSessions: 44, pendingEvidence: 1 }),
@@ -302,10 +339,12 @@ describe("deriveOverviewProgress in first-run mode", () => {
     const snapshot = deriveOverviewProgress(
       latch,
       requeued,
-      { ...INITIAL_DOCK, stepsDocked: 2 },
+      "agents",
+      null,
+      true,
       INITIAL_LAST_PASS,
     )
-    expect(snapshot.check.done).toBe(true)
+    expect(snapshot.checks.done).toBe(true)
   })
 })
 
@@ -316,8 +355,15 @@ describe("deriveOverviewProgress", () => {
       onboardingCompleted: true,
     })
     const latch = advanceFirstRunLatch(INITIAL_FIRST_RUN_LATCH, emptyInputs)
-    const snapshot = deriveOverviewProgress(latch, emptyInputs, INITIAL_DOCK, INITIAL_LAST_PASS)
-    expect(snapshot.check).toEqual({
+    const snapshot = deriveOverviewProgress(
+      latch,
+      emptyInputs,
+      "agents",
+      null,
+      true,
+      INITIAL_LAST_PASS,
+    )
+    expect(snapshot.checks).toEqual({
       done: true,
       windowSessions: 0,
       pendingEvidence: 0,
@@ -335,10 +381,12 @@ describe("deriveOverviewProgress", () => {
     const snapshot = deriveOverviewProgress(
       INITIAL_FIRST_RUN_LATCH,
       inputs({ checksReport }),
-      INITIAL_DOCK,
+      "agents",
+      null,
+      true,
       INITIAL_LAST_PASS,
     )
-    expect(snapshot.check.windowSessions).toBe(40)
+    expect(snapshot.checks.windowSessions).toBe(40)
     expect(snapshot.failingCount).toBe(0)
     expect(snapshot.categories).toHaveLength(2)
   })
@@ -355,7 +403,9 @@ describe("deriveOverviewProgress", () => {
     const snapshot = deriveOverviewProgress(
       INITIAL_FIRST_RUN_LATCH,
       inputs({ checksReport }),
-      INITIAL_DOCK,
+      "agents",
+      null,
+      true,
       INITIAL_LAST_PASS,
     )
     expect(snapshot.failingCount).toBe(1)
@@ -367,11 +417,13 @@ describe("deriveOverviewProgress", () => {
     ])
   })
 
-  it("shows the history line only while the background pass is pending or running", () => {
+  it("shows the history line only while the background pass runs with sessions to report", () => {
     const withoutHistory = deriveOverviewProgress(
       INITIAL_FIRST_RUN_LATCH,
       inputs(),
-      INITIAL_DOCK,
+      "agents",
+      null,
+      true,
       INITIAL_LAST_PASS,
     )
     expect(withoutHistory.history).toBeNull()
@@ -381,7 +433,9 @@ describe("deriveOverviewProgress", () => {
       inputs({
         scanStatus: status({ history: { state: "running", completed: 1_204, total: 6_300 } }),
       }),
-      INITIAL_DOCK,
+      "agents",
+      null,
+      true,
       INITIAL_LAST_PASS,
     )
     expect(running.history).toEqual({ completed: 1_204, total: 6_300 })
@@ -391,10 +445,27 @@ describe("deriveOverviewProgress", () => {
       inputs({
         scanStatus: status({ history: { state: "done", completed: 6_300, total: 6_300 } }),
       }),
-      INITIAL_DOCK,
+      "agents",
+      null,
+      true,
       INITIAL_LAST_PASS,
     )
     expect(done.history).toBeNull()
+
+    for (const history of [
+      { state: "pending" as const, completed: 0, total: 0 },
+      { state: "running" as const, completed: 0, total: 0 },
+    ]) {
+      const empty = deriveOverviewProgress(
+        INITIAL_FIRST_RUN_LATCH,
+        inputs({ scanStatus: status({ history }) }),
+        "agents",
+        null,
+        true,
+        INITIAL_LAST_PASS,
+      )
+      expect(empty.history).toBeNull()
+    }
   })
 
   it("maps the discovery slug to a display label", () => {
@@ -406,10 +477,12 @@ describe("deriveOverviewProgress", () => {
           foundByAgent: [{ agent: "codex", sessions: 88, done: true }],
         }),
       }),
-      INITIAL_DOCK,
+      "agents",
+      null,
+      true,
       INITIAL_LAST_PASS,
     )
-    expect(snapshot.find.rows).toEqual([
+    expect(snapshot.agents.rows).toEqual([
       { agent: "codex", label: "Codex", sessions: 88, done: true },
     ])
   })

@@ -433,6 +433,8 @@ type FirstRunActionKind =
   | "folder_access_granted"
   | "include_non_repo_folders"
   | "live_usage_started"
+  | "live_usage_skipped"
+  | "enhance_opened"
 
 function isNativePeekInteraction(interaction: Interaction): boolean {
   switch (interaction.kind) {
@@ -476,6 +478,23 @@ export function noteInteraction(interaction: Interaction): void {
 export async function finishFirstRun(): Promise<AppSettings> {
   if (!hasShell()) return { ...DEFAULT_SETTINGS, onboardingCompleted: true }
   return invoke<AppSettings>("finish_first_run")
+}
+
+/** A stage of the first-run takeover's backend gate that the renderer
+ *  opens. Rust `FirstRunStage` also has `Welcome`, where a first run starts,
+ *  and `Done`, which `finish_first_run` sets. */
+export type FirstRunStage = "agents" | "sessions" | "checks"
+
+/**
+ * Open the backend gate up to `stage`, so the scan pass and the evidence
+ * worker waiting at it can proceed.
+ *
+ * The gate only moves forward: an earlier stage than the one already open is
+ * a no-op on the backend, so a stray or repeated call is harmless.
+ */
+export async function advanceFirstRun(stage: FirstRunStage): Promise<void> {
+  if (!hasShell()) return
+  await invoke("advance_first_run", { stage })
 }
 
 /**
@@ -933,6 +952,16 @@ export async function onLiveUsageChanged(
   return listen<LiveUsageSummaryPayload>(LIVE_USAGE_CHANGED_EVENT, (event) =>
     handler(event.payload),
   )
+}
+
+/** Event the shell emits after limit factor learning changes the estimates.
+ *  Mirrors `LIMIT_ESTIMATES_CHANGED_EVENT` in `src-tauri/src/usage_alerts.rs`. */
+const LIMIT_ESTIMATES_CHANGED_EVENT = "limit-estimates:changed"
+
+/** Subscribe to changed limit estimates. The result unsubscribes. */
+export async function onLimitEstimatesChanged(handler: () => void): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen(LIMIT_ESTIMATES_CHANGED_EVENT, () => handler())
 }
 
 /** Event the insights worker emits when its pool-wide backlog starts or

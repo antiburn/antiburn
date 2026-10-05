@@ -2,6 +2,7 @@ macro_rules! with_app_commands {
     ($callback:ident) => {
         $callback! {
             commands::add_scan_root => "add_scan_root",
+            commands::advance_first_run => "advance_first_run",
             remote_sessions::add_remote_host => "add_remote_host",
             commands::app_info => "app_info",
             commands::apply_prepared_burn_check_operation => "apply_prepared_burn_check_operation",

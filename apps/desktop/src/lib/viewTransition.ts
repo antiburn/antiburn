@@ -9,15 +9,19 @@ import { flushSync } from "react-dom"
  * the change before the browser takes the new snapshot. Without view
  * transition support, or when the reader asks for reduced motion, the change
  * applies at once.
+ *
+ * Returns the transition's `finished` promise, so a caller can sequence work
+ * after the animation lands — a resolved promise when there is no
+ * transition, so every caller can `await` the result the same way.
  */
-export function withViewTransition(update: () => void): void {
+export function withViewTransition(update: () => void): Promise<void> {
   if (
     typeof document === "undefined" ||
     typeof document.startViewTransition !== "function" ||
     window.matchMedia("(prefers-reduced-motion: reduce)").matches
   ) {
     update()
-    return
+    return Promise.resolve()
   }
-  document.startViewTransition(() => flushSync(update))
+  return document.startViewTransition(() => flushSync(update)).finished
 }

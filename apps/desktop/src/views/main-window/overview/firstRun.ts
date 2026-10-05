@@ -1,16 +1,11 @@
 // The Overview's first-run latch. Decides, once per session, whether to show
-// the find/read/check steps block, and remembers each step's own numbers so
+// the Agents, Sessions and Checks steps block, and remembers each step's own numbers so
 // a later routine pass does not reset a checklist the reader already saw.
 // Pure code, with no module state, so a test drives it without any IPC
 // mocking.
 
 import type { ChecksReportPayload } from "../../../lib/insightsIpc"
 import type { AgentFoundCount, ReadGateCounts, ScanStatus } from "../../../lib/ipc"
-
-/** The wait after the last step finishes, before the first step moves down. */
-export const DOCK_START_DELAY_MS = 700
-/** The pause between two steps that move down. */
-export const DOCK_STEP_PAUSE_MS = 450
 
 export interface FirstRunInputs {
   scanStatus: ScanStatus | null
@@ -24,7 +19,7 @@ export interface FirstRunInputs {
   /**
    * Whether `checksReport` was requested after the last scan pass finished.
    * A report from before that point can miss the sessions the pass saved,
-   * so step 3 does not latch on it.
+   * so the Checks step does not latch on it.
    */
   checksReportCurrent: boolean
 }
@@ -33,13 +28,13 @@ export interface FirstRunLatch {
   /** Whether the "show steps this session" question has been answered. */
   decided: boolean
   showSteps: boolean
-  step1Done: boolean
-  step1Rows: AgentFoundCount[]
-  step2Done: boolean
-  step2Read: { completed: number; total: number }
-  step2Gate: ReadGateCounts | null
-  step3Done: boolean
-  step3Check: { windowSessions: number; deferredEvidence: number }
+  agentsDone: boolean
+  agentsFound: AgentFoundCount[]
+  sessionsDone: boolean
+  sessionsRead: { completed: number; total: number }
+  sessionsGate: ReadGateCounts | null
+  checksDone: boolean
+  checksResult: { windowSessions: number; deferredEvidence: number }
 }
 
 export const INITIAL_FIRST_RUN_LATCH: FirstRunLatch = {
@@ -49,13 +44,13 @@ export const INITIAL_FIRST_RUN_LATCH: FirstRunLatch = {
   // {@link advanceFirstRunLatch} decides, or {@link resetFirstRunLatch} forces
   // it on.
   showSteps: false,
-  step1Done: false,
-  step1Rows: [],
-  step2Done: false,
-  step2Read: { completed: 0, total: 0 },
-  step2Gate: null,
-  step3Done: false,
-  step3Check: { windowSessions: 0, deferredEvidence: 0 },
+  agentsDone: false,
+  agentsFound: [],
+  sessionsDone: false,
+  sessionsRead: { completed: 0, total: 0 },
+  sessionsGate: null,
+  checksDone: false,
+  checksResult: { windowSessions: 0, deferredEvidence: 0 },
 }
 
 /**
@@ -82,15 +77,22 @@ export const INITIAL_FIRST_RUN_LATCH: FirstRunLatch = {
  * it marks evidence unsettled again — intended, since the device already
  * finished a first run.
  *
- * Steps 1 and 2 each latch their own numbers the first time they finish, so
+ * The Agents and Sessions steps each latch their own numbers the first time they finish, so
  * a later routine pass — every 5 minutes, and every launch, per the scan
  * design — does not reset a checklist the reader already saw.
  *
- * Step 3 latches when the worker has no work it can claim: every pending
+ * The Agents step finishes once discovery has found every agent's sessions, read
+ * straight from `foundByAgent`: non-empty, and every entry done. A full pass
+ * now waits at the backend's first-run sessions gate before it moves past the
+ * "finding" phase — until the reader presses Agents' Next — so `phase` alone
+ * can stay `"finding"` long after discovery itself is done. Reading the
+ * phase instead, as before, would never finish the Agents step during that wait.
+ *
+ * The Checks step latches when the worker has no work it can claim: every pending
  * session is deferred by a retry backoff. A live session changes during its
  * check, backs off, and goes pending again after each turn, so neither
  * `evidenceSettled` nor a live pending count can tell when the first check
- * is done. In the steps block, step 3 also waits for step 2 and for a report
+ * is done. In the steps block, the Checks step also waits for the Sessions step and for a report
  * requested after the pass finished, so a report from before the pass saved
  * its sessions cannot latch an empty result.
  */
@@ -106,22 +108,23 @@ export function advanceFirstRunLatch(
       showSteps: !inputs.onboardingCompleted,
     }
   }
-  const phase = inputs.scanStatus?.phase
-  if (!next.step1Done && phase != null && phase !== "finding" && phase !== "idle") {
-    next = { ...next, step1Done: true, step1Rows: inputs.scanStatus?.foundByAgent ?? [] }
+  const found = inputs.scanStatus?.foundByAgent ?? []
+  if (!next.agentsDone && found.length > 0 && found.every((row) => row.done)) {
+    next = { ...next, agentsDone: true, agentsFound: found }
   }
-  if (!next.step2Done && phase === "saving" && inputs.scanStatus?.gate) {
+  const phase = inputs.scanStatus?.phase
+  if (!next.sessionsDone && phase === "saving" && inputs.scanStatus?.gate) {
     next = {
       ...next,
-      step2Done: true,
-      step2Read: inputs.scanStatus.read,
-      step2Gate: inputs.scanStatus.gate,
+      sessionsDone: true,
+      sessionsRead: inputs.scanStatus.read,
+      sessionsGate: inputs.scanStatus.gate,
     }
   }
   const report = inputs.checksReport
-  const readSettled = !next.showSteps || (next.step2Done && inputs.checksReportCurrent)
+  const readSettled = !next.showSteps || (next.sessionsDone && inputs.checksReportCurrent)
   if (
-    !next.step3Done &&
+    !next.checksDone &&
     next.decided &&
     readSettled &&
     report != null &&
@@ -129,8 +132,8 @@ export function advanceFirstRunLatch(
   ) {
     next = {
       ...next,
-      step3Done: true,
-      step3Check: {
+      checksDone: true,
+      checksResult: {
         windowSessions: report.windowSessions,
         deferredEvidence: report.deferredEvidence,
       },
@@ -147,18 +150,18 @@ export function resetFirstRunLatch(): FirstRunLatch {
 }
 
 /**
- * Un-latch step 2, so the pass a reader's own "Include them" click
+ * Un-latch the Sessions step, so the pass a reader's own "Include them" click
  * triggers replaces the read outcome they just asked to change — unlike a
- * routine tick, this pass has a reader waiting to see its result. Step 3
- * un-latches too, because the pass adds sessions to check. Step 1 is
+ * routine tick, this pass has a reader waiting to see its result. The Checks step
+ * un-latches too, because the pass adds sessions to check. The Agents step is
  * untouched: discovery does not depend on this setting.
  */
-export function unlatchReadOutcome(latch: FirstRunLatch): FirstRunLatch {
+export function unlatchSessionsOutcome(latch: FirstRunLatch): FirstRunLatch {
   return {
     ...latch,
-    step2Done: false,
-    step2Gate: null,
-    step3Done: false,
-    step3Check: INITIAL_FIRST_RUN_LATCH.step3Check,
+    sessionsDone: false,
+    sessionsGate: null,
+    checksDone: false,
+    checksResult: INITIAL_FIRST_RUN_LATCH.checksResult,
   }
 }

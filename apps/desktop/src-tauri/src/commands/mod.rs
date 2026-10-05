@@ -41,6 +41,7 @@ use crate::dto::{
     SessionHygieneRequest, SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary,
     SessionRelation, SessionRelations, SubagentMember,
 };
+use crate::first_run_gate::{FirstRunGate, FirstRunStage};
 pub(crate) mod local_usage;
 pub(crate) mod quota;
 #[cfg(test)]
@@ -535,6 +536,7 @@ pub async fn finish_first_run(app: tauri::AppHandle) -> CommandResult<AppSetting
     // Only the save that finishes the first run records it, so a repeated
     // call or a failed save never reports a finish.
     if !previous.onboarding_completed && saved.onboarding_completed {
+        app.state::<FirstRunGate>().finish();
         let analytics_app = app.clone();
         run_blocking(move || {
             crate::analytics::record_interaction(
@@ -546,6 +548,14 @@ pub async fn finish_first_run(app: tauri::AppHandle) -> CommandResult<AppSetting
         .await?;
     }
     Ok(saved)
+}
+
+/// Open the first-run gate up to `stage`, from the reader's own Next or Show
+/// press. The gate only ever opens further — see
+/// [`crate::first_run_gate::FirstRunGate::advance`].
+#[tauri::command]
+pub fn advance_first_run(app: tauri::AppHandle, stage: FirstRunStage) {
+    app.state::<FirstRunGate>().advance(stage);
 }
 
 /// Start live usage from a deliberate click in the Overview.
@@ -2476,6 +2486,14 @@ pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
 pub(crate) async fn reset_first_run(app: tauri::AppHandle) -> CommandResult<()> {
     // TEMP ftue-diag
     ::tracing::info!(event = "ftue_diag", message = "reset_first_run: start");
+    // The gate goes back to the start before anything else runs, so the pass
+    // the wipe is about to request waits at the agents gate instead of running
+    // straight through on the stage this run already reached.
+    app.state::<FirstRunGate>().reset();
+    // A pass already waiting at a gate must end as cancelled rather than
+    // hold the scan slot forever once the gate has just gone back to
+    // Welcome.
+    app.state::<ScanController>().request_cancel();
     let removed = wipe_local_session_data(&app).await;
     // TEMP ftue-diag
     ::tracing::info!(

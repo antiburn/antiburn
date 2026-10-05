@@ -6,7 +6,7 @@ import {
   INITIAL_FIRST_RUN_LATCH,
   advanceFirstRunLatch,
   resetFirstRunLatch,
-  unlatchReadOutcome,
+  unlatchSessionsOutcome,
   type FirstRunInputs,
   type FirstRunLatch,
 } from "./firstRun"
@@ -182,11 +182,11 @@ describe("advanceFirstRunLatch", () => {
       }),
     )
     expect(latch.showSteps).toBe(true)
-    expect(latch.step1Done).toBe(true)
-    expect(latch.step1Rows).toEqual([{ agent: "claude-code", sessions: 412, done: true }])
-    expect(latch.step2Done).toBe(true)
-    expect(latch.step2Read).toEqual({ completed: 500, total: 500 })
-    expect(latch.step2Gate).toEqual({
+    expect(latch.agentsDone).toBe(true)
+    expect(latch.agentsFound).toEqual([{ agent: "claude-code", sessions: 412, done: true }])
+    expect(latch.sessionsDone).toBe(true)
+    expect(latch.sessionsRead).toEqual({ completed: 500, total: 500 })
+    expect(latch.sessionsGate).toEqual({
       kept: 480,
       outsideRepository: 20,
       excluded: 0,
@@ -194,7 +194,36 @@ describe("advanceFirstRunLatch", () => {
     })
   })
 
-  it("latches step 1 and 2 once, and ignores a later routine pass resetting them", () => {
+  it("finishes the Agents step while the pass still waits at the sessions gate with phase 'finding'", () => {
+    // The backend's first-run gate holds the pass's phase at "finding" until
+    // the reader presses Agents' Next, even though discovery itself is done.
+    const latch = advanceFirstRunLatch(
+      INITIAL_FIRST_RUN_LATCH,
+      inputs({
+        scanStatus: status({
+          phase: "finding",
+          foundByAgent: [{ agent: "codex", sessions: 3, done: true }],
+        }),
+      }),
+    )
+    expect(latch.agentsDone).toBe(true)
+    expect(latch.agentsFound).toEqual([{ agent: "codex", sessions: 3, done: true }])
+  })
+
+  it("keeps the Agents step open while any agent is still searching", () => {
+    const latch = advanceFirstRunLatch(
+      INITIAL_FIRST_RUN_LATCH,
+      inputs({
+        scanStatus: status({
+          phase: "finding",
+          foundByAgent: [{ agent: "codex", sessions: 3, done: false }],
+        }),
+      }),
+    )
+    expect(latch.agentsDone).toBe(false)
+  })
+
+  it("latches the Agents and Sessions steps once, and ignores a later routine pass resetting them", () => {
     let latch = advanceFirstRunLatch(
       INITIAL_FIRST_RUN_LATCH,
       inputs({
@@ -207,8 +236,8 @@ describe("advanceFirstRunLatch", () => {
         checksReport: report({ evidenceSettled: true }),
       }),
     )
-    expect(latch.step1Done).toBe(true)
-    expect(latch.step2Done).toBe(true)
+    expect(latch.agentsDone).toBe(true)
+    expect(latch.sessionsDone).toBe(true)
 
     // A routine 5-minute tick starts a fresh pass: discovery resets to
     // empty and the phase moves back to "finding".
@@ -223,18 +252,18 @@ describe("advanceFirstRunLatch", () => {
         checksReport: report({ evidenceSettled: true }),
       }),
     )
-    expect(latch.step1Rows).toEqual([{ agent: "codex", sessions: 88, done: true }])
-    expect(latch.step2Read).toEqual({ completed: 88, total: 88 })
+    expect(latch.agentsFound).toEqual([{ agent: "codex", sessions: 88, done: true }])
+    expect(latch.sessionsRead).toEqual({ completed: 88, total: 88 })
   })
 })
 
-describe("advanceFirstRunLatch step 3", () => {
+describe("advanceFirstRunLatch the Checks step", () => {
   const readDone: FirstRunLatch = {
     ...resetFirstRunLatch(),
-    step1Done: true,
-    step2Done: true,
-    step2Read: { completed: 44, total: 44 },
-    step2Gate: { kept: 44, outsideRepository: 0, excluded: 0, unreadable: 0 },
+    agentsDone: true,
+    sessionsDone: true,
+    sessionsRead: { completed: 44, total: 44 },
+    sessionsGate: { kept: 44, outsideRepository: 0, excluded: 0, unreadable: 0 },
   }
 
   it("finishes when every pending session is deferred, such as a live session", () => {
@@ -250,8 +279,8 @@ describe("advanceFirstRunLatch step 3", () => {
         checksReportCurrent: true,
       }),
     )
-    expect(latch.step3Done).toBe(true)
-    expect(latch.step3Check).toEqual({ windowSessions: 44, deferredEvidence: 1 })
+    expect(latch.checksDone).toBe(true)
+    expect(latch.checksResult).toEqual({ windowSessions: 44, deferredEvidence: 1 })
   })
 
   it("keeps running while a pending session can still be claimed", () => {
@@ -267,7 +296,7 @@ describe("advanceFirstRunLatch step 3", () => {
         checksReportCurrent: true,
       }),
     )
-    expect(latch.step3Done).toBe(false)
+    expect(latch.checksDone).toBe(false)
   })
 
   it("does not latch on a report requested before the pass finished", () => {
@@ -277,7 +306,7 @@ describe("advanceFirstRunLatch step 3", () => {
       readDone,
       inputs({ checksReport: report({ windowSessions: 0 }), checksReportCurrent: false }),
     )
-    expect(latch.step3Done).toBe(false)
+    expect(latch.checksDone).toBe(false)
   })
 
   it("stays done when a live session goes pending again after a turn", () => {
@@ -296,61 +325,61 @@ describe("advanceFirstRunLatch step 3", () => {
         checksReportCurrent: true,
       }),
     )
-    expect(latch.step3Done).toBe(true)
+    expect(latch.checksDone).toBe(true)
   })
 
-  it("does not wait for the read step when the steps block is hidden", () => {
+  it("does not wait for the Sessions step when the steps block is hidden", () => {
     const latch = advanceFirstRunLatch(
       INITIAL_FIRST_RUN_LATCH,
       inputs({ checksReport: report({ windowSessions: 44 }), onboardingCompleted: true }),
     )
     expect(latch.showSteps).toBe(false)
-    expect(latch.step3Done).toBe(true)
+    expect(latch.checksDone).toBe(true)
   })
 })
 
 describe("resetFirstRunLatch", () => {
-  it("brings the steps block back and clears the latched step 1 and 2 numbers", () => {
+  it("brings the steps block back and clears the latched Agents and Sessions numbers", () => {
     const settled: FirstRunLatch = {
       decided: true,
       showSteps: false,
-      step1Done: true,
-      step1Rows: [{ agent: "codex", sessions: 88, done: true }],
-      step2Done: true,
-      step2Read: { completed: 88, total: 88 },
-      step2Gate: { kept: 88, outsideRepository: 0, excluded: 0, unreadable: 0 },
-      step3Done: true,
-      step3Check: { windowSessions: 88, deferredEvidence: 0 },
+      agentsDone: true,
+      agentsFound: [{ agent: "codex", sessions: 88, done: true }],
+      sessionsDone: true,
+      sessionsRead: { completed: 88, total: 88 },
+      sessionsGate: { kept: 88, outsideRepository: 0, excluded: 0, unreadable: 0 },
+      checksDone: true,
+      checksResult: { windowSessions: 88, deferredEvidence: 0 },
     }
     const latch = resetFirstRunLatch()
     expect(latch.decided).toBe(true)
     expect(latch.showSteps).toBe(true)
-    expect(latch.step1Done).toBe(false)
-    expect(latch.step2Done).toBe(false)
-    expect(latch.step3Done).toBe(false)
+    expect(latch.agentsDone).toBe(false)
+    expect(latch.sessionsDone).toBe(false)
+    expect(latch.checksDone).toBe(false)
     expect(latch).not.toEqual(settled)
   })
 })
 
-describe("unlatchReadOutcome", () => {
+describe("unlatchSessionsOutcome", () => {
   it("un-latches steps 2 and 3, so the pass an 'Include them' click triggers replaces them", () => {
     const done: FirstRunLatch = {
       decided: true,
       showSteps: true,
-      step1Done: true,
-      step1Rows: [{ agent: "codex", sessions: 88, done: true }],
-      step2Done: true,
-      step2Read: { completed: 88, total: 88 },
-      step2Gate: { kept: 68, outsideRepository: 20, excluded: 0, unreadable: 0 },
-      step3Done: true,
-      step3Check: { windowSessions: 68, deferredEvidence: 0 },
+      agentsDone: true,
+      agentsFound: [{ agent: "codex", sessions: 88, done: true }],
+      sessionsDone: true,
+      sessionsRead: { completed: 88, total: 88 },
+      sessionsGate: { kept: 68, outsideRepository: 20, excluded: 0, unreadable: 0 },
+      checksDone: true,
+      checksResult: { windowSessions: 68, deferredEvidence: 0 },
     }
-    const latch = unlatchReadOutcome(done)
-    expect(latch.step2Done).toBe(false)
-    expect(latch.step2Gate).toBeNull()
-    expect(latch.step3Done).toBe(false)
+    const latch = unlatchSessionsOutcome(done)
+    expect(latch.sessionsDone).toBe(false)
+    expect(latch.sessionsGate).toBeNull()
+    expect(latch.checksDone).toBe(false)
     // Discovery is unaffected by this setting.
-    expect(latch.step1Done).toBe(true)
-    expect(latch.step1Rows).toEqual([{ agent: "codex", sessions: 88, done: true }])
+    expect(latch.agentsDone).toBe(true)
+    expect(latch.agentsFound).toEqual([{ agent: "codex", sessions: 88, done: true }])
   })
 })
