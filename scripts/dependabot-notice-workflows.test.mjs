@@ -90,6 +90,17 @@ test("generation installs without lifecycle scripts and uploads only changed not
     "${{ runner.temp }}/dependabot-notices/THIRD_PARTY_NOTICES",
   );
   assert.match(upload.if, /steps\.notice\.outputs\.changed == 'true'/);
+  const lookup = write.jobs.prepare.steps.find((step) =>
+    step.name.startsWith("Find the exact"),
+  );
+  const lookupName = lookup.run.match(/artifact_name="([^"]+)"/)?.[1];
+  assert.equal(
+    upload.with.name.replace(
+      "${{ github.event.pull_request.head.sha }}",
+      "${head_sha}",
+    ),
+    lookupName,
+  );
   assert.doesNotMatch(
     flatten(generation.jobs.generate).join("\n"),
     /secrets\./,
