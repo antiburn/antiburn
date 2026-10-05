@@ -111,6 +111,10 @@ test("write workflow trusts only successful same-repository generation runs", ()
   assert.equal(prepare.permissions.actions, "read");
   assert.equal(prepare.permissions["pull-requests"], "read");
   assert.equal(write.jobs.write.permissions.contents, "read");
+  assert.match(
+    prepare.steps.find((step) => step.name.startsWith("Find the exact")).run,
+    /gh api -X GET/,
+  );
 });
 
 test("the PAT appears only in the final guarded push step", () => {

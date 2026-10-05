@@ -47,7 +47,7 @@ jobs:
         run: |
           set -euo pipefail
           git check-ref-format --branch "$HEAD_BRANCH"
-          pull_requests="$(gh api "repos/${GITHUB_REPOSITORY}/pulls" -f state=open -f head="${HEAD_OWNER}:${HEAD_BRANCH}" -f base=main -f per_page=100)"
+          pull_requests="$(gh api -X GET "repos/${GITHUB_REPOSITORY}/pulls" -f state=open -f head="${HEAD_OWNER}:${HEAD_BRANCH}" -f base=main -f per_page=100)"
           source="$(printf '%s' "$pull_requests" | node scripts/verify-dependabot-notice-run.mjs)"
           if [[ "$(printf '%s' "$source" | jq -r '.eligible // true')" == "false" ]]; then
             echo "No open Dependabot pull request remains for this workflow run."
