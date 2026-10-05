@@ -4,6 +4,9 @@ use super::{
     JevAnswer, JevEvidenceReference, JevInputWindow, JevQuestion, JevWorkItem, JevWorkItemResult,
     highest_probability_choice,
 };
+use crate::checks::ignored_instructions::sha256_hex;
+use serde_json::json;
+use std::collections::BTreeMap;
 
 pub trait ReferenceClassifier {
     type Properties;
@@ -20,9 +23,6 @@ pub trait ReferenceClassifier {
         reference_classification(reference, &self.revision(), self.questions(), evidence)
     }
 }
-use serde_json::json;
-use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 
 pub fn reference_classification(
     reference_context: serde_json::Value,
@@ -39,9 +39,8 @@ pub fn reference_classification(
         &evidence,
     ))
     .map_err(|_| super::JevError::InvalidCheckContext)?;
-    let digest = Sha256::digest(bytes);
     Ok(JevWorkItem {
-        id: format!("classification-{:x}", digest),
+        id: format!("classification-{}", sha256_hex(&bytes)),
         window: JevInputWindow {
             fields: json!({"reference": reference_context}),
             evidence,
