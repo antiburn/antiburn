@@ -231,9 +231,12 @@ fn serialize_selected_cursor_progress(
     })?)
 }
 
+/// `rebased_from` names the saved revision that a fresh backlog pass continues.
+/// The cursor then keeps its result and moves to `input_revision`.
 fn restore_selected_assessment(
     assessment: Option<&BurnCheckAssessment>,
     input_revision: &str,
+    rebased_from: Option<&str>,
 ) -> anyhow::Result<(
     AssessmentCursor,
     Option<CompactProgress>,
@@ -245,7 +248,7 @@ fn restore_selected_assessment(
         .unwrap_or_default();
     let round = cursor.round;
     let mut selected = selected.unwrap_or_default();
-    if cursor.input_revision.as_deref() != Some(input_revision)
+    if cursor.input_revision.as_deref() != Some(rebased_from.unwrap_or(input_revision))
         || selected.revision != SELECTED_CONTENT_PROGRESS_REVISION
     {
         selected = SelectedContentProgress {
@@ -259,6 +262,9 @@ fn restore_selected_assessment(
             prior_findings: assessment.map(carried_findings).unwrap_or_default(),
             ..Default::default()
         };
+    } else if rebased_from.is_some() {
+        cursor.input_revision = Some(input_revision.to_owned());
+        compact = None;
     }
     Ok((cursor, compact, selected))
 }
@@ -441,8 +447,9 @@ async fn run_candidate(
         .and_then(|assessment| assessment.input_revision.as_deref());
     let resumed_revision_changed = (saved_position.is_some() || resumed_backlog)
         && saved_revision != Some(input.input_revision.as_str());
+    let mut rebased_from = None;
     if resumed_revision_changed {
-        input = match prepare_input(
+        let normal = match prepare_input(
             store,
             candidate,
             None,
@@ -455,9 +462,24 @@ async fn run_candidate(
             PrepareInputOutcome::Ready(input) => *input,
             _ => return Ok(()),
         };
+        // A backlog pass always has a different revision from the normal pass
+        // that started it. If the normal input did not change, continue the
+        // backlog pass. Without this step, the worker starts the normal pass
+        // again in a loop and the backlog pass never runs.
+        if resumed_backlog
+            && saved_position.is_none()
+            && saved_revision == Some(normal.input_revision.as_str())
+        {
+            rebased_from = saved_revision;
+        } else {
+            input = normal;
+        }
     }
-    let (cursor, compact_progress, selected_progress) =
-        restore_selected_assessment(stored_before_queue.as_ref(), &input.input_revision)?;
+    let (cursor, compact_progress, selected_progress) = restore_selected_assessment(
+        stored_before_queue.as_ref(),
+        &input.input_revision,
+        rebased_from,
+    )?;
     let (mut cursor, compact_progress, mut selected_progress) = if stale_cursor {
         (
             AssessmentCursor {
@@ -1989,7 +2011,7 @@ mod settings_tests {
             request_count: 0,
         };
         let (mut restored, compact, mut selected) =
-            restore_selected_assessment(Some(&assessment), "revision").unwrap();
+            restore_selected_assessment(Some(&assessment), "revision", None).unwrap();
         assert!(compact.is_some());
         assert_eq!(restored.comparison_after.as_deref(), Some("comparison-2"));
         assert_eq!(restored.result, cursor.result);
@@ -2055,6 +2077,66 @@ mod settings_tests {
     }
 
     #[test]
+    fn fresh_backlog_pass_continues_from_the_normal_pass_revision() {
+        let mut previous = result(&["prior"]);
+        previous.input_revision = "normal".into();
+        let cursor = AssessmentCursor {
+            input_revision: Some("normal".into()),
+            round: 2,
+            backlog: true,
+            result: Some(previous.clone()),
+            ..Default::default()
+        };
+        let selected = SelectedContentProgress {
+            revision: SELECTED_CONTENT_PROGRESS_REVISION,
+            cursor: None,
+        };
+        let context = JevSessionContext {
+            input_revision: "normal".into(),
+            session_identity: "session".into(),
+            check_context: serde_json::Value::Null,
+            limitations: Vec::new(),
+            evidence_store: Default::default(),
+            reference_snapshots: Vec::new(),
+        };
+        let assessment = BurnCheckAssessment {
+            key: SessionKey::new("native", "claude-code", "session"),
+            check_id: CHECK_ID.into(),
+            input_revision: Some("normal".into()),
+            status: "failed".into(),
+            progress_json: serialize_selected_cursor_progress(
+                &cursor,
+                &cursor.progress,
+                &[],
+                &context,
+                &mut BTreeMap::new(),
+                Some(&selected),
+            )
+            .unwrap(),
+            result_json: Some(serde_json::to_string(&previous).unwrap()),
+            result_revision: Some("normal".into()),
+            request_count: 1,
+        };
+
+        let (rebased, compact, _) =
+            restore_selected_assessment(Some(&assessment), "backlog", Some("normal")).unwrap();
+        assert!(rebased.backlog);
+        assert_eq!(rebased.round, 2);
+        assert_eq!(rebased.input_revision.as_deref(), Some("backlog"));
+        assert_eq!(rebased.result.unwrap().findings.len(), 1);
+        assert!(compact.is_none());
+
+        for rebased_from in [None, Some("changed")] {
+            let (reset, _, _) =
+                restore_selected_assessment(Some(&assessment), "backlog", rebased_from).unwrap();
+            assert!(!reset.backlog);
+            assert!(reset.result.is_none());
+            assert_eq!(reset.round, 3);
+            assert_eq!(reset.prior_findings, previous.findings);
+        }
+    }
+
+    #[test]
     fn legacy_and_changed_keyset_progress_reset_work_but_keep_prior_findings() {
         let previous = result(&["prior-action"]);
         for selected_content in [
@@ -2083,7 +2165,7 @@ mod settings_tests {
                 assessment.progress_json = value.to_string();
             }
             let (cursor, compact, selected) =
-                restore_selected_assessment(Some(&assessment), "revision").unwrap();
+                restore_selected_assessment(Some(&assessment), "revision", None).unwrap();
             assert!(compact.is_none());
             assert!(selected.cursor.is_none());
             assert_eq!(selected.revision, SELECTED_CONTENT_PROGRESS_REVISION);
