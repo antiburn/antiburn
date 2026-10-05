@@ -58,13 +58,24 @@ jobs:
             versionFromTag(process.env.REQUESTED_TAG);
           '
 
-      - name: Checkout tap
+      - name: Checkout public tap for pull request validation
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: antiburn/homebrew-tap
+          ref: main
+          path: tap
+          persist-credentials: false
+
+      - name: Checkout tap for release update
+        if: github.event_name != 'pull_request'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: antiburn/homebrew-tap
           ref: main
           path: tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          persist-credentials: true
 
       - name: Select release
         id: release
@@ -91,6 +102,7 @@ jobs:
           cp "$CASK_PATH" tap/Casks/antiburn.rb
 
       - name: Verify tap write access without changing it
+        if: github.event_name != 'pull_request'
         working-directory: tap
         run: git push --dry-run origin HEAD:main
 
