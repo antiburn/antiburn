@@ -34,7 +34,18 @@ antiburn supports Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode, K
 
 ## Install
 
-macOS or Linux:
+macOS 13 or later, with Homebrew (Apple silicon and Intel):
+
+```sh
+brew install --cask antiburn/tap/antiburn
+```
+
+If you already installed antiburn from a DMG or curl, quit it and move the old
+`/Applications/antiburn.app` to the Trash before installing with Homebrew. Keep
+the local data folder to preserve your settings and history. See
+[installation and updates](docs/support.md#installation-and-updates).
+
+Shell installer for macOS or Linux:
 
 ```sh
 curl -fsSL https://antiburn.com/install.sh | sh

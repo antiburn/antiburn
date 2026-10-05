@@ -6,15 +6,71 @@ listed here is not claimed — a cell that is absent means "not supported", not
 
 ## Platforms
 
-| Platform                                              | v1 support                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| macOS 13 or later (Apple silicon and Intel)           | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| macOS 12 or earlier                                   | Not supported; the bundle declares macOS 13 as its minimum                                                                                                                                                                                                                                                                                                                                                                                 |
-| Windows 11 (x86-64 and ARM64)                                   | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Windows 10                                            | Not tested; no support claimed                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Platform                                                                 | v1 support                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| macOS 13 or later (Apple silicon and Intel)                              | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| macOS 12 or earlier                                                      | Not supported; the bundle declares macOS 13 as its minimum                                                                                                                                                                                                                                                                                                                                                                                 |
+| Windows 11 (x86-64 and ARM64)                                            | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Windows 10                                                               | Not tested; no support claimed                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Linux, mainstream x86-64 and ARM64 (aarch64) desktops with a system tray | Supported; it runs on the X11 backend there — through XWayland on a Wayland session — because it places its own popover and notification windows; a session-wide `GDK_BACKEND` that only restates the Wayland default (plain `wayland`, or a wayland-first list naming `x11`) is overridden for antiburn alone, `ANTIBURN_GDK_BACKEND` forces a backend explicitly, and a session with no X server leaves that placement to the compositor |
-| Linux without a system tray (or an AppIndicator host) | Not supported — antiburn is a tray application                                                                                                                                                                                                                                                                                                                                                                                             |
-| Mobile                                                | Out of scope                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Linux without a system tray (or an AppIndicator host)                    | Not supported — antiburn is a tray application                                                                                                                                                                                                                                                                                                                                                                                             |
+| Mobile                                                                   | Out of scope                                                                                                                                                                                                                                                                                                                                                                                                                               |
+
+## Installation and updates
+
+On macOS 13 or later, install the native Apple silicon or Intel package with
+the owned Homebrew tap:
+
+```sh
+brew install --cask antiburn/tap/antiburn
+```
+
+If a manual or curl installation already exists, quit antiburn and move only
+`/Applications/antiburn.app` to the Trash first. Keep the local data folder.
+Homebrew then installs the same app identity and uses the existing settings
+and history. Use Homebrew or the in-app updater for that installation; do not
+overwrite it with the curl installer.
+
+The macOS/Linux shell installer and Windows PowerShell installer remain
+available in the [README](../README.md#install). Manual packages are available
+from the [desktop releases](https://github.com/antiburn/antiburn/releases).
+
+antiburn can update itself. The cask declares `auto_updates true`. Homebrew's
+upgrade behavior can depend on its version and settings. Request a Homebrew
+update explicitly:
+
+```sh
+brew update
+brew upgrade --cask antiburn/tap/antiburn
+```
+
+An in-app update changes the installed app but can leave Homebrew's version
+receipt behind. `brew info` can then show the previous Homebrew installation.
+Native Apple silicon and Intel tests with Homebrew 6.0.22 and 6.0.18 verified
+the 0.7.3-to-0.9.0 transition. While the tap still described 0.7.3, normal
+bulk, explicit, and `--greedy` cask upgrades all preserved the newer 0.9.0 app.
+Explicit and greedy upgrades reported that the latest version was already
+installed. After the tap advanced to 0.9.0, an explicit cask upgrade
+reconciled Homebrew's receipt to 0.9.0. This result is limited to that tested
+transition and those Homebrew versions.
+
+Normal Homebrew removal preserves settings and history:
+
+```sh
+brew uninstall --cask antiburn/tap/antiburn
+```
+
+To remove the app and its local data, settings, logs, cache, and webview state:
+
+```sh
+brew uninstall --cask --zap antiburn/tap/antiburn
+```
+
+Zap targets `~/Library/Application Support/ai.antiburn.desktop`,
+`~/Library/Caches/ai.antiburn.desktop`, `~/Library/Logs/antiburn`, and
+`~/Library/WebKit/ai.antiburn.desktop`. It preserves coding-agent transcripts,
+provider credentials, projects, and agent configuration changes. macOS can
+retain its own permission and historical login-item records after removal.
 
 ## Agents
 
@@ -22,20 +78,20 @@ antiburn reads session data that a coding agent has already written to disk.
 Plan limits are separate: antiburn can ask a provider for those figures as
 described in [Network](#network).
 
-| Agent          | Discovery                | Detailed session analysis             | Burn Check               | WSL           | Notes                                                                                                                                                                                                  |
-| -------------- | ------------------------ | ------------------------------------- | ------------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Claude Code    | Supported                | Supported                             | Supported                | Supported     |                                                                                                                                                                                                        |
-| Codex          | Supported                | Supported                             | Supported                | Supported     |                                                                                                                                                                                                        |
-| OpenCode       | Supported                | Supported                             | Supported                | Supported     | WSL discovery uses bounded OpenCode CLI export. It is not disk-only access.                                                                                                                            |
-| Cursor         | Supported                | Supported on characterized surfaces   | Finding-only O support   | Not supported | Other surfaces fail closed.                                                                                                                                                                            |
-| GitHub Copilot | Supported                | Supported for accepted CLI v1 bundles | Supported for S/O        | Not supported | Requires the strict event and schema-v7 request-store bundle. D is unavailable because request depth is not retained. IDE chat remains fail closed. Prompts, content, and tool arguments are not read. |
-| Cline          | Supported                | Partial                               | Finding-only S/O         | Not supported | Terminal messages-contract-v1 bundles support model and child findings; legacy sources fail closed.                                                                                                    |
-| Kiro           | Supported                | Safe V2 CLI facts only                | Unavailable              | Not supported | V2 requires exact local `.json` and `.jsonl` siblings. V3, IDE stores, and manual `/chat save` exports fail closed.                                                                                    |
-| Amp            | Supported                | Partial                               | Finding-only D/O         | Not supported | Thread JSON supports bounded depth and model findings; file-change records fail closed.                                                                                                                |
-| Pi             | macOS and Linux only     | Supported for Pi V1-V3 CLI sessions   | Supported                | Not supported | Includes `PI_AGENT_DIR`; documented V1/V2 migrations are normalized into the V3 reader; excluded on native Windows and WSL.                                                                            |
+| Agent          | Discovery                | Detailed session analysis             | Burn Check               | WSL           | Notes                                                                                                                                                                                                                                |
+| -------------- | ------------------------ | ------------------------------------- | ------------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Claude Code    | Supported                | Supported                             | Supported                | Supported     |                                                                                                                                                                                                                                      |
+| Codex          | Supported                | Supported                             | Supported                | Supported     |                                                                                                                                                                                                                                      |
+| OpenCode       | Supported                | Supported                             | Supported                | Supported     | WSL discovery uses bounded OpenCode CLI export. It is not disk-only access.                                                                                                                                                          |
+| Cursor         | Supported                | Supported on characterized surfaces   | Finding-only O support   | Not supported | Other surfaces fail closed.                                                                                                                                                                                                          |
+| GitHub Copilot | Supported                | Supported for accepted CLI v1 bundles | Supported for S/O        | Not supported | Requires the strict event and schema-v7 request-store bundle. D is unavailable because request depth is not retained. IDE chat remains fail closed. Prompts, content, and tool arguments are not read.                               |
+| Cline          | Supported                | Partial                               | Finding-only S/O         | Not supported | Terminal messages-contract-v1 bundles support model and child findings; legacy sources fail closed.                                                                                                                                  |
+| Kiro           | Supported                | Safe V2 CLI facts only                | Unavailable              | Not supported | V2 requires exact local `.json` and `.jsonl` siblings. V3, IDE stores, and manual `/chat save` exports fail closed.                                                                                                                  |
+| Amp            | Supported                | Partial                               | Finding-only D/O         | Not supported | Thread JSON supports bounded depth and model findings; file-change records fail closed.                                                                                                                                              |
+| Pi             | macOS and Linux only     | Supported for Pi V1-V3 CLI sessions   | Supported                | Not supported | Includes `PI_AGENT_DIR`; documented V1/V2 migrations are normalized into the V3 reader; excluded on native Windows and WSL.                                                                                                          |
 | Oh My Pi       | macOS and Linux only     | Supported for the OMP v3 CLI core     | Finding-only D/T/O       | Not supported | Discovers `~/.omp/agent/sessions`, and `PI_CONFIG_DIR` or `PI_CODING_AGENT_DIR` when they resolve to an OMP tree. Named profiles and XDG redirects are not discovered. Extra journal types fail closed, so there is no clean result. |
-| Antigravity    | Supported, **disk-only** | Supported on characterized surfaces   | Finding-only D/O support | Not supported | Native `agy`/IDE SQLite usage plus brain JSONL and saved cascade analysis.                                                                                                                             |
-| Devin          | Supported, **disk-only** | Finding-only S                        | Finding-only S           | Not supported | Uses Devin Local migration-17 SQLite; legacy Windsurf roots keep the stable `windsurf` identity. Desktop ACP is child-only and optional.                                                               |
+| Antigravity    | Supported, **disk-only** | Supported on characterized surfaces   | Finding-only D/O support | Not supported | Native `agy`/IDE SQLite usage plus brain JSONL and saved cascade analysis.                                                                                                                                                           |
+| Devin          | Supported, **disk-only** | Finding-only S                        | Finding-only S           | Not supported | Uses Devin Local migration-17 SQLite; legacy Windsurf roots keep the stable `windsurf` identity. Desktop ACP is child-only and optional.                                                                                             |
 
 **Disk-only** means sessions come from the agent's own documented local files; the
 live language-server APIs those two editors expose aren't read, so a session that
@@ -66,13 +122,13 @@ exact binding limits. The same document has the exhaustive prompt matrix.
 
 ### Second-tier product coverage
 
-| Agent          | Burn Check result              | Auto Fix on macOS and Linux | Other current support                        |
-| -------------- | ------------------------------ | --------------------------- | -------------------------------------------- |
-| GitHub Copilot | S/O on accepted CLI v1 bundles | None                        | Current M/K inventory; no remediation prompt |
-| Cline          | Finding-only S/O               | None                        | Current M/K inventory; no remediation prompt |
-| Kiro           | Unavailable                    | None                        | Current M/K inventory; no remediation prompt |
-| Amp            | Finding-only D/O               | None                        | Current M/K inventory; no remediation prompt |
-| Devin          | Finding-only S                 | None                        | Current M/K inventory; no remediation prompt |
+| Agent          | Burn Check result              | Auto Fix on macOS and Linux | Other current support                                                       |
+| -------------- | ------------------------------ | --------------------------- | --------------------------------------------------------------------------- |
+| GitHub Copilot | S/O on accepted CLI v1 bundles | None                        | Current M/K inventory; no remediation prompt                                |
+| Cline          | Finding-only S/O               | None                        | Current M/K inventory; no remediation prompt                                |
+| Kiro           | Unavailable                    | None                        | Current M/K inventory; no remediation prompt                                |
+| Amp            | Finding-only D/O               | None                        | Current M/K inventory; no remediation prompt                                |
+| Devin          | Finding-only S                 | None                        | Current M/K inventory; no remediation prompt                                |
 | Oh My Pi       | Finding-only D/T/O             | None                        | No inventory; Auto Fix and Fix Prompts are a planned follow-up, not shipped |
 
 Each Auto Fix changes one winning control after a separate review and
