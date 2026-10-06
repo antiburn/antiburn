@@ -52,7 +52,7 @@ fn agent_session_locations_for_home(home: &Path) -> Vec<AgentSessionLocations> {
 fn display_under_home(path: &Path, home: &Path) -> String {
     match path.strip_prefix(home) {
         Ok(stripped) if stripped.as_os_str().is_empty() => "~".to_string(),
-        Ok(stripped) => format!("~/{}", stripped.display()),
+        Ok(stripped) => Path::new("~").join(stripped).display().to_string(),
         Err(_) => path.display().to_string(),
     }
 }
@@ -61,13 +61,22 @@ fn display_under_home(path: &Path, home: &Path) -> String {
 mod tests {
     use super::*;
 
+    /// `~/.codex/sessions` with this platform's path separator.
+    fn codex_sessions_display() -> String {
+        Path::new("~")
+            .join(".codex")
+            .join("sessions")
+            .display()
+            .to_string()
+    }
+
     #[test]
     fn shortens_paths_under_home_and_leaves_others_full() {
         let home = tempfile::tempdir().unwrap();
         let under_home = home.path().join(".codex").join("sessions");
         assert_eq!(
             display_under_home(&under_home, home.path()),
-            "~/.codex/sessions"
+            codex_sessions_display()
         );
         assert_eq!(display_under_home(home.path(), home.path()), "~");
 
@@ -96,7 +105,7 @@ mod tests {
         let default_root = codex
             .locations
             .iter()
-            .find(|location| location.path == "~/.codex/sessions")
+            .find(|location| location.path == codex_sessions_display())
             .expect("~/.codex/sessions is always a Codex watch root");
         assert!(default_root.found);
 

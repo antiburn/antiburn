@@ -2661,8 +2661,8 @@ fn assert_scheduler_source_contract(source: &str) {
 /// instead of covering it by execution.
 #[test]
 fn a_full_pass_waits_at_the_agents_gate_then_the_read_gate_before_any_write() {
-    let source = include_str!("mod.rs");
-    let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+    let source = include_str!("mod.rs").replace("\r\n", "\n");
+    let production = source.split("#[cfg(test)]").next().unwrap_or(&source);
     let start = production
         .find("async fn pass(\n")
         .expect("the pass function exists");

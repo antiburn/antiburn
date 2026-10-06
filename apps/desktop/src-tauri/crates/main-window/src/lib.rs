@@ -423,9 +423,9 @@ mod tests {
         assert_eq!(
             validated_placement(None, &[TALL], Some(TALL), 1.0, 0, 0),
             Placement {
-                x: 410,
+                x: 360,
                 y: 212,
-                width: 1100,
+                width: 1200,
                 height: 800,
                 maximized: false,
                 scale_factor: 1.0,
@@ -438,9 +438,9 @@ mod tests {
         assert_eq!(
             validated_placement(None, &[PRIMARY], Some(PRIMARY), 1.0, 0, 0),
             Placement {
-                x: 170,
+                x: 120,
                 y: 90,
-                width: 1100,
+                width: 1200,
                 height: 744,
                 maximized: false,
                 scale_factor: 1.0,
@@ -562,7 +562,7 @@ mod tests {
             height: 1_920,
         };
         let placement = validated_placement(None, &[retina], Some(retina), 2.0, 0, 0);
-        assert_eq!((placement.width, placement.height), (2_200, 1_600));
+        assert_eq!((placement.width, placement.height), (2_400, 1_600));
         assert!(!placement.maximized);
     }
 
