@@ -167,23 +167,44 @@ async fn repo_root() -> Result<PathBuf> {
 /// Runs `git -C <dir> rev-parse --show-toplevel`. This handles the case
 /// where `dir` is a subdirectory of the repo.
 pub async fn repo_root_at(dir: &Path) -> Result<PathBuf> {
+    repo_root_if_any_at(dir)
+        .await?
+        .context("git rev-parse --show-toplevel failed: not a git repository")
+}
+
+/// Return the repository root for `dir`, or `None` when Git reports that
+/// `dir` is not in a repository.
+///
+/// Other failures are errors, for example a missing `git` executable, a
+/// missing `dir`, or a repository that Git refuses to read.
+pub async fn repo_root_if_any_at(dir: &Path) -> Result<Option<PathBuf>> {
     let environment = environment::environment_from_mounted_path(dir).unwrap_or_default();
+    // Git translates its messages. The C locale keeps the text that
+    // `is_not_a_repository` looks for.
     let output = run_git_output_in_environment(
         &environment,
         Some(dir),
         &["rev-parse", "--show-toplevel"],
-        &[],
+        &[("LC_ALL", "C")],
     )
     .await
     .context("failed to execute git rev-parse --show-toplevel")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if is_not_a_repository(&stderr) {
+            return Ok(None);
+        }
         bail!("git rev-parse --show-toplevel failed: {}", stderr.trim());
     }
 
     let stdout = String::from_utf8(output.stdout).context("git output was not valid UTF-8")?;
-    path_from_git_output(&environment, stdout.trim())
+    path_from_git_output(&environment, stdout.trim()).map(Some)
+}
+
+/// True when Git's stderr says that the directory is not in a repository.
+fn is_not_a_repository(stderr: &str) -> bool {
+    stderr.contains("not a git repository")
 }
 
 /// Translates path-valued Git stdout back to the host-readable namespace while
@@ -1193,6 +1214,33 @@ mod tests {
         let root = repo_root_at(dir.path()).await.unwrap();
         assert!(root.exists());
         assert!(root.join("README.md").exists());
+    }
+
+    #[tokio::test]
+    async fn repo_root_if_any_at_separates_a_plain_folder_from_a_failure() {
+        let repo = init_temp_repo().await;
+        let plain = TempDir::new().unwrap();
+
+        assert!(repo_root_if_any_at(repo.path()).await.unwrap().is_some());
+        assert_eq!(repo_root_if_any_at(plain.path()).await.unwrap(), None);
+        assert!(
+            repo_root_if_any_at(&plain.path().join("missing"))
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn is_not_a_repository_matches_the_git_messages() {
+        assert!(is_not_a_repository(
+            "fatal: not a git repository (or any of the parent directories): .git"
+        ));
+        assert!(is_not_a_repository(
+            "fatal: not a git repository (or any parent up to mount point /)"
+        ));
+        assert!(!is_not_a_repository(
+            "fatal: detected dubious ownership in repository at '/srv/app'"
+        ));
     }
 
     #[tokio::test]

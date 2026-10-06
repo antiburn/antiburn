@@ -7,7 +7,7 @@ import {
   type BurnCheckSamplePayload,
   type BurnCheckTargetPayload,
 } from "../../../lib/insightsIpc"
-import { CHECK_LABELS } from "../../../lib/presentation/checks"
+import { CHECK_LABELS } from "../../../lib/presentation/checkReport"
 import { ScrollPane } from "../../../components/ui/ScrollPane"
 import { SessionRow } from "../../../components/session/SessionList"
 import { toActivityEntry } from "../../../lib/activityEntries"
@@ -42,6 +42,13 @@ export function scopeLabel(scope: BurnCheckTargetPayload["display"]["scopeKind"]
 }
 
 export function targetTitle(target: BurnCheckTargetPayload): string {
+  if (target.finding.detector === "ignoredInstructions") {
+    const heading = target.display.instructionTitle?.trim()
+    if (heading) return heading
+    const source = target.display.resourceIdentity
+    const path = source?.startsWith("home:") ? `~/${source.slice("home:".length)}` : source
+    return path?.split(/[\\/]/).at(-1) || "Instruction file"
+  }
   return (
     target.display.resourceIdentity ??
     CHECK_LABELS[target.finding.detector] ??
@@ -97,9 +104,11 @@ function sizeSessionList(viewport: HTMLDivElement | null) {
 export function FailedSessions({
   samples,
   total,
+  label = "Failed sessions",
 }: {
   samples: BurnCheckSamplePayload[]
   total?: number
+  label?: string
 }) {
   const [status, setStatus] = useState<string | null>(null)
   const [busyHandle, setBusyHandle] = useState<string | null>(null)
@@ -150,7 +159,7 @@ export function FailedSessions({
     <div className="burn-check-samples">
       <div
         role={scrollable ? undefined : "region"}
-        aria-label={scrollable ? undefined : "Failed sessions"}
+        aria-label={scrollable ? undefined : label}
         className="mt-1"
       >
         {scrollable ? (
@@ -160,7 +169,7 @@ export function FailedSessions({
             className="flex-none"
             viewportRef={sizeSessionList}
             viewportTabIndex={0}
-            viewportLabel="Failed sessions"
+            viewportLabel={label}
             viewportClassName="pr-3 overscroll-y-contain"
           >
             {cards}

@@ -2,6 +2,38 @@ use super::*;
 
 mod claude_parent_child;
 
+#[tokio::test]
+async fn evidence_pass_rejects_a_file_that_changed_after_discovery() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = temp.path().join("session.jsonl");
+    std::fs::write(
+        &path,
+        r#"{"type":"assistant","timestamp":100,"message":{"id":"m","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":2,"output_tokens":3},"content":[{"type":"text","text":"done"}]}}"#,
+    )
+    .unwrap();
+
+    let pass = analyze_located_for_evidence(
+        AgentKind::Claude,
+        "session",
+        ClaimedSource {
+            fingerprint: Some("sv1:stale-discovery-claim".to_owned()),
+            generation: 1,
+        },
+        PassSignal::new(),
+        None,
+        None,
+        LocatedTranscripts {
+            source: SessionSource::File(path),
+            children: Vec::new(),
+        },
+    )
+    .await;
+
+    assert_eq!(pass.outcome, PassOutcome::SourceChanged);
+    assert!(pass.evidence.is_none());
+    assert!(pass.source_fingerprint.is_none());
+}
+
 #[test]
 fn cached_total_tokens_sums_every_model_and_component() {
     let json = r#"{

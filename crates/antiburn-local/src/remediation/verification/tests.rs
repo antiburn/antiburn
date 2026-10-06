@@ -194,8 +194,7 @@ fn supported_generic_verification_requires_a_clean_detector_assessment() {
     assert_eq!(fixed.outcome, VerificationOutcome::Fixed);
     assert_eq!(fixed.observed_at_ms, Some(101));
 
-    let recurrence_evidence =
-        crate::insights::detectors::test_support::claude_evidence("recurrence");
+    let recurrence_evidence = crate::checks::test_support::claude_evidence("recurrence");
     let recurred = verify_prompt_watch(
         DetectorId::ModelOverthinking,
         SourceFormat::ClaudeJsonl,
@@ -235,7 +234,7 @@ fn supported_generic_verification_requires_a_clean_detector_assessment() {
 
 #[test]
 fn incomplete_no_finding_assessment_cannot_verify_a_fix() {
-    let mut evidence = crate::insights::detectors::test_support::claude_evidence("incomplete");
+    let mut evidence = crate::checks::test_support::claude_evidence("incomplete");
     evidence.coverage = crate::analysis::EvidenceCoverage::Partial(
         crate::analysis::CoverageReason::MalformedRecord,
     );

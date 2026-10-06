@@ -250,6 +250,7 @@ pub(crate) fn session_limit_allocations(
                     agent: session.key.agent.clone(),
                     session_id: session.key.session_id.clone(),
                     wsl_distro: session.wsl_distro.clone(),
+                    remote_host_id: None,
                     metric,
                     provider: provider.to_string(),
                     display_name: provider_usage::providers::display_name(provider).to_string(),

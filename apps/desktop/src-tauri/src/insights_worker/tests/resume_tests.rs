@@ -96,7 +96,7 @@ async fn run_worker_step(
     let analyzer = move |_agent: AgentKind,
                          session_id: String,
                          _wsl_distro: Option<String>,
-                         _claimed: analysis::ClaimedSource,
+                         claimed: analysis::ClaimedSource,
                          signal: PassSignal,
                          turn_row_store: Option<Arc<dyn TurnRowStore>>,
                          _fork_parent_session_id: Option<String>| {
@@ -119,11 +119,12 @@ async fn run_worker_step(
         }
         let captured_outcomes = Arc::clone(&captured_outcomes_for_analyzer);
         Box::pin(async move {
-            let pass = analysis::evidence_pass_with_turn_rows(
+            let mut pass = analysis::evidence_pass_with_turn_rows(
                 &inputs,
                 &|| signal.observe(),
                 turn_row_store,
             );
+            pass.source_fingerprint = claimed.fingerprint;
             *captured_outcomes.lock().unwrap() = pass.source_outcomes.clone();
             pass
         }) as PassFuture

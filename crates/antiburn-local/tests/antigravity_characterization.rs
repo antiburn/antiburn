@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
-    CompositeSink, EvidenceCoverage, EvidenceSource, EvidenceValue, MemoryTurnRowStore, RawSource,
-    SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
-    SourceFormat, SourceKind, ToolCategory, ToolClass, TurnRowSink, TurnRowStore, reader_for,
+    CompositeSink, EvidenceCoverage, EvidenceSource, EvidenceValue, FenceScope, MemoryTurnRowStore,
+    RawSource, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
+    SessionMetricsAccumulator, SourceFormat, SourceKind, ToolCategory, ToolClass, TurnRowSink,
+    TurnRowStore, TurnSessionKey, query_turn_content, reader_for,
 };
 use antiburn_local::insights::{
     CoverageCounts, DetectorCounts, DetectorId, EfficiencyReportAccumulator, ModelRegistry,
@@ -235,6 +236,52 @@ fn companion_parse_gaps_do_not_hide_database_findings() {
 }
 
 #[test]
+fn sqlite_companion_retains_assistant_content_without_double_counting_usage() {
+    let (directory, input) = database(true, false, false, false);
+    let path = directory
+        .path()
+        .join("brain/synthetic/.system_generated/logs/transcript.jsonl");
+    let mut transcript = std::fs::read_to_string(&path).unwrap();
+    transcript.push_str(
+        r#"{"type":"PLANNER_RESPONSE","step_index":2,"content":"companion assistant content","usage":{"input_tokens":900,"output_tokens":900}}"#,
+    );
+    transcript.push('\n');
+    std::fs::write(path, transcript).unwrap();
+
+    let normalized = reader_for("antigravity").normalize(&input).unwrap();
+    let assistant_events = normalized
+        .events
+        .iter()
+        .filter(|event| event.role == antiburn_local::analysis::Role::Assistant)
+        .collect::<Vec<_>>();
+    assert_eq!(assistant_events.len(), 1);
+    assert_eq!(assistant_events[0].usage.input_tokens, 10);
+    assert_eq!(assistant_events[0].usage.output_tokens, 2);
+
+    let store = MemoryTurnRowStore::new("antigravity", "synthetic");
+    let mut rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        "synthetic",
+        None,
+    );
+    reader_for("antigravity").visit(&input, &mut rows).unwrap();
+    let key = TurnSessionKey {
+        environment_key: "native",
+        agent: "antigravity",
+        session_id: "synthetic",
+    };
+    let content = store.with_connection(|connection| {
+        query_turn_content(connection, &key, &FenceScope::single(1)).unwrap()
+    });
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.text == "companion assistant content")
+    );
+}
+
+#[test]
 fn cli_transcript_recovers_settings_model_thinking_tools_and_clipped_coverage() {
     let mut input = input(RawSource::Jsonl(
         include_str!("fixtures/antigravity_characterization/cli_realistic.jsonl").to_owned(),
@@ -256,16 +303,51 @@ fn cli_transcript_recovers_settings_model_thinking_tools_and_clipped_coverage() 
 #[test]
 fn cascade_transcript_preserves_thinking_and_nested_tool_calls() {
     let mut input = input(RawSource::Jsonl(
-        include_str!("fixtures/antigravity_characterization/cascade_thinking.json").to_owned(),
+        include_str!("fixtures/antigravity_characterization/cascade_content.json").to_owned(),
     ));
     input.source_format = SourceFormat::AntigravityCascadeJson;
 
     let session = reader_for("antigravity").normalize(&input).unwrap();
-    assert_eq!(session.events.len(), 2);
+    assert_eq!(session.events.len(), 3);
     assert!(session.events[1].has_thinking);
     assert_eq!(session.events[1].model.as_deref(), Some("gemini-3.6-flash"));
     assert_eq!(session.events[1].tools.len(), 1);
     assert_eq!(session.events[1].tools[0].category, ToolCategory::Read);
+    assert_eq!(session.events[2].role, antiburn_local::analysis::Role::Tool);
+
+    let store = MemoryTurnRowStore::new("antigravity", "synthetic");
+    let mut rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        "synthetic",
+        None,
+    );
+    reader_for("antigravity").visit(&input, &mut rows).unwrap();
+    let key = TurnSessionKey {
+        environment_key: "native",
+        agent: "antigravity",
+        session_id: "synthetic",
+    };
+    let content = store.with_connection(|connection| {
+        query_turn_content(connection, &key, &FenceScope::single(1)).unwrap()
+    });
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.text == "cascade-user-response")
+    );
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.text == "cascade-user-item")
+    );
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.text == "cascade-assistant-text")
+    );
 }
 
 #[test]
@@ -321,5 +403,56 @@ fn resource_tool_calls_remain_unclassified_without_resource_metadata() {
             .by_name
             .values()
             .all(|tool| tool.calls == 1 && tool.class == ToolClass::Unclassified)
+    );
+}
+
+#[test]
+fn antigravity_brain_content_reaches_the_shared_private_turn_content_path() {
+    let input = input(RawSource::Jsonl(
+        include_str!("fixtures/antigravity_characterization/ignored_instructions_content.jsonl")
+            .to_owned(),
+    ));
+    let store = MemoryTurnRowStore::new("antigravity", "synthetic");
+    let mut rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        "synthetic",
+        None,
+    );
+    reader_for("antigravity").visit(&input, &mut rows).unwrap();
+
+    let key = TurnSessionKey {
+        environment_key: "native",
+        agent: "antigravity",
+        session_id: "synthetic",
+    };
+    let content = store.with_connection(|connection| {
+        query_turn_content(connection, &key, &FenceScope::single(1)).unwrap()
+    });
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.text == "ANTIGRAVITY-USER")
+    );
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.text.contains("focused tests passed"))
+    );
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.kind.as_str() == "tool_input")
+    );
+    assert!(content.parts.iter().all(|part| {
+        part.part.text != "test result: ok" || part.part.kind.as_str() != "user_text"
+    }));
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.kind.as_str() == "thinking")
     );
 }

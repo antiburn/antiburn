@@ -74,6 +74,29 @@ fn record_text(value: &Value) -> String {
     }
 }
 
+/// Keep a mixed user record's text under user authority while its result
+/// blocks remain tool results. The shared parser treats result-only records
+/// as tool turns, so restore user authority only when native user text exists.
+fn has_claude_user_text(value: &Value) -> bool {
+    let Some(content) = value
+        .get("message")
+        .and_then(|message| message.get("content"))
+    else {
+        return false;
+    };
+    match content {
+        Value::String(text) => !text.is_empty(),
+        Value::Array(blocks) => blocks.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("text")
+                && block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.is_empty())
+        }),
+        _ => false,
+    }
+}
+
 /// Returns true for Claude lifecycle records that carry no normalized event.
 /// Keep this allowlist local because these records are Claude-specific and
 /// some other JSONL vendors use the same top-level `system` discriminator.
@@ -967,6 +990,15 @@ impl ClaudeSessionReader {
                         continue;
                     };
 
+                    // A user record can carry both user text and tool results.
+                    // The shared parser reclassifies any record with a result
+                    // block as a tool turn; Claude needs authority per block.
+                    if value.get("type").and_then(Value::as_str) == Some("user")
+                        && has_claude_user_text(&value)
+                    {
+                        event.role = crate::analysis::model::Role::User;
+                    }
+
                     let link = event
                         .parent_uuid
                         .as_deref()
@@ -987,7 +1019,10 @@ impl ClaudeSessionReader {
                             });
                         state.pending_commands.push((state.ordinal, commands));
                     }
-                    let content_parts = extract_content_parts(&value, event.role);
+                    let mut content_parts = extract_content_parts(&value, event.role);
+                    state
+                        .tool_identities
+                        .bind_parts(event.thread_id.as_deref(), &mut content_parts);
                     sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
                     if !content_parts.is_empty() {
                         sink.record(NormalizedRecord::TurnContent(Box::new(TurnContent {
@@ -1005,6 +1040,8 @@ impl ClaudeSessionReader {
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 struct ClaudeStreamState {
+    #[serde(default)]
+    tool_identities: crate::analysis::tool_identity::ToolIdentityMap,
     max_usage_by_message_id: HashMap<String, Usage>,
     context_window: Option<u64>,
     context_window_source: Option<ContextWindowSource>,

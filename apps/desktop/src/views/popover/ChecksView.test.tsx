@@ -2,8 +2,8 @@ import { fireEvent, render, screen, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import type { BurnCheckDetectorId, ChecksCategoryPayload } from "../../lib/insightsIpc"
-import type { ChecksPresentation } from "../../lib/presentation/checks"
-import { aggregateBurnCheckPresentation } from "../../lib/presentation/burnChecks"
+import type { ChecksPresentation } from "../../lib/presentation/checkReport"
+import { aggregateBurnCheckPresentation } from "../../lib/presentation/checkStatus"
 import { ChecksPeek, ChecksSummary } from "./ChecksView"
 
 function category(

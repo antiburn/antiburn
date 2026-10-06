@@ -47,7 +47,12 @@ vi.mock("../../lib/useSessionHygiene", async (importOriginal) => ({
   useSessionHygiene: (identities: LocalSessionIdentity[]) =>
     new Map(
       identities.map((identity) => [
-        localSessionKey(identity.agent, identity.sessionId, identity.wslDistro),
+        localSessionKey(
+          identity.agent,
+          identity.sessionId,
+          identity.wslDistro,
+          identity.remoteHostId,
+        ),
         mocks.hygiene,
       ]),
     ),
@@ -204,6 +209,18 @@ describe("SessionPane — copy path", () => {
     expect(screen.queryByLabelText("Reveal in file manager")).toBeNull()
   })
 
+  it("shows source context but no local file or project actions for a remote session", () => {
+    const props = paneProps("/remote/private/session.jsonl")
+    props.subject.remoteHostId = "host-a"
+    props.payload!.projectPath = "/remote/private/project"
+    render(<SessionPane {...props} />)
+
+    expect(screen.getByText("Source Remote computer")).toBeVisible()
+    expect(screen.queryByLabelText("Copy path")).toBeNull()
+    expect(screen.queryByLabelText("Reveal in file manager")).toBeNull()
+    expect(screen.queryByRole("button", { name: "Project folder" })).toBeNull()
+  })
+
   it("shows no success tick when the clipboard write fails", async () => {
     mocks.writeClipboardText.mockRejectedValue(new Error("denied"))
     pane("/Users/dev/.claude/projects/app/session-1.jsonl")
@@ -250,7 +267,12 @@ describe("SessionPane — project folder", () => {
       outcome: "succeeded",
     })
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /^Open in/ })))
-    expect(mocks.openProjectFolder).toHaveBeenCalledWith("/tmp/worktrees/project with spaces")
+    expect(mocks.openProjectFolder).toHaveBeenCalledWith({
+      kind: "session",
+      environmentKey: "native",
+      agent: "claude-code",
+      sessionId: "session-1",
+    })
     expect(mocks.revealSource).not.toHaveBeenCalled()
     expect(mocks.noteInteraction).toHaveBeenCalledWith({
       kind: "projectFolderAction",

@@ -233,6 +233,10 @@
   color: var(--color-label) !important;
 }
 
+.session-filters-menu .session-filter-source-host {
+  padding-inline-start: calc(var(--space-2xl) + var(--space-sm));
+}
+
 .main-window-detail {
   flex: 1;
 }

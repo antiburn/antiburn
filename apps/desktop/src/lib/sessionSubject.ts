@@ -8,6 +8,7 @@ export interface SessionSubject {
   repo?: string | undefined
   timestamp?: string | undefined
   wslDistro?: string | null | undefined
+  remoteHostId?: string | null | undefined
   title?: string | undefined
   subagent?: {
     parentSessionId: string
@@ -21,10 +22,15 @@ export function sessionKey(subject: SessionSubject): string {
   return subject.subagent
     ? JSON.stringify([
         "subagent",
-        localSessionKey(subject.agent, subject.subagent.parentSessionId, subject.wslDistro),
+        localSessionKey(
+          subject.agent,
+          subject.subagent.parentSessionId,
+          subject.wslDistro,
+          subject.remoteHostId,
+        ),
         subject.subagent.subagentId,
       ])
-    : localSessionKey(subject.agent, subject.sessionId, subject.wslDistro)
+    : localSessionKey(subject.agent, subject.sessionId, subject.wslDistro, subject.remoteHostId)
 }
 
 /** Load one subject's analysis. Sub-agents use their dedicated command. */
@@ -37,7 +43,13 @@ export async function loadSessionAnalysis(
       subject.subagent.parentSessionId,
       subject.subagent.subagentId,
       subject.wslDistro,
+      subject.remoteHostId,
     )
   }
-  return getSessionAnalysis(subject.agent, subject.sessionId, subject.wslDistro)
+  return getSessionAnalysis(
+    subject.agent,
+    subject.sessionId,
+    subject.wslDistro,
+    subject.remoteHostId,
+  )
 }

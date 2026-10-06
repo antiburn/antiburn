@@ -38,8 +38,8 @@ use serde_json::Value;
 use crate::analysis::SourceChangedReason;
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::interface::{
-    NormalizedRecord, RawSource, RecordSink, SessionCollector, SessionInput, SessionReader,
-    SessionSummary, VisitOutcome,
+    ContentAuthority, ContentKind, ContentPart, NormalizedRecord, RawSource, RecordSink,
+    SessionCollector, SessionInput, SessionReader, SessionSummary, TurnContent, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, Usage};
 use crate::analysis::records::{parse_ts, parse_usage, tool_call_from_input};
@@ -527,6 +527,7 @@ struct AntigravityStreamState {
     started_at_ms: Option<i64>,
     cascade_partial: bool,
     attribution_incomplete: bool,
+    pending_content: Option<Vec<ContentPart>>,
 }
 
 impl AntigravityStreamState {
@@ -549,13 +550,16 @@ impl AntigravityStreamState {
         let Some(mut event) = step_to_event(value) else {
             return;
         };
+        let mut skip_event = false;
+        let content_role = event.role;
         if suppress_usage {
             event.usage = Usage::default();
             if event.role == Role::Assistant {
                 if event.tools.is_empty() {
-                    return;
+                    skip_event = true;
+                } else {
+                    event.role = Role::Tool;
                 }
-                event.role = Role::Tool;
             }
         }
         event.model = model_from(value).or_else(|| self.model.clone());
@@ -567,7 +571,27 @@ impl AntigravityStreamState {
         if self.started_at_ms.is_none() {
             self.started_at_ms = event.ts_ms;
         }
-        sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        let mut content = step_content_parts(value, content_role);
+        if value
+            .get("truncated_fields")
+            .and_then(Value::as_array)
+            .is_some_and(|fields| fields.iter().any(|field| field.as_str() == Some("content")))
+        {
+            for part in &mut content {
+                if part.kind != ContentKind::ToolInput && part.kind != ContentKind::Thinking {
+                    part.truncated = true;
+                    part.metadata.bindings.clear();
+                }
+            }
+        }
+        if !skip_event {
+            sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        }
+        if !content.is_empty() {
+            sink.record(NormalizedRecord::TurnContent(Box::new(TurnContent {
+                parts: content,
+            })));
+        }
     }
 
     fn observe_model(&mut self, value: &Value) {
@@ -1463,6 +1487,13 @@ impl<'de> Visitor<'de> for StepsVisitor<'_> {
                 self.0
                     .sink
                     .record(NormalizedRecord::MetricsEvent(Box::new(event)));
+                if let Some(parts) = self.0.state.pending_content.take() {
+                    self.0
+                        .sink
+                        .record(NormalizedRecord::TurnContent(Box::new(TurnContent {
+                            parts,
+                        })));
+                }
             }
             if partial {
                 self.0
@@ -1574,7 +1605,11 @@ impl<'de> Visitor<'de> for StepVisitor<'_> {
                 }
                 "content" | "userInput" => {
                     step.has_content = true;
-                    map.next_value::<IgnoredAny>()?;
+                    if key == "content" {
+                        step.content = map.next_value_seed(RetainedStringSeed(&mut step))?;
+                    } else {
+                        map.next_value_seed(UserInputSeed(&mut step))?;
+                    }
                 }
                 _ => {
                     map.next_value::<IgnoredAny>()?;
@@ -1627,6 +1662,9 @@ struct CascadeStep {
     inline_tool_name: Option<String>,
     inline_input: Option<Value>,
     has_content: bool,
+    content: Option<String>,
+    user_response: Option<String>,
+    user_items: Vec<String>,
     has_thinking: bool,
     retained_bytes: usize,
     partial: bool,
@@ -1694,6 +1732,11 @@ impl CascadeStep {
             event
                 .tools
                 .push(tool_call_from_input(&name, self.inline_input.as_ref()));
+        }
+        let content =
+            cascade_content_parts(role, self.content, self.user_response, self.user_items);
+        if !content.is_empty() {
+            state.pending_content = Some(content);
         }
         Some(event)
     }
@@ -1842,6 +1885,155 @@ impl Visitor<'_> for TimestampVisitor<'_> {
 }
 
 struct MetadataSeed<'a>(&'a mut CascadeStep);
+
+struct UserInputSeed<'a>(&'a mut CascadeStep);
+
+impl<'de> DeserializeSeed<'de> for UserInputSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(UserInputVisitor(self.0))
+    }
+}
+
+struct UserInputVisitor<'a>(&'a mut CascadeStep);
+
+impl<'de> Visitor<'de> for UserInputVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Antigravity user input")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "userResponse" => {
+                    self.0.user_response = map.next_value_seed(RetainedStringSeed(self.0))?;
+                }
+                "items" => map.next_value_seed(UserItemsSeed(self.0))?,
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+struct UserItemsSeed<'a>(&'a mut CascadeStep);
+
+impl<'de> DeserializeSeed<'de> for UserItemsSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(UserItemsVisitor(self.0))
+    }
+}
+
+struct UserItemsVisitor<'a>(&'a mut CascadeStep);
+
+impl<'de> Visitor<'de> for UserItemsVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Antigravity user input items")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while let Some(item) = sequence.next_element_seed(UserItemSeed(self.0))? {
+            if let Some(text) = item {
+                if self.0.user_items.len() < MAX_CASCADE_TOOL_CALLS_PER_STEP {
+                    self.0.user_items.push(text);
+                } else {
+                    self.0.partial = true;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+struct UserItemSeed<'a>(&'a mut CascadeStep);
+
+impl<'de> DeserializeSeed<'de> for UserItemSeed<'_> {
+    type Value = Option<String>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(UserItemVisitor(self.0))
+    }
+}
+
+struct UserItemVisitor<'a>(&'a mut CascadeStep);
+
+impl<'de> Visitor<'de> for UserItemVisitor<'_> {
+    type Value = Option<String>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an Antigravity user input item")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut text = None;
+        while let Some(key) = map.next_key::<String>()? {
+            if key == "text" {
+                text = map.next_value_seed(RetainedStringSeed(self.0))?;
+            } else {
+                map.next_value::<IgnoredAny>()?;
+            }
+        }
+        Ok(text)
+    }
+}
+
+fn cascade_content_parts(
+    role: Role,
+    content: Option<String>,
+    response: Option<String>,
+    items: Vec<String>,
+) -> Vec<ContentPart> {
+    let mut parts = Vec::new();
+    if role == Role::User {
+        for text in response.into_iter().chain(content).chain(items) {
+            if !text.is_empty() {
+                parts.push(
+                    ContentPart::new(ContentKind::UserText, text)
+                        .with_authority(ContentAuthority::User),
+                );
+            }
+        }
+    } else if role == Role::Assistant
+        && let Some(text) = content.clone().filter(|text| !text.is_empty())
+    {
+        parts.push(
+            ContentPart::new(ContentKind::AssistantText, text)
+                .with_authority(ContentAuthority::Assistant),
+        );
+    } else if role == Role::Tool
+        && let Some(text) = content.clone().filter(|text| !text.is_empty())
+    {
+        parts.push(ContentPart::new(ContentKind::ToolResult, text));
+    }
+    parts
+}
 
 impl<'de> DeserializeSeed<'de> for MetadataSeed<'_> {
     type Value = ();
@@ -2545,6 +2737,16 @@ fn step_to_event(step: &Value) -> Option<NormalizedEvent> {
     };
 
     let mut ev = NormalizedEvent::new(role);
+    ev.message_id = obj
+        .get("step_id")
+        .or_else(|| obj.get("stepId"))
+        .or_else(|| obj.get("step_index"))
+        .and_then(|value| match value {
+            Value::String(value) => Some(value.clone()),
+            Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        })
+        .filter(|identity| !identity.is_empty() && identity.len() <= 256);
     ev.has_thinking = obj
         .get("thinking")
         .and_then(Value::as_str)
@@ -2578,6 +2780,127 @@ fn step_to_event(step: &Value) -> Option<NormalizedEvent> {
     ev.usage = parse_usage(obj.get("usage"));
 
     Some(ev)
+}
+
+fn step_content_parts(step: &Value, role: Role) -> Vec<ContentPart> {
+    let Some(object) = step.as_object() else {
+        return Vec::new();
+    };
+    let authority = match role {
+        Role::User => ContentAuthority::User,
+        Role::Assistant => ContentAuthority::Assistant,
+        Role::System => ContentAuthority::System,
+        Role::Tool => ContentAuthority::Tool,
+    };
+    let mut parts = Vec::new();
+
+    if role == Role::User {
+        let user_input = object.get("userInput");
+        let text = user_input
+            .and_then(|value| value.get("userResponse"))
+            .and_then(Value::as_str)
+            .or_else(|| object.get("content").and_then(Value::as_str));
+        if let Some(text) = text.filter(|text| !text.is_empty()) {
+            parts.push(ContentPart::new(ContentKind::UserText, text).with_authority(authority));
+        }
+        if let Some(items) = user_input
+            .and_then(|value| value.get("items"))
+            .and_then(Value::as_array)
+        {
+            for item in items {
+                if let Some(text) = item.get("text").and_then(Value::as_str) {
+                    parts.push(
+                        ContentPart::new(ContentKind::UserText, text).with_authority(authority),
+                    );
+                }
+            }
+        }
+        return parts;
+    }
+
+    if role == Role::Assistant {
+        if let Some(text) = object
+            .get("content")
+            .or_else(|| object.get("response"))
+            .or_else(|| object.get("text"))
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+        {
+            parts
+                .push(ContentPart::new(ContentKind::AssistantText, text).with_authority(authority));
+        }
+        if let Some(text) = object.get("thinking").and_then(Value::as_str) {
+            parts.push(ContentPart::new(ContentKind::Thinking, text).with_authority(authority));
+        }
+        if let Some(calls) = object.get("tool_calls").and_then(Value::as_array) {
+            for (index, call) in calls.iter().enumerate() {
+                let name = call.get("name").and_then(Value::as_str).map(str::to_owned);
+                let input = call
+                    .get("args")
+                    .or_else(|| call.get("arguments"))
+                    .and_then(crate::analysis::records::compact_json_text);
+                if let Some(input) = input {
+                    parts.push(
+                        ContentPart::new(ContentKind::ToolInput, input)
+                            .with_tool_identity(name, None)
+                            .with_native_input_fields(
+                                call.get("args")
+                                    .or_else(|| call.get("arguments"))
+                                    .expect("captured native input"),
+                                &format!(
+                                    "/tool_calls/{index}/{}",
+                                    if call.get("args").is_some() {
+                                        "args"
+                                    } else {
+                                        "arguments"
+                                    }
+                                ),
+                                crate::analysis::jev_evidence::JevNativeFieldContainer::Step,
+                            ),
+                    );
+                }
+            }
+        }
+        return parts;
+    }
+
+    if role == Role::System {
+        if let Some(text) = object
+            .get("content")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+        {
+            parts.push(ContentPart::new(ContentKind::UserText, text).with_authority(authority));
+        }
+        return parts;
+    }
+
+    let tool_name = tool_name(object).or_else(|| {
+        object
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .and_then(|calls| calls.first())
+            .and_then(|call| call.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    });
+    let call_id = object
+        .get("tool_call_id")
+        .or_else(|| object.get("toolCallId"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if let Some(text) = object
+        .get("content")
+        .or_else(|| object.get("output"))
+        .or_else(|| object.get("result"))
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        parts.push(
+            ContentPart::new(ContentKind::ToolResult, text).with_tool_identity(tool_name, call_id),
+        );
+    }
+    parts
 }
 
 /// Strip a `CORTEX_STEP_TYPE_` prefix and uppercase, so the brain
@@ -3128,8 +3451,8 @@ mod tests {
     }
 
     #[test]
-    fn large_ignored_cascade_content_does_not_increase_retained_step_bytes() {
-        fn retained_high_water(content: &str) -> (usize, usize) {
+    fn large_cascade_content_is_bounded_and_marks_partial() {
+        fn retained_high_water(content: &str) -> (usize, usize, RecordCoverage) {
             let document = format!(
                 r#"{{"source":"antigravity_api","steps":{{"steps":[{{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","content":"{content}","model":"MODEL_PLACEHOLDER_M35","usage":{{"input_tokens":21,"output_tokens":8}}}}]}}}}"#
             );
@@ -3142,8 +3465,9 @@ mod tests {
                 )
                 .expect("cascade streams");
             sink.finish(summary);
+            let coverage = sink.coverage();
             let events = sink.into_session().expect("cascade finishes").events.len();
-            (retained, events)
+            (retained, events, coverage)
         }
 
         let small = retained_high_water("small ignored body");
@@ -3152,8 +3476,9 @@ mod tests {
 
         assert_eq!(small.1, 1);
         assert_eq!(large.1, 1);
-        assert_eq!(large.0, small.0);
-        assert!(large.0 < 1024);
+        assert!(large.0 > small.0);
+        assert!(large.0 <= MAX_CASCADE_RETAINED_STEP_BYTES);
+        assert_eq!(large.2, RecordCoverage::Partial);
     }
 
     #[test]

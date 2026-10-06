@@ -396,6 +396,68 @@ fn minimal_roles_tools_and_thinking_are_preserved() {
 }
 
 #[test]
+fn pi_builtin_tool_families_keep_input_fields_separate_by_category() {
+    use antiburn_local::analysis::ToolCategory;
+
+    let calls = [
+        (
+            "bash",
+            json!({"command": "printf synthetic"}),
+            ToolCategory::Bash,
+        ),
+        ("read", json!({"path": "src/lib.rs"}), ToolCategory::Read),
+        (
+            "edit",
+            json!({"path": "src/lib.rs", "oldText": "a", "newText": "b"}),
+            ToolCategory::Edit,
+        ),
+        (
+            "write",
+            json!({"path": "src/new.rs", "content": "synthetic body"}),
+            ToolCategory::Edit,
+        ),
+        (
+            "grep",
+            json!({"pattern": "needle", "path": "src"}),
+            ToolCategory::Search,
+        ),
+        (
+            "find",
+            json!({"pattern": "*.rs", "path": "src"}),
+            ToolCategory::Search,
+        ),
+        ("ls", json!({"path": "src"}), ToolCategory::Read),
+    ];
+    let content: Vec<_> = calls
+        .iter()
+        .enumerate()
+        .map(|(index, (name, arguments, _))| {
+            json!({"type": "toolCall", "id": format!("call-{index}"), "name": name, "arguments": arguments})
+        })
+        .collect();
+    let source = admitted_jsonl(
+        &json!({
+            "type": "message", "id": "builtin-calls", "parentId": null,
+            "timestamp": "2026-01-01T00:00:01Z",
+            "message": {"role": "assistant", "content": content}
+        })
+        .to_string(),
+    );
+    let input = SessionInput {
+        source: RawSource::Jsonl(source),
+        ..input("minimal_session")
+    };
+    let (_, _, session) = collect(&input);
+    assert_eq!(session.events.len(), 1);
+    let tools = &session.events[0].tools;
+    assert_eq!(tools.len(), calls.len());
+    for (tool, (name, _arguments, category)) in tools.iter().zip(calls) {
+        assert_eq!(tool.name, name);
+        assert_eq!(tool.category, category);
+    }
+}
+
+#[test]
 fn usage_buckets_are_disjoint_and_context_uses_all_input_classes() {
     let (_, _, usage) = collect(&input("usage_all_buckets"));
     assert_eq!(usage.events[0].usage.input_tokens, 2);

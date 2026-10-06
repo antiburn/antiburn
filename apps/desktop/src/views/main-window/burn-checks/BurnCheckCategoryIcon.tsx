@@ -1,7 +1,7 @@
 import { BookOpen, type LucideIcon } from "lucide-react"
 
 import type { BurnCheckDetectorId } from "../../../lib/insightsIpc"
-import { CHECK_UI } from "../../checks/checkUi"
+import { CHECK_UI } from "../../checks/checkPresentation"
 
 interface CheckCategoryAppearance {
   Icon: LucideIcon
@@ -27,6 +27,10 @@ const CHECK_CATEGORY_APPEARANCE: Record<BurnCheckDetectorId, CheckCategoryAppear
   },
   cacheChurn: { Icon: CHECK_UI.cacheChurn.icon, className: "text-check-cache" },
   sessionsOverDepth: { Icon: CHECK_UI.sessionsOverDepth.icon, className: "text-check-depth" },
+  ignoredInstructions: {
+    Icon: CHECK_UI.ignoredInstructions.icon,
+    className: "text-check-instructions",
+  },
 }
 
 export function BurnCheckCategoryIcon({ detector }: { detector: BurnCheckDetectorId }) {

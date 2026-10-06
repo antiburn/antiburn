@@ -383,6 +383,28 @@ describe("MainWindowNavigationSession", () => {
     stop()
   })
 
+  it("opens a host-only list through a recovered native destination", async () => {
+    mocks.peek.mockResolvedValue({
+      revision: 1,
+      destination: { section: "activity", target: null, remoteHostId: "host-a" },
+    })
+    const { activity, session } = setup()
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(mocks.acknowledge).toHaveBeenCalledWith(7, 1))
+    expect(session.getSnapshot().destination).toEqual({
+      section: "activity",
+      filters: {
+        source: { kind: "selected", includeLocal: false, remote: ["host-a"] },
+        agents: [],
+        result: "all",
+        spend: "all",
+      },
+      subject: null,
+    })
+    expect(activity.getSnapshot().subject).toBeNull()
+    stop()
+  })
+
   it("keeps the newest target across event and peek ordering races", async () => {
     const pending = deferred<MainWindowNavigationRequest | null>()
     mocks.peek.mockReturnValue(pending.promise)

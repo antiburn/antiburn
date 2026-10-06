@@ -162,16 +162,13 @@ function Assert-InstallerIntegrity {
     Write-InstallerInfo "Verified SHA-256 for $assetName"
 }
 
-function Test-WindowsArchitecture {
-    $architecture = if ($env:PROCESSOR_ARCHITEW6432) {
-        $env:PROCESSOR_ARCHITEW6432
-    }
-    else {
-        $env:PROCESSOR_ARCHITECTURE
-    }
-    if ($architecture -notin @('AMD64', 'x86_64')) {
-        throw "Unsupported Windows architecture: $architecture"
-    }
+function Get-WindowsArchitecture {
+    # Read the hardware architecture because PowerShell can run under emulation.
+    $architecture = Get-CimInstance -ClassName Win32_Processor -Property Architecture |
+        Select-Object -First 1 -ExpandProperty Architecture
+    if ($architecture -eq 9) { return 'x64' }
+    if ($architecture -eq 12) { return 'arm64' }
+    throw "Unsupported Windows processor architecture: $architecture"
 }
 
 function Invoke-AntiburnInstall {
@@ -185,9 +182,9 @@ function Invoke-AntiburnInstall {
     }
 
     Write-InstallerBanner
-    Test-WindowsArchitecture
+    $architecture = Get-WindowsArchitecture
     $release = Get-AntiburnRelease -RequestedVersion $resolvedVersion
-    $assetName = "antiburn_$($release.Version)_x64-setup.exe"
+    $assetName = "antiburn_$($release.Version)_${architecture}-setup.exe"
     $baseUrl = "$script:GitHubUrl/releases/download/$($release.Tag)"
     $temporaryDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("antiburn-install-" + [guid]::NewGuid())
     $installerPath = Join-Path $temporaryDirectory $assetName

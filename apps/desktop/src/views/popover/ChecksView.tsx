@@ -11,9 +11,9 @@ import {
   checksHeroPresentation,
   formatTokenBurnPercent,
   type ChecksPresentation,
-} from "../../lib/presentation/checks"
-import { checkRowPresentation } from "../checks/checkUi"
-import { emptyBurnCheckPresentation } from "../../lib/presentation/burnChecks"
+} from "../../lib/presentation/checkReport"
+import { checkRowPresentation } from "../checks/checkPresentation"
+import { emptyBurnCheckPresentation } from "../../lib/presentation/checkStatus"
 
 function summaryEstimate(presentation: ChecksPresentation): string | null {
   const basisPoints = presentation.estimate.tokenBurnBasisPoints

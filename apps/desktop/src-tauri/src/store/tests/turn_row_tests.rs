@@ -11,10 +11,10 @@ use super::*;
 #[test]
 fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pin the count so each new migration requires an explicit test update.
-    assert_eq!(super::schema::MIGRATIONS.len(), 57);
+    assert_eq!(super::schema::MIGRATIONS.len(), 70);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 57);
+    assert_eq!(store.schema_version().unwrap(), 70);
     let index_exists = store
         .lock()
         .query_row(
@@ -38,6 +38,18 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
         .unwrap();
     assert!(assistant_index_sql.contains("environment_key, agent, session_id, claim_fence"));
     assert!(assistant_index_sql.contains("WHERE role = 'assistant'"));
+    let normalized_fields_column = store
+        .lock()
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM pragma_table_info('turn_content')
+                 WHERE name = 'normalized_fields_json'
+            )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap();
+    assert!(normalized_fields_column);
 }
 
 #[test]
@@ -62,7 +74,7 @@ fn v50_removes_legacy_live_usage_history_but_preserves_snapshot() {
     )
     .unwrap();
 
-    assert_eq!(store.schema_version().unwrap(), 57);
+    assert_eq!(store.schema_version().unwrap(), 70);
     assert_eq!(store.internal_value("internal:liveUsageHistoryV2"), None);
     assert_eq!(
         store.internal_value("internal:liveUsageSnapshotV2"),
