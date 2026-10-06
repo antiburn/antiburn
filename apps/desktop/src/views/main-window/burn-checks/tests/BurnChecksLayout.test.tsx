@@ -188,6 +188,26 @@ describe("BurnChecksView layout", { timeout: 15_000 }, () => {
     expect(screen.queryByText("Coverage details")).not.toBeInTheDocument()
   })
 
+  it("shows the clean icon for a passing check with zero complete sessions", async () => {
+    setup(target, false, aggregate, {
+      ...report,
+      categories: [
+        {
+          id: "ignoredInstructions",
+          lifecycle: "passing",
+          finding: 0,
+          clean: 0,
+          unavailable: 18,
+          estimatedTokenBurnBasisPoints: null,
+        },
+      ],
+    })
+
+    const message = await screen.findByText("No finding in 0 complete sessions.")
+    expect(message.parentElement?.querySelector("svg")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Ignored Instructions, Passed" })).toBeVisible()
+  })
+
   it("counts check types including snoozed and unassessed checks, not session results", () => {
     const state = vi.spyOn(SnoozedBurnChecks, "useSnoozedBurnChecks").mockReturnValue({
       status: "ready",

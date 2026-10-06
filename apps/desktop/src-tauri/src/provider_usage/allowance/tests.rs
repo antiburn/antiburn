@@ -29,6 +29,7 @@ fn contribution(bucket_start_epoch: i64, percent: f64) -> crate::dto::QuotaContr
         agent: "claude".to_string(),
         session_id: "one".to_string(),
         wsl_distro: None,
+        remote_host_id: None,
         bucket_start_epoch,
         usd: 1.0,
         percent: Some(percent),

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-scan-remote-host"
+description = "Enables the scan_remote_host command without any pre-configured scope."
+commands.allow = ["scan_remote_host"]
+
+[[permission]]
+identifier = "deny-scan-remote-host"
+description = "Denies the scan_remote_host command without any pre-configured scope."
+commands.deny = ["scan_remote_host"]

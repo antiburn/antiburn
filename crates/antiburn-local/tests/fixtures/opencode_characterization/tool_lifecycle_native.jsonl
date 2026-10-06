@@ -1,0 +1,5 @@
+{"type":"message","messageID":"m-lifecycle","sessionID":"root","time":{"created":1000},"payload":{"role":"assistant","modelID":"model-a","tokens":{"input":1,"output":1}}}
+{"type":"part","messageID":"m-lifecycle","payload":{"type":"tool","tool":"bash","callID":"call-completed","state":{"status":"completed","input":{"command":"printf completed"},"output":"completed output"}}}
+{"type":"part","messageID":"m-lifecycle","payload":{"type":"tool","tool":"bash","callID":"call-running","state":{"status":"running","input":{"command":"printf running"}}}}
+{"type":"part","messageID":"m-lifecycle","payload":{"type":"tool","tool":"bash","callID":"call-error","state":{"status":"error","input":{"command":"printf error"},"error":"command failed"}}}
+{"type":"part","messageID":"m-lifecycle","payload":{"type":"tool","tool":"bash","callID":"call-pending","state":{"status":"pending","input":{"command":"printf pending"}}}}

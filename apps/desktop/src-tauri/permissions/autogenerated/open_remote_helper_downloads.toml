@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-remote-helper-downloads"
+description = "Enables the open_remote_helper_downloads command without any pre-configured scope."
+commands.allow = ["open_remote_helper_downloads"]
+
+[[permission]]
+identifier = "deny-open-remote-helper-downloads"
+description = "Denies the open_remote_helper_downloads command without any pre-configured scope."
+commands.deny = ["open_remote_helper_downloads"]

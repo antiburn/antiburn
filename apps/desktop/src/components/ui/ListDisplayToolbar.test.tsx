@@ -26,9 +26,28 @@ describe("ListDisplayToolbar", () => {
     const control = screen.getByRole("radiogroup", { name: "Session metric" })
     expect(control).toHaveAttribute("data-variant", "text-tabs")
     expect(control).not.toHaveTextContent("Show")
+    const selected = screen.getByRole("radio", { name: "Cost" })
+    expect(selected).toHaveClass("text-label")
+    expect(selected).not.toHaveClass("text-accent")
 
     fireEvent.click(screen.getByRole("radio", { name: "Week %" }))
     expect(onChange).toHaveBeenCalledWith("weeklyPercent")
+  })
+
+  it("forwards an explicit accent selection tone", () => {
+    render(
+      <ListDisplayToolbar
+        options={OPTIONS}
+        value="cost"
+        onChange={() => {}}
+        ariaLabel="Session metric"
+        selectedTone="accent"
+      />,
+    )
+
+    const selected = screen.getByRole("radio", { name: "Cost" })
+    expect(selected).toHaveClass("text-accent")
+    expect(selected).not.toHaveClass("text-label")
   })
 
   it("lets a window host opt the toolbar into its drag region", () => {

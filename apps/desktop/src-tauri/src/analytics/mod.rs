@@ -133,10 +133,37 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::AppSearchResultOpened { category } => {
             let _ = category;
         }
+        event::Interaction::IgnoredInstructionObserved { stage, outcome } => {
+            let _ = (stage, outcome);
+        }
         event::Interaction::SessionFiltersChanged { action, agent } => {
             let _ = (action, agent);
         }
     }
+}
+
+#[cfg(not(feature = "analytics"))]
+pub fn record_remote_host_connection_checked(
+    _app: &tauri::AppHandle,
+    _outcome: event::RemoteConnectionOutcome,
+) {
+}
+
+#[cfg(not(feature = "analytics"))]
+pub fn record_remote_host_changed(
+    _app: &tauri::AppHandle,
+    _change: event::RemoteHostChange,
+    _configured_hosts: usize,
+) {
+}
+
+#[cfg(not(feature = "analytics"))]
+pub fn record_remote_sync_completed(
+    _app: &tauri::AppHandle,
+    _outcome: event::RemoteSyncOutcome,
+    _origin: event::RemoteSyncOrigin,
+    _cached_sessions: usize,
+) {
 }
 
 #[cfg(not(feature = "analytics"))]
@@ -433,6 +460,78 @@ mod enabled {
     /// the dog; a dropped event is not worth a single line of user-facing text.
     pub fn record(app: &tauri::AppHandle, name: EventName, facts: Facts) {
         let _ = record_event(app, name, facts);
+    }
+
+    pub fn record_remote_host_connection_checked(
+        app: &tauri::AppHandle,
+        outcome: event::RemoteConnectionOutcome,
+    ) {
+        let label = match outcome {
+            event::RemoteConnectionOutcome::Ready => "ready",
+            event::RemoteConnectionOutcome::Authentication => "authentication",
+            event::RemoteConnectionOutcome::HostKey => "host_key",
+            event::RemoteConnectionOutcome::HelperMissing => "helper_missing",
+            event::RemoteConnectionOutcome::Incompatible => "incompatible",
+            event::RemoteConnectionOutcome::Connection => "connection",
+            event::RemoteConnectionOutcome::Invalid => "invalid",
+        };
+        record(
+            app,
+            EventName::RemoteHostConnectionChecked,
+            Facts {
+                label: Some(label),
+                ..Facts::default()
+            },
+        );
+    }
+
+    pub fn record_remote_host_changed(
+        app: &tauri::AppHandle,
+        change: event::RemoteHostChange,
+        configured_hosts: usize,
+    ) {
+        let label = match change {
+            event::RemoteHostChange::Added => "added",
+            event::RemoteHostChange::Edited => "edited",
+            event::RemoteHostChange::Removed => "removed",
+            event::RemoteHostChange::SyncEnabled => "sync_enabled",
+            event::RemoteHostChange::SyncDisabled => "sync_disabled",
+        };
+        record(
+            app,
+            EventName::RemoteHostChanged,
+            Facts {
+                label: Some(label),
+                bucket: Some(event::bucket(configured_hosts as u64)),
+                ..Facts::default()
+            },
+        );
+    }
+
+    pub fn record_remote_sync_completed(
+        app: &tauri::AppHandle,
+        outcome: event::RemoteSyncOutcome,
+        origin: event::RemoteSyncOrigin,
+        cached_sessions: usize,
+    ) {
+        let label = match outcome {
+            event::RemoteSyncOutcome::Succeeded => "succeeded",
+            event::RemoteSyncOutcome::Failed => "failed",
+        };
+        let detail = match origin {
+            event::RemoteSyncOrigin::Manual => "manual",
+            event::RemoteSyncOrigin::Automatic => "automatic",
+        };
+        record(
+            app,
+            EventName::RemoteSyncCompleted,
+            Facts {
+                label: Some(label),
+                detail: Some(detail),
+                bucket: Some(event::bucket(cached_sessions as u64)),
+                ..Facts::default()
+            },
+        );
     }
 
     fn record_event(app: &tauri::AppHandle, name: EventName, facts: Facts) -> bool {
@@ -962,6 +1061,10 @@ mod enabled {
     ///
     /// The renderer names a shape, not an event. See [`Interaction`] for why.
     pub fn record_interaction(app: &tauri::AppHandle, interaction: Interaction) {
+        #[cfg(debug_assertions)]
+        if matches!(interaction, Interaction::IgnoredInstructionObserved { .. }) {
+            return;
+        }
         if let Some((provider, state)) = deliberate_live_usage_observation(interaction) {
             record_live_usage_state(app, provider, state);
             return;

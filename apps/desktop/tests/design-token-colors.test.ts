@@ -40,6 +40,7 @@ const SYSTEM_COLORS = new Set([
   "-apple-system-tertiary-label",
   "-apple-system-separator",
   "-apple-system-accent-color",
+  "-apple-system-control-accent",
 ])
 
 type Hsl = {

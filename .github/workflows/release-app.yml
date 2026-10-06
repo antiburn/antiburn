@@ -3,6 +3,7 @@ name: Release app
 # Cuts a DRAFT GitHub Release for the desktop application from an
 # `antiburn-v<version>` tag. Nothing here publishes: a person reads the draft,
 # checks the assets against docs/runbooks/release.md, and presses Publish.
+# Manual dispatch builds the same assets from main and uploads them to Actions.
 #
 # The shape of a release is fixed by that draft. Published tags and assets are
 # immutable — a mistake is corrected by a new version, never by replacing an
@@ -19,17 +20,22 @@ name: Release app
 #           run; a release never spends another full matrix proving the same SHA
 #   sbom    dependency inventories, generated with no credentials in scope
 #   build   the only jobs that see signing credentials, one per release target
-#   draft   assembles, hashes, attests, and drafts — the only job that can
-#           write to the repository
+#   assemble hashes, attests, and uploads the complete asset set
+#   draft   creates a draft only for tag pushes
 
 on:
   push:
     tags: ["antiburn-v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Application version to build without creating a GitHub Release
+        required: true
+        type: string
 
 # Least privilege by default. `contents: write` is granted to exactly one job,
-# and the provenance token scopes are granted only where an attestation is
-# actually produced. This workflow has no `pull_request` trigger at all, so a
-# fork can never reach the `release` environment's credentials.
+# and OIDC is granted to the build and attestation jobs. This workflow has no
+# `pull_request` trigger, so a fork cannot reach the release credentials.
 permissions:
   contents: read
 
@@ -55,7 +61,18 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
+      - name: Require main for manual builds
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          if [[ "$EVENT" == "workflow_dispatch" && "$REF" != "refs/heads/main" ]]; then
+            echo "::error::Manual release builds must run from main."
+            exit 1
+          fi
+
       # Third-party actions are pinned by immutable commit SHA.
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -67,13 +84,20 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Verify the tag agrees with every manifest
+      - name: Apply the manual build version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: node scripts/prepare-app-version.mjs "$VERSION"
+
+      - name: Verify the build version agrees with every manifest
         id: version
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && format('antiburn-v{0}', inputs.version) || github.ref_name }}
         run: node scripts/verify-release-version.mjs app "$TAG"
 
       - name: Verify the embedded engine is a released source tree
+        if: github.event_name == 'push'
         run: node scripts/verify-app-engine-release.mjs
 
       # The updater is the one network-capable surface in the application, and
@@ -101,6 +125,10 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            printf 'Build of commit %s with application version %s.\n' "$GITHUB_SHA" "$VERSION" > RELEASE-NOTES.md
+            exit 0
+          fi
           notes=$(awk -v ver="$VERSION" '
             /^## \[/ {
               if (found) exit
@@ -185,6 +213,12 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      - name: Apply the manual build version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: node scripts/prepare-app-version.mjs "$VERSION"
+
       - name: Enable Corepack
         run: corepack enable
 
@@ -192,7 +226,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # `--target all` covers every platform's conditional dependencies, so one
-      # inventory describes all four release targets rather than the host's.
+      # inventory describes all six release targets rather than the host's.
       # The engine appears in here as a component: it is a path dependency of
       # the shell, which is what actually ships.
       - name: Inventory the Rust dependency tree
@@ -244,13 +278,11 @@ jobs:
   build:
     name: Build ${{ matrix.name }}
     needs: [verify, trusted-main-ci]
-    # Every signing credential lives in this protected environment, and only a
-    # tag push in this repository can reach it. Restrict the environment's
-    # deployment branches/tags to `antiburn-v*` as well — see
-    # docs/runbooks/release.md.
+    # The environment permits release tags and protected main dispatches.
     environment: release
     permissions:
       contents: read
+      id-token: write
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -277,6 +309,13 @@ jobs:
             artifact: windows-x64
             arch_label: x64
             updater_platform: windows-x86_64
+          - name: Windows ARM64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            bundles: nsis
+            artifact: windows-arm64
+            arch_label: arm64
+            updater_platform: windows-aarch64
           # Pinned rather than `ubuntu-latest`: the build host's glibc is the
           # floor for every Linux user, so it is a release decision and not a
           # thing that should move when GitHub rolls a new default.
@@ -287,10 +326,25 @@ jobs:
             artifact: linux-x64
             arch_label: x64
             updater_platform: linux-x86_64-appimage
+            linuxdeploy_asset_id: "538917371"
+            linuxdeploy_sha256: "36a2d7e274d12e1050d0e9ecfe11d339ed54720b2bec464c286d53f8b07f5c62"
+          # The same glibc-floor reasoning: ubuntu-24.04-arm pins the ARM64
+          # floor at glibc 2.39.
+          - name: Linux ARM64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            bundles: appimage,deb
+            artifact: linux-arm64
+            arch_label: aarch64
+            updater_platform: linux-aarch64-appimage
+            linuxdeploy_asset_id: "538917074"
+            linuxdeploy_sha256: "556ab80baa98e600aa80f0dcedfb70bca0e1ce7e9f147fb345be3fcc3e91b2b1"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # The ARM64 runner images use the ports mirrors, so the sed covers
+      # those forms as well; they match nothing on the x64 images.
       - name: Use Canonical Ubuntu package archive
         if: runner.os == 'Linux'
         run: |
@@ -298,6 +352,8 @@ jobs:
             -exec sed -i \
               -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
               -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              -e 's|http://azure.ports.ubuntu.com/ubuntu-ports|http://ports.ubuntu.com/ubuntu-ports|g' \
+              -e 's|https://azure.ports.ubuntu.com/ubuntu-ports|http://ports.ubuntu.com/ubuntu-ports|g' \
               {} +
 
       # WebKitGTK, GTK and the AppIndicator tray are the shell's Linux
@@ -344,6 +400,12 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      - name: Apply the manual build version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: node scripts/prepare-app-version.mjs "$VERSION"
 
       - name: Enable Corepack
         run: corepack enable
@@ -406,7 +468,12 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_SIGNING_ACCOUNT_NAME }}
+          AZURE_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_SIGNING_CERTIFICATE_PROFILE_NAME }}
           ALLOW_UNSIGNED_WINDOWS: ${{ vars.ALLOW_UNSIGNED_WINDOWS }}
         run: |
           set -euo pipefail
@@ -429,13 +496,21 @@ jobs:
               platform_signing=developer-id
               ;;
             Windows)
-              if [[ -n "${WINDOWS_CERTIFICATE:-}" ]]; then
+              configured=0
+              for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID AZURE_SIGNING_ENDPOINT AZURE_SIGNING_ACCOUNT_NAME AZURE_SIGNING_CERTIFICATE_PROFILE_NAME; do
+                if [[ -n "${!name:-}" ]]; then
+                  configured=$((configured + 1))
+                else
+                  missing="${missing:+${missing}, }${name}"
+                fi
+              done
+              if [[ "$configured" -eq 6 ]]; then
                 platform_signing=authenticode
-              elif [[ "${ALLOW_UNSIGNED_WINDOWS:-}" == "true" ]]; then
+              elif [[ "$configured" -eq 0 && "${ALLOW_UNSIGNED_WINDOWS:-}" == "true" ]]; then
                 echo "::warning::Building the Windows installer WITHOUT an Authenticode signature, because ALLOW_UNSIGNED_WINDOWS is true. SmartScreen will warn on download."
                 platform_signing=unsigned
               else
-                echo "::error::No Authenticode credentials (WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD) are configured. Add them to the 'release' environment, or set the repository variable ALLOW_UNSIGNED_WINDOWS=true to deliberately ship an unsigned, clearly-labelled build."
+                echo "::error::Missing Azure signing variables in the 'release' environment: ${missing}. A partial Azure configuration cannot use the unsigned waiver."
                 exit 1
               fi
               ;;
@@ -530,43 +605,22 @@ jobs:
           fi
           echo "TAURI_SIGNING_CONFIG=${GITHUB_WORKSPACE}/apps/desktop/src-tauri/tauri.release.conf.json" >> "$GITHUB_ENV"
 
-      - name: Import the Authenticode signing certificate
+      - name: Authenticate Windows signing with Azure OIDC
+        if: runner.os == 'Windows' && steps.signing.outputs.platform_signing == 'authenticode'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Prepare Azure Authenticode signing
         if: runner.os == 'Windows' && steps.signing.outputs.platform_signing == 'authenticode'
         shell: pwsh
         env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $pfx = Join-Path $env:RUNNER_TEMP "antiburn-signing.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
-          $password = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
-          $imported = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
-          Remove-Item $pfx -Force
-          if (-not $imported.Thumbprint) {
-            Write-Host "::error::The Authenticode certificate imported without a thumbprint."
-            exit 1
-          }
-          $timestampUrl = $env:WINDOWS_TIMESTAMP_URL
-          if ([string]::IsNullOrWhiteSpace($timestampUrl)) {
-            $timestampUrl = "http://timestamp.digicert.com"
-          }
-          # Tauri signs the installer with signtool when the bundle config
-          # names a certificate in the local store. Passing it as an overlay
-          # config keeps the thumbprint out of the committed configuration.
-          $config = @{
-            bundle = @{
-              windows = @{
-                certificateThumbprint = $imported.Thumbprint
-                digestAlgorithm = "sha256"
-                timestampUrl = $timestampUrl
-              }
-            }
-          }
-          $configPath = Join-Path $env:RUNNER_TEMP "signing.conf.json"
-          $config | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding utf8
-          "TAURI_SIGNING_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_SIGNING_ACCOUNT_NAME }}
+          AZURE_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_SIGNING_CERTIFICATE_PROFILE_NAME }}
+        run: ./scripts/setup-windows-signing.ps1
 
       # `icon.icns` and `icon.ico` are the two platform containers that are not
       # checked in (see src-tauri/icons/README.md). `tauri icon` also re-samples
@@ -583,16 +637,19 @@ jobs:
 
       # Tauri 2.11.4 caches a 2024 linuxdeploy build that bundles libwayland-client.
       # This pinned build follows the AppImage graphics-library exclusions.
+      # The asset id and hash are per-architecture matrix values; the cache
+      # file name must match what tauri-bundler looks for on this host, and
+      # `uname -m` gives that same architecture label.
       - name: Install the pinned Linux AppImage bundler
         if: runner.os == 'Linux'
         shell: bash
         env:
-          LINUXDEPLOY_ASSET_ID: "538917371"
-          LINUXDEPLOY_SHA256: "36a2d7e274d12e1050d0e9ecfe11d339ed54720b2bec464c286d53f8b07f5c62"
+          LINUXDEPLOY_ASSET_ID: ${{ matrix.linuxdeploy_asset_id }}
+          LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy_sha256 }}
         run: |
           set -euo pipefail
           tools="${XDG_CACHE_HOME:-$HOME/.cache}/tauri"
-          destination="${tools}/linuxdeploy-x86_64.AppImage"
+          destination="${tools}/linuxdeploy-$(uname -m).AppImage"
           mkdir -p "$tools"
           curl --fail --location --retry 3 \
             --header 'Accept: application/octet-stream' \
@@ -706,6 +763,8 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           $ErrorActionPreference = "Stop"
+          . ./scripts/windows-signing.ps1
+          Assert-WindowsSignature -FilePath "apps/desktop/src-tauri/target/$env:TARGET/release/antiburn.exe"
           $bundle = "apps/desktop/src-tauri/target/$env:TARGET/release/bundle/nsis"
           $installers = Get-ChildItem -Path $bundle -Filter *.exe
           if ($installers.Count -eq 0) {
@@ -713,12 +772,7 @@ jobs:
             exit 1
           }
           foreach ($installer in $installers) {
-            $signature = Get-AuthenticodeSignature $installer.FullName
-            if ($signature.Status -ne "Valid") {
-              Write-Host "::error::$($installer.Name) is not validly signed: $($signature.Status)"
-              exit 1
-            }
-            Write-Host "$($installer.Name): $($signature.SignerCertificate.Subject)"
+            Assert-WindowsSignature -FilePath $installer.FullName
           }
 
       # Collection is driven by the detached signatures rather than by a table
@@ -739,7 +793,7 @@ jobs:
           UPDATER_PLATFORM: ${{ matrix.updater_platform }}
           ARTIFACT: ${{ matrix.artifact }}
           PLATFORM_SIGNING: ${{ steps.signing.outputs.platform_signing }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.verify.outputs.tag }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -825,13 +879,19 @@ jobs:
           path: release-artifacts
           if-no-files-found: error
 
-  draft:
-    name: Draft the release
-    needs: [verify, sbom, build]
+  remote-helper:
+    name: Package Linux remote helpers
+    needs: [verify, trusted-main-ci]
+    uses: ./.github/workflows/build-remote-helper.yml
+    with:
+      version: ${{ github.event_name == 'workflow_dispatch' && needs.verify.outputs.version || '' }}
+
+  assemble:
+    name: Assemble release assets
+    needs: [verify, sbom, build, remote-helper]
     runs-on: ubuntu-24.04
     permissions:
-      # The only write in the whole workflow: create the draft and its assets.
-      contents: write
+      contents: read
       # Build provenance: an OIDC identity to sign the attestation with, and
       # permission to record it against this repository.
       id-token: write
@@ -852,6 +912,12 @@ jobs:
           name: release-notes
           path: notes
 
+      - name: Download the remote helpers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: remote-helper-*
+          path: incoming/remote-helpers
+
       - name: Download the inventories
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -861,7 +927,7 @@ jobs:
       - name: Assemble the release directory
         env:
           VERSION: ${{ needs.verify.outputs.version }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.verify.outputs.tag }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -870,21 +936,28 @@ jobs:
             -exec cp {} dist/ \;
           cp notes/RELEASE-NOTES.md dist/
           cp install.sh install.ps1 dist/
+          jq -n \
+            --arg version "$VERSION" \
+            --arg source "$GITHUB_SHA" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --arg engine_tree "$(git rev-parse HEAD:crates/antiburn-local)" \
+            '{version: $version, source: $source, event: $event, engine_tree: $engine_tree}' \
+            > dist/BUILD-INFO.json
 
           mapfile -t manifests < <(find incoming -type f -name 'updater-*.json' | sort)
-          if [[ "${#manifests[@]}" -ne 4 ]]; then
-            echo "::error::Expected 4 updater manifest fragments, found ${#manifests[@]}. A release ships every target or none."
+          if [[ "${#manifests[@]}" -ne 6 ]]; then
+            echo "::error::Expected 6 updater manifest fragments, found ${#manifests[@]}. A release ships every target or none."
             exit 1
           fi
 
           mapfile -t evidence < <(find incoming -type f -name 'evidence-*.json' | sort)
-          if [[ "${#evidence[@]}" -ne 4 ]]; then
-            echo "::error::Expected 4 build-evidence records, found ${#evidence[@]}."
+          if [[ "${#evidence[@]}" -ne 6 ]]; then
+            echo "::error::Expected 6 build-evidence records, found ${#evidence[@]}."
             exit 1
           fi
           jq -e -s '
             (map(.platform) | sort) ==
-              ["darwin-aarch64", "darwin-x86_64", "linux-x86_64-appimage", "windows-x86_64"] and
+              ["darwin-aarch64", "darwin-x86_64", "linux-aarch64-appimage", "linux-x86_64-appimage", "windows-aarch64", "windows-x86_64"] and
             all(.[]; (.signing | length) > 0 and (.files | length) >= 2)
           ' "${evidence[@]}" > /dev/null
           require_count() {
@@ -896,14 +969,18 @@ jobs:
             fi
           }
           require_count '*.dmg' 2
-          require_count '*.exe' 1
-          require_count '*.AppImage' 1
-          require_count '*.deb' 1
+          require_count '*.exe' 2
+          require_count "antiburn_${VERSION}_x64-setup.exe" 1
+          require_count "antiburn_${VERSION}_arm64-setup.exe" 1
+          require_count '*.AppImage' 2
+          require_count '*.deb' 2
           require_count '*.app.tar.gz' 2
-          require_count '*.sig' 4
+          require_count '*.sig' 6
           require_count '*.cdx.json' 2
           require_count 'install.sh' 1
           require_count 'install.ps1' 1
+          require_count "antiburn-remote-${VERSION}-x86_64-unknown-linux-musl.tar.gz" 1
+          require_count "antiburn-remote-${VERSION}-aarch64-unknown-linux-musl.tar.gz" 1
 
           platforms=$(jq -s 'add' "${manifests[@]}")
           jq -n \
@@ -916,7 +993,7 @@ jobs:
 
           jq -e '
             (.platforms | keys | sort) ==
-              ["darwin-aarch64", "darwin-x86_64", "linux-x86_64-appimage", "windows-x86_64"]
+              ["darwin-aarch64", "darwin-x86_64", "linux-aarch64-appimage", "linux-x86_64-appimage", "windows-aarch64", "windows-x86_64"]
           ' dist/latest.json > /dev/null
 
           # Every URL the manifest advertises must be immutable, point at this
@@ -981,6 +1058,43 @@ jobs:
           VERSION: ${{ needs.verify.outputs.version }}
         run: cp "$BUNDLE_PATH" "dist/antiburn-${VERSION}-provenance.intoto.jsonl"
 
+      - name: Upload the assembled assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: dist
+          if-no-files-found: error
+
+      - name: Summarize the build
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          {
+            echo "## Application build ${VERSION}"
+            echo
+            echo "Source: \`${GITHUB_SHA}\`. Trigger: \`${GITHUB_EVENT_NAME}\`."
+            echo "Download the assembled assets from the release Actions artifact."
+            echo
+            echo "| Platform | Target | Signing mode |"
+            echo "| --- | --- | --- |"
+            jq -s -r 'sort_by(.platform)[] | "| `\(.platform)` | `\(.target)` | `\(.signing)` |"' incoming/*/evidence-*.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  draft:
+    name: Draft the release
+    if: github.event_name == 'push'
+    needs: [verify, assemble]
+    runs-on: ubuntu-24.04
+    permissions:
+      # GitHub Releases writes are restricted to this tag-only job.
+      contents: write
+    steps:
+      - name: Download the assembled assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: dist
+
       # Drafts are re-runnable; published releases are not. That is the whole
       # retention rule, enforced here rather than only written down.
       #
@@ -1037,12 +1151,7 @@ jobs:
             echo
             echo "### Automated evidence"
             echo
-            echo "The workflow verified the exact main CI SHA, four updater platforms, immutable URLs, detached signatures, asset presence, checksums, and the signing mode reported by every build."
-            echo
-            echo "| Platform | Target | Signing mode |"
-            echo "| --- | --- | --- |"
-            jq -s -r 'sort_by(.platform)[] | "| `\(.platform)` | `\(.target)` | `\(.signing)` |"' \
-              incoming/*/evidence-*.json
+            echo "The workflow verified the exact main CI SHA, six updater platforms, immutable URLs, detached signatures, asset presence, checksums, and the signing mode reported by every build."
             echo
             echo "| Asset | SHA-256 |"
             echo "| --- | --- |"

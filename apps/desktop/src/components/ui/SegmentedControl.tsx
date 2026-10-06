@@ -17,9 +17,9 @@ export type SegmentedControlSelectedTone = "accent" | "neutral"
  *  for any number of options.
  *
  *  `variant="text-tabs"` drops the pill chrome for a run of plain labels. The
- *  selected label takes the accent blue and an underline in the same blue —
- *  the same control and the same keyboard contract, for places where a filled
- *  segment would be too loud. `size` sets its row height and label scale:
+ *  selected label and underline use primary label ink. Set `selectedTone` to
+ *  `"accent"` to use accent ink for the selected label. The underline stays neutral.
+ *  Text tabs keep the same keyboard contract. `size` sets the row height and label scale:
  *  `"regular"` (the default) is a 24px row at `type-footnote`, and `"large"`
  *  is a 28px row at `type-body`. Every other variant ignores `size`.
  *
@@ -44,7 +44,7 @@ export function SegmentedControl<T extends string>({
   idPrefix,
   variant = "segmented",
   size = "regular",
-  selectedTone = "accent",
+  selectedTone = "neutral",
   disabled = false,
 }: {
   options: ReadonlyArray<SegmentedOption<T>>

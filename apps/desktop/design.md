@@ -21,6 +21,7 @@ sources:
   - src/components/burn-checks/burn-check-summary.css
   - src/views/main-window/overview/overview.css
   - src/views/main-window/quota/quota.css
+  - src/views/settings/remote-hosts.css
 colors:
   # Concrete token colors use modern HSL function syntax.
   # Use the shortest value that keeps the same 8-bit RGB channels.
@@ -204,6 +205,9 @@ colors:
   check-depth:
     light: "hsl(158 89% 39.6%)"
     dark: "hsl(156 75% 47.2%)"
+  check-instructions:
+    light: "hsl(287 65% 52%)"
+    dark: "hsl(287 75% 68%)"
   # Floating-HUD sub-palette only (src/styles/hud.css)
   burn:
     light: "hsl(18 100% 50%)"
@@ -549,7 +553,7 @@ components:
     separator: "{colors.separator} hairline between two unselected neighbours"
   list-display-toolbar:
     className: "ListDisplayToolbar + SegmentedControl variant=text-tabs"
-    selectedInk: "{colors.accent} by default; {colors.label} for the Sessions metric through selectedTone=neutral"
+    selectedInk: "{colors.label} by default for all text tabs; {colors.accent} only through selectedTone=accent"
     indicatorColor: "{colors.label}"
     typography: "{typography.footnote}" # size="regular" (default): 24px row, 12px gap
     height: 32px
@@ -704,6 +708,18 @@ Notes for what isn't expressible as a token:
   denominator. Failure wording uses semibold weight. Compact Lucide indicators use a
   15px visual size. Compact segmented dials remain 14px with a 1.5px optical stroke and 14-degree requested
   gaps. A text-bearing indicator shifts down 1px for optical alignment with the monospace verdict.
+  Main collection rows that are not assessed form an 8px grid. When an assessed group follows,
+  leave an 8px gap without a divider or top inset.
+  In the main report, show actual failures first. Keep awaiting, passed, and
+  snoozed checks in their own groups. Show all active checks without a lifecycle
+  in a neutral `Not assessed (N)` disclosure only when N is at least one. Keep
+  these rows hidden by default; the disclosure makes them reachable when needed.
+  Start it collapsed; search opens and focuses its target. Collapsing a focused row
+  returns focus to the disclosure. Never describe an unassessed row as failed.
+  When Ignored Instructions reports priority sampling, place a small tertiary
+  information icon next to its detail title. Its shared tooltip explains that
+  likely conflicts are checked first and later checks can reduce the remaining
+  unassessed gap. The icon is a keyboard-focusable 24px target.
   Session-card rows use a 2px interline gap inside unchanged 12px vertical card padding. A zero-failure result with at least one assessed check uses an outlined ring and tick, even
   when some checks are not assessed. Session cards keep the passing verdict visible above the title.
   Failed and non-result states keep their explicit verdict wording. Session cards use
@@ -770,7 +786,9 @@ Notes for what isn't expressible as a token:
   explanation opens at a time. Unknown estimates omit the meter. Flames remain static when reports update.
 - **Themes** — three sources, in cascade order. The system light/dark preference is the default. A
   platform whose webview exposes live system label/separator/accent tokens picks those up through
-  `@supports`, so text and chrome track the OS exactly. A platform without them takes an explicit
+  `@supports`, so text and chrome track the OS exactly. Detect native accent support
+  separately from system labels: use `-apple-system-accent-color` when available,
+  then `-apple-system-control-accent`, otherwise the documented palette. A platform without them takes an explicit
   `<html data-theme="light|dark">` palette, which is deliberately more opaque because there is no
   window material behind it. `prefers-reduced-transparency` makes the window and popover surfaces
   solid in every branch.
@@ -804,6 +822,42 @@ Notes for what isn't expressible as a token:
   (`SectionGroup`) → row label `type-body` (`Row`) → row description
   `type-footnote text-label-secondary`. Only the pane title is semibold; below it size and contrast
   carry the hierarchy. Hand-rolled rows must match `Row`'s label type.
+- **Remote hosts in Settings** — keep the folder-access warning above all settings
+  sections when access is needed. Place Remote hosts first among the Sources sections,
+  before Scanning and Coding agents. Keep the introductory description inside the card, above
+  Sync frequency in the first block. Follow with host rows, then a compact
+  footer with Add host. Explain offline availability in the introductory description.
+  Sync frequency stays a searchable Settings row without a second section heading;
+  its description reads “Enabled hosts sync automatically while Antiburn is running.”
+  Each host has the shared Settings toggle at the trailing edge to disable all
+  syncing for that host. Preserve cached sessions and disable Sync now and Retry.
+  Discard pending scans and fence active scans from further cache commits; an SSH
+  request already in flight may settle. Replace the last-sync text with “Sync off” in disabled host metadata;
+  retain the last-sync time in its tooltip.
+  Align each host's 14px monitor with its display name. Put its SSH alias (when
+  different from its display name) in a muted, 16px-high badge using the `CountPill`
+  treatment: `surface-tertiary/40`, tertiary ink, mono caption text, and no border.
+  Constrain the badge to its metadata column, truncate long aliases, and expose the
+  full alias on hover.
+  Keep the monitor neutral. Use the existing failure message and Retry action to
+  signal problems; do not add a connected indicator to the normal state.
+  Keep the session link and last-sync text on the same wrapping metadata line,
+  center-aligned with a middle dot only between the count and sync status, and no
+  success icon. Leave `space-sm` between the alias badge and session link, with no
+  separator. Keep the other metadata gaps at `space-xs`. Use `text-label`
+  with a quiet underline for the count link; it opens Sessions filtered to that host. Keep half of `space-xs`
+  between the name and metadata. Place Sync now/Syncing…/Retry, the overflow button,
+  and the unlabelled shared switch in one strip with equal `space-md` gaps. Center
+  this strip vertically against the complete two-line host identity. The switch
+  retains a host-specific accessible name and a tooltip explaining pause behavior.
+  Align the sync dropdown to the card’s trailing content edge, above the host switches.
+  Below 520px card width, place the action strip below the full-width metadata;
+  below 360px, place the dropdown below its labels. Source chips show the host name,
+  “N hosts”, or “Remote”. Put failures on a separate status line and retain
+  last-good metadata. Expand remote action hit areas vertically by half of `space-xs`
+  without overlapping adjacent actions. Editor primary actions reserve their
+  longest label's intrinsic width across checking, ready, and saving states;
+  Cancel stays in the same position and renders once.
 - **Window chrome** — a window that hides its native title bar owns the drag strip and the matching
   top clearance in the webview; a window that keeps native decorations must not reserve that space.
   Keep that decision in the window's own layout, not in the shared primitives.
@@ -1007,8 +1061,8 @@ dot; the timestamp never wraps. When the repository name exceeds
 18 monospace characters, the visible timestamp drops “ago”; its accessible label remains complete. The model line does
 not reserve inline space for the vendor mark. Group labels use sentence case. A
 shared `ListDisplayToolbar` places the pinned activity label and the right-aligned `text-tabs` badge metric control on one row with the labels Cost,
-Week %, and 5h %. Its accessible group name replaces redundant visible labels. The selected choice uses accent ink and a
-primary-label hairline underline by default. Sessions opts into neutral primary-label ink while retaining the underline. Each option links its
+Week %, and 5h %. Its accessible group name replaces redundant visible labels. The selected choice uses primary-label ink and a
+primary-label hairline underline by default. Set `selectedTone="accent"` to use accent ink for the selected label while retaining the neutral underline. Each option links its
 own shared tooltip description to its focusable radio: Cost explains estimated session cost, while Week % and 5h % explain the estimated share
 of the provider limit for that window when available. The control crossfades only color and underline opacity over `--duration-quick`; it never slides a moving indicator.
 
@@ -1033,6 +1087,10 @@ open across choices. Unselected zero-count options stay visible at 50% opacity b
 and each All option stay enabled even with zero matches, so users can remove or reset filters. Agent menu rows pair vendor marks with visible names, accessible menu labels, and
 typeahead text. Vendor marks use 14px in menu rows. Active chips use 12px vendor marks centered in a 14px box to balance their visual weight against the 14px check-result marks. Agent chips show only the mark and remove icon; the whole chip provides its vendor-name tooltip. Failed and Passed menu
 rows and active chips reuse the shared 14px Burn Check marks and colors. Active facet labels use primary `text-label` ink; remove icons retain their secondary hierarchy. Active pills describe selected constraints and omit counts, including from their accessible removal labels. Contextual match counts remain in the menu; the header badge retains the full time-range total. Active chips use the quieter `surface-card` fill at rest and `surface-secondary` on hover in both themes.
+The Source group keeps All sources and Local labels directly after their checkboxes. Only Remote adds a 12px Monitor mark; host rows keep their checkbox and text label without repeating the mark. Host row content starts 32px from the menu edge (`space-2xl` plus `space-sm`), 24px farther in than its Remote parent, so the hosts read as children without leaving a blank icon column on local choices.
+Remote session cards show a bare 12px Monitor in tertiary ink beside the model.
+Center the icon within the model line box while text retains baseline alignment;
+its tooltip and accessible name identify the host.
 Status marks sit 8px from their chip labels; the label or vendor mark sits 4px from its remove icon.
 The minimum-spend option reads “$1 or more” in the menu and “≥ $1” in the pill; its accessible name remains “$1 or more”.
 The menu selection checkmark remains separate. High cost keeps
@@ -1092,7 +1150,7 @@ Project context appears once below the title and actions, using the full text-co
 Keep it on one line, truncating overflow while retaining the inline folder control.
 The folder hover panel reveals the full recorded local path and supports open/copy actions
 on pointer hover or keyboard focus.
-Failed sessions use the shared session cards without a separate heading, count badge, or disclosure.
+Related sessions use the shared session cards without a separate count badge or disclosure.
 Show all available cards. Lists longer than five cards scroll within the measured height of the
 first five cards. Counts and dates use tabular numerals.
 The project row keeps a bare 14px folder icon in a 20px target and a `mt-1` count gap.
@@ -1104,6 +1162,15 @@ The actions align with that first line and wrap without negative vertical offset
 Every finding explanation appears below the header metrics.
 All check actions sit at the header’s right edge. Named resource cards contain evidence only.
 Do not repeat explanations or check-level actions in the body.
+An Ignored Instructions finding shows the same two sections in every detail state: “Instruction”
+and “Where it was ignored”. Load bounded saved excerpts when the detail opens, without another
+disclosure. Include the instruction source and line range, plus the cited action and its available
+time. Show each complete bounded excerpt with its source and a short explanation. Keep surrounding
+events chronological behind “Show context”. Keep the finding summary visible while excerpts load
+or fail; offer Retry after a failed read. New assessments save the compared excerpts with the finding so later session changes
+do not hide the example. For older findings without saved excerpts, show the instruction location
+and action summary, then state that exact text was not saved. Closing or changing the selected
+detail discards late responses. Other session findings may load bounded evidence on demand.
 The collection and detail panes start at the top of the workspace. The collection docks directly to
 the sidebar and uses the same `--main-window-collection-width` geometry as Sessions. Its 340px width
 does not change by breakpoint. The detail pane remains flexible, and both panes own independent scroll
@@ -1112,8 +1179,9 @@ gutter separates the collection from the sidebar. Both surfaces use the same che
 counts, order, token-burn percentages, summaries, and semantic status colors. This parity comes from
 shared presentation helpers. Do not copy labels or calculate percentages in either surface. Do not
 sum category percentages. Use color only for the compact status icon and metric. Other text and
-surfaces stay neutral. The main view shows failed and passed groups. It hides not-assessed rows;
-settled historical coverage gaps use a not-assessed count, not a processing state. Category rows use
+surfaces stay neutral. The main view shows failed and passed groups. It hides not-assessed rows
+by default; show a `Not assessed (N)` disclosure when those rows need to be reachable.
+Settled historical coverage gaps use a not-assessed count, not a processing state. Category rows use
 separate `session-card` rounded controls and accessible selection buttons. The selected detail uses one short, check-specific
 finding sentence below the heading. The prompt action sits at the heading’s right edge. Do not show internal target identities,
 repeated observations, repeated guidance, or detail refresh and bounded-list notices. Unused MCP servers, skills, and built-in tools show

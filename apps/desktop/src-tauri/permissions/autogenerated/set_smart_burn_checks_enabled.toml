@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-smart-burn-checks-enabled"
+description = "Enables the set_smart_burn_checks_enabled command without any pre-configured scope."
+commands.allow = ["set_smart_burn_checks_enabled"]
+
+[[permission]]
+identifier = "deny-set-smart-burn-checks-enabled"
+description = "Denies the set_smart_burn_checks_enabled command without any pre-configured scope."
+commands.deny = ["set_smart_burn_checks_enabled"]

@@ -82,6 +82,7 @@ pub(crate) type KeyCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 pub(crate) struct ExpectedKeyRelease(AtomicU64);
 
 impl ExpectedKeyRelease {
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn arm(&self) {
         self.0.fetch_add(1, Ordering::SeqCst);
     }

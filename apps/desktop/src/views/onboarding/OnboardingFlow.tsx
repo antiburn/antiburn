@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, FolderPlus, Lock, X } from "lucide-react"
+import { AlertTriangle, Check, ChevronRight, FolderPlus, Lock, X } from "lucide-react"
 
 import appIcon from "../../assets/app-icon.png"
 import { useState } from "react"
@@ -52,6 +52,9 @@ export interface OnboardingFlowProps {
   repositories: readonly LocalRepositoryItem[]
   /** Include or ignore one repository. */
   onToggleRepository: (item: LocalRepositoryItem, enabled: boolean) => void
+  /** Whether the scan keeps sessions from folders without git. */
+  includeNonRepoFolders: boolean
+  onIncludeNonRepoFoldersChange: (enabled: boolean) => void
   /** Run a discovery pass. Called when a step needs fresh results. */
   onDiscover: () => void
   /** The shell's scan status, or null before the first read. */
@@ -135,7 +138,8 @@ function Welcome() {
           antiburn reads your coding agent session logs and analyses them locally.
         </p>
         <p className="mt-2 text-balance type-body text-label-secondary">
-          No account needed, and your session content is never uploaded.
+          No account needed. Session analysis stays local unless you enable the optional Ignored
+          Instructions check with a TypeSafe API key in Settings.
         </p>
       </div>
     </div>
@@ -256,9 +260,16 @@ function SourcesAndRepos({
   onRemoveScanRoot,
   onRetryScan,
   onToggleRepository,
+  includeNonRepoFolders,
+  onIncludeNonRepoFoldersChange,
 }: Pick<
   OnboardingFlowProps,
-  "defaultRoots" | "scanRoots" | "onAddScanRoot" | "onRemoveScanRoot"
+  | "defaultRoots"
+  | "scanRoots"
+  | "onAddScanRoot"
+  | "onRemoveScanRoot"
+  | "includeNonRepoFolders"
+  | "onIncludeNonRepoFoldersChange"
 > & {
   blockedRoots: readonly string[]
   permissionFlow: FolderPermissionFlow
@@ -278,6 +289,8 @@ function SourcesAndRepos({
   const toggleable = repositories.filter((item) => item.status !== "not_cloned")
   const allEnabled = toggleable.length > 0 && toggleable.every((item) => item.enabled)
   const [choosingRepos, setChoosingRepos] = useState(false)
+  const [defaultsExpanded, setDefaultsExpanded] = useState(false)
+  const blockedDefaults = defaultRoots.filter((root) => blockedRoots.includes(root)).length
   // Every repository is on and the reader has not asked to see them, so the
   // list stays closed.
   const scanningAll = allEnabled && !choosingRepos
@@ -318,8 +331,32 @@ function SourcesAndRepos({
         <ScrollPane className="mt-2.5" viewportClassName="pr-1">
           {defaultRoots.length > 0 && (
             <>
-              <p className="pb-1 type-footnote font-semibold! text-label-tertiary">Defaults</p>
-              <ul className="space-y-0.5 pb-3">
+              <button
+                type="button"
+                aria-expanded={defaultsExpanded}
+                onClick={() => setDefaultsExpanded((open) => !open)}
+                className="mb-1 flex items-center gap-1 rounded-control type-footnote text-label-tertiary hover:text-label-secondary"
+              >
+                <ChevronRight
+                  size={12}
+                  strokeWidth={2.5}
+                  aria-hidden="true"
+                  className={cn(
+                    "shrink-0 transition-transform duration-[var(--duration-fast)] ease-out",
+                    defaultsExpanded && "rotate-90",
+                  )}
+                />
+                <span className="font-semibold!">
+                  Searching {defaultRoots.length} default{" "}
+                  {defaultRoots.length === 1 ? "location" : "locations"}
+                </span>
+                {blockedDefaults > 0 ? (
+                  <span className="type-caption">
+                    · {blockedDefaults} {blockedDefaults === 1 ? "needs" : "need"} permission
+                  </span>
+                ) : null}
+              </button>
+              <ul className={cn("space-y-0.5 pb-3", !defaultsExpanded && "hidden")}>
                 {defaultRoots.map((root) => {
                   const blocked = blockedRoots.includes(root)
                   return (
@@ -464,6 +501,19 @@ function SourcesAndRepos({
             />
           </div>
         ) : null}
+        <div className="mt-2 flex items-center gap-3 border-b border-separator pb-2">
+          <div className="min-w-0 flex-1">
+            <p className="type-callout text-label">Folders without git</p>
+            <p className="type-caption text-label-tertiary">
+              Counts sessions started in a folder that isn't a repository.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={includeNonRepoFolders}
+            onCheckedChange={onIncludeNonRepoFoldersChange}
+            aria-label="Include folders without git"
+          />
+        </div>
         <div className="mt-2 min-h-0 flex-1">
           {scanningAll ? null : scanFailed && repositories.length === 0 ? (
             <div className="flex h-full items-center justify-center px-6 text-center">
@@ -637,6 +687,8 @@ export function OnboardingFlow({
   onRemoveScanRoot,
   repositories,
   onToggleRepository,
+  includeNonRepoFolders,
+  onIncludeNonRepoFoldersChange,
   onDiscover,
   scanStatus,
   liveUsageMeters,
@@ -743,6 +795,8 @@ export function OnboardingFlow({
             onRemoveScanRoot={onRemoveScanRoot}
             onRetryScan={onDiscover}
             onToggleRepository={onToggleRepository}
+            includeNonRepoFolders={includeNonRepoFolders}
+            onIncludeNonRepoFoldersChange={onIncludeNonRepoFoldersChange}
           />
         )}
         {step === "ready" && (

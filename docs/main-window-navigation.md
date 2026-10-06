@@ -49,6 +49,12 @@ narrower DTO and an explicit mapping at the renderer boundary. A new local view
 does not extend native routes or permissions. Adding a native route still requires
 an explicit TypeScript/Rust contract change.
 
+Settings host session counts use the revisioned native navigation route, including
+pending-request recovery when the main window opens. Only Settings can send an
+Activity destination with a validated remote host ID. The renderer opens that
+host’s list with other facets cleared and no selected session. The link explicitly
+retains the user’s Sessions date range; the count represents all cached sessions.
+
 ### Feature-owned search metadata
 
 Settings panes, Settings controls, agent session filters, and checks own their

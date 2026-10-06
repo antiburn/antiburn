@@ -169,7 +169,8 @@ describe("SegmentedControl", () => {
 
     const selected = screen.getByRole("tab", { name: "B" })
     expect(selected.className).toContain("font-medium")
-    expect(selected.className).toContain("text-accent")
+    expect(selected).toHaveClass("text-label")
+    expect(selected).not.toHaveClass("text-accent")
     expect(selected.querySelector(".segmented-control-text-indicator")?.className).toContain(
       "opacity-100",
     )
@@ -222,7 +223,29 @@ describe("SegmentedControl", () => {
     const selected = screen.getByRole("radio", { name: "Left" })
     expect(selected.className).toContain("type-body")
     expect(selected.className).toContain("font-medium")
-    expect(selected.className).toContain("text-accent")
+    expect(selected).toHaveClass("text-label")
+    expect(selected).not.toHaveClass("text-accent")
+  })
+
+  it("supports explicit accent text with a neutral selection underline", () => {
+    render(
+      <SegmentedControl
+        options={TWO}
+        value="left"
+        onChange={() => {}}
+        ariaLabel="Placement"
+        variant="text-tabs"
+        selectedTone="accent"
+      />,
+    )
+
+    const selected = screen.getByRole("radio", { name: "Left" })
+    expect(selected).toHaveClass("text-accent")
+    expect(selected).not.toHaveClass("text-label")
+    expect(selected.querySelector(".segmented-control-text-indicator")).toHaveClass(
+      "bg-label",
+      "opacity-100",
+    )
   })
 
   it("supports a neutral selected text tab and describes each actual button", () => {

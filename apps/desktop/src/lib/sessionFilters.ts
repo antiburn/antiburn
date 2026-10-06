@@ -1,5 +1,5 @@
 import type { SessionListEntry } from "../components/session/SessionList"
-import { sessionBurnCheckPresentation } from "./presentation/burnChecks"
+import { sessionBurnCheckPresentation } from "./presentation/checkStatus"
 import { INITIAL_SESSION_HYGIENE, sessionHygieneChecks } from "./presentation/sessionHygiene"
 import type { BurnCheckDetectorId } from "./insightsIpc"
 import { visibleSessionHygieneChecks } from "./snoozedBurnChecks"
@@ -15,25 +15,38 @@ export const MATERIAL_COST_FLOOR_USD = 1
 
 export type SessionResultFilter = "all" | "failing" | "passing"
 export type SessionSpendFilter = "all" | "notable" | "material"
+export type SessionSourceFilter =
+  { kind: "all" } | { kind: "selected"; includeLocal: boolean; remote: "all" | string[] }
 
 export interface SessionFilters {
+  source?: SessionSourceFilter
   agents: string[]
   result: SessionResultFilter
   spend: SessionSpendFilter
 }
 
 export function normalizeSessionFilters(filters: SessionFilters): SessionFilters {
-  return { ...filters, agents: [...new Set(filters.agents)].sort() }
+  const source = normalizeSessionSource(filters.source ?? { kind: "all" })
+  const normalized = {
+    agents: [...new Set(filters.agents)].sort(),
+    result: filters.result,
+    spend: filters.spend,
+  }
+  return source.kind === "all" ? normalized : { ...normalized, source }
 }
 
 export function serializeSessionFilters(filters: SessionFilters): string {
-  const { agents, result, spend } = normalizeSessionFilters(filters)
-  return `v1:${JSON.stringify({ agents, result, spend })}`
+  const { source = { kind: "all" }, agents, result, spend } = normalizeSessionFilters(filters)
+  return `v2:${JSON.stringify({ source, agents, result, spend })}`
 }
 
 export function parseSessionFilters(saved: string): SessionFilters {
-  const all: SessionFilters = { agents: [], result: "all", spend: "all" }
-  if (!saved.startsWith("v1:")) {
+  const all: SessionFilters = {
+    agents: [],
+    result: "all",
+    spend: "all",
+  }
+  if (!saved.startsWith("v1:") && !saved.startsWith("v2:")) {
     const legacy = parseSessionFilterId(saved)
     switch (legacy.kind) {
       case "agent":
@@ -62,10 +75,60 @@ export function parseSessionFilters(saved: string): SessionFilters {
       (spend !== "all" && spend !== "notable" && spend !== "material")
     )
       return all
-    return normalizeSessionFilters({ agents, result, spend })
+    if (saved.startsWith("v1:"))
+      return normalizeSessionFilters({ ...all, agents, result, spend })
+    if (!("source" in value) || !isSessionSourceFilter(value.source)) return all
+    return normalizeSessionFilters({ source: value.source, agents, result, spend })
   } catch {
     return all
   }
+}
+
+function isSessionSourceFilter(value: unknown): value is SessionSourceFilter {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+  if (!("kind" in value)) return false
+  if (value.kind === "all") return Object.keys(value).length === 1
+  if (value.kind !== "selected" || !("includeLocal" in value) || !("remote" in value))
+    return false
+  return (
+    typeof value.includeLocal === "boolean" &&
+    (value.remote === "all" ||
+      (Array.isArray(value.remote) &&
+        value.remote.every(
+          (id): id is string => typeof id === "string" && id.trim().length > 0,
+        )))
+  )
+}
+
+export function normalizeSessionSource(
+  source: SessionSourceFilter,
+  knownRemoteHostIds?: readonly string[],
+): SessionSourceFilter {
+  if (source.kind === "all") return source
+  if (source.remote === "all") return source
+  const remote = [...new Set(source.remote.filter((id) => id.trim()))].sort()
+  if (!source.includeLocal && remote.length === 0) return { kind: "all" }
+  if (
+    remote.length > 0 &&
+    knownRemoteHostIds &&
+    new Set(knownRemoteHostIds).size === remote.length &&
+    knownRemoteHostIds.every((id) => remote.includes(id))
+  )
+    return { kind: "selected", includeLocal: source.includeLocal, remote: "all" }
+  return { kind: "selected", includeLocal: source.includeLocal, remote }
+}
+
+/** Reconcile explicit IDs only after the caller has an authoritative inventory. */
+export function reconcileSessionSource(
+  source: SessionSourceFilter,
+  knownRemoteHostIds: readonly string[],
+): SessionSourceFilter {
+  if (source.kind === "all" || source.remote === "all") return source
+  const known = new Set(knownRemoteHostIds)
+  return normalizeSessionSource(
+    { ...source, remote: source.remote.filter((id) => known.has(id)) },
+    knownRemoteHostIds,
+  )
 }
 
 /** Parse a legacy filter. Preserve unknown agents and reset unknown kinds. */
@@ -90,6 +153,7 @@ function hygieneCountsFor(
         agent: entry.agent,
         sessionId: entry.sessionId,
         wslDistro: entry.wslDistro ?? null,
+        remoteHostId: entry.remoteHostId ?? null,
       })
     : INITIAL_SESSION_HYGIENE
   return sessionBurnCheckPresentation(
@@ -119,6 +183,13 @@ function spendMatches(entry: SessionListEntry): Record<SessionSpendFilter, boole
   }
 }
 
+function sourceMatches(entry: SessionListEntry, source: SessionSourceFilter): boolean {
+  if (source.kind === "all") return true
+  const remoteHostId = entry.remoteHostId?.trim()
+  if (!remoteHostId) return source.includeLocal
+  return source.remote === "all" || source.remote.includes(remoteHostId)
+}
+
 /** Preserve entry order and the full-cohort high-cost classification. */
 export function filterSessionEntries(
   entries: readonly SessionListEntry[],
@@ -130,6 +201,7 @@ export function filterSessionEntries(
   return entries.filter(
     (entry) =>
       (agents.size === 0 || agents.has(entry.agent)) &&
+      sourceMatches(entry, filters.source ?? { kind: "all" }) &&
       spendMatches(entry)[filters.spend] &&
       (filters.result === "all" ||
         resultMatches(entry, hygieneSnapshot, snoozed)[filters.result]),
@@ -141,6 +213,12 @@ export interface SessionFilterCounts {
   matching: number
   agentsAll: number
   agents: Record<string, number>
+  source?: {
+    all: number
+    local: number
+    remoteAll: number
+    remote: Record<string, number>
+  }
   result: Record<SessionResultFilter, number>
   spend: Record<SessionSpendFilter, number>
 }
@@ -159,26 +237,44 @@ export function sessionFilterCounts(
     matching: 0,
     agentsAll: 0,
     agents: {},
+    source: { all: 0, local: 0, remoteAll: 0, remote: {} },
     result: { all: 0, failing: 0, passing: 0 },
     spend: { all: 0, notable: 0, material: 0 },
   }
+  const sourceCounts = counts.source!
 
   for (const entry of entries) {
     const result = resultMatches(entry, hygieneSnapshot, snoozed)
     const spend = spendMatches(entry)
     const agentMatches = agents.size === 0 || agents.has(entry.agent)
-    const otherFacetsMatch = result[filters.result] && spend[filters.spend]
-    agentCounts.set(entry.agent, (agentCounts.get(entry.agent) ?? 0) + Number(otherFacetsMatch))
-    if (otherFacetsMatch) {
+    const sourceMatch = sourceMatches(entry, filters.source ?? { kind: "all" })
+    const sourceOtherFacetsMatch =
+      agentMatches && result[filters.result] && spend[filters.spend]
+    const agentOtherFacetsMatch = sourceMatch && result[filters.result] && spend[filters.spend]
+    agentCounts.set(
+      entry.agent,
+      (agentCounts.get(entry.agent) ?? 0) + Number(agentOtherFacetsMatch),
+    )
+    if (agentOtherFacetsMatch) {
       counts.agentsAll += 1
       if (agentMatches) counts.matching += 1
     }
-    if (agentMatches && spend[filters.spend]) {
+    if (sourceOtherFacetsMatch) {
+      sourceCounts.all += 1
+      const remoteHostId = entry.remoteHostId?.trim()
+      if (remoteHostId) {
+        sourceCounts.remoteAll += 1
+        sourceCounts.remote[remoteHostId] = (sourceCounts.remote[remoteHostId] ?? 0) + 1
+      } else {
+        sourceCounts.local += 1
+      }
+    }
+    if (sourceMatch && agentMatches && spend[filters.spend]) {
       counts.result.all += 1
       counts.result.failing += Number(result.failing)
       counts.result.passing += Number(result.passing)
     }
-    if (agentMatches && result[filters.result]) {
+    if (sourceMatch && agentMatches && result[filters.result]) {
       counts.spend.all += 1
       counts.spend.notable += Number(spend.notable)
       counts.spend.material += Number(spend.material)

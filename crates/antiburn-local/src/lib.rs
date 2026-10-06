@@ -13,6 +13,7 @@
 //!   organization, remote-sharing, enrichment, or telemetry contracts.
 
 pub mod analysis;
+pub mod checks;
 pub mod discovery;
 pub mod insights;
 pub mod model;

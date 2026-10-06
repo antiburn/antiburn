@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import type { SessionHygienePayload } from "../insightsIpc"
+import { sessionBurnCheckPresentation } from "./checkStatus"
 import {
   INITIAL_SESSION_HYGIENE,
   notAssessedReasonLabel,
@@ -27,6 +28,28 @@ const PAYLOAD: SessionHygienePayload = {
 }
 
 describe("sessionHygieneChecks", () => {
+  it("includes a published ignored-instruction failure in session and popover counts only when present", () => {
+    const ordinary = sessionHygieneChecks(PAYLOAD)
+    expect(ordinary.some((check) => check.id === "ignoredInstructions")).toBe(false)
+    const checks = sessionHygieneChecks({
+      ...PAYLOAD,
+      badges: [
+        ...PAYLOAD.badges,
+        { id: "ignoredInstructions", status: "finding", notAssessedReason: null },
+      ],
+    })
+    const ignored = checks.find((check) => check.id === "ignoredInstructions")!
+    expect(ignored.title).toBe("Instructions ignored")
+    expect(sessionHygieneDocumentation(ignored).guidance).toEqual([
+      "Follow the cited instruction and correct the affected work.",
+    ])
+    expect(sessionBurnCheckPresentation(checks, "ready").counts).toEqual({
+      failed: 2,
+      passed: 4,
+      unassessed: 1,
+    })
+  })
+
   it("maps every engine identifier to reader copy in a stable order", () => {
     expect(sessionHygieneChecks(PAYLOAD).map(({ id, title }) => ({ id, title }))).toEqual([
       { id: "sessionOverdepth", title: "Session went too deep" },

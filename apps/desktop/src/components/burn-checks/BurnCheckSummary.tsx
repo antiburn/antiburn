@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 
-import type { BurnCheckPresentation } from "../../lib/presentation/burnChecks"
+import type { BurnCheckPresentation } from "../../lib/presentation/checkStatus"
 
 export function BurnCheckSummary({
   presentation,

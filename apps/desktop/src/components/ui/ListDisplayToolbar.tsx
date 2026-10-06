@@ -13,7 +13,7 @@ export function ListDisplayToolbar<T extends string>({
   ariaLabel,
   dragRegion = false,
   className,
-  selectedTone = "accent",
+  selectedTone = "neutral",
   topPadding = "default",
 }: {
   label?: string

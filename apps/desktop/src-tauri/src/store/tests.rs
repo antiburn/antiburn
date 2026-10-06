@@ -11,11 +11,15 @@ use super::model::{
 use super::*;
 
 mod activity_tests;
+mod burn_check_tests;
 mod coverage_tests;
 mod evidence_tests;
+#[path = "tests/history_tests.rs"]
+mod history_tests;
 mod reader_tests;
 mod reconcile_tests;
 mod remediation_tests;
+mod remote_count_tests;
 mod resume_tests;
 mod revision_tests;
 mod settings_tests;
@@ -42,6 +46,22 @@ fn session(session_id: &str, updated_at: i64) -> SessionRecord {
         fork_parent_session_id: None,
         source_fingerprint: None,
     }
+}
+
+fn add_session_content(store: &Store, record: &SessionRecord) {
+    let mut row = turn_row(0);
+    row.source_key = record.key.session_id.clone();
+    row.thread_id = row.source_key.clone();
+    row.content = vec![antiburn_local::analysis::ContentPart::new(
+        antiburn_local::analysis::ContentKind::AssistantText,
+        "synthetic session action",
+    )];
+    let key = antiburn_local::analysis::TurnSessionKey {
+        environment_key: &record.key.environment_key,
+        agent: &record.key.agent,
+        session_id: &record.key.session_id,
+    };
+    insert_turn_rows(&store.lock(), &key, 1, &[row]).unwrap();
 }
 
 fn seed_historical_sessions(store: &Store, count: usize) {
@@ -153,7 +173,6 @@ fn scan_history_queries_cross_the_key_batch_boundary() {
     store
         .upsert_sessions(&records, &crate::agents::evidence_cohort())
         .unwrap();
-
     let activity_keys = records
         .iter()
         .map(|record| {
@@ -249,15 +268,11 @@ fn title_history_cohort_preserves_all_native_agent_rows() {
 }
 
 fn projection_revisions() -> ProjectionRevisions {
-    ProjectionRevisions {
-        parser_revision: 1,
-        analyzer_revision: 1,
-        metrics_schema_revision: 1,
-        evidence_schema_revision: 1,
-    }
+    crate::analysis::projection_revisions()
 }
 
 fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> AnalysisRecord {
+    let revisions = crate::analysis::projection_revisions();
     AnalysisRecord {
         key,
         model_breakdown_json: "{}".into(),
@@ -269,9 +284,9 @@ fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> Ana
         source_fingerprint: fingerprint.into(),
         pricing_generation: 1,
         analyzed_generation: generation,
-        parser_revision: 1,
-        analyzer_revision: 1,
-        metrics_schema_revision: 1,
+        parser_revision: revisions.parser_revision,
+        analyzer_revision: revisions.analyzer_revision,
+        metrics_schema_revision: revisions.metrics_schema_revision,
     }
 }
 
@@ -308,7 +323,7 @@ fn evidence_completion(
     EvidenceCompletion {
         claim_fence: claim.claim_fence,
         status,
-        evidence_schema_revision: 1,
+        evidence_schema_revision: crate::analysis::projection_revisions().evidence_schema_revision,
         evidence_json,
     }
 }
@@ -331,15 +346,18 @@ fn seed_ready_evidence_row(store: &Store, session_id: &str) -> SessionRecord {
         .execute(
             "UPDATE session_evidence
                 SET status = 'ready', analyzed_generation = 1,
-                    processed_fingerprint = 'sv1:current', parser_revision = 1,
-                    analyzer_revision = 1, evidence_schema_revision = 1,
+                    processed_fingerprint = 'sv1:current', parser_revision = ?4,
+                    analyzer_revision = ?5, evidence_schema_revision = ?6,
                     evidence_json = '{\"groups\":[]}',
                     retry_count = 0, claim_fence = 4, analyzed_at_epoch = 900
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
             params![
                 record.key.environment_key,
                 record.key.agent,
-                record.key.session_id
+                record.key.session_id,
+                crate::analysis::projection_revisions().parser_revision,
+                crate::analysis::projection_revisions().analyzer_revision,
+                crate::analysis::projection_revisions().evidence_schema_revision,
             ],
         )
         .unwrap();
@@ -393,6 +411,7 @@ fn published_evidence_pass(record: &SessionRecord) -> crate::analysis::EvidenceP
         &|| false,
         Some(store),
     );
+    pass.source_fingerprint = record.source_fingerprint.clone();
     pass.analysis.fingerprint = record
         .source_fingerprint
         .clone()
@@ -1683,7 +1702,9 @@ fn publish_projections_round_trips_initial_context_json() {
     let store = store();
     let (record, claim) = claimed_projection(&store, "publish-initial-context", 100, 60);
     let record = AnalysisRecord {
-        initial_context_json: Some(r#"{"sources":[{"name":"CLAUDE.md","tokens":120}]}"#.into()),
+        initial_context_json: Some(
+            r#"{"sources":[{"source":"skill","sourceName":"CLAUDE.md","tokenCount":120}]}"#.into(),
+        ),
         source_summaries_json: None,
         ..record
     };
@@ -1913,6 +1934,189 @@ fn deleting_a_session_takes_its_derived_records_with_it() {
 }
 
 #[test]
+fn selected_history_keeps_candidates_pending_until_evidence_is_ready() {
+    let store = store();
+    let now = 1_000_000;
+    let start = now - 7 * 24 * 60 * 60;
+    store
+        .upsert_sessions(
+            &[
+                session("boundary", start),
+                session("recent", now - 1),
+                session("old", start - 1),
+            ],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    add_session_content(&store, &session("boundary", start));
+    add_session_content(&store, &session("recent", now - 1));
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], now - 10)
+        .unwrap();
+    assert_eq!(store.enqueue_burn_checks(now, 7).unwrap(), 2);
+    assert_eq!(
+        store
+            .historical_burn_check_status(now, 180)
+            .unwrap()
+            .waiting_for_data,
+        2
+    );
+    assert_eq!(store.enqueue_burn_checks(now, 7).unwrap(), 0);
+    assert_eq!(
+        store
+            .historical_burn_check_status(now, 180)
+            .unwrap()
+            .waiting_for_data,
+        2
+    );
+    assert_eq!(
+        store
+            .burn_check_assessment(
+                &SessionKey::new("native", "claude-code", "old"),
+                "ignored_instructions"
+            )
+            .unwrap()
+            .unwrap()
+            .status,
+        "idle"
+    );
+}
+
+#[test]
+fn selected_history_reaches_candidates_after_the_first_worker_page() {
+    let store = store();
+    let now = 1_000_000;
+    let records = (0..33)
+        .map(|index| session(&format!("recent-{index:02}"), now - 200))
+        .collect::<Vec<_>>();
+    store
+        .upsert_sessions(&records, &crate::agents::evidence_cohort())
+        .unwrap();
+    for record in &records {
+        add_session_content(&store, record);
+    }
+    {
+        let connection = store.lock();
+        connection
+            .execute(
+                "UPDATE session_evidence SET status = 'ready',
+                 analyzed_generation = (SELECT s.source_generation FROM session s
+                    WHERE s.environment_key = session_evidence.environment_key
+                      AND s.agent = session_evidence.agent
+                      AND s.session_id = session_evidence.session_id),
+                  parser_revision = ?1, analyzer_revision = ?2,
+                  evidence_schema_revision = ?3,
+                  published_fence = 1",
+                rusqlite::params![
+                    antiburn_local::analysis::PARSER_REVISION,
+                    antiburn_local::analysis::ANALYZER_REVISION,
+                    antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION
+                ],
+            )
+            .unwrap();
+    }
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], now - 300)
+        .unwrap();
+    assert_eq!(store.enqueue_burn_checks(now, 7).unwrap(), 33);
+    let first = store
+        .burn_check_candidates("ignored_instructions", now, 180, 16)
+        .unwrap();
+    assert_eq!(first.len(), 16);
+    for candidate in &first {
+        store
+            .lock()
+            .execute(
+                "UPDATE burn_check_assessment SET status = 'superseded'
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                AND check_id = 'ignored_instructions' AND boundary_generation = -2
+                AND status = 'idle'",
+                rusqlite::params![
+                    candidate.session.key.environment_key,
+                    candidate.session.key.agent,
+                    candidate.session.key.session_id
+                ],
+            )
+            .unwrap();
+    }
+    let second = store
+        .burn_check_candidates("ignored_instructions", now, 180, 16)
+        .unwrap();
+    assert_eq!(second.len(), 16);
+    assert!(second.iter().all(|candidate| {
+        !first
+            .iter()
+            .any(|earlier| earlier.session.key == candidate.session.key)
+    }));
+    let selected = &second[0];
+    {
+        let connection = store.lock();
+        connection
+            .execute(
+                "UPDATE burn_check_assessment SET status = 'completed',
+                 boundary_activity_cursor = ?1, updated_at_epoch = ?2
+              WHERE environment_key = ?3 AND agent = ?4 AND session_id = ?5",
+                rusqlite::params![
+                    selected.activity_cursor,
+                    now,
+                    selected.session.key.environment_key,
+                    selected.session.key.agent,
+                    selected.session.key.session_id
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE session SET updated_at_epoch = ?1, activity_cursor = 'later-activity'
+              WHERE environment_key = ?2 AND agent = ?3 AND session_id = ?4",
+                rusqlite::params![
+                    now + 10,
+                    selected.session.key.environment_key,
+                    selected.session.key.agent,
+                    selected.session.key.session_id
+                ],
+            )
+            .unwrap();
+    }
+    let later = store
+        .burn_check_candidates("ignored_instructions", now + 200, 180, 33)
+        .unwrap();
+    assert!(
+        later
+            .iter()
+            .any(|candidate| candidate.session.key == selected.session.key
+                && candidate.boundary_at_epoch == now)
+    );
+}
+
+#[test]
+fn selected_history_queues_every_page_without_repeating_the_first() {
+    let store = store();
+    let now = 1_000_000;
+    let records = (0..513)
+        .map(|index| session(&format!("recent-{index:03}"), now - 200))
+        .collect::<Vec<_>>();
+    store
+        .upsert_sessions(&records, &crate::agents::evidence_cohort())
+        .unwrap();
+    for record in &records {
+        add_session_content(&store, record);
+    }
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], now)
+        .unwrap();
+    assert_eq!(store.enqueue_burn_checks(now, 7).unwrap(), 513);
+    assert_eq!(
+        store
+            .historical_burn_check_status(now, 180)
+            .unwrap()
+            .waiting_for_data,
+        513
+    );
+    assert_eq!(store.enqueue_burn_checks(now, 7).unwrap(), 0);
+}
+
+#[test]
 fn scan_roots_dedup_and_ignore_a_trailing_separator() {
     let store = store();
     store.add_scan_root("/home/avery/work/").unwrap();
@@ -2070,58 +2274,71 @@ fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
 
 #[test]
 fn close_account_switches_keep_completed_sessions_with_the_previous_account() {
-    let store = store();
-    store.set_internal_value("internal:providerAccountRolloutV1", "1000");
-    let mut completed = session("completed-a", 2_000);
-    completed.key.agent = "pi".into();
-    let mut spanning = session("spanning", 2_000);
-    spanning.key.agent = "pi".into();
-    let mut old = session("old", 900);
-    old.key.agent = "pi".into();
-    store
-        .upsert_sessions(
-            &[completed, spanning.clone(), old],
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
-
-    let first = "a".repeat(64);
-    let second = "b".repeat(64);
-    store
-        .observe_provider_account("pi", "anthropic", &first, 2_025, "tool_oauth")
-        .unwrap();
-    store
-        .observe_provider_account("pi", "anthropic", &first, 2_050, "tool_oauth")
-        .unwrap();
-    spanning.updated_at_epoch = Some(2_075);
-    let mut new = session("new-b", 2_075);
-    new.key.agent = "pi".into();
-    store
-        .upsert_sessions(&[spanning, new], &crate::agents::evidence_cohort())
-        .unwrap();
-    store
-        .observe_provider_account("pi", "anthropic", &second, 2_100, "tool_oauth")
-        .unwrap();
-
-    let accounts_for = |session_id: &str| {
-        let connection = store.lock();
-        let mut statement = connection
-            .prepare(
-                "SELECT account_key FROM session_provider_account
-                  WHERE agent = 'pi' AND session_id = ?1
-                  ORDER BY account_key",
+    for environment in ["native", "wsl:Ubuntu", "ssh:host"] {
+        let store = store();
+        let session = |id: &str, epoch| {
+            let mut row = session(id, epoch);
+            row.key.environment_key = environment.into();
+            row
+        };
+        store.set_internal_value("internal:providerAccountRolloutV1", "1000");
+        let mut completed = session("completed-a", 2_000);
+        completed.key.agent = "pi".into();
+        let mut spanning = session("spanning", 2_000);
+        spanning.key.agent = "pi".into();
+        let mut old = session("old", 900);
+        old.key.agent = "pi".into();
+        store
+            .upsert_sessions(
+                &[completed, spanning.clone(), old],
+                &crate::agents::evidence_cohort(),
             )
             .unwrap();
-        statement
-            .query_map([session_id], |row| row.get::<_, String>(0))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(accounts_for("completed-a"), vec![first.clone()]);
-    assert_eq!(accounts_for("new-b"), vec![second.clone()]);
-    assert_eq!(accounts_for("spanning"), vec![first, second]);
-    assert!(accounts_for("old").is_empty());
+
+        let first = "a".repeat(64);
+        let second = "b".repeat(64);
+        store
+            .observe_provider_account("pi", "anthropic", &first, 2_025, "tool_oauth")
+            .unwrap();
+        store
+            .observe_provider_account("pi", "anthropic", &first, 2_050, "tool_oauth")
+            .unwrap();
+        spanning.updated_at_epoch = Some(2_075);
+        let mut new = session("new-b", 2_075);
+        new.key.agent = "pi".into();
+        store
+            .upsert_sessions(&[spanning, new], &crate::agents::evidence_cohort())
+            .unwrap();
+        store
+            .observe_provider_account("pi", "anthropic", &second, 2_100, "tool_oauth")
+            .unwrap();
+
+        let accounts_for = |session_id: &str| {
+            let connection = store.lock();
+            let mut statement = connection
+                .prepare(
+                    "SELECT account_key FROM session_provider_account
+                  WHERE agent = 'pi' AND session_id = ?1
+                  ORDER BY account_key",
+                )
+                .unwrap();
+            statement
+                .query_map([session_id], |row| row.get::<_, String>(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>()
+        };
+        if environment.starts_with("ssh:") {
+            assert!(accounts_for("completed-a").is_empty());
+            assert!(accounts_for("new-b").is_empty());
+            assert!(accounts_for("spanning").is_empty());
+            continue;
+        }
+        assert_eq!(accounts_for("completed-a"), vec![first.clone()]);
+        assert_eq!(accounts_for("new-b"), vec![second.clone()]);
+        assert_eq!(accounts_for("spanning"), vec![first, second]);
+        assert!(accounts_for("old").is_empty());
+    }
 }
 
 #[test]
@@ -2450,4 +2667,43 @@ fn turn_row(turn_index: u64) -> TurnRow {
         subagent_launches: 0,
         content: Vec::new(),
     }
+}
+
+#[test]
+fn local_overview_rows_survive_more_than_the_shared_remote_limit() {
+    let store = store();
+    let mut rows = (0..501)
+        .map(|index| {
+            let mut row = session(&format!("remote-{index}"), 3000 + index);
+            row.key.environment_key = "ssh:host".into();
+            row
+        })
+        .collect::<Vec<_>>();
+    let native = session("native", 1000);
+    let mut wsl = session("wsl", 2000);
+    wsl.key.environment_key = "wsl:ubuntu".into();
+    wsl.wsl_distro = Some("Ubuntu".into());
+    rows.extend([native, wsl]);
+    store
+        .upsert_sessions(&rows, &crate::agents::evidence_cohort())
+        .unwrap();
+    let all = store.recent_sessions(0, 500).unwrap();
+    assert_eq!(all.len(), 500);
+    assert!(all.iter().all(|row| row.key.remote_host_id().is_some()));
+    let local = store
+        .recent_local_sessions_excluding(0, 6, &DisabledAgents::default())
+        .unwrap();
+    assert_eq!(
+        local
+            .iter()
+            .map(|row| row.key.session_id.as_str())
+            .collect::<Vec<_>>(),
+        ["wsl", "native"]
+    );
+    assert!(
+        store
+            .recent_local_sessions_excluding(0, 6, &DisabledAgents::parse("claude-code"))
+            .unwrap()
+            .is_empty()
+    );
 }

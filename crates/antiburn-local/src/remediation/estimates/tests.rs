@@ -194,7 +194,7 @@ fn all_nine_estimate_methods_keep_their_reviewed_units() {
     for ((detector, input), unit) in DetectorId::ALL.into_iter().zip(inputs).zip(expected_units) {
         assert_eq!(
             input.method(),
-            SavingsEstimateMethod::for_detector(detector)
+            SavingsEstimateMethod::for_detector(detector).expect("supported estimate method")
         );
         assert_eq!(
             estimate_savings(savings_interval(), &input)

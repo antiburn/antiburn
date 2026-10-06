@@ -367,7 +367,9 @@ describe("OnboardingView", () => {
     expect(
       await screen.findByRole("heading", { name: "Stop hitting your token limits." }),
     ).toBeInTheDocument()
-    expect(screen.getByText(/your session content is never uploaded/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/session analysis stays local unless you enable the optional/i),
+    ).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
 
     // 2 — Coding agents. Discovery starts on leaving Welcome.
@@ -685,6 +687,58 @@ describe("OnboardingView", () => {
     )
     // The list closes again once every repository is on.
     await waitFor(() => expect(screen.queryByText("avery/widgets")).not.toBeInTheDocument())
+  })
+
+  it("saves the folders-without-git switch as soon as it changes", async () => {
+    mockCommands({ list_repositories: [REPOSITORY] })
+    render(<OnboardingView />)
+
+    await advanceToSources()
+
+    const folders = await screen.findByRole("switch", { name: "Include folders without git" })
+    expect(folders).not.toBeChecked()
+
+    fireEvent.click(folders)
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_settings", {
+        settings: expect.objectContaining({ includeNonRepoFolders: true }),
+      }),
+    )
+    expect(folders).toBeChecked()
+  })
+
+  it("saves the folders-without-git switch in gesture order", async () => {
+    const saves: { value: unknown; resolve: () => void }[] = []
+    mockCommands({
+      list_repositories: [REPOSITORY],
+      set_settings: (args?: unknown) => {
+        const settings = (args as { settings: { includeNonRepoFolders: boolean } }).settings
+        return new Promise((resolve) => {
+          saves.push({
+            value: settings.includeNonRepoFolders,
+            resolve: () => resolve(settings),
+          })
+        })
+      },
+    })
+    render(<OnboardingView />)
+
+    await advanceToSources()
+
+    const folders = await screen.findByRole("switch", { name: "Include folders without git" })
+    fireEvent.click(folders)
+    fireEvent.click(folders)
+    await waitFor(() => expect(saves).toHaveLength(1))
+    expect(folders).not.toBeChecked()
+
+    // The older save finishes first and does not move the switch.
+    saves[0]!.resolve()
+    await waitFor(() => expect(saves).toHaveLength(2))
+    expect(folders).not.toBeChecked()
+
+    saves[1]!.resolve()
+    expect(saves.map((save) => save.value)).toEqual([true, false])
+    await waitFor(() => expect(folders).not.toBeChecked())
   })
 
   it("keeps repository rows after failure and hides retry while scanning", async () => {

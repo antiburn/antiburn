@@ -96,10 +96,17 @@ export const APP_SEARCH_CATALOG: readonly AppSearchResult[] = [
 export function searchApp(
   query: string,
   platform: Platform = detectPlatform(),
+  checksAvailable = true,
 ): AppSearchResult[] {
   const normalized = query.trim().toLocaleLowerCase().slice(0, 200)
   const words = normalized.split(/\s+/).filter(Boolean)
-  return APP_SEARCH_CATALOG.filter((result) => !result.platform || result.platform === platform)
+  return APP_SEARCH_CATALOG.filter(
+    (result) =>
+      (!result.platform || result.platform === platform) &&
+      (checksAvailable ||
+        result.target.kind !== "check" ||
+        result.target.check !== "ignoredInstructions"),
+  )
     .map((result) => {
       if (result.target.kind !== "setting" || !result.target.control) return result
       const label = settingsControlLabel(result.target.control, platform)
@@ -125,7 +132,12 @@ export function searchApp(
     .map((entry) => entry.result)
 }
 
-export function groupAppResults(query: string, results = searchApp(query)): AppSearchGroup[] {
+export function groupAppResults(
+  query: string,
+  platform?: Platform,
+  checksAvailable = true,
+): AppSearchGroup[] {
+  const results = searchApp(query, platform, checksAvailable)
   const best = query.trim() ? results[0] : undefined
   const remaining = results.filter((result) => result !== best)
   const groups: AppSearchGroup[] = best ? [{ label: "Best match", results: [best] }] : []

@@ -1,0 +1,91 @@
+name: Build remote helper
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Temporary application version for a manual release build
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Remote helper (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node for manual version preparation
+        if: inputs.version != ''
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - name: Apply the manual build version
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: node scripts/prepare-app-version.mjs "$VERSION"
+
+      - name: Install native musl compiler
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
+        with:
+          toolchain: "1.97.0"
+          components: rustfmt, clippy
+          targets: ${{ matrix.target }}
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: crates/antiburn-remote -> target
+          shared-key: remote-helper
+          key: ${{ matrix.target }}
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Check formatting
+        working-directory: crates/antiburn-remote
+        run: cargo fmt --check
+
+      - name: Check and test the native helper
+        working-directory: crates/antiburn-remote
+        run: |
+          set -euo pipefail
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+
+      - name: Build and package the static helper
+        env:
+          TARGET: ${{ matrix.target }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: "-C target-feature=+crt-static -C link-self-contained=yes"
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path crates/antiburn-remote/Cargo.toml \
+            --locked --release --target "$TARGET"
+          bash scripts/package-remote-helper.sh "$TARGET" dist
+
+      - name: Upload the helper archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: remote-helper-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error

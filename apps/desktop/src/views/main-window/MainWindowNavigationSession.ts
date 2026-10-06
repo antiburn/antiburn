@@ -9,7 +9,7 @@ import {
   type MainWindowSessionIdentity,
 } from "../../lib/ipc"
 import type { MainViewId } from "../../lib/navigation/mainViews"
-import type { CHECK_LABELS } from "../../lib/presentation/checks"
+import type { CHECK_LABELS } from "../../lib/presentation/checkReport"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import {
   normalizeSessionFilters,
@@ -50,7 +50,12 @@ function normalizeDestination(destination: MainDestination): MainDestination {
     return {
       section: "activity",
       filters: normalizeSessionFilters(
-        destination.filters ?? { agents: [], result: "all", spend: "all" },
+        destination.filters ?? {
+          source: { kind: "all" },
+          agents: [],
+          result: "all",
+          spend: "all",
+        },
       ),
       subject: destination.subject ?? null,
     }
@@ -189,7 +194,12 @@ export class MainWindowNavigationSession {
     try {
       if (destination.section === "activity" && this.activity) {
         this.activity.restoreNavigation(
-          destination.filters ?? { agents: [], result: "all", spend: "all" },
+          destination.filters ?? {
+            source: { kind: "all" },
+            agents: [],
+            result: "all",
+            spend: "all",
+          },
           destination.subject ?? null,
           origin,
           reportFilterSelection,
@@ -213,6 +223,7 @@ export class MainWindowNavigationSession {
       agent: subject.agent,
       sessionId: subject.subagent?.parentSessionId ?? subject.sessionId,
       wslDistro: subject.wslDistro ?? null,
+      ...(subject.remoteHostId ? { remoteHostId: subject.remoteHostId } : {}),
     }
   }
 
@@ -249,7 +260,15 @@ export class MainWindowNavigationSession {
       ...new Map(
         subjects.map((subject) => {
           const target = this.rootIdentity(subject)
-          return [localSessionKey(target.agent, target.sessionId, target.wslDistro), target]
+          return [
+            localSessionKey(
+              target.agent,
+              target.sessionId,
+              target.wslDistro,
+              target.remoteHostId,
+            ),
+            target,
+          ]
         }),
       ).values(),
     ]
@@ -267,16 +286,18 @@ export class MainWindowNavigationSession {
     }
     const available = new Set(
       existing.map((target) =>
-        localSessionKey(target.agent, target.sessionId, target.wslDistro),
+        localSessionKey(target.agent, target.sessionId, target.wslDistro, target.remoteHostId),
       ),
     )
     const isAvailable = (subject: SessionSubject) => {
       const target = this.rootIdentity(subject)
-      return available.has(localSessionKey(target.agent, target.sessionId, target.wslDistro))
+      return available.has(
+        localSessionKey(target.agent, target.sessionId, target.wslDistro, target.remoteHostId),
+      )
     }
     const checked = new Set(
       targets.map((target) =>
-        localSessionKey(target.agent, target.sessionId, target.wslDistro),
+        localSessionKey(target.agent, target.sessionId, target.wslDistro, target.remoteHostId),
       ),
     )
     const currentAfterCheck = this.activity?.getSnapshot().subject
@@ -285,7 +306,12 @@ export class MainWindowNavigationSession {
       currentAfterCheck &&
       currentTarget &&
       checked.has(
-        localSessionKey(currentTarget.agent, currentTarget.sessionId, currentTarget.wslDistro),
+        localSessionKey(
+          currentTarget.agent,
+          currentTarget.sessionId,
+          currentTarget.wslDistro,
+          currentTarget.remoteHostId,
+        ),
       ) &&
       !isAvailable(currentAfterCheck)
         ? currentAfterCheck
@@ -310,6 +336,7 @@ export class MainWindowNavigationSession {
         {
           section: "activity",
           filters: this.activity?.getSnapshot().filters ?? {
+            source: { kind: "all" },
             agents: [],
             result: "all",
             spend: "all",
@@ -351,9 +378,30 @@ export class MainWindowNavigationSession {
       return { section: NATIVE_VIEW_IDS[request.destination.section] }
     }
     const activity = this.activity?.getSnapshot()
+    if (request.destination.remoteHostId) {
+      return {
+        section: "activity",
+        filters: {
+          source: {
+            kind: "selected",
+            includeLocal: false,
+            remote: [request.destination.remoteHostId],
+          },
+          agents: [],
+          result: "all",
+          spend: "all",
+        },
+        subject: null,
+      }
+    }
     return {
       section: "activity",
-      filters: activity?.filters ?? { agents: [], result: "all", spend: "all" },
+      filters: activity?.filters ?? {
+        source: { kind: "all" },
+        agents: [],
+        result: "all",
+        spend: "all",
+      },
       subject: request.destination.target ?? activity?.subject ?? null,
     }
   }

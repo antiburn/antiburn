@@ -5,7 +5,7 @@ import { refreshSnoozedBurnChecks, useSnoozedBurnChecks } from "../../lib/snooze
 
 import { ScrollPane } from "../../components/ui/ScrollPane"
 import { Skeleton } from "../../components/ui/Skeleton"
-import { type BurnChecksSession } from "./BurnChecksSession"
+import { type BurnChecksController } from "./burn-checks/BurnChecksController"
 import { BurnChecksHeader } from "./burn-checks/BurnChecksHeader"
 import { BurnChecksReport } from "./burn-checks/BurnChecksReport"
 
@@ -16,7 +16,7 @@ export function BurnChecksView({
   focusRevision,
 }: {
   active: boolean
-  session: BurnChecksSession
+  session: BurnChecksController
   focusRevision?: number | undefined
   focusedCheck?: ChecksCategoryPayload["id"] | undefined
 }) {

@@ -2,6 +2,7 @@ import type { HygieneSummary } from "../../../src/lib/insightsIpc"
 import type { AllowanceUsageSummaryPayload } from "../../../src/lib/providerUsageIpc"
 import { emitFixtureEvent } from "./event"
 import { fixtureDetailMap, fixtureIsland, fixtureTokenMap } from "./hud"
+import { hasRemoteFixture, remoteFixtureCommand, remoteFixtureIds } from "./remote"
 
 declare global {
   interface Window {
@@ -248,6 +249,18 @@ const entries = [
 ]
 
 function fixtureEntries(state: FixtureState) {
+  if (hasRemoteFixture()) {
+    return [
+      ...entries,
+      ...entries.map((entry, index) => ({
+        ...entry,
+        sessionId: `remote-${index}`,
+        title: index === 0 ? "Review remote changes" : "Inspect build results",
+        remoteHostId: remoteFixtureIds[index],
+        isActive: false,
+      })),
+    ]
+  }
   if (state !== "long") return entries
   return entries.map((entry, index) =>
     index === 1
@@ -309,6 +322,7 @@ const nudge = {
 }
 
 function dataFor(command: string, args: Record<string, unknown> | undefined): unknown {
+  if (command.includes("remote_")) return remoteFixtureCommand(command, args)
   const state = fixtureState()
   const fault = fixtureFault()
   const empty = state === "empty"
