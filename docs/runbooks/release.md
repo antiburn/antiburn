@@ -327,6 +327,11 @@ Signing and notarization consume the existing service quotas. Installing a
 manual build with the same version uses the regular app identity and paths;
 perform acceptance on the intended Windows test systems.
 
+Linux packaging pins both architecture assets from retained linuxdeploy release
+`1-alpha-20251107-1` by asset ID and SHA-256. Do not pin the moving `continuous`
+release: upstream replaces its assets and deletes their old IDs. Keep the
+post-build host-Wayland boundary check when changing this tool.
+
 ### 2.1 Decide the version
 
 Semantic versioning against what a reader experiences. A pre-release version

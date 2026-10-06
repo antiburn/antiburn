@@ -86,6 +86,7 @@ jobs:
 
       - name: Apply the manual build version
         if: github.event_name == 'workflow_dispatch'
+        shell: bash
         env:
           VERSION: ${{ inputs.version }}
         run: node scripts/prepare-app-version.mjs "$VERSION"
@@ -215,6 +216,7 @@ jobs:
 
       - name: Apply the manual build version
         if: github.event_name == 'workflow_dispatch'
+        shell: bash
         env:
           VERSION: ${{ needs.verify.outputs.version }}
         run: node scripts/prepare-app-version.mjs "$VERSION"
@@ -326,8 +328,8 @@ jobs:
             artifact: linux-x64
             arch_label: x64
             updater_platform: linux-x86_64-appimage
-            linuxdeploy_asset_id: "538917371"
-            linuxdeploy_sha256: "36a2d7e274d12e1050d0e9ecfe11d339ed54720b2bec464c286d53f8b07f5c62"
+            linuxdeploy_asset_id: "313839329"
+            linuxdeploy_sha256: "c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
           # The same glibc-floor reasoning: ubuntu-24.04-arm pins the ARM64
           # floor at glibc 2.39.
           - name: Linux ARM64
@@ -337,8 +339,8 @@ jobs:
             artifact: linux-arm64
             arch_label: aarch64
             updater_platform: linux-aarch64-appimage
-            linuxdeploy_asset_id: "538917074"
-            linuxdeploy_sha256: "556ab80baa98e600aa80f0dcedfb70bca0e1ce7e9f147fb345be3fcc3e91b2b1"
+            linuxdeploy_asset_id: "313839294"
+            linuxdeploy_sha256: "620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -403,6 +405,7 @@ jobs:
 
       - name: Apply the manual build version
         if: github.event_name == 'workflow_dispatch'
+        shell: bash
         env:
           VERSION: ${{ needs.verify.outputs.version }}
         run: node scripts/prepare-app-version.mjs "$VERSION"
@@ -635,8 +638,7 @@ jobs:
           test -f apps/desktop/src-tauri/icons/icon.icns
           test -f apps/desktop/src-tauri/icons/icon.ico
 
-      # Tauri 2.11.4 caches a 2024 linuxdeploy build that bundles libwayland-client.
-      # This pinned build follows the AppImage graphics-library exclusions.
+      # Use retained linuxdeploy release 1-alpha-20251107-1, not moving continuous assets.
       # The asset id and hash are per-architecture matrix values; the cache
       # file name must match what tauri-bundler looks for on this host, and
       # `uname -m` gives that same architecture label.
