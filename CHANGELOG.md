@@ -45,6 +45,12 @@ CI changes, and documentation that no user acts on stay out — see
   5 minutes) and Older sessions (read once after setup), each with its own
   status.
 
+### Fixed
+
+- Clear local index no longer corrupts sessions that were being checked when
+  you cleared it. A check that started before the clear could count a
+  session's turns twice, or leave it with no turns at all.
+
 ## [0.9.0] - 2026-09-29
 
 This release also contains the changes from 0.8.0 and 0.8.1, which were tagged

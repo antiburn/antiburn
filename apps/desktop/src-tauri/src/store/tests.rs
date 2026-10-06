@@ -12,6 +12,7 @@ use super::*;
 
 mod activity_tests;
 mod burn_check_tests;
+mod claim_fence_tests;
 mod coverage_tests;
 mod evidence_tests;
 #[path = "tests/history_tests.rs"]
