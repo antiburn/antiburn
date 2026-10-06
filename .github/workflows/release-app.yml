@@ -27,9 +27,8 @@ on:
     tags: ["antiburn-v*"]
 
 # Least privilege by default. `contents: write` is granted to exactly one job,
-# and the provenance token scopes are granted only where an attestation is
-# actually produced. This workflow has no `pull_request` trigger at all, so a
-# fork can never reach the `release` environment's credentials.
+# and OIDC is granted to the build and attestation jobs. This workflow has no
+# `pull_request` trigger, so a fork cannot reach the release credentials.
 permissions:
   contents: read
 
@@ -251,6 +250,7 @@ jobs:
     environment: release
     permissions:
       contents: read
+      id-token: write
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -430,7 +430,12 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_SIGNING_ACCOUNT_NAME }}
+          AZURE_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_SIGNING_CERTIFICATE_PROFILE_NAME }}
           ALLOW_UNSIGNED_WINDOWS: ${{ vars.ALLOW_UNSIGNED_WINDOWS }}
         run: |
           set -euo pipefail
@@ -453,13 +458,21 @@ jobs:
               platform_signing=developer-id
               ;;
             Windows)
-              if [[ -n "${WINDOWS_CERTIFICATE:-}" ]]; then
+              configured=0
+              for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID AZURE_SIGNING_ENDPOINT AZURE_SIGNING_ACCOUNT_NAME AZURE_SIGNING_CERTIFICATE_PROFILE_NAME; do
+                if [[ -n "${!name:-}" ]]; then
+                  configured=$((configured + 1))
+                else
+                  missing="${missing:+${missing}, }${name}"
+                fi
+              done
+              if [[ "$configured" -eq 6 ]]; then
                 platform_signing=authenticode
-              elif [[ "${ALLOW_UNSIGNED_WINDOWS:-}" == "true" ]]; then
+              elif [[ "$configured" -eq 0 && "${ALLOW_UNSIGNED_WINDOWS:-}" == "true" ]]; then
                 echo "::warning::Building the Windows installer WITHOUT an Authenticode signature, because ALLOW_UNSIGNED_WINDOWS is true. SmartScreen will warn on download."
                 platform_signing=unsigned
               else
-                echo "::error::No Authenticode credentials (WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD) are configured. Add them to the 'release' environment, or set the repository variable ALLOW_UNSIGNED_WINDOWS=true to deliberately ship an unsigned, clearly-labelled build."
+                echo "::error::Missing Azure signing variables in the 'release' environment: ${missing}. A partial Azure configuration cannot use the unsigned waiver."
                 exit 1
               fi
               ;;
@@ -554,43 +567,22 @@ jobs:
           fi
           echo "TAURI_SIGNING_CONFIG=${GITHUB_WORKSPACE}/apps/desktop/src-tauri/tauri.release.conf.json" >> "$GITHUB_ENV"
 
-      - name: Import the Authenticode signing certificate
+      - name: Authenticate Windows signing with Azure OIDC
+        if: runner.os == 'Windows' && steps.signing.outputs.platform_signing == 'authenticode'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Prepare Azure Authenticode signing
         if: runner.os == 'Windows' && steps.signing.outputs.platform_signing == 'authenticode'
         shell: pwsh
         env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $pfx = Join-Path $env:RUNNER_TEMP "antiburn-signing.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
-          $password = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
-          $imported = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
-          Remove-Item $pfx -Force
-          if (-not $imported.Thumbprint) {
-            Write-Host "::error::The Authenticode certificate imported without a thumbprint."
-            exit 1
-          }
-          $timestampUrl = $env:WINDOWS_TIMESTAMP_URL
-          if ([string]::IsNullOrWhiteSpace($timestampUrl)) {
-            $timestampUrl = "http://timestamp.digicert.com"
-          }
-          # Tauri signs the installer with signtool when the bundle config
-          # names a certificate in the local store. Passing it as an overlay
-          # config keeps the thumbprint out of the committed configuration.
-          $config = @{
-            bundle = @{
-              windows = @{
-                certificateThumbprint = $imported.Thumbprint
-                digestAlgorithm = "sha256"
-                timestampUrl = $timestampUrl
-              }
-            }
-          }
-          $configPath = Join-Path $env:RUNNER_TEMP "signing.conf.json"
-          $config | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding utf8
-          "TAURI_SIGNING_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_SIGNING_ACCOUNT_NAME }}
+          AZURE_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_SIGNING_CERTIFICATE_PROFILE_NAME }}
+        run: ./scripts/setup-windows-signing.ps1
 
       # `icon.icns` and `icon.ico` are the two platform containers that are not
       # checked in (see src-tauri/icons/README.md). `tauri icon` also re-samples
@@ -733,6 +725,8 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           $ErrorActionPreference = "Stop"
+          . ./scripts/windows-signing.ps1
+          Assert-WindowsSignature -FilePath "apps/desktop/src-tauri/target/$env:TARGET/release/antiburn.exe"
           $bundle = "apps/desktop/src-tauri/target/$env:TARGET/release/bundle/nsis"
           $installers = Get-ChildItem -Path $bundle -Filter *.exe
           if ($installers.Count -eq 0) {
@@ -740,12 +734,7 @@ jobs:
             exit 1
           }
           foreach ($installer in $installers) {
-            $signature = Get-AuthenticodeSignature $installer.FullName
-            if ($signature.Status -ne "Valid") {
-              Write-Host "::error::$($installer.Name) is not validly signed: $($signature.Status)"
-              exit 1
-            }
-            Write-Host "$($installer.Name): $($signature.SignerCertificate.Subject)"
+            Assert-WindowsSignature -FilePath $installer.FullName
           }
 
       # Collection is driven by the detached signatures rather than by a table
