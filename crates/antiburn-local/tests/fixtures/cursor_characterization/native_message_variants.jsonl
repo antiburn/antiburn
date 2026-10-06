@@ -1,0 +1,6 @@
+{"cursor_source":"agent_transcript","sessionId":"synthetic-native-messages"}
+{"role":"system","id":"system-1","content":[{"text":"system policy"}]}
+{"role":"assistant","id":"assistant-1","content":"A scalar assistant message."}
+{"role":"assistant","id":"assistant-2","content":[{"type":"tool_use","id":"call-1","name":"Shell","input":{"command":"cargo test"}},{"type":"tool_use","id":"call-2","name":"Shell","arguments":{"command":"cargo check"}}]}
+{"role":"assistant","id":"assistant-3","content":[{"type":"tool_result","toolName":"Shell","callId":"call-1","content":"test output","output":"test output"},{"type":"command_output","tool_name":"Shell","tool_call_id":"call-2","output":"check output"}]}
+{"role":"user","id":"user-4","content":[{"type":"text","text":"<user_query>user request</user_query>"},{"type":"redacted","data":"[REDACTED]"}]}

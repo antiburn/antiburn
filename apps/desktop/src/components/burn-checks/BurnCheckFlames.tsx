@@ -1,7 +1,7 @@
 import { Flame } from "lucide-react"
 import { useId } from "react"
 
-import { formatTokenBurnPercent } from "../../lib/presentation/checks"
+import { formatTokenBurnPercent } from "../../lib/presentation/checkReport"
 import { Tooltip } from "../presentation/Tooltip"
 
 const FLAMES = [0, 1, 2, 3] as const

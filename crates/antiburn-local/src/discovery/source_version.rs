@@ -419,27 +419,28 @@ impl super::Explorers {
                     surface: descriptor.surface.clone(),
                 })
             }
-            SessionSource::Inline { content, .. } => {
-                let stat = SourceStat {
-                    identity: None,
-                    size: content.len() as u64,
-                    modified_nanos: None,
-                    changed_nanos: None,
-                };
-                Some(SourceVersion {
-                    fingerprint: FingerprintInputs {
-                        stat,
-                        head_hash: Some(content_hash_of(content.as_bytes())),
-                    }
-                    .fingerprint(),
-                    estimated_bytes: Some(content.len() as u64),
-                    streamability: Streamability::InlineMaterialized,
-                    source_format: descriptor.source_format,
-                    surface: descriptor.surface.clone(),
-                })
-            }
+            SessionSource::Inline { content, .. } => Some(SourceVersion {
+                fingerprint: inline_source_fingerprint(content),
+                estimated_bytes: Some(content.len() as u64),
+                streamability: Streamability::InlineMaterialized,
+                source_format: descriptor.source_format,
+                surface: descriptor.surface.clone(),
+            }),
         }
     }
+}
+
+pub fn inline_source_fingerprint(content: &str) -> String {
+    FingerprintInputs {
+        stat: SourceStat {
+            identity: None,
+            size: content.len() as u64,
+            modified_nanos: None,
+            changed_nanos: None,
+        },
+        head_hash: Some(content_hash_of(content.as_bytes())),
+    }
+    .fingerprint()
 }
 
 fn bundle_fingerprint(source: &SessionSource, format: SourceFormat) -> Option<String> {

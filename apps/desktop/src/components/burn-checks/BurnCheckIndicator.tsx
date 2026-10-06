@@ -1,6 +1,6 @@
 import { CircleDashed } from "lucide-react"
 
-import type { BurnCheckPresentation } from "../../lib/presentation/burnChecks"
+import type { BurnCheckPresentation } from "../../lib/presentation/checkStatus"
 import { SegmentedRadialDial } from "../ui/SegmentedRadialDial"
 import { BURN_CHECK_MARKS } from "./burnCheckMarks"
 

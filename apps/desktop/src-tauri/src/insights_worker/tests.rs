@@ -179,6 +179,7 @@ async fn evidence_and_remediation_work_alternate_when_both_stay_ready() {
 fn failed_pass(outcome: PassOutcome) -> EvidencePass {
     EvidencePass {
         analysis: analysis::SessionAnalysis::unavailable(),
+        source_fingerprint: None,
         evidence: None,
         outcome,
         source_outcomes: Vec::new(),
@@ -200,6 +201,10 @@ fn published_pass(record: &SessionRecord) -> EvidencePass {
         &|| false,
         Some(store),
     );
+    pass.source_fingerprint = record
+        .source_fingerprint
+        .clone()
+        .or_else(|| Some(analysis::MISSING_FINGERPRINT.into()));
     pass.analysis.fingerprint = record
         .source_fingerprint
         .clone()
@@ -230,6 +235,10 @@ fn generic_published_pass(record: &SessionRecord) -> EvidencePass {
         &|| false,
         Some(store),
     );
+    pass.source_fingerprint = record
+        .source_fingerprint
+        .clone()
+        .or_else(|| Some(analysis::MISSING_FINGERPRINT.into()));
     pass.analysis.fingerprint = record
         .source_fingerprint
         .clone()
@@ -324,6 +333,28 @@ fn published_status_classifies_capability_sets_against_detector_prerequisites() 
         published_status(&evidence_with(no_capabilities())),
         PublishedEvidence::Unsupported
     );
+    for source_format in [
+        antiburn_local::analysis::SourceFormat::ClaudeJsonl,
+        antiburn_local::analysis::SourceFormat::CodexRolloutJsonl,
+        antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+        antiburn_local::analysis::SourceFormat::PiV3Jsonl,
+        antiburn_local::analysis::SourceFormat::CursorCliAgentJsonl,
+        antiburn_local::analysis::SourceFormat::CursorCliStoreDb,
+        antiburn_local::analysis::SourceFormat::CursorChatStoreDb,
+        antiburn_local::analysis::SourceFormat::CursorIdeComposer,
+        antiburn_local::analysis::SourceFormat::AntigravityBrainJsonl,
+        antiburn_local::analysis::SourceFormat::AntigravitySqlite,
+    ] {
+        let capabilities = SourceCapabilities {
+            source_format,
+            ..no_capabilities()
+        };
+        assert_eq!(
+            published_status(&evidence_with(capabilities)),
+            PublishedEvidence::Ready,
+            "{source_format:?} must reach its check-owned evidence path"
+        );
+    }
 }
 
 #[test]
@@ -480,6 +511,49 @@ async fn a_hot_source_does_not_starve_a_stable_session() {
         .unwrap()
         .unwrap();
     assert_eq!(next.key.session_id, "stable");
+}
+
+#[test]
+fn claim_next_evidence_by_recency_prefers_the_most_recently_active_session() {
+    let store = store();
+    store
+        .upsert_sessions(
+            &[
+                SessionRecord {
+                    updated_at_epoch: Some(50),
+                    ..record("old")
+                },
+                SessionRecord {
+                    updated_at_epoch: Some(500),
+                    ..record("new")
+                },
+                SessionRecord {
+                    updated_at_epoch: None,
+                    ..record("unknown-activity")
+                },
+            ],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+
+    let first = store
+        .claim_next_evidence_by_recency(&crate::agents::evidence_cohort(), 1_000, LEASE_SECS)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.key.session_id, "new");
+
+    let second = store
+        .claim_next_evidence_by_recency(&crate::agents::evidence_cohort(), 1_000, LEASE_SECS)
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.key.session_id, "old");
+
+    // Unknown activity never jumps ahead of a known one: it claims last.
+    let third = store
+        .claim_next_evidence_by_recency(&crate::agents::evidence_cohort(), 1_000, LEASE_SECS)
+        .unwrap()
+        .unwrap();
+    assert_eq!(third.key.session_id, "unknown-activity");
 }
 
 #[test]
@@ -958,7 +1032,7 @@ async fn the_worker_loop_runs_one_pass_at_a_time() {
             &runner,
             &|_| {},
             &WorkerLoopSignals {
-                idle: &|| {},
+                report_changed: &|| {},
                 backlog: &|_| {},
             },
             &|_, _| {},
@@ -1030,7 +1104,7 @@ async fn a_worker_loop_pass_reports_one_busy_stretch_and_resets() {
             &runner,
             &|_| {},
             &WorkerLoopSignals {
-                idle: &|| {},
+                report_changed: &|| {},
                 backlog: &|_| {},
             },
             &|_, _| {},
@@ -1103,7 +1177,7 @@ async fn the_worker_loop_announces_backlog_start_and_drain_once() {
             &runner,
             &|_| {},
             &WorkerLoopSignals {
-                idle: &|| {},
+                report_changed: &|| {},
                 backlog: &|active| task_announced.lock().unwrap().push(active),
             },
             &|_, _| {},
@@ -1164,7 +1238,7 @@ async fn the_worker_loop_marks_the_backlog_busy_before_the_first_pass_runs() {
             &runner,
             &|_| {},
             &WorkerLoopSignals {
-                idle: &|| {},
+                report_changed: &|| {},
                 backlog: &|active| {
                     backlog_log
                         .lock()
@@ -1449,9 +1523,7 @@ async fn a_published_pass_leaves_the_expected_turn_rows_under_its_claim_fence() 
                 &|| signal.observe(),
                 turn_row_store,
             );
-            if let Some(fingerprint) = claimed.fingerprint {
-                pass.analysis.fingerprint = fingerprint;
-            }
+            pass.source_fingerprint = claimed.fingerprint;
             pass
         }) as PassFuture
     };
@@ -1479,6 +1551,166 @@ async fn a_published_pass_leaves_the_expected_turn_rows_under_its_claim_fence() 
             .count_turn_rows_for_session(&target.key, evidence.claim_fence)
             .unwrap(),
         2
+    );
+}
+
+#[tokio::test]
+async fn file_source_identity_survives_real_publication_and_enters_history_candidates() {
+    use std::io::Read as _;
+
+    let store = store();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("claude-session.jsonl");
+    std::fs::write(
+        &path,
+        concat!(
+            r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"Do not use shell."}}"#,
+            "\n",
+            r#"{"type":"assistant","uuid":"a1","parentUuid":"u1","timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","id":"m1","model":"claude-opus-4-6","usage":{"input_tokens":2,"output_tokens":3},"content":[{"type":"text","text":"I will check the project instructions."},{"type":"tool_use","id":"call-1","name":"Bash","input":{"command":"true"}}]}}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    let mut file = std::fs::File::open(&path).unwrap();
+    let stat =
+        antiburn_local::discovery::source_version::SourceStat::from_open_std_file(&file).unwrap();
+    let mut head = Vec::new();
+    file.by_ref()
+        .take(antiburn_local::discovery::source_version::FINGERPRINT_HEAD_BYTES as u64)
+        .read_to_end(&mut head)
+        .unwrap();
+    let discovered_fingerprint = antiburn_local::discovery::source_version::FingerprintInputs {
+        stat,
+        head_hash: Some(antiburn_local::discovery::source_version::head_hash_of(
+            &head,
+        )),
+    }
+    .fingerprint();
+    let mut session = record("file-source-identity");
+    session.source_label = path.to_string_lossy().into_owned();
+    session.source_fingerprint = Some(discovered_fingerprint.clone());
+    session.updated_at_epoch = Some(1_767_225_600);
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&session),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let source_generation = store
+        .session_source_state(&session.key)
+        .unwrap()
+        .unwrap()
+        .source_generation;
+
+    let store_for_runner = store.clone();
+    let runner = move |record: &SessionRecord, signal: PassSignal, claim_fence: i64| {
+        let writer: Arc<dyn TurnRowStore> = Arc::new(FencedTurnRowStore::new(
+            store_for_runner.clone(),
+            record.key.clone(),
+            claim_fence,
+        ));
+        let source = antiburn_local::discovery::SessionSource::File(path.clone());
+        let session_id = record.key.session_id.clone();
+        let fingerprint = record.source_fingerprint.clone();
+        Box::pin(async move {
+            analysis::analyze_located_for_evidence(
+                AgentKind::Claude,
+                &session_id,
+                analysis::ClaimedSource {
+                    fingerprint,
+                    generation: source_generation,
+                },
+                signal,
+                Some(writer),
+                None,
+                analysis::LocatedTranscripts {
+                    source,
+                    children: Vec::new(),
+                },
+            )
+            .await
+        }) as PassFuture
+    };
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], 1_767_225_600)
+        .unwrap();
+    assert!(
+        process_next(
+            &store,
+            &|| 1_767_225_800,
+            &runner,
+            &|_| {},
+            &|_, _| {},
+            &|| {}
+        )
+        .await
+        .unwrap()
+    );
+
+    let evidence = store.evidence(&session.key).unwrap().unwrap();
+    assert_eq!(evidence.status, EvidenceStatus::Ready);
+    assert_eq!(
+        evidence.processed_fingerprint.as_deref(),
+        Some(discovered_fingerprint.as_str())
+    );
+    let aggregate: String = store
+        .lock()
+        .query_row(
+            "SELECT source_fingerprint FROM session_analysis
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            rusqlite::params![
+                session.key.environment_key,
+                session.key.agent,
+                session.key.session_id
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(aggregate.starts_with("v2:"));
+    assert_ne!(aggregate, discovered_fingerprint);
+
+    assert_eq!(store.enqueue_burn_checks(1_767_225_800, 7).unwrap(), 1);
+    assert_eq!(
+        store
+            .burn_check_candidates("ignored_instructions", 1_767_225_800, 180, 16)
+            .unwrap()
+            .len(),
+        1
+    );
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence SET analyzer_revision = ?4
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            rusqlite::params![
+                session.key.environment_key,
+                session.key.agent,
+                session.key.session_id,
+                antiburn_local::analysis::ANALYZER_REVISION - 1,
+            ],
+        )
+        .unwrap();
+    assert!(
+        store
+            .burn_check_candidates("ignored_instructions", 1_767_225_800, 180, 16)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .historical_burn_check_status(1_767_225_800, 180)
+            .unwrap()
+            .waiting_for_data,
+        1
+    );
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(
+                &crate::agents::evidence_cohort(),
+                analysis::projection_revisions(),
+            )
+            .unwrap(),
+        1
     );
 }
 
@@ -1551,9 +1783,7 @@ async fn a_linked_forks_pass_publishes_turn_rows_only_for_its_own_turns() {
                 &|| signal.observe(),
                 turn_row_store,
             );
-            if let Some(fingerprint) = claimed.fingerprint {
-                pass.analysis.fingerprint = fingerprint;
-            }
+            pass.source_fingerprint = claimed.fingerprint;
             pass
         }) as PassFuture
     };
@@ -1612,6 +1842,9 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
     pi.key.agent = "pi".to_owned();
     pi.source_label = source_path.to_string_lossy().into_owned();
     pi.source_fingerprint = Some("sv1:synthetic-pi-worker".to_owned());
+    // The report below windows by last activity now, not by start time, so
+    // this fixture's activity must fall inside the window it queries.
+    pi.updated_at_epoch = Some(1_767_225_610);
     store
         .upsert_sessions(std::slice::from_ref(&pi), &crate::agents::evidence_cohort())
         .unwrap();
@@ -1650,9 +1883,7 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
                 &|| signal.observe(),
                 turn_row_store,
             );
-            if let Some(fingerprint) = claimed.fingerprint {
-                pass.analysis.fingerprint = fingerprint;
-            }
+            pass.source_fingerprint = claimed.fingerprint;
             pass
         }) as PassFuture
     };

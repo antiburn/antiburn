@@ -121,7 +121,9 @@ describe("SessionStatusBar", () => {
         : check,
     )
     render(<SessionStatusBar checks={checks} />)
-    const verdict = screen.getByLabelText(/5 session burn checks. All passed/)
+    const verdict = screen.getByLabelText(
+      /5 session burn checks. 5 passed. Overpowered subagents not assessed\./,
+    )
     expect(verdict).toHaveTextContent("5/5 passed")
     expect(screen.getByText("5/5 passed")).toHaveClass("text-burn-check-pass-fill")
     expect(verdict.querySelector('[data-burn-check-indicator="pass"]')).not.toBeNull()

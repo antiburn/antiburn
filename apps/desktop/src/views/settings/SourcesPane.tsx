@@ -1,4 +1,4 @@
-import { SettingsSectionGroup } from "./SettingsSearchRows"
+import { SettingsSectionGroup, SettingsToggleRow } from "./SettingsSearchRows"
 import { FolderPlus, RefreshCw, X } from "lucide-react"
 import { useCallback, useState, useSyncExternalStore } from "react"
 
@@ -17,6 +17,7 @@ import type { LocalRepositoryItem } from "../../lib/types/repository"
 import { useFolderPermissionFlow } from "../../lib/useFolderPermissionFlow"
 import { scanStatusLabel } from "../popover/ScanStatusBar"
 import { SourcesSession } from "./SourcesSession"
+import { RemoteHostsSection } from "./RemoteHostsSection"
 import { useAppSettings } from "./useAppSettings"
 
 /**
@@ -35,11 +36,12 @@ import { useAppSettings } from "./useAppSettings"
 
 export interface SourcesPaneProps {
   discoveryPaused: boolean
+  appVersion?: string
 }
 
-export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
+export function SourcesPane({ discoveryPaused, appVersion = "VERSION" }: SourcesPaneProps) {
   const [session] = useState(() => new SourcesSession())
-  const { repositories, scanRoots, permissions, scanning } = useSyncExternalStore(
+  const { repositories, scanRoots, permissions, scanning, remote } = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
   )
@@ -118,6 +120,8 @@ export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
             rechecking={rechecking}
           />
         ) : null}
+
+        <RemoteHostsSection remote={remote} session={session} appVersion={appVersion} />
 
         <SettingsSectionGroup
           searchId="sourceScanning"
@@ -231,6 +235,14 @@ export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
                 onLocate={() => void handleLocate()}
               />
             </div>
+          </Card>
+          <Card>
+            <SettingsToggleRow
+              searchId="sourceNonRepoFolders"
+              description="Counts sessions started in a folder that isn't a repository. Burn checks still need a repository."
+              checked={settings.includeNonRepoFolders}
+              onChange={(next) => void update({ includeNonRepoFolders: next })}
+            />
           </Card>
         </SettingsSectionGroup>
       </div>

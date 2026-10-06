@@ -44,6 +44,7 @@ pub struct ActivityEntry {
     /// `cli`, `ide_desktop`, or `unknown`.
     pub surface: String,
     pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
     pub title: Option<String>,
     /// Whether this session was branched from another local session.
     pub has_fork_parent: bool,
@@ -69,6 +70,7 @@ pub struct SessionIdentity {
     pub agent: String,
     pub session_id: String,
     pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
 }
 
 /// One end of a local fork relation.
@@ -157,6 +159,7 @@ pub struct SessionAnalysis {
     pub supports_analysis: bool,
     pub title: Option<String>,
     pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
     pub is_active: bool,
     /// Cost of the parent transcript plus every sub-agent it launched.
     ///
@@ -291,6 +294,43 @@ pub struct ScanStatus {
     /// R5: how many session rows the last pass added or refreshed.
     /// This lets a reader detect a productive pass without `list_changed`.
     pub re_described: usize,
+    /// Progress of the dedicated historical pass, under the current
+    /// retention. `None` only before the first status computation; once set,
+    /// it stays `Some` for the rest of the run.
+    pub history: Option<ScanHistoryProgress>,
+}
+
+/// Progress of the dedicated historical pass, which widens discovery past
+/// [`crate::store::model::CURRENT_WINDOW_DAYS`] up to the retention limit.
+///
+/// `total` and `completed` count indexed sessions whose last activity is
+/// older than the current window: `total` is how many the historical pass
+/// has found so far, `completed` is how many of those have settled evidence
+/// (ready, failed, or unsupported).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanHistoryProgress {
+    pub state: ScanHistoryState,
+    pub completed: usize,
+    pub total: usize,
+}
+
+/// One state in [`ScanHistoryProgress`]. See each variant for what a reader
+/// should take it to mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScanHistoryState {
+    /// The current retention keeps only the current window: there is no
+    /// older history to find.
+    None,
+    /// History is not done yet, and the pass has not started — it is
+    /// waiting for the current work to finish first.
+    Pending,
+    /// The historical pass is discovering or reading, or its sessions still
+    /// wait for analysis.
+    Running,
+    /// Complete for the current retention.
+    Done,
 }
 
 /* -------------------------------------------------------------------------
@@ -584,6 +624,7 @@ pub struct SessionLimitAllocation {
     pub agent: String,
     pub session_id: String,
     pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
     pub metric: SessionLimitMetric,
     pub provider: String,
     pub display_name: String,
@@ -691,6 +732,7 @@ pub struct QuotaContributionPayload {
     pub agent: String,
     pub session_id: String,
     pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
     pub bucket_start_epoch: i64,
     pub usd: f64,
     pub percent: Option<f64>,
@@ -703,6 +745,7 @@ pub struct QuotaSessionTotalPayload {
     pub agent: String,
     pub session_id: String,
     pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
     pub title: Option<String>,
     pub usd: f64,
     pub percent: Option<f64>,
@@ -785,6 +828,7 @@ pub struct SessionQuotaRequest {
     pub agent: String,
     pub session_id: String,
     pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
 }
 
 /// The quota period one [`SessionQuotaEntryPayload`] falls in, without the
@@ -843,6 +887,8 @@ pub struct SessionQuotaPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ChecksCategoryPayload {
     pub id: BurnCheckDetectorId,
+    /// True only for a published, sampled Ignored Instructions assessment.
+    pub sampled: bool,
     /// The current remediation state. `None` means the category has no complete assessment.
     pub lifecycle: Option<ChecksCategoryLifecyclePayload>,
     pub finding: u64,
@@ -889,6 +935,7 @@ pub enum BurnCheckDetectorId {
     OldModelUsage,
     OveruseOfFastMode,
     CacheChurn,
+    IgnoredInstructions,
 }
 
 /// A reader-owned suppression for one entire burn check.
@@ -920,6 +967,7 @@ impl From<BurnCheckDetectorId> for DetectorId {
             BurnCheckDetectorId::OldModelUsage => Self::OldModelUsage,
             BurnCheckDetectorId::OveruseOfFastMode => Self::OveruseOfFastMode,
             BurnCheckDetectorId::CacheChurn => Self::CacheChurn,
+            BurnCheckDetectorId::IgnoredInstructions => Self::IgnoredInstructions,
         }
     }
 }
@@ -1088,6 +1136,7 @@ pub enum BurnCheckVerificationLimit {
 pub struct BurnCheckDisplayFactsPayload {
     pub resource_kind: BurnCheckResourceKind,
     pub resource_identity: Option<String>,
+    pub instruction_title: Option<String>,
     pub current_value: Option<String>,
     pub replacement_value: Option<String>,
     pub scope_kind: BurnCheckScopeKind,
@@ -1267,6 +1316,7 @@ pub struct BurnCheckTargetPayload {
     pub auto_fix: AutoFixAvailabilityPayload,
     pub prompt_fix: PromptFixAvailabilityPayload,
     pub watch: Option<BurnCheckWatchPayload>,
+    pub evidence_available: bool,
     pub coverage_limits: Vec<BurnCheckCoverageLimit>,
     pub samples: Vec<BurnCheckSamplePayload>,
     pub expires_at_epoch: i64,
@@ -1520,15 +1570,24 @@ pub struct SessionHygieneRequest {
     pub agent: String,
     pub session_id: String,
     pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
 }
 
 /// One session hygiene status on the IPC boundary.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionHygieneStatus {
     Finding,
     Clean,
+    Checking,
+    CouldntCheck,
     NotAssessed,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IgnoredInstructionSessionStatus {
+    pub status: SessionHygieneStatus,
+    pub reason: Option<&'static str>,
 }
 
 /// The stored facts that caused one session hygiene finding.
@@ -1585,6 +1644,8 @@ pub struct SessionHygieneBadgePayload {
     pub id: &'static str,
     pub status: SessionHygieneStatus,
     pub not_assessed_reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_reason: Option<&'static str>,
     /// Which vendor billing mechanism backs an `excessCacheRehydration`
     /// verdict. Absent for every other badge and for old evidence with no
     /// `repeated_context` marker.
@@ -1680,6 +1741,7 @@ impl SessionHygieneBadgePayload {
             id: badge_id_str(badge.id),
             status,
             not_assessed_reason,
+            check_reason: None,
             accounting,
             finding_evidence,
         }
@@ -1990,6 +2052,7 @@ impl From<DetectorId> for BurnCheckDetectorId {
             DetectorId::OldModelUsage => Self::OldModelUsage,
             DetectorId::OveruseOfFastMode => Self::OveruseOfFastMode,
             DetectorId::CacheChurn => Self::CacheChurn,
+            DetectorId::IgnoredInstructions => Self::IgnoredInstructions,
         }
     }
 }
@@ -2092,6 +2155,7 @@ impl From<crate::remediation::BurnCheckDisplayFacts> for BurnCheckDisplayFactsPa
                 Resource::Cache => BurnCheckResourceKind::Cache,
             },
             resource_identity: value.resource_identity,
+            instruction_title: value.instruction_title,
             current_value: value.current_value,
             replacement_value: value.replacement_value,
             scope_kind: value.scope_kind.into(),
@@ -2331,6 +2395,7 @@ impl From<crate::remediation::BurnCheckTarget> for BurnCheckTargetPayload {
                 }
             },
             watch: value.watch.map(Into::into),
+            evidence_available: value.evidence_available,
             coverage_limits: value
                 .coverage_limits
                 .into_iter()
@@ -2588,6 +2653,7 @@ impl ChecksReportPayload {
                 let counts = report.detectors[id.index()];
                 ChecksCategoryPayload {
                     id: id.into(),
+                    sampled: false,
                     lifecycle: None,
                     finding: counts.finding,
                     agents: if counts.finding > 0 {
@@ -2993,6 +3059,7 @@ mod tests {
                     agent: "claude-code".to_string(),
                     session_id: "s1".to_string(),
                     wsl_distro: None,
+                    remote_host_id: None,
                     bucket_start_epoch: 0,
                     usd: 1.0,
                     percent: Some(2.0),
@@ -3001,6 +3068,7 @@ mod tests {
                     agent: "claude-code".to_string(),
                     session_id: "s1".to_string(),
                     wsl_distro: None,
+                    remote_host_id: None,
                     title: Some("Fix the bug".to_string()),
                     usd: 1.0,
                     percent: Some(2.0),
@@ -3258,7 +3326,7 @@ mod tests {
             let aggregates = value["estimatedTokenBurnBasisPointsByDetectorMask"]
                 .as_array()
                 .unwrap();
-            assert_eq!(aggregates.len(), 512);
+            assert_eq!(aggregates.len(), 1 << DetectorId::COUNT);
             assert_eq!(aggregates[0], serde_json::Value::Null);
             assert_eq!(aggregates[1], 500);
             assert_eq!(aggregates[2], 1_000);
@@ -3301,18 +3369,36 @@ mod tests {
                     "finding",
                     "id",
                     "lifecycle",
+                    "sampled",
                     "unavailable",
                 ]
             );
             assert_eq!(value["categories"][0]["finding"], 2);
             assert_eq!(value["categories"][0]["clean"], 1);
             assert_eq!(value["categories"][0]["unavailable"], 1);
+            assert_eq!(value["categories"][0]["sampled"], false);
 
             let value =
                 serde_json::to_value(ChecksReportPayload::from_report(&report, false, 4)).unwrap();
             assert_eq!(value["evidenceSettled"], false);
             assert_eq!(value["pendingEvidence"], 4);
             assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_000);
+        }
+
+        #[test]
+        fn sampled_notice_serializes_only_for_the_ignored_instructions_category() {
+            let mut payload = ChecksReportPayload::from_report(&report(), true, 0);
+            payload.categories[DetectorId::IgnoredInstructions.index()].sampled = true;
+
+            let value = serde_json::to_value(payload).unwrap();
+            let categories = value["categories"].as_array().unwrap();
+            assert_eq!(categories.len(), DetectorId::COUNT);
+            for (index, category) in categories.iter().enumerate() {
+                assert_eq!(
+                    category["sampled"],
+                    index == DetectorId::IgnoredInstructions.index()
+                );
+            }
         }
 
         #[test]
@@ -3368,6 +3454,7 @@ mod tests {
             let display = BurnCheckDisplayFactsPayload {
                 resource_kind: BurnCheckResourceKind::Model,
                 resource_identity: Some("old-model".into()),
+                instruction_title: None,
                 current_value: Some("old-model".into()),
                 replacement_value: Some("new-model".into()),
                 scope_kind: BurnCheckScopeKind::Project,
@@ -3400,6 +3487,7 @@ mod tests {
                     "estimatedOpportunity",
                     "estimatedTokenBurnBasisPoints",
                     "firstObservedAtMs",
+                    "instructionTitle",
                     "lastObservedAtMs",
                     "observationCount",
                     "quantity",
@@ -3916,6 +4004,7 @@ mod tests {
                     display: crate::remediation::BurnCheckDisplayFacts {
                         resource_kind: crate::remediation::BurnCheckResourceKind::Model,
                         resource_identity: Some("old".into()),
+                        instruction_title: None,
                         current_value: Some("old".into()),
                         replacement_value: Some("new".into()),
                         scope_kind: crate::remediation::BurnCheckScopeKind::Project,

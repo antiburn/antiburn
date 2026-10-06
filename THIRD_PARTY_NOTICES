@@ -205,7 +205,7 @@ eventemitter3@5.0.4 | MIT | https://github.com/primus/eventemitter3#readme
 get-nonce@1.0.1 | MIT | https://github.com/theKashey/get-nonce
 immer@11.1.16 | MIT | https://github.com/immerjs/immer#readme
 internmap@2.0.3 | ISC | https://github.com/mbostock/internmap/
-lucide-react@1.47.0 | ISC | https://lucide.dev
+lucide-react@1.48.0 | ISC | https://lucide.dev
 react-dom@19.3.0 | MIT | https://react.dev/
 react-is@17.0.2 | MIT | https://reactjs.org/
 react-redux@9.3.0 | MIT | https://github.com/reduxjs/react-redux
@@ -218,7 +218,7 @@ redux-thunk@3.1.0 | MIT | https://github.com/reduxjs/redux-thunk
 redux@5.0.1 | MIT | http://redux.js.org
 reselect@5.2.0 | MIT | https://github.com/reduxjs/reselect#readme
 scheduler@0.28.0 | MIT | https://react.dev/
-simple-icons@16.31.0 | CC0-1.0 | https://simpleicons.org
+simple-icons@16.32.0 | CC0-1.0 | https://simpleicons.org
 tiny-invariant@1.3.3 | MIT | https://github.com/alexreardon/tiny-invariant#readme
 tslib@2.8.1 | 0BSD | https://www.typescriptlang.org/
 use-callback-ref@1.3.3 | MIT | https://github.com/theKashey/use-callback-ref#readme
@@ -229,6 +229,7 @@ victory-vendor@37.3.6 | MIT AND ISC | https://commerce.nearform.com/open-source/
 Rust crates
 -----------
 adler2@2.0.1 | 0BSD OR MIT OR Apache-2.0 | https://github.com/oyvindln/adler2
+aes@0.8.4 | MIT OR Apache-2.0 | https://github.com/RustCrypto/block-ciphers
 ahash@0.8.12 | MIT OR Apache-2.0 | https://github.com/tkaitchuck/ahash
 aho-corasick@1.1.5 | Unlicense OR MIT | https://github.com/BurntSushi/aho-corasick
 alloc-no-stdlib@2.0.4 | BSD-3-Clause | https://github.com/dropbox/rust-alloc-no-stdlib
@@ -262,6 +263,7 @@ bitflags@1.3.2 | MIT OR Apache-2.0 | https://github.com/bitflags/bitflags
 bitflags@2.13.1 | MIT OR Apache-2.0 | https://github.com/bitflags/bitflags
 block-buffer@0.10.4 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils
 block-buffer@0.12.1 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils
+block-padding@0.3.3 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils
 block2@0.6.2 | MIT | https://github.com/madsmtm/objc2
 blocking@1.6.2 | Apache-2.0 OR MIT | https://github.com/smol-rs/blocking
 brotli-decompressor@5.0.3 | BSD-3-Clause OR MIT | https://github.com/dropbox/rust-brotli-decompressor
@@ -276,12 +278,14 @@ camino@1.2.5 | MIT OR Apache-2.0 | https://github.com/camino-rs/camino
 cargo-platform@0.1.9 | MIT OR Apache-2.0 | https://github.com/rust-lang/cargo
 cargo_metadata@0.19.2 | MIT | https://github.com/oli-obk/cargo_metadata
 cargo_toml@0.22.3 | Apache-2.0 OR MIT | https://gitlab.com/lib.rs/cargo_toml
+cbc@0.1.2 | MIT OR Apache-2.0 | https://github.com/RustCrypto/block-modes
 cc@1.4.2 | MIT OR Apache-2.0 | https://github.com/rust-lang/cc-rs
 cfb@0.7.3 | MIT | https://github.com/mdsteele/rust-cfb
 cfg-expr@0.15.8 | MIT OR Apache-2.0 | https://github.com/EmbarkStudios/cfg-expr
 cfg-expr@0.20.9 | MIT OR Apache-2.0 | https://github.com/EmbarkStudios/cfg-expr
 cfg-if@1.0.4 | MIT OR Apache-2.0 | https://github.com/rust-lang/cfg-if
 cfg_aliases@0.1.1 | MIT | https://github.com/katharostech/cfg_aliases
+cipher@0.4.4 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits
 clipboard-win@5.4.1 | BSL-1.0 | https://github.com/DoumanAsh/clipboard-win
 cmov@0.5.4 | Apache-2.0 OR MIT | https://github.com/RustCrypto/utils
 cobs@0.3.0 | MIT OR Apache-2.0 | https://github.com/jamesmunns/cobs.rs
@@ -311,6 +315,7 @@ darling@0.23.0 | MIT | https://github.com/TedDriggs/darling
 darling_core@0.23.0 | MIT | https://github.com/TedDriggs/darling
 darling_macro@0.23.0 | MIT | https://github.com/TedDriggs/darling
 dasp_sample@0.11.0 | MIT OR Apache-2.0 | https://github.com/rustaudio/sample.git
+dbus-secret-service@4.1.0 | MIT OR Apache-2.0 | https://github.com/brotskydotcom/dbus-secret-service.git
 dbus@0.9.12 | Apache-2.0 OR MIT | https://github.com/diwic/dbus-rs
 deranged@0.5.8 | MIT OR Apache-2.0 | https://github.com/jhpratt/deranged
 derive_more-impl@2.1.1 | MIT | https://github.com/JelteF/derive_more
@@ -392,7 +397,7 @@ getrandom@0.4.3 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom
 gio-sys@0.18.1 | MIT | https://github.com/gtk-rs/gtk-rs-core
 gio-sys@0.22.9 | MIT | https://github.com/gtk-rs/gtk-rs-core
 gio@0.18.4 | MIT | https://github.com/gtk-rs/gtk-rs-core
-gio@0.22.9 | MIT | https://github.com/gtk-rs/gtk-rs-core
+gio@0.22.10 | MIT | https://github.com/gtk-rs/gtk-rs-core
 glam@0.28.0 | MIT OR Apache-2.0 | https://github.com/bitshifter/glam-rs
 glib-macros@0.18.5 | MIT | https://github.com/gtk-rs/gtk-rs-core
 glib-macros@0.22.9 | MIT | https://github.com/gtk-rs/gtk-rs-core
@@ -416,6 +421,8 @@ hashlink@0.9.1 | MIT OR Apache-2.0 | https://github.com/kyren/hashlink
 heck@0.4.1 | MIT OR Apache-2.0 | https://github.com/withoutboats/heck
 heck@0.5.0 | MIT OR Apache-2.0 | https://github.com/withoutboats/heck
 hex@0.4.3 | MIT OR Apache-2.0 | https://github.com/KokaKiwi/rust-hex
+hkdf@0.12.4 | MIT OR Apache-2.0 | https://github.com/RustCrypto/KDFs/
+hmac@0.12.1 | MIT OR Apache-2.0 | https://github.com/RustCrypto/MACs
 hmac@0.13.0 | MIT OR Apache-2.0 | https://github.com/RustCrypto/MACs
 html5ever@0.38.0 | MIT OR Apache-2.0 | https://github.com/servo/html5ever
 http-body-util@0.1.5 | MIT | https://github.com/hyperium/http-body
@@ -443,6 +450,7 @@ indexmap@2.14.0 | Apache-2.0 OR MIT | https://github.com/indexmap-rs/indexmap
 infer@0.19.0 | MIT | https://github.com/bojand/infer
 inotify-sys@0.1.8 | ISC | https://github.com/hannobraun/inotify-sys
 inotify@0.11.5 | ISC | https://github.com/hannobraun/inotify-rs
+inout@0.1.4 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils
 ipnet@2.12.1 | MIT OR Apache-2.0 | https://github.com/krisprice/ipnet
 is-docker@0.2.0 | MIT | https://github.com/TheLarkInn/is-docker
 is-wsl@0.4.0 | MIT | https://github.com/TheLarkInn/is-wsl
@@ -453,10 +461,11 @@ javascriptcore-rs@1.1.2 | MIT | https://github.com/tauri-apps/javascriptcore-rs
 jiff-core@0.1.0 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
 jiff-tzdb-platform@0.1.3 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
 jiff-tzdb@0.1.8 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
-jiff@0.2.35 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
+jiff@0.2.37 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
 json-patch@3.0.1 | MIT OR Apache-2.0 | https://github.com/idubrov/json-patch
 jsonptr@0.6.3 | MIT OR Apache-2.0 | https://github.com/chanced/jsonptr
 keyboard-types@0.7.0 | MIT OR Apache-2.0 | https://github.com/pyfisch/keyboard-types
+keyring@3.6.3 | MIT OR Apache-2.0 | https://github.com/hwchen/keyring-rs.git
 lazy_static@1.5.0 | MIT OR Apache-2.0 | https://github.com/rust-lang-nursery/lazy-static.rs
 libappindicator-sys@0.9.0 | Apache-2.0 OR MIT | https://crates.io/crates/libappindicator-sys/0.9.0
 libappindicator@0.9.0 | Apache-2.0 OR MIT | https://crates.io/crates/libappindicator/0.9.0
@@ -491,8 +500,10 @@ num-bigint@0.4.8 | MIT OR Apache-2.0 | https://github.com/rust-num/num-bigint
 num-complex@0.4.6 | MIT OR Apache-2.0 | https://github.com/rust-num/num-complex
 num-conv@0.2.2 | MIT OR Apache-2.0 | https://github.com/jhpratt/num-conv
 num-integer@0.1.47 | MIT OR Apache-2.0 | https://github.com/rust-num/num-integer
+num-iter@0.1.46 | MIT OR Apache-2.0 | https://github.com/rust-num/num-iter
 num-rational@0.4.2 | MIT OR Apache-2.0 | https://github.com/rust-num/num-rational
 num-traits@0.2.19 | MIT OR Apache-2.0 | https://github.com/rust-num/num-traits
+num@0.4.3 | MIT OR Apache-2.0 | https://github.com/rust-num/num
 num_cpus@1.17.0 | MIT OR Apache-2.0 | https://github.com/seanmonstar/num_cpus
 numeric-array@0.6.1 | MIT OR Apache-2.0 | https://github.com/novacrazy/numeric-array
 objc2-app-kit@0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2
@@ -678,21 +689,21 @@ tauri-plugin-dialog@2.7.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/pl
 tauri-plugin-fs@2.5.2 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
 tauri-plugin-opener@2.5.5 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
 tauri-plugin-prevent-default@5.0.2 | MIT | https://github.com/ferreira-tb/tauri-plugin-prevent-default
-tauri-plugin-single-instance@2.4.4 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
-tauri-plugin-updater@2.11.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
+tauri-plugin-single-instance@2.4.5 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
+tauri-plugin-updater@2.12.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
 tauri-plugin@2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
 tauri-runtime-wry@2.11.4 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
 tauri-runtime@2.11.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
 tauri-utils@2.9.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
 tauri-winres@0.3.6 | MIT | https://github.com/tauri-apps/winres
-tauri@2.11.5 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
+tauri@2.11.6 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
 tempfile@3.27.0 | MIT OR Apache-2.0 | https://github.com/Stebalien/tempfile
 tendril@0.5.1 | MIT OR Apache-2.0 | https://github.com/servo/html5ever
 thingbuf@0.1.6 | MIT | https://github.com/hawkw/thingbuf
 thiserror-impl@1.0.69 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror
-thiserror-impl@2.0.20 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror
+thiserror-impl@2.0.21 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror
 thiserror@1.0.69 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror
-thiserror@2.0.20 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror
+thiserror@2.0.21 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror
 thread_local@1.1.10 | MIT OR Apache-2.0 | https://github.com/Amanieu/thread_local-rs
 tiff@0.11.3 | MIT | https://github.com/image-rs/image-tiff
 time-core@0.1.9 | MIT OR Apache-2.0 | https://github.com/time-rs/time
@@ -768,6 +779,7 @@ wide@1.6.1 | Zlib OR Apache-2.0 OR MIT | https://github.com/Lokathor/wide
 winapi-util@0.1.11 | Unlicense OR MIT | https://github.com/BurntSushi/winapi-util
 winapi@0.3.9 | MIT OR Apache-2.0 | https://github.com/retep998/winapi-rs
 window-vibrancy@0.6.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri-plugin-vibrancy
+window-vibrancy@0.8.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri-plugin-vibrancy
 windows-collections@0.2.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-collections@0.3.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-core@0.61.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
@@ -796,6 +808,8 @@ windows-threading@0.2.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windo
 windows-version@0.1.7 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows@0.61.3 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows@0.62.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
+windows_aarch64_msvc@0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
+windows_aarch64_msvc@0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows_x86_64_gnu@0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows_x86_64_gnu@0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows_x86_64_msvc@0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
@@ -825,6 +839,7 @@ zerocopy@0.8.56 | BSD-2-Clause OR Apache-2.0 OR MIT | https://github.com/google/
 zerofrom-derive@0.1.7 | Unicode-3.0 | https://github.com/unicode-org/icu4x
 zerofrom@0.1.8 | Unicode-3.0 | https://github.com/unicode-org/icu4x
 zeroize@1.9.0 | Apache-2.0 OR MIT | https://github.com/RustCrypto/utils
+zeroize_derive@1.5.0 | Apache-2.0 OR MIT | https://github.com/RustCrypto/utils
 zerotrie@0.2.4 | Unicode-3.0 | https://github.com/unicode-org/icu4x
 zerovec-derive@0.11.3 | Unicode-3.0 | https://github.com/unicode-org/icu4x
 zerovec@0.11.6 | Unicode-3.0 | https://github.com/unicode-org/icu4x
@@ -1472,15 +1487,46 @@ Used by:
   system-deps@6.2.2
   system-deps@9.0.0
   thiserror-impl@1.0.69
-  thiserror-impl@2.0.20
+  thiserror-impl@2.0.21
   thiserror@1.0.69
-  thiserror@2.0.20
+  thiserror@2.0.21
   typeid@1.0.3
   unicode-ident@1.0.24
   x11-dl@2.21.0
   x11@2.21.0
   zmij@1.0.23
   zvariant_utils@4.0.0
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+========================================
+
+Used by:
+  aes@0.8.4
+
+Copyright (c) 2018 Artyom Pavlov
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -1546,7 +1592,7 @@ Used by:
   jiff-core@0.1.0
   jiff-tzdb-platform@0.1.3
   jiff-tzdb@0.1.8
-  jiff@0.2.35
+  jiff@0.2.37
   memchr@2.8.3
   walkdir@2.5.0
 
@@ -1795,7 +1841,7 @@ Used by:
   gio-sys@0.18.1
   gio-sys@0.22.9
   gio@0.18.4
-  gio@0.22.9
+  gio@0.22.10
   glib-macros@0.18.5
   glib-macros@0.22.9
   glib-sys@0.18.1
@@ -2008,8 +2054,10 @@ Used by:
   num-bigint@0.4.8
   num-complex@0.4.6
   num-integer@0.1.47
+  num-iter@0.1.46
   num-rational@0.4.2
   num-traits@0.2.19
+  num@0.4.3
   regex-automata@0.4.18
   regex-syntax@0.8.11
   regex@1.13.1
@@ -2044,6 +2092,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
   block-buffer@0.10.4
+  block-padding@0.3.3
 
 Copyright (c) 2018-2019 The RustCrypto Project Developers
 
@@ -2148,13 +2197,13 @@ Used by:
   tauri-plugin-dialog@2.7.3
   tauri-plugin-fs@2.5.2
   tauri-plugin-opener@2.5.5
-  tauri-plugin-single-instance@2.4.4
-  tauri-plugin-updater@2.11.0
+  tauri-plugin-single-instance@2.4.5
+  tauri-plugin-updater@2.12.0
   tauri-plugin@2.6.3
   tauri-runtime-wry@2.11.4
   tauri-runtime@2.11.3
   tauri-utils@2.9.3
-  tauri@2.11.5
+  tauri@2.11.6
   unic-char-property@0.9.0
   unic-char-range@0.9.0
   unic-common@0.9.0
@@ -2191,6 +2240,8 @@ Used by:
   windows-version@0.1.7
   windows@0.61.3
   windows@0.62.2
+  windows_aarch64_msvc@0.52.6
+  windows_aarch64_msvc@0.53.1
   windows_x86_64_gnu@0.52.6
   windows_x86_64_gnu@0.53.1
   windows_x86_64_msvc@0.52.6
@@ -2261,6 +2312,38 @@ Used by:
   bytes@1.12.1
 
 Copyright (c) 2018 Carl Lerche
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+========================================
+
+Used by:
+  cbc@0.1.2
+
+Copyright (c) 2018-2022 RustCrypto Developers
+Copyright (c) 2018 Artyom Pavlov
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -2429,6 +2512,37 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+========================================
+
+Used by:
+  cipher@0.4.4
+
+Copyright (c) 2016-2020 RustCrypto Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
 
 ========================================
 
@@ -3635,6 +3749,37 @@ SOFTWARE.
 ========================================
 
 Used by:
+  dbus-secret-service@4.1.0
+
+Copyright (c) 2016 secret-service Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+========================================
+
+Used by:
   dbus@0.9.12
   libdbus-sys@0.2.7
 
@@ -3770,6 +3915,7 @@ SOFTWARE.
 
 Used by:
   digest@0.10.7
+  hmac@0.12.1
   hmac@0.13.0
 
 Copyright (c) 2017 Artyom Pavlov
@@ -5559,6 +5705,38 @@ SOFTWARE.
 ========================================
 
 Used by:
+  hkdf@0.12.4
+
+Copyright (c) 2015-2018 Vlad Filippov
+Copyright (c) 2018-2021 RustCrypto Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+========================================
+
+Used by:
   html5ever@0.38.0
   markup5ever@0.38.0
   web_atoms@0.2.6
@@ -6030,6 +6208,38 @@ THIS SOFTWARE.
 ========================================
 
 Used by:
+  inout@0.1.4
+
+Copyright (c) 2022 The RustCrypto Project Developers
+Copyright (c) 2022 Artyom Pavlov
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+========================================
+
+Used by:
   internmap@2.0.3
   victory-vendor@37.3.6
 
@@ -6223,6 +6433,37 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+========================================
+
+Used by:
+  keyring@3.6.3
+
+Copyright (c) 2016 keyring Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
 
 ========================================
 
@@ -6438,7 +6679,7 @@ DEALINGS IN THE SOFTWARE.
 ========================================
 
 Used by:
-  lucide-react@1.47.0
+  lucide-react@1.48.0
 
 ISC License
 
@@ -9660,7 +9901,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  simple-icons@16.31.0
+  simple-icons@16.32.0
 
 # CC0 1.0 Universal
 
@@ -11472,6 +11713,7 @@ SOFTWARE.
 
 Used by:
   window-vibrancy@0.6.0
+  window-vibrancy@0.8.1
 
 MIT License
 
@@ -11742,6 +11984,37 @@ Used by:
   zeroize@1.9.0
 
 Copyright (c) 2018-2026 The RustCrypto Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+========================================
+
+Used by:
+  zeroize_derive@1.5.0
+
+Copyright (c) 2019-2026 The RustCrypto Project Developers
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated

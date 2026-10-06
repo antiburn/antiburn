@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { PopoverPeekData } from "../../lib/popoverPeekIpc"
 import type { LiveUsageSourceErrorPayload } from "../../lib/providerUsageIpc"
-import { emptyBurnCheckPresentation } from "../../lib/presentation/burnChecks"
+import { emptyBurnCheckPresentation } from "../../lib/presentation/checkStatus"
 import { PopoverPeekController } from "./PopoverPeekController"
 
 const analytics = vi.hoisted(() => ({

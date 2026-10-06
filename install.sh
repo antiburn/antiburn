@@ -712,8 +712,9 @@ install_macos() {
 }
 
 install_deb() {
+  deb_arch="$1"
   require_command id
-  asset_name="antiburn_${VERSION}_amd64.deb"
+  asset_name="antiburn_${VERSION}_${deb_arch}.deb"
   asset_path="${TMP_DIR}/${asset_name}"
   download_release_asset "$asset_name" "$asset_path"
 
@@ -721,7 +722,7 @@ install_deb() {
   package_arch=$(dpkg-deb -f "$asset_path" Architecture)
   package_version=$(dpkg-deb -f "$asset_path" Version)
   [ "$package_name" = "antiburn" ] || fail "The Debian package has an unexpected name: $package_name."
-  [ "$package_arch" = "amd64" ] || fail "The Debian package has an unexpected architecture: $package_arch."
+  [ "$package_arch" = "$deb_arch" ] || fail "The Debian package has an unexpected architecture: $package_arch."
   [ "$package_version" = "$VERSION" ] || fail "The Debian package has an unexpected version: $package_version."
 
   info "Installing the Debian package"
@@ -732,8 +733,9 @@ install_deb() {
 }
 
 install_appimage() {
+  appimage_arch="$1"
   [ -n "${HOME:-}" ] || fail "HOME is required for an AppImage installation."
-  asset_name="antiburn_${VERSION}_amd64.AppImage"
+  asset_name="antiburn_${VERSION}_${appimage_arch}.AppImage"
   asset_path="${TMP_DIR}/${asset_name}"
   download_release_asset "$asset_name" "$asset_path"
 
@@ -779,15 +781,25 @@ install_appimage() {
 
 install_linux() {
   arch="$1"
+  # Tauri labels the two Linux bundles differently: the Debian package uses
+  # the dpkg names (amd64, arm64) and the AppImage uses the machine names
+  # (amd64, aarch64).
   case "$arch" in
-    x86_64 | amd64) ;;
+    x86_64 | amd64)
+      linux_deb_arch="amd64"
+      linux_appimage_arch="amd64"
+      ;;
+    aarch64 | arm64)
+      linux_deb_arch="arm64"
+      linux_appimage_arch="aarch64"
+      ;;
     *) fail "Unsupported Linux architecture: $arch" ;;
   esac
 
   if command -v apt-get >/dev/null 2>&1 && command -v dpkg-deb >/dev/null 2>&1; then
-    install_deb
+    install_deb "$linux_deb_arch"
   else
-    install_appimage
+    install_appimage "$linux_appimage_arch"
   fi
 }
 

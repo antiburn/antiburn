@@ -313,6 +313,7 @@ pub(super) fn quota_usage_with_turn_dollars(
                         agent: row.key.agent.clone(),
                         session_id: row.key.session_id.clone(),
                         wsl_distro,
+                        remote_host_id: None,
                         bucket_start_epoch: row.bucket_start_epoch,
                         usd: row.usd,
                         percent,
@@ -358,6 +359,7 @@ pub(super) fn quota_usage_with_turn_dollars(
                     agent: key.agent.clone(),
                     session_id: key.session_id.clone(),
                     wsl_distro,
+                    remote_host_id: None,
                     title,
                     usd,
                     percent: any_percent.then_some(percent_sum),
@@ -473,11 +475,16 @@ fn session_quota_for_store(
     now: i64,
     request: SessionQuotaRequest,
 ) -> CommandResult<SessionQuotaPayload> {
-    let key = SessionKey::for_session(
+    let key = SessionKey::for_origin(
         &request.agent,
         &request.session_id,
         request.wsl_distro.as_deref(),
-    );
+        request.remote_host_id.as_deref(),
+    )
+    .map_err(str::to_owned)?;
+    if key.remote_host_id().is_some() {
+        return Err("Provider quota is unavailable for cached remote sessions".into());
+    }
     let empty = || SessionQuotaPayload {
         entries: Vec::new(),
         generated_at: iso_from_epoch(Some(now)),
@@ -1265,6 +1272,7 @@ mod tests {
                 agent: AGENT.to_string(),
                 session_id: "spanning-session".to_string(),
                 wsl_distro: None,
+                remote_host_id: None,
             },
         )
         .expect("computes the payload");
@@ -1324,6 +1332,7 @@ mod tests {
                 agent: AGENT.to_string(),
                 session_id: "measured-session".to_string(),
                 wsl_distro: None,
+                remote_host_id: None,
             },
         )
         .expect("computes the payload");
@@ -1376,6 +1385,7 @@ mod tests {
                 agent: AGENT.to_string(),
                 session_id: "no-factor-session".to_string(),
                 wsl_distro: None,
+                remote_host_id: None,
             },
         )
         .expect("computes the payload");
@@ -1430,6 +1440,7 @@ mod tests {
                 agent: AGENT.to_string(),
                 session_id: "long-lived-session".to_string(),
                 wsl_distro: None,
+                remote_host_id: None,
             },
         )
         .expect("computes the payload");
@@ -1466,6 +1477,7 @@ mod tests {
                 agent: AGENT.to_string(),
                 session_id: "unbound-session".to_string(),
                 wsl_distro: None,
+                remote_host_id: None,
             },
         )
         .expect("computes the payload");
@@ -1520,6 +1532,7 @@ mod tests {
                 agent: AGENT.to_string(),
                 session_id: "plan-session".to_string(),
                 wsl_distro: None,
+                remote_host_id: None,
             },
         )
         .expect("computes the payload");
@@ -1551,6 +1564,7 @@ mod tests {
                 agent: AGENT.to_string(),
                 session_id: "no-plan-session".to_string(),
                 wsl_distro: None,
+                remote_host_id: None,
             },
         )
         .expect("computes the payload");
@@ -1687,6 +1701,7 @@ mod tests {
                 agent: AGENT.to_string(),
                 session_id: "capped-session".to_string(),
                 wsl_distro: None,
+                remote_host_id: None,
             },
         )
         .expect("computes the payload");
@@ -1729,6 +1744,7 @@ mod tests {
                 agent: AGENT.to_string(),
                 session_id: "offset-start-session".to_string(),
                 wsl_distro: None,
+                remote_host_id: None,
             },
         )
         .expect("computes the payload");
@@ -1870,6 +1886,7 @@ mod tests {
             agent: AGENT.into(),
             session_id: key.session_id.clone(),
             wsl_distro: None,
+            remote_host_id: None,
         };
         let limits_request = || QuotaUsageRequest {
             provider: PROVIDER.into(),
@@ -1928,6 +1945,7 @@ mod tests {
                 agent: AGENT.into(),
                 session_id: key.session_id.clone(),
                 wsl_distro: None,
+                remote_host_id: None,
             },
         )
         .unwrap();

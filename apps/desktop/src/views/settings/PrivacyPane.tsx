@@ -141,8 +141,13 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             4px to the left of everything it introduces. */}
         <p className="type-body px-1 text-pretty text-label-secondary">
           antiburn reads the session files your coding agents already keep on this machine and
-          keeps the data it needs locally. Your session content, prompts, and file paths never
-          leave it.{" "}
+          keeps its index locally. The optional Ignored Instructions check sends selected
+          instruction text, assistant text excerpts, Bash command input, file-edit and read-file
+          paths, search queries with scope filters, and other-tool inputs to TypeSafe when
+          enabled in Settings → Checks. Bash input can include inline scripts, heredocs, and
+          patches recorded inside the command. Dedicated edit-tool content and tool-result text
+          are excluded. Selected paths can leave this machine. Product analytics never includes
+          that content.{" "}
           {analyticsSupported
             ? "The one thing antiburn reports to us is anonymised product analytics, which you can turn off below."
             : "This build sends no analytics at all."}{" "}
@@ -158,11 +163,16 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             keep on this machine. It may copy data into its own local store, but it never
             modifies or deletes the source transcripts.
           </Disclosure>
-          <Disclosure label="Visibility data stays on this machine">
+          <Disclosure label="The session index stays on this machine">
             antiburn may keep session content and derived analysis in its own local store when
             they are needed for visibility or analysis. That can include messages, tool
             activity, file content recorded in a transcript, identities, paths, counts,
-            durations, token totals, and cost estimates. Nothing in this store is uploaded.
+            durations, token totals, and cost estimates. Only the optional Ignored Instructions
+            assessment sends selected instruction text, assistant text excerpts, Bash command
+            input, file-edit and read-file paths, search queries with scope filters, and
+            other-tool inputs to TypeSafe. Bash input can include inline scripts, heredocs, and
+            patches recorded inside the command. Dedicated edit-tool content and tool-result
+            text are excluded. Selected paths can leave this machine.
           </Disclosure>
           <Disclosure label="You control how long history stays">
             antiburn keeps indexed session data for the period you select below. The default is
@@ -170,18 +180,28 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             window. Shorter periods keep the local index lighter. The agents&rsquo; own source
             files are left exactly where they are.
           </Disclosure>
-          <Disclosure label="Your work is never uploaded">
+          <Disclosure label="When your work can leave this machine">
             There is no antiburn account, and nothing of ours you have to reach for the app to
-            work. No session content — such as a transcript, prompt, title, file path,
-            repository name, token count, or cost figure — is sent anywhere. antiburn does make
-            requests of its own: it downloads public model prices from models.dev at startup and
-            hourly while running; it asks GitHub Releases whether a newer version exists; where
-            a source is enabled, it can ask a provider for your current plan limits using the
+            work. Product analytics does not contain session content, a prompt, title, file
+            path, repository name, token count, or cost figure. antiburn does make requests of
+            its own: it downloads public model prices from models.dev at startup and hourly
+            while running; it asks GitHub Releases whether a newer version exists; where a
+            source is enabled, it can ask a provider for your current plan limits using the
             credentials your own tools already stored; and, in a released build with the switch
             below on, it sends the anonymised product analytics listed below. Handing a provider
-            back a credential it issued you is not a disclosure — it already has it. Those
-            analytics are the one thing that goes to us; they are listed field by field below,
-            and they contain none of your work. This build
+            back a credential it issued you is not a disclosure — it already has it. Enabling
+            Ignored Instructions in Settings → Checks sends selected instruction text, assistant
+            text excerpts, Bash command input, file-edit and read-file paths, search queries
+            with scope filters, and other-tool inputs to TypeSafe using your API key. Bash input
+            can include inline scripts, heredocs, and patches recorded inside the command.
+            Dedicated edit-tool content and tool-result text are excluded. Selected paths can
+            leave this machine. TypeSafe usage charges can apply. Pausing Smart Burn Checks
+            keeps the saved key but stops new checks; remove the key separately in Settings →
+            Checks. That pane shows bounded local token totals and estimated spend by model
+            price version, without session identifiers or request content. Session deletion
+            keeps these already-incurred totals; Clear Local Data removes them. The analytics
+            sent to us are listed field by field below, and they contain none of that content.
+            This build
             {analyticsSupported
               ? " can send them."
               : " has no analytics endpoint, so it cannot send them at all."}
@@ -324,11 +344,11 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   one question, and answering it two accordions apart made them
                   open both to find out. */}
               <p className="mt-2">
-                Never your session content, transcripts, prompts, titles, file paths, repository
-                or branch names, token counts, costs, credentials, name, or email address. Not
-                even exact counts: a precise number, repeated week after week, identifies a
-                machine on its own. Resource ranges can reveal coarse app work intensity and
-                local data volume, but not the work itself.
+                Analytics never includes your session content, transcripts, prompts, titles,
+                file paths, repository or branch names, token counts, costs, credentials, name,
+                or email address. Not even exact counts: a precise number, repeated week after
+                week, identifies a machine on its own. Resource ranges can reveal coarse app
+                work intensity and local data volume, but not the work itself.
               </p>
             </Disclosure>
             {/* Both identifiers stay in one place with the timestamp effect.
@@ -388,7 +408,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
         <Card>
           <SettingsRow
             searchId="retention"
-            description="All session data stays on this machine. Keeping it longer preserves history after providers’ 30-day retention window; a shorter period keeps antiburn’s local index lighter."
+            description="antiburn’s session index stays on this machine. Keeping it longer preserves history after providers’ 30-day retention window; a shorter period keeps antiburn’s local index lighter."
             trailing={
               <SegmentedControl
                 options={RETENTION_OPTIONS}

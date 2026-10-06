@@ -85,6 +85,7 @@ fn entry(session_id: &str) -> ActivityEntry {
         is_active: true,
         surface: "cli".into(),
         wsl_distro: None,
+        remote_host_id: None,
         title: None,
         has_fork_parent: false,
         fork_child_count: 0,

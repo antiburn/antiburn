@@ -8,7 +8,7 @@ import type {
   BurnCheckTargetPayload,
   ChecksReportPayload,
 } from "../../../../lib/insightsIpc"
-import { BurnChecksSession, type BurnChecksAdapter } from "../../BurnChecksSession"
+import { BurnChecksController, type BurnChecksControllerAdapter } from "../BurnChecksController"
 import { BurnChecksView } from "../../BurnChecksView"
 import { BurnChecksSavings } from "../BurnChecksSavings"
 
@@ -117,6 +117,7 @@ export const target: BurnCheckTargetPayload = {
   autoFix: { status: "available" },
   promptFix: { status: "available" },
   watch: null,
+  evidenceAvailable: false,
   coverageLimits: ["currentPublishedEvidenceOnly"],
   samples: [
     {
@@ -204,13 +205,13 @@ export function setup(
   reportPayload: ChecksReportPayload | Promise<ChecksReportPayload> = namedTargetReport,
   checkSamples?: BurnCheckTargetPayload["samples"],
 ): {
-  adapter: BurnChecksAdapter
-  session: BurnChecksSession
+  adapter: BurnChecksControllerAdapter
+  session: BurnChecksController
   view: RenderResult
   hide: () => void
 } {
   let visible: ((value: boolean) => void) | null = null
-  const adapter: BurnChecksAdapter = {
+  const adapter: BurnChecksControllerAdapter = {
     getReport: vi.fn(() => Promise.resolve(reportPayload)),
     getAggregateWins: vi.fn(() => Promise.resolve(aggregatePayload)),
     getTargets: vi.fn(async () => {
@@ -237,7 +238,7 @@ export function setup(
     }),
     onChanged: vi.fn(async () => () => undefined),
   }
-  const session = new BurnChecksSession(adapter)
+  const session = new BurnChecksController(adapter)
   const view = render(<BurnChecksView active session={session} />)
   return { adapter, session, view, hide: () => visible?.(false) }
 }

@@ -20,9 +20,9 @@ use crate::analysis::framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
 };
 use crate::analysis::interface::{
-    ContentKind, ContentPart, ContextWindowSource, EvidenceObservation, NormalizedRecord,
-    ProviderHint, RawSource, RecordSink, RelationProvenance, SessionCollector, SessionInput,
-    SessionReader, SessionSummary, TurnContent, VisitOutcome, push_provider_hint,
+    ContentAuthority, ContentKind, ContentPart, ContextWindowSource, EvidenceObservation,
+    NormalizedRecord, ProviderHint, RawSource, RecordSink, RelationProvenance, SessionCollector,
+    SessionInput, SessionReader, SessionSummary, TurnContent, VisitOutcome, push_provider_hint,
 };
 use crate::analysis::model::{
     CompactionTrigger, EventSource, NormalizedEvent, NormalizedSession, Role, ToolCall,
@@ -50,8 +50,13 @@ impl SessionReader for OpenCodeSessionReader {
 
     fn capabilities(&self, input: &SessionInput) -> crate::analysis::SourceCapabilities {
         let mut capabilities = crate::analysis::SourceCapabilities::opencode();
-        capabilities.source_format =
-            input.source_format_or(crate::analysis::SourceFormat::OpenCodeJsonl);
+        capabilities.source_format = match input.source_format {
+            crate::analysis::SourceFormat::Uncharacterized => match &input.source {
+                RawSource::Sqlite(_) => crate::analysis::SourceFormat::OpenCodeSqliteV2,
+                _ => crate::analysis::SourceFormat::OpenCodeJsonl,
+            },
+            format => format,
+        };
         capabilities
     }
 
@@ -891,7 +896,10 @@ fn apply_part(
                 } else {
                     ContentKind::UserText
                 };
-                pending.content.push(ContentPart::new(kind, text));
+                pending.content.push(
+                    ContentPart::new(kind, text)
+                        .with_authority(content_authority(pending.event.role)),
+                );
             }
         }
         "file" | "snapshot" | "step-start" | "step-finish" | "agent" | "retry" => {}
@@ -902,9 +910,10 @@ fn apply_part(
                 .and_then(Value::as_str)
                 .filter(|text| !text.is_empty())
             {
-                pending
-                    .content
-                    .push(ContentPart::new(ContentKind::Thinking, text));
+                pending.content.push(
+                    ContentPart::new(ContentKind::Thinking, text)
+                        .with_authority(ContentAuthority::Assistant),
+                );
             }
         }
         "tool" => apply_tool_part(object, pending, sink),
@@ -928,6 +937,15 @@ fn apply_part(
         }
         discriminator if !discriminator.is_empty() => unrecognized(discriminator, sink),
         _ => unrecognized("<missing_part_type>", sink),
+    }
+}
+
+fn content_authority(role: Role) -> ContentAuthority {
+    match role {
+        Role::User => ContentAuthority::User,
+        Role::Assistant => ContentAuthority::Assistant,
+        Role::System => ContentAuthority::System,
+        Role::Tool => ContentAuthority::Tool,
     }
 }
 
@@ -997,26 +1015,66 @@ fn apply_tool_part(
     let input = state.and_then(|state| state.get("input"));
     pending.event.tools.push(tool_call_from_input(name, input));
     if let Some(text) = input.and_then(compact_json_text) {
-        pending
-            .content
-            .push(ContentPart::new(ContentKind::ToolInput, text));
+        let mut captured = ContentPart::new(ContentKind::ToolInput, text).with_tool_identity(
+            Some(name.to_owned()),
+            part.get("callID")
+                .or_else(|| part.get("callId"))
+                .or_else(|| part.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        );
+        use crate::analysis::jev_evidence::JevOperationState;
+        captured.metadata.state = match state
+            .and_then(|state| state.get("status"))
+            .and_then(Value::as_str)
+        {
+            Some("pending") => JevOperationState::Pending,
+            Some("running") => JevOperationState::Running,
+            Some("completed") => JevOperationState::Completed,
+            Some("error") => JevOperationState::Error,
+            _ => JevOperationState::Unknown,
+        };
+        if !captured.truncated
+            && let Some(fields) = captured.normalized_fields.as_ref()
+        {
+            captured.metadata.bindings = crate::analysis::jev_evidence::native_input_bindings(
+                input.expect("captured native input"),
+                "/state/input",
+                fields,
+                crate::analysis::jev_evidence::JevNativeFieldContainer::Part,
+            );
+        }
+        pending.content.push(captured);
     }
     if let Some(output) = state
         .and_then(|state| state.get("output"))
         .and_then(Value::as_str)
-        .filter(|output| !output.is_empty())
     {
-        pending
-            .content
-            .push(ContentPart::new(ContentKind::ToolResult, output));
+        pending.content.push(
+            ContentPart::new(ContentKind::ToolResult, output).with_tool_identity(
+                Some(name.to_owned()),
+                part.get("callID")
+                    .or_else(|| part.get("callId"))
+                    .or_else(|| part.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            ),
+        );
     } else if let Some(error) = state
         .and_then(|state| state.get("error"))
         .and_then(Value::as_str)
         .filter(|error| !error.is_empty())
     {
-        pending
-            .content
-            .push(ContentPart::new(ContentKind::ToolResult, error));
+        pending.content.push(
+            ContentPart::new(ContentKind::ToolResult, error).with_tool_identity(
+                Some(name.to_owned()),
+                part.get("callID")
+                    .or_else(|| part.get("callId"))
+                    .or_else(|| part.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            ),
+        );
     }
 }
 
@@ -1309,5 +1367,49 @@ mod tests {
         assert_eq!(parts[2].text, r#"{"command":"ls"}"#);
         assert_eq!(parts[3].kind, ContentKind::ToolResult);
         assert_eq!(parts[3].text, "ok");
+    }
+
+    #[test]
+    fn tool_part_keeps_present_empty_output_distinct_from_missing_output() {
+        let mut pending = PendingMessage {
+            id: "m1".to_owned(),
+            event: NormalizedEvent::new(Role::Assistant),
+            content: Vec::new(),
+            part_bytes: 0,
+            parts_oversized: false,
+            tasks: Vec::new(),
+            task_incomplete: false,
+        };
+        let mut sink = ContentCapturingSink::default();
+        apply_tool_part(
+            serde_json::json!({
+                "tool": "bash",
+                "callID": "call-empty",
+                "state": {"status": "completed", "input": {"command": "true"}, "output": ""}
+            })
+            .as_object()
+            .unwrap(),
+            &mut pending,
+            &mut sink,
+        );
+        apply_tool_part(
+            serde_json::json!({
+                "tool": "bash",
+                "callID": "call-missing",
+                "state": {"status": "completed", "input": {"command": "true"}}
+            })
+            .as_object()
+            .unwrap(),
+            &mut pending,
+            &mut sink,
+        );
+        let results: Vec<_> = pending
+            .content
+            .iter()
+            .filter(|part| part.kind == ContentKind::ToolResult)
+            .collect();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].text, "");
+        assert_eq!(results[0].tool_call_id.as_deref(), Some("call-empty"));
     }
 }

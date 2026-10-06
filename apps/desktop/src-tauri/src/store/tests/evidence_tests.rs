@@ -1,6 +1,47 @@
 use super::*;
 
 #[test]
+fn reconciliation_requeues_ready_evidence_with_a_composite_fingerprint() {
+    let store = store();
+    let record = seed_current_session_evidence(&store, "composite-fingerprint");
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence SET processed_fingerprint = 'v2:[[\"parent\",\"1:2\"]]'
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(
+                &crate::agents::evidence_cohort(),
+                projection_revisions(),
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(
+                &crate::agents::evidence_cohort(),
+                projection_revisions(),
+            )
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn the_generation_increments_only_when_the_fingerprint_changes() {
     let store = store();
     let key = SessionKey::new("native", "claude-code", "generation");
@@ -285,6 +326,7 @@ async fn analysis_from_rows_serves_a_published_pass_without_reading_a_transcript
             &|| false,
             Some(row_store),
         );
+        pass.source_fingerprint = record.source_fingerprint.clone();
         pass.analysis.fingerprint = record
             .source_fingerprint
             .clone()
@@ -367,6 +409,7 @@ async fn analysis_from_rows_still_serves_a_published_pass_after_a_requeue() {
             &|| false,
             Some(row_store),
         );
+        pass.source_fingerprint = record.source_fingerprint.clone();
         pass.analysis.fingerprint = record
             .source_fingerprint
             .clone()
@@ -556,6 +599,7 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
         Box::pin(async {
             crate::analysis::EvidencePass {
                 analysis: crate::analysis::SessionAnalysis::unavailable(),
+                source_fingerprint: None,
                 evidence: None,
                 outcome: crate::analysis::PassOutcome::SourceMissing,
                 source_outcomes: Vec::new(),
@@ -598,9 +642,10 @@ fn a_catalog_change_requeues_no_session_evidence() {
                 source_fingerprint: "sv1:current".into(),
                 pricing_generation: 2,
                 analyzed_generation: 1,
-                parser_revision: 1,
-                analyzer_revision: 1,
-                metrics_schema_revision: 1,
+                parser_revision: crate::analysis::projection_revisions().parser_revision,
+                analyzer_revision: crate::analysis::projection_revisions().analyzer_revision,
+                metrics_schema_revision: crate::analysis::projection_revisions()
+                    .metrics_schema_revision,
             },
             None,
         )
@@ -1054,7 +1099,10 @@ fn publishing_session_evidence_writes_both_projections_and_the_start_time() {
     );
     assert_eq!(evidence.parser_revision, Some(record.parser_revision));
     assert_eq!(evidence.analyzer_revision, Some(record.analyzer_revision));
-    assert_eq!(evidence.evidence_schema_revision, Some(1));
+    assert_eq!(
+        evidence.evidence_schema_revision,
+        Some(crate::analysis::projection_revisions().evidence_schema_revision)
+    );
     assert_eq!(evidence.retry_count, 0);
     assert_eq!(evidence.last_error, None);
     assert_eq!(evidence.claimed_at_epoch, None);
