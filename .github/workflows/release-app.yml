@@ -3,6 +3,7 @@ name: Release app
 # Cuts a DRAFT GitHub Release for the desktop application from an
 # `antiburn-v<version>` tag. Nothing here publishes: a person reads the draft,
 # checks the assets against docs/runbooks/release.md, and presses Publish.
+# Manual dispatch builds the same assets from main and uploads them to Actions.
 #
 # The shape of a release is fixed by that draft. Published tags and assets are
 # immutable — a mistake is corrected by a new version, never by replacing an
@@ -19,12 +20,18 @@ name: Release app
 #           run; a release never spends another full matrix proving the same SHA
 #   sbom    dependency inventories, generated with no credentials in scope
 #   build   the only jobs that see signing credentials, one per release target
-#   draft   assembles, hashes, attests, and drafts — the only job that can
-#           write to the repository
+#   assemble hashes, attests, and uploads the complete asset set
+#   draft   creates a draft only for tag pushes
 
 on:
   push:
     tags: ["antiburn-v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Application version to build without creating a GitHub Release
+        required: true
+        type: string
 
 # Least privilege by default. `contents: write` is granted to exactly one job,
 # and OIDC is granted to the build and attestation jobs. This workflow has no
@@ -54,7 +61,18 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
+      - name: Require main for manual builds
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          if [[ "$EVENT" == "workflow_dispatch" && "$REF" != "refs/heads/main" ]]; then
+            echo "::error::Manual release builds must run from main."
+            exit 1
+          fi
+
       # Third-party actions are pinned by immutable commit SHA.
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -66,13 +84,20 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Verify the tag agrees with every manifest
+      - name: Apply the manual build version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: node scripts/prepare-app-version.mjs "$VERSION"
+
+      - name: Verify the build version agrees with every manifest
         id: version
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && format('antiburn-v{0}', inputs.version) || github.ref_name }}
         run: node scripts/verify-release-version.mjs app "$TAG"
 
       - name: Verify the embedded engine is a released source tree
+        if: github.event_name == 'push'
         run: node scripts/verify-app-engine-release.mjs
 
       # The updater is the one network-capable surface in the application, and
@@ -100,6 +125,10 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            printf 'Build of commit %s with application version %s.\n' "$GITHUB_SHA" "$VERSION" > RELEASE-NOTES.md
+            exit 0
+          fi
           notes=$(awk -v ver="$VERSION" '
             /^## \[/ {
               if (found) exit
@@ -184,6 +213,12 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      - name: Apply the manual build version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: node scripts/prepare-app-version.mjs "$VERSION"
+
       - name: Enable Corepack
         run: corepack enable
 
@@ -243,10 +278,7 @@ jobs:
   build:
     name: Build ${{ matrix.name }}
     needs: [verify, trusted-main-ci]
-    # Every signing credential lives in this protected environment, and only a
-    # tag push in this repository can reach it. Restrict the environment's
-    # deployment branches/tags to `antiburn-v*` as well — see
-    # docs/runbooks/release.md.
+    # The environment permits release tags and protected main dispatches.
     environment: release
     permissions:
       contents: read
@@ -368,6 +400,12 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      - name: Apply the manual build version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: node scripts/prepare-app-version.mjs "$VERSION"
 
       - name: Enable Corepack
         run: corepack enable
@@ -755,7 +793,7 @@ jobs:
           UPDATER_PLATFORM: ${{ matrix.updater_platform }}
           ARTIFACT: ${{ matrix.artifact }}
           PLATFORM_SIGNING: ${{ steps.signing.outputs.platform_signing }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.verify.outputs.tag }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -844,17 +882,16 @@ jobs:
   remote-helper:
     name: Package Linux remote helpers
     needs: [verify, trusted-main-ci]
-    # No version input: the helper names its archive from its own manifest, and
-    # `verify` has already refused the tag if that manifest disagrees with it.
     uses: ./.github/workflows/build-remote-helper.yml
+    with:
+      version: ${{ github.event_name == 'workflow_dispatch' && needs.verify.outputs.version || '' }}
 
-  draft:
-    name: Draft the release
+  assemble:
+    name: Assemble release assets
     needs: [verify, sbom, build, remote-helper]
     runs-on: ubuntu-24.04
     permissions:
-      # The only write in the whole workflow: create the draft and its assets.
-      contents: write
+      contents: read
       # Build provenance: an OIDC identity to sign the attestation with, and
       # permission to record it against this repository.
       id-token: write
@@ -890,7 +927,7 @@ jobs:
       - name: Assemble the release directory
         env:
           VERSION: ${{ needs.verify.outputs.version }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.verify.outputs.tag }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -899,6 +936,13 @@ jobs:
             -exec cp {} dist/ \;
           cp notes/RELEASE-NOTES.md dist/
           cp install.sh install.ps1 dist/
+          jq -n \
+            --arg version "$VERSION" \
+            --arg source "$GITHUB_SHA" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --arg engine_tree "$(git rev-parse HEAD:crates/antiburn-local)" \
+            '{version: $version, source: $source, event: $event, engine_tree: $engine_tree}' \
+            > dist/BUILD-INFO.json
 
           mapfile -t manifests < <(find incoming -type f -name 'updater-*.json' | sort)
           if [[ "${#manifests[@]}" -ne 6 ]]; then
@@ -1014,6 +1058,43 @@ jobs:
           VERSION: ${{ needs.verify.outputs.version }}
         run: cp "$BUNDLE_PATH" "dist/antiburn-${VERSION}-provenance.intoto.jsonl"
 
+      - name: Upload the assembled assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: dist
+          if-no-files-found: error
+
+      - name: Summarize the build
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          {
+            echo "## Application build ${VERSION}"
+            echo
+            echo "Source: \`${GITHUB_SHA}\`. Trigger: \`${GITHUB_EVENT_NAME}\`."
+            echo "Download the assembled assets from the release Actions artifact."
+            echo
+            echo "| Platform | Target | Signing mode |"
+            echo "| --- | --- | --- |"
+            jq -s -r 'sort_by(.platform)[] | "| `\(.platform)` | `\(.target)` | `\(.signing)` |"' incoming/*/evidence-*.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  draft:
+    name: Draft the release
+    if: github.event_name == 'push'
+    needs: [verify, assemble]
+    runs-on: ubuntu-24.04
+    permissions:
+      # GitHub Releases writes are restricted to this tag-only job.
+      contents: write
+    steps:
+      - name: Download the assembled assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: dist
+
       # Drafts are re-runnable; published releases are not. That is the whole
       # retention rule, enforced here rather than only written down.
       #
@@ -1071,11 +1152,6 @@ jobs:
             echo "### Automated evidence"
             echo
             echo "The workflow verified the exact main CI SHA, six updater platforms, immutable URLs, detached signatures, asset presence, checksums, and the signing mode reported by every build."
-            echo
-            echo "| Platform | Target | Signing mode |"
-            echo "| --- | --- | --- |"
-            jq -s -r 'sort_by(.platform)[] | "| `\(.platform)` | `\(.target)` | `\(.signing)` |"' \
-              incoming/*/evidence-*.json
             echo
             echo "| Asset | SHA-256 |"
             echo "| --- | --- |"
