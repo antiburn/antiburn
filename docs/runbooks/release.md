@@ -18,7 +18,8 @@ drafts; a person reads the draft and presses Publish. There is no auto-publish
 and there will not be one — the review is the point, not a formality on the way
 to it.
 
-GitHub Releases is the only place antiburn's artifacts live. There is no
+GitHub Releases hosts published artifacts. Manual builds store their assets in
+GitHub Actions. There is no
 separate download host, no object store, and no content-delivery layer: the
 release page is the canonical artifact host and the updater host at once.
 
@@ -26,7 +27,8 @@ release page is the canonical artifact host and the updater host at once.
 
 ## Part 1 — One-time repository setup
 
-The `release` environment, updater key, and Apple credentials are configured.
+The `release` environment, updater key, Apple credentials, and Azure Windows
+signing configuration are configured.
 Use this section when credentials rotate or the environment must be recreated.
 The workflows fail early if required material is missing, so an unconfigured
 repository cannot produce something that looks like a signed release.
@@ -41,7 +43,7 @@ only jobs that can reach them are the ones that ask for the environment by name
 Configure it as:
 
 - **Deployment branches and tags:** _Selected branches and tags_ → add the tag
-  rule `antiburn-v*`. Nothing else can start a job that touches these secrets.
+  rule `antiburn-v*` and branch rule `main`. Manual builds run only on `main`.
 - **Required reviewers:** optional. The draft-then-publish step is already a
   human gate; add reviewers here as well if you want the pause to happen
   _before_ the credentials are used rather than after.
@@ -66,13 +68,13 @@ Placeholders below show the shape, never a real value.
 | `APPLE_ID`                           | For notarization          | The Apple ID that owns the notarization submission.                                                                       | Placeholder: `releases@example.org`                                                                                                                                                                                                  |
 | `APPLE_PASSWORD`                     | For notarization          | An **app-specific password** for that Apple ID — never the account password.                                              | appleid.apple.com → Sign-In and Security → App-Specific Passwords. Placeholder: `abcd-efgh-ijkl-mnop`                                                                                                                                |
 | `APPLE_TEAM_ID`                      | For notarization          | The ten-character Apple Developer team identifier.                                                                        | Apple Developer → Membership. Placeholder: `ABCDE12345`                                                                                                                                                                              |
-| `WINDOWS_CERTIFICATE`                | For signed Windows builds | Base64 of the Authenticode code-signing certificate exported as `.pfx`.                                                   | `base64 -w0 codesign.pfx`. Placeholder: `MIIM…`                                                                                                                                                                                      |
-| `WINDOWS_CERTIFICATE_PASSWORD`       | With the above            | The `.pfx` export passphrase.                                                                                             | Chosen during export. Placeholder: `<passphrase>`                                                                                                                                                                                    |
 | `ANTIBURN_ANALYTICS_URL`             | For official analytics    | The first-party analytics endpoint compiled into official builds.                                                         | Store the production HTTPS origin. Never commit it.                                                                                                                                                                                  |
 | `ANTIBURN_ANALYTICS_OPERATOR`        | With the analytics URL    | The operator name shown in Settings → Privacy.                                                                            | `Cadence AI (Vic) Pty Ltd`                                                                                                                                                                                                           |
 
 `GITHUB_TOKEN` is provided by Actions; it is not configured and must not be
-replaced by a personal access token.
+replaced by a personal access token in the build and signing workflows. The
+separate Homebrew publication workflow uses a tap-only PAT for its
+cross-repository write; see [Homebrew publication](#homebrew-publication).
 
 The workflow compiles official desktop builds with `distribution,analytics`.
 Keep both analytics secrets unset until the privacy policy is ready. A missing
@@ -107,38 +109,149 @@ Regenerate the profile after the App ID capability or signing certificate
 changes. Never commit it. The release workflow checks its team, application
 identifier, capability, distribution type, and expiration before embedding it.
 
-### 1.3 Repository variables
+### 1.3 Azure Windows signing and variables
 
-Variables (Settings → Secrets and variables → Actions → Variables), not secrets:
+Windows uses **Azure Artifact Signing Basic**, an Organization / Public identity
+validation, and a **Public Trust** certificate profile. Microsoft added Australian
+organization eligibility on 2026-07-23. The legal publisher is
+`Cadence AI (Vic) Pty Ltd`. The East US service endpoint is
+`https://eus.codesigning.azure.net`; the company can be Australian even though
+the signing service is hosted in another region.
 
-| Variable                 | Default when unset                          | Effect                                                                                                    |
-| ------------------------ | ------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `ALLOW_UNSIGNED_WINDOWS` | unset (= build fails without a certificate) | `true` builds the Windows installer **without** an Authenticode signature. SmartScreen warns on download. |
-| `WINDOWS_TIMESTAMP_URL`  | `http://timestamp.digicert.com`             | RFC 3161 timestamp authority used when signing the installer, so signatures outlive the certificate.      |
+Basic includes 5,000 signatures per month at a published USD 9.99/month before
+tax. Each file signed consumes a signature. Tauri signs the app, NSIS plugin
+copies, uninstaller, and installer, so each release target uses several
+signatures. The Windows signing probe adds one signature per target and verifies
+live authentication before the full compile. Check current [pricing](https://azure.microsoft.com/pricing/details/artifact-signing/)
+before changing the subscription.
 
-macOS releases always require Developer ID signing and notarization.
-`ALLOW_UNSIGNED_WINDOWS` remains set until an Authenticode certificate exists.
-It produces a build that says it is unsigned; it never fakes a platform signature.
+Add these as **environment variables** under Settings → Environments → `release`:
+
+| Variable | Value |
+| --- | --- |
+| `AZURE_CLIENT_ID` | Application (client) ID of the dedicated Entra signing application |
+| `AZURE_TENANT_ID` | Entra tenant ID that owns the signing subscription |
+| `AZURE_SUBSCRIPTION_ID` | Subscription ID containing the signing account |
+| `AZURE_SIGNING_ENDPOINT` | Region-specific HTTPS signing endpoint |
+| `AZURE_SIGNING_ACCOUNT_NAME` | Artifact Signing account name |
+| `AZURE_SIGNING_CERTIFICATE_PROFILE_NAME` | Public Trust certificate profile name |
+
+These are configuration identifiers, not private keys. No PFX, certificate
+password, or client secret is used. All six variables are required for signed
+Windows releases.
+
+#### Azure identity and GitHub federation setup
+
+1. Register `Microsoft.CodeSigning` in the paid Azure subscription. Create a
+   Basic signing account in a supported region.
+2. Give the human onboarding account `Artifact Signing Identity Verifier`
+   access. Submit Organization / Public validation using the legal business
+   details and complete the representative identity checks. Wait for
+   **Completed**, then create a **Public Trust** certificate profile with
+   Program Type **None**.
+3. Create a single-tenant Entra app registration for Windows release signing.
+   Under Certificates & secrets → Federated credentials, add a GitHub credential
+   for organization `antiburn`, repository `antiburn`, entity type **Environment**,
+   and environment `release`.
+4. Confirm issuer `https://token.actions.githubusercontent.com`, subject
+   `repo:antiburn/antiburn:environment:release`, and audience
+   `api://AzureADTokenExchange`.
+5. Assign the app's service principal `Artifact Signing Certificate Profile Signer`
+   at the certificate-profile scope, not subscription Owner. For example:
+
+   ```bash
+   az role assignment create \
+     --assignee-object-id "<service-principal-object-id>" \
+     --assignee-principal-type ServicePrincipal \
+     --role "Artifact Signing Certificate Profile Signer" \
+     --scope "/subscriptions/<subscription-id>/resourceGroups/<resource-group>/providers/Microsoft.CodeSigning/codeSigningAccounts/<account>/certificateProfiles/<profile>"
+   ```
+
+6. Configure the six GitHub environment variables and keep the environment's
+   `antiburn-v*` tag and `main` branch restrictions. Azure login uses OIDC through
+   the CLI. The
+   signing client excludes all credential types except Azure CLI.
+
+The shared release build matrix has `id-token: write`; only the Windows signed
+legs execute Azure login. All legs remain behind the same protected environment
+and exact-SHA main CI gate. Installer-test CI has no signing identity and does
+not make signing requests.
+
+Follow Microsoft's [setup guide](https://learn.microsoft.com/azure/artifact-signing/quickstart)
+and [role guide](https://learn.microsoft.com/azure/artifact-signing/tutorial-assign-roles)
+when renewing identity validation or recreating the resources. Check the Azure
+portal for validation expiry and renew it before it expires. Microsoft rotates
+the three-day signing certificates; do not pin a leaf certificate thumbprint.
+
+#### Toolchain and signing order
+
+`scripts/setup-windows-signing.ps1` downloads hash-verified, pinned Windows SDK
+BuildTools 10.0.26100.4188, Artifact Signing Client 1.0.128, and the x64 .NET
+8.0.31 runtime. The x64 SignTool and client DLL run natively on x64 and through
+x64 emulation on the existing `windows-11-arm` runner. The official Artifact
+Signing GitHub action does not support ARM runners, so this integration uses
+Microsoft's documented SignTool interface instead.
+
+CI exercises x64 runtime and SignTool execution on both Windows architectures
+without credentials. This smoke check does not prove live client authentication
+or signing: the signed prerelease must prove the full path on both targets before
+production acceptance. If ARM64 signing fails, stop the release and investigate;
+do not drop that target or publish an unsigned substitute.
+
+The temporary Tauri `bundle.windows.signCommand` overlay calls
+`scripts/windows-signing.ps1` with each file as a separate argument. It signs
+with SHA-256 and the RFC 3161 service `http://timestamp.acs.microsoft.com`, verifies
+the signature, and requires the full expected publisher subject and a timestamp.
+Tauri calls this hook for the app and NSIS contents before producing the final
+installer and its updater signature. Never sign an installer again after its
+detached updater signature, checksum, or provenance is generated.
+
+The build rejects SignTool warnings and errors. Final verification checks the
+NSIS installer, silently installs it into a runner temporary directory, and
+checks the installed executable and uninstaller before uninstalling. Tauri
+restores its unsigned raw build executable after packaging, so checking that
+file would reject a correctly signed installer. A valid timestamp lets
+signatures remain valid after leaf expiry;
+the verifier uses Windows trust validation rather than rejecting every expired
+leaf certificate.
+
+If signing fails, check the logged error, OIDC subject, profile-level signer
+role, matching endpoint region, and identity validation status. A wrong role or
+endpoint commonly produces 403. Do not change the role to Owner or add a secret
+fallback. Runtime or DLL-load errors require checking the pinned x64 toolchain
+and its `DOTNET_ROOT` configuration, especially on ARM64.
+
+#### Required Windows signing
+
+Both Windows targets require Azure Authenticode signing. Missing configuration,
+signing failures, or failed verification stop the build. The former
+`ALLOW_UNSIGNED_WINDOWS` waiver is removed and has no effect. macOS releases
+require Developer ID signing and notarization.
 
 #### Enabling Windows installer signature enforcement
 
 The PowerShell bootstrap installer requires SHA-256 verification today but permits
-unsigned Windows packages. When an Authenticode certificate is available:
+unsigned Windows packages. Activate strict bootstrap verification after the
+first signed production release passes Windows acceptance and becomes latest:
 
-1. Configure `WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD` in the
-   `release` environment.
-2. Remove `ALLOW_UNSIGNED_WINDOWS` and require the `authenticode` signing mode in
-   `release-app.yml`.
+1. Rehearse both Windows targets with the configured Azure signing profile.
+2. Confirm both inventory entries use `authenticode`; unsigned Windows builds
+   are no longer permitted.
 3. Extend `Assert-InstallerIntegrity` in the root `install.ps1` with
    `Get-AuthenticodeSignature`. Require `Valid` status and the expected antiburn
    publisher identity.
 4. Add tests for a missing signature, a wrong publisher, an invalid chain, and an
-   expired certificate to `scripts/install-ps1.test.ps1`.
+   expired leaf certificate with and without a valid timestamp to
+   `scripts/install-ps1.test.ps1`.
 5. Remove the unsigned-installer warning from `install.ps1` and the README only
    after a signed release passes the Windows acceptance check.
 
-Do not add inactive signature code before these credentials exist. The checksum
-and the unsigned warning must continue to state the current release behavior.
+Do not merge strict bootstrap enforcement while latest still points at an
+unsigned release. That would stop the public install command from working.
+Decide how explicit requests for historical unsigned versions are handled, and
+document any rejection clearly. Keep current unsigned warnings accurate until
+the signed release is available. Authenticode signing does not guarantee that
+SmartScreen warnings disappear; Microsoft no longer promises an EV bypass.
 
 ### 1.4 Tag protection
 
@@ -177,13 +290,49 @@ repository maintenance, not routine contributions or releases.
 ### 1.6 Attestations
 
 Build provenance is recorded with `actions/attest-build-provenance`, which needs
-`id-token: write` and `attestations: write` — granted in the one job that
-produces them and nowhere else. Public repositories get this for free; nothing
-else needs enabling.
+`id-token: write` and `attestations: write`. Only the assemble job has
+`attestations: write`; the build job also needs `id-token: write` for Azure login.
+Public repositories get attestations for free; nothing else needs enabling.
 
 ---
 
 ## Part 2 — Cutting an application release
+
+### Manual full-matrix build
+
+Run the same signed packaging pipeline without creating a tag or GitHub Release:
+
+```bash
+gh workflow run release-app.yml --ref main -f version=0.9.0
+```
+
+The version input is required and can be an existing version or a supported
+prerelease such as `0.10.0-rc.1`. The workflow applies it only in runner checkouts
+to all application and helper manifests and lockfile entries. It runs all six
+desktop targets, both remote helpers, SBOMs, updater signing, platform signature
+checks, checksum assembly, and provenance. Artifact and installer names are the
+same as tag builds. Download individual platform artifacts or the assembled
+`release` artifact from the Actions run.
+
+Manual builds require successful main CI for the dispatched SHA and the existing
+release credentials. They do not require a matching engine release tag or a
+changelog entry. `BUILD-INFO.json` records the source SHA, version, event, and
+engine tree identity. Tag builds retain engine-release and changelog checks.
+
+Only tag pushes can reach the GitHub Releases write job. A manual build cannot
+create or update a release or change Latest. The assembled `latest.json` retains
+the normal version-based release URLs for packaging validation; the workflow
+does not host those newly built files at those URLs. Use the Actions artifacts
+for manual acceptance, not the published update endpoint.
+
+Signing and notarization consume the existing service quotas. Installing a
+manual build with the same version uses the regular app identity and paths;
+perform acceptance on the intended Windows test systems.
+
+Linux packaging pins both architecture assets from retained linuxdeploy release
+`1-alpha-20251107-1` by asset ID and SHA-256. Do not pin the moving `continuous`
+release: upstream replaces its assets and deletes their old IDs. Keep the
+post-build host-Wayland boundary check when changing this tool.
 
 ### 2.1 Decide the version
 
@@ -296,11 +445,13 @@ tag only after the commit is on `main`.
 5. **remote-helper** — builds static Linux x64 and ARM64 helpers on native
    runners, runs their tests, checks static linkage, and verifies archive
    extraction. It has no signing or repository-write credentials.
-6. **draft** — requires both helper archives, adds the root `install.sh` and `install.ps1`, then merges the
+6. **assemble** — requires both helper archives, adds the root `install.sh` and `install.ps1`, then merges the
    fragments into `latest.json` with immutable
    tag-specific URLs; verifies all six platform keys, asset presence, detached
    signatures, reported signing modes, and `SHA256SUMS`; attests provenance over
-   every asset; and creates the draft.
+    every asset; and uploads the assembled `release` Actions artifact.
+7. **draft** — runs only for tag pushes and creates or updates the draft from
+   the assembled assets.
 
 The main run and its cache warming finish before the exact-SHA gate opens, so
 the tag's critical path is packaging and signing rather than another test
@@ -346,6 +497,14 @@ work, but it does not replace these signed-artifact checks.
       buys); on Windows, note whether SmartScreen warns.
       Check both Windows architectures, including an ARM64 install from
       Windows PowerShell 5.1 and an emulated x64 PowerShell 7 session.
+- [ ] **Windows publisher and timestamps verify.** Dot-source
+      `scripts/windows-signing.ps1` and call `Assert-WindowsSignature -FilePath`
+      for the downloaded installer, installed `antiburn.exe`, and installed
+      uninstaller on both architectures. All must have valid Authenticode,
+      the expected company subject, and timestamps. Test uninstall as well.
+      Download through a browser on clean supported Windows systems to retain
+      Mark of the Web, and record SmartScreen behavior separately from signature
+      validity.
 - [ ] **The previous version can update to this one.** The real test of a
       release: install the previous version, point it at the draft only after
       publishing (drafts are not reachable), or rehearse with a pre-release tag.
@@ -377,6 +536,11 @@ Press **Publish release**. That is the whole publication step, and it is
 deliberately a person's action.
 
 ### 2.9 Verify after publishing
+
+Confirm that [Update Homebrew tap](../../.github/workflows/update-homebrew-tap.yml)
+succeeds for this stable desktop tag and that the tap's own native macOS CI
+passes. Engine releases and prereleases do not update the tap. A failed tap bump
+does not unpublish the desktop release.
 
 ```bash
 curl -sSL https://github.com/antiburn/antiburn/releases/latest/download/latest.json | jq .
@@ -485,6 +649,81 @@ the consumer deletes the secret and revokes the token; the rewrite step
 becomes a no-op and everything else stays byte-identical.
 
 ---
+
+## Homebrew publication
+
+The macOS cask lives in the public
+[`antiburn/homebrew-tap`](https://github.com/antiburn/homebrew-tap) repository.
+Use `brew install --cask antiburn/tap/antiburn`. The tap supports stable desktop
+releases only; an upstream `homebrew/cask` submission is not required.
+
+[`update-homebrew-tap.yml`](../../.github/workflows/update-homebrew-tap.yml)
+runs after a desktop release is published. It reads that exact release and its
+`SHA256SUMS`, requires both macOS DMGs, updates only the cask version and two
+hashes, and runs Homebrew style and online strict audit before pushing a
+signed-off version-bump commit. The tap's push CI then tests both native macOS
+architectures. The build and signing workflow still stops at a draft.
+
+Updates are serialized. An identical rerun is a no-op. Older versions and
+changed hashes for an existing version fail. Policy changes to the cask need
+normal review; the updater does not rewrite them. Published assets never change.
+
+### Tap credential
+
+Store a fine-grained PAT as repository Actions secret `HOMEBREW_TAP_TOKEN` in
+`antiburn/antiburn`. Select resource owner `antiburn`, only repository
+`homebrew-tap`, and Contents read/write. Metadata read access is automatic.
+Do not grant Workflows or Administration permissions. Complete organization
+approval if required. The normal product `GITHUB_TOKEN` reads release data;
+the PAT authenticates only the tap checkout and push.
+
+```sh
+gh secret set HOMEBREW_TAP_TOKEN --repo antiburn/antiburn
+```
+
+Use the interactive prompt. Keep the token owner, expiration, and renewal
+reminder in the maintainer's private credential record. On rotation, replace the
+secret, verify tap access, and revoke the old token. Never log the value.
+
+Same-repository pull requests touching the updater run a non-writing preview
+against the current tap release. The preview checks the cask and performs a
+dry-run push to verify the credential; it does not commit a bump. Fork pull
+requests run the pure script tests through normal CI without the tap secret.
+Publication and manual recovery use updater code from the default branch.
+
+### Retry or refresh the cask
+
+After the workflow is merged, dispatch it with an exact published stable tag:
+
+```sh
+gh workflow run update-homebrew-tap.yml \
+  --repo antiburn/antiburn --ref main \
+  -f tag=antiburn-v<VERSION>
+```
+
+Inspect the Actions result, the cask version/hashes, and the tap's CI result.
+If access fails, check the token's expiration, approval, permissions, and tap
+branch rules. If a maintainer changed the tap concurrently, rerun against its
+latest state. Do not force-push or downgrade the tap.
+
+If Actions is unavailable, use a product checkout and the current, clean
+Homebrew tap checkout:
+
+```sh
+tap=$(brew --repository antiburn/tap)
+node scripts/update-homebrew-cask.mjs antiburn-v<VERSION> "$tap/Casks/antiburn.rb"
+brew style --cask antiburn/tap/antiburn
+brew audit --cask --strict --online antiburn/tap/antiburn
+```
+
+Review the diff in that tap checkout. Stage only `Casks/antiburn.rb`, then
+commit and push the validated change with Conventional Commits and DCO sign-off
+under the tap's rules. Do not validate an older installed tap while pushing a
+different checkout.
+
+A failed tap update leaves the desktop release available through curl and
+manual downloads. Fix the update and rerun the same tag. Do not rebuild or
+unpublish the product release to repair the tap.
 
 ## When a run fails
 

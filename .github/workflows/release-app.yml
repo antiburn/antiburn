@@ -3,6 +3,7 @@ name: Release app
 # Cuts a DRAFT GitHub Release for the desktop application from an
 # `antiburn-v<version>` tag. Nothing here publishes: a person reads the draft,
 # checks the assets against docs/runbooks/release.md, and presses Publish.
+# Manual dispatch builds the same assets from main and uploads them to Actions.
 #
 # The shape of a release is fixed by that draft. Published tags and assets are
 # immutable — a mistake is corrected by a new version, never by replacing an
@@ -19,17 +20,22 @@ name: Release app
 #           run; a release never spends another full matrix proving the same SHA
 #   sbom    dependency inventories, generated with no credentials in scope
 #   build   the only jobs that see signing credentials, one per release target
-#   draft   assembles, hashes, attests, and drafts — the only job that can
-#           write to the repository
+#   assemble hashes, attests, and uploads the complete asset set
+#   draft   creates a draft only for tag pushes
 
 on:
   push:
     tags: ["antiburn-v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Application version to build without creating a GitHub Release
+        required: true
+        type: string
 
 # Least privilege by default. `contents: write` is granted to exactly one job,
-# and the provenance token scopes are granted only where an attestation is
-# actually produced. This workflow has no `pull_request` trigger at all, so a
-# fork can never reach the `release` environment's credentials.
+# and OIDC is granted to the build and attestation jobs. This workflow has no
+# `pull_request` trigger, so a fork cannot reach the release credentials.
 permissions:
   contents: read
 
@@ -55,7 +61,18 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
+      - name: Require main for manual builds
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          if [[ "$EVENT" == "workflow_dispatch" && "$REF" != "refs/heads/main" ]]; then
+            echo "::error::Manual release builds must run from main."
+            exit 1
+          fi
+
       # Third-party actions are pinned by immutable commit SHA.
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -67,13 +84,21 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Verify the tag agrees with every manifest
+      - name: Apply the manual build version
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: node scripts/prepare-app-version.mjs "$VERSION"
+
+      - name: Verify the build version agrees with every manifest
         id: version
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && format('antiburn-v{0}', inputs.version) || github.ref_name }}
         run: node scripts/verify-release-version.mjs app "$TAG"
 
       - name: Verify the embedded engine is a released source tree
+        if: github.event_name == 'push'
         run: node scripts/verify-app-engine-release.mjs
 
       # The updater is the one network-capable surface in the application, and
@@ -101,6 +126,10 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            printf 'Build of commit %s with application version %s.\n' "$GITHUB_SHA" "$VERSION" > RELEASE-NOTES.md
+            exit 0
+          fi
           notes=$(awk -v ver="$VERSION" '
             /^## \[/ {
               if (found) exit
@@ -185,6 +214,13 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      - name: Apply the manual build version
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: node scripts/prepare-app-version.mjs "$VERSION"
+
       - name: Enable Corepack
         run: corepack enable
 
@@ -244,13 +280,11 @@ jobs:
   build:
     name: Build ${{ matrix.name }}
     needs: [verify, trusted-main-ci]
-    # Every signing credential lives in this protected environment, and only a
-    # tag push in this repository can reach it. Restrict the environment's
-    # deployment branches/tags to `antiburn-v*` as well — see
-    # docs/runbooks/release.md.
+    # The environment permits release tags and protected main dispatches.
     environment: release
     permissions:
       contents: read
+      id-token: write
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -294,8 +328,8 @@ jobs:
             artifact: linux-x64
             arch_label: x64
             updater_platform: linux-x86_64-appimage
-            linuxdeploy_asset_id: "538917371"
-            linuxdeploy_sha256: "36a2d7e274d12e1050d0e9ecfe11d339ed54720b2bec464c286d53f8b07f5c62"
+            linuxdeploy_asset_id: "313839329"
+            linuxdeploy_sha256: "c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
           # The same glibc-floor reasoning: ubuntu-24.04-arm pins the ARM64
           # floor at glibc 2.39.
           - name: Linux ARM64
@@ -305,8 +339,8 @@ jobs:
             artifact: linux-arm64
             arch_label: aarch64
             updater_platform: linux-aarch64-appimage
-            linuxdeploy_asset_id: "538917074"
-            linuxdeploy_sha256: "556ab80baa98e600aa80f0dcedfb70bca0e1ce7e9f147fb345be3fcc3e91b2b1"
+            linuxdeploy_asset_id: "313839294"
+            linuxdeploy_sha256: "620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -344,7 +378,8 @@ jobs:
             libxdo-dev \
             patchelf \
             pkg-config \
-            wget
+            wget \
+            xdg-utils
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
@@ -368,6 +403,13 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      - name: Apply the manual build version
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: node scripts/prepare-app-version.mjs "$VERSION"
 
       - name: Enable Corepack
         run: corepack enable
@@ -416,10 +458,8 @@ jobs:
       # are no detached signatures, and latest.json would point at downloads
       # nothing can verify.
       #
-      # Windows platform signing can be waived, but only deliberately and only
-      # loudly: set ALLOW_UNSIGNED_WINDOWS to `true`, and the draft says so in
-      # its own first line. macOS releases always require Developer ID signing
-      # and notarization. Nothing here ever fakes a signature.
+      # Windows requires Azure Authenticode signing. macOS requires Developer ID
+      # signing and notarization.
       - name: Check the signing credentials this build needs
         id: signing
         shell: bash
@@ -430,8 +470,12 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          ALLOW_UNSIGNED_WINDOWS: ${{ vars.ALLOW_UNSIGNED_WINDOWS }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_SIGNING_ACCOUNT_NAME }}
+          AZURE_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_SIGNING_CERTIFICATE_PROFILE_NAME }}
         run: |
           set -euo pipefail
           missing=""
@@ -453,15 +497,16 @@ jobs:
               platform_signing=developer-id
               ;;
             Windows)
-              if [[ -n "${WINDOWS_CERTIFICATE:-}" ]]; then
-                platform_signing=authenticode
-              elif [[ "${ALLOW_UNSIGNED_WINDOWS:-}" == "true" ]]; then
-                echo "::warning::Building the Windows installer WITHOUT an Authenticode signature, because ALLOW_UNSIGNED_WINDOWS is true. SmartScreen will warn on download."
-                platform_signing=unsigned
-              else
-                echo "::error::No Authenticode credentials (WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD) are configured. Add them to the 'release' environment, or set the repository variable ALLOW_UNSIGNED_WINDOWS=true to deliberately ship an unsigned, clearly-labelled build."
+              for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID AZURE_SIGNING_ENDPOINT AZURE_SIGNING_ACCOUNT_NAME AZURE_SIGNING_CERTIFICATE_PROFILE_NAME; do
+                if [[ -z "${!name:-}" ]]; then
+                  missing="${missing:+${missing}, }${name}"
+                fi
+              done
+              if [[ -n "$missing" ]]; then
+                echo "::error::Missing required Azure signing variables in the 'release' environment: ${missing}. Windows builds require Authenticode signing."
                 exit 1
               fi
+              platform_signing=authenticode
               ;;
             *)
               # Linux packages carry no platform code signature: neither the
@@ -554,43 +599,40 @@ jobs:
           fi
           echo "TAURI_SIGNING_CONFIG=${GITHUB_WORKSPACE}/apps/desktop/src-tauri/tauri.release.conf.json" >> "$GITHUB_ENV"
 
-      - name: Import the Authenticode signing certificate
+      - name: Authenticate Windows signing with Azure OIDC
+        if: runner.os == 'Windows' && steps.signing.outputs.platform_signing == 'authenticode'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Prepare Azure Authenticode signing
         if: runner.os == 'Windows' && steps.signing.outputs.platform_signing == 'authenticode'
         shell: pwsh
         env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_SIGNING_ACCOUNT_NAME }}
+          AZURE_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_SIGNING_CERTIFICATE_PROFILE_NAME }}
+        run: ./scripts/setup-windows-signing.ps1
+
+      - name: Verify Azure signing integration
+        if: runner.os == 'Windows' && steps.signing.outputs.platform_signing == 'authenticode'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
-          $ErrorActionPreference = "Stop"
-          $pfx = Join-Path $env:RUNNER_TEMP "antiburn-signing.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
-          $password = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
-          $imported = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
-          Remove-Item $pfx -Force
-          if (-not $imported.Thumbprint) {
-            Write-Host "::error::The Authenticode certificate imported without a thumbprint."
-            exit 1
+          $ErrorActionPreference = 'Stop'
+          $directory = Join-Path $env:RUNNER_TEMP 'windows-signing-probe'
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          $source = Join-Path $directory 'signing-probe.rs'
+          $binary = Join-Path $directory 'signing-probe.exe'
+          Set-Content -LiteralPath $source -Value 'fn main() {}' -Encoding ascii
+          rustc --crate-name signing_probe --target $env:TARGET $source -o $binary
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signing probe compilation failed with exit code $LASTEXITCODE."
           }
-          $timestampUrl = $env:WINDOWS_TIMESTAMP_URL
-          if ([string]::IsNullOrWhiteSpace($timestampUrl)) {
-            $timestampUrl = "http://timestamp.digicert.com"
-          }
-          # Tauri signs the installer with signtool when the bundle config
-          # names a certificate in the local store. Passing it as an overlay
-          # config keeps the thumbprint out of the committed configuration.
-          $config = @{
-            bundle = @{
-              windows = @{
-                certificateThumbprint = $imported.Thumbprint
-                digestAlgorithm = "sha256"
-                timestampUrl = $timestampUrl
-              }
-            }
-          }
-          $configPath = Join-Path $env:RUNNER_TEMP "signing.conf.json"
-          $config | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding utf8
-          "TAURI_SIGNING_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          ./scripts/windows-signing.ps1 -FilePath $binary
 
       # `icon.icns` and `icon.ico` are the two platform containers that are not
       # checked in (see src-tauri/icons/README.md). `tauri icon` also re-samples
@@ -605,8 +647,7 @@ jobs:
           test -f apps/desktop/src-tauri/icons/icon.icns
           test -f apps/desktop/src-tauri/icons/icon.ico
 
-      # Tauri 2.11.4 caches a 2024 linuxdeploy build that bundles libwayland-client.
-      # This pinned build follows the AppImage graphics-library exclusions.
+      # Use retained linuxdeploy release 1-alpha-20251107-1, not moving continuous assets.
       # The asset id and hash are per-architecture matrix values; the cache
       # file name must match what tauri-bundler looks for on this host, and
       # `uname -m` gives that same architecture label.
@@ -733,19 +774,28 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           $ErrorActionPreference = "Stop"
+          . ./scripts/windows-signing.ps1
+          # Tauri restores the unsigned build executable after packaging.
+          # Verify the installed payload instead of that restored copy.
           $bundle = "apps/desktop/src-tauri/target/$env:TARGET/release/bundle/nsis"
-          $installers = Get-ChildItem -Path $bundle -Filter *.exe
-          if ($installers.Count -eq 0) {
-            Write-Host "::error::No NSIS installer was produced."
-            exit 1
+          $installers = @(Get-ChildItem -Path $bundle -Filter *.exe)
+          if ($installers.Count -ne 1) {
+            throw "Expected one NSIS installer, found $($installers.Count)."
           }
-          foreach ($installer in $installers) {
-            $signature = Get-AuthenticodeSignature $installer.FullName
-            if ($signature.Status -ne "Valid") {
-              Write-Host "::error::$($installer.Name) is not validly signed: $($signature.Status)"
-              exit 1
-            }
-            Write-Host "$($installer.Name): $($signature.SignerCertificate.Subject)"
+          $installer = $installers[0]
+          Assert-WindowsSignature -FilePath $installer.FullName
+          $directory = Join-Path $env:RUNNER_TEMP 'antiburn-install-verification'
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', "/D=$directory") -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Silent installation failed with exit code $($process.ExitCode)."
+          }
+          $application = Join-Path $directory 'antiburn.exe'
+          $uninstaller = Join-Path $directory 'uninstall.exe'
+          Assert-WindowsSignature -FilePath $application
+          Assert-WindowsSignature -FilePath $uninstaller
+          $process = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+          if ($process.ExitCode -ne 0 -or (Test-Path -LiteralPath $application)) {
+            throw "Silent uninstall failed with exit code $($process.ExitCode)."
           }
 
       # Collection is driven by the detached signatures rather than by a table
@@ -766,7 +816,7 @@ jobs:
           UPDATER_PLATFORM: ${{ matrix.updater_platform }}
           ARTIFACT: ${{ matrix.artifact }}
           PLATFORM_SIGNING: ${{ steps.signing.outputs.platform_signing }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.verify.outputs.tag }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -855,17 +905,16 @@ jobs:
   remote-helper:
     name: Package Linux remote helpers
     needs: [verify, trusted-main-ci]
-    # No version input: the helper names its archive from its own manifest, and
-    # `verify` has already refused the tag if that manifest disagrees with it.
     uses: ./.github/workflows/build-remote-helper.yml
+    with:
+      version: ${{ github.event_name == 'workflow_dispatch' && needs.verify.outputs.version || '' }}
 
-  draft:
-    name: Draft the release
+  assemble:
+    name: Assemble release assets
     needs: [verify, sbom, build, remote-helper]
     runs-on: ubuntu-24.04
     permissions:
-      # The only write in the whole workflow: create the draft and its assets.
-      contents: write
+      contents: read
       # Build provenance: an OIDC identity to sign the attestation with, and
       # permission to record it against this repository.
       id-token: write
@@ -901,7 +950,7 @@ jobs:
       - name: Assemble the release directory
         env:
           VERSION: ${{ needs.verify.outputs.version }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.verify.outputs.tag }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -910,6 +959,13 @@ jobs:
             -exec cp {} dist/ \;
           cp notes/RELEASE-NOTES.md dist/
           cp install.sh install.ps1 dist/
+          jq -n \
+            --arg version "$VERSION" \
+            --arg source "$GITHUB_SHA" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --arg engine_tree "$(git rev-parse HEAD:crates/antiburn-local)" \
+            '{version: $version, source: $source, event: $event, engine_tree: $engine_tree}' \
+            > dist/BUILD-INFO.json
 
           mapfile -t manifests < <(find incoming -type f -name 'updater-*.json' | sort)
           if [[ "${#manifests[@]}" -ne 6 ]]; then
@@ -1025,6 +1081,43 @@ jobs:
           VERSION: ${{ needs.verify.outputs.version }}
         run: cp "$BUNDLE_PATH" "dist/antiburn-${VERSION}-provenance.intoto.jsonl"
 
+      - name: Upload the assembled assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: dist
+          if-no-files-found: error
+
+      - name: Summarize the build
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          {
+            echo "## Application build ${VERSION}"
+            echo
+            echo "Source: \`${GITHUB_SHA}\`. Trigger: \`${GITHUB_EVENT_NAME}\`."
+            echo "Download the assembled assets from the release Actions artifact."
+            echo
+            echo "| Platform | Target | Signing mode |"
+            echo "| --- | --- | --- |"
+            jq -s -r 'sort_by(.platform)[] | "| `\(.platform)` | `\(.target)` | `\(.signing)` |"' incoming/*/evidence-*.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  draft:
+    name: Draft the release
+    if: github.event_name == 'push'
+    needs: [verify, assemble]
+    runs-on: ubuntu-24.04
+    permissions:
+      # GitHub Releases writes are restricted to this tag-only job.
+      contents: write
+    steps:
+      - name: Download the assembled assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: dist
+
       # Drafts are re-runnable; published releases are not. That is the whole
       # retention rule, enforced here rather than only written down.
       #
@@ -1082,11 +1175,6 @@ jobs:
             echo "### Automated evidence"
             echo
             echo "The workflow verified the exact main CI SHA, six updater platforms, immutable URLs, detached signatures, asset presence, checksums, and the signing mode reported by every build."
-            echo
-            echo "| Platform | Target | Signing mode |"
-            echo "| --- | --- | --- |"
-            jq -s -r 'sort_by(.platform)[] | "| `\(.platform)` | `\(.target)` | `\(.signing)` |"' \
-              incoming/*/evidence-*.json
             echo
             echo "| Asset | SHA-256 |"
             echo "| --- | --- |"
