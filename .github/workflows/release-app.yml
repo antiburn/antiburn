@@ -785,15 +785,27 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           . ./scripts/windows-signing.ps1
-          Assert-WindowsSignature -FilePath "apps/desktop/src-tauri/target/$env:TARGET/release/antiburn.exe"
+          # Tauri restores the unsigned build executable after packaging.
+          # Verify the installed payload instead of that restored copy.
           $bundle = "apps/desktop/src-tauri/target/$env:TARGET/release/bundle/nsis"
-          $installers = Get-ChildItem -Path $bundle -Filter *.exe
-          if ($installers.Count -eq 0) {
-            Write-Host "::error::No NSIS installer was produced."
-            exit 1
+          $installers = @(Get-ChildItem -Path $bundle -Filter *.exe)
+          if ($installers.Count -ne 1) {
+            throw "Expected one NSIS installer, found $($installers.Count)."
           }
-          foreach ($installer in $installers) {
-            Assert-WindowsSignature -FilePath $installer.FullName
+          $installer = $installers[0]
+          Assert-WindowsSignature -FilePath $installer.FullName
+          $directory = Join-Path $env:RUNNER_TEMP 'antiburn-install-verification'
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', "/D=$directory") -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Silent installation failed with exit code $($process.ExitCode)."
+          }
+          $application = Join-Path $directory 'antiburn.exe'
+          $uninstaller = Join-Path $directory 'uninstall.exe'
+          Assert-WindowsSignature -FilePath $application
+          Assert-WindowsSignature -FilePath $uninstaller
+          $process = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+          if ($process.ExitCode -ne 0 -or (Test-Path -LiteralPath $application)) {
+            throw "Silent uninstall failed with exit code $($process.ExitCode)."
           }
 
       # Collection is driven by the detached signatures rather than by a table

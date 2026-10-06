@@ -207,8 +207,11 @@ installer and its updater signature. Never sign an installer again after its
 detached updater signature, checksum, or provenance is generated.
 
 The build rejects SignTool warnings and errors. Final verification checks the
-app executable and NSIS installer. Windows acceptance also checks the installed
-uninstaller. A valid timestamp lets signatures remain valid after leaf expiry;
+NSIS installer, silently installs it into a runner temporary directory, and
+checks the installed executable and uninstaller before uninstalling. Tauri
+restores its unsigned raw build executable after packaging, so checking that
+file would reject a correctly signed installer. A valid timestamp lets
+signatures remain valid after leaf expiry;
 the verifier uses Windows trust validation rather than rejecting every expired
 leaf certificate.
 
