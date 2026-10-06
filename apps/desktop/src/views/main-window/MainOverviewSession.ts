@@ -38,7 +38,10 @@ export interface MainOverviewAdapter {
 }
 
 export interface MainOverviewSessionListSource {
-  getSnapshot(): { entries: SessionListEntry[] | null }
+  getSnapshot(): {
+    entries: SessionListEntry[] | null
+    localEntries?: SessionListEntry[] | null
+  }
   subscribeList(listener: () => void): () => void
 }
 
@@ -183,7 +186,8 @@ export interface MainOverviewSnapshot {
 }
 
 function overviewRecentEntries(entries: readonly SessionListEntry[]): SessionListEntry[] {
-  return [...entries]
+  return entries
+    .filter((entry) => !entry.remoteHostId)
     .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
     .slice(0, OVERVIEW_RECENT_SESSION_COUNT)
 }
@@ -692,7 +696,8 @@ export class MainOverviewSession {
   /** Refresh the newest sessions from the shared main-window list. */
   refreshRecentSessions = (): void => {
     if (!this.snapshot.active) return
-    const entries = this.sessionList.getSnapshot().entries
+    const source = this.sessionList.getSnapshot()
+    const entries = source.localEntries === undefined ? source.entries : source.localEntries
     if (entries) {
       const rows = overviewRecentEntries(entries)
       this.update({ recentSessions: rows })

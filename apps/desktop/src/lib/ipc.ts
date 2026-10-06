@@ -60,6 +60,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   dockIconVisible: true,
   autoUpdate: true,
   discoveryPaused: false,
+  includeNonRepoFolders: false,
   notificationsEnabled: true,
   notifyUpdateAvailable: true,
   notifyScanFailure: true,
@@ -322,7 +323,7 @@ export type Interaction =
       step: "welcome" | "agents_detected" | "sources_and_repos" | "ready"
     }
   | { kind: "projectFolderAction"; action: "open" | "copy"; outcome: "succeeded" | "failed" }
-  | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" }
+  | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" | "remote" }
   | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
   | {
       kind: "surfaceStateObserved"
@@ -342,6 +343,11 @@ export type Interaction =
   | { kind: "burnCheckAutoFixCompleted"; outcome: AutoFixAnalyticsOutcome }
   | { kind: "burnCheckPromptPrepared"; outcome: PromptPreparationAnalyticsOutcome }
   | { kind: "burnCheckPromptCopied" }
+  | {
+      kind: "ignoredInstructionObserved"
+      stage: "finding" | "evidence" | "prompt"
+      outcome: "visible" | "available" | "unavailable" | "failed" | "copied"
+    }
   | {
       kind: "burnCheckOutcomeObserved"
       outcome: "verified" | "recurred"
@@ -408,6 +414,13 @@ export type SessionFilterAction =
   | "spend_notable"
   | "spend_material"
   | "spend_all"
+  | "source_all"
+  | "source_local_added"
+  | "source_local_removed"
+  | "source_remote_all_added"
+  | "source_remote_all_removed"
+  | "source_remote_host_added"
+  | "source_remote_host_removed"
   | "cleared_all"
 
 function isNativePeekInteraction(interaction: Interaction): boolean {
@@ -670,6 +683,16 @@ export async function scanNow(activityWindowDays?: number): Promise<ScanStatus |
     : invoke<ScanStatus>("scan_now", { activityWindowDays })
 }
 
+/**
+ * Run the dedicated historical pass now (Settings > General > Historical
+ * scan). Widens discovery past the current window, up to the retention
+ * limit, instead of {@link scanNow}'s current-window-only rescan.
+ */
+export async function scanHistory(): Promise<ScanStatus | null> {
+  if (!hasShell()) return null
+  return invoke<ScanStatus>("scan_history")
+}
+
 /** What the current or last scan is doing. */
 export async function getScanStatus(): Promise<ScanStatus | null> {
   if (!hasShell()) return null
@@ -765,9 +788,13 @@ export async function removeScanRoot(path: string): Promise<string[]> {
 }
 
 /** Open the project directory through the native file manager. */
-export async function openProjectFolder(path: string): Promise<void> {
+export type ProjectFolderTarget =
+  | { kind: "session"; environmentKey: string; agent: string; sessionId: string }
+  | { kind: "burnCheck"; actionId: string }
+
+export async function openProjectFolder(target: ProjectFolderTarget): Promise<void> {
   if (!hasShell()) throw new Error("The native file manager is unavailable")
-  await invoke("open_project_folder", { path })
+  await invoke("open_project_folder", { target })
 }
 
 /** Reveal a transcript in the platform's file manager. */

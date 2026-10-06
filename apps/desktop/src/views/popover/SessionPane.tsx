@@ -1,5 +1,6 @@
+import { environmentKey } from "../../lib/presentation/localIdentity"
 import { confirm } from "@tauri-apps/plugin-dialog"
-import { useCallback } from "react"
+import { useCallback, useSyncExternalStore } from "react"
 
 import { SessionDetailPresentation } from "../../components/session/SessionDetailPresentation"
 import type { SessionQuotaOpenTarget } from "../../components/session/SessionQuotaSection"
@@ -30,6 +31,7 @@ import type {
   LocalSessionRelation,
   LocalSessionRelations,
 } from "../../lib/types/session"
+import { remoteHostLabel, remoteHosts } from "../../lib/remoteHosts"
 
 /**
  * One session's analysis, loaded and wired to the actions a reader can take.
@@ -138,7 +140,12 @@ function toLocalCost(
 
   if (subject.subagent) {
     const cost = localCost(
-      topLevelCostSubject(subject.agent, subject.sessionId, subject.wslDistro),
+      topLevelCostSubject(
+        subject.agent,
+        subject.sessionId,
+        subject.wslDistro,
+        subject.remoteHostId,
+      ),
       payload.cost,
       parentTokens,
       model,
@@ -148,7 +155,12 @@ function toLocalCost(
   }
 
   const cost = localCost(
-    inclusiveCostSubject(subject.agent, subject.sessionId, subject.wslDistro),
+    inclusiveCostSubject(
+      subject.agent,
+      subject.sessionId,
+      subject.wslDistro,
+      subject.remoteHostId,
+    ),
     payload.cost,
     payload.inclusiveTokens ?? ZERO_TOKENS,
     model,
@@ -159,7 +171,12 @@ function toLocalCost(
   const parent =
     subagentCount > 0
       ? localCost(
-          topLevelCostSubject(subject.agent, subject.sessionId, subject.wslDistro),
+          topLevelCostSubject(
+            subject.agent,
+            subject.sessionId,
+            subject.wslDistro,
+            subject.remoteHostId,
+          ),
           payload.topLevelCost,
           parentTokens,
           model,
@@ -169,7 +186,12 @@ function toLocalCost(
   const subagents =
     subagentCount > 0
       ? localCost(
-          subagentsCostSubject(subject.agent, subject.sessionId, subject.wslDistro),
+          subagentsCostSubject(
+            subject.agent,
+            subject.sessionId,
+            subject.wslDistro,
+            subject.remoteHostId,
+          ),
           payload.subagentsCost,
           payload.subagentsTokens ?? ZERO_TOKENS,
           null,
@@ -208,6 +230,14 @@ export function SessionPane({
   embedded = false,
   active = true,
 }: SessionPaneProps) {
+  const remoteState = useSyncExternalStore(
+    remoteHosts.subscribe,
+    remoteHosts.getSnapshot,
+    remoteHosts.getSnapshot,
+  )
+  const remoteHost = subject.remoteHostId
+    ? remoteState.hosts.find((host) => host.id === subject.remoteHostId)
+    : undefined
   /**
    * Delete: antiburn's own records only.
    *
@@ -218,14 +248,21 @@ export function SessionPane({
   const handleDelete = useCallback(async () => {
     const requestConfirmation = () =>
       confirm(
-        "This removes antiburn’s stored analysis for the session. The agent’s own transcript file is not touched, and a later scan will find the session again.",
+        subject.remoteHostId
+          ? "This removes this cached session and its analysis from this Mac. The original transcript on the remote computer is unchanged, and a later sync can find it again."
+          : "This removes antiburn’s stored analysis for the session. The agent’s own transcript file is not touched, and a later scan will find the session again.",
         { title: "Remove this session from antiburn?", kind: "warning", okLabel: "Remove" },
       )
     const proceed = embedded
       ? await requestConfirmation()
       : await withPopoverHold(requestConfirmation)
     if (!proceed) return
-    await deleteSessionData(subject.agent, subject.sessionId, subject.wslDistro)
+    await deleteSessionData(
+      subject.agent,
+      subject.sessionId,
+      subject.wslDistro,
+      subject.remoteHostId,
+    )
     onDeleted()
   }, [subject, onDeleted, embedded])
 
@@ -246,6 +283,7 @@ export function SessionPane({
     agent: subject.agent,
     sessionId: subject.sessionId,
     wslDistro: subject.wslDistro ?? null,
+    remoteHostId: subject.remoteHostId ?? null,
   }
   const hygieneBySession = useSessionHygiene(active ? [hygieneIdentity] : [])
   const hygiene = sessionHygieneFor(hygieneBySession, hygieneIdentity)
@@ -278,10 +316,11 @@ export function SessionPane({
         agent: target.identity.agent,
         sessionId: target.identity.sessionId,
         wslDistro: target.identity.wslDistro ?? null,
+        remoteHostId: target.identity.remoteHostId ?? subject.remoteHostId ?? null,
         title,
       })
     },
-    [onOpenSession],
+    [onOpenSession, subject.remoteHostId],
   )
 
   const openSubagent = useCallback(
@@ -292,6 +331,7 @@ export function SessionPane({
         ...(subject.repo ? { repo: subject.repo } : {}),
         ...(subject.timestamp ? { timestamp: subject.timestamp } : {}),
         wslDistro: subject.wslDistro ?? null,
+        remoteHostId: subject.remoteHostId ?? null,
         title: label,
         subagent: {
           parentSessionId: subject.sessionId,
@@ -308,6 +348,7 @@ export function SessionPane({
       subject.timestamp,
       subject.title,
       subject.wslDistro,
+      subject.remoteHostId,
     ],
   )
 
@@ -319,6 +360,7 @@ export function SessionPane({
       ...(subject.repo ? { repo: subject.repo } : {}),
       ...(subject.timestamp ? { timestamp: subject.timestamp } : {}),
       wslDistro: subject.wslDistro ?? null,
+      remoteHostId: subject.remoteHostId ?? null,
       ...(subject.subagent.parentTitle ? { title: subject.subagent.parentTitle } : {}),
     })
   }, [onOpenSession, subject])
@@ -337,6 +379,13 @@ export function SessionPane({
         ...(subject.timestamp ? { timestamp: subject.timestamp } : {}),
         ...(title ? { title } : {}),
         wslDistro: subject.wslDistro ?? null,
+        remoteHostId: subject.remoteHostId ?? null,
+        ...(remoteHost
+          ? {
+              remoteHostName: remoteHostLabel(remoteHost),
+              remoteLastSuccessfulSyncEpoch: remoteHost.lastSuccessfulSyncEpoch,
+            }
+          : {}),
         ...(subject.subagent
           ? {
               subagent: subject.subagent.parentTitle
@@ -353,7 +402,7 @@ export function SessionPane({
       subagentCount={payload?.orchestration?.subagentCount ?? 0}
       modelRuns={payload?.modelRuns ?? []}
       relations={relations}
-      sessionQuota={sessionQuota}
+      sessionQuota={subject.remoteHostId ? null : sessionQuota}
       {...(onOpenQuota ? { onOpenQuota } : {})}
       {...(onBack ? { onBack } : {})}
       {...(onPrev ? { onPrev } : {})}
@@ -362,7 +411,7 @@ export function SessionPane({
       onOpenOrchestrator={openOrchestrator}
       onOpenRelatedSession={openRelated}
       onDeleteSession={() => void handleDelete()}
-      {...(sourcePath
+      {...(sourcePath && !subject.remoteHostId
         ? {
             onRevealSource: handleReveal,
             onCopySourcePath: handleCopyPath,
@@ -371,12 +420,24 @@ export function SessionPane({
               : {}),
           }
         : {})}
-      {...(projectPath
+      {...(projectPath && !subject.remoteHostId
         ? {
             projectFolder: {
               path: projectPath,
-              onOpen: () => performProjectFolderAction(projectPath, "open"),
-              onCopy: () => performProjectFolderAction(projectPath, "copy"),
+              onOpen: () =>
+                performProjectFolderAction(projectPath, "open", {
+                  kind: "session",
+                  environmentKey: environmentKey(subject.wslDistro, subject.remoteHostId),
+                  agent: subject.agent,
+                  sessionId: subject.sessionId,
+                }),
+              onCopy: () =>
+                performProjectFolderAction(projectPath, "copy", {
+                  kind: "session",
+                  environmentKey: environmentKey(subject.wslDistro, subject.remoteHostId),
+                  agent: subject.agent,
+                  sessionId: subject.sessionId,
+                }),
             },
           }
         : {})}

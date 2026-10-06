@@ -7,7 +7,9 @@ import {
   filterSessionEntries,
   sessionFilterCounts,
   MATERIAL_COST_FLOOR_USD,
+  normalizeSessionSource,
   parseSessionFilters,
+  reconcileSessionSource,
   serializeSessionFilters,
 } from "./sessionFilters"
 import type { SessionHygieneSnapshot } from "./useSessionHygiene"
@@ -144,6 +146,7 @@ describe("sessionFilterCounts", () => {
       all: 0,
       matching: 0,
       agentsAll: 0,
+      source: { all: 0, local: 0, remoteAll: 0, remote: {} },
       result: { all: 0, failing: 0, passing: 0 },
       spend: { all: 0, notable: 0, material: 0 },
       agents: {},
@@ -190,7 +193,7 @@ describe("saved contextual filters", () => {
     }
     const saved = serializeSessionFilters(filters)
     expect(saved).toBe(
-      'v1:{"agents":["codex","future-agent"],"result":"failing","spend":"material"}',
+      'v2:{"source":{"kind":"all"},"agents":["codex","future-agent"],"result":"failing","spend":"material"}',
     )
     expect(serializeSessionFilters(parseSessionFilters(saved))).toBe(saved)
     expect(filters.agents).toEqual(["future-agent", "codex", "codex"])
@@ -253,6 +256,7 @@ describe("composable facets and contextual counts", () => {
       matching: 1,
       agentsAll: 1,
       agents: { codex: 1, "claude-code": 0, cursor: 0, "future-agent": 0 },
+      source: { all: 1, local: 1, remoteAll: 0, remote: {} },
       result: { all: 1, failing: 1, passing: 0 },
       spend: { all: 1, material: 1, notable: 1 },
     })
@@ -269,5 +273,75 @@ describe("composable facets and contextual counts", () => {
     expect(counts.matching).toBe(2)
     expect(counts.result).toEqual({ all: 3, failing: 0, passing: 2 })
     expect(counts.agents).toEqual({ codex: 1, "claude-code": 1, cursor: 0 })
+  })
+})
+
+describe("source facet", () => {
+  const local = entry({ sessionId: "local" })
+  const alpha = entry({ sessionId: "alpha", remoteHostId: "host-a", agent: "codex" })
+  const beta = entry({ sessionId: "beta", remoteHostId: "host-b", agent: "cursor" })
+  const sessions = [local, alpha, beta]
+
+  it("combines selected sources with OR and other facets with AND", () => {
+    expect(
+      filterSessionEntries(sessions, EMPTY_HYGIENE, {
+        source: { kind: "selected", includeLocal: true, remote: ["host-b"] },
+        agents: [],
+        result: "all",
+        spend: "all",
+      }),
+    ).toEqual([local, beta])
+    expect(
+      filterSessionEntries(sessions, EMPTY_HYGIENE, {
+        source: { kind: "selected", includeLocal: true, remote: "all" },
+        agents: ["codex"],
+        result: "all",
+        spend: "all",
+      }),
+    ).toEqual([alpha])
+  })
+
+  it("counts Source without applying its own selection", () => {
+    const counts = sessionFilterCounts(sessions, EMPTY_HYGIENE, {
+      source: { kind: "selected", includeLocal: false, remote: ["host-a"] },
+      agents: [],
+      result: "all",
+      spend: "all",
+    })
+    expect(counts.matching).toBe(1)
+    expect(counts.source).toEqual({
+      all: 3,
+      local: 1,
+      remoteAll: 2,
+      remote: { "host-a": 1, "host-b": 1 },
+    })
+  })
+
+  it("normalizes all known hosts to a wildcard and reconciles removed IDs", () => {
+    expect(
+      normalizeSessionSource(
+        { kind: "selected", includeLocal: false, remote: ["host-b", "host-a"] },
+        ["host-a", "host-b"],
+      ),
+    ).toEqual({ kind: "selected", includeLocal: false, remote: "all" })
+    expect(
+      reconcileSessionSource(
+        { kind: "selected", includeLocal: true, remote: ["host-a", "removed"] },
+        ["host-a"],
+      ),
+    ).toEqual({ kind: "selected", includeLocal: true, remote: "all" })
+  })
+
+  it("round trips v2 and migrates v1 to unrestricted Source", () => {
+    const filters = {
+      source: { kind: "selected" as const, includeLocal: true, remote: ["host-a"] },
+      agents: ["codex"],
+      result: "failing" as const,
+      spend: "material" as const,
+    }
+    expect(parseSessionFilters(serializeSessionFilters(filters))).toEqual(filters)
+    expect(
+      parseSessionFilters('v1:{"agents":["codex"],"result":"failing","spend":"material"}'),
+    ).toEqual({ agents: ["codex"], result: "failing", spend: "material" })
   })
 })

@@ -95,6 +95,10 @@ export function sessionDiscussionPrompt({
       otherChecks.push(`- Not assessed — ${check.name} (${reason}).`)
     } else if (badge.status === "clean") {
       otherChecks.push(`- Passed — ${check.name}.`)
+    } else if (badge.status === "checking" || badge.status === "couldntCheck") {
+      const status = badge.status === "checking" ? "Checking" : "Couldn't check"
+      const reason = badge.checkReason ? ` (${text(badge.checkReason)})` : ""
+      otherChecks.push(`- ${status} — ${check.name}${reason}.`)
     } else {
       const details = sessionHygieneDocumentation(check).findingDetails
       findings.push(
@@ -124,7 +128,7 @@ export function sessionDiscussionPrompt({
     `- Agent: ${text(agentDisplayName(subject.agent))} (${text(subject.agent)})`,
     `- Models / thinking modes: ${models.length ? models.map(text).join(", ") : data?.models.length ? data.models.map(text).join(", ") : "Unavailable"}`,
     `- Repository label: ${subject.repo ? text(subject.repo) : "Unavailable"}`,
-    `- Origin: ${subject.wslDistro ? `WSL (${text(subject.wslDistro)})` : "Native"}`,
+    `- Origin: ${subject.remoteHostId ? "Remote" : subject.wslDistro ? `WSL (${text(subject.wslDistro)})` : "Native"}`,
     ...(payload?.sourcePath
       ? ["- Source path (JSON string):", "```json", JSON.stringify(payload.sourcePath), "```"]
       : ["- Source path (JSON string): Unavailable"]),

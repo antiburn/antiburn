@@ -36,6 +36,10 @@ function harness({
   checksum = "a".repeat(64),
   packageType = "appimage",
 } = {}) {
+  // The release names Linux assets by architecture: dpkg names for the
+  // Debian package and machine names for the AppImage.
+  const debArch = arch === "aarch64" ? "arm64" : "amd64";
+  const appimageArch = arch === "aarch64" ? "aarch64" : "amd64";
   const directory = mkdtempSync(join(tmpdir(), "antiburn-install-test-"));
   const bin = join(directory, "bin");
   const home = join(directory, "home");
@@ -64,7 +68,7 @@ done
 if [ "$output" = "/dev/null" ]; then
   printf '%s' 'https://github.com/antiburn/antiburn/releases/tag/antiburn-v1.2.3'
 elif [ "\${url##*/}" = "SHA256SUMS" ]; then
-  printf '%s  %s\\n' '${checksum}' '${packageType === "deb" ? "antiburn_1.2.3_amd64.deb" : "antiburn_1.2.3_amd64.AppImage"}' > "$output"
+  printf '%s  %s\\n' '${checksum}' '${packageType === "deb" ? `antiburn_1.2.3_${debArch}.deb` : `antiburn_1.2.3_${appimageArch}.AppImage`}' > "$output"
 else
   printf '%s' 'release asset' > "$output"
 fi
@@ -85,7 +89,7 @@ fi
       `#!/bin/sh
 case "$3" in
   Package) printf '%s\\n' antiburn ;;
-  Architecture) printf '%s\\n' amd64 ;;
+  Architecture) printf '%s\\n' ${debArch} ;;
   Version) printf '%s\\n' 1.2.3 ;;
   *) exit 1 ;;
 esac
@@ -197,6 +201,41 @@ test("install.sh uses APT for a verified Debian package", () => {
     readFileSync(context.log, "utf8"),
     /install --yes --allow-downgrades .*antiburn_1\.2\.3_amd64\.deb/,
   );
+});
+
+test("install.sh installs the aarch64 AppImage on an arm64 host", () => {
+  const context = harness({ arch: "aarch64" });
+  const result = spawnSync("/bin/sh", [installer], {
+    encoding: "utf8",
+    env: context.env,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /antiburn_1\.2\.3_aarch64\.AppImage/);
+  assert.ok(existsSync(join(context.home, "Applications", "antiburn.AppImage")));
+});
+
+test("install.sh uses APT for the arm64 Debian package on an arm64 host", () => {
+  const context = harness({ arch: "aarch64", packageType: "deb" });
+  const result = spawnSync("/bin/sh", [installer], {
+    encoding: "utf8",
+    env: context.env,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    readFileSync(context.log, "utf8"),
+    /install --yes --allow-downgrades .*antiburn_1\.2\.3_arm64\.deb/,
+  );
+});
+
+test("install.sh rejects an unsupported Linux architecture before downloading", () => {
+  const context = harness({ arch: "riscv64" });
+  const result = spawnSync("/bin/sh", [installer], {
+    encoding: "utf8",
+    env: context.env,
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Unsupported Linux architecture: riscv64/);
+  assert.doesNotMatch(result.stdout, /Downloading antiburn_/);
 });
 
 test("install.sh stops before installation when the checksum differs", () => {

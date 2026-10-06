@@ -59,6 +59,18 @@ afterEach(() => {
 // one test can take five times its local run time. 15 s is the bound, not a
 // target.
 describe("BurnChecksView actions", { timeout: 15_000 }, () => {
+  it("reports an Ignored Instructions prompt copy without sending the prompt", async () => {
+    render(<CheckPromptAction detector="ignoredInstructions" targets={[]} refresh={vi.fn()} />)
+    fireEvent.click(screen.getByRole("button", { name: "Copy fix prompt" }))
+    await screen.findByRole("button", { name: "Copied" })
+    expect(commands.noteInteraction.mock.calls).toContainEqual([
+      { kind: "ignoredInstructionObserved", stage: "prompt", outcome: "copied" },
+    ])
+    expect(commands.noteInteraction.mock.calls.flat()).not.toContainEqual(
+      expect.objectContaining({ prompt: expect.any(String) }),
+    )
+  })
+
   it("uses backend prepare, apply, and prompt commands without duplicate actions", async () => {
     const { adapter, session } = setup()
     const fix = await screen.findByRole("button", { name: "Fix" })

@@ -30,7 +30,12 @@ export const NATIVE_ENVIRONMENT_KEY = "native"
  * ASCII letters use lowercase to match Rust's `to_ascii_lowercase`.
  * Non-ASCII characters stay unchanged.
  */
-export function environmentKey(wslDistro?: string | null): string {
+export function environmentKey(
+  wslDistro?: string | null,
+  remoteHostId?: string | null,
+): string {
+  const host = remoteHostId?.trim()
+  if (host) return `ssh:${host}`
   const distro = wslDistro?.trim()
   return distro
     ? `wsl:${distro.replace(/[A-Z]/g, (letter) => letter.toLowerCase())}`
@@ -52,13 +57,19 @@ export function localSessionKey(
   agent: string,
   sessionId: string,
   wslDistro?: string | null,
+  remoteHostId?: string | null,
 ): string {
-  return JSON.stringify([environmentKey(wslDistro), agent, sessionId])
+  return JSON.stringify([environmentKey(wslDistro, remoteHostId), agent, sessionId])
 }
 
 /** {@link localSessionKey} for an identity record. */
 export function sessionIdentityKey(identity: LocalSessionIdentity): string {
-  return localSessionKey(identity.agent, identity.sessionId, identity.wslDistro)
+  return localSessionKey(
+    identity.agent,
+    identity.sessionId,
+    identity.wslDistro,
+    identity.remoteHostId,
+  )
 }
 
 /** True when two session identities name the same local transcript. */

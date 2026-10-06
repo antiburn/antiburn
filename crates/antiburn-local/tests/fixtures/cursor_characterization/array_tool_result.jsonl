@@ -1,0 +1,3 @@
+{"sessionId":"cursor-array-result","cursor_source":"agent_transcript"}
+{"role":"assistant","message":{"content":[{"type":"tool-use","id":"call-1","name":"Shell","input":{"command":"true"}}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_result","tool_call_id":"call-1","tool_name":"Shell","content":[{"type":"text","text":"first"},{"type":"text","text":"second"}]}]}}

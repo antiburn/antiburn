@@ -13,6 +13,7 @@ export interface SessionHygieneCheck {
   id: SessionHygieneBadgeId
   status: SessionHygieneBadgePayload["status"]
   notAssessedReason: InsightsNotAssessedReason | null
+  checkReason?: string
   findingEvidence?: SessionHygieneBadgePayload["findingEvidence"]
   title: string
   /**
@@ -127,6 +128,16 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
     explainer:
       "This estimates paid context beyond context growth. Cache expiry, context changes, and provider evictions can contribute; the estimate does not establish the cause.",
   },
+  {
+    id: "ignoredInstructions",
+    name: "Ignored Instructions",
+    cleanTitle: "Instructions followed",
+    findingTitle: "Instructions ignored",
+    notAssessedTitle: "Instructions not assessed",
+    summary: "Instructions were ignored in this session.",
+    guidance: ["Follow the cited instruction and correct the affected work."],
+    explainer: "Some sessions didn't follow your agent instruction files properly.",
+  },
 ]
 
 export interface SessionHygieneDocumentation {
@@ -152,7 +163,10 @@ const ACCOUNTING_DETAIL: Record<
 }
 
 export const INITIAL_SESSION_HYGIENE: SessionHygienePayload = {
-  badges: CHECKS.map((check) => ({ ...NOT_ASSESSED, id: check.id })),
+  badges: CHECKS.filter((check) => check.id !== "ignoredInstructions").map((check) => ({
+    ...NOT_ASSESSED,
+    id: check.id,
+  })),
   evidenceState: "pending",
   unusedResources: null,
 }
@@ -173,7 +187,11 @@ export function sessionHygieneExplainers(): Array<{
 
 /** Add reader copy and semantic ink to the engine badge identifiers. */
 export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHygieneCheck[] {
-  return CHECKS.map((definition) => {
+  return CHECKS.filter(
+    (definition) =>
+      definition.id !== "ignoredInstructions" ||
+      payload.badges.some((badge) => badge.id === definition.id),
+  ).map((definition) => {
     const badge = payload.badges.find((candidate) => candidate.id === definition.id) ?? {
       ...NOT_ASSESSED,
       id: definition.id,
@@ -198,6 +216,16 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
         name: definition.name,
         detail,
         ink: "system-green" as const,
+      }
+    }
+    if (badge.status === "checking" || badge.status === "couldntCheck") {
+      return {
+        ...badge,
+        title:
+          badge.status === "checking" ? "Checking instructions" : "Couldn't check instructions",
+        name: definition.name,
+        detail,
+        ink: "label-tertiary" as const,
       }
     }
     return {

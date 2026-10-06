@@ -4,7 +4,7 @@
 
 [package]
 name = "antiburn-local"
-version = "0.11.0"
+version = "0.13.0"
 edition = "2024"
 description = "Self-contained, network-free local engine for antiburn: discovery, session analysis, repository identity, pricing, and versioned local persistence/export contracts."
 license = "MIT"
@@ -26,6 +26,7 @@ test-instrumentation = []
 # actually needs — none, today. Every dependency added here must pass the
 # dependency-license check against the crate's own lockfile.
 [dependencies]
+base64 = "0.23"
 anyhow = "1"
 # Async trait methods on the per-agent discovery adapter contract.
 async-trait = "0.1"
@@ -44,6 +45,8 @@ async-trait = "0.1"
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+toml = "0.8"
 # Compact binary encoding for `StreamSnapshot` (see `analysis::resume`): a
 # resumed pass writes one of these on every append, so JSON's re-expanded
 # field names and string values cost too many bytes.
@@ -82,4 +85,8 @@ harness = false
 
 [[bench]]
 name = "memory_baseline"
+harness = false
+
+[[bench]]
+name = "assessment_plan"
 harness = false

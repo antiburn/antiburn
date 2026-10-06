@@ -654,6 +654,26 @@ describe("SessionDetailPresentation — session facts", () => {
     ).toBeTruthy()
   })
 
+  it("shows a remote source and its last completed sync in the header", () => {
+    view({
+      session: {
+        agent: "claude-code",
+        sessionId: "s1",
+        title: "T",
+        wslDistro: null,
+        remoteHostId: "host-a",
+        remoteHostName: "Build server",
+        remoteLastSuccessfulSyncEpoch: 1_772_366_400,
+      },
+    })
+
+    const source = screen.getByText("Source Build server")
+    expect(source).toBeVisible()
+    expect(source.parentElement?.querySelector(".lucide-monitor")).toBeTruthy()
+    expect(screen.getByText(/Last synced/)).toBeVisible()
+    expect(screen.queryByText("Source Local")).toBeNull()
+  })
+
   it("shows no orchestrator banner, and opens a sub-agent from the Cost tab instead", () => {
     const onOpenSubagent = vi.fn()
     const members = [

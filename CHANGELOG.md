@@ -22,6 +22,31 @@ CI changes, and documentation that no user acts on stay out — see
 
 ### Added
 
+- Native Windows 11 ARM64 builds. The PowerShell installer selects the ARM64
+  package, including when PowerShell runs under emulation, and the app receives
+  native ARM64 updates.
+
+## [0.9.0] - 2026-09-29
+
+This release also contains the changes from 0.8.0 and 0.8.1, which were tagged
+but not published.
+
+### Added
+
+- Settings → Sources and onboarding have an "Include folders without git"
+  switch. Turn it on to keep sessions started in a folder that isn't a
+  repository. It is off by default. A session started in a folder that holds
+  several repos is now filed under the repo it worked in, instead of being
+  dropped.
+- Remote sessions: add up to eight Linux computers over SSH in Settings →
+  Sources, and their Claude Code and Codex sessions appear next to your local
+  ones. Sync by hand or on a schedule, and pick hosts with the Source filter.
+  Copied sessions stay available offline. Turning a host off stops syncing but
+  keeps the sessions it already copied. Rows and details show which host a
+  session came from.
+- Sessions filters now combine. Pick several agents, then narrow by check
+  result (Failed or Passed) and spend (High cost, or $1 or more). The menu
+  stays open while you choose.
 - Oh My Pi (`omp`) sessions under `~/.omp/agent/sessions` are discovered as
   their own agent. Depth, thinking, and old-model findings can appear; other
   journal types fail closed, and this version cannot report a clean Burn Check
@@ -29,6 +54,25 @@ CI changes, and documentation that no user acts on stay out — see
 
 ### Fixed
 
+- The "No repositories found" message in Settings → Sources is centered in its
+  card instead of being cut off at the top.
+- Claude usage no longer says you are signed out while Claude Code is still
+  signed in. When antiburn is opened from Finder it now finds the `claude`
+  command in the usual install places to refresh an expired sign-in.
+- The popover and main window now show the same message when a Claude usage
+  check fails: "Couldn't update Claude usage", with the time of the last good
+  reading.
+- Session contributions to a limit no longer add up to more than the
+  provider's reading. Spend is matched to the time each turn happened, the
+  session card and Limits chart use the same period edges, and the session
+  card drops its confidence column.
+- Sessions no longer stay marked active for hours after the computer sleeps.
+- Cache warnings now need a real cache miss after an idle break, so short
+  misses that recover on their own no longer raise one. Aborted Pi attempts
+  no longer count as too much thinking. Copied fix prompts keep their full
+  layout, and you can copy the same prompt again.
+- The menu bar icon keeps at least one column lit while any allowance
+  remains, and goes fully dim only at 100% used.
 - The Windows install command no longer fails when many installs share one
   network address. It finds the latest release through the GitHub release page,
   as the macOS and Linux installer does, instead of the rate-limited GitHub API.

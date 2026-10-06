@@ -1,6 +1,6 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import * as TooltipPrimitive from "@radix-ui/react-tooltip"
-import { Check, ListFilter, X } from "lucide-react"
+import { Check, ListFilter, Monitor, Minus, X } from "lucide-react"
 import { useCallback, useRef, useState, type MouseEvent, type RefObject } from "react"
 
 import { renderAgentIcon } from "../../lib/agentIcon"
@@ -20,11 +20,18 @@ import { Tooltip } from "../../components/presentation/Tooltip"
 import { CollectionHeader } from "../../components/ui/CollectionHeader"
 import { CountPill } from "../../components/ui/CountPill"
 import { observeMenuPointerExit } from "../../components/ui/menuPointerDismissal"
+import { remoteHostLabel, type RemoteHost } from "../../lib/remoteHosts"
 
 export interface SessionFiltersHeaderProps {
   filters: SessionFilters
   counts: SessionFilterCounts
   agents: string[]
+  remoteHosts?: readonly RemoteHost[]
+  onResetSources?: () => void
+  onToggleLocalSource?: () => void
+  onToggleRemoteSource?: () => void
+  onClearRemoteSources?: () => void
+  onToggleRemoteHost?: (hostId: string) => void
   onToggleAgent: (agent: string) => void
   onResetAgents: () => void
   onResultChange: (result: SessionResultFilter) => void
@@ -43,6 +50,7 @@ type ActiveChip = {
   agent?: string
   mark?: BurnCheckMark
   tooltip?: string | undefined
+  remote?: boolean
   remove: () => void
 }
 
@@ -79,7 +87,13 @@ function VendorIcon({ agent, compact = false }: { agent: string; compact?: boole
   )
 }
 
-function Indicator({ checkbox = false }: { checkbox?: boolean }) {
+function Indicator({
+  checkbox = false,
+  mixed = false,
+}: {
+  checkbox?: boolean
+  mixed?: boolean
+}) {
   return (
     <span
       className={
@@ -88,9 +102,13 @@ function Indicator({ checkbox = false }: { checkbox?: boolean }) {
           : "flex size-4 shrink-0 items-center justify-center"
       }
     >
-      <DropdownMenu.ItemIndicator>
-        <Check size={12} aria-hidden="true" />
-      </DropdownMenu.ItemIndicator>
+      {mixed ? (
+        <Minus size={12} aria-hidden="true" />
+      ) : (
+        <DropdownMenu.ItemIndicator>
+          <Check size={12} aria-hidden="true" />
+        </DropdownMenu.ItemIndicator>
+      )}
     </span>
   )
 }
@@ -193,6 +211,11 @@ function FilterChip({
       ) : null}
       {chip.agent ? (
         <VendorIcon agent={chip.agent} compact />
+      ) : chip.remote ? (
+        <>
+          <Monitor size={12} aria-hidden="true" />
+          <span className="max-w-40 truncate text-label">{chip.label}</span>
+        </>
       ) : (
         <span className="text-label">{chip.label}</span>
       )}
@@ -207,6 +230,12 @@ export function SessionFiltersHeader({
   filters,
   counts,
   agents,
+  remoteHosts = [],
+  onResetSources = () => undefined,
+  onToggleLocalSource = () => undefined,
+  onToggleRemoteSource = () => undefined,
+  onClearRemoteSources = () => undefined,
+  onToggleRemoteHost = () => undefined,
   onToggleAgent,
   onResetAgents,
   onResultChange,
@@ -253,7 +282,65 @@ export function SessionFiltersHeader({
     },
     { value: "material", label: "$1 or more" },
   ]
+  const source = filters.source ?? { kind: "all" }
+  const sourceCounts = counts.source ?? {
+    all: counts.all,
+    local: counts.all,
+    remoteAll: 0,
+    remote: {},
+  }
+  const selectedRemote = source.kind === "selected" ? source.remote : ([] as string[])
+  const remoteAll = selectedRemote === "all"
+  const remoteSome = Array.isArray(selectedRemote) && selectedRemote.length > 0
   const chips: ActiveChip[] = [
+    ...(source.kind === "selected" && source.includeLocal
+      ? [
+          {
+            id: "source:local",
+            label: "Local",
+            remove: onToggleLocalSource,
+          },
+        ]
+      : []),
+    ...(remoteAll
+      ? [
+          {
+            id: "source:remote",
+            label: "Remote",
+            remote: true,
+            remove: onToggleRemoteSource,
+          },
+        ]
+      : Array.isArray(selectedRemote) && selectedRemote.length > 1
+        ? [
+            {
+              id: "source:remote-selection",
+              label: `${selectedRemote.length} hosts`,
+              tooltip: selectedRemote
+                .map((id) => {
+                  const host = remoteHosts.find((candidate) => candidate.id === id)
+                  return host ? remoteHostLabel(host) : "Remote host"
+                })
+                .join(", "),
+              remote: true,
+              remove: onClearRemoteSources,
+            },
+          ]
+        : Array.isArray(selectedRemote)
+          ? selectedRemote.flatMap((id) => {
+              const host = remoteHosts.find((candidate) => candidate.id === id)
+              return host
+                ? [
+                    {
+                      id: `source:${id}`,
+                      label: remoteHostLabel(host),
+                      remote: true,
+                      remove: () => onToggleRemoteHost(id),
+                    },
+                  ]
+                : []
+            })
+          : []),
     ...filters.agents.map((agent) => ({
       id: `agent:${agent}`,
       label: agentDisplayName(agent),
@@ -394,6 +481,77 @@ export function SessionFiltersHeader({
                 sideOffset={4}
                 collisionPadding={8}
               >
+                <DropdownMenu.Group>
+                  <DropdownMenu.Label className="px-2 pt-2 pb-1 type-caption text-label-secondary">
+                    Source · Select one or more
+                  </DropdownMenu.Label>
+                  <DropdownMenu.CheckboxItem
+                    checked={source.kind === "all"}
+                    className="ui-menu-item"
+                    textValue="All sources"
+                    aria-label={`All sources, ${sessionCountLabel(sourceCounts.all)}`}
+                    onSelect={(event) => event.preventDefault()}
+                    onCheckedChange={onResetSources}
+                  >
+                    <Indicator checkbox />
+                    <span>All sources</span>
+                    <MenuCount count={sourceCounts.all} />
+                  </DropdownMenu.CheckboxItem>
+                  <DropdownMenu.CheckboxItem
+                    checked={source.kind === "selected" && source.includeLocal}
+                    disabled={
+                      sourceCounts.local === 0 &&
+                      !(source.kind === "selected" && source.includeLocal)
+                    }
+                    className="ui-menu-item"
+                    textValue="Local"
+                    aria-label={`Local, ${sessionCountLabel(sourceCounts.local)}`}
+                    onSelect={(event) => event.preventDefault()}
+                    onCheckedChange={onToggleLocalSource}
+                  >
+                    <Indicator checkbox />
+                    <span>Local</span>
+                    <MenuCount count={sourceCounts.local} />
+                  </DropdownMenu.CheckboxItem>
+                  <DropdownMenu.CheckboxItem
+                    checked={remoteSome ? "indeterminate" : remoteAll}
+                    disabled={sourceCounts.remoteAll === 0 && !remoteAll && !remoteSome}
+                    className="ui-menu-item"
+                    textValue="Remote"
+                    aria-label={`Remote, ${sessionCountLabel(sourceCounts.remoteAll)}`}
+                    onSelect={(event) => event.preventDefault()}
+                    onCheckedChange={onToggleRemoteSource}
+                  >
+                    <Indicator checkbox mixed={remoteSome} />
+                    <Monitor size={12} aria-hidden="true" />
+                    <span>Remote</span>
+                    <MenuCount count={sourceCounts.remoteAll} />
+                  </DropdownMenu.CheckboxItem>
+                  {remoteHosts.map((host) => {
+                    const checked =
+                      remoteAll ||
+                      (Array.isArray(selectedRemote) && selectedRemote.includes(host.id))
+                    const count = sourceCounts.remote[host.id] ?? 0
+                    const label = remoteHostLabel(host)
+                    return (
+                      <DropdownMenu.CheckboxItem
+                        key={host.id}
+                        checked={checked}
+                        disabled={count === 0 && !checked}
+                        className="ui-menu-item session-filter-source-host"
+                        textValue={label}
+                        aria-label={`${label}, ${sessionCountLabel(count)}`}
+                        onSelect={(event) => event.preventDefault()}
+                        onCheckedChange={() => onToggleRemoteHost(host.id)}
+                      >
+                        <Indicator checkbox />
+                        <span className="truncate">{label}</span>
+                        <MenuCount count={count} />
+                      </DropdownMenu.CheckboxItem>
+                    )
+                  })}
+                </DropdownMenu.Group>
+                <DropdownMenu.Separator className="ui-menu-separator" />
                 <DropdownMenu.Group>
                   <DropdownMenu.Label className="px-2 pt-2 pb-1 type-caption text-label-secondary">
                     Agents · Select one or more

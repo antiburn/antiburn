@@ -102,6 +102,15 @@ pub enum EventName {
     /// The contextual Sessions filters changed.
     #[cfg(feature = "analytics")]
     SessionFiltersChanged,
+    /// A remote-host prerequisite check reached a closed result.
+    #[cfg(feature = "analytics")]
+    RemoteHostConnectionChecked,
+    /// A configured remote host was added, edited, or removed.
+    #[cfg(feature = "analytics")]
+    RemoteHostChanged,
+    /// A remote synchronization pass reached a terminal result.
+    #[cfg(feature = "analytics")]
+    RemoteSyncCompleted,
     /// An explicit project folder action completed.
     #[cfg(feature = "analytics")]
     ProjectFolderAction,
@@ -126,6 +135,12 @@ pub enum EventName {
     AppSearchResultOpened,
     /// The reader saved a different application interface size preset.
     InterfaceScaleChanged,
+    /// A reader viewed an Ignored Instructions finding or acted on its evidence or prompt.
+    #[cfg(feature = "analytics")]
+    IgnoredInstructionObserved,
+    /// A saved TypeSafe setting, a history run request, or a terminal check result.
+    #[cfg(feature = "analytics")]
+    IgnoredInstructionLifecycle,
 }
 
 /// Every event this application may send.
@@ -164,6 +179,9 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::BurnCheckOutcomeObserved,
     EventName::SessionFilterSelected,
     EventName::SessionFiltersChanged,
+    EventName::RemoteHostConnectionChecked,
+    EventName::RemoteHostChanged,
+    EventName::RemoteSyncCompleted,
     EventName::ProjectFolderAction,
     EventName::QuotaIncidentsObserved,
     EventName::ProviderIncidentsObserved,
@@ -173,6 +191,8 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::AppSearchOpened,
     EventName::AppSearchResultOpened,
     EventName::InterfaceScaleChanged,
+    EventName::IgnoredInstructionObserved,
+    EventName::IgnoredInstructionLifecycle,
 ];
 
 #[cfg(feature = "analytics")]
@@ -206,6 +226,9 @@ impl EventName {
             EventName::ProjectFolderAction => "antiburn.project_folder_action",
             EventName::SessionFilterSelected => "antiburn.session_filter_selected",
             EventName::SessionFiltersChanged => "antiburn.session_filters_changed",
+            EventName::RemoteHostConnectionChecked => "antiburn.remote_host_connection_checked",
+            EventName::RemoteHostChanged => "antiburn.remote_host_changed",
+            EventName::RemoteSyncCompleted => "antiburn.remote_sync_completed",
             EventName::QuotaIncidentsObserved => "antiburn.quota_incidents_observed",
             EventName::ProviderIncidentsObserved => "antiburn.provider_incidents_observed",
             EventName::ProviderIncidentsIngested => "antiburn.provider_incidents_ingested",
@@ -214,6 +237,8 @@ impl EventName {
             EventName::AppSearchOpened => "antiburn.app_search_opened",
             EventName::AppSearchResultOpened => "antiburn.app_search_result_opened",
             EventName::InterfaceScaleChanged => "antiburn.interface_scale_changed",
+            EventName::IgnoredInstructionObserved => "antiburn.ignored_instruction_observed",
+            EventName::IgnoredInstructionLifecycle => "antiburn.ignored_instruction_lifecycle",
         }
     }
 }
@@ -504,11 +529,33 @@ pub enum Interaction {
     AppSearchResultOpened {
         category: SearchCategory,
     },
+    IgnoredInstructionObserved {
+        stage: IgnoredInstructionStage,
+        outcome: IgnoredInstructionOutcome,
+    },
     /// The contextual Sessions filters changed.
     SessionFiltersChanged {
         action: SessionFilterAction,
         agent: Option<AgentKind>,
     },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IgnoredInstructionStage {
+    Finding,
+    Evidence,
+    Prompt,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IgnoredInstructionOutcome {
+    Visible,
+    Available,
+    Unavailable,
+    Failed,
+    Copied,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -686,6 +733,7 @@ pub enum OnboardingStep {
 pub enum Environment {
     Native,
     Wsl,
+    Remote,
 }
 
 /// A Sessions sidebar filter kind. `Agent` covers every harness item; the
@@ -729,7 +777,50 @@ pub enum SessionFilterAction {
     SpendNotable,
     SpendMaterial,
     SpendAll,
+    SourceAll,
+    SourceLocalAdded,
+    SourceLocalRemoved,
+    SourceRemoteAllAdded,
+    SourceRemoteAllRemoved,
+    SourceRemoteHostAdded,
+    SourceRemoteHostRemoved,
     ClearedAll,
+}
+
+/// A privacy-safe result from checking one remote host connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteConnectionOutcome {
+    Ready,
+    Authentication,
+    HostKey,
+    HelperMissing,
+    Incompatible,
+    Connection,
+    Invalid,
+}
+
+/// A configured-host lifecycle operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteHostChange {
+    Added,
+    Edited,
+    Removed,
+    SyncEnabled,
+    SyncDisabled,
+}
+
+/// A terminal remote synchronization result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteSyncOutcome {
+    Succeeded,
+    Failed,
+}
+
+/// Why a remote synchronization pass started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteSyncOrigin {
+    Manual,
+    Automatic,
 }
 
 #[cfg(feature = "analytics")]
@@ -862,6 +953,14 @@ impl Interaction {
                     ..Facts::default()
                 },
             ),
+            Interaction::IgnoredInstructionObserved { stage, outcome } => (
+                EventName::IgnoredInstructionObserved,
+                Facts {
+                    label: Some(stage.as_str()),
+                    detail: Some(outcome.as_str()),
+                    ..Facts::default()
+                },
+            ),
             Interaction::SessionFiltersChanged { action, agent } => (
                 EventName::SessionFiltersChanged,
                 Facts {
@@ -931,6 +1030,20 @@ wire_values!(SessionFilterKind, {
 wire_values!(HistoryDirection, { HistoryDirection::Back => "back", HistoryDirection::Forward => "forward" });
 #[cfg(feature = "analytics")]
 wire_values!(SearchCategory, { SearchCategory::View => "view", SearchCategory::Setting => "setting", SearchCategory::Check => "check" });
+#[cfg(feature = "analytics")]
+wire_values!(IgnoredInstructionStage, {
+    IgnoredInstructionStage::Finding => "finding",
+    IgnoredInstructionStage::Evidence => "evidence",
+    IgnoredInstructionStage::Prompt => "prompt",
+});
+#[cfg(feature = "analytics")]
+wire_values!(IgnoredInstructionOutcome, {
+    IgnoredInstructionOutcome::Visible => "visible",
+    IgnoredInstructionOutcome::Available => "available",
+    IgnoredInstructionOutcome::Unavailable => "unavailable",
+    IgnoredInstructionOutcome::Failed => "failed",
+    IgnoredInstructionOutcome::Copied => "copied",
+});
 
 #[cfg(feature = "analytics")]
 wire_values!(SessionFilterAction, {
@@ -943,6 +1056,13 @@ wire_values!(SessionFilterAction, {
     SessionFilterAction::SpendNotable => "spend_notable",
     SessionFilterAction::SpendMaterial => "spend_material",
     SessionFilterAction::SpendAll => "spend_all",
+    SessionFilterAction::SourceAll => "source_all",
+    SessionFilterAction::SourceLocalAdded => "source_local_added",
+    SessionFilterAction::SourceLocalRemoved => "source_local_removed",
+    SessionFilterAction::SourceRemoteAllAdded => "source_remote_all_added",
+    SessionFilterAction::SourceRemoteAllRemoved => "source_remote_all_removed",
+    SessionFilterAction::SourceRemoteHostAdded => "source_remote_host_added",
+    SessionFilterAction::SourceRemoteHostRemoved => "source_remote_host_removed",
     SessionFilterAction::ClearedAll => "cleared_all",
 });
 
@@ -1077,6 +1197,7 @@ impl Environment {
         match self {
             Environment::Native => "native",
             Environment::Wsl => "wsl",
+            Environment::Remote => "remote",
         }
     }
 }
@@ -1298,6 +1419,27 @@ mod tests {
         CoverageBand, CpuBand, IoRateBand, MemoryBand, ResourceUsageSummary,
     };
     use super::*;
+
+    #[test]
+    fn ignored_instruction_interactions_accept_only_closed_statuses() {
+        let interaction: Interaction = serde_json::from_str(
+            r#"{"kind":"ignoredInstructionObserved","stage":"evidence","outcome":"available"}"#,
+        )
+        .unwrap();
+        let (name, facts) = interaction.resolve();
+        assert_eq!(name.as_str(), "antiburn.ignored_instruction_observed");
+        assert_eq!(facts.label, Some("evidence"));
+        assert_eq!(facts.detail, Some("available"));
+        assert!(facts.unrecognized_types.is_none());
+        assert!(serde_json::from_str::<Interaction>(
+            r#"{"kind":"ignoredInstructionObserved","stage":"evidence","outcome":"private_text"}"#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<Interaction>(
+            r#"{"kind":"ignoredInstructionObserved","stage":"evidence","outcome":"available","excerpt":"private"}"#
+        )
+        .is_err());
+    }
 
     fn resource_summary() -> ResourceUsageSummary {
         ResourceUsageSummary {
@@ -1749,6 +1891,9 @@ mod tests {
                 | EventName::ProjectFolderAction
                 | EventName::SessionFilterSelected
                 | EventName::SessionFiltersChanged
+                | EventName::RemoteHostConnectionChecked
+                | EventName::RemoteHostChanged
+                | EventName::RemoteSyncCompleted
                 | EventName::QuotaIncidentsObserved
                 | EventName::ProviderIncidentsObserved
                 | EventName::ProviderIncidentsIngested
@@ -1756,12 +1901,14 @@ mod tests {
                 | EventName::NavigationHistoryMoved
                 | EventName::AppSearchOpened
                 | EventName::AppSearchResultOpened
-                | EventName::InterfaceScaleChanged => true,
+                | EventName::InterfaceScaleChanged
+                | EventName::IgnoredInstructionObserved
+                | EventName::IgnoredInstructionLifecycle => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            35,
+            40,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));

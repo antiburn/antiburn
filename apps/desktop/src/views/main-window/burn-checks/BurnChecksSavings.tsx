@@ -7,7 +7,7 @@ import type {
   BurnCheckDetectorId,
   BurnCheckEstimatedValuePayload,
 } from "../../../lib/insightsIpc"
-import { CHECK_LABELS } from "../../../lib/presentation/checks"
+import { CHECK_LABELS } from "../../../lib/presentation/checkReport"
 import { DisclosureChevron } from "./BurnCheckTargetPresentation"
 
 const ESTIMATED_SAVINGS_TOOLTIP =

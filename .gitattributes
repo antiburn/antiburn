@@ -1,1 +1,5 @@
 apps/desktop/src/lib/fixtures/antigravity-mark.svg text eol=lf
+crates/antiburn-local/tests/fixtures/ignored_instructions/rich_scenarios.tsv text eol=lf
+crates/antiburn-local/tests/fixtures/ignored_instructions/development_inventory_evidence.json text eol=lf
+crates/antiburn-local/tests/fixtures/ignored_instructions/heldout_evidence.json text eol=lf
+crates/antiburn-local/tests/fixtures/ignored_instructions/rich_scenarios_heldout.txt text eol=lf

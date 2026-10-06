@@ -36,7 +36,7 @@ use tauri::{AppHandle, Manager};
 use crate::consent::StoreConsentGrants;
 use crate::dto::{DeferredPermissionDir, RepositoryItem};
 use crate::scan::IGNORE_SCOPE;
-use crate::store::{RepositoryRecord, Store};
+use crate::store::{DisabledAgents, RepositoryRecord, Store};
 
 /// Owners the forward scan runs for, most sessions first. A machine that works
 /// across many owners still gets its session-located repositories in full; the
@@ -52,19 +52,26 @@ const MAX_SESSIONS_CONSIDERED: usize = 2_000;
 
 /// Re-derive the repository list and persist it.
 pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
-    let store = app.state::<Store>();
+    refresh_from_store(&app.state::<Store>()).await
+}
+
+async fn refresh_from_store(store: &Store) -> anyhow::Result<()> {
     let ignored = ignored_paths::load_ignored(store.state_dir(), IGNORE_SCOPE);
 
-    // Repository counts use the newest bounded slice of retained sessions.
+    // Repository counts use the newest bounded slice of retained local sessions.
     // The cap protects an always-running utility
     // from loading an unbounded history into memory at once.
-    let sessions = store.recent_sessions(0, MAX_SESSIONS_CONSIDERED)?;
+    let sessions = store.recent_local_sessions_excluding(
+        0,
+        MAX_SESSIONS_CONSIDERED,
+        &DisabledAgents::default(),
+    )?;
     let known: Vec<RepositoryRecord> = store.repositories()?;
     let scan_roots: Vec<PathBuf> = store.scan_roots()?.into_iter().map(PathBuf::from).collect();
 
     // What the user has already allowed. Read, never probed: confirming a grant
     // means reading the directory, which is the very thing that prompts.
-    let consent = StoreConsentGrants::new(&store);
+    let consent = StoreConsentGrants::new(store);
     let granted = consent.granted_dirs();
 
     let cwds: Vec<String> = distinct_cwds(&sessions);
@@ -105,7 +112,11 @@ pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
 
 /// Refresh only the stored session counts after local session deletion.
 pub fn refresh_session_counts(store: &Store) -> anyhow::Result<()> {
-    let sessions = store.recent_sessions(0, MAX_SESSIONS_CONSIDERED)?;
+    let sessions = store.recent_local_sessions_excluding(
+        0,
+        MAX_SESSIONS_CONSIDERED,
+        &DisabledAgents::default(),
+    )?;
     let mut repositories = store.repositories()?;
     for repository in &mut repositories {
         repository.session_count = repository
@@ -305,6 +316,9 @@ pub fn purge_ignored_sessions(store: &Store) -> anyhow::Result<usize> {
     }
     let mut removed = 0;
     for session in store.recent_sessions(0, usize::MAX)? {
+        if session.key.remote_host_id().is_some() {
+            continue;
+        }
         let Some(cwd) = session.cwd.as_deref() else {
             continue;
         };
@@ -656,6 +670,102 @@ mod tests {
             wsl_distro: None,
             enabled,
         }
+    }
+
+    fn crowded_remote_repository_fixture() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(dir.path()).unwrap();
+        let mut native_repo = repo_record("native", true);
+        native_repo.repo_root = Some(dir.path().join("native").to_string_lossy().into_owned());
+        std::fs::create_dir(native_repo.repo_root.as_ref().unwrap()).unwrap();
+        native_repo.session_count = 99;
+        let mut wsl_repo = repo_record("wsl", true);
+        wsl_repo.repo_root = Some(dir.path().join("wsl").to_string_lossy().into_owned());
+        std::fs::create_dir(wsl_repo.repo_root.as_ref().unwrap()).unwrap();
+        wsl_repo.wsl_distro = Some("Ubuntu".into());
+        wsl_repo.session_count = 99;
+        store
+            .replace_repositories(&[native_repo.clone(), wsl_repo.clone()])
+            .unwrap();
+        let session = |environment: &str, id: &str, cwd: &str, epoch| crate::store::SessionRecord {
+            key: crate::store::SessionKey::new(environment, "claude-code", id),
+            source_kind: "file".into(),
+            source_label: format!("file:{environment}:{id}"),
+            wsl_distro: (environment == "wsl:ubuntu").then(|| "Ubuntu".into()),
+            title: None,
+            title_source: None,
+            cwd: Some(cwd.into()),
+            surface: "cli".into(),
+            updated_at_epoch: Some(epoch),
+            activity_cursor: String::new(),
+            activity_source: "mtime".into(),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+            source_fingerprint: None,
+        };
+        let native_root = native_repo.repo_root.as_deref().unwrap();
+        let wsl_root = wsl_repo.repo_root.as_deref().unwrap();
+        let mut rows = (0..=MAX_SESSIONS_CONSIDERED)
+            .map(|index| {
+                session(
+                    "ssh:host",
+                    &format!("remote-{index}"),
+                    native_root,
+                    2000 + index as i64,
+                )
+            })
+            .collect::<Vec<_>>();
+        rows.extend([
+            session("native", "same-id", native_root, 1000),
+            session("wsl:ubuntu", "same-id", wsl_root, 1001),
+        ]);
+        store.upsert_sessions(&rows, &[]).unwrap();
+        assert!(
+            store
+                .recent_sessions(0, MAX_SESSIONS_CONSIDERED)
+                .unwrap()
+                .iter()
+                .all(|row| row.key.remote_host_id().is_some())
+        );
+
+        (dir, store)
+    }
+
+    #[test]
+    fn newer_remote_sessions_do_not_displace_local_repository_counts() {
+        let (_dir, store) = crowded_remote_repository_fixture();
+        refresh_session_counts(&store).unwrap();
+
+        let counts: HashMap<_, _> = store
+            .repositories()
+            .unwrap()
+            .into_iter()
+            .map(|repo| (repo.key, repo.session_count))
+            .collect();
+        assert_eq!(counts.get("native"), Some(&1));
+        assert_eq!(counts.get("wsl"), Some(&1));
+        assert_eq!(
+            store
+                .recent_sessions(0, MAX_SESSIONS_CONSIDERED)
+                .unwrap()
+                .len(),
+            MAX_SESSIONS_CONSIDERED
+        );
+    }
+
+    #[tokio::test]
+    async fn newer_remote_sessions_do_not_displace_local_repository_discovery() {
+        let (_dir, store) = crowded_remote_repository_fixture();
+        refresh_from_store(&store).await.unwrap();
+        let counts: HashMap<_, _> = store
+            .repositories()
+            .unwrap()
+            .into_iter()
+            .map(|repo| (repo.repo_name, repo.session_count))
+            .collect();
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts.get("native"), Some(&1));
+        assert_eq!(counts.get("wsl"), Some(&1));
     }
 
     /// An opted-out path whose record is gone entirely (an earlier build

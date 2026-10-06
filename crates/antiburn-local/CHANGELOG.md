@@ -17,8 +17,25 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-29
+
+This release also contains the changes from 0.10.0, 0.11.0, and 0.12.0,
+which were tagged but not published.
+
 ### Added
 
+- Add `platform::git::repo_root_if_any_at`. It returns `Ok(None)` only when
+  Git reports that the directory is not in a repository. Other failures, such
+  as a missing directory, a missing `git` executable, or a repository that Git
+  refuses to read, are errors. Git runs with `LC_ALL=C` so that the message
+  check does not depend on the locale. `repo_root_at` now calls it and keeps
+  its old behaviour.
+- Add `discovery::scanner::infer_repo_root_below_cwd`. When a session's
+  recorded `cwd` is a parent folder of repositories, it reads the head of the
+  transcript and returns the repository that holds the most distinct candidate
+  folders below `cwd`. The count is folders, not edits. A tie goes to the
+  repository that the transcript touched first. It probes at most eight
+  candidates and returns `None` when none resolves to a repository.
 - Add `AgentKind::Omp` and `SourceFormat::OmpV3Jsonl`. Discovery reads
   `~/.omp/agent/sessions`, honouring `PI_CONFIG_DIR` and the default-profile
   `PI_CODING_AGENT_DIR`; named profiles and XDG redirects are not discovered.
@@ -30,15 +47,16 @@ version and refuses the release if there is none.
   unrecognized. Session-overdepth, model-overthinking, and old-model findings
   are allowed; overpowered-subagent and clean results are not.
 
-## [0.11.0] - 2026-09-22
-
-### Added
-
+- Add `discovery::fork_parent_from_content`, which reads a declared fork
+  parent from the first five records of a transcript, searching at most four
+  levels into a metadata record. It reads normalized and Codex fork headers.
+- Cache evidence counts `transient_miss_episodes` (a cache miss followed by
+  recovered hits during continuous activity) and
+  `possible_rehydration_episodes` (a recovered miss after the supported idle
+  interval for the route). Pi and OpenCode routes are supported.
 - `QuotaIncident` carries an optional `reset_clock` (new `QuotaResetClock`
   type): the wall-clock reset time and IANA zone that a Claude limit-error
   message states in free text. The engine does not resolve it to an instant.
-  Advance the evidence schema revision to 21 so existing stored analyses
-  reparse to populate the field.
 - Add the public named-resource verification API for unused MCP servers,
   built-in tools, and skills: `NamedResourceVerificationTarget`,
   `NamedResourceObservation`, `NamedResourceEvidence`,
@@ -74,33 +92,6 @@ version and refuses the release if there is none.
 - Antigravity reads model changes from CLI `USER_INPUT`
   `<USER_SETTINGS_CHANGE>` metadata and flags records with a non-empty
   `truncated_fields` list as partial.
-
-### Changed
-
-- **Breaking:** `EfficiencyReport::estimated_token_burn_with_resource_tokens_by_session`
-  is removed. Use
-  `EfficiencyReport::estimated_token_burn_for_active_detectors(active_detector_mask, resource_assessments)`,
-  which recomputes aggregate and per-detector burn for a selected set of
-  detectors from `ResourceTokenBurnAssessment` values without exposing
-  session-level token data.
-- `CopilotCliJsonl` no longer claims a clean result for unused MCP servers,
-  built-in tools, or skills, and no longer produces `SessionsOverDepth`
-  findings. The accepted Copilot CLI bundle carries no resource-inventory or
-  request-depth evidence to support them.
-
-### Fixed
-
-- Amp thread parsing double-counted cache-creation tokens inside
-  `inputTokens`. Amp now reports `input_tokens` net of `cacheCreationTokens`,
-  reconciles against `totalInputTokens` with the shared context-token
-  accounting, and claims `SourceCapabilities::request_context_tokens`.
-- Cursor discovery no longer overwrites an embedded fork observation with the
-  weaker title-based heuristic.
-
-## [0.10.0] - 2026-09-21
-
-### Added
-
 - Add bounded analysis for AMP v39 full-export thread JSON and Devin Local
   migration-17 SQLite sessions. AMP provides session-overdepth and old-model
   usage findings; Devin provides overpowered-subagent findings and can use
@@ -112,11 +103,35 @@ version and refuses the release if there is none.
 
 ### Changed
 
-- Advance parser, evidence, and coverage revisions to 39, 20, and 6. Existing
-  stored analyses reparse under the new contracts.
+- **Breaking:** `EfficiencyReport::estimated_token_burn_with_resource_tokens_by_session`
+  is removed. Use
+  `EfficiencyReport::estimated_token_burn_for_active_detectors(active_detector_mask, resource_assessments)`,
+  which recomputes aggregate and per-detector burn for a selected set of
+  detectors from `ResourceTokenBurnAssessment` values without exposing
+  session-level token data.
+- The cache-churn check needs a possible rehydration episode before it reports
+  a finding. A high repeated-input ratio alone is not assessed.
+- A Pi attempt that aborts with zero reported tokens is no longer evidence of
+  excessive thinking. Its model and provider changes still carry forward.
+- `CopilotCliJsonl` no longer claims a clean result for unused MCP servers,
+  built-in tools, or skills, and no longer produces `SessionsOverDepth`
+  findings. The accepted Copilot CLI bundle carries no resource-inventory or
+  request-depth evidence to support them.
 - Keep partial or unsupported source evidence from claiming a clean result,
   and fingerprint the accepted Devin SQLite and companion inputs so content
   changes invalidate prior work.
+- Advance the parser revision to 39, `ANALYZER_REVISION` to 25,
+  `EVIDENCE_SCHEMA_REVISION` to 22, and the coverage revision to 6. Existing
+  stored analyses reparse under the new contracts.
+
+### Fixed
+
+- Amp thread parsing double-counted cache-creation tokens inside
+  `inputTokens`. Amp now reports `input_tokens` net of `cacheCreationTokens`,
+  reconciles against `totalInputTokens` with the shared context-token
+  accounting, and claims `SourceCapabilities::request_context_tokens`.
+- Cursor discovery no longer overwrites an embedded fork observation with the
+  weaker title-based heuristic.
 
 ## [0.9.1] - 2026-09-17
 

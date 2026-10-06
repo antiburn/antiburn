@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-update-remote-host"
+description = "Enables the update_remote_host command without any pre-configured scope."
+commands.allow = ["update_remote_host"]
+
+[[permission]]
+identifier = "deny-update-remote-host"
+description = "Denies the update_remote_host command without any pre-configured scope."
+commands.deny = ["update_remote_host"]
