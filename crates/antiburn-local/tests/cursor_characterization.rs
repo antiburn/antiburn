@@ -271,6 +271,67 @@ fn every_accepted_cursor_tool_call_spelling_emits_a_call_and_input() {
 }
 
 #[test]
+fn native_message_variants_preserve_authority_and_tool_identity() {
+    use antiburn_local::analysis::{ContentAuthority, Role};
+
+    let source = include_str!("fixtures/cursor_characterization/native_message_variants.jsonl");
+    let mut sink = CursorRecordingSink::default();
+    reader_for("cursor")
+        .visit(&input(RawSource::Jsonl(source.to_owned())), &mut sink)
+        .unwrap();
+
+    assert_eq!(sink.events.len(), 5);
+    assert_eq!(sink.events[0].role, Role::System);
+    assert_eq!(
+        sink.contents[0].parts[0].authority,
+        ContentAuthority::System
+    );
+    assert_eq!(
+        sink.contents[1].parts[0].text,
+        "A scalar assistant message."
+    );
+    assert_eq!(sink.events[2].tools.len(), 2);
+    assert_eq!(sink.contents[2].parts.len(), 2);
+    assert_eq!(
+        sink.contents[2].parts[0].tool_call_id.as_deref(),
+        Some("call-1")
+    );
+    assert_eq!(
+        sink.contents[2].parts[1].tool_call_id.as_deref(),
+        Some("call-2")
+    );
+    assert_eq!(sink.contents[3].parts.len(), 2);
+    assert_eq!(
+        sink.contents[3].parts[0].tool_name.as_deref(),
+        Some("Shell")
+    );
+    assert_eq!(
+        sink.contents[3].parts[0].tool_call_id.as_deref(),
+        Some("call-1")
+    );
+    assert_eq!(
+        sink.contents[3].parts[1].tool_call_id.as_deref(),
+        Some("call-2")
+    );
+    assert_eq!(sink.contents[4].parts.len(), 1);
+    assert_eq!(sink.contents[4].parts[0].text, "user request");
+}
+
+#[test]
+fn array_tool_result_keeps_outer_tool_identity() {
+    let source = include_str!("fixtures/cursor_characterization/array_tool_result.jsonl");
+    let mut sink = CursorRecordingSink::default();
+    reader_for("cursor")
+        .visit(&input(RawSource::Jsonl(source.to_owned())), &mut sink)
+        .unwrap();
+    let result = &sink.contents[1].parts[0];
+    assert_eq!(result.kind, ContentKind::ToolResult);
+    assert_eq!(result.text, "first\nsecond");
+    assert_eq!(result.tool_name.as_deref(), Some("Shell"));
+    assert_eq!(result.tool_call_id.as_deref(), Some("call-1"));
+}
+
+#[test]
 fn resource_tool_calls_remain_unclassified_without_resource_metadata() {
     let input = input(RawSource::Jsonl(
         include_str!("fixtures/cursor_characterization/unclassified_resource_calls.jsonl")

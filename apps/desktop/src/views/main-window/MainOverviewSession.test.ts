@@ -302,6 +302,26 @@ describe("MainOverviewSession", () => {
     stop()
   })
 
+  it("excludes remote rows through refresh and hide/show while retaining WSL", async () => {
+    const { session, setEntries, setVisible } = setup()
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().recentSessions).not.toBeNull())
+    const local = entry("local", "2026-09-14T08:00:00Z")
+    const wsl = { ...entry("wsl", "2026-09-14T07:00:00Z"), wslDistro: "Ubuntu" }
+    const remote = { ...entry("remote", "2026-09-15T09:00:00Z"), remoteHostId: "host-1" }
+    setEntries([remote, local, wsl])
+    expect(session.getSnapshot().recentSessions?.map((row) => row.sessionId)).toEqual([
+      "local",
+      "wsl",
+    ])
+    setVisible(false)
+    setEntries([remote])
+    setVisible(true)
+    await vi.waitFor(() => expect(session.getSnapshot().recentSessions).toEqual([]))
+    stop()
+  })
+
   it("defers shared-list updates while inactive and catches up on resume", async () => {
     const { session, setEntries, setVisible } = setup()
     sessions.push(session)

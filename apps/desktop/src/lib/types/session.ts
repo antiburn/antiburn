@@ -271,6 +271,7 @@ export interface LocalSessionIdentity {
   agent: string
   sessionId: string
   wslDistro?: string | null
+  remoteHostId?: string | null
 }
 
 /** One end of a local fork relation. */

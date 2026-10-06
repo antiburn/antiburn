@@ -798,11 +798,10 @@ impl PiStreamState {
                 .iter()
                 .any(|block| block["type"] == "toolCall" && block["name"] == "subagent")
         {
-            let content: Vec<_> = blocks
-                .iter()
-                .filter(|block| !(block["type"] == "toolCall" && block["name"] == "subagent"))
-                .collect();
-            extract_content_parts(&serde_json::json!({"content": content}), event.role)
+            extract_content_parts(value, event.role)
+                .into_iter()
+                .filter(|part| part.tool_name.as_deref() != Some("subagent"))
+                .collect()
         } else {
             extract_content_parts(value, event.role)
         };
@@ -2447,11 +2446,17 @@ mod tests {
             }
         })
         .to_string();
+        let user_record = json!({
+            "type": "message",
+            "timestamp": "2026-01-01T00:00:03Z",
+            "message": {"role": "user", "content": "plain user text"}
+        })
+        .to_string();
         let input = SessionInput {
             agent: "pi".to_string(),
             session_id: "content-session".to_string(),
             source: RawSource::Jsonl(format!(
-                "{{\"type\":\"session\",\"version\":3,\"timestamp\":\"2026-01-01T00:00:00Z\"}}\n{assistant_record}\n{tool_result_record}\n"
+                "{{\"type\":\"session\",\"version\":3,\"timestamp\":\"2026-01-01T00:00:00Z\"}}\n{assistant_record}\n{tool_result_record}\n{user_record}\n"
             )),
             fork_parent_session_id: None,
             source_format: Default::default(),
@@ -2462,7 +2467,7 @@ mod tests {
             .visit(&input, &mut sink)
             .expect("visit content session");
 
-        assert_eq!(sink.contents.len(), 2, "one TurnContent per turn");
+        assert_eq!(sink.contents.len(), 3, "one TurnContent per turn");
         let assistant_parts = &sink.contents[0].parts;
         assert_eq!(assistant_parts.len(), 3);
         assert_eq!(assistant_parts[0].kind, ContentKind::AssistantText);
@@ -2471,11 +2476,20 @@ mod tests {
         assert_eq!(assistant_parts[1].text, "pondering");
         assert_eq!(assistant_parts[2].kind, ContentKind::ToolInput);
         assert_eq!(assistant_parts[2].text, r#"{"command":"ls"}"#);
+        assert_eq!(assistant_parts[2].tool_name.as_deref(), Some("bash"));
+        assert_eq!(assistant_parts[2].tool_call_id.as_deref(), Some("call-1"));
 
         let tool_result_parts = &sink.contents[1].parts;
         assert_eq!(tool_result_parts.len(), 1);
         assert_eq!(tool_result_parts[0].kind, ContentKind::ToolResult);
         assert_eq!(tool_result_parts[0].text, "ok");
+        assert_eq!(tool_result_parts[0].tool_name.as_deref(), Some("bash"));
+        assert_eq!(tool_result_parts[0].tool_call_id.as_deref(), Some("call-1"));
+
+        let user_parts = &sink.contents[2].parts;
+        assert_eq!(user_parts.len(), 1);
+        assert_eq!(user_parts[0].kind, ContentKind::UserText);
+        assert_eq!(user_parts[0].text, "plain user text");
     }
 
     #[test]

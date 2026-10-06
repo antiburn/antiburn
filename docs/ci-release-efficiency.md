@@ -78,7 +78,8 @@ The last three successful app release workflows had these medians:
 - 14.28 minutes and 41.35 raw runner-minutes were the duplicated `Checks`
   matrix.
 - The four signed/package builds took 14.43 minutes on the critical path and
-  33.97 raw runner-minutes.
+  33.97 raw runner-minutes. These medians predate the fifth build leg (Linux
+  ARM64), which adds its own runner-minutes to later releases.
 
 Trusting the exact successful `main` SHA removes the 41.35 duplicated
 runner-minutes on every app release. If the tag is pushed after `main` CI is

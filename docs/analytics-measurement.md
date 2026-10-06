@@ -68,7 +68,7 @@ buckets; the Claude diagnostic had nine additional optional fields.
 | `antiburn.onboarding_step_viewed`        | `OnboardingSession.noteOnboardingStep`; four fixed steps, once per step per flow instance.                                                                                                                                                                  | Shows setup progress. Has no new-versus-restarted flow distinction or failure reason.                                                                                              |
 | `antiburn.onboarding_finished`           | After the finish command saves settings. Explicit setup restarts can emit another completion.                                                                                                                                                               | Shows completed setup, not first useful data or unique new installations.                                                                                                          |
 | `antiburn.scan_completed`                | Full discovery pass; first outcome or changed count bucket relative to the previous reported outcome. Scoped passes emit nothing.                                                                                                                           | Shows coarse discovery health and inventory. Is not an interaction or a scan-attempt counter.                                                                                      |
-| `antiburn.setting_toggled`               | Saved changes to `live_usage`, `notifications`, `launch_at_login`, `tray_icon`, `dock_icon`, or `discovery_paused`; key only.                                                                                                                               | Shows use of six controls. Does not show direction, current adoption, other settings, or success of OS integration.                                                                |
+| `antiburn.setting_toggled`               | Saved changes to `live_usage`, `notifications`, `launch_at_login`, `tray_icon`, `dock_icon`, `discovery_paused`, or `include_non_repo_folders`; key only.                                                                                                                               | Shows use of seven controls. Does not show direction, current adoption, other settings, or success of OS integration.                                                                |
 | `antiburn.session_opened`                | Activity-card handler before analysis loads; agent category and native/WSL.                                                                                                                                                                                 | Measures list-to-detail intent. Does not establish that detail loaded, or cover related sessions, subagents, or newer/older navigation.                                            |
 | `antiburn.error_occurred`                | Full scan failure, with `scan_failed`; repeated identical outcomes suppressed.                                                                                                                                                                              | Shows some discovery failures. Misses scoped failures and other feature failures; cannot supply an operation failure rate.                                                         |
 | `antiburn.unrecognized_records_observed` | Nonempty unknown-record summary returned to Settings Insights; changed category/count bucket within the process. Clean results reset suppression without an event.                                                                                          | Diagnoses reader-selected cohorts. Does not count all Insights visits or population parser failure rates.                                                                          |
@@ -296,6 +296,21 @@ use. No selected-agent arrays, raw serialized filters, session identifiers,
 titles, repository paths, result counts, cost values, or thresholds are sent.
 No new wire properties are added.
 
+Remote-source filtering extends this event at the first app version with remote
+sessions. Its additional closed actions are `source_all`, `source_local_added`,
+`source_local_removed`, `source_remote_all_added`, `source_remote_all_removed`,
+`source_remote_host_added`, and `source_remote_host_removed`. They carry no
+`detail`, host IDs, names, aliases, selected arrays, counts, or filter snapshots.
+The existing deliberate canonical-state-change boundary and exclusions apply.
+A mixed parent becoming fully selected records one remote-all addition;
+removing a source chip records its corresponding removal. Removing a grouped
+host chip records one remote-all removal and preserves Local. Opening a host
+from Settings records a host addition when it changes the selected source. Inventory loading,
+host removal reconciliation, wildcard expansion, migration, and history restores
+do not record filter use. Measure source-action reach among reporting Sessions
+viewers to evaluate filter discoverability; it is not a count of remote hosts or
+successful syncs.
+
 Validation covers the real controller mutations, canonical no-ops, legacy and
 versioned restore, agent add/remove and resets, rapid saves, and save failure.
 Rust tests cover every closed action, known/omitted agents, forbidden extra
@@ -481,7 +496,95 @@ failure. Do not merely increase queue size or add a blocking exit flush. Monitor
 delivery lag, duplicate message IDs, rejection counts, and event mix in the
 collector separately from product engagement.
 
+## Remote sessions measurement
+
+The product questions are whether reporting installations can connect a host,
+whether sync continues to work, and whether Source filtering is discoverable.
+Compare the distribution of connection-check outcomes among reporting
+installations that make a check. Compare scan outcomes by manual/automatic
+origin among installations with remote sync outcomes. Use persisted host-change
+events to measure configuration actions and Source gestures among Sessions
+viewers to measure filter use. These metrics guide setup guidance and reliability
+work; they do not count people, hosts, SSH attempts on the wire, or live remote
+activity. Segment at the first app version that ships these events.
+
+The backend owns three completed-outcome boundaries:
+
+- `remote_host_connection_checked`: one result for each explicit check or
+  preflight required by add/alias change. Its closed labels are `ready`,
+  `authentication`, `host_key`, `helper_missing`, `incompatible`, `timeout`,
+  `connection`, `invalid`, and `storage`. Timeout/storage are reserved values;
+  current unavailable-SSH failures map to connection. Checking and then saving
+  may legitimately perform two checks; this is not a unique-host funnel.
+- `remote_host_changed`: `added`, `edited`, `removed`, `sync_enabled`, or
+  `sync_disabled` only after durable
+  success, with configured-host count in the existing bucket. A canceled form,
+  rejected request, failed write, or refresh emits no configuration success.
+- `remote_sync_completed`: `succeeded` or `failed`, `manual` or `automatic`, and
+  the cached-session-count bucket after a current scan terminates. Removed,
+  canceled, or superseded generations do not report a completed outcome. A
+  failed scan can retain previously cached sessions; its bucket is not an
+  imported-session count.
+
+Connection and configuration volume is bounded by explicit operations. The
+single-flight scheduler coalesces queued scans; automatic runs follow the
+selected completion-based interval (at least one minute per host). Repeated
+polls, event subscriptions, renderer remounts, and hidden-window refreshes emit
+nothing. Background sync can emit while Settings is closed, so exclude it from
+engagement and visit metrics. Retries are new completed operations; delivery
+retries retain normal event-ID deduplication.
+
+Source filter actions follow the canonical gesture contract above. Session-open
+events add a closed `remote` environment alongside `native` and `wsl`. No host
+ID, alias, address, user, path, transcript, selected-source array, exact count,
+or raw error is serialized. No new envelope fields are added. Existing opt-out,
+unconfigured-build, environment-disablement, queue, and delivery rules remain
+unchanged. Validation must exercise the actual operation boundaries and their
+failure/cancellation branches as well as the closed wire schema.
+
 ## Event review contract
+
+### Ignored Instructions
+
+The product question is whether enabled checks reach useful findings and whether
+readers inspect evidence and copy a fix prompt. Report distinct reporting
+installations with a deliberately visible Ignored Instructions finding, evidence
+outcome, and prompt outcome. Use reporting installations on supporting app
+versions with a deliberate Burn Checks exposure as the visible-use denominator.
+Do not count background assessments, queued work, or historical assessment
+outcomes as visits or automatic adoption. Debug builds suppress reader events
+for this check. Saved enablement transitions, explicit backfill requests, and
+terminal assessment outcomes measure activation and published attempts, not
+unique sessions or provider calls.
+
+`ignored_instruction_observed` is owned by the visible Checks detail and
+evidence/prompt handlers. `label` is `finding`, `evidence`, or `prompt`;
+`detail` is `visible` for a finding, `available`/`unavailable`/`failed` for
+evidence, or `copied`/`unavailable`/`failed` for prompt action. The finding
+event needs deliberate selection and a visible failing detail. Evidence events
+need a current target request to settle while its action remains selected;
+stale responses do not count. Prompt events follow an explicit attempt, not
+automatic preparation. Repeated reader attempts may report again; they are not
+unique findings. No text, prompt, path, finding, session, key, or request ID
+is sent through analytics. TypeSafe receives selected instruction text,
+assistant text excerpts, Bash command input, edit/read paths, search queries with
+scope, and other-tool input through a separate channel. User messages, edit
+contents, read/search/command output, and other tool results are excluded.
+Segment reports at the
+first app version shipping these events.
+
+`ignored_instruction_lifecycle` is emitted when Settings enables or pauses Smart
+Burn Checks, saves or removes the key, changes the history window, or requests a
+historical run, and when an assessment publishes a terminal result. Labels are `enablement`,
+`history_window`, `backfill`, and `execution`. Details are respectively
+`enabled`/`disabled`, `future`/`7_days`/`30_days`, `requested`, and
+`completed`/`failed`. Intermediate ranges do not emit this event. Cached and
+retried work can finish an assessment without another provider call. These are
+assessment-level terminal outcomes, not whole-backfill completion events. A
+dispatched assessment has up to three total attempts, not three retries;
+previous attempts may have been charged. If dispatch outcome remains unresolved,
+Antiburn blocks further dispatch for that work. No provider response, input
+digest, session ID, key, selected text, or error text is sent.
 
 Every added or changed event must document:
 

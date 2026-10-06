@@ -1,0 +1,989 @@
+{
+  "cases": [
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "f2587fd488570a68009f8e645b6a9d4a1c71cb3d677c6279b774086e644d7705",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["f2587fd488570a68009f8e645b6a9d4a1c71cb3d677c6279b774086e644d7705/e0"],
+      "id": "command-forbidden-direct",
+      "input_sha256": "1aed119f4aabd348890e081857bd65188fa6a61b96cfe7df47435e22443cf5ce",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 1,
+        "comparison_id_order_sha256": "60ef90483b8348522aad5794b1a7a169ae3f0abde8b43f1bd6eeafa722c2c4eb",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 1
+          }
+        ],
+        "selected_comparisons": 1,
+        "unique_comparison_ids": 1
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "8ee5cb1cae8126c7dea32048dbdccd6361e1373a8e8b64a9c2fd02b5b456be4f",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["8ee5cb1cae8126c7dea32048dbdccd6361e1373a8e8b64a9c2fd02b5b456be4f/e0"],
+      "id": "command-pipeline-command",
+      "input_sha256": "4bd0dddfb4dca46a43896039ba4a5442eee88d4a491a4b3e8503b32555c1c2b5",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 1,
+        "comparison_id_order_sha256": "5079ce27a516fbfe222105a0ac6a63b15a060270cbb1c240a61340636f2208f1",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 1
+          }
+        ],
+        "selected_comparisons": 1,
+        "unique_comparison_ids": 1
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "command-shell-variable",
+      "input_sha256": "cbd8170829e53cf4e8d54635fc3a7c214b957817e0dceb40e84fec8880c20b1e",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "command-output-only",
+      "input_sha256": "5e552f8002cfb4d09e8c84b599454fbc8d3cee39609b37abb45d46d370aae642",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "f2587fd488570a68009f8e645b6a9d4a1c71cb3d677c6279b774086e644d7705",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["f2587fd488570a68009f8e645b6a9d4a1c71cb3d677c6279b774086e644d7705/e0"],
+      "id": "command-nested-tool-wrapper",
+      "input_sha256": "86636b784b1fb05b811de6cef7a970343cecaed4c289bc3fd1adffd8cc2bbfeb",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 1,
+        "comparison_id_order_sha256": "60ef90483b8348522aad5794b1a7a169ae3f0abde8b43f1bd6eeafa722c2c4eb",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 1
+          }
+        ],
+        "selected_comparisons": 1,
+        "unique_comparison_ids": 1
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "f2587fd488570a68009f8e645b6a9d4a1c71cb3d677c6279b774086e644d7705",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["f2587fd488570a68009f8e645b6a9d4a1c71cb3d677c6279b774086e644d7705/e0"],
+      "id": "command-shell-escape",
+      "input_sha256": "0478bf15891e768acc291b7928eb4f2171e1a14bf35c5fc59c3080555676362b",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 1,
+        "comparison_id_order_sha256": "8e94d77a89ee3595e7063bc2a46e730e6df274dc109bc8f2bb9a6afb61b31a4f",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 1
+          }
+        ],
+        "selected_comparisons": 1,
+        "unique_comparison_ids": 1
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "6e0ecc09b13d42b509dc63de2e8c644adc580877b357381883db4a19a6d87681",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["6e0ecc09b13d42b509dc63de2e8c644adc580877b357381883db4a19a6d87681/e0"],
+      "id": "assistant-final-required",
+      "input_sha256": "9881cad6adf91fcc9d58e1302debbbda80b5d9389a0f5250a41bfe5f629e7d32",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 1,
+        "comparison_id_order_sha256": "30c96c7809186a96c5da3196c00296d43f1c27e20cb6e298188e8fd656227fb3",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 1
+          }
+        ],
+        "selected_comparisons": 1,
+        "unique_comparison_ids": 1
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "assistant-final-present",
+      "input_sha256": "101c3846bd4da82ebfc68c3a1f3bb70f68e505b3db5f44694f7e1ecf52b35ac4",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e2",
+          "action_reference_id": "e2",
+          "end_line": 4,
+          "rule_id": "f237bc76c17a6e09c31364b8733d9762282cf41d268791ae1b61c1b2d179dee3",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["f237bc76c17a6e09c31364b8733d9762282cf41d268791ae1b61c1b2d179dee3/e2"],
+      "id": "assistant-false-success-report",
+      "input_sha256": "3ae9ea3fdce707a256c69e0d5d63c6f4947537c593adc9ef4135b47cf4f90a5b",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 2,
+        "comparison_id_order_sha256": "b0304aa77a207b020c3ca4649e1d0dc4bfef57635541e65a8d440a0bef4a97cb",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 2
+          }
+        ],
+        "selected_comparisons": 2,
+        "unique_comparison_ids": 2
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "assistant-quoted-forbidden-text",
+      "input_sha256": "94df5e6abba7012e5440de35a104aee5c1ba151fe0c7d80c62496a6299f29c39",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "assistant-progress-history-missing",
+      "input_sha256": "45b181de1496811d04b88ffea5b00b894d254ca6cc235f9b5520b3007ef054a8",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "edd91ba416aeb9d840ef6b3af9e91013ec44c431c09b76703ae6e6c8503f577d",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["edd91ba416aeb9d840ef6b3af9e91013ec44c431c09b76703ae6e6c8503f577d/e0"],
+      "id": "prerequisite-tests-before-commit",
+      "input_sha256": "af95abe0718d9db6de724ecfa42f7a1c623012f872be71e9b203fe38c8a3cf1d",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 2,
+        "comparison_id_order_sha256": "5c11fcef43f0696082dbc2bf4090ef55b06e4c0528b1ed31adce4216327b35cd",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 2
+          }
+        ],
+        "selected_comparisons": 2,
+        "unique_comparison_ids": 2
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "prerequisite-tests-before-commit-satisfied",
+      "input_sha256": "042966ad35742e46ce6e883864a08fd02b3806a41782018e1c32a3df0d842349",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "43ca70b2e3c40640dbdc5e718c69ecb9de93b4b2936cee68ef0f7a8545fb332c",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["43ca70b2e3c40640dbdc5e718c69ecb9de93b4b2936cee68ef0f7a8545fb332c/e0"],
+      "id": "prerequisite-approval-before-release",
+      "input_sha256": "66b16c8095dd65bec7083772addc7d1ed425b60dd2f6ee04f1fe3b3bb470e0c5",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 1,
+        "comparison_id_order_sha256": "8a6fa62bf5853042245847efc2f3532a58d7a99620387d48a91462c099b3e9a3",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 1
+          }
+        ],
+        "selected_comparisons": 1,
+        "unique_comparison_ids": 1
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "prerequisite-approval-present",
+      "input_sha256": "d73b0c12dd122e2c99afb45a7120aa74d77b7a2f0678b5e4ad65e763ba7048bc",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "prerequisite-condition-false",
+      "input_sha256": "2e385012a9ad7facab8ead53fdd6a4a09efef4f92f5ea49d899dafd2eacc5520",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e2",
+          "action_reference_id": "e2",
+          "end_line": 4,
+          "rule_id": "85d1df7ed8150a2be39e0b0f8ba2278bbf968d34c4e3a2bb4972ccca072eed75",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["85d1df7ed8150a2be39e0b0f8ba2278bbf968d34c4e3a2bb4972ccca072eed75/e2"],
+      "id": "prerequisite-condition-true",
+      "input_sha256": "ec7f7da6f24fcbfbabd1b6c4f39d5f08ee391ecb10649d3097eaf88fdef11fff",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 2,
+        "comparison_id_order_sha256": "b4699ddc7ef1c6aad12ee43cc61d865224b3facb63b9a9aa2a9aaeaf45ab27ec",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 2
+          }
+        ],
+        "selected_comparisons": 2,
+        "unique_comparison_ids": 2
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "4e0001bf887aa3056022d60dc4b942f8b133159705e8390d345d2b290ed7a448",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["4e0001bf887aa3056022d60dc4b942f8b133159705e8390d345d2b290ed7a448/e0"],
+      "id": "path-edit-restricted",
+      "input_sha256": "e774cc67e2802ee854ee7cc680b473437f0b1238d40241afc9f4ee1207f23480",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 1,
+        "comparison_id_order_sha256": "203d4fb4407b280d9f86d419e9cb8bfd834e0c4d8020749d77136b7bd029bcd6",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 1
+          }
+        ],
+        "selected_comparisons": 1,
+        "unique_comparison_ids": 1
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "path-edit-sibling",
+      "input_sha256": "0ad2a24b7f7bf01d6c2b22adb136f1a7ca6012c771d7b22407aa13019d9a0801",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "path-search-exact-query",
+      "input_sha256": "38baa8e83700fa9595f96e323fa82dee359ed351849ba216a25509bb71f9c4b2",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e1",
+          "action_reference_id": "e1",
+          "end_line": 4,
+          "rule_id": "dad0b6b70a8e611eb2584de4a5068240373d134eb7967e424961590f7d4933e8",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["dad0b6b70a8e611eb2584de4a5068240373d134eb7967e424961590f7d4933e8/e1"],
+      "id": "path-search-wrong-query",
+      "input_sha256": "6973a1a3767c2a57af552e8decc2a6c45fcdc2b47bc1ed42ce6bcd2da344c342",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 2,
+        "comparison_id_order_sha256": "b9a923033d65add033abdb2024f77f68a20255889281a0d51f1edbd3abc9fd11",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 2
+          }
+        ],
+        "selected_comparisons": 2,
+        "unique_comparison_ids": 2
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "e87ab6bf1d56651aa3afae0e189252a83a3fb42720a20e6b402112f9c8471063",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["e87ab6bf1d56651aa3afae0e189252a83a3fb42720a20e6b402112f9c8471063/e0"],
+      "id": "path-patch-update-header",
+      "input_sha256": "bfb3d0dee619aadb5d8408f4e12e3c3226aee17f071bbc8898351639002a6438",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 1,
+        "comparison_id_order_sha256": "1797949db00d775bfaa057998e0779866bb4111c86488ab6b80a3a90bdc89deb",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 1
+          }
+        ],
+        "selected_comparisons": 1,
+        "unique_comparison_ids": 1
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "adacf2c2a5f67678ecfaf1d60f1e13b5560979fd84142634e7f1f80bb0f8a3aa",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["adacf2c2a5f67678ecfaf1d60f1e13b5560979fd84142634e7f1f80bb0f8a3aa/e0"],
+      "id": "scope-recorded-global",
+      "input_sha256": "f67586db2d6f7974037f088f747b11b7bbe0149b301fc756d441a04d0054d1dc",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 1,
+        "comparison_id_order_sha256": "18942544718c5adec8d1990d77aac3d620788262246423d95202a82f713f8846",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 1
+          }
+        ],
+        "selected_comparisons": 1,
+        "unique_comparison_ids": 1
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "scope-current-file-only",
+      "input_sha256": "363345ff1a74c3e75d868f58a11c43a3cc1e4e179c4cd3ad9b436d91c2886d61",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "d1e316743010d76c38e4d10b3eb4b843f523bd383145e536a5abc8220a5c9806",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["d1e316743010d76c38e4d10b3eb4b843f523bd383145e536a5abc8220a5c9806/e0"],
+      "id": "scope-conditional-path-match",
+      "input_sha256": "f2dd1e9ec796a333ee5ada608d1ae31368de0c75a481b9693d6e829c95bcc22d",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 1,
+        "comparison_id_order_sha256": "4faa89ba23af564738a32314c01b4837e27011fe38c83251a467587ebfc03d84",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 1
+          }
+        ],
+        "selected_comparisons": 1,
+        "unique_comparison_ids": 1
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "scope-conditional-path-no-match",
+      "input_sha256": "3e4326c5c07f3e015aa78b6fde3e84cba82da95cd3479747cb06eef8fb4f195b",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "42ed87f2019693a8ab5ad334a0ccdc537b80e9972f337675dfd8d22cb6d8a1bb",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["42ed87f2019693a8ab5ad334a0ccdc537b80e9972f337675dfd8d22cb6d8a1bb/e0"],
+      "id": "chunk-long-action-cut",
+      "input_sha256": "3e9483d244636a80fef5ac67f46598c492828664c83ad3fd970ee5489c5c92d7",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 15,
+        "comparison_id_order_sha256": "faad9831e1c057aa60b8e64d95894b7a1ced66d7390f98af31eea22db2c46d0f",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 15
+          }
+        ],
+        "selected_comparisons": 15,
+        "unique_comparison_ids": 15
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "600a2b472686abd642ead1780970218692155ec36edc430523de92d9a12fcc14",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["600a2b472686abd642ead1780970218692155ec36edc430523de92d9a12fcc14/e0"],
+      "id": "chunk-utf8-boundary",
+      "input_sha256": "18ab5f8d6cd38223941577207f3c5628805ee847c367890e3a1df4bf00077b8e",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 10,
+        "comparison_id_order_sha256": "ce75d67718f870b971049cb0adeed87f45361d309ad3bd1e3ccb8ea6f4689cad",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 10
+          }
+        ],
+        "selected_comparisons": 10,
+        "unique_comparison_ids": 10
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "chunk-exception-at-cut",
+      "input_sha256": "f4988e8cdde88c22f9848637c5a532003b71854e2a855a78c6fe3734c18ddaee",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e2",
+          "action_reference_id": "e2",
+          "end_line": 4,
+          "rule_id": "2d44792c914f0405e47a7207c2eb3bcbd4971f91159ac3514c4b6f0193f1c8ba",
+          "source": "AGENTS.md",
+          "start_line": 3
+        }
+      ],
+      "bindings": ["2d44792c914f0405e47a7207c2eb3bcbd4971f91159ac3514c4b6f0193f1c8ba/e2"],
+      "id": "chunk-condition-at-cut",
+      "input_sha256": "075ee72578bf07f577ac28cb4276ff87b1acdbbc453c2192ddebce0624d58469",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 4,
+        "comparison_id_order_sha256": "01053a1cda9c2d53a91f73ad3de8afad5934c7015c3df9733e8c4bcb38dcb83e",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 4
+          }
+        ],
+        "selected_comparisons": 4,
+        "unique_comparison_ids": 4
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "chunk-distant-counterevidence",
+      "input_sha256": "1a579c78a4af83f6c346b31521de1414fa4c4c1ff7ee250a232ec2ef0496cb78",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "chunk-page-cut-approval",
+      "input_sha256": "a18ba45d06d00afa6aae4615d0ecfb75c588f3e12842e3150428340717f17652",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "329d8e82de7b485f4e1583e377da86867fb4aa61ccf95976b9e583416451c1b5",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["329d8e82de7b485f4e1583e377da86867fb4aa61ccf95976b9e583416451c1b5/e0"],
+      "id": "candidate-paraphrase",
+      "input_sha256": "4b912072a540ffd113f717a16b37d39b8b2f2de8d87854d7c3de79dc3441a420",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 1,
+        "comparison_id_order_sha256": "9fb03fd2694d31d6ea9276607d9a53c1d9cd7462734fb993239cb5bee1984a5c",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 1
+          }
+        ],
+        "selected_comparisons": 1,
+        "unique_comparison_ids": 1
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "candidate-distractor",
+      "input_sha256": "821699524c5ef53a294f242d1d1ac84f5d33cd1dd38a59d78164ce8421bf1dfb",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "7c332ae4cbac00e09821afca3a92a37ae520e0fb352fc18578a8f4164182df6f",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["7c332ae4cbac00e09821afca3a92a37ae520e0fb352fc18578a8f4164182df6f/e0"],
+      "id": "candidate-alias-resolved",
+      "input_sha256": "6b5665582ce69402e252ee2c0323a05127b856346bddff532ec2689e6b20aa5b",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 1,
+        "comparison_id_order_sha256": "d1286df92f77cd0423d4b4d386fc2c18baa8c03d2ed13f9ab6a111def8c3773b",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 1
+          }
+        ],
+        "selected_comparisons": 1,
+        "unique_comparison_ids": 1
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "candidate-alias-missing",
+      "input_sha256": "d324b2a413bbabdd1dff712f8ca668845ec94473efd72471d7a35c4da0847d89",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e1",
+          "action_reference_id": "e1",
+          "end_line": 4,
+          "rule_id": "0b6032279a8374f6ce1e7d02a7ea13ced97c899bef4d29858a32902e38a1a73f",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["0b6032279a8374f6ce1e7d02a7ea13ced97c899bef4d29858a32902e38a1a73f/e1"],
+      "id": "lifecycle-append-new-event",
+      "input_sha256": "2ed4799748093faab79e4599e0cefe4bbae7f4b663048a11244e9af9afff2936",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 2,
+        "comparison_id_order_sha256": "e93184c9cc090d7d47158ea0a182473797fd70b6e96a4acf1d758d20ec4c8454",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 2
+          }
+        ],
+        "selected_comparisons": 2,
+        "unique_comparison_ids": 2
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "lifecycle-append-irrelevant",
+      "input_sha256": "f648adafd14fe014ffaa3238feb7abe56c31508f3f098c503277643dbc504722",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "lifecycle-cache-same-request",
+      "input_sha256": "4c3bbc6878620d69549dff3dff57ff441e0569983d7742cd4afaeb6a8f0d6f3e",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "0b6032279a8374f6ce1e7d02a7ea13ced97c899bef4d29858a32902e38a1a73f",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["0b6032279a8374f6ce1e7d02a7ea13ced97c899bef4d29858a32902e38a1a73f/e0"],
+      "id": "lifecycle-cache-changed-input",
+      "input_sha256": "3764999d43204ca0c44b85c592d26a1db3721f47e19d98a3f6aadd0a07828afd",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 1,
+        "comparison_id_order_sha256": "89259e1802ff19a120a855eac7419ea3103fa4b38da485ad55a2ac5d62b7c882",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 1
+          }
+        ],
+        "selected_comparisons": 1,
+        "unique_comparison_ids": 1
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "lifecycle-resume-stale-revision",
+      "input_sha256": "3a9b0e8831af12f24f065cd80134884c1f97c75461dc5f3a4aaf2ec568f32b66",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "provider-missing-answer",
+      "input_sha256": "87985930abc183d34dbf9a6392542424ea7cb009cb6da55c680bb28460d82496",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "provider-invalid-json",
+      "input_sha256": "1924423f12001a9867dd79a17359ff5a1f28567b237e70821e9a8e4ee6ea9e0c",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "provider-cache-valid",
+      "input_sha256": "c7d29485e06f3889fec206d03df68669eafd97c522203d30f11197cb7061db71",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e1",
+          "action_reference_id": "e1",
+          "end_line": 4,
+          "rule_id": "ce8ed206dc8c21aad8d225fc092dd6d42335abe43d242daebedbe8eff279cb28",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["ce8ed206dc8c21aad8d225fc092dd6d42335abe43d242daebedbe8eff279cb28/e1"],
+      "id": "projection-user-excluded",
+      "input_sha256": "a497a2b0c78123ce71f71914e8e324ee049d279ffe8d7b2daa2ad9d076fbcdb0",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 1,
+        "comparison_id_order_sha256": "7523daf27763021d43480ffc95caf0df3bf34b3d92cb31c86fa552971c95bf96",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 1
+          }
+        ],
+        "selected_comparisons": 1,
+        "unique_comparison_ids": 1
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "f2587fd488570a68009f8e645b6a9d4a1c71cb3d677c6279b774086e644d7705",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["f2587fd488570a68009f8e645b6a9d4a1c71cb3d677c6279b774086e644d7705/e0"],
+      "id": "projection-bash-command-included",
+      "input_sha256": "d664a1a55594f3023688c298ec7d9e5fa0f99673d61142d7207e36fdf451aec9",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 1,
+        "comparison_id_order_sha256": "60ef90483b8348522aad5794b1a7a169ae3f0abde8b43f1bd6eeafa722c2c4eb",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 1
+          }
+        ],
+        "selected_comparisons": 1,
+        "unique_comparison_ids": 1
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    },
+    {
+      "bindings": [],
+      "id": "projection-edit-content-excluded",
+      "input_sha256": "4fb68f62806c8ae2362e0958b7c374fef92eb08ad5d4ba0440020176a615250b",
+      "resolution": "not_required",
+      "revisions": null,
+      "semantic_references": []
+    },
+    {
+      "binding_records": [
+        {
+          "action_id": "e0",
+          "action_reference_id": "e0",
+          "end_line": 4,
+          "rule_id": "f2587fd488570a68009f8e645b6a9d4a1c71cb3d677c6279b774086e644d7705",
+          "source": "AGENTS.md",
+          "start_line": 4
+        }
+      ],
+      "bindings": ["f2587fd488570a68009f8e645b6a9d4a1c71cb3d677c6279b774086e644d7705/e0"],
+      "id": "projection-nested-wrapper",
+      "input_sha256": "3aa89a464fe596ef835bc5d67750d1b1c39bf1c78cfb736450849447c087ea0d",
+      "resolution": "resolved",
+      "resolution_audit": {
+        "candidate_pairs": 1,
+        "comparison_id_order_sha256": "60ef90483b8348522aad5794b1a7a169ae3f0abde8b43f1bd6eeafa722c2c4eb",
+        "exhaustive": true,
+        "page_count": 1,
+        "pages": [
+          {
+            "after": null,
+            "next": null,
+            "selected_comparisons": 1
+          }
+        ],
+        "selected_comparisons": 1,
+        "unique_comparison_ids": 1
+      },
+      "revisions": "parser=46;projection=7;chunking=21;questions=38;reducer=27",
+      "semantic_references": []
+    }
+  ],
+  "schema_version": 1
+}

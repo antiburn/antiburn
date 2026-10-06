@@ -27,6 +27,7 @@ export const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
   oldModelUsage: "Some sessions used an older model when a newer one was available.",
   overuseOfFastMode: "Some work paid for speed it did not need.",
   cacheChurn: "Some sessions kept paying to reload the same context.",
+  ignoredInstructions: "Some sessions didn't follow your agent instruction files properly.",
 }
 
 function isUnusedResourceDetector(detector: BurnCheckDetectorId) {
@@ -117,6 +118,12 @@ export function CheckPromptAction({
                 ? "unavailable"
                 : "failed",
         })
+        if (detector === "ignoredInstructions" && outcome?.outcome !== "promptReady")
+          noteInteraction({
+            kind: "ignoredInstructionObserved",
+            stage: "prompt",
+            outcome: outcome?.outcome === "unavailable" ? "unavailable" : "failed",
+          })
         if (key.current !== startedKey) return
         if (outcome?.outcome !== "promptReady") {
           setBusy(false)
@@ -134,6 +141,12 @@ export function CheckPromptAction({
       }
       if (key.current !== startedKey) return
       noteInteraction({ kind: "burnCheckPromptCopied" })
+      if (detector === "ignoredInstructions")
+        noteInteraction({
+          kind: "ignoredInstructionObserved",
+          stage: "prompt",
+          outcome: "copied",
+        })
       setPrompt(nextPrompt)
       setCopied(true)
       setBusy(false)
@@ -142,6 +155,12 @@ export function CheckPromptAction({
       const preparationFailed = nextPrompt === null
       if (preparationFailed)
         noteInteraction({ kind: "burnCheckPromptPrepared", outcome: "failed" })
+      if (preparationFailed && detector === "ignoredInstructions")
+        noteInteraction({
+          kind: "ignoredInstructionObserved",
+          stage: "prompt",
+          outcome: "failed",
+        })
       if (key.current !== startedKey) return
       setPrompt(nextPrompt)
       setBusy(false)

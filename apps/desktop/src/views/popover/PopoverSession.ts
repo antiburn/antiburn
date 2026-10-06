@@ -549,7 +549,13 @@ export class PopoverSession {
   private patchOrRefetchEntry(entry: ActivityEntryPayload): void {
     const entries = this.snapshot.entries
     if (!entries) return
-    const index = indexOfSession(entries, entry.agent, entry.sessionId, entry.wslDistro)
+    const index = indexOfSession(
+      entries,
+      entry.agent,
+      entry.sessionId,
+      entry.wslDistro,
+      entry.remoteHostId,
+    )
     if (index === -1) {
       this.requestEntriesRefresh()
       return

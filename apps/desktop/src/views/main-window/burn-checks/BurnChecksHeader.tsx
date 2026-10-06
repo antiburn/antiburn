@@ -5,7 +5,7 @@ import { CollectionToolbar } from "../../../components/ui/CollectionToolbar"
 import { BURN_CHECK_MARKS } from "../../../components/burn-checks/burnCheckMarks"
 
 import type { ChecksReportPayload } from "../../../lib/insightsIpc"
-import { checksPresentation } from "../../../lib/presentation/checks"
+import { checksPresentation } from "../../../lib/presentation/checkReport"
 import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../../lib/snoozedBurnChecks"
 
 export function BurnChecksHeader({ report }: { report?: ChecksReportPayload }) {

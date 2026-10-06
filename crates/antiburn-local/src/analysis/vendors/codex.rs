@@ -425,6 +425,8 @@ struct CodexStreamState {
     /// [`CACHE_WRITE_ALIAS_KEYS`] key. See `usage_carries_cache_write`.
     cache_write_tokens_available: bool,
     context: CodexContextAccumulator,
+    #[serde(default)]
+    tool_identities: crate::analysis::tool_identity::ToolIdentityMap,
 }
 
 /// Snapshot codec for a `CodexStreamState` field whose type carries
@@ -661,7 +663,9 @@ impl CodexStreamState {
             if self.is_duplicate_boundary(&event) {
                 return;
             }
-            let content_parts = content_parts_for_record(&value);
+            let mut content_parts = content_parts_for_record(&value);
+            self.tool_identities
+                .bind_parts(self.agent_path.as_deref(), &mut content_parts);
             sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
             if !content_parts.is_empty() {
                 sink.record(NormalizedRecord::TurnContent(Box::new(TurnContent {
@@ -1637,13 +1641,34 @@ fn content_parts_for_record(record: &Value) -> Vec<ContentPart> {
 /// `input_text` / `output_text` blocks), captured through the shared JSONL
 /// content extractor.
 fn message_content_parts(payload: &Map<String, Value>) -> Vec<ContentPart> {
-    let role = match payload.get("role").and_then(Value::as_str) {
+    use crate::analysis::interface::ContentAuthority;
+
+    let raw_role = payload.get("role").and_then(Value::as_str);
+    let role = match raw_role {
         Some("assistant") => Role::Assistant,
-        // `user`, `system`, and `developer` all capture as user-side text —
-        // `ContentKind` has no separate system kind.
+        Some("system") | Some("developer") => Role::System,
         _ => Role::User,
     };
+    let authority = match raw_role {
+        Some("assistant") => ContentAuthority::Assistant,
+        Some("system") => ContentAuthority::System,
+        Some("developer") => ContentAuthority::Developer,
+        Some("user") => ContentAuthority::User,
+        _ => ContentAuthority::Unknown,
+    };
     extract_content_parts_from_container(payload, role)
+        .into_iter()
+        .map(|part| {
+            if matches!(
+                part.kind,
+                ContentKind::UserText | ContentKind::AssistantText
+            ) {
+                part.with_authority(authority)
+            } else {
+                part
+            }
+        })
+        .collect()
 }
 
 /// A `reasoning` response_item's `summary[]` text, concatenated into one
@@ -1674,10 +1699,31 @@ fn reasoning_content_parts(payload: &Map<String, Value>) -> Vec<ContentPart> {
 /// `exec` wrapper input is a JavaScript string, kept as-is).
 fn function_call_content_parts(payload: &Map<String, Value>) -> Vec<ContentPart> {
     let input = payload.get("arguments").or_else(|| payload.get("input"));
+    let name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let call_id = payload
+        .get("call_id")
+        .or_else(|| payload.get("callId"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     input
         .and_then(compact_json_text)
         .into_iter()
-        .map(|text| ContentPart::new(ContentKind::ToolInput, text))
+        .map(|text| {
+            ContentPart::new(ContentKind::ToolInput, text)
+                .with_tool_identity(name.clone(), call_id.clone())
+                .with_native_input_fields(
+                    input.expect("captured input"),
+                    if payload.contains_key("arguments") {
+                        "/payload/arguments"
+                    } else {
+                        "/payload/input"
+                    },
+                    crate::analysis::jev_evidence::JevNativeFieldContainer::Record,
+                )
+        })
         .collect()
 }
 
@@ -1688,11 +1734,18 @@ fn tool_output_content_parts(payload: &Map<String, Value>) -> Vec<ContentPart> {
     let text = payload
         .get("output")
         .and_then(Value::as_str)
-        .filter(|text| !text.is_empty())
         .map(str::to_owned)
         .or_else(|| concatenated_text(payload.get("content")));
+    let call_id = payload
+        .get("call_id")
+        .or_else(|| payload.get("callId"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     text.into_iter()
-        .map(|text| ContentPart::new(ContentKind::ToolResult, text))
+        .map(|text| {
+            ContentPart::new(ContentKind::ToolResult, text)
+                .with_tool_identity(None, call_id.clone())
+        })
         .collect()
 }
 
@@ -2625,8 +2678,14 @@ mod tests {
         // maps `internal_server_error` and the four transport struct
         // variants' `http_status_code` to a `ServerError` or `Connection`
         // provider incident, through the new `transport_incident_kind`
-        // helper; this changed the fingerprinted byte range.
-        const EXPECTED_FINGERPRINT: u64 = 738_113_492_623_469_583;
+        // helper. Content extraction now retains exact system/developer
+        // authority and tool-call IDs, changing this fingerprinted byte range
+        // without changing inertness rules.
+        // Native field bindings use only the captured arguments or input.
+        // They do not change the inertness rules.
+        // Tool outputs now retain present-empty strings and bind a tool name
+        // only through an exact recorded call ID.
+        const EXPECTED_FINGERPRINT: u64 = 1_740_647_647_726_565_029;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();
@@ -3381,6 +3440,27 @@ mod tests {
         assert_eq!(sink.contents[2].parts[0].text, r#"{"command":"ls"}"#);
         assert_eq!(sink.contents[3].parts[0].kind, ContentKind::ToolResult);
         assert_eq!(sink.contents[3].parts[0].text, "ok");
+    }
+
+    #[test]
+    fn tool_results_join_recorded_names_and_keep_present_empty_output() {
+        let call = serde_json::json!({
+            "type": "response_item",
+            "payload": {"type": "function_call", "name": "bash", "call_id": "call-1", "arguments": "{\"command\":\"true\"}"}
+        });
+        let empty_result = serde_json::json!({
+            "type": "response_item",
+            "payload": {"type": "function_call_output", "call_id": "call-1", "output": ""}
+        });
+        let mut identities = crate::analysis::tool_identity::ToolIdentityMap::default();
+        let mut input = content_parts_for_record(&call);
+        identities.bind_parts(None, &mut input);
+        let mut output = content_parts_for_record(&empty_result);
+        identities.bind_parts(None, &mut output);
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].text, "");
+        assert_eq!(output[0].tool_name.as_deref(), Some("bash"));
+        assert_eq!(output[0].tool_call_id.as_deref(), Some("call-1"));
     }
 
     fn thread_settings_applied(service_tier: &str) -> Value {

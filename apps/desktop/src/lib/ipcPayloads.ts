@@ -47,6 +47,11 @@ export interface AppSettings {
    */
   discoveryPaused: boolean
   /**
+   * Whether the scan keeps sessions whose working directory is not in a Git
+   * repository. Off keeps the repository-only scan gate.
+   */
+  includeNonRepoFolders: boolean
+  /**
    * The master switch for desktop notifications. Off means nothing is
    * delivered, whatever the per-kind preferences say.
    */
@@ -205,6 +210,19 @@ export interface ScanStatus {
    * productive one without inferring it from `listChanged` alone.
    */
   reDescribed: number
+  /** Progress of the dedicated historical pass, under the current retention. */
+  history?: ScanHistoryProgress
+}
+
+/**
+ * Progress of the dedicated historical pass, which widens discovery past
+ * the current window up to the retention limit. Mirrors Rust
+ * `ScanHistoryProgress`.
+ */
+export interface ScanHistoryProgress {
+  state: "none" | "pending" | "running" | "done"
+  completed: number
+  total: number
 }
 
 /** Whether the insights worker pool has a backlog to drain right now.

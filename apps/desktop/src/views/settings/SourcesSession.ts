@@ -17,6 +17,19 @@ import type {
   LocalRepositoryItem,
   LocalRepositoryStatus,
 } from "../../lib/types/repository"
+import {
+  addRemoteHost,
+  checkRemoteHost,
+  remoteHosts,
+  removeRemoteHost,
+  scanRemoteHost,
+  setRemoteHostSyncEnabled,
+  updateRemoteHost,
+  type RemoteHost,
+  type RemoteHostPreflight,
+  type RemoteHostsSnapshot,
+  type RemoteSyncIntervalSecs,
+} from "../../lib/remoteHosts"
 
 const EMPTY_PERMISSIONS: FolderPermissions = {
   deferred: [],
@@ -30,6 +43,7 @@ export type SourcesSnapshot = {
   permissions: FolderPermissions
   /** True while the repository list is being (re)built from disk. */
   scanning: boolean
+  remote: RemoteHostsSnapshot
 }
 
 /** Narrow the shell's status string to the list's union. */
@@ -74,12 +88,14 @@ export class SourcesSession {
   private listeners = new Set<() => void>()
   private started = false
   private generation = 0
+  private stopRemote: (() => void) | null = null
 
   private snapshot: SourcesSnapshot = {
     repositories: [],
     scanRoots: [],
     permissions: EMPTY_PERMISSIONS,
     scanning: true,
+    remote: remoteHosts.getSnapshot(),
   }
 
   getSnapshot = (): SourcesSnapshot => this.snapshot
@@ -158,9 +174,34 @@ export class SourcesSession {
     await navigator.clipboard.writeText(text || "No folder-access probes this run.")
   }
 
+  checkRemoteHost = (sshAlias: string): Promise<RemoteHostPreflight> =>
+    checkRemoteHost(sshAlias)
+
+  addRemoteHost = (sshAlias: string, displayName: string | null): Promise<RemoteHost> =>
+    addRemoteHost(sshAlias, displayName)
+
+  updateRemoteHost = (
+    id: string,
+    sshAlias: string,
+    displayName: string | null,
+  ): Promise<RemoteHost> => updateRemoteHost(id, sshAlias, displayName)
+
+  removeRemoteHost = (id: string): Promise<void> => removeRemoteHost(id)
+
+  setRemoteHostSyncEnabled = (id: string, enabled: boolean): Promise<void> =>
+    setRemoteHostSyncEnabled(id, enabled)
+
+  scanRemoteHost = (id: string): Promise<void> => scanRemoteHost(id)
+
+  setRemoteSyncInterval = (seconds: RemoteSyncIntervalSecs): Promise<void> =>
+    remoteHosts.setInterval(seconds)
+
   private start = async (): Promise<void> => {
     this.started = true
     const generation = ++this.generation
+    this.stopRemote = remoteHosts.subscribe(() => {
+      if (generation === this.generation) this.update({ remote: remoteHosts.getSnapshot() })
+    })
 
     const [repos, scanRoots, permissions] = await Promise.all([
       listRepositories().catch(() => []),
@@ -182,6 +223,8 @@ export class SourcesSession {
   private stop(): void {
     this.started = false
     this.generation += 1
+    this.stopRemote?.()
+    this.stopRemote = null
   }
 
   private update(change: Partial<SourcesSnapshot>): void {

@@ -1,0 +1,3 @@
+{"type":"USER_INPUT","step_index":1,"content":"ANTIGRAVITY-USER"}
+{"type":"PLANNER_RESPONSE","step_index":2,"content":"The focused tests passed.","thinking":"private reasoning stays local","tool_calls":[{"name":"shell","args":{"cmd":"cargo test --test focused"}}]}
+{"type":"RUN_COMMAND","step_index":3,"content":"test result: ok"}

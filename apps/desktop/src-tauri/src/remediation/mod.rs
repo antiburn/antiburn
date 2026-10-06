@@ -105,7 +105,7 @@ fn representative_paths(
 const ID_TTL: Duration = Duration::from_secs(10 * 60);
 /// Per-detector cap on cached target ids. Two full listings fit, so the ids a
 /// window still holds survive one background relist of the same check.
-const TARGET_CACHE_LIMIT: usize = 2 * MAX_TARGETS;
+const TARGET_CACHE_LIMIT: usize = 6 * MAX_TARGETS;
 const MAX_TARGETS: usize = 100;
 const MAX_CHECK_PROMPT_TARGETS: usize = 100;
 const MAX_PASSIVE_CANDIDATES: usize = 512;
@@ -114,6 +114,165 @@ const PREPARED_CACHE_LIMIT: usize = 8;
 const PREPARED_CACHE_BYTES: usize = 4 * 1024 * 1024;
 const TARGET_DOMAIN: &[u8] = b"antiburn/remediation-target/v2\0";
 const PROMPT_REFERENCE_PREFIX: &str = "Remediation reference: ABR-";
+
+fn unavailable_instruction_evidence() -> BurnCheckTargetEvidence {
+    BurnCheckTargetEvidence {
+        status: BurnCheckEvidenceStatus::Unavailable,
+        items: Vec::new(),
+    }
+}
+
+fn stored_instruction_evidence(cause: &FindingCause) -> Option<BurnCheckTargetEvidence> {
+    let FindingCause::IgnoredInstructionConflict(evidence) = cause else {
+        return None;
+    };
+    if evidence.instruction_excerpt.is_empty() || evidence.action_excerpt.is_empty() {
+        return None;
+    }
+    Some(BurnCheckTargetEvidence {
+        status: BurnCheckEvidenceStatus::Available,
+        items: vec![
+            BurnCheckEvidenceItem {
+                label: BurnCheckEvidenceLabel::Instruction,
+                source_label: evidence
+                    .source
+                    .strip_prefix("project:")
+                    .or_else(|| evidence.source.strip_prefix("home:"))
+                    .unwrap_or(&evidence.source)
+                    .to_owned(),
+                reference: evidence.rule_heading.clone(),
+                observed_at_ms: None,
+                start_line: Some(evidence.start_line),
+                end_line: Some(evidence.end_line),
+                excerpt: bounded_evidence_excerpt(&evidence.instruction_excerpt),
+                explanation: "Instruction text used for this comparison.".to_owned(),
+                limitation: evidence
+                    .instruction_excerpt_truncated
+                    .then(|| "The saved instruction excerpt is incomplete.".to_owned()),
+            },
+            BurnCheckEvidenceItem {
+                label: BurnCheckEvidenceLabel::ObservedAction,
+                source_label: "Session action".to_owned(),
+                reference: evidence.action_id.clone(),
+                observed_at_ms: evidence.action_timestamp_ms,
+                start_line: None,
+                end_line: None,
+                excerpt: bounded_evidence_excerpt(&evidence.action_excerpt),
+                explanation: "This is the action that Antiburn compared with the instruction."
+                    .to_owned(),
+                limitation: evidence
+                    .action_excerpt_truncated
+                    .then(|| "The saved action excerpt is incomplete.".to_owned()),
+            },
+        ],
+    })
+}
+
+fn bounded_evidence_excerpt(text: &str) -> String {
+    let end = text
+        .char_indices()
+        .take_while(|(index, character)| *index + character.len_utf8() <= 4096)
+        .map(|(index, character)| index + character.len_utf8())
+        .last()
+        .unwrap_or(0);
+    text[..end].to_owned()
+}
+
+fn available_evidence_references(
+    action_id: &str,
+    context_ids: &BTreeSet<&str>,
+    available_ids: &BTreeSet<String>,
+) -> Option<(Vec<String>, bool)> {
+    if !available_ids.contains(action_id) {
+        return None;
+    }
+    let missing_context = context_ids
+        .iter()
+        .any(|reference| !available_ids.contains(*reference));
+    let mut references = vec![action_id.to_owned()];
+    references.extend(
+        context_ids
+            .iter()
+            .filter(|reference| available_ids.contains(**reference))
+            .map(|reference| (*reference).to_owned()),
+    );
+    Some((references, missing_context))
+}
+
+fn prompt_watch_supported(detectors: impl IntoIterator<Item = DetectorId>) -> bool {
+    detectors
+        .into_iter()
+        .any(|detector| detector != DetectorId::IgnoredInstructions)
+}
+
+fn current_instruction_excerpt(
+    finding: &CurrentFinding,
+    source: &str,
+    instruction_id: &str,
+    instruction_digest: &str,
+    rule_id: &str,
+    provenance: antiburn_local::analysis::ignored_instructions::InstructionProvenance,
+    scope: antiburn_local::analysis::ignored_instructions::InstructionScope,
+) -> Option<(String, String)> {
+    use antiburn_local::analysis::ignored_instructions::{
+        MAX_INSTRUCTION_BYTES, sha256_hex, snapshot_from_text,
+    };
+    use std::path::Component;
+
+    let (root, relative) = if let Some(relative) = source.strip_prefix("project:") {
+        (
+            project_worktree_root(finding.workspace_candidate()?)?,
+            relative,
+        )
+    } else {
+        let relative = source.strip_prefix("home:")?;
+        (antiburn_local::paths::home_dir()?, relative)
+    };
+    let relative_path = Path::new(relative);
+    if relative_path.as_os_str().is_empty()
+        || relative_path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return None;
+    }
+    let root = std::fs::canonicalize(root).ok()?;
+    let path = std::fs::canonicalize(root.join(relative_path)).ok()?;
+    if !path.starts_with(&root)
+        || std::fs::metadata(&path).ok()?.len() > MAX_INSTRUCTION_BYTES as u64
+    {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() > MAX_INSTRUCTION_BYTES || sha256_hex(&bytes) != instruction_digest {
+        return None;
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    let snapshot = snapshot_from_text(source, text, provenance, scope).ok()?;
+    if snapshot.id != instruction_id || snapshot.digest != instruction_digest {
+        return None;
+    }
+    let section = snapshot
+        .sections
+        .iter()
+        .find(|section| section.id == rule_id)?;
+    Some((bounded_evidence_excerpt(&section.text), relative.to_owned()))
+}
+
+fn project_worktree_root(start: &Path) -> Option<PathBuf> {
+    let start = std::fs::canonicalize(start).ok()?;
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&start)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return Some(start);
+    }
+    let root = String::from_utf8(output.stdout).ok()?;
+    std::fs::canonicalize(root.trim()).ok()
+}
 
 fn resource_target_matches(
     expected: &insights_report::UnusedResourceTarget,
@@ -197,6 +356,7 @@ impl CachedTarget {
                         agent: session.agent.clone(),
                         session_id: session.session_id.clone(),
                         observed_at_ms: session.observed_at_ms,
+                        incarnation: None,
                     })
                     .collect()
             },
@@ -410,8 +570,12 @@ impl RemediationController {
                     break;
                 }
             }
-            category.lifecycle =
-                resolve_category_lifecycle(category.finding, category.clean, awaiting_evidence);
+            category.lifecycle = resolve_category_lifecycle(
+                category.id.into(),
+                category.finding,
+                category.clean,
+                awaiting_evidence,
+            );
         }
         Ok(())
     }
@@ -473,12 +637,24 @@ impl RemediationController {
         let expires = options.now.saturating_add(ID_TTL.as_secs() as i64);
         let mut targets = Vec::new();
         let mut cached = Vec::new();
-        for target in grouped.into_values().take(MAX_TARGETS) {
+        for mut target in grouped.into_values().take(MAX_TARGETS) {
+            target.findings.sort_by(|left, right| {
+                right
+                    .observed_at_ms
+                    .cmp(&left.observed_at_ms)
+                    .then_with(|| left.session_id.cmp(&right.session_id))
+            });
             let display = target.findings[0]
                 .finding
                 .display()
                 .map_err(|_| ControllerError::Internal)?;
             let display_facts = burn_check_display_facts(&target, None);
+            let instruction_project = matches!(
+                target.findings[0].finding.cause(),
+                FindingCause::IgnoredInstructionConflict(evidence)
+                    if evidence.source.starts_with("project:")
+            );
+            let has_project_path = target.scope_kind == "project" || instruction_project;
             let watch = store
                 .latest_remediation_for_target(
                     &target.findings[0].environment_key,
@@ -527,21 +703,21 @@ impl RemediationController {
                         .collect::<BTreeSet<_>>()
                         .len(),
                 ),
-                project_name: (target.scope_kind == "project")
+                project_name: has_project_path
                     .then(|| {
                         target.findings[0]
                             .workspace_candidate()
                             .and_then(display::project_name)
                     })
                     .flatten(),
-                project_location: (target.scope_kind == "project")
+                project_location: has_project_path
                     .then(|| {
                         target.findings[0]
                             .workspace_candidate()
                             .and_then(display::project_location)
                     })
                     .flatten(),
-                project_path: (target.scope_kind == "project")
+                project_path: has_project_path
                     .then(|| {
                         target.findings[0]
                             .workspace_candidate()
@@ -558,6 +734,10 @@ impl RemediationController {
                     Err(reason) => PromptFixAvailability::Unavailable(reason),
                 },
                 watch,
+                evidence_available: target
+                    .findings
+                    .iter()
+                    .any(|finding| finding.finding.detector == DetectorId::IgnoredInstructions),
                 coverage_limits: vec![CoverageLimit::CurrentPublishedEvidenceOnly],
                 sample_sessions: target_samples,
                 expires_at_epoch: expires,
@@ -691,6 +871,7 @@ impl RemediationController {
                     Err(reason) => PromptFixAvailability::Unavailable(reason),
                 },
                 watch,
+                evidence_available: false,
                 coverage_limits: vec![CoverageLimit::CurrentPublishedEvidenceOnly],
                 sample_sessions: target_samples,
                 expires_at_epoch: expires,
@@ -739,6 +920,42 @@ impl RemediationController {
         )
     }
 
+    /// Resolve a project folder from an unexpired local check action.
+    pub fn project_folder(
+        &self,
+        store: &Store,
+        action_id: &str,
+    ) -> Result<String, ControllerError> {
+        let target = self.cached_target(action_id, now_epoch())?;
+        if target.scope_kind != "project" {
+            return Err(ControllerError::TargetNotFound);
+        }
+        let finding = target
+            .findings
+            .first()
+            .ok_or(ControllerError::TargetNotFound)?;
+        let environment = &finding.environment_key;
+        if environment != "native"
+            && !environment
+                .strip_prefix("wsl:")
+                .is_some_and(|distro| !distro.is_empty())
+        {
+            return Err(ControllerError::TargetNotFound);
+        }
+        let key = SessionKey::new(environment, &finding.agent, &finding.session_id);
+        if store
+            .session(&key)
+            .map_err(|_| ControllerError::Internal)?
+            .is_none()
+        {
+            return Err(ControllerError::TargetNotFound);
+        }
+        finding
+            .workspace_candidate()
+            .and_then(display::project_path)
+            .ok_or(ControllerError::TargetNotFound)
+    }
+
     pub fn copy_prompt_fix_burn_check_target(
         &self,
         store: &Store,
@@ -774,10 +991,259 @@ impl RemediationController {
         let watch = watches
             .into_iter()
             .next()
-            .ok_or(ControllerError::PersistenceFailed)?;
-        Ok(PromptFixResult {
-            prompt,
-            watch: Some(public_watch(store, &watch)?.ok_or(ControllerError::PersistenceFailed)?),
+            .map(|watch| public_watch(store, &watch))
+            .transpose()?
+            .flatten();
+        Ok(PromptFixResult { prompt, watch })
+    }
+
+    pub fn burn_check_target_evidence(
+        &self,
+        store: &Store,
+        action_id: &str,
+    ) -> Result<BurnCheckTargetEvidence, ControllerError> {
+        let target = match self.cached_target(action_id, now_epoch()) {
+            Ok(target) => target,
+            Err(ControllerError::TargetNotFound | ControllerError::TargetExpired) => {
+                return Ok(unavailable_instruction_evidence());
+            }
+            Err(error) => return Err(error),
+        };
+        if target.finding().detector == DetectorId::IgnoredInstructions
+            && let Some(evidence) = stored_instruction_evidence(target.finding().cause())
+        {
+            return Ok(evidence);
+        }
+        if let Err(error) = self.revalidate(&target) {
+            return match error {
+                ControllerError::TargetNotFound
+                | ControllerError::TargetExpired
+                | ControllerError::TargetChanged => Ok(unavailable_instruction_evidence()),
+                other => Err(other),
+            };
+        }
+        if target.finding().detector != DetectorId::IgnoredInstructions {
+            return Err(ControllerError::TargetNotFound);
+        }
+        let Some(current) = target.findings.first() else {
+            return Ok(unavailable_instruction_evidence());
+        };
+        let antiburn_local::remediation::FindingCause::IgnoredInstructionConflict(evidence) =
+            current.finding.cause()
+        else {
+            return Ok(unavailable_instruction_evidence());
+        };
+        let antiburn_local::remediation::IgnoredInstructionConflictEvidence {
+            assessment_revision,
+            instruction_id,
+            instruction_digest,
+            rule_id,
+            rule_heading,
+            start_line,
+            end_line,
+            source,
+            provenance,
+            instruction_scope,
+            action_id,
+            action_digest: expected_action_digest,
+            action_timestamp_ms: expected_action_timestamp_ms,
+            nearby_context_ids,
+            counterevidence_ids,
+            certainty,
+            limitations,
+            ..
+        } = evidence.as_ref();
+
+        let key = SessionKey::new(
+            current.environment_key.as_str(),
+            current.agent.as_str(),
+            current.session_id.as_str(),
+        );
+        let session_identity = format!(
+            "{}\0{}\0{}",
+            current.environment_key, current.agent, current.session_id
+        );
+        let context_ids: BTreeSet<_> = nearby_context_ids
+            .iter()
+            .chain(counterevidence_ids)
+            .map(String::as_str)
+            .filter(|reference| *reference != action_id)
+            .collect();
+        let mut actions = BTreeMap::new();
+        let mut content_cursor = None;
+        for _ in 0..16 {
+            let Some(page) = store
+                .published_turn_content_keyset_selected(
+                    &key,
+                    antiburn_local::analysis::SelectedContentRequest {
+                        source_generation: current.source_generation,
+                        after_ms: Some(i64::MIN),
+                        source_positions: &BTreeMap::from([("*".to_owned(), 0)]),
+                        cursor: content_cursor.as_ref(),
+                        selection: antiburn_local::analysis::jev::JevCheck::input_selection(
+                            &antiburn_local::analysis::ignored_instructions::IgnoredInstructionsCheck,
+                        ),
+                    },
+                )
+                .map_err(|_| ControllerError::Internal)?
+            else {
+                return Ok(unavailable_instruction_evidence());
+            };
+            let published = page.content;
+            if published.publication_fence != current.published_fence
+                || published.source_generation != Some(current.source_generation)
+            {
+                return Ok(unavailable_instruction_evidence());
+            }
+            let more = published.coverage.more_parts;
+            let next_cursor = page.next_cursor;
+            let evidence = antiburn_local::analysis::ignored_instructions::prepare_session_content(
+                &session_identity,
+                current.finding.source_format,
+                published,
+                Vec::new(),
+            );
+            for action in evidence.actions {
+                if action.reference.id == *action_id
+                    || context_ids.contains(action.reference.id.as_str())
+                {
+                    actions.insert(action.reference.id.clone(), action);
+                }
+            }
+            if actions.len() == context_ids.len() + 1 || !more {
+                break;
+            }
+            content_cursor = next_cursor;
+        }
+        let available_ids = actions.keys().cloned().collect::<BTreeSet<_>>();
+        let Some((references, context_missing)) =
+            available_evidence_references(action_id, &context_ids, &available_ids)
+        else {
+            return Ok(unavailable_instruction_evidence());
+        };
+        let current_instruction = current_instruction_excerpt(
+            current,
+            source,
+            instruction_id,
+            instruction_digest,
+            rule_id,
+            *provenance,
+            *instruction_scope,
+        );
+        let (instruction_excerpt, source_label, instruction_limitation) =
+            current_instruction.map_or_else(
+                || {
+                    (
+                        rule_heading.clone(),
+                        source
+                            .strip_prefix("project:")
+                            .or_else(|| source.strip_prefix("home:"))
+                            .filter(|path| !path.is_empty())
+                        .unwrap_or("Instruction file")
+                        .to_owned(),
+                        Some("The instruction text is unavailable or has changed since this assessment.".to_owned()),
+                    )
+                },
+                |(excerpt, label)| (excerpt, label, None),
+            );
+        let mut items = vec![BurnCheckEvidenceItem {
+            label: BurnCheckEvidenceLabel::Instruction,
+            source_label,
+            reference: rule_id.clone(),
+            observed_at_ms: None,
+            start_line: Some(*start_line),
+            end_line: Some(*end_line),
+            excerpt: if instruction_limitation.is_some() {
+                "Instruction text unavailable.".to_owned()
+            } else {
+                instruction_excerpt
+            },
+            explanation: format!(
+                "{} conflict · {}.",
+                match certainty {
+                    antiburn_local::analysis::ignored_instructions::FindingCertainty::Likely => "Likely",
+                    antiburn_local::analysis::ignored_instructions::FindingCertainty::Possible => "Possible",
+                },
+                match provenance {
+                    antiburn_local::analysis::ignored_instructions::InstructionProvenance::RecordedInjection => "recorded instruction",
+                    antiburn_local::analysis::ignored_instructions::InstructionProvenance::ObservedRead => "instruction seen in the session",
+                    antiburn_local::analysis::ignored_instructions::InstructionProvenance::CurrentFileComparison => "current instruction file",
+                },
+            ),
+            limitation: instruction_limitation.or_else(|| match provenance {
+                antiburn_local::analysis::ignored_instructions::InstructionProvenance::CurrentFileComparison => Some("Note: this session may have run on outdated instructions.".to_owned()),
+                antiburn_local::analysis::ignored_instructions::InstructionProvenance::ObservedRead => Some("We saw the instruction in the session, but cannot tell if it was active before the action.".to_owned()),
+                antiburn_local::analysis::ignored_instructions::InstructionProvenance::RecordedInjection => None,
+            }),
+        }];
+        for reference in references {
+            let Some(action) = actions.get(&reference) else {
+                return Ok(unavailable_instruction_evidence());
+            };
+            let is_observed_action = action.reference.id == *action_id;
+            if is_observed_action
+                && expected_action_timestamp_ms.is_some()
+                && action.timestamp_ms != *expected_action_timestamp_ms
+            {
+                return Ok(unavailable_instruction_evidence());
+            }
+            if is_observed_action
+                && !expected_action_digest.is_empty()
+                && antiburn_local::analysis::ignored_instructions::content_action_digest(action)
+                    != *expected_action_digest
+            {
+                return Ok(unavailable_instruction_evidence());
+            }
+            let excerpt = bounded_evidence_excerpt(&action.text);
+            items.push(BurnCheckEvidenceItem {
+                label: if is_observed_action {
+                    BurnCheckEvidenceLabel::ObservedAction
+                } else {
+                    BurnCheckEvidenceLabel::Context
+                },
+                source_label: if is_observed_action {
+                    "Observed session action".to_owned()
+                } else {
+                    "Session context".to_owned()
+                },
+                reference: action.reference.id.clone(),
+                observed_at_ms: action.timestamp_ms,
+                start_line: None,
+                end_line: None,
+                excerpt,
+                explanation: if is_observed_action {
+                    "This is the action cited by the assessment.".to_owned()
+                } else {
+                    "This nearby event provides context for the assessment.".to_owned()
+                },
+                limitation: if action.truncated {
+                    Some("The saved event text is incomplete.".to_owned())
+                } else {
+                    None
+                },
+            });
+        }
+        if context_missing
+            && let Some(action) = items
+                .iter_mut()
+                .find(|item| item.label == BurnCheckEvidenceLabel::ObservedAction)
+        {
+            action.limitation = Some(match action.limitation.take() {
+                Some(existing) => format!("{existing} Some nearby context is no longer available."),
+                None => "Some nearby context is no longer available.".to_owned(),
+            });
+        }
+        if !limitations.is_empty() && items[0].limitation.is_none() {
+            items[0].limitation = Some(
+                "The assessment records additional evidence limits. Review the action and section before deciding.".to_owned(),
+            );
+        }
+        if assessment_revision.is_empty() {
+            return Ok(unavailable_instruction_evidence());
+        }
+        Ok(BurnCheckTargetEvidence {
+            status: BurnCheckEvidenceStatus::Available,
+            items,
         })
     }
 
@@ -790,6 +1256,13 @@ impl RemediationController {
         let targets = self.list_burn_check_targets(store, detector, context)?;
         let now = now_epoch();
         if targets.targets.is_empty() {
+            if detector == DetectorId::IgnoredInstructions {
+                return Ok(CheckPromptFixResult {
+                    prompt: fallback_remediation_prompt(detector)
+                        .map_err(ControllerError::PromptUnavailable)?
+                        .into_string(),
+                });
+            }
             return Err(ControllerError::CheckPromptUnavailable);
         }
         if targets.truncated {
@@ -1974,7 +2447,7 @@ impl RemediationController {
         prompt: &str,
         now: i64,
     ) -> Result<(Vec<RemediationRecord>, String), ControllerError> {
-        if targets.is_empty() {
+        if !prompt_watch_supported(targets.iter().map(|target| target.finding().detector)) {
             return Ok((Vec::new(), prompt.to_owned()));
         }
         let watch_inputs = targets
@@ -2088,16 +2561,19 @@ impl RemediationController {
 }
 
 fn resolve_category_lifecycle(
+    detector: DetectorId,
     finding: u64,
     clean: u64,
     awaiting_evidence: bool,
 ) -> Option<ChecksCategoryLifecyclePayload> {
-    if awaiting_evidence {
-        Some(ChecksCategoryLifecyclePayload::AwaitingVerification)
-    } else if finding > 0 {
+    if finding > 0 && detector == DetectorId::IgnoredInstructions {
         Some(ChecksCategoryLifecyclePayload::Failing)
+    } else if awaiting_evidence {
+        Some(ChecksCategoryLifecyclePayload::AwaitingVerification)
     } else if clean > 0 {
         Some(ChecksCategoryLifecyclePayload::Passing)
+    } else if finding > 0 {
+        Some(ChecksCategoryLifecyclePayload::Failing)
     } else {
         None
     }

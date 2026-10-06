@@ -18,7 +18,7 @@ describe("Burn Check import boundaries", () => {
   })
 
   it("keeps the presentation adapter independent of UI", () => {
-    const sources = imports("lib/presentation/burnChecks.ts")
+    const sources = imports("lib/presentation/checkStatus.ts")
     expect(
       sources.some((source) => source.includes("components") || source.includes("views")),
     ).toBe(false)

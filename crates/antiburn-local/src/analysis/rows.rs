@@ -148,6 +148,27 @@ pub const TURN_SCHEMA_V8_SQL: &str = r#"
 ALTER TABLE turn ADD COLUMN cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0;
 "#;
 
+/// DDL that preserves content-part authority and native tool joins.
+pub const TURN_SCHEMA_V9_SQL: &str = r#"
+ALTER TABLE turn_content ADD COLUMN authority TEXT NOT NULL DEFAULT 'unknown'
+    CHECK (authority IN ('user', 'assistant', 'system', 'developer', 'tool', 'unknown'));
+ALTER TABLE turn_content ADD COLUMN tool_name TEXT;
+ALTER TABLE turn_content ADD COLUMN tool_call_id TEXT;
+"#;
+
+/// DDL that persists the one-time normalized semantic fields for tool input.
+pub const TURN_SCHEMA_V10_SQL: &str = r#"
+ALTER TABLE turn_content ADD COLUMN normalized_fields_json TEXT
+    CHECK (normalized_fields_json IS NULL OR json_valid(normalized_fields_json));
+"#;
+
+pub const TURN_SCHEMA_V11_SQL: &str = r#"
+CREATE INDEX turn_content_source_page
+    ON turn (environment_key, agent, session_id, claim_fence, source_key, turn_index);
+CREATE INDEX turn_content_recent_page
+    ON turn (environment_key, agent, session_id, claim_fence, turn_index DESC, source_key DESC);
+"#;
+
 /// DDL for the `session_coverage` table: one row per `(environment_key,
 /// agent, session_id, claim_fence)`, holding the serialized
 /// [`SessionCoverageRecord`] a pass wrote alongside its turn rows under the
@@ -218,7 +239,8 @@ CREATE TABLE source_resume (
 /// [`TURN_SCHEMA_V2_SQL`], [`TURN_SCHEMA_V3_SQL`],
 /// [`SESSION_COVERAGE_SCHEMA_SQL`], [`TURN_SCHEMA_V4_SQL`],
 /// [`SOURCE_RESUME_SCHEMA_SQL`], [`TURN_SCHEMA_V5_SQL`], and
-/// [`TURN_SCHEMA_V6_SQL`], [`TURN_SCHEMA_V7_SQL`], and [`TURN_SCHEMA_V8_SQL`] as its own
+/// [`TURN_SCHEMA_V6_SQL`], [`TURN_SCHEMA_V7_SQL`], [`TURN_SCHEMA_V8_SQL`],
+/// [`TURN_SCHEMA_V9_SQL`], and [`TURN_SCHEMA_V10_SQL`] as its own
 /// migrations instead, since [`TURN_SCHEMA_SQL`] is already applied on user machines.
 pub const TURN_MIGRATIONS: &[&str] = &[
     TURN_SCHEMA_SQL,
@@ -231,6 +253,9 @@ pub const TURN_MIGRATIONS: &[&str] = &[
     TURN_SCHEMA_V6_SQL,
     TURN_SCHEMA_V7_SQL,
     TURN_SCHEMA_V8_SQL,
+    TURN_SCHEMA_V9_SQL,
+    TURN_SCHEMA_V10_SQL,
+    TURN_SCHEMA_V11_SQL,
 ];
 
 /// Number of rows a [`TurnRowSink`] buffers before it writes them, unless the
@@ -679,8 +704,9 @@ const INSERT_TURN_SQL: &str = "INSERT INTO turn (
 )";
 
 const INSERT_TURN_CONTENT_SQL: &str = "INSERT INTO turn_content (
-    turn_rowid, part_index, kind, content, truncated
-) VALUES (?1, ?2, ?3, ?4, ?5)";
+    turn_rowid, part_index, kind, content, truncated, authority,
+    tool_name, tool_call_id, normalized_fields_json
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)";
 
 /// Inserts one batch of rows for `key`, all stamped with `claim_fence`, and
 /// each row's captured content (if any) into `turn_content`.
@@ -733,12 +759,26 @@ pub fn insert_turn_rows(
         if !row.content.is_empty() {
             let turn_rowid = conn.last_insert_rowid();
             for (part_index, part) in row.content.iter().enumerate() {
+                let normalized_fields = part
+                    .normalized_fields
+                    .as_ref()
+                    .map(|fields| {
+                        let mut value = serde_json::to_value(fields)?;
+                        value["metadata"] = serde_json::to_value(&part.metadata)?;
+                        serde_json::to_string(&value)
+                    })
+                    .transpose()
+                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
                 content_statement.execute(params![
                     turn_rowid,
                     part_index as i64,
                     part.kind.as_str(),
                     part.text.as_bytes(),
                     i64::from(part.truncated),
+                    part.authority.as_str(),
+                    part.tool_name,
+                    part.tool_call_id,
+                    normalized_fields,
                 ])?;
             }
         }
@@ -1464,11 +1504,10 @@ mod tests {
             INSERT INTO session VALUES ('native', 'pi', 's1');",
         )
         .unwrap();
-        // Stop before V7 and V8 so the test can apply each in isolation:
-        // V7 adds `provider`/`api` to a legacy row, and V8 (applied right
-        // after) adds `cache_write_1h_tokens`, which `query_turn_rows`
-        // needs present to run at all.
-        for migration in &TURN_MIGRATIONS[..TURN_MIGRATIONS.len() - 2] {
+        // Stop before V7 through V11 so the test can apply each in isolation.
+        // V7 adds routes, V8 adds one-hour cache writes, and V9 adds content
+        // authority/tool identities. V10 adds normalized tool-input fields.
+        for migration in &TURN_MIGRATIONS[..TURN_MIGRATIONS.len() - 5] {
             conn.execute_batch(migration).unwrap();
         }
         conn.execute_batch(
@@ -1482,6 +1521,9 @@ mod tests {
         .unwrap();
         conn.execute_batch(TURN_SCHEMA_V7_SQL).unwrap();
         conn.execute_batch(TURN_SCHEMA_V8_SQL).unwrap();
+        conn.execute_batch(TURN_SCHEMA_V9_SQL).unwrap();
+        conn.execute_batch(TURN_SCHEMA_V10_SQL).unwrap();
+        conn.execute_batch(TURN_SCHEMA_V11_SQL).unwrap();
         let key = TurnSessionKey {
             environment_key: "native",
             agent: "pi",

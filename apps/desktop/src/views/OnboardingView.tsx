@@ -65,6 +65,8 @@ export function OnboardingView() {
         onRemoveScanRoot={session.removeScanRoot}
         repositories={state.repositories}
         onToggleRepository={session.toggleRepository}
+        includeNonRepoFolders={state.includeNonRepoFolders}
+        onIncludeNonRepoFoldersChange={session.setIncludeNonRepoFolders}
         onDiscover={session.rescan}
         scanStatus={state.scanStatus}
         liveUsageMeters={state.liveUsageMeters}

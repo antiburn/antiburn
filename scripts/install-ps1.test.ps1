@@ -5,6 +5,100 @@ BeforeAll {
 }
 
 Describe 'install.ps1' {
+    Context 'Windows architecture' {
+        It 'selects x64 for an AMD64 processor' {
+            Mock Get-CimInstance { [PSCustomObject]@{ Architecture = 9 } }
+            Get-WindowsArchitecture | Should -Be 'x64'
+        }
+
+        It 'selects ARM64 even when PowerShell runs under x64 emulation' {
+            Mock Get-CimInstance { [PSCustomObject]@{ Architecture = 12 } }
+            $previous = $env:PROCESSOR_ARCHITECTURE
+            try {
+                $env:PROCESSOR_ARCHITECTURE = 'AMD64'
+                Get-WindowsArchitecture | Should -Be 'arm64'
+            }
+            finally {
+                $env:PROCESSOR_ARCHITECTURE = $previous
+            }
+        }
+
+        It 'rejects unsupported processor architecture <Architecture>' -ForEach @(0, 5, 6) {
+            Mock Get-CimInstance { [PSCustomObject]@{ Architecture = $Architecture } }
+            { Get-WindowsArchitecture } | Should -Throw '*Unsupported Windows processor architecture*'
+        }
+
+        It 'rejects an empty processor query' {
+            Mock Get-CimInstance { }
+            { Get-WindowsArchitecture } | Should -Throw '*Unsupported Windows processor architecture*'
+        }
+    }
+
+    Context 'Architecture-specific installation' {
+        BeforeEach {
+            Mock Write-InstallerBanner { }
+            Mock Write-InstallerInfo { }
+            Mock Write-Warning { }
+            Mock Get-AntiburnRelease {
+                [PSCustomObject]@{ Version = '1.2.3'; Tag = 'antiburn-v1.2.3' }
+            }
+            Mock Invoke-InstallerDownload {
+                if ($Uri.AbsolutePath.EndsWith('/SHA256SUMS')) {
+                    $hash = (Get-FileHash -LiteralPath $script:FixtureInstaller -Algorithm SHA256).Hash
+                    Set-Content -LiteralPath $OutFile -Value "$hash  $script:ExpectedAsset"
+                }
+                else {
+                    Copy-Item -LiteralPath $script:FixtureInstaller -Destination $OutFile
+                }
+            }
+            Mock Start-Process { [PSCustomObject]@{ ExitCode = 0 } }
+            Mock Test-Path { $true } -ParameterFilter {
+                $LiteralPath -eq (Join-Path $env:LOCALAPPDATA 'antiburn\antiburn.exe')
+            }
+            $script:FixtureInstaller = Join-Path $TestDrive 'synthetic-installer.exe'
+            Set-Content -LiteralPath $script:FixtureInstaller -Value 'synthetic installer'
+            $script:PreviousVersion = $env:ANTIBURN_VERSION
+            $script:PreviousAttestation = $env:ANTIBURN_VERIFY_ATTESTATION
+            $env:ANTIBURN_VERSION = ''
+            $env:ANTIBURN_VERIFY_ATTESTATION = ''
+        }
+
+        AfterEach {
+            $env:ANTIBURN_VERSION = $script:PreviousVersion
+            $env:ANTIBURN_VERIFY_ATTESTATION = $script:PreviousAttestation
+        }
+
+        It 'downloads and verifies the <Label> installer before starting it' -ForEach @(
+            @{ Architecture = 9; Label = 'x64' }
+            @{ Architecture = 12; Label = 'arm64' }
+        ) {
+            Mock Get-CimInstance { [PSCustomObject]@{ Architecture = $Architecture } }
+            $script:ExpectedAsset = "antiburn_1.2.3_${Label}-setup.exe"
+
+            Invoke-AntiburnInstall -RequestedVersion '1.2.3'
+
+            Should -Invoke Invoke-InstallerDownload -Times 1 -Exactly -ParameterFilter {
+                $Uri.AbsoluteUri -eq "https://github.com/antiburn/antiburn/releases/download/antiburn-v1.2.3/$script:ExpectedAsset"
+            }
+            Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter {
+                (Split-Path -Leaf $FilePath) -eq $script:ExpectedAsset -and
+                $ArgumentList -eq '/P /R' -and $Wait -and $PassThru
+            }
+        }
+
+        It 'does not start the ARM64 installer when checksum verification fails' {
+            Mock Get-CimInstance { [PSCustomObject]@{ Architecture = 12 } }
+            $script:ExpectedAsset = 'antiburn_1.2.3_arm64-setup.exe'
+            Mock Invoke-InstallerDownload {
+                Set-Content -LiteralPath $OutFile -Value "$('a' * 64)  $script:ExpectedAsset"
+            }
+
+            { Invoke-AntiburnInstall -RequestedVersion '1.2.3' } |
+                Should -Throw '*Checksum verification failed*'
+            Should -Invoke Start-Process -Times 0 -Exactly
+        }
+    }
+
     It 'selects one exact checksum entry' {
         $checksums = Join-Path $TestDrive 'SHA256SUMS'
         $hash = 'a' * 64

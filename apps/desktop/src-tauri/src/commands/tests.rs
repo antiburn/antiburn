@@ -1,0 +1,1323 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::time::Duration;
+
+use antiburn_local::analysis::price_breakdown;
+use antiburn_local::pricing::ModelTokens;
+
+use super::*;
+
+#[test]
+fn hud_locking_commands_dispatch_to_blocking_workers() {
+    let source = include_str!("../hud_commands.rs");
+    for name in [
+        "hide_overlay_window",
+        "resize_overlay_window",
+        "set_hud_detail_size",
+        "tear_off_overlay",
+        "set_hud_island",
+    ] {
+        let signature = format!("pub async fn {name}(");
+        let body = source
+            .split_once(&signature)
+            .unwrap_or_else(|| panic!("{name} must not run on the UI thread"))
+            .1
+            .split_once("\n}")
+            .expect("the command has a body")
+            .0;
+        let dispatch = body
+            .find("run_blocking(move ||")
+            .expect("a blocking worker");
+        let hud_call = body[dispatch..]
+            .find("antiburn_hud::")
+            .expect("a HUD operation")
+            + dispatch;
+        assert!(dispatch < hud_call, "{name} dispatches before locking");
+        assert!(body.contains(".await"), "{name} awaits completion");
+    }
+}
+
+#[test]
+fn hud_notch_reads_do_not_dispatch_mutations_to_the_main_thread() {
+    let source = include_str!("../hud_commands.rs");
+    assert!(!source.contains("on_main_value(&app, antiburn_hud::settle_after_drag)"));
+    assert!(!source.contains("move |app| antiburn_hud::restore_dock(app, dock)"));
+    let restore = include_str!("../hud.rs")
+        .split_once("pub fn restore_at_launch(")
+        .unwrap()
+        .1;
+    let restore = restore.split_once("\n}").unwrap().0;
+    let dispatch = restore
+        .find("spawn_blocking")
+        .expect("startup dispatches to a worker");
+    let open = restore
+        .find("antiburn_hud::open")
+        .expect("startup opens the HUD");
+    assert!(dispatch < open);
+}
+
+#[test]
+fn hud_hover_intent_stays_synchronous_and_outside_the_resize_lock() {
+    let commands = include_str!("../hud_commands.rs");
+    let hud = include_str!("../../crates/hud/src/lib.rs");
+    for name in ["show_hud_detail", "hide_hud_detail"] {
+        assert!(commands.contains(&format!("pub fn {name}(")));
+    }
+    let show = hud.split_once("pub fn show_detail(").unwrap().1;
+    let show = show.split_once("\n}").unwrap().0;
+    assert!(!show.contains("resize_apply_guard"));
+    assert!(!show.contains("spawn"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn hud_lock_contention_leaves_native_query_dispatch_responsive() {
+    let lock = std::sync::Arc::new(std::sync::Mutex::new(()));
+    let scale_lock = lock.clone();
+    let (query_tx, query_rx) = tokio::sync::oneshot::channel();
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    let scale = tokio::spawn(run_blocking(move || {
+        let _guard = scale_lock.lock().expect("scale lock");
+        query_tx.send(()).expect("native query dispatch");
+        reply_rx.recv_timeout(Duration::from_secs(5)).map_err(fail)
+    }));
+    query_rx
+        .await
+        .expect("scale holds the lock and requests the UI");
+    let (resize_tx, resize_rx) = tokio::sync::oneshot::channel();
+    let resize = tokio::spawn(run_blocking(move || {
+        resize_tx.send(()).expect("resize starts");
+        let _guard = lock.lock().expect("resize lock");
+        Ok(())
+    }));
+    tokio::time::timeout(Duration::from_secs(2), resize_rx)
+        .await
+        .expect("resize dispatch does not block the UI")
+        .expect("resize starts while scale holds the lock");
+    assert!(!resize.is_finished());
+    reply_tx
+        .send(())
+        .expect("the UI can answer the native query");
+    scale
+        .await
+        .expect("scale joins")
+        .expect("native query succeeds");
+    resize
+        .await
+        .expect("resize joins")
+        .expect("resize completes");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn blocking_command_work_keeps_the_current_thread_runtime_responsive() {
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let operation = tokio::spawn(run_blocking(move || {
+        let _ = started_tx.send(());
+        release_rx
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(fail)
+    }));
+
+    tokio::time::timeout(Duration::from_secs(2), started_rx)
+        .await
+        .expect("the blocking operation starts without occupying the runtime")
+        .expect("the blocking operation reports that it started");
+    tokio::time::timeout(
+        Duration::from_millis(250),
+        tokio::time::sleep(Duration::from_millis(1)),
+    )
+    .await
+    .expect("the current-thread runtime advances while blocking work remains");
+    assert!(!operation.is_finished());
+    release_tx
+        .send(())
+        .expect("the blocking operation accepts release");
+    operation
+        .await
+        .expect("the command task joins")
+        .expect("the blocking operation succeeds");
+}
+
+#[test]
+fn burn_check_remediation_rejects_unrelated_windows() {
+    assert!(ensure_checks_window(popover::LABEL).is_ok());
+    assert!(ensure_checks_window(crate::main_window::LABEL).is_ok());
+    assert!(ensure_checks_window("settings").is_err());
+    assert!(ensure_checks_window("onboarding").is_err());
+    assert!(ensure_checks_window(crate::popover_peek::LABEL).is_err());
+}
+
+#[test]
+fn burn_check_snooze_command_rejects_malformed_stored_state() {
+    let store = Store::open_in_memory(Path::new("/tmp/antiburn-snooze-command-test")).unwrap();
+    store.save_burn_check_snoozes("not json").unwrap();
+
+    assert!(current_burn_check_snoozes(&store).is_err());
+}
+
+#[test]
+fn burn_check_payload_keeps_check_samples_diverse_and_target_samples_independent() {
+    use crate::remediation::{
+        AutoFixAvailability, BurnCheckDisplayFacts, BurnCheckResourceKind, BurnCheckSampleSession,
+        BurnCheckScopeKind, BurnCheckTarget, BurnCheckTargetList, BurnCheckVerificationLimit,
+        PromptFixAvailability,
+    };
+    use crate::store::{AnalysisRecord, EvidenceCompletion, PublishedEvidence};
+    use antiburn_local::analysis::SourceFormat;
+    use antiburn_local::insights::DetectorId;
+    use antiburn_local::model::AgentKind;
+    use antiburn_local::remediation::{DisplayFacts, FindingDisplay};
+
+    let store = Store::open_in_memory(Path::new("/tmp/antiburn-check-payload-test")).unwrap();
+    let state = crate::main_window::MainWindowState::load(&store);
+    let agents = [
+        "claude-code",
+        "claude-code",
+        "claude-code",
+        "codex",
+        "codex",
+        "codex",
+    ];
+    let mut samples = Vec::new();
+    for (index, agent) in agents.into_iter().enumerate() {
+        let mut record = session_record("file", "/synthetic/private-source.jsonl");
+        record.key = SessionKey::new("native", agent, format!("private-session-{index}"));
+        record.title = Some(format!("Review {index}"));
+        record.cwd = Some("/synthetic/demo".into());
+        record.updated_at_epoch = Some(990 - index as i64);
+        record.source_fingerprint = Some(format!("fingerprint-{index}"));
+        store
+            .upsert_sessions(
+                std::slice::from_ref(&record),
+                &crate::agents::evidence_cohort(),
+            )
+            .unwrap();
+        let claim = store
+            .claim_next_evidence(&[agent], 1000, 60)
+            .unwrap()
+            .unwrap();
+        assert_eq!(claim.key, record.key);
+        let tokens = ModelTokens {
+            input_tokens: 1000,
+            output_tokens: 100,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
+        };
+        let breakdown =
+            serde_json::to_string(&HashMap::from([("claude-sonnet-5", tokens)])).unwrap();
+        let mut evidence = synthetic_evidence();
+        evidence.identity.agent = agent.into();
+        evidence.identity.session_id = record.key.session_id.clone();
+        assert!(
+            store
+                .publish_projections(
+                    &AnalysisRecord {
+                        key: record.key.clone(),
+                        model_breakdown_json: breakdown.clone(),
+                        pricing_breakdown_json: breakdown,
+                        inclusive_models_json: "[]".into(),
+                        initial_context_json: None,
+                        source_summaries_json: None,
+                        provider_hints_json: None,
+                        source_fingerprint: record.source_fingerprint.clone().unwrap(),
+                        pricing_generation: 0,
+                        analyzed_generation: claim.source_generation,
+                        parser_revision: PARSER_REVISION,
+                        analyzer_revision: ANALYZER_REVISION,
+                        metrics_schema_revision: 0,
+                    },
+                    None,
+                    &EvidenceCompletion {
+                        claim_fence: claim.claim_fence,
+                        status: PublishedEvidence::Ready,
+                        evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
+                        evidence_json: serde_json::to_string(&evidence).unwrap(),
+                    },
+                    &[],
+                    &[],
+                )
+                .unwrap()
+        );
+        samples.push(BurnCheckSampleSession {
+            environment_key: record.key.environment_key,
+            agent: record.key.agent,
+            session_id: record.key.session_id,
+            observed_at_ms: 990_000 - index as i64,
+            incarnation: None,
+        });
+    }
+    let target = BurnCheckTarget {
+        finding_id: "finding".into(),
+        action_id: "action".into(),
+        finding: FindingDisplay {
+            detector: DetectorId::SessionsOverDepth,
+            agent: AgentKind::Claude,
+            source_format: SourceFormat::ClaudeJsonl,
+            observation: "Long session".into(),
+            certainty: None,
+            instruction_provenance: None,
+            facts: DisplayFacts {
+                labels: Vec::new(),
+                omitted: 0,
+            },
+        },
+        display: BurnCheckDisplayFacts {
+            resource_kind: BurnCheckResourceKind::Session,
+            resource_identity: None,
+            instruction_title: None,
+            current_value: None,
+            replacement_value: None,
+            scope_kind: BurnCheckScopeKind::Session,
+            quantity: None,
+            quantity_unit: None,
+            observation_count: 3,
+            first_observed_at_ms: 1,
+            last_observed_at_ms: 990_000,
+            estimate_method: None,
+            estimated_opportunity: None,
+            estimated_token_burn_basis_points: None,
+            verification_limit: BurnCheckVerificationLimit::CurrentEvidenceCannotProveFix,
+        },
+        occurrences: 3,
+        affected_sessions: Some(3),
+        project_name: None,
+        project_location: None,
+        project_path: None,
+        config_file: None,
+        auto_fix: AutoFixAvailability::Unavailable(
+            crate::remediation::AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
+        ),
+        prompt_fix: PromptFixAvailability::Available,
+        watch: None,
+        evidence_available: false,
+        coverage_limits: Vec::new(),
+        sample_sessions: samples[..3].to_vec(),
+        expires_at_epoch: 1600,
+    };
+    let mut overlapping_target = target.clone();
+    overlapping_target.sample_sessions = vec![samples[0].clone()];
+    let payload = burn_check_target_list_payload(
+        &state,
+        &store,
+        BurnCheckTargetList {
+            targets: vec![target, overlapping_target],
+            sample_sessions: samples,
+            truncated: false,
+        },
+        1000,
+    )
+    .unwrap();
+    assert_eq!(payload.samples.len(), 6);
+    assert_eq!(
+        payload
+            .samples
+            .iter()
+            .map(|sample| sample.agent.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "claude-code",
+            "claude-code",
+            "claude-code",
+            "codex",
+            "codex",
+            "codex"
+        ]
+    );
+    assert_eq!(payload.targets[0].samples.len(), 3);
+    assert!(
+        payload.targets[0]
+            .samples
+            .iter()
+            .all(|sample| sample.agent == "claude-code")
+    );
+    assert_eq!(payload.targets[1].samples.len(), 1);
+    assert_eq!(
+        payload.samples[0].navigation_handle,
+        payload.targets[1].samples[0].navigation_handle
+    );
+    for sample in &payload.samples {
+        assert!(sample.title.starts_with("Review "));
+        assert_eq!(sample.repo, "demo");
+        assert!(sample.is_active);
+        assert!(!sample.timestamp.is_empty());
+        assert!(sample.cost.is_some());
+        assert!(!sample.models.is_empty());
+        assert_eq!(sample.hygiene.evidence_state, "ready");
+        assert!(
+            state
+                .resolve_sample_handle(&sample.navigation_handle, std::time::Instant::now())
+                .is_ok()
+        );
+    }
+    let encoded = serde_json::to_string(&payload).unwrap();
+    for private in [
+        "sessionId",
+        "environmentKey",
+        "wslDistro",
+        "/synthetic/",
+        "private-session-",
+    ] {
+        assert!(!encoded.contains(private), "the payload exposes {private}");
+    }
+}
+
+#[test]
+fn expected_auto_fix_failures_map_to_closed_outcomes() {
+    assert!(matches!(
+        apply_prepared_outcome(Err(ControllerError::TargetExpired)).unwrap(),
+        ApplyPreparedBurnCheckOperationOutcome::Expired
+    ));
+    assert!(matches!(
+        apply_prepared_outcome(Err(ControllerError::TargetChanged)).unwrap(),
+        ApplyPreparedBurnCheckOperationOutcome::Stale
+    ));
+    assert!(matches!(
+        apply_prepared_outcome(Err(ControllerError::ApplyFailed(
+            crate::agent_config::ApplyError::Conflict(
+                crate::agent_config::ApplyConflict::ChangedContent
+            )
+        )))
+        .unwrap(),
+        ApplyPreparedBurnCheckOperationOutcome::Conflict
+    ));
+    assert!(apply_prepared_outcome(Err(ControllerError::Internal)).is_err());
+    assert!(matches!(
+        prepare_auto_fix_outcome(Err(ControllerError::TargetExpired)).unwrap(),
+        PrepareAutoFixBurnCheckTargetOutcome::Expired
+    ));
+}
+
+#[test]
+fn auto_fix_success_reports_verification_availability() {
+    assert!(matches!(
+        apply_prepared_outcome(Ok(crate::remediation::AutoFixResult {
+            watch_id: "watch".into(),
+            verification_available: true,
+        }))
+        .unwrap(),
+        ApplyPreparedBurnCheckOperationOutcome::AppliedAwaitingVerification { .. }
+    ));
+    assert!(matches!(
+        apply_prepared_outcome(Ok(crate::remediation::AutoFixResult {
+            watch_id: "watch".into(),
+            verification_available: false,
+        }))
+        .unwrap(),
+        ApplyPreparedBurnCheckOperationOutcome::AppliedVerificationUnavailable { .. }
+    ));
+}
+
+#[test]
+fn expected_prompt_failures_map_to_closed_outcomes() {
+    assert!(matches!(
+        prompt_fix_outcome(Err(ControllerError::TargetNotFound)).unwrap(),
+        CopyPromptFixBurnCheckTargetOutcome::Unavailable {
+            reason: PromptFixUnavailableReason::TargetNotFound
+        }
+    ));
+    assert!(matches!(
+        prompt_fix_outcome(Err(ControllerError::PromptUnavailable(
+            antiburn_local::remediation::RemediationUnavailableReason::PromptSizeLimit
+        )))
+        .unwrap(),
+        CopyPromptFixBurnCheckTargetOutcome::Unavailable {
+            reason: PromptFixUnavailableReason::PromptSizeLimit
+        }
+    ));
+    assert!(matches!(
+        prompt_fix_outcome(Err(ControllerError::PromptUnavailable(
+            antiburn_local::remediation::RemediationUnavailableReason::ProtectedBuiltInTool
+        )))
+        .unwrap(),
+        CopyPromptFixBurnCheckTargetOutcome::Unavailable {
+            reason: PromptFixUnavailableReason::ProtectedBuiltInTool
+        }
+    ));
+    assert!(prompt_fix_outcome(Err(ControllerError::PersistenceFailed)).is_err());
+}
+
+#[test]
+fn analytics_documentation_matches_the_installed_release() {
+    assert_eq!(
+        analytics_documentation_url("0.1.0-rc.5"),
+        "https://github.com/antiburn/antiburn/blob/antiburn-v0.1.0-rc.5/docs/analytics.md"
+    );
+}
+
+fn repository(key: &str, name: &str, root: &str) -> RepositoryRecord {
+    RepositoryRecord {
+        key: key.into(),
+        repo_name: name.into(),
+        full_name: format!("avery/{name}"),
+        status: "accessible".into(),
+        repo_root: Some(root.into()),
+        suspected_path: None,
+        worktree_count: 1,
+        session_count: 0,
+        wsl_distro: None,
+        enabled: true,
+    }
+}
+
+#[test]
+fn restarting_onboarding_retires_the_popover_before_opening_setup() {
+    let actions = RefCell::new(Vec::new());
+
+    restart_onboarding_surfaces(
+        || actions.borrow_mut().push("hide_popover"),
+        || {
+            actions.borrow_mut().push("open_onboarding");
+            Ok(())
+        },
+    )
+    .expect("the test transition succeeds");
+
+    assert_eq!(*actions.borrow(), ["hide_popover", "open_onboarding"]);
+}
+
+/// The report request covers thirty days, ends one past now (the end
+/// bound is exclusive), and asks for the native scope only.
+#[test]
+fn the_insights_request_spans_thirty_days_of_the_native_scope() {
+    let request = insights_report_request(1_000_000_000);
+    assert_eq!(request.environment_key, "native");
+    assert_eq!(request.computed_at_epoch, 1_000_000_000);
+    assert_eq!(request.window.end_epoch, 1_000_000_001);
+    assert_eq!(
+        request.window.end_epoch - request.window.start_epoch,
+        30 * 86_400 + 1
+    );
+}
+
+#[test]
+fn a_working_directory_is_labelled_by_the_repository_that_contains_it() {
+    let repositories = vec![repository("a", "widgets", "/home/avery/code/widgets")];
+    assert_eq!(
+        repository_label(&repositories, Some("/home/avery/code/widgets/src/api")),
+        "widgets"
+    );
+}
+
+#[test]
+fn a_nested_clone_wins_over_the_repository_above_it() {
+    let repositories = vec![
+        repository("a", "widgets", "/home/avery/code/widgets"),
+        repository(
+            "b",
+            "vendored",
+            "/home/avery/code/widgets/third_party/vendored",
+        ),
+    ];
+    assert_eq!(
+        repository_label(
+            &repositories,
+            Some("/home/avery/code/widgets/third_party/vendored/src")
+        ),
+        "vendored"
+    );
+}
+
+#[test]
+fn a_directory_outside_every_repository_falls_back_to_its_own_name() {
+    assert_eq!(repository_label(&[], Some("/tmp/scratch")), "scratch");
+    assert_eq!(repository_label(&[], Some("")), "");
+    assert_eq!(repository_label(&[], None), "");
+}
+
+#[test]
+fn a_sibling_directory_is_not_mistaken_for_the_repository() {
+    let repositories = vec![repository("a", "widgets", "/home/avery/code/widgets")];
+    assert_eq!(
+        repository_label(&repositories, Some("/home/avery/code/widgets-legacy")),
+        "widgets-legacy",
+        "the fallback, not the neighbouring repository"
+    );
+}
+
+#[test]
+fn epochs_render_as_the_iso_stamps_the_activity_list_parses() {
+    assert_eq!(iso_from_epoch(Some(0)), "1970-01-01T00:00:00Z");
+    assert_eq!(iso_from_epoch(Some(1_800_000_000)), "2027-01-15T08:00:00Z");
+    // A session with no activity still yields a parseable stamp rather
+    // than an empty string the list would drop.
+    assert_eq!(iso_from_epoch(None), "1970-01-01T00:00:00Z");
+}
+
+#[test]
+fn a_ready_or_unsupported_fence_is_not_stale() {
+    assert!(!analysis_is_stale(Some(
+        crate::store::EvidenceStatus::Ready
+    )));
+    assert!(!analysis_is_stale(Some(
+        crate::store::EvidenceStatus::Unsupported
+    )));
+}
+
+#[test]
+fn a_fence_left_by_a_requeue_or_a_running_pass_is_stale() {
+    // The served rows are the last winning publish's, but the evidence
+    // row itself is not terminal: a fresher pass is queued or running
+    // behind them.
+    assert!(analysis_is_stale(Some(
+        crate::store::EvidenceStatus::Pending
+    )));
+    assert!(analysis_is_stale(Some(
+        crate::store::EvidenceStatus::Processing
+    )));
+}
+
+#[test]
+fn a_failed_pass_behind_an_earlier_publish_is_not_stale_on_its_own() {
+    // Nothing fresher is queued or running: the worker gave up. The
+    // served rows stay marked fresh until something requeues this row,
+    // at which point it reads `pending` again.
+    assert!(!analysis_is_stale(Some(
+        crate::store::EvidenceStatus::Failed
+    )));
+}
+
+fn session_record(source_kind: &str, source_label: &str) -> SessionRecord {
+    SessionRecord {
+        key: SessionKey::for_session("claude-code", "session-1", None),
+        source_kind: source_kind.into(),
+        source_label: source_label.into(),
+        wsl_distro: None,
+        title: None,
+        title_source: None,
+        cwd: None,
+        surface: "cli".into(),
+        updated_at_epoch: None,
+        activity_cursor: String::new(),
+        activity_source: "unknown".into(),
+        subagent_count: 0,
+        fork_parent_session_id: None,
+        source_fingerprint: None,
+    }
+}
+
+#[test]
+fn stored_project_path_preserves_missing_worktrees_and_ignores_relative_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir
+        .path()
+        .join("missing worktree")
+        .to_string_lossy()
+        .into_owned();
+    let mut record = session_record("file", "/transcript/session.jsonl");
+    record.cwd = Some(path.clone());
+    assert_eq!(stored_project_path(Some(&record)), Some(path));
+    record.cwd = Some("relative/project".into());
+    assert_eq!(stored_project_path(Some(&record)), None);
+    record.cwd = None;
+    assert_eq!(stored_project_path(Some(&record)), None);
+    assert_eq!(stored_project_path(None), None);
+}
+
+#[test]
+fn a_file_backed_session_reveals_its_transcript_path() {
+    let record = session_record("file", "/home/avery/.claude/projects/demo/session.jsonl");
+    assert_eq!(
+        stored_source_path(Some(&record)).as_deref(),
+        Some("/home/avery/.claude/projects/demo/session.jsonl")
+    );
+}
+
+#[test]
+fn a_non_file_session_has_no_reveal_path() {
+    let record = session_record("providerDb", "opencode:root-session");
+    assert_eq!(stored_source_path(Some(&record)), None);
+}
+
+#[test]
+fn no_stored_record_has_no_reveal_path() {
+    assert_eq!(stored_source_path(None), None);
+}
+
+#[test]
+fn a_relative_path_never_reaches_the_platform_opener() {
+    for path in [
+        "",
+        "relative/session.jsonl",
+        "./session.jsonl",
+        "../../etc/passwd",
+    ] {
+        let error = revealable_path(path).expect_err("must be rejected");
+        assert!(
+            error.contains("absolute"),
+            "{path:?} should be refused for not being absolute, got {error:?}"
+        );
+    }
+}
+
+#[test]
+fn a_path_that_is_not_on_this_machine_is_refused_rather_than_forwarded() {
+    let absent = if cfg!(windows) {
+        r"C:\antiburn\does\not\exist\session.jsonl"
+    } else {
+        "/antiburn/does/not/exist/session.jsonl"
+    };
+    let error = revealable_path(absent).expect_err("must be rejected");
+    assert!(error.contains("not on this machine"), "got {error:?}");
+}
+
+#[test]
+fn a_real_file_resolves_to_a_canonical_path() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let file = directory.path().join("session.jsonl");
+    std::fs::write(&file, "{}\n").unwrap();
+
+    let resolved = revealable_path(&file.to_string_lossy()).expect("a real file resolves");
+    assert!(resolved.is_absolute());
+    assert!(resolved.exists());
+    assert_eq!(resolved.file_name(), file.file_name());
+    // Nothing extended-length reaches the opener, on any platform.
+    assert!(!resolved.to_string_lossy().starts_with(r"\\?\"));
+
+    // The data folder is revealed the same way, so directories resolve too.
+    let folder = revealable_path(&directory.path().to_string_lossy()).unwrap();
+    assert!(folder.is_dir());
+}
+
+#[test]
+fn a_traversal_dressed_up_as_an_absolute_path_is_resolved_before_it_is_used() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let nested = directory.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let file = directory.path().join("session.jsonl");
+    std::fs::write(&file, "{}\n").unwrap();
+
+    let sneaky = nested.join("..").join("session.jsonl");
+    let resolved = revealable_path(&sneaky.to_string_lossy()).unwrap();
+    assert_eq!(
+        resolved,
+        revealable_path(&file.to_string_lossy()).unwrap(),
+        "the opener sees the resolved path, never the one that was typed"
+    );
+}
+
+#[test]
+fn cached_remote_paths_are_rejected_without_a_renderer_origin_hint() {
+    let root = Path::new("/private/antiburn/remote-sessions");
+    assert!(is_remote_cache_path(
+        Path::new("/private/antiburn/remote-sessions/transcripts/host/session.jsonl"),
+        root,
+    ));
+    assert!(!is_remote_cache_path(
+        Path::new("/private/antiburn/local/session.jsonl"),
+        root,
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn remote_path_guard_normalizes_drive_and_unc_prefixes() {
+    for (root, inside, outside) in [
+        (
+            r"\\?\C:\cache\remote",
+            r"C:\cache\remote\transcripts\file",
+            r"C:\cache\remote-other\file",
+        ),
+        (
+            r"\\?\UNC\server\share\remote",
+            r"\\server\share\remote\file",
+            r"\\server\share\elsewhere\file",
+        ),
+    ] {
+        assert!(is_remote_cache_path(Path::new(inside), Path::new(root)));
+        assert!(!is_remote_cache_path(Path::new(outside), Path::new(root)));
+    }
+}
+
+fn evidence_row(
+    status: crate::store::EvidenceStatus,
+    evidence: Option<SessionEvidence>,
+) -> crate::store::EvidenceRow {
+    crate::store::EvidenceRow {
+        key: SessionKey::new("native", "claude-code", "synthetic-hygiene"),
+        status,
+        analyzed_generation: Some(1),
+        processed_fingerprint: Some("synthetic-fingerprint".to_owned()),
+        parser_revision: Some(PARSER_REVISION),
+        analyzer_revision: Some(ANALYZER_REVISION),
+        evidence_schema_revision: Some(EVIDENCE_SCHEMA_REVISION),
+        evidence_json: evidence
+            .map(|value| serde_json::to_string(&value).expect("synthetic evidence serializes")),
+        retry_count: 0,
+        claim_fence: 0,
+        claimed_at_epoch: None,
+        lease_expires_at_epoch: None,
+        next_attempt_at_epoch: None,
+        analyzed_at_epoch: Some(1),
+        last_error: None,
+        published_fence: Some(0),
+    }
+}
+
+fn synthetic_evidence_accumulator() -> antiburn_local::analysis::SessionEvidenceAccumulator {
+    antiburn_local::analysis::SessionEvidenceAccumulator::new(
+        antiburn_local::analysis::EvidenceSource {
+            agent: "claude-code".to_owned(),
+            session_id: "synthetic-hygiene".to_owned(),
+            kind: antiburn_local::analysis::SourceKind::File,
+            capabilities: antiburn_local::analysis::SourceCapabilities::claude(),
+        },
+    )
+}
+
+pub(super) fn synthetic_evidence() -> SessionEvidence {
+    synthetic_evidence_accumulator().evidence(&antiburn_local::analysis::TurnFacts::default())
+}
+
+// The generation `evidence_row` stamps as `analyzed_generation`. Tests
+// that are not exercising a generation mismatch pass this back as the
+// session's current source generation, so the row reads as current.
+const SYNTHETIC_GENERATION: Option<i64> = Some(1);
+
+#[test]
+fn session_hygiene_preserves_queue_states_without_a_false_clean_result() {
+    let missing = session_hygiene_payload(None, SYNTHETIC_GENERATION);
+    assert_eq!(missing.evidence_state, "pending");
+    assert!(
+        missing
+            .badges
+            .iter()
+            .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed))
+    );
+
+    let processing = session_hygiene_payload(
+        Some(evidence_row(crate::store::EvidenceStatus::Processing, None)),
+        SYNTHETIC_GENERATION,
+    );
+    assert_eq!(processing.evidence_state, "processing");
+    assert!(
+        processing
+            .badges
+            .iter()
+            .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed)),
+        "a processing row with no prior evidence has nothing to serve"
+    );
+
+    let pending_without_evidence = session_hygiene_payload(
+        Some(evidence_row(crate::store::EvidenceStatus::Pending, None)),
+        SYNTHETIC_GENERATION,
+    );
+    assert_eq!(pending_without_evidence.evidence_state, "pending");
+    assert!(
+        pending_without_evidence
+            .badges
+            .iter()
+            .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed)),
+        "a pending row with no prior evidence has nothing to serve"
+    );
+}
+
+/// Debug strings of a payload's badge statuses, in badge order — a
+/// cheap stand-in for `PartialEq` (the DTO derives `Debug` only).
+fn badge_signature(payload: &SessionHygienePayload) -> Vec<String> {
+    payload
+        .badges
+        .iter()
+        .map(|badge| format!("{:?}", badge.status))
+        .collect()
+}
+
+#[test]
+fn session_hygiene_serves_the_last_verdict_while_old_revisions_recompute() {
+    // The row's revisions fell behind (a parser/analyzer/schema bump),
+    // so a requeue is pending, but the row still carries the evidence
+    // from its last publish. The session UI shows that last verdict,
+    // marked "stale", instead of a blank not-assessed result.
+    let evidence = synthetic_evidence();
+    let mut stale_row = evidence_row(crate::store::EvidenceStatus::Ready, Some(evidence.clone()));
+    stale_row.parser_revision = Some(PARSER_REVISION - 1);
+    let fresh_row = evidence_row(crate::store::EvidenceStatus::Ready, Some(evidence));
+
+    let stale_payload = session_hygiene_payload(Some(stale_row), SYNTHETIC_GENERATION);
+    let fresh_payload = session_hygiene_payload(Some(fresh_row), SYNTHETIC_GENERATION);
+
+    assert_eq!(stale_payload.evidence_state, "stale");
+    assert_eq!(
+        badge_signature(&stale_payload),
+        badge_signature(&fresh_payload),
+        "a stale row serves the same verdict as the last publish, only marked stale"
+    );
+}
+
+#[test]
+fn session_hygiene_serves_the_last_verdict_while_a_requeued_row_recomputes() {
+    // `reconcile_evidence_revisions` flips a stale Ready row's status to
+    // Pending but keeps its old `evidence_json` by design (see
+    // `store/mod.rs`). This row copies that shape: a non-Ready status
+    // next to fully current evidence from a previous pass. The
+    // maintainer's ruling: show that last verdict, marked "stale",
+    // instead of "Computing checks…" while the requeue runs.
+    let evidence = synthetic_evidence();
+    let mut pending_row = evidence_row(
+        crate::store::EvidenceStatus::Pending,
+        Some(evidence.clone()),
+    );
+    pending_row.retry_count = 0;
+    let ready_row = evidence_row(crate::store::EvidenceStatus::Ready, Some(evidence));
+
+    let pending_payload = session_hygiene_payload(Some(pending_row), SYNTHETIC_GENERATION);
+    let ready_payload = session_hygiene_payload(Some(ready_row), SYNTHETIC_GENERATION);
+
+    assert_eq!(pending_payload.evidence_state, "stale");
+    assert_eq!(
+        badge_signature(&pending_payload),
+        badge_signature(&ready_payload),
+        "leftover evidence_json on a requeued row serves the last real verdict, not a blank one"
+    );
+}
+
+#[test]
+fn session_hygiene_serves_the_last_verdict_from_an_earlier_source_generation() {
+    // The source grew a new generation (a requeue not yet run, or still
+    // pending) while this row's evidence is still Ready and carries
+    // current revisions from the previous generation. The row's own
+    // evidence is served as "stale" rather than blanked out.
+    let evidence = synthetic_evidence();
+    let row = evidence_row(crate::store::EvidenceStatus::Ready, Some(evidence.clone()));
+    assert_eq!(row.analyzed_generation, SYNTHETIC_GENERATION);
+    let newer_source_generation = Some(2);
+    let current_row = evidence_row(crate::store::EvidenceStatus::Ready, Some(evidence));
+
+    let stale_payload = session_hygiene_payload(Some(row), newer_source_generation);
+    let current_payload = session_hygiene_payload(Some(current_row), SYNTHETIC_GENERATION);
+
+    assert_eq!(stale_payload.evidence_state, "stale");
+    assert_eq!(
+        badge_signature(&stale_payload),
+        badge_signature(&current_payload),
+        "evidence analyzed against a superseded source generation still serves its own verdict, marked stale"
+    );
+}
+
+#[test]
+fn session_hygiene_batches_preserve_order_and_isolate_invalid_rows() {
+    let mut invalid = evidence_row(crate::store::EvidenceStatus::Ready, None);
+    invalid.evidence_json = Some("{".to_owned());
+    let payloads = session_hygiene_payloads(
+        vec![
+            None,
+            Some(invalid),
+            Some(evidence_row(
+                crate::store::EvidenceStatus::Ready,
+                Some(synthetic_evidence()),
+            )),
+        ],
+        vec![
+            SYNTHETIC_GENERATION,
+            SYNTHETIC_GENERATION,
+            SYNTHETIC_GENERATION,
+        ],
+    );
+
+    assert_eq!(payloads.len(), 3);
+    assert_eq!(payloads[0].evidence_state, "pending");
+    assert_eq!(payloads[1].evidence_state, "failed");
+    assert_eq!(payloads[2].evidence_state, "ready");
+}
+
+#[test]
+fn session_hygiene_marks_an_accepted_prefix_as_still_growing() {
+    let mut accumulator = synthetic_evidence_accumulator();
+    accumulator.observe_source_outcome(antiburn_local::analysis::VisitOutcome::AcceptedPrefix {
+        boundary: 1,
+    });
+    let evidence = accumulator.evidence(&antiburn_local::analysis::TurnFacts::default());
+    assert!(matches!(
+        evidence.coverage,
+        antiburn_local::analysis::EvidenceCoverage::Partial(
+            antiburn_local::analysis::CoverageReason::PinnedPrefix
+        )
+    ));
+    let row = evidence_row(crate::store::EvidenceStatus::Ready, Some(evidence));
+
+    let payload = session_hygiene_payload(Some(row), SYNTHETIC_GENERATION);
+    assert_eq!(payload.evidence_state, "activelyGrowing");
+    assert!(payload.badges.iter().all(|badge| {
+        // Model Overthinking / Fast Mode Overuse report a missing
+        // signal, because the synthetic evidence carries zero
+        // eligible turns. Every other badge — Obsolete Model
+        // included, since the reviewed production registry is
+        // non-empty and its own rule falls through to the
+        // session-wide coverage check — reports the session-wide
+        // partial coverage from the accepted-prefix outcome.
+        let expected_reason = match badge.id {
+            "modelOverthinking" | "fastModeOveruse" => "signalMissing",
+            _ => "incompleteEvidence",
+        };
+        matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed)
+            && badge.not_assessed_reason == Some(expected_reason)
+    }));
+}
+
+#[test]
+fn the_default_scan_roots_are_absolute_and_under_the_home_directory() {
+    let Some(home) = antiburn_local::paths::home_dir() else {
+        return;
+    };
+    for root in default_scan_roots() {
+        assert!(
+            Path::new(&root).starts_with(&home),
+            "{root} should sit under {}",
+            home.display()
+        );
+    }
+}
+
+#[test]
+fn a_presence_request_is_bounded_by_the_list_row_limit() {
+    let session_ref = |index: usize| crate::session_lifecycle::SessionRef {
+        environment_key: "native".to_owned(),
+        agent: "claude-code".to_owned(),
+        session_id: format!("session-{index}"),
+    };
+    let at_the_bound = (0..MAX_ACTIVITY_ROWS).map(session_ref).collect::<Vec<_>>();
+    assert_eq!(
+        bounded_presence_request(&at_the_bound).map(<[_]>::len),
+        Ok(MAX_ACTIVITY_ROWS)
+    );
+    assert_eq!(bounded_presence_request(&[]).map(<[_]>::len), Ok(0));
+
+    let past_the_bound = (0..=MAX_ACTIVITY_ROWS).map(session_ref).collect::<Vec<_>>();
+    let error = bounded_presence_request(&past_the_bound).expect_err("501 is too many");
+    assert!(error.contains("too many"), "got {error:?}");
+}
+
+#[test]
+fn get_live_sessions_keeps_its_signature() {
+    let source = include_str!("mod.rs").replace("\r\n", "\n");
+    for checkout in [source.clone(), source.replace('\n', "\r\n")] {
+        assert_live_sessions_source_contract(&checkout);
+    }
+}
+
+fn assert_live_sessions_source_contract(source: &str) {
+    let source = source.replace("\r\n", "\n");
+    let expected = "pub fn get_live_sessions(\n    app: tauri::AppHandle,\n    limit: Option<usize>,\n) -> crate::session_lifecycle::LiveSnapshot {\n    app.state::<crate::session_lifecycle::SessionEvents>()\n        .snapshot(limit.unwrap_or(crate::session_lifecycle::DEFAULT_SNAPSHOT_LIMIT))\n}";
+    assert!(
+        source.contains(expected),
+        "the snapshot command changed shape; only its payload may grow"
+    );
+    // The named-presence command guards its bound before the registry
+    // lock and answers through the one presence reader.
+    let presence = source
+        .split("pub fn get_live_sessions_for(")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("the presence command exists");
+    assert!(presence.contains("bounded_presence_request(&sessions)?"));
+    assert!(presence.contains(".presence(sessions)"));
+}
+
+mod session_limit_allocations_tests {
+    use std::path::Path;
+
+    use rusqlite::params;
+
+    use super::*;
+    use crate::store::AnalysisRecord;
+    use crate::store::provider_limit::{FactorPoint, LANE_FIVE_HOUR, LANE_WEEKLY};
+
+    const PROVIDER: &str = "anthropic";
+    const AGENT: &str = "claude-code";
+    const MODEL: &str = "claude-sonnet-5";
+
+    fn account(character: char) -> String {
+        character.to_string().repeat(64)
+    }
+
+    fn memory_store() -> Store {
+        Store::open_in_memory(Path::new("/tmp/antiburn-session-limit-allocations-test"))
+            .expect("opens store")
+    }
+
+    fn synthetic_session(store: &Store, session_id: &str, updated_at_epoch: i64) -> SessionRecord {
+        let record = SessionRecord {
+            key: SessionKey::new("native", AGENT, session_id),
+            source_kind: "inline".to_string(),
+            source_label: "synthetic".to_string(),
+            wsl_distro: None,
+            title: None,
+            title_source: None,
+            cwd: None,
+            surface: "unknown".to_string(),
+            updated_at_epoch: Some(updated_at_epoch),
+            activity_cursor: "synthetic".to_string(),
+            activity_source: "event".to_string(),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+            source_fingerprint: Some("synthetic".to_string()),
+        };
+        store
+            .upsert_sessions(std::slice::from_ref(&record), &[])
+            .expect("stores synthetic session");
+        record
+    }
+
+    /// Give a session an inclusive breakdown of one model, priced through
+    /// the test pricing fixture. `model_breakdown_json` and
+    /// `pricing_breakdown_json` share the same key, as they do for a
+    /// session with no fast-mode turns.
+    fn save_breakdown(store: &Store, key: &SessionKey, input_tokens: u64) {
+        save_breakdown_with_pricing_key(store, key, MODEL, MODEL, input_tokens);
+    }
+
+    /// Give a session an inclusive breakdown that routes under
+    /// `routing_model` (`model_breakdown_json`) but prices under
+    /// `pricing_key` (`pricing_breakdown_json`), the way a fast-mode turn
+    /// does: routing sees the plain model name, pricing sees the
+    /// `-fast`-suffixed catalog key.
+    fn save_breakdown_with_pricing_key(
+        store: &Store,
+        key: &SessionKey,
+        routing_model: &str,
+        pricing_key: &str,
+        input_tokens: u64,
+    ) {
+        let tokens = ModelTokens {
+            input_tokens,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
+        };
+        let model_breakdown =
+            std::collections::HashMap::from([(routing_model.to_string(), tokens.clone())]);
+        let pricing_breakdown =
+            std::collections::HashMap::from([(pricing_key.to_string(), tokens)]);
+        store
+            .save_analysis(
+                &AnalysisRecord {
+                    key: key.clone(),
+                    model_breakdown_json: serde_json::to_string(&model_breakdown)
+                        .expect("serializes the routing breakdown"),
+                    pricing_breakdown_json: serde_json::to_string(&pricing_breakdown)
+                        .expect("serializes the pricing breakdown"),
+                    inclusive_models_json: "[]".to_string(),
+                    initial_context_json: None,
+                    source_summaries_json: None,
+                    provider_hints_json: None,
+                    source_fingerprint: "synthetic".to_string(),
+                    pricing_generation: 0,
+                    analyzed_generation: 0,
+                    parser_revision: 0,
+                    analyzer_revision: 0,
+                    metrics_schema_revision: 0,
+                },
+                None,
+            )
+            .expect("saves synthetic analysis");
+    }
+
+    fn bind_account(store: &Store, key: &SessionKey, account_key: &str) {
+        store
+            .lock()
+            .execute(
+                "INSERT INTO session_provider_account (
+                     environment_key, agent, session_id, provider, account_key,
+                     provenance, confidence, first_seen_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'provider_live', 'direct', '2026-01-01T00:00:00Z')",
+                params![
+                    key.environment_key,
+                    key.agent,
+                    key.session_id,
+                    PROVIDER,
+                    account_key
+                ],
+            )
+            .expect("binds synthetic account");
+    }
+
+    fn seen_account(store: &Store, account_key: &str) {
+        store
+            .lock()
+            .execute(
+                "INSERT INTO provider_account_seen (
+                     agent, provider, account_key, first_seen_epoch, last_seen_epoch
+                 ) VALUES (?1, ?2, ?3, 1, 1)",
+                params![AGENT, PROVIDER, account_key],
+            )
+            .expect("records a seen account");
+    }
+
+    fn insert_point(
+        store: &Store,
+        account_key: &str,
+        lane: &str,
+        effective_at_epoch: i64,
+        usd_per_percent: f64,
+        method: &str,
+    ) {
+        store
+            .upsert_factor_point(&FactorPoint {
+                id: 0,
+                provider: PROVIDER.to_string(),
+                account_key: account_key.to_string(),
+                lane: lane.to_string(),
+                effective_at_epoch,
+                usd_per_percent,
+                method: method.to_string(),
+                sample_count: 1,
+                plan: None,
+                plan_tier: None,
+            })
+            .expect("stores a synthetic factor point");
+    }
+
+    #[test]
+    fn percent_divides_session_cost_by_the_point_at_the_session_end() {
+        let store = memory_store();
+        let account_key = account('a');
+        let session = synthetic_session(&store, "session-1", 1_000);
+        save_breakdown(&store, &session.key, 1_000_000);
+        bind_account(&store, &session.key, &account_key);
+        insert_point(&store, &account_key, LANE_WEEKLY, 500, 2.0, "delta");
+
+        let allocations = session_limit_allocations(&store, std::slice::from_ref(&session))
+            .expect("computes rows");
+        let weekly = allocations
+            .iter()
+            .find(|allocation| allocation.metric == crate::dto::SessionLimitMetric::Weekly)
+            .expect("a weekly row for the bound account");
+        let cost = price_breakdown(&std::collections::HashMap::from([(
+            MODEL.to_string(),
+            ModelTokens {
+                input_tokens: 1_000_000,
+                ..Default::default()
+            },
+        )]))
+        .expect("the fixture model is priced");
+        assert_eq!(weekly.percent, cost.total_usd / 2.0);
+        assert_eq!(weekly.confidence, "learned");
+        assert_eq!(weekly.account_key, Some(account_key));
+    }
+
+    #[test]
+    fn an_older_session_uses_the_earliest_point() {
+        let store = memory_store();
+        let account_key = account('b');
+        let session = synthetic_session(&store, "session-old", 100);
+        save_breakdown(&store, &session.key, 1_000_000);
+        bind_account(&store, &session.key, &account_key);
+        // The session ends well before either point; both fall back to
+        // the earliest one.
+        insert_point(&store, &account_key, LANE_WEEKLY, 5_000, 4.0, "delta");
+        insert_point(&store, &account_key, LANE_WEEKLY, 10_000, 8.0, "delta");
+
+        let allocations = session_limit_allocations(&store, &[session]).expect("computes rows");
+        let weekly = allocations
+            .iter()
+            .find(|allocation| allocation.metric == crate::dto::SessionLimitMetric::Weekly)
+            .expect("a weekly row");
+        let cost = price_breakdown(&std::collections::HashMap::from([(
+            MODEL.to_string(),
+            ModelTokens {
+                input_tokens: 1_000_000,
+                ..Default::default()
+            },
+        )]))
+        .expect("the fixture model is priced");
+        assert_eq!(weekly.percent, cost.total_usd / 4.0);
+    }
+
+    #[test]
+    fn a_missing_factor_yields_no_row() {
+        let store = memory_store();
+        let account_key = account('c');
+        let session = synthetic_session(&store, "session-no-factor", 1_000);
+        save_breakdown(&store, &session.key, 1_000_000);
+        bind_account(&store, &session.key, &account_key);
+
+        let allocations = session_limit_allocations(&store, &[session]).expect("computes rows");
+        assert!(allocations.is_empty());
+    }
+
+    #[test]
+    fn an_unattributed_session_yields_no_row() {
+        let store = memory_store();
+        let session = synthetic_session(&store, "session-ambiguous", 1_000);
+        save_breakdown(&store, &session.key, 1_000_000);
+        // Two accounts seen for the agent, none bound: the two-step rule
+        // cannot resolve one.
+        seen_account(&store, &account('d'));
+        seen_account(&store, &account('e'));
+        insert_point(&store, &account('d'), LANE_WEEKLY, 500, 2.0, "delta");
+
+        let allocations = session_limit_allocations(&store, &[session]).expect("computes rows");
+        assert!(allocations.is_empty());
+    }
+
+    #[test]
+    fn confidence_follows_the_points_method() {
+        let store = memory_store();
+        let account_key = account('f');
+        let session = synthetic_session(&store, "session-seeded", 1_000);
+        save_breakdown(&store, &session.key, 1_000_000);
+        bind_account(&store, &session.key, &account_key);
+        insert_point(
+            &store,
+            &account_key,
+            LANE_FIVE_HOUR,
+            500,
+            2.0,
+            "window_start",
+        );
+
+        let allocations = session_limit_allocations(&store, &[session]).expect("computes rows");
+        let five_hour = allocations
+            .iter()
+            .find(|allocation| allocation.metric == crate::dto::SessionLimitMetric::FiveHour)
+            .expect("a five-hour row");
+        assert_eq!(five_hour.confidence, "seeded");
+    }
+
+    #[test]
+    fn a_fast_mode_session_prices_at_the_fast_rate() {
+        // The fixture catalog prices "gpt-5.6-sol" and its "-fast" tier
+        // differently, so this model shows whether the badge reads the
+        // speed-aware catalog key or the plain routing name.
+        const FAST_MODEL: &str = "gpt-5.6-sol";
+        let store = memory_store();
+        let account_key = account('g');
+        let session = synthetic_session(&store, "session-fast", 1_000);
+        save_breakdown_with_pricing_key(
+            &store,
+            &session.key,
+            FAST_MODEL,
+            "gpt-5.6-sol-fast",
+            1_000_000,
+        );
+        bind_account(&store, &session.key, &account_key);
+        insert_point(&store, &account_key, LANE_WEEKLY, 500, 2.0, "delta");
+
+        let allocations = session_limit_allocations(&store, std::slice::from_ref(&session))
+            .expect("computes rows");
+        let weekly = allocations
+            .iter()
+            .find(|allocation| allocation.metric == crate::dto::SessionLimitMetric::Weekly)
+            .expect("a weekly row for the bound account");
+        let tokens = ModelTokens {
+            input_tokens: 1_000_000,
+            ..Default::default()
+        };
+        let fast_cost = price_breakdown(&std::collections::HashMap::from([(
+            "gpt-5.6-sol-fast".to_string(),
+            tokens.clone(),
+        )]))
+        .expect("the fixture fast tier is priced");
+        let base_cost = price_breakdown(&std::collections::HashMap::from([(
+            FAST_MODEL.to_string(),
+            tokens,
+        )]))
+        .expect("the fixture base tier is priced");
+        assert_ne!(
+            fast_cost.total_usd, base_cost.total_usd,
+            "the fixture must price the fast tier differently for this test to mean anything"
+        );
+        assert_eq!(weekly.percent, fast_cost.total_usd / 2.0);
+    }
+}

@@ -50,7 +50,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Test the CI control plane
-        run: node --test scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/classify-ci-changes.test.mjs scripts/mem-report.test.mjs scripts/window-open-report.test.mjs scripts/verify-linux-appimage.test.mjs scripts/third-party-notices.test.mjs scripts/verify-app-engine-release.test.mjs scripts/wait-for-main-ci.test.mjs
+        run: node --test scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/classify-ci-changes.test.mjs scripts/mem-report.test.mjs scripts/window-open-report.test.mjs scripts/verify-linux-appimage.test.mjs scripts/third-party-notices.test.mjs scripts/verify-app-engine-release.test.mjs scripts/wait-for-main-ci.test.mjs scripts/update-homebrew-cask.test.mjs scripts/windows-signing-workflow.test.mjs
 
       # The drift guard runs here, not in a classified job. It reads the
       # contract, the stylesheets, and the popover window's own corner
@@ -80,6 +80,8 @@ jobs:
             os: ubuntu-latest
           - name: windows
             os: windows-latest
+          - name: windows-arm64
+            os: windows-11-arm
           - name: macos
             os: macos-latest
     runs-on: ${{ matrix.os }}
@@ -119,6 +121,12 @@ jobs:
       - name: Tests
         working-directory: crates/antiburn-local
         run: cargo nextest run --locked --lib --tests
+
+  remote-helper:
+    name: remote helper
+    needs: classify
+    if: needs.classify.outputs.engine == 'true' || needs.classify.outputs.desktop_backend == 'true'
+    uses: ./.github/workflows/build-remote-helper.yml
 
   desktop-frontend:
     name: desktop app (frontend, ${{ matrix.name }})
@@ -225,6 +233,8 @@ jobs:
             os: ubuntu-latest
           - name: windows
             os: windows-latest
+          - name: windows-arm64
+            os: windows-11-arm
           - name: macos
             os: macos-latest
         check:
@@ -367,6 +377,8 @@ jobs:
             os: ubuntu-24.04
           - name: Windows
             os: windows-latest
+          - name: Windows ARM64
+            os: windows-11-arm
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -399,7 +411,7 @@ jobs:
         shell: pwsh
         run: |
           Import-Module Pester -RequiredVersion 5.7.1
-          Invoke-Pester scripts/install-ps1.test.ps1 -CI
+          Invoke-Pester -Path scripts/install-ps1.test.ps1,scripts/windows-signing.test.ps1 -CI
 
       - name: Install the Windows PowerShell test tool
         if: runner.os == 'Windows'
@@ -411,17 +423,38 @@ jobs:
         shell: powershell
         run: |
           Import-Module Pester -RequiredVersion 5.7.1
-          Invoke-Pester scripts/install-ps1.test.ps1 -CI
+          Invoke-Pester -Path scripts/install-ps1.test.ps1,scripts/windows-signing.test.ps1 -CI
 
       - name: Check the PowerShell installer
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           Import-Module PSScriptAnalyzer -RequiredVersion 1.24.0
-          $findings = @(Invoke-ScriptAnalyzer -Path install.ps1 -Severity Error,Warning)
+          $findings = @(foreach ($path in 'install.ps1', 'scripts/windows-signing.ps1', 'scripts/setup-windows-signing.ps1') {
+            Invoke-ScriptAnalyzer -Path $path -Severity Error,Warning
+          })
           if ($findings.Count -gt 0) {
             $findings | Format-Table -AutoSize
             throw "PSScriptAnalyzer found $($findings.Count) issue(s)."
+          }
+
+      - name: Check x64 signing tools on both Windows architectures
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          . ./scripts/setup-windows-signing.ps1
+          Install-WindowsSigningToolchain -Directory (Join-Path $env:RUNNER_TEMP 'windows-signing') | Out-Host
+
+      - name: Verify native Windows installer selection
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . ./install.ps1
+          $expected = if ($env:RUNNER_ARCH -eq 'ARM64') { 'arm64' } else { 'x64' }
+          $actual = Get-WindowsArchitecture
+          if ($actual -ne $expected) {
+            throw "Expected $expected installer on this runner, got $actual."
           }
 
   release-metadata:
@@ -486,14 +519,22 @@ jobs:
           - name: Windows x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
+          - name: Windows ARM64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
           - name: Linux x64
             os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+          - name: Linux ARM64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # The ARM64 runner images use the ports mirrors, so the sed covers
+      # those forms as well; they match nothing on the x64 images.
       - name: Use Canonical Ubuntu package archive
         if: runner.os == 'Linux'
         run: |
@@ -501,6 +542,8 @@ jobs:
             -exec sed -i \
               -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
               -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              -e 's|http://azure.ports.ubuntu.com/ubuntu-ports|http://ports.ubuntu.com/ubuntu-ports|g' \
+              -e 's|https://azure.ports.ubuntu.com/ubuntu-ports|http://ports.ubuntu.com/ubuntu-ports|g' \
               {} +
 
       - name: Install Tauri system dependencies
@@ -587,6 +630,9 @@ jobs:
       - name: Check engine advisories
         working-directory: crates/antiburn-local
         run: cargo deny --locked check advisories
+
+      - name: Check remote helper dependencies
+        run: cargo deny --manifest-path crates/antiburn-remote/Cargo.toml --locked --config crates/antiburn-local/deny.toml check bans licenses advisories
 
       - name: Check desktop app licenses and dependency bans
         working-directory: apps/desktop/src-tauri
@@ -691,6 +737,7 @@ jobs:
     needs:
       - classify
       - engine
+      - remote-helper
       - desktop-frontend
       - desktop-backend
       - installer-tests
@@ -704,6 +751,7 @@ jobs:
     env:
       CLASSIFY_RESULT: ${{ needs.classify.result }}
       ENGINE_RESULT: ${{ needs.engine.result }}
+      REMOTE_HELPER_RESULT: ${{ needs.remote-helper.result }}
       FRONTEND_RESULT: ${{ needs.desktop-frontend.result }}
       BACKEND_RESULT: ${{ needs.desktop-backend.result }}
       INSTALLER_TESTS_RESULT: ${{ needs.installer-tests.result }}
@@ -751,6 +799,11 @@ jobs:
 
           require_success classify "$CLASSIFY_RESULT"
           require_if_selected engine "$ENGINE_SELECTED" "$ENGINE_RESULT"
+          if [[ "$ENGINE_SELECTED" == "true" || "$BACKEND_SELECTED" == "true" ]]; then
+            require_success remote-helper "$REMOTE_HELPER_RESULT"
+          else
+            allow_skip remote-helper "$REMOTE_HELPER_RESULT"
+          fi
           require_if_selected desktop-frontend "$FRONTEND_SELECTED" "$FRONTEND_RESULT"
           require_if_selected desktop-backend "$BACKEND_SELECTED" "$BACKEND_RESULT"
           require_if_selected installer-tests "$INSTALLERS_SELECTED" "$INSTALLER_TESTS_RESULT"

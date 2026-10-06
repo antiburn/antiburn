@@ -182,6 +182,28 @@ pub struct RemediationResult {
 }
 
 impl SessionKey {
+    pub fn for_origin(
+        agent: &str,
+        session_id: &str,
+        wsl_distro: Option<&str>,
+        remote_host_id: Option<&str>,
+    ) -> Result<Self, &'static str> {
+        let wsl = wsl_distro.map(str::trim).filter(|value| !value.is_empty());
+        let remote = remote_host_id.map(str::trim);
+        match (wsl, remote) {
+            (Some(_), Some(_)) => Err("a session cannot be both WSL and remote"),
+            (None, Some("")) => Err("remote host ID is empty"),
+            (None, Some(host_id)) => Ok(Self::new(format!("ssh:{host_id}"), agent, session_id)),
+            (_, None) => Ok(Self::for_session(agent, session_id, wsl_distro)),
+        }
+    }
+
+    pub fn remote_host_id(&self) -> Option<&str> {
+        self.environment_key
+            .strip_prefix("ssh:")
+            .filter(|host_id| !host_id.is_empty())
+    }
+
     pub fn new(
         environment_key: impl Into<String>,
         agent: impl Into<String>,
@@ -908,12 +930,19 @@ impl DisabledAgents {
 }
 
 /// Narrowest and widest activity windows the settings pane offers, in days.
-/// These control presentation and recent discovery, not storage: sessions
-/// already indexed follow the separate retention setting.
+/// These control presentation only: sessions already indexed follow the
+/// separate retention setting.
 pub const MIN_ACTIVITY_DAYS: u32 = 1;
 pub const MAX_ACTIVITY_DAYS: u32 = 14;
 /// Days of activity a fresh install shows.
 pub const DEFAULT_ACTIVITY_DAYS: u32 = 7;
+
+/// "Current" means last activity inside this many days. A routine scan pass
+/// discovers exactly this window, and the checks report covers the same
+/// window, so the number of sessions a pass reads equals the number the
+/// report checks. [`MAX_ACTIVITY_DAYS`] is a separate, narrower number: the
+/// display slider's ceiling, not a discovery or report bound.
+pub const CURRENT_WINDOW_DAYS: u32 = 30;
 
 /// Supported local session-data retention periods, in days.
 pub const SESSION_DATA_RETENTION_DAYS_30: i32 = 30;
@@ -970,6 +999,10 @@ pub struct AppSettings {
     /// Paused stops the *scheduler* only: an explicit rescan still runs, and
     /// everything already indexed stays browsable. See [`crate::scan`].
     pub discovery_paused: bool,
+    /// Whether the scan keeps a session whose working directory is not in a
+    /// Git repository. Off keeps the repository-only scan gate.
+    #[serde(default)]
+    pub include_non_repo_folders: bool,
     /// The master switch for desktop notifications. Off means nothing is
     /// delivered, whatever the per-kind preferences below say.
     pub notifications_enabled: bool,
@@ -1068,6 +1101,7 @@ impl Default for AppSettings {
             dock_icon_visible: true,
             auto_update: true,
             discovery_paused: false,
+            include_non_repo_folders: false,
             // On by default, and the per-kind switches with them: each kind
             // is about something the reader would want to act on, and none
             // repeats. A notification surface that has to be found before it
@@ -1312,5 +1346,26 @@ mod tests {
         assert_eq!(key.agent, "claude-code");
         assert_eq!(key.session_id, "abc");
         assert_ne!(key, SessionKey::for_session("claude-code", "abc", None));
+    }
+
+    #[test]
+    fn remote_identity_uses_the_immutable_host_id_and_rejects_wsl() {
+        let key = SessionKey::for_origin(
+            "claude-code",
+            "abc",
+            None,
+            Some("11111111-1111-4111-8111-111111111111"),
+        )
+        .unwrap();
+        assert_eq!(
+            key.environment_key,
+            "ssh:11111111-1111-4111-8111-111111111111"
+        );
+        assert_eq!(
+            key.remote_host_id(),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+        assert!(SessionKey::for_origin("claude-code", "abc", Some("Ubuntu"), Some("id")).is_err());
+        assert!(SessionKey::for_origin("claude-code", "abc", None, Some("  ")).is_err());
     }
 }

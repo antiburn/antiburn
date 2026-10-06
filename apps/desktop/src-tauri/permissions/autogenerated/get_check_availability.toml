@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-check-availability"
+description = "Enables the get_check_availability command without any pre-configured scope."
+commands.allow = ["get_check_availability"]
+
+[[permission]]
+identifier = "deny-get-check-availability"
+description = "Denies the get_check_availability command without any pre-configured scope."
+commands.deny = ["get_check_availability"]
