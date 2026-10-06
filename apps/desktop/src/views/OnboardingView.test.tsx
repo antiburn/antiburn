@@ -270,7 +270,7 @@ describe("OnboardingView", () => {
     expect(screen.getByText("No sessions yet · Signed in")).toBeInTheDocument()
   })
 
-  it("says when a login comes through Pi", async () => {
+  it("does not count a login that Pi holds as the agent's", async () => {
     let resolveUsage!: (usage: LiveUsageSummaryPayload) => void
     mockCommands({
       get_live_usage: new Promise<LiveUsageSummaryPayload>((resolve) => {
@@ -303,8 +303,10 @@ describe("OnboardingView", () => {
         ],
       })
     })
-    expect(await screen.findByText("No sessions yet · Signed in via Pi")).toBeInTheDocument()
-    expect(screen.getByRole("switch", { name: "Show Codex sessions" })).toBeInTheDocument()
+    // Pi holds both logins. Pi is its own agent, so neither Codex nor Claude
+    // is found from them.
+    expect(screen.queryByText("Found on this computer")).not.toBeInTheDocument()
+    expect(screen.queryByText(/via Pi/)).not.toBeInTheDocument()
   })
 
   it("still reaches Ready when the detection request rejects", async () => {

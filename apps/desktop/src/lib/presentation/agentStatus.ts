@@ -10,6 +10,10 @@ import { liveToolName } from "./liveUsage"
  * that come from different places: the scan's session count, and the usage
  * meter's login detection. Only an agent billed by one fixed provider has a
  * meter, so the login part applies to Claude, Codex and Antigravity.
+ *
+ * A login that Pi holds is Pi's, not the agent's. Pi uses the provider's
+ * models, but it is a separate coding agent. So the line ignores a meter
+ * whose login comes through Pi, and that login never makes an agent found.
  */
 export interface AgentStatus {
   /** Sessions, a login, or the provider's desktop app turned up. */
@@ -41,16 +45,17 @@ export function agentStatus(
   sessionsSeen: number,
   meter: LiveUsageMeterPayload | undefined,
 ): AgentStatus {
+  const ownMeter = meter?.carrierLabel === "Pi" ? undefined : meter
   const parts: string[] = []
   if (sessionsSeen > 0)
     parts.push(`${sessionsSeen} ${sessionsSeen === 1 ? "session" : "sessions"}`)
-  const desktopApp = meter?.carrierLabel === "Pi" ? undefined : meter?.desktopAppLabel
+  const desktopApp = ownMeter?.desktopAppLabel
   if (desktopApp) parts.push(desktopApp)
-  const login = meter ? loginPart(meter, Boolean(desktopApp)) : null
+  const login = ownMeter ? loginPart(ownMeter, Boolean(desktopApp)) : null
   if (login) parts.push(login)
 
   const signedInOrInstalled =
-    meter?.detection === "signedIn" || meter?.detection === "installedNotSignedIn"
+    ownMeter?.detection === "signedIn" || ownMeter?.detection === "installedNotSignedIn"
   const found = sessionsSeen > 0 || signedInOrInstalled || Boolean(desktopApp)
   if (found && sessionsSeen === 0) parts.unshift("No sessions yet")
   return { found, line: parts.join(" · ") }
@@ -58,12 +63,10 @@ export function agentStatus(
 
 /** The login half of the line, or null when detection has nothing definite. */
 function loginPart(meter: LiveUsageMeterPayload, desktopApp: boolean): string | null {
-  const viaPi = meter.carrierLabel === "Pi"
   switch (meter.detection) {
     case "signedIn":
-      return viaPi ? "Signed in via Pi" : "Signed in"
+      return "Signed in"
     case "installedNotSignedIn":
-      if (viaPi) return "Pi not signed in"
       return desktopApp && meter.shown
         ? `Limits need ${liveToolName(meter)} signed in`
         : "Not signed in"

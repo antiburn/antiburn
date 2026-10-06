@@ -82,22 +82,25 @@ describe("agentStatus", () => {
       line: "5 sessions",
     },
     {
-      name: "a login through Pi",
+      name: "a Claude login that only Pi holds",
       sessions: 0,
-      meter: claude({ detection: "signedIn", carrierLabel: "Pi" }),
-      found: true,
-      line: "No sessions yet · Signed in via Pi",
+      meter: claude({ detection: "signedIn", carrier: "pi", carrierLabel: "Pi" }),
+      found: false,
+      line: "",
     },
     {
-      name: "Pi found but not signed in, beside Claude Desktop",
-      sessions: 0,
-      meter: claude({
-        detection: "installedNotSignedIn",
-        carrierLabel: "Pi",
-        desktopAppLabel: "Claude Desktop",
-      }),
+      name: "Claude sessions beside a login that only Pi holds",
+      sessions: 7,
+      meter: claude({ detection: "signedIn", carrier: "pi", carrierLabel: "Pi" }),
       found: true,
-      line: "No sessions yet · Pi not signed in",
+      line: "7 sessions",
+    },
+    {
+      name: "Pi found but not signed in",
+      sessions: 0,
+      meter: claude({ detection: "installedNotSignedIn", carrier: "pi", carrierLabel: "Pi" }),
+      found: false,
+      line: "",
     },
   ])("says $name", ({ sessions, meter, found, line }) => {
     expect(agentStatus(sessions, meter)).toEqual({ found, line })
