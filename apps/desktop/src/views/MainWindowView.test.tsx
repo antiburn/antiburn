@@ -27,12 +27,16 @@ const overviewProgressMock = vi.hoisted(() => ({
     mode: "steady",
     flow: "done",
     openStep: null,
+    openStepControl: null,
+    openStepControlRevision: 0,
     stepShown: true,
     agents: { done: true, rows: [] },
     sessions: {
       done: true,
       completed: 0,
       total: 0,
+      displayCompleted: 0,
+      displayTotal: 0,
       gate: null,
       includeNonRepoFolders: false,
       deferred: [],
@@ -43,9 +47,11 @@ const overviewProgressMock = vi.hoisted(() => ({
     history: null,
   } as OverviewProgress,
 }))
+const openProgressStep = vi.fn()
 vi.mock("./main-window/overview/overviewProgressStore", () => ({
   subscribeOverviewProgress: () => () => undefined,
   overviewProgress: () => overviewProgressMock.current,
+  openProgressStep: (step: string, control?: string) => openProgressStep(step, control),
 }))
 vi.mock("./main-window/overview/ProgressNav", () => ({ ProgressNav: () => null }))
 
@@ -268,6 +274,18 @@ describe("MainWindowView", () => {
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "burn checks" } })
     await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
     expect(screen.getByRole("tabpanel", { name: "Checks" })).toHaveFocus()
+  })
+  it("choosing a step-settings result opens Overview on that step's control", async () => {
+    render(<MainWindowView />)
+    fireEvent.keyDown(document, { key: "k", metaKey: isMacOS(), ctrlKey: !isMacOS() })
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "scan folders" } })
+    await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
+    expect(screen.getByRole("tabpanel", { name: "Overview" })).toBeVisible()
+    expect(openProgressStep).toHaveBeenCalledWith("sessions", "sourceFolders")
+    expect(noteInteraction).toHaveBeenCalledWith({
+      kind: "appSearchResultOpened",
+      category: "stepSetting",
+    })
   })
   it.each([
     "Mozilla/5.0 (Macintosh; Intel Mac OS X)",

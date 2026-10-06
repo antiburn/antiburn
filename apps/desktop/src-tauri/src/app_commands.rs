@@ -4,6 +4,7 @@ macro_rules! with_app_commands {
             commands::add_scan_root => "add_scan_root",
             commands::advance_first_run => "advance_first_run",
             remote_sessions::add_remote_host => "add_remote_host",
+            commands::session_locations::agent_session_locations => "agent_session_locations",
             commands::app_info => "app_info",
             commands::apply_prepared_burn_check_operation => "apply_prepared_burn_check_operation",
             commands::begin_popover_hold => "begin_popover_hold",
@@ -23,7 +24,6 @@ macro_rules! with_app_commands {
             main_window::existing_main_window_session_targets => "existing_main_window_session_targets",
             commands::export_diagnostics => "export_diagnostics",
             commands::finish_first_run => "finish_first_run",
-            commands::ftue_diag => "ftue_diag", // TEMP ftue-diag
             commands::get_consent_diagnostics => "get_consent_diagnostics",
             commands::get_checks_report => "get_checks_report",
             commands::get_folder_permissions => "get_folder_permissions",

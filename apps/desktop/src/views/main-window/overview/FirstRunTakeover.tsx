@@ -19,6 +19,7 @@ import {
   skipLiveLimits,
   subscribeOverviewProgress,
 } from "./overviewProgressStore"
+import { StepSettingsDisclosure } from "./stepSettings/StepSettingsDisclosure"
 
 function WelcomeCard() {
   return (
@@ -120,6 +121,8 @@ function LiveLimitsCard() {
             {error}
           </p>
         )}
+
+        <StepSettingsDisclosure step="limits" />
       </div>
     </div>
   )
@@ -158,10 +161,13 @@ function TakeoverStep({
     <>
       <ProgressStepCard
         step={step}
+        surface="firstRun"
         progress={progress}
         isSteady={false}
         transitionName={progressStepTransitionName(step)}
       />
+
+      {step !== "fixes" && <StepSettingsDisclosure step={step} />}
 
       {step === "fixes" && fixesFound(progress) ? (
         <div className="mt-(--space-lg) flex flex-col items-center gap-(--space-sm)">

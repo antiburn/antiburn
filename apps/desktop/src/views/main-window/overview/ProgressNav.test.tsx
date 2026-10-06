@@ -33,6 +33,13 @@ function stepDocked(flow: FlowStep, step: ProgressStepKey): boolean {
 
 const openChecks = vi.fn()
 
+// The modal's own IPC-heavy settings are covered by each step component's
+// own tests; here a stand-in proves the modal renders them for the open
+// step, without pulling Tauri-backed sessions into this file.
+vi.mock("./stepSettings/StepSettings", () => ({
+  StepSettings: ({ step }: { step: string }) => <div data-testid="step-settings">{step}</div>,
+}))
+
 vi.mock("./overviewProgressStore", () => ({
   subscribeOverviewProgress: () => () => undefined,
   overviewProgress: () => snapshot,
@@ -50,6 +57,19 @@ vi.mock("./overviewProgressStore", () => ({
 
 afterEach(() => vi.clearAllMocks())
 
+/** A nav row's value, read from CountUp's accessible target value rather
+ *  than the number it shows mid-count. */
+function navValue(label: RegExp): string {
+  const row = screen.getByRole("button", { name: label })
+  return row.querySelector("[data-count-up-value]")?.textContent ?? ""
+}
+
+/** Whether a nav row's value is in its pulsing (still-working) state. */
+function navPulsing(label: RegExp): boolean {
+  const row = screen.getByRole("button", { name: label })
+  return row.querySelector(".font-mono")?.classList.contains("animate-pulse") ?? false
+}
+
 function progress(
   flow: FlowStep,
   mode: OverviewProgress["mode"],
@@ -59,6 +79,8 @@ function progress(
     mode,
     flow,
     openStep: null,
+    openStepControl: null,
+    openStepControlRevision: 0,
     stepShown: true,
     agents: {
       done: true,
@@ -68,6 +90,8 @@ function progress(
       done: true,
       completed: 7,
       total: 7,
+      displayCompleted: 7,
+      displayTotal: 7,
       gate: null,
       includeNonRepoFolders: false,
       deferred: [],
@@ -114,20 +138,153 @@ describe("ProgressNav's row visibility", () => {
   it("counts the checks that run, with Ignored Instructions only once it is set up", () => {
     snapshot = progress("done", "steady")
     render(<ProgressNav onOpenChecks={openChecks} />)
-    expect(screen.getByRole("button", { name: /^Checks/ })).toHaveTextContent(/^Checks9$/)
+    expect(navValue(/^Checks/)).toBe("9")
     act(() => checksConfiguredStore.set(true))
-    expect(screen.getByRole("button", { name: /^Checks/ })).toHaveTextContent(/^Checks10$/)
+    expect(navValue(/^Checks/)).toBe("10")
     act(() => checksConfiguredStore.set(false))
   })
 
-  it("shows 'No recent sessions' on the Fixes row when the window has none", () => {
+  it("shows the failing count on the Fixes row", () => {
     snapshot = progress("done", "steady", {
       checks: { done: true, windowSessions: 0, pendingEvidence: 0, deferredEvidence: 0 },
+      failingCount: 3,
     })
     render(<ProgressNav onOpenChecks={openChecks} />)
-    expect(screen.getByRole("button", { name: /^Fixes/ })).toHaveTextContent(
-      "No recent sessions",
+    expect(navValue(/^Fixes/)).toBe("3")
+  })
+})
+
+describe("ProgressNav's Sessions row and the history pass", () => {
+  function sessionsProgress(
+    overrides: Partial<OverviewProgress["sessions"]> = {},
+    history: OverviewProgress["history"] = null,
+  ): OverviewProgress {
+    return progress("done", "steady", {
+      sessions: {
+        done: true,
+        completed: 114,
+        total: 114,
+        displayCompleted: 114,
+        displayTotal: 114,
+        gate: null,
+        includeNonRepoFolders: false,
+        deferred: [],
+        ...overrides,
+      },
+      history,
+    })
+  }
+
+  it("shows the 30-day total, pulsing, before the 30-day read is done", () => {
+    snapshot = sessionsProgress({
+      done: false,
+      completed: 50,
+      total: 114,
+      displayCompleted: 50,
+      displayTotal: 114,
+    })
+    render(<ProgressNav onOpenChecks={openChecks} />)
+    expect(navValue(/^Sessions/)).toBe("114")
+    expect(navPulsing(/^Sessions/)).toBe(true)
+  })
+
+  it("shows the combined completed figure, not pulsing, once the 30-day read is done and the history pass is idle", () => {
+    snapshot = sessionsProgress()
+    render(<ProgressNav onOpenChecks={openChecks} />)
+    expect(navValue(/^Sessions/)).toBe("114")
+    expect(navPulsing(/^Sessions/)).toBe(false)
+  })
+
+  it("climbs with the history pass's completed count, and pulses, while reading", () => {
+    snapshot = sessionsProgress(
+      { displayCompleted: 432 },
+      { state: "reading", completed: 318, total: 318 },
     )
+    render(<ProgressNav onOpenChecks={openChecks} />)
+    expect(navValue(/^Sessions/)).toBe("432")
+    expect(navPulsing(/^Sessions/)).toBe(true)
+  })
+
+  it("pulses while looking for older sessions", () => {
+    snapshot = sessionsProgress({}, { state: "looking", completed: 0, total: 0 })
+    render(<ProgressNav onOpenChecks={openChecks} />)
+    expect(navPulsing(/^Sessions/)).toBe(true)
+  })
+
+  it("stops pulsing once the history pass is done", () => {
+    snapshot = sessionsProgress(
+      { displayCompleted: 432 },
+      { state: "done", completed: 318, total: 318 },
+    )
+    render(<ProgressNav onOpenChecks={openChecks} />)
+    expect(navValue(/^Sessions/)).toBe("432")
+    expect(navPulsing(/^Sessions/)).toBe(false)
+  })
+})
+
+describe("ProgressNav's Sessions step card", () => {
+  function openSessions(history: OverviewProgress["history"]): void {
+    snapshot = progress("done", "steady", {
+      openStep: "sessions",
+      sessions: {
+        done: true,
+        completed: 114,
+        total: 114,
+        displayCompleted: 432,
+        displayTotal: 432,
+        gate: null,
+        includeNonRepoFolders: false,
+        deferred: [],
+      },
+      history,
+    })
+    render(<ProgressNav onOpenChecks={openChecks} />)
+  }
+
+  it("shows the combined completed/total on the progress bar", () => {
+    openSessions({ state: "reading", completed: 318, total: 400 })
+    const values = screen.getByRole("dialog").querySelectorAll("[data-count-up-value]")
+    expect(Array.from(values, (node) => node.textContent).join("/")).toBe("432/432")
+  })
+
+  it("shows a pending footnote", () => {
+    openSessions({ state: "pending", completed: 0, total: 0 })
+    expect(screen.getByText("Older sessions are read once checks finish.")).toBeInTheDocument()
+  })
+
+  it("shows a looking footnote", () => {
+    openSessions({ state: "looking", completed: 0, total: 0 })
+    expect(screen.getByText("Looking for older sessions…")).toBeInTheDocument()
+  })
+
+  it("shows a reading footnote with the history pass's own numbers, not the combined ones", () => {
+    openSessions({ state: "reading", completed: 318, total: 400 })
+    expect(screen.getByText("Reading older sessions · 318 of 400")).toBeInTheDocument()
+  })
+
+  it("shows no footnote once the history pass is done", () => {
+    openSessions({ state: "done", completed: 400, total: 400 })
+    expect(
+      screen.queryByText(
+        /Reading older sessions|Looking for older sessions|Older sessions are read/,
+      ),
+    ).toBeNull()
+  })
+
+  it("shows no footnote when there is no history to report", () => {
+    openSessions(null)
+    expect(screen.queryByText(/older session/i)).toBeNull()
+  })
+})
+
+describe("ProgressNav's Fixes step card", () => {
+  it("no longer shows a history fine-print line", () => {
+    snapshot = progress("done", "steady", {
+      openStep: "fixes",
+      history: { state: "reading", completed: 100, total: 200 },
+    })
+    render(<ProgressNav onOpenChecks={openChecks} />)
+    expect(screen.queryByText(/Reading older history/)).toBeNull()
   })
 })
 
@@ -181,7 +338,14 @@ describe("ProgressNav's modal", () => {
     snapshot = progress("done", "steady", { openStep: "agents" })
     render(<ProgressNav onOpenChecks={openChecks} />)
     expect(screen.getByRole("dialog", { name: "Agents" })).toBeInTheDocument()
-    expect(screen.getByRole("heading", { name: "Finding agents" })).toBeInTheDocument()
+    expect(screen.getByRole("heading", { name: "Agents", level: 2 })).toBeInTheDocument()
+    expect(screen.queryByRole("heading", { name: "Finding agents" })).toBeNull()
+  })
+
+  it("shows the step's own settings below the summary, open by default", () => {
+    snapshot = progress("done", "steady", { openStep: "sessions" })
+    render(<ProgressNav onOpenChecks={openChecks} />)
+    expect(screen.getByTestId("step-settings")).toHaveTextContent("sessions")
   })
 
   it("closes on Escape and returns focus to the row that opened it", () => {

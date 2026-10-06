@@ -21,7 +21,7 @@ sources:
   - src/components/burn-checks/burn-check-summary.css
   - src/views/main-window/overview/overview.css
   - src/views/main-window/quota/quota.css
-  - src/views/settings/remote-hosts.css
+  - src/views/main-window/overview/stepSettings/remote-hosts.css
 colors:
   # Concrete token colors use modern HSL function syntax.
   # Use the shortest value that keeps the same 8-bit RGB channels.

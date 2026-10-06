@@ -8,7 +8,6 @@ import { Disclosure, DisclosureGroup } from "../../components/ui/Disclosure"
 import { Pane } from "../../components/ui/Pane"
 import { PushButton } from "../../components/ui/PushButton"
 import { SectionGroup } from "../../components/ui/SectionGroup"
-import { SegmentedControl } from "../../components/ui/SegmentedControl"
 import { StatusText } from "../../components/ui/StatusText"
 import { exportDiagnostics } from "../../lib/diagnosticsIpc"
 import {
@@ -43,18 +42,6 @@ type ClearState =
 /** What the diagnostics export action is currently doing. */
 type DiagnosticsExportState = "idle" | "exporting" | "exported" | "failed"
 
-type RetentionValue = "30" | "90" | "-1"
-
-const RETENTION_OPTIONS: ReadonlyArray<{ value: RetentionValue; label: string }> = [
-  { value: "30", label: "30 days" },
-  { value: "90", label: "90 days" },
-  { value: "-1", label: "Forever" },
-]
-
-function retentionLength(days: number): number {
-  return days === -1 ? Number.POSITIVE_INFINITY : days
-}
-
 export type PrivacyPaneProps = AppSettingsController & { info: AppInfo | null }
 
 export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps) {
@@ -67,23 +54,6 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
   const analyticsSupported = info?.analyticsSupported ?? false
   const analyticsEnvironmentDisabled = info?.analyticsEnvironmentDisabled ?? false
   const operator = info?.analyticsOperator ?? null
-
-  async function handleRetentionChange(value: RetentionValue) {
-    const days = Number(value)
-    if (retentionLength(days) < retentionLength(settings.sessionDataRetentionDays)) {
-      const period = days === 30 ? "30 days" : "90 days"
-      const proceed = await confirm(
-        `This immediately removes antiburn’s local data for sessions whose last activity is older than ${period}. Providers retain session history for only 30 days, so antiburn may hold the only remaining history. Your coding agents’ transcript files are not touched.`,
-        {
-          title: `Keep session data for ${period}?`,
-          kind: "warning",
-          okLabel: "Change retention",
-        },
-      )
-      if (!proceed) return
-    }
-    await update({ sessionDataRetentionDays: days })
-  }
 
   /**
    * Clearing the index is confirmed first, and the confirmation says the two
@@ -406,19 +376,6 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
 
       <SectionGroup title="Local data">
         <Card>
-          <SettingsRow
-            searchId="retention"
-            description="antiburn’s session index stays on this machine. Keeping it longer preserves history after providers’ 30-day retention window; a shorter period keeps antiburn’s local index lighter."
-            trailing={
-              <SegmentedControl
-                options={RETENTION_OPTIONS}
-                value={String(settings.sessionDataRetentionDays) as RetentionValue}
-                ariaLabel="Session data retention"
-                onChange={(value) => void handleRetentionChange(value)}
-                disabled={!loaded}
-              />
-            }
-          />
           <SettingsRow
             searchId="clearIndex"
             description="Forget every session, analysis, evidence, and scan record antiburn has stored. Your agents’ transcripts are untouched, so a later scan finds them again. Your preferences, scan folders, and repository choices are kept."

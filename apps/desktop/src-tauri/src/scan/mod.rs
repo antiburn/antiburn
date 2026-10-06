@@ -176,8 +176,8 @@ pub enum ScanTrigger {
     /// The reader asked for a rescan explicitly. Stays current-window only —
     /// see [`Self::HistoricalScan`] for the trigger that widens.
     ManualRescan,
-    /// The reader asked for the dedicated historical pass (Settings ›
-    /// General › Historical scan), or the scheduler started the one-time
+    /// The reader asked for the dedicated historical pass (Sessions step ›
+    /// Scanning › Older sessions), or the scheduler started the one-time
     /// automatic pass for the current retention. Widens discovery past the
     /// current window — see `history::window_secs`.
     HistoricalScan,
@@ -343,8 +343,10 @@ pub struct ScanController {
     /// The retention for which this launch already asked for the automatic
     /// historical pass. A failed or cancelled pass does not ask again until
     /// the next launch, so a lasting failure cannot repeat it after every
-    /// pass, and a cancel holds. The reader's own Historical scan ignores it.
+    /// pass, and a cancel holds. The reader's own "Older sessions" scan ignores it.
     history_auto_requested_for: Mutex<Option<i32>>,
+    /// True while a historical pass runs its discovery or describe phase.
+    history_pass_running: AtomicBool,
 }
 
 impl ScanController {
@@ -458,6 +460,11 @@ impl ScanController {
 
     /// Records that a current-window pass finished. Idempotent: a later
     /// pass's finish leaves this set.
+    /// Whether a historical pass runs its discovery or describe phase now.
+    pub(crate) fn history_pass_running(&self) -> bool {
+        self.history_pass_running.load(Ordering::SeqCst)
+    }
+
     pub(crate) fn mark_current_pass_done(&self) {
         self.first_current_pass_done.store(true, Ordering::SeqCst);
     }
@@ -888,16 +895,13 @@ pub(crate) async fn try_run_pass(
                 status.gate = None;
             }
         });
-        // TEMP ftue-diag
-        ::tracing::info!(
-            event = "ftue_diag",
-            message = "scan:started",
-            phase = ?started.phase,
-            found_by_agent_len = started.found_by_agent.len(),
-        );
         let _ = app.emit(EVENT_STARTED, started);
     }
-    history::push_progress(app, matches!(trigger, ScanTrigger::HistoricalScan), true);
+    app.state::<ScanController>().history_pass_running.store(
+        matches!(trigger, ScanTrigger::HistoricalScan),
+        Ordering::SeqCst,
+    );
+    history::push_progress(app, true);
     ::tracing::debug!(event = "scan_pass_started", trigger = trigger.label());
     let pass_started_at = Instant::now();
 
@@ -953,7 +957,10 @@ pub(crate) async fn try_run_pass(
             _ => {}
         }
     }
-    history::push_progress(app, false, true);
+    controller
+        .history_pass_running
+        .store(false, Ordering::SeqCst);
+    history::push_progress(app, true);
     history::maybe_start_automatic_pass(app);
     let finished = controller.status();
     let duration_ms = pass_started_at.elapsed().as_millis() as u64;
@@ -982,13 +989,6 @@ pub(crate) async fn try_run_pass(
             );
         }
     }
-    // TEMP ftue-diag
-    ::tracing::info!(
-        event = "ftue_diag",
-        message = "scan:finished",
-        phase = ?finished.phase,
-        found_by_agent_len = finished.found_by_agent.len(),
-    );
     let _ = app.emit(EVENT_FINISHED, finished.clone());
     // The outcome, not a shaped event: whether this pass is worth reporting at
     // all is an analytics question, and this scheduler runs a full pass every
@@ -1281,6 +1281,7 @@ async fn pass(
         let status = controller.update(|status| {
             status.phase = ScanPhase::Saving;
             status.gate = Some(gate_counts);
+            apply_admitted_agent_counts(&mut status.found_by_agent, records);
         });
         let _ = app.emit(EVENT_PROGRESS, status);
     }
@@ -1863,9 +1864,11 @@ async fn current_window_candidates(
 }
 
 /// [`current_window_candidates`], and `on_found` gets each agent's count of
-/// current sessions when the filter finishes that agent. An agent that
-/// discovery found nothing for gets 0 before the filter starts. The Agents step
-/// shows these counts, so its total agrees with the sessions that the Read
+/// current-window candidate files when the filter finishes that agent. An
+/// agent that discovery found nothing for gets 0 before the filter starts.
+/// The Agents step's card shows this candidate count while discovery runs;
+/// once the read stage finishes, `pass` replaces it with the sessions that
+/// stage actually admits, so the finished count agrees with what the Read
 /// step reads.
 async fn current_window_candidates_with_progress(
     logs: Vec<SessionLog>,
@@ -2793,6 +2796,24 @@ fn source_kind(source: &SessionSource) -> &'static str {
         SessionSource::File(_) => "file",
         SessionSource::Inline { .. } => "inline",
         SessionSource::ProviderDb { .. } => "providerDb",
+    }
+}
+
+/// Replace discovery's candidate-file count in every `found_by_agent` entry
+/// with the sessions this pass actually admits for that agent — 0 for an
+/// agent with none. `records` is the read stage's output, after it has
+/// dropped every sub-agent transcript and gate-rejected session, so this is
+/// the count the Agents list and its icon row must agree on. `done` was
+/// already true from discovery, and stays true.
+fn apply_admitted_agent_counts(found_by_agent: &mut [AgentFoundCount], records: &[SessionRecord]) {
+    let totals = per_agent_totals(records);
+    let admitted: std::collections::BTreeMap<&str, usize> = totals
+        .iter()
+        .map(|(agent, seen, _cursor)| (agent.as_str(), *seen as usize))
+        .collect();
+    for entry in found_by_agent.iter_mut() {
+        entry.sessions = admitted.get(entry.agent.as_str()).copied().unwrap_or(0);
+        entry.done = true;
     }
 }
 

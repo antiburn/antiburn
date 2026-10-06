@@ -17,6 +17,13 @@ const openChecks = vi.fn()
 
 vi.mock("../../../lib/platform", () => ({ isMacOS: () => platform.macOS }))
 
+// Each step component's own tests cover its IPC-heavy settings; here a
+// stand-in proves the first-run disclosure shows and hides them, without
+// pulling Tauri-backed sessions into this file.
+vi.mock("./stepSettings/StepSettings", () => ({
+  StepSettings: ({ step }: { step: string }) => <div data-testid="step-settings">{step}</div>,
+}))
+
 vi.mock("./overviewProgressStore", () => ({
   subscribeOverviewProgress: () => () => undefined,
   overviewProgress: () => snapshot,
@@ -40,12 +47,16 @@ function progress(flow: FlowStep, overrides: Partial<OverviewProgress> = {}): Ov
     mode: "firstRun",
     flow,
     openStep: null,
+    openStepControl: null,
+    openStepControlRevision: 0,
     stepShown: true,
     agents: { done: false, rows: [] },
     sessions: {
       done: false,
       completed: 0,
       total: 0,
+      displayCompleted: 0,
+      displayTotal: 0,
       gate: null,
       includeNonRepoFolders: false,
       deferred: [],
@@ -104,6 +115,14 @@ describe("FirstRunTakeover's live-limits step", () => {
     expect(skipLiveLimits).toHaveBeenCalledTimes(1)
     expect(showLiveLimits).not.toHaveBeenCalled()
   })
+
+  it("keeps its settings hidden until Show settings is clicked", () => {
+    snapshot = progress("limits")
+    render(<FirstRunTakeover onOpenChecks={openChecks} />)
+    expect(screen.queryByTestId("step-settings")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Show settings" }))
+    expect(screen.getByTestId("step-settings")).toHaveTextContent("limits")
+  })
 })
 
 describe("FirstRunTakeover's step cards", () => {
@@ -143,6 +162,8 @@ describe("FirstRunTakeover's step cards", () => {
         done: false,
         completed: 1,
         total: 10,
+        displayCompleted: 1,
+        displayTotal: 10,
         gate: null,
         includeNonRepoFolders: false,
         deferred: [],
@@ -200,5 +221,30 @@ describe("FirstRunTakeover's step cards", () => {
     expect(nextStep).toHaveBeenCalledTimes(1)
     expect(enhanceFixes).not.toHaveBeenCalled()
     expect(openChecks).not.toHaveBeenCalled()
+  })
+
+  it("offers no settings disclosure on the Fixes step", () => {
+    snapshot = progress("fixes", {
+      checks: { done: true, windowSessions: 0, pendingEvidence: 0, deferredEvidence: 0 },
+    })
+    render(<FirstRunTakeover onOpenChecks={openChecks} />)
+    expect(screen.queryByRole("button", { name: "Show settings" })).toBeNull()
+  })
+
+  it("shows the Agents step's settings when Show settings is clicked, and hides them again", () => {
+    snapshot = progress("agents", { agents: { done: true, rows: [] } })
+    render(<FirstRunTakeover onOpenChecks={openChecks} />)
+    expect(screen.queryByTestId("step-settings")).toBeNull()
+
+    const toggle = screen.getByRole("button", { name: "Show settings" })
+    expect(toggle).toHaveAttribute("aria-expanded", "false")
+    fireEvent.click(toggle)
+
+    expect(screen.getByTestId("step-settings")).toHaveTextContent("agents")
+    const hide = screen.getByRole("button", { name: "Hide settings" })
+    expect(hide).toHaveAttribute("aria-expanded", "true")
+
+    fireEvent.click(hide)
+    expect(screen.queryByTestId("step-settings")).toBeNull()
   })
 })

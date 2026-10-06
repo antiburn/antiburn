@@ -141,6 +141,11 @@ pub enum EventName {
     /// A saved TypeSafe setting, a history run request, or a terminal check result.
     #[cfg(feature = "analytics")]
     IgnoredInstructionLifecycle,
+    /// A progress step's settings became visible: the first-run "Show
+    /// settings" disclosure opened, or the step's modal opened after the
+    /// first run.
+    #[cfg(feature = "analytics")]
+    StepSettingsViewed,
 }
 
 /// Every event this application may send.
@@ -193,6 +198,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::FirstRunFinished,
     EventName::IgnoredInstructionObserved,
     EventName::IgnoredInstructionLifecycle,
+    EventName::StepSettingsViewed,
 ];
 
 #[cfg(feature = "analytics")]
@@ -239,6 +245,7 @@ impl EventName {
             EventName::FirstRunFinished => "antiburn.first_run_finished",
             EventName::IgnoredInstructionObserved => "antiburn.ignored_instruction_observed",
             EventName::IgnoredInstructionLifecycle => "antiburn.ignored_instruction_lifecycle",
+            EventName::StepSettingsViewed => "antiburn.step_settings_viewed",
         }
     }
 }
@@ -549,6 +556,16 @@ pub enum Interaction {
     },
     /// The first-run Overview's result first showed.
     FirstRunFinished {},
+    /// A progress step's settings became visible. `limits` only ever
+    /// carries `first_run`: after the first run, its settings live in
+    /// Settings → Usage, which reports its own `settings_pane_viewed`
+    /// instead. Nothing here enforces that pairing — it holds because the
+    /// only caller for `limits` is the first-run disclosure — so it is
+    /// documented, not typed.
+    StepSettingsViewed {
+        label: StepSettingsLabel,
+        detail: StepSettingsDetail,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -690,7 +707,6 @@ pub enum SurfaceState {
 pub enum SettingsPane {
     General,
     Appearance,
-    Sources,
     Privacy,
     Notifications,
     Usage,
@@ -755,6 +771,7 @@ pub enum HistoryDirection {
 pub enum SearchCategory {
     View,
     Setting,
+    StepSetting,
     Check,
 }
 
@@ -811,6 +828,28 @@ pub enum FirstRunActionKind {
     LiveUsageStarted,
     LiveUsageSkipped,
     EnhanceOpened,
+}
+
+/// A progress step whose settings a reader can view. Narrower than the
+/// renderer's own `StepSettingsStep`: `fixes` has no settings to report and
+/// never reaches this enum.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StepSettingsLabel {
+    Agents,
+    Limits,
+    Sessions,
+    Checks,
+}
+
+/// Which surface showed the step's settings.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StepSettingsDetail {
+    /// The first-run takeover's "Show settings" disclosure opened.
+    FirstRun,
+    /// The progress-nav step modal opened, after the first run.
+    Modal,
 }
 
 /// A privacy-safe result from checking one remote host connection.
@@ -1014,6 +1053,14 @@ impl Interaction {
                 },
             ),
             Interaction::FirstRunFinished {} => (EventName::FirstRunFinished, Facts::default()),
+            Interaction::StepSettingsViewed { label, detail } => (
+                EventName::StepSettingsViewed,
+                Facts {
+                    label: Some(label.as_str()),
+                    detail: Some(detail.as_str()),
+                    ..Facts::default()
+                },
+            ),
         }
     }
 }
@@ -1069,7 +1116,7 @@ wire_values!(SessionFilterKind, {
 #[cfg(feature = "analytics")]
 wire_values!(HistoryDirection, { HistoryDirection::Back => "back", HistoryDirection::Forward => "forward" });
 #[cfg(feature = "analytics")]
-wire_values!(SearchCategory, { SearchCategory::View => "view", SearchCategory::Setting => "setting", SearchCategory::Check => "check" });
+wire_values!(SearchCategory, { SearchCategory::View => "view", SearchCategory::Setting => "setting", SearchCategory::StepSetting => "step_setting", SearchCategory::Check => "check" });
 #[cfg(feature = "analytics")]
 wire_values!(IgnoredInstructionStage, {
     IgnoredInstructionStage::Finding => "finding",
@@ -1193,11 +1240,24 @@ wire_values!(SurfaceState, {
 wire_values!(SettingsPane, {
     SettingsPane::General => "general",
     SettingsPane::Appearance => "appearance",
-    SettingsPane::Sources => "sources",
     SettingsPane::Privacy => "privacy",
     SettingsPane::Notifications => "notifications",
     SettingsPane::Usage => "usage",
     SettingsPane::About => "about",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(StepSettingsLabel, {
+    StepSettingsLabel::Agents => "agents",
+    StepSettingsLabel::Limits => "limits",
+    StepSettingsLabel::Sessions => "sessions",
+    StepSettingsLabel::Checks => "checks",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(StepSettingsDetail, {
+    StepSettingsDetail::FirstRun => "first_run",
+    StepSettingsDetail::Modal => "modal",
 });
 
 #[cfg(feature = "analytics")]
@@ -1949,7 +2009,8 @@ mod tests {
                 | EventName::InterfaceScaleChanged
                 | EventName::FirstRunStepReached
                 | EventName::FirstRunAction
-                | EventName::FirstRunFinished => true,
+                | EventName::FirstRunFinished
+                | EventName::StepSettingsViewed => true,
                 EventName::IgnoredInstructionObserved | EventName::IgnoredInstructionLifecycle => {
                     true
                 }
@@ -1957,7 +2018,7 @@ mod tests {
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            40,
+            41,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -2350,6 +2411,13 @@ mod tests {
                 EventName::AppSearchResultOpened,
                 Some("check"),
             ),
+            (
+                Interaction::AppSearchResultOpened {
+                    category: SearchCategory::StepSetting,
+                },
+                EventName::AppSearchResultOpened,
+                Some("step_setting"),
+            ),
         ];
         for (interaction, expected_name, expected_label) in cases {
             let (name, facts) = interaction.resolve();
@@ -2450,6 +2518,33 @@ mod tests {
             let (name, facts) = Interaction::FirstRunAction { action }.resolve();
             assert_eq!(name, EventName::FirstRunAction);
             assert_eq!(facts.label, Some(expected));
+        }
+    }
+
+    #[test]
+    fn step_settings_viewed_uses_closed_vocabulary() {
+        for (label, expected_label) in [
+            (StepSettingsLabel::Agents, "agents"),
+            (StepSettingsLabel::Limits, "limits"),
+            (StepSettingsLabel::Sessions, "sessions"),
+            (StepSettingsLabel::Checks, "checks"),
+        ] {
+            for (detail, expected_detail) in [
+                (StepSettingsDetail::FirstRun, "first_run"),
+                (StepSettingsDetail::Modal, "modal"),
+            ] {
+                let (name, facts) = Interaction::StepSettingsViewed { label, detail }.resolve();
+                assert_eq!(name, EventName::StepSettingsViewed);
+                assert_eq!(facts.label, Some(expected_label));
+                assert_eq!(facts.detail, Some(expected_detail));
+            }
+        }
+        for value in [
+            serde_json::json!({"kind":"stepSettingsViewed","label":"usage","detail":"modal"}),
+            serde_json::json!({"kind":"stepSettingsViewed","label":"agents","detail":"settings"}),
+            serde_json::json!({"kind":"stepSettingsViewed","label":"agents","detail":"modal","extra":true}),
+        ] {
+            assert!(serde_json::from_value::<Interaction>(value).is_err());
         }
     }
 

@@ -819,12 +819,50 @@ mod tests {
             "\"allow-request-main-window-recovery\"",
             "\"allow-peek-main-window-navigation-target\"",
             "\"allow-acknowledge-main-window-navigation-target\"",
+            // The Overview's step settings (Agents, Sessions, Checks).
+            "\"dialog:allow-open\"",
+            "\"allow-agent-session-locations\"",
+            "\"allow-scan-now\"",
+            "\"allow-open-folder-access-settings\"",
+            "\"allow-add-scan-root\"",
+            "\"allow-get-consent-diagnostics\"",
+            "\"allow-get-folder-permissions\"",
+            "\"allow-list-repositories\"",
+            "\"allow-list-scan-roots\"",
+            "\"allow-recheck-folder-permissions\"",
+            "\"allow-refresh-repositories\"",
+            "\"allow-remove-scan-root\"",
+            "\"allow-set-repository-enabled\"",
+            "\"allow-get-remote-hosts\"",
+            "\"allow-check-remote-host\"",
+            "\"allow-add-remote-host\"",
+            "\"allow-update-remote-host\"",
+            "\"allow-set-remote-host-sync-enabled\"",
+            "\"allow-remove-remote-host\"",
+            "\"allow-scan-remote-host\"",
+            "\"allow-get-remote-sync-status\"",
+            "\"allow-set-remote-sync-interval\"",
+            "\"allow-app-info\"",
+            "\"allow-scan-history\"",
+            "\"allow-cancel-scan\"",
+            "\"allow-get-check-availability\"",
+            "\"allow-open-main-window-section\"",
         ] {
             assert!(capability.contains(expected), "missing {expected}");
         }
         for excluded in ["\"default\"", "dialog:default", "opener:default"] {
             assert!(!capability.contains(excluded), "unexpected {excluded}");
         }
+    }
+
+    #[test]
+    fn checks_settings_capability_also_covers_the_main_window() {
+        let capability = include_str!("../capabilities/checks-settings.json");
+        assert!(capability.contains("\"main\""), "missing main window");
+        assert!(
+            capability.contains("\"settings\""),
+            "missing settings window"
+        );
     }
 
     #[cfg(target_os = "macos")]

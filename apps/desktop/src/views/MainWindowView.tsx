@@ -13,12 +13,17 @@ import { MainActivitySession, subjectForEntry } from "./main-window/MainActivity
 import { BurnChecksView } from "./main-window/BurnChecksView"
 import { BurnChecksController } from "./main-window/burn-checks/BurnChecksController"
 import { AppSearch } from "./main-window/AppSearch"
-import { resolveSettingsSearchTarget, type AppSearchResult } from "../lib/appSearch"
+import {
+  resolveSettingsSearchTarget,
+  resolveStepSettingsSearchTarget,
+  type AppSearchResult,
+} from "../lib/appSearch"
 import { MainWindowLayout } from "./main-window/MainWindowLayout"
 import { MainWindowNavigationSession } from "./main-window/MainWindowNavigationSession"
 import { MainOverviewSession } from "./main-window/MainOverviewSession"
 import { OverviewView } from "./main-window/OverviewView"
 import {
+  openProgressStep,
   overviewProgress,
   subscribeOverviewProgress,
 } from "./main-window/overview/overviewProgressStore"
@@ -153,6 +158,10 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
           active={active}
           session={activitySession}
           hygieneBySession={hygieneBySession}
+          onOpenRangeSettings={() => {
+            selectSection("overview")
+            openProgressStep("sessions", "recentDays")
+          }}
           onOpenQuota={(target) => {
             quotaSession.open(
               { provider: target.provider, accountKey: target.accountKey, lane: target.lane },
@@ -198,6 +207,12 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     if (target.kind === "setting") {
       const destination = resolveSettingsSearchTarget(target)
       await openSettingsWindow(destination.pane, destination.control)
+    } else if (target.kind === "stepSetting") {
+      const destination = resolveStepSettingsSearchTarget(target)
+      flushSync(() => {
+        navigationSession.select("overview")
+      })
+      openProgressStep(destination.step, destination.control)
     } else if (target.kind === "check")
       navigationSession.navigate({ section: "burnChecks", check: target.check })
     else {
@@ -222,7 +237,11 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   return (
     <>
       {searchOpen && (
-        <AppSearch onChoose={chooseSearchResult} onClose={() => setSearchOpen(false)} />
+        <AppSearch
+          onChoose={chooseSearchResult}
+          onClose={() => setSearchOpen(false)}
+          stepSettingsAvailable={!(overview.mode === "firstRun" && overview.flow !== "done")}
+        />
       )}
       <MainWindowLayout
         canBack={!takeoverActive && navigation.canBack}

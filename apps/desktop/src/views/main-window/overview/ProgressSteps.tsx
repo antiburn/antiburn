@@ -5,6 +5,7 @@
 
 import type { ReactNode } from "react"
 
+import { CountUp } from "../../../components/ui/CountUp"
 import { cn } from "../../../lib/cn"
 import { renderAgentIcon } from "../../../lib/agentIcon"
 import { noteInteraction, scanNow } from "../../../lib/ipc"
@@ -17,6 +18,7 @@ import {
   enableNonRepoFolders,
   fixesFound,
   type FixCategory,
+  type HistoryProgress,
   type OverviewProgress,
   type ProgressStepKey,
 } from "./overviewProgressStore"
@@ -61,13 +63,11 @@ function fixesSubtitle(failing: FixCategory[]): string {
 
 function StepProgressBar({
   completed,
-  done,
   title,
   started,
   total,
 }: {
   completed: number
-  done: boolean
   title: string
   started: boolean
   total: number
@@ -90,15 +90,40 @@ function StepProgressBar({
         />
       </div>
 
-      <span className="type-body flex items-baseline justify-end">
-        {!started
-          ? "Waiting"
-          : completed == null
-            ? fmt(total)
-            : `${fmt(completed)}/${fmt(total)}`}
+      <span className="type-body flex items-baseline justify-end tabular-nums">
+        {!started ? (
+          "Waiting"
+        ) : (
+          <>
+            <CountUp value={completed} />/<CountUp value={total} />
+          </>
+        )}
       </span>
     </div>
   )
+}
+
+/** The Sessions step's footnote for the background history pass. One line,
+ *  under the step's progress bar; nothing shows once the pass is done. */
+function HistoryFootnote({ history }: { history: HistoryProgress }) {
+  switch (history.state) {
+    case "pending":
+      return (
+        <p className="type-footnote text-label-tertiary">
+          Older sessions are read once checks finish.
+        </p>
+      )
+    case "looking":
+      return <p className="type-footnote text-label-tertiary">Looking for older sessions…</p>
+    case "reading":
+      return (
+        <p className="type-footnote text-label-tertiary">
+          Reading older sessions · {fmt(history.completed)} of {fmt(history.total)}
+        </p>
+      )
+    case "done":
+      return null
+  }
 }
 
 /** The Agents step's own content: a row of agent logos. No heading row — the
@@ -177,14 +202,21 @@ function SessionsStepRow({
   snapshot: OverviewProgress
   permissionFlow: FolderPermissionFlow
 }) {
-  const { done, completed, total, gate } = snapshot.sessions
-  const started = total > 0
+  const { done, displayCompleted, displayTotal, gate } = snapshot.sessions
+  const started = displayTotal > 0
 
-  const data = { completed, done, started, title: "Read session data", total }
+  const data = {
+    completed: displayCompleted,
+    started,
+    title: "Read session data",
+    total: displayTotal,
+  }
 
   return (
     <div className="flex flex-col gap-2">
       <StepProgressBar {...data} />
+
+      {snapshot.history && <HistoryFootnote history={snapshot.history} />}
 
       {snapshot.sessions.deferred.length > 0 && (
         <ReadFolderPermissionNotice
@@ -236,11 +268,11 @@ function ChecksStepRow({
   snapshot: OverviewProgress
   isSteady: boolean
 }) {
-  const { done, windowSessions, pendingEvidence } = snapshot.checks
+  const { windowSessions, pendingEvidence } = snapshot.checks
   const started = isSteady || snapshot.sessions.done
   const completed = Math.max(0, windowSessions - pendingEvidence)
 
-  const data = { completed, done, started, title: "Run session checks", total: windowSessions }
+  const data = { completed, started, title: "Run session checks", total: windowSessions }
 
   return (
     <div className="flex flex-col gap-2">
@@ -267,13 +299,11 @@ function StepCard({
   transitionName,
   title,
   body,
-  finePrint,
   children,
 }: {
   transitionName: string | undefined
   title: string
   body?: string
-  finePrint?: string
   children?: ReactNode
 }) {
   return (
@@ -284,11 +314,54 @@ function StepCard({
       <div className="flex flex-col gap-(--space-xs) text-center">
         <h2 className="type-title-2 text-label">{title}</h2>
         {body && <p className="type-body text-label-secondary">{body}</p>}
-        {finePrint && <p className="type-footnote text-label-tertiary">{finePrint}</p>}
       </div>
       {children && <div className="flex w-full flex-col gap-(--space-md)">{children}</div>}
     </div>
   )
+}
+
+/** Where a step card shows: the first-run takeover, or a docked row's modal. */
+export type ProgressStepSurface = "firstRun" | "modal"
+
+/**
+ * The title and body of each step that has live content. The first run
+ * tells what the step does now; the modal tells what the step keeps and
+ * what its settings below change.
+ */
+const STEP_COPY: Record<
+  Exclude<ProgressStepKey, "fixes">,
+  Record<ProgressStepSurface, { title: string; body: string }>
+> = {
+  agents: {
+    firstRun: {
+      title: "Finding agents",
+      body: "Scanning the last 30 days of session logs to find out which coding agents you're using on this machine.",
+    },
+    modal: {
+      title: "Agents",
+      body: "The coding agents antiburn will scan for sessions to report on.",
+    },
+  },
+  sessions: {
+    firstRun: {
+      title: "Reading sessions",
+      body: "antiburn pulls each session's metadata - every line of the log - into a local unencrypted sqlite db, for indexed access.",
+    },
+    modal: {
+      title: "Sessions",
+      body: "Each session's metadata in a local unencrypted sqlite db. Choose where it looks, how far back it reads, and how long it keeps data.",
+    },
+  },
+  checks: {
+    firstRun: {
+      title: "Running session checks",
+      body: "antiburn checks for anti-patterns, especially problems with the context window, caching, and unused tools or skills.",
+    },
+    modal: {
+      title: "Checks",
+      body: "antiburn checks each session for anti-patterns in the context window, caching, and unused tools or skills.",
+    },
+  },
 }
 
 /**
@@ -299,11 +372,13 @@ function StepCard({
  */
 export function ProgressStepCard({
   step,
+  surface,
   progress,
   isSteady,
   transitionName,
 }: {
   step: ProgressStepKey
+  surface: ProgressStepSurface
   progress: OverviewProgress
   isSteady: boolean
   transitionName: string | undefined
@@ -312,37 +387,24 @@ export function ProgressStepCard({
   switch (step) {
     case "agents":
       return (
-        <StepCard
-          transitionName={transitionName}
-          title="Finding agents"
-          body="Scanning the last 30 days of session logs to find out which coding agents you're using on this machine."
-        >
+        <StepCard transitionName={transitionName} {...STEP_COPY.agents[surface]}>
           <AgentsStepRow snapshot={progress} />
         </StepCard>
       )
     case "sessions":
       return (
-        <StepCard
-          transitionName={transitionName}
-          title="Reading sessions"
-          body="antiburn pulls each session's metadata - every line of the log - into a local unencrypted sqlite db, for indexed access."
-        >
+        <StepCard transitionName={transitionName} {...STEP_COPY.sessions[surface]}>
           <SessionsStepRow snapshot={progress} permissionFlow={permissionFlow} />
         </StepCard>
       )
     case "checks":
       return (
-        <StepCard
-          transitionName={transitionName}
-          title="Running session checks"
-          body="antiburn checks for anti-patterns, especially problems with the context window, caching, and unused tools or skills."
-        >
+        <StepCard transitionName={transitionName} {...STEP_COPY.checks[surface]}>
           <ChecksStepRow snapshot={progress} isSteady={isSteady} />
         </StepCard>
       )
     case "fixes": {
       const failing = progress.categories.filter((category) => category.status === "needsFix")
-      const history = progress.history
       return (
         <StepCard
           transitionName={transitionName}
@@ -358,11 +420,6 @@ export function ProgressStepCard({
             : progress.checks.windowSessions > 0
               ? { body: "Your config already looks efficient." }
               : {})}
-          {...(history
-            ? {
-                finePrint: `Reading older history · ${fmt(history.completed)} of ${fmt(history.total)}`,
-              }
-            : {})}
         />
       )
     }

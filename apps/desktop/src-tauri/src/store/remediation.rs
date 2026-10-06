@@ -928,41 +928,6 @@ impl Store {
         Ok(usize::try_from(count).unwrap_or(0))
     }
 
-    // TEMP ftue-diag: describes every unsettled evidence row, so a drained
-    // backlog with work left shows why the worker cannot claim that work.
-    pub fn unsettled_evidence_rows(&self) -> Result<Vec<String>> {
-        let connection = self.lock();
-        let mut statement = connection.prepare(
-            "SELECT e.agent, e.session_id, e.status, e.claim_fence, e.claimed_at_epoch,
-                    e.lease_expires_at_epoch, e.next_attempt_at_epoch, e.retry_count,
-                    e.analyzed_generation, s.source_generation, e.last_error
-               FROM session_evidence e
-               LEFT JOIN session s
-                 ON s.environment_key = e.environment_key
-                AND s.agent = e.agent AND s.session_id = e.session_id
-              WHERE e.status IN ('pending', 'processing')",
-        )?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok(format!(
-                    "{}/{} status={} fence={} claimed_at={:?} lease_expires={:?} next_attempt={:?} retry={} analyzed_gen={:?} session_gen={:?} last_error={:?}",
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, Option<i64>>(4)?,
-                    row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, Option<i64>>(6)?,
-                    row.get::<_, i64>(7)?,
-                    row.get::<_, Option<i64>>(8)?,
-                    row.get::<_, Option<i64>>(9)?,
-                    row.get::<_, Option<String>>(10)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
     /// Claim the next pending or expired-lease evidence row for `agents`,
     /// preferring the session most recently active.
     ///

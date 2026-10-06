@@ -298,8 +298,11 @@ pub struct ScanStatus {
     /// value once a pass ends, the same as every other field here — a fresh
     /// pass moves it forward again from [`ScanPhase::Finding`].
     pub phase: ScanPhase,
-    /// One entry for each agent a full pass searches, in a fixed order. Each
-    /// entry gets its count and `done` when that agent's explorer finishes.
+    /// One entry for each agent a full pass searches, in a fixed order.
+    /// Discovery sets each entry's count to the candidate files it found and
+    /// marks it `done` when that agent's explorer finishes; the read stage
+    /// then replaces the count with the sessions it admits for that agent,
+    /// once the whole pass reaches [`ScanPhase::Saving`].
     pub found_by_agent: Vec<AgentFoundCount>,
     /// Progress through the metadata-read stage.
     pub read: ReadProgress,
@@ -327,7 +330,10 @@ pub enum ScanPhase {
     Saving,
 }
 
-/// Sessions one agent explorer found in the current or most recent pass.
+/// One agent's count for the current or most recent pass. Before the pass
+/// reaches [`ScanPhase::Saving`], `sessions` is discovery's candidate-file
+/// count; from `Saving` on, it is the number of sessions the read stage
+/// admitted for this agent.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentFoundCount {
@@ -335,9 +341,29 @@ pub struct AgentFoundCount {
     /// payload carries the fact, not the wording.
     pub agent: String,
     pub sessions: usize,
-    /// Whether this agent's explorer has finished. `sessions` is final only
-    /// when this is true.
+    /// Whether this agent's explorer has finished. Stays `true` while the
+    /// read stage later replaces `sessions` with the admitted count.
     pub done: bool,
+}
+
+/// One agent's session-watch folders, for the Agents step settings list.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionLocations {
+    /// The agent's discovery slug. See [`AgentFoundCount::agent`].
+    pub agent: String,
+    /// The agent's watch roots, in watch-root order, with duplicates removed.
+    pub locations: Vec<SessionLocation>,
+}
+
+/// One folder a watcher observes for one agent's sessions.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionLocation {
+    /// The folder's path, with a leading home directory shown as `~`.
+    pub path: String,
+    /// Whether the folder exists on disk right now.
+    pub found: bool,
 }
 
 /// Progress through the metadata-read stage.
@@ -388,6 +414,9 @@ pub struct ScanHistoryProgress {
     pub state: ScanHistoryState,
     pub completed: usize,
     pub total: usize,
+    /// True while the historical pass itself runs its discovery or describe
+    /// phase. False while only the worker reads the sessions it found.
+    pub pass_running: bool,
 }
 
 /// One state in [`ScanHistoryProgress`]. See each variant for what a reader

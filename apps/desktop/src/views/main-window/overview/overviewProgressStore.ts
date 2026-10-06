@@ -19,7 +19,6 @@ import {
 import {
   advanceFirstRun,
   finishFirstRun,
-  ftueDiag, // TEMP ftue-diag
   getFolderPermissions,
   getSettings,
   noteInteraction,
@@ -70,8 +69,17 @@ interface AgentsStep {
 
 interface SessionsStep {
   done: boolean
+  /** Sessions in the current 30-day window. The first-run steps and their
+   *  `stepDone` gating read this and `total`, never the combined figures
+   *  below, so the gate a reader is waiting on never moves with the
+   *  background history pass. */
   completed: number
   total: number
+  /** What the Sessions step shows: `completed`/`total` plus the background
+   *  history pass's own completed/total, once that pass has sessions of its
+   *  own to report. Equal to `completed`/`total` at every other time. */
+  displayCompleted: number
+  displayTotal: number
   /** The gate outcome, once the read stage this session has finished once. */
   gate: ReadGateCounts | null
   includeNonRepoFolders: boolean
@@ -98,8 +106,22 @@ export interface FixCategory {
   status: FixStatus
 }
 
-interface HistoryProgress {
+/**
+ * The background history pass's state, as the Overview shows it.
+ *
+ * `"pending"`: discovered but not started — the pass waits for the steady
+ * scan to catch up. `"looking"`: running, and still discovering which older
+ * sessions exist (the backend's `total` is 0 so far). `"reading"`: running,
+ * with sessions to read (`total` set). `"done"`: finished.
+ */
+export type HistoryState = "pending" | "looking" | "reading" | "done"
+
+export interface HistoryProgress {
+  state: HistoryState
+  /** Older sessions whose full log the pass has read so far. 0 in
+   *  `"pending"` and `"looking"`, where there is nothing to count yet. */
   completed: number
+  /** Older sessions the pass has found. 0 in `"pending"` and `"looking"`. */
   total: number
 }
 
@@ -202,6 +224,13 @@ export interface OverviewProgress {
   flow: FlowStep
   /** The step whose modal is open, if any. */
   openStep: ProgressStepKey | null
+  /** A control to reveal and focus inside the open step's settings, from a
+   *  search result. Null when the modal opened without one — a nav-row
+   *  click, say — and the modal shows no particular control. */
+  openStepControl: string | null
+  /** Bumped on every `openProgressStep` call that names a control, so
+   *  choosing the same control twice still re-reveals it. */
+  openStepControlRevision: number
   /**
    * Whether the takeover shows the card for `flow`. False while the previous
    * card moves to its place, so the next card appears only after it lands.
@@ -213,8 +242,10 @@ export interface OverviewProgress {
   /** Every category in the checks report, for the persistent checklist. */
   categories: FixCategory[]
   failingCount: number
-  /** The planned background history pass's progress. Null unless the
-   *  backend reports it and it is still under way. */
+  /** The background history pass's progress. Null during the first-run
+   *  steps — the pass itself waits for the first run to finish, so there is
+   *  nothing to show until then — and whenever the backend reports no pass
+   *  under the current retention. */
   history: HistoryProgress | null
 }
 
@@ -243,14 +274,21 @@ export const INITIAL_LAST_PASS: LastPass = { lastFound: null, lastRead: null }
 
 /**
  * Keeps the last finished pass's agents and read numbers across a routine
- * pass that resets the live status to zero. `lastFound` updates once a
- * pass's discovery is entirely done; `lastRead` updates once a pass has
- * left the read stage, whether it is still saving or has finished.
+ * pass that resets the live status to zero. `lastFound` updates once a pass
+ * reaches `"saving"`, where each count is the sessions the read stage
+ * admitted. Discovery's candidate counts are higher, so taking them would
+ * make the row jump up and back down on each pass. `lastRead` updates once
+ * a pass has left the read stage, whether it is still saving or has
+ * finished.
  */
 export function advanceLastPass(previous: LastPass, status: ScanStatus | null): LastPass {
   if (!status) return previous
   let { lastFound, lastRead } = previous
-  if (status.foundByAgent.length > 0 && status.foundByAgent.every((row) => row.done)) {
+  if (
+    status.phase === "saving" &&
+    status.foundByAgent.length > 0 &&
+    status.foundByAgent.every((row) => row.done)
+  ) {
     lastFound = status.foundByAgent
   }
   if (!status.running && status.phase !== "idle" && status.phase !== "finding") {
@@ -271,12 +309,26 @@ function toFixCategory(category: ChecksCategoryPayload): FixCategory {
   return { id: category.id, label: CHECK_LABELS[category.id], status }
 }
 
-function deriveHistory(history: ScanHistoryProgress | undefined): HistoryProgress | null {
-  if (!history) return null
-  // A pending pass has found nothing yet, and during a first run it waits
-  // for the first run to finish. Show only a pass with sessions to report.
-  if (history.state !== "running" || history.total === 0) return null
-  return { completed: history.completed, total: history.total }
+/**
+ * `exposedFlow` gates this the same way the rest of the Overview treats
+ * `"done"`: a steady device is always there, and a first run reaches it only
+ * once its last step closes. Before that point the history pass is still
+ * running behind the scenes, but a reader mid-flow has nothing to do with
+ * its number, so this returns null throughout the first-run steps.
+ */
+function deriveHistory(
+  exposedFlow: FlowStep,
+  history: ScanHistoryProgress | undefined,
+): HistoryProgress | null {
+  if (exposedFlow !== "done") return null
+  if (!history || history.state === "none") return null
+  if (history.state === "pending") return { state: "pending", completed: 0, total: 0 }
+  if (history.state === "running") {
+    return history.total === 0
+      ? { state: "looking", completed: 0, total: 0 }
+      : { state: "reading", completed: history.completed, total: history.total }
+  }
+  return { state: "done", completed: history.completed, total: history.total }
 }
 
 function deriveMode(latch: FirstRunLatch): OverviewProgress["mode"] {
@@ -291,6 +343,8 @@ export function deriveOverviewProgress(
   openStep: ProgressStepKey | null,
   stepShown: boolean,
   lastPass: LastPass,
+  openStepControl: string | null = null,
+  openStepControlRevision = 0,
 ): OverviewProgress {
   const mode = deriveMode(latch)
   // Steady behaves as "done": every step reads as docked, so the row always
@@ -321,10 +375,22 @@ export function deriveOverviewProgress(
     : latch.sessionsDone
       ? latch.sessionsRead
       : (inputs.scanStatus?.read ?? { completed: 0, total: 0 })
+  const history = deriveHistory(exposedFlow, inputs.scanStatus?.history)
+  // The combined figures count the history pass's own sessions once it has
+  // some to report. Before then — including throughout the first-run steps,
+  // where `history` is always null — they equal the 30-day numbers.
+  const historyToCount =
+    history && (history.state === "reading" || history.state === "done") ? history : null
   const sessions: SessionsStep = {
     done: latch.sessionsDone,
     completed: sessionsSource.completed,
     total: sessionsSource.total,
+    displayCompleted: historyToCount
+      ? sessionsSource.completed + historyToCount.completed
+      : sessionsSource.completed,
+    displayTotal: historyToCount
+      ? sessionsSource.total + historyToCount.total
+      : sessionsSource.total,
     gate: latch.sessionsDone ? latch.sessionsGate : null,
     includeNonRepoFolders: inputs.includeNonRepoFolders,
     deferred: inputs.deferred,
@@ -358,13 +424,15 @@ export function deriveOverviewProgress(
     mode,
     flow: exposedFlow,
     openStep,
+    openStepControl,
+    openStepControlRevision,
     stepShown,
     agents,
     sessions,
     checks,
     categories,
     failingCount,
-    history: deriveHistory(inputs.scanStatus?.history),
+    history,
   }
 }
 
@@ -375,6 +443,8 @@ export function deriveOverviewProgress(
 let latch: FirstRunLatch = INITIAL_FIRST_RUN_LATCH
 let flow: FlowStep = "welcome"
 let openStep: ProgressStepKey | null = null
+let openStepControl: string | null = null
+let openStepControlRevision = 0
 let stepShown = true
 let liveScanStatus: ScanStatus | null = null
 let liveChecksReport: ChecksReportPayload | null = null
@@ -416,11 +486,22 @@ let snapshot: OverviewProgress = deriveOverviewProgress(
   openStep,
   stepShown,
   lastPass,
+  openStepControl,
+  openStepControlRevision,
 )
 const listeners = new Set<() => void>()
 
 function recompute(): void {
-  snapshot = deriveOverviewProgress(latch, currentInputs(), flow, openStep, stepShown, lastPass)
+  snapshot = deriveOverviewProgress(
+    latch,
+    currentInputs(),
+    flow,
+    openStep,
+    stepShown,
+    lastPass,
+    openStepControl,
+    openStepControlRevision,
+  )
   for (const listener of listeners) listener()
   maybeReportFirstRunSteps()
 }
@@ -474,44 +555,15 @@ function onScanStatus(status: ScanStatus | null): void {
     requestChecks?.()
     refreshFolderPermissions?.()
   }
-  // TEMP ftue-diag
-  void ftueDiag("onScanStatus", {
-    running: status?.running ?? null,
-    phase: status?.phase ?? null,
-    foundByAgentLen: status?.foundByAgent.length ?? null,
-    read: status?.read ?? null,
-    gate: status?.gate != null,
-  })
   latch = advanceFirstRunLatch(latch, currentInputs())
-  logLatch() // TEMP ftue-diag
   recompute()
 }
 
 function onChecksReport(report: ChecksReportPayload | null, current: boolean): void {
   liveChecksReport = report
   liveChecksReportCurrent = current
-  // TEMP ftue-diag
-  void ftueDiag("onChecksReport", {
-    evidenceSettled: report?.evidenceSettled ?? null,
-    windowSessions: report?.windowSessions ?? null,
-    pendingEvidence: report?.pendingEvidence ?? null,
-    deferredEvidence: report?.deferredEvidence ?? null,
-    current,
-  })
   latch = advanceFirstRunLatch(latch, currentInputs())
-  logLatch() // TEMP ftue-diag
   recompute()
-}
-
-// TEMP ftue-diag
-function logLatch(): void {
-  void ftueDiag("latch", {
-    decided: latch.decided,
-    showSteps: latch.showSteps,
-    agentsDone: latch.agentsDone,
-    sessionsDone: latch.sessionsDone,
-    checksDone: latch.checksDone,
-  })
 }
 
 function onSettings(settings: AppSettings): void {
@@ -519,7 +571,6 @@ function onSettings(settings: AppSettings): void {
   liveOnboardingCompleted = settings.onboardingCompleted
   liveUsageOn = settings.liveUsageEnabled && settings.liveUsageStarted
   latch = advanceFirstRunLatch(latch, currentInputs())
-  logLatch() // TEMP ftue-diag
   recompute()
 }
 
@@ -527,6 +578,7 @@ function onReset(): void {
   latch = resetFirstRunLatch()
   flow = "welcome"
   openStep = null
+  openStepControl = null
   stepShown = true
   // The wipe clears `onboardingCompleted`, so this device is a first run
   // again until the pass the reset triggers finishes it.
@@ -540,7 +592,6 @@ function onReset(): void {
   reportedFirstRunRead = false
   reportedFirstRunChecked = false
   reportedFirstRunResult = false
-  void ftueDiag("onReset", { generation, listeners: listeners.size }) // TEMP ftue-diag
   recompute()
 }
 
@@ -666,12 +717,28 @@ export function rewindTo(step: ProgressStepKey): void {
   })
 }
 
-/** Open one step's modal over the current view. */
-export function openProgressStep(key: ProgressStepKey): void {
+/**
+ * Open one step's modal over the current view. `control` names a search
+ * target to reveal and focus inside it, without changing its value; omit it
+ * for an ordinary nav-row open, which shows the modal with nothing singled
+ * out.
+ */
+export function openProgressStep(key: ProgressStepKey, control?: string): void {
   void withViewTransition(() => {
     openStep = key
+    if (control) {
+      openStepControl = control
+      openStepControlRevision += 1
+    } else {
+      openStepControl = null
+    }
     recompute()
   })
+  // `fixes` has no settings — `StepSettings` renders nothing for it — so
+  // opening its modal reports no exposure.
+  if (key !== "fixes") {
+    noteInteraction({ kind: "stepSettingsViewed", label: key, detail: "modal" })
+  }
 }
 
 /** Close the open step modal. */
@@ -706,18 +773,8 @@ let checksConsumerId: string | null = null
 let nextConsumer = 0
 const stops: Array<() => void> = []
 
-async function attach(
-  thisGeneration: number,
-  pending: Promise<() => void>,
-  label: string, // TEMP ftue-diag
-): Promise<void> {
-  const stop = await pending.catch((error: unknown) => {
-    // TEMP ftue-diag
-    void ftueDiag("attach rejected", { label, thisGeneration, error: String(error) })
-    return null
-  })
-  // TEMP ftue-diag
-  void ftueDiag("attach resolved", { label, thisGeneration, generation, ok: stop != null })
+async function attach(thisGeneration: number, pending: Promise<() => void>): Promise<void> {
+  const stop = await pending.catch(() => null)
   if (!stop) return
   if (thisGeneration !== generation) stop()
   else stops.push(stop)
@@ -727,8 +784,6 @@ async function start(): Promise<void> {
   const thisGeneration = ++generation
   checksConsumerId = `overview-progress-${++nextConsumer}`
   const consumerId = checksConsumerId
-  // TEMP ftue-diag
-  void ftueDiag("start entry", { thisGeneration, listeners: listeners.size })
 
   function refreshChecks(): void {
     const runsAtRequest = scanRunsSeen
@@ -751,18 +806,10 @@ async function start(): Promise<void> {
       .then((permissions) => {
         if (thisGeneration !== generation) return
         liveDeferred = permissions.deferred
-        // TEMP ftue-diag
-        void ftueDiag("refreshFolderPermissions resolved", {
-          deferredLen: permissions.deferred.length,
-        })
         latch = advanceFirstRunLatch(latch, currentInputs())
-        logLatch() // TEMP ftue-diag
         recompute()
       })
-      .catch((error: unknown) => {
-        // TEMP ftue-diag
-        void ftueDiag("refreshFolderPermissions rejected", { error: String(error) })
-      })
+      .catch(() => undefined)
   }
   refreshFolderPermissions = refreshPermissions
 
@@ -774,36 +821,26 @@ async function start(): Promise<void> {
           if (thisGeneration === generation) onScanStatus(scanStatusStore.getSnapshot())
         }),
       ),
-      "scanStatusStore", // TEMP ftue-diag
     ),
     attach(
       thisGeneration,
       onChecksReportChanged(() => {
         if (thisGeneration === generation) refreshChecks()
       }),
-      "checksReportChanged", // TEMP ftue-diag
     ),
     attach(
       thisGeneration,
       onSettingsChanged((settings) => {
         if (thisGeneration === generation) onSettings(settings)
       }),
-      "settingsChanged", // TEMP ftue-diag
     ),
     attach(
       thisGeneration,
       onFtueReset(() => {
         if (thisGeneration === generation) onReset()
       }),
-      "ftueReset", // TEMP ftue-diag
     ),
   ])
-  // TEMP ftue-diag
-  void ftueDiag("after Promise.all", {
-    thisGeneration,
-    generation,
-    stale: thisGeneration !== generation,
-  })
   if (thisGeneration !== generation) return
   onScanStatus(scanStatusStore.getSnapshot())
   refreshChecks()
@@ -817,8 +854,6 @@ function stop(): void {
   generation += 1
   requestChecks = null
   refreshFolderPermissions = null
-  // TEMP ftue-diag
-  void ftueDiag("stop", { generation })
   for (const detach of stops.splice(0)) detach()
   if (checksConsumerId) void cancelChecksReport(checksConsumerId).catch(() => undefined)
   checksConsumerId = null

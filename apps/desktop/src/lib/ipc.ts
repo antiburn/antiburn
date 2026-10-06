@@ -16,6 +16,7 @@ import {
 import type { SettingsPane } from "./settingsPanes"
 import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
 import type {
+  AgentSessionLocations,
   AppInfo,
   AppSettings,
   InsightsBacklog,
@@ -222,6 +223,12 @@ export async function appInfo(): Promise<AppInfo | null> {
   return invoke<AppInfo>("app_info")
 }
 
+/** The folders antiburn watches for each agent's sessions. */
+export async function agentSessionLocations(): Promise<AgentSessionLocations[]> {
+  if (!hasShell()) return []
+  return invoke<AgentSessionLocations[]>("agent_session_locations")
+}
+
 /** Ask the shell to check the signed release feed. */
 export async function checkForUpdates(): Promise<UpdateStatusPayload> {
   if (!hasShell()) return unsupportedUpdateStatus()
@@ -312,7 +319,7 @@ export async function openPrivacyPolicy(): Promise<void> {
 export type Interaction =
   | { kind: "navigationHistoryMoved"; direction: "back" | "forward" }
   | { kind: "appSearchOpened" }
-  | { kind: "appSearchResultOpened"; category: "view" | "setting" | "check" }
+  | { kind: "appSearchResultOpened"; category: "view" | "setting" | "stepSetting" | "check" }
   | { kind: "projectFolderAction"; action: "open" | "copy"; outcome: "succeeded" | "failed" }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" | "remote" }
   | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
@@ -370,6 +377,11 @@ export type Interaction =
       result?: FirstRunResult
     }
   | { kind: "firstRunAction"; action: FirstRunActionKind }
+  | {
+      kind: "stepSettingsViewed"
+      label: StepSettingsAnalyticsLabel
+      detail: StepSettingsDetail
+    }
 
 export type Surface =
   | "activity"
@@ -435,6 +447,13 @@ type FirstRunActionKind =
   | "live_usage_started"
   | "live_usage_skipped"
   | "enhance_opened"
+
+/** A progress step whose settings became visible. Narrower than
+ *  `StepSettingsStep` (the Overview's own type): `"fixes"` has no settings
+ *  and never reaches this event. */
+type StepSettingsAnalyticsLabel = "agents" | "limits" | "sessions" | "checks"
+/** Which surface showed the step's settings. */
+type StepSettingsDetail = "first_run" | "modal"
 
 function isNativePeekInteraction(interaction: Interaction): boolean {
   switch (interaction.kind) {
@@ -706,18 +725,9 @@ export async function scanNow(activityWindowDays?: number): Promise<ScanStatus |
     : invoke<ScanStatus>("scan_now", { activityWindowDays })
 }
 
-// TEMP ftue-diag: never commit. Debug-only sink so `overviewProgressStore`'s
-// own trace lines land in the same antiburn-debug log as the backend's.
-export async function ftueDiag(message: string, data: unknown): Promise<void> {
-  if (!hasShell()) return
-  await invoke("ftue_diag", { message, data }).catch((error: unknown) => {
-    console.error("ftue_diag failed", error)
-  })
-}
-
 /**
- * Run the dedicated historical pass now (Settings > General > Historical
- * scan). Widens discovery past the current window, up to the retention
+ * Run the dedicated historical pass now (Sessions step > Scanning > Older
+ * sessions). Widens discovery past the current window, up to the retention
  * limit, instead of {@link scanNow}'s current-window-only rescan.
  */
 export async function scanHistory(): Promise<ScanStatus | null> {

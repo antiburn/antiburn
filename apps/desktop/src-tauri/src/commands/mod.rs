@@ -46,6 +46,7 @@ pub(crate) mod local_usage;
 pub(crate) mod quota;
 #[cfg(test)]
 mod reader_routing_tests;
+pub(crate) mod session_locations;
 
 use crate::insights_ipc::InsightsController;
 use crate::insights_report::ReportRequest;
@@ -1302,30 +1303,9 @@ pub async fn get_scan_status(app: tauri::AppHandle) -> CommandResult<ScanStatus>
                 sessions_seen,
             })
             .collect();
-        // TEMP ftue-diag
-        ::tracing::info!(
-            event = "ftue_diag",
-            message = "get_scan_status",
-            phase = ?status.phase,
-            running = status.running,
-            agents_len = status.agents.len(),
-        );
         Ok(status)
     })
     .await
-}
-
-/// TEMP ftue-diag: a debug-only sink for `ftueStore`'s own frontend-side
-/// trace lines, so they land in the same debug log as the backend's.
-/// Never committed — strip before any PR.
-#[tauri::command]
-pub fn ftue_diag(message: String, data: serde_json::Value) {
-    #[cfg(debug_assertions)]
-    ::tracing::info!(event = "ftue_diag", message = %message, data = %data);
-    #[cfg(not(debug_assertions))]
-    {
-        let _ = (message, data);
-    }
 }
 
 /* -------------------------------------------------------------------------
@@ -2484,8 +2464,6 @@ pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
 /// register and any webview could invoke.
 #[cfg(debug_assertions)]
 pub(crate) async fn reset_first_run(app: tauri::AppHandle) -> CommandResult<()> {
-    // TEMP ftue-diag
-    ::tracing::info!(event = "ftue_diag", message = "reset_first_run: start");
     // The gate goes back to the start before anything else runs, so the pass
     // the wipe is about to request waits at the agents gate instead of running
     // straight through on the stage this run already reached.
@@ -2495,13 +2473,6 @@ pub(crate) async fn reset_first_run(app: tauri::AppHandle) -> CommandResult<()> 
     // Welcome.
     app.state::<ScanController>().request_cancel();
     let removed = wipe_local_session_data(&app).await;
-    // TEMP ftue-diag
-    ::tracing::info!(
-        event = "ftue_diag",
-        message = "reset_first_run: wipe done",
-        removed = ?removed.as_ref().ok(),
-        error = ?removed.as_ref().err().map(|error| format!("{error:?}")),
-    );
     removed?;
     crate::main_window::on_main_value(&app, crate::main_window::reset_placement).await?;
     let store = app.state::<Store>().inner().clone();
@@ -2515,23 +2486,11 @@ pub(crate) async fn reset_first_run(app: tauri::AppHandle) -> CommandResult<()> 
     })
     .await?;
     apply_settings_transition_on_main(&app, &previous, &saved).await?;
-    let emitted = app.emit(FTUE_RESET_EVENT, ());
-    // TEMP ftue-diag
-    ::tracing::info!(
-        event = "ftue_diag",
-        message = "reset_first_run: ftue:reset emitted",
-        ok = emitted.is_ok(),
-    );
+    let _ = app.emit(FTUE_RESET_EVENT, ());
     let opened = crate::main_window::on_main_value(&app, |app| {
         crate::main_window::open_at_section(app, crate::main_window::MainWindowSection::Overview)
     })
     .await;
-    // TEMP ftue-diag
-    ::tracing::info!(
-        event = "ftue_diag",
-        message = "reset_first_run: main window opened",
-        ok = matches!(opened, Ok(Ok(_))),
-    );
     opened??;
     Ok(())
 }

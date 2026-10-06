@@ -147,6 +147,9 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
             let _ = action;
         }
         event::Interaction::FirstRunFinished {} => {}
+        event::Interaction::StepSettingsViewed { label, detail } => {
+            let _ = (label, detail);
+        }
     }
 }
 

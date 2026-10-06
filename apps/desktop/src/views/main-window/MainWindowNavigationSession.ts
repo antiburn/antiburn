@@ -19,6 +19,7 @@ import {
 import { sessionKey, type SessionSubject } from "../../lib/sessionSubject"
 
 import type { MainActivitySession } from "./MainActivitySession"
+import { openProgressStep } from "./overview/overviewProgressStore"
 
 const HISTORY_LIMIT = 100
 const NATIVE_VIEW_IDS = {
@@ -412,6 +413,7 @@ export class MainWindowNavigationSession {
       this.targetRevision = request.revision
       this.snapshot = { ...this.snapshot, requests: this.snapshot.requests + 1 }
       this.navigate(this.destinationForRequest(request))
+      if (request.destination.overviewStep) openProgressStep(request.destination.overviewStep)
     }
     const generation = this.rendererGeneration()
     if (generation === null) return

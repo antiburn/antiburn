@@ -321,7 +321,7 @@ async fn run_worker(app: tauri::AppHandle) {
         // Catches up the history progress indicator while the worker
         // settles history evidence after the historical pass itself has
         // already finished. `push_progress` throttles this call.
-        crate::scan::history::push_progress(&report_app, false, false);
+        crate::scan::history::push_progress(&report_app, false);
     };
     let backlog_app = app.clone();
     let announce_backlog = move |active: bool| {
@@ -333,7 +333,7 @@ async fn run_worker(app: tauri::AppHandle) {
         // `scan::history::maybe_start_automatic_pass`) is the backlog
         // draining; check it on every drain, not only after a scan pass.
         if !active {
-            crate::scan::history::push_progress(&backlog_app, false, true);
+            crate::scan::history::push_progress(&backlog_app, true);
             crate::scan::history::maybe_start_automatic_pass(&backlog_app);
             // The first run's turns are now published, so limit factors can
             // learn from them.
@@ -612,8 +612,6 @@ pub(crate) async fn process_next(
     // while the backlog still read idle.
     on_claimed();
     let Some(record) = store.session(&claim.key)? else {
-        // TEMP ftue-diag
-        ::tracing::info!(event = "insights_claim_no_session", session_id = %claim.key.session_id, fence = claim.claim_fence);
         return Ok(true);
     };
     let Some(_agent) = crate::agents::kind_from_slug(&record.key.agent) else {
@@ -634,8 +632,6 @@ pub(crate) async fn process_next(
                 }
                 progress = observed;
                 if !store.renew_evidence_lease(&claim, clock(), LEASE_SECS)? {
-                    // TEMP ftue-diag
-                    ::tracing::info!(event = "insights_lease_lost", session_id = %claim.key.session_id, fence = claim.claim_fence);
                     signal.cancel();
                     let _ = pass.await;
                     break None;
@@ -649,16 +645,6 @@ pub(crate) async fn process_next(
     pass.analysis.analyzed_generation = claim.source_generation;
     let outcome = apply_outcome(store, &claim, &pass, clock())?;
     let published = outcome.applied && pass.outcome == PassOutcome::Published;
-    if !outcome.applied {
-        // TEMP ftue-diag
-        ::tracing::info!(
-            event = "insights_outcome_not_applied",
-            session_id = %claim.key.session_id,
-            fence = claim.claim_fence,
-            claim_generation = ?claim.source_generation,
-            outcome = ?pass.outcome,
-        );
-    }
     if pass.outcome != PassOutcome::Published {
         // Log each pass that does not publish. A retry sets a backoff, and
         // the checks report then counts the session as deferred.
@@ -814,10 +800,6 @@ pub(crate) async fn worker_loop(
                         processed = drained,
                         elapsed_ms
                     );
-                    // TEMP ftue-diag
-                    for row in store.unsettled_evidence_rows().unwrap_or_default() {
-                        ::tracing::info!(event = "insights_unsettled_after_drain", now = clock(), row = %row);
-                    }
                     (signals.backlog)(false);
                 }
                 if report_dirty {

@@ -17,6 +17,12 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `Explorers::discover_recent_sessions_with_progress` passes
+  each finished agent to its callback as an `AgentKind`, not as a display
+  label. Call `AgentKind::display_label` to get the old text.
+
 ## [0.13.0] - 2026-09-29
 
 This release also contains the changes from 0.10.0, 0.11.0, and 0.12.0,

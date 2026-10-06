@@ -14,7 +14,7 @@ pub const LABEL: &str = "main";
 /// The dedicated frontend entry.
 pub const URL: &str = "main.html";
 /// The first inner width in logical pixels.
-pub const DEFAULT_WIDTH: f64 = 1100.0;
+pub const DEFAULT_WIDTH: f64 = 1200.0;
 /// The first inner height in logical pixels.
 ///
 /// This value is taller than a small display can show. `centered_default`

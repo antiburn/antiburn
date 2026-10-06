@@ -1714,6 +1714,63 @@ fn a_pass_with_nothing_discovered_reports_no_agents() {
     assert!(per_agent_totals(&[]).is_empty());
 }
 
+/// `apply_admitted_agent_counts` is the fix for the bug where the Agents
+/// step's icon row (discovery's candidate-file count) disagreed with its
+/// Coding agents list (a stale `scan_state` total): both must end up reading
+/// the same, read-stage-admitted number. Discovery found more candidate
+/// files for `claude-code` than the read stage admits here (one was a
+/// sub-agent transcript or a gate rejection), and `codex` had candidates but
+/// no admitted session at all.
+#[test]
+fn apply_admitted_agent_counts_replaces_the_candidate_count_with_what_the_read_stage_admits() {
+    let mut found_by_agent = vec![
+        AgentFoundCount {
+            agent: "claude-code".to_string(),
+            sessions: 5,
+            done: true,
+        },
+        AgentFoundCount {
+            agent: "codex".to_string(),
+            sessions: 2,
+            done: true,
+        },
+    ];
+    let records = vec![
+        record("claude-code", "a", Some(1_000)),
+        record("claude-code", "b", Some(2_000)),
+        record("claude-code", "c", Some(3_000)),
+    ];
+
+    apply_admitted_agent_counts(&mut found_by_agent, &records);
+
+    assert_eq!(found_by_agent[0].agent, "claude-code");
+    assert_eq!(
+        found_by_agent[0].sessions, 3,
+        "the admitted count, not discovery's 5"
+    );
+    assert!(found_by_agent[0].done);
+    assert_eq!(found_by_agent[1].agent, "codex");
+    assert_eq!(
+        found_by_agent[1].sessions, 0,
+        "no admitted session for this agent"
+    );
+    assert!(found_by_agent[1].done);
+}
+
+#[test]
+fn apply_admitted_agent_counts_zeroes_every_entry_when_nothing_was_admitted() {
+    let mut found_by_agent = vec![AgentFoundCount {
+        agent: "cursor".to_string(),
+        sessions: 4,
+        done: true,
+    }];
+
+    apply_admitted_agent_counts(&mut found_by_agent, &[]);
+
+    assert_eq!(found_by_agent[0].sessions, 0);
+    assert!(found_by_agent[0].done);
+}
+
 /// A scoped pass counts only its named agents, not the whole install, so its
 /// count is not comparable to a full pass's count. Only a full pass may
 /// report to analytics, on success or on failure.
@@ -2818,6 +2875,64 @@ async fn the_read_total_shrinks_by_exactly_the_subagent_count_found() {
         forced_calls, 1,
         "the last log always forces one final report"
     );
+}
+
+/// End to end for the Agents-step bug: discovery's candidate count for
+/// Claude includes a sub-agent transcript the read stage then drops, and
+/// Cursor has a candidate but ends up with no admitted session. Once the
+/// read stage settles, `found_by_agent` must show the admitted counts, not
+/// discovery's candidate counts.
+#[tokio::test]
+async fn a_full_pass_corrects_found_by_agent_to_what_the_read_stage_admits() {
+    let home = tempfile::TempDir::new().unwrap();
+    let parent = write_claude_session(home.path(), "11111111-2222-3333-4444-555555555556");
+    let sidechain = write_claude_sidechain(home.path(), "aaaa-2222");
+    let logs = vec![
+        log(AgentKind::Claude, parent, 1_800_000_000),
+        log(AgentKind::Claude, sidechain, 1_800_000_050),
+    ];
+
+    // Discovery's counts, before the read stage has run: two candidate files
+    // for Claude, one for Cursor (which has no file on disk at all here —
+    // discovery found a candidate that the read stage never admits).
+    let mut found_by_agent = vec![
+        AgentFoundCount {
+            agent: "claude-code".to_string(),
+            sessions: 2,
+            done: true,
+        },
+        AgentFoundCount {
+            agent: "cursor".to_string(),
+            sessions: 1,
+            done: true,
+        },
+    ];
+
+    let described = describe_with_gate(
+        logs,
+        home.path(),
+        &HashSet::new(),
+        &std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
+        false,
+        &mut |_, _, _| {},
+    )
+    .await;
+
+    apply_admitted_agent_counts(&mut found_by_agent, &described.records);
+
+    assert_eq!(found_by_agent[0].agent, "claude-code");
+    assert_eq!(
+        found_by_agent[0].sessions, 1,
+        "the sub-agent transcript no longer counts as a session"
+    );
+    assert!(found_by_agent[0].done);
+    assert_eq!(found_by_agent[1].agent, "cursor");
+    assert_eq!(
+        found_by_agent[1].sessions, 0,
+        "an agent with no admitted session reads 0, not its stale candidate count"
+    );
+    assert!(found_by_agent[1].done);
 }
 
 #[test]

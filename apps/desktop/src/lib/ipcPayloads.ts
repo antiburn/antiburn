@@ -203,15 +203,39 @@ interface AgentScanState {
  *  state before any pass has ever run. */
 export type ScanPhase = "idle" | "finding" | "reading" | "saving"
 
-/** Sessions one agent explorer found this pass. Mirrors Rust `AgentFoundCount`. */
+/**
+ * One agent's count for the current or most recent pass. Mirrors Rust
+ * `AgentFoundCount`. Before the pass reaches `"saving"`, `sessions` is
+ * discovery's candidate-file count; from `"saving"` on, it is the number of
+ * sessions the read stage admitted for this agent.
+ */
 export interface AgentFoundCount {
   /** The agent's discovery slug. Map this to a display label with
    *  `agentDisplayName` before rendering it. */
   agent: string
   sessions: number
-  /** Whether this agent's search has finished. `sessions` is final only
-   *  when this is true. */
+  /** Whether this agent's search has finished. Stays `true` while the read
+   *  stage later replaces `sessions` with the admitted count. */
   done: boolean
+}
+
+/**
+ * One agent's session-watch folders. Mirrors Rust `AgentSessionLocations`.
+ */
+export interface AgentSessionLocations {
+  /** The agent's discovery slug. Same value as {@link AgentFoundCount.agent}. */
+  agent: string
+  /** The agent's watch roots, in watch-root order, with duplicates removed. */
+  locations: SessionLocation[]
+}
+
+/** One folder a watcher observes for one agent's sessions. Mirrors Rust
+ *  `SessionLocation`. */
+interface SessionLocation {
+  /** The folder's path, with a leading home directory shown as `~`. */
+  path: string
+  /** Whether the folder exists on disk right now. */
+  found: boolean
 }
 
 /** Progress through the metadata-read stage. Mirrors Rust `ReadProgress`. */
@@ -262,8 +286,9 @@ export interface ScanStatus {
   reDescribed: number
   /** The stage the current or most recent pass reached. */
   phase: ScanPhase
-  /** Sessions each agent explorer found this pass. An agent that found none
-   *  is absent. */
+  /** Each agent's count for this pass, in a fixed order. See
+   *  {@link AgentFoundCount} for how the count's meaning changes with
+   *  `phase`. */
   foundByAgent: AgentFoundCount[]
   /** Progress through the metadata-read stage. */
   read: ReadProgress
@@ -283,6 +308,9 @@ export interface ScanHistoryProgress {
   state: "none" | "pending" | "running" | "done"
   completed: number
   total: number
+  /** True while the historical pass itself runs. False while only the worker
+   *  reads the sessions it found. */
+  passRunning: boolean
 }
 
 /** Whether the insights worker pool has a backlog to drain right now.

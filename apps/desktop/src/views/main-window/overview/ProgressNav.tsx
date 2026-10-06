@@ -1,10 +1,12 @@
-import { useId, useRef, useSyncExternalStore, type RefObject } from "react"
+import { useId, useRef, useState, useSyncExternalStore, type RefObject } from "react"
 import { createPortal } from "react-dom"
 
+import { CountUp } from "../../../components/ui/CountUp"
 import { checksConfiguredStore } from "../../../lib/checkAvailability"
 import { cn } from "../../../lib/cn"
 import type { BurnCheckDetectorId } from "../../../lib/insightsIpc"
 import { enabledCheckCount } from "../../../lib/presentation/checkDefinitions"
+import { SettingsTargetFocus } from "../../settings/SettingsTargetFocus"
 import { PRIMARY_BUTTON, ProgressStepCard } from "./ProgressSteps"
 import {
   closeProgressStep,
@@ -19,6 +21,7 @@ import {
   stepDocked,
   subscribeOverviewProgress,
 } from "./overviewProgressStore"
+import { StepSettings } from "./stepSettings/StepSettings"
 
 const STEPS: readonly ProgressStepKey[] = ["agents", "sessions", "checks", "fixes"]
 
@@ -29,27 +32,34 @@ const STEP_LABELS: Record<ProgressStepKey, string> = {
   fixes: "Fixes",
 }
 
-function fmt(value: number): string {
-  return value.toLocaleString()
-}
-
 function rowContent(
   step: ProgressStepKey,
   progress: OverviewProgress,
   enabledChecks: number,
-): { value: string; pulsing: boolean } {
+): { value: number; pulsing: boolean } {
   switch (step) {
     case "agents": {
       const total = progress.agents.rows.reduce(
         (sum, row) => sum + (row.sessions > 0 ? 1 : 0),
         0,
       )
-      return { value: fmt(total), pulsing: !progress.agents.done }
+      return { value: total, pulsing: !progress.agents.done }
     }
-    case "sessions":
-      return { value: fmt(progress.sessions.total), pulsing: !progress.sessions.done }
+    case "sessions": {
+      const { done, displayCompleted, total } = progress.sessions
+      // Before the 30-day read is done, the row shows that read's own total,
+      // which climbs as discovery finds sessions. Once it's done, the row
+      // shows the combined figure instead, which climbs as the background
+      // history pass reads sessions older than the 30-day window.
+      const historyActive =
+        progress.history?.state === "looking" || progress.history?.state === "reading"
+      return {
+        value: done ? displayCompleted : total,
+        pulsing: !done || historyActive,
+      }
+    }
     case "checks":
-      return { value: fmt(enabledChecks), pulsing: !progress.checks.done }
+      return { value: enabledChecks, pulsing: !progress.checks.done }
     case "fixes": {
       return { value: progress.failingCount, pulsing: false }
     }
@@ -99,7 +109,7 @@ function ProgressRow({
           pulsing && "animate-pulse",
         )}
       >
-        {value}
+        <CountUp value={value} />
       </span>
     </button>
   )
@@ -123,6 +133,7 @@ function ProgressStepModal({
   onOpenChecks: (check: BurnCheckDetectorId | undefined) => void
 }) {
   const titleId = useId()
+  const [targetFocus] = useState(() => new SettingsTargetFocus())
   const close = () => {
     closeProgressStep()
     queueMicrotask(returnFocus)
@@ -154,33 +165,55 @@ function ProgressStepModal({
             first?.focus()
           }
         }}
-        className="flex max-h-[calc(100vh-3rem)] w-full max-w-lg flex-col items-center gap-(--space-lg) overflow-y-auto rounded-control border border-separator bg-surface-card p-5 text-label shadow-raised"
+        className="flex max-h-[calc(100vh-3rem)] w-full max-w-2xl flex-col overflow-hidden rounded-control border border-separator bg-surface-card text-label shadow-raised"
       >
         <h4 id={titleId} className="sr-only">
           {STEP_LABELS[step]}
         </h4>
-        <ProgressStepCard
-          step={step}
-          progress={progress}
-          isSteady={progress.mode === "steady"}
-          transitionName={progressStepTransitionName(step)}
-        />
-        {step === "fixes" && fixesFound(progress) && (
-          <button
-            type="button"
-            onClick={() => {
-              const check = firstFailingCheck(progress)
-              closeProgressStep()
-              onOpenChecks(check)
-            }}
-            className={PRIMARY_BUTTON}
+        {/* Only this area scrolls: the summary card, then the step's own
+            settings, open by default. The footer below stays put. */}
+        <div className="flex min-h-0 flex-1 flex-col items-center gap-(--space-lg) overflow-y-auto p-5">
+          <ProgressStepCard
+            step={step}
+            surface="modal"
+            progress={progress}
+            isSteady={progress.mode === "steady"}
+            transitionName={progressStepTransitionName(step)}
+          />
+          <div
+            ref={(node) =>
+              node
+                ? targetFocus.attach(
+                    node,
+                    step,
+                    progress.openStepControl,
+                    progress.openStepControlRevision,
+                  )
+                : undefined
+            }
+            className="flex w-full flex-col gap-(--space-md)"
           >
-            Enhance
+            <StepSettings step={step} />
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center justify-center gap-(--space-sm) border-t border-separator p-3">
+          {step === "fixes" && fixesFound(progress) && (
+            <button
+              type="button"
+              onClick={() => {
+                const check = firstFailingCheck(progress)
+                closeProgressStep()
+                onOpenChecks(check)
+              }}
+              className={PRIMARY_BUTTON}
+            >
+              Enhance
+            </button>
+          )}
+          <button type="button" autoFocus onClick={close} className="ui-push-button">
+            Close
           </button>
-        )}
-        <button type="button" autoFocus onClick={close} className="ui-push-button">
-          Close
-        </button>
+        </div>
       </section>
     </div>,
     document.body,
