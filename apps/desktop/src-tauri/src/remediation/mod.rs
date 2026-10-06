@@ -55,6 +55,7 @@ use vendors::{ActionSupport, RemediationAction, vendor_policy};
 
 use config::*;
 pub(crate) use config::{PublicationSettingAttribution, publication_config_attribution};
+pub(crate) use config::{claude_profile_source, claude_profile_source_at};
 pub(crate) use config::{config_context, managed_configuration_present, runtime_override_present};
 #[cfg(test)]
 pub(crate) use config::{hashed_workspace_key, publication_config_attribution_with_home};
@@ -67,6 +68,8 @@ use stored::{
     validate_envelope_version,
 };
 pub(crate) use target::passive_remediations;
+#[cfg(test)]
+pub(crate) use target::profile_session_in;
 use target::*;
 pub(crate) use watch::evaluate_dirty_remediation;
 
@@ -300,6 +303,10 @@ struct CachedTarget {
     scope_key: String,
     physical_target_key: Option<String>,
     config: Option<CachedConfig>,
+    /// The finding's session ran in an added Claude profile directory. The
+    /// editor reads only `~/.claude`, so the target has no editable control
+    /// and no verification.
+    profile_session: bool,
 }
 
 /// True when the reduced report still lists this resource target.
@@ -1772,6 +1779,34 @@ impl RemediationController {
             .provider_account_secret()
             .map_err(|_| ControllerError::Internal)?;
         let mut identity = target_identity(&secret, &finding, project_root.as_deref());
+        let profile_session = store
+            .session(&SessionKey {
+                environment_key: finding.environment_key.clone(),
+                agent: finding.agent.clone(),
+                session_id: finding.session_id.clone(),
+            })
+            .map_err(|_| ControllerError::Internal)?
+            .is_some_and(|session| {
+                config::claude_profile_session(agent, &finding.environment_key, &session)
+            });
+        if profile_session {
+            return Ok((
+                identity.group_key,
+                CachedTarget {
+                    profile_session: true,
+                    findings: vec![finding],
+                    resource: None,
+                    target_key: identity.target_key,
+                    canonical_identity: identity.canonical_identity,
+                    workspace_key: identity.workspace_key,
+                    agent,
+                    scope_kind: identity.scope_kind,
+                    scope_key: identity.scope_key,
+                    physical_target_key: None,
+                    config: None,
+                },
+            ));
+        }
         let attributed_physical_key = identity.physical_target_key.clone();
         let mut config = None;
         let operation = reviewed_config_operation(agent, finding.finding.cause());
@@ -1807,6 +1842,7 @@ impl RemediationController {
                 return Ok((
                     identity.group_key,
                     CachedTarget {
+                        profile_session: false,
                         findings: vec![finding],
                         resource: None,
                         target_key: identity.target_key,
@@ -1921,6 +1957,7 @@ impl RemediationController {
         Ok((
             identity.group_key,
             CachedTarget {
+                profile_session: false,
                 findings: vec![finding],
                 resource: None,
                 target_key: identity.target_key,
@@ -2053,6 +2090,7 @@ impl RemediationController {
             }
         }
         Ok(CachedTarget {
+            profile_session: false,
             findings: Vec::new(),
             resource: Some(CachedResourceTarget {
                 target: resource.clone(),
@@ -2521,12 +2559,14 @@ impl RemediationController {
         let definition = watch_definition(target);
         let result = if state == RemediationState::Reserved {
             json!({"version": 1, "verification": {"status": "reserved"}, "savings": {"status": "pending"}})
-        } else if !watch_verification_available(
-            &definition,
-            &target.scope_kind,
-            target.agent.slug(),
-            target.finding().detector,
-        ) {
+        } else if target.profile_session
+            || !watch_verification_available(
+                &definition,
+                &target.scope_kind,
+                target.agent.slug(),
+                target.finding().detector,
+            )
+        {
             json!({"version": 1, "verification": {"status": "verificationUnavailable"}, "savings": {"status": "unavailable"}})
         } else if definition.old_model.is_none() {
             json!({"version": 1, "verification": {"status": "watching", "methodRevision": VERIFICATION_METHOD_REVISION}, "savings": {"status": "unavailable"}})

@@ -29,8 +29,22 @@ pub async fn get_quota_accounts(app: tauri::AppHandle) -> CommandResult<QuotaAcc
         let now = scan::unix_now();
         let store = app.state::<Store>();
         let accounts = store.quota_accounts(now).map_err(fail)?;
+        let labels = crate::claude_profiles::account_labels(&store);
         Ok(QuotaAccountsPayload {
-            accounts: accounts.into_iter().map(quota_account_payload).collect(),
+            accounts: accounts
+                .into_iter()
+                .map(|account| {
+                    let account_label = crate::claude_profiles::account_label(
+                        &labels,
+                        &account.provider,
+                        &account.account_key,
+                    );
+                    QuotaAccountPayload {
+                        account_label,
+                        ..quota_account_payload(account)
+                    }
+                })
+                .collect(),
             generated_at: iso_from_epoch(Some(now)),
         })
     })
@@ -44,6 +58,7 @@ fn quota_account_payload(
         provider: account.provider,
         display_name: account.display_name,
         account_key: account.account_key,
+        account_label: None,
         lanes: account
             .lanes
             .into_iter()

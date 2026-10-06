@@ -5,9 +5,16 @@
 //! `~/Library/Application Support/Claude/claude-code-sessions/` (or the
 //! platform-equivalent config directory), which can advance a session's recency
 //! even when the underlying transcript file is not the freshest file on disk.
+//!
+//! A reader can run more than one Claude Code configuration directory, each
+//! selected by `CLAUDE_CONFIG_DIR` (for example, one per subscription). The
+//! embedding application registers those extra directories with
+//! [`set_profile_config_dirs`]. Discovery reads `~/.claude` and every
+//! registered directory the same way.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 #[cfg(test)]
 use crate::discovery::scanner;
@@ -21,6 +28,61 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 pub struct ClaudeExplorer;
+
+/// Extra Claude Code configuration directories, in registration order.
+static PROFILE_CONFIG_DIRS: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
+
+/// Replace the extra Claude Code configuration directories that discovery
+/// reads in addition to `~/.claude`.
+pub fn set_profile_config_dirs(dirs: Vec<PathBuf>) {
+    let mut guard = PROFILE_CONFIG_DIRS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = dirs;
+}
+
+/// The extra Claude Code configuration directories registered with
+/// [`set_profile_config_dirs`].
+pub fn profile_config_dirs() -> Vec<PathBuf> {
+    PROFILE_CONFIG_DIRS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// Every configuration directory discovery reads under `home`: the default
+/// `<home>/.claude` first, then each registered profile directory once.
+fn config_dirs_in(home: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![home.join(".claude")];
+    for dir in profile_config_dirs() {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
+/// The Claude Code configuration directory that holds a transcript at
+/// `<config>/projects/<project>/...`, when it is not `<home>/.claude`.
+///
+/// The answer depends only on the path, so it stays true after the reader
+/// removes the profile, and it covers fork-job sessions whose label is the
+/// transcript path.
+pub fn non_default_config_dir(transcript: &Path, home: &Path) -> Option<PathBuf> {
+    let config_dir = transcript
+        .ancestors()
+        .skip(1)
+        .find(|ancestor| ancestor.file_name().and_then(|name| name.to_str()) == Some("projects"))?
+        .parent()?;
+    (config_dir != home.join(".claude")).then(|| config_dir.to_path_buf())
+}
+
+/// True when `dir` is a Claude Code configuration directory that discovery
+/// reads: a directory named `.claude`, or a registered profile directory.
+pub(crate) fn is_config_dir(dir: &Path) -> bool {
+    dir.file_name().and_then(|name| name.to_str()) == Some(".claude")
+        || profile_config_dirs().iter().any(|profile| profile == dir)
+}
 
 const MAX_CLAUDE_JOB_COUNT: usize = 10_000;
 const MAX_CLAUDE_JOB_VALUE_BYTES: usize = 4096;
@@ -124,7 +186,10 @@ impl AgentExplorer for ClaudeExplorer {
     /// `entrypoint` marker disambiguates). IDE: `<app-config>/Claude/claude-code-sessions/**`.
     fn surface_paths(&self, home: &Path) -> SurfacePaths {
         SurfacePaths {
-            cli: vec![home.join(".claude").join("projects")],
+            cli: config_dirs_in(home)
+                .into_iter()
+                .map(|dir| dir.join("projects"))
+                .collect(),
             ide_desktop: vec![app_config_dir_in("Claude", home).join("claude-code-sessions")],
             mirror: Vec::new(),
         }
@@ -134,11 +199,14 @@ impl AgentExplorer for ClaudeExplorer {
     /// all move independently: a fork's `state.json` can change with no
     /// transcript write at all. Watch every root discovery reads.
     fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
-        vec![
-            WatchRoot::recursive(home.join(".claude").join("projects")),
-            WatchRoot::recursive(app_config_dir_in("Claude", home).join("claude-code-sessions")),
-            WatchRoot::recursive(home.join(".claude").join("jobs")),
-        ]
+        let mut roots = vec![WatchRoot::recursive(
+            app_config_dir_in("Claude", home).join("claude-code-sessions"),
+        )];
+        for dir in config_dirs_in(home) {
+            roots.push(WatchRoot::recursive(dir.join("projects")));
+            roots.push(WatchRoot::recursive(dir.join("jobs")));
+        }
+        roots
     }
 
     /// The desktop app rewrites a session's manifest under
@@ -233,22 +301,21 @@ pub(crate) fn sample_log_path(home: &Path) -> PathBuf {
 /// `<project_dir>/{session_id}.jsonl` across all project dirs. Backs the
 /// `direct_session_source` override; separated for testability.
 async fn locate_transcript_in(home: &Path, session_id: &str) -> Option<PathBuf> {
-    let project_dirs = all_log_dirs_in(home).await;
+    let project_dirs = all_log_dirs_in(&config_dirs_in(home)).await;
     resolve_cli_transcript_path(&project_dirs, session_id).await
 }
 
-/// Internal: find ALL Claude log directories under a given home directory.
+/// Internal: find ALL Claude log directories under the given configuration
+/// directories.
 ///
 /// Separated from `all_log_dirs` for testability.
-async fn all_log_dirs_in(home: &Path) -> Vec<PathBuf> {
-    let projects_dir = home.join(".claude").join("projects");
+async fn all_log_dirs_in(config_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let projects_dirs: Vec<PathBuf> = config_dirs.iter().map(|dir| dir.join("projects")).collect();
     tokio::task::spawn_blocking(move || {
-        let Ok(entries) = std::fs::read_dir(&projects_dir) else {
-            return Vec::new();
-        };
-        entries
-            .flatten()
-            .map(|entry| entry.path())
+        projects_dirs
+            .iter()
+            .filter_map(|projects_dir| std::fs::read_dir(projects_dir).ok())
+            .flat_map(|entries| entries.flatten().map(|entry| entry.path()))
             .filter(|path| path.is_dir())
             .collect()
     })
@@ -468,7 +535,7 @@ async fn desktop_manifest_dirs_in(home: &Path) -> Vec<PathBuf> {
 }
 
 async fn discover_recent_in(home: &Path, now: i64, since_secs: i64) -> Vec<SessionLog> {
-    discover_recent_including_subagent_parents(home, now, since_secs).await
+    discover_recent_including_subagent_parents(home, &config_dirs_in(home), now, since_secs).await
 }
 
 /// WSL entry point with the same parent-only and child-recency semantics as
@@ -479,8 +546,16 @@ pub async fn discover_recent_in_wsl(
     now: i64,
     since_secs: i64,
 ) -> Vec<SessionLog> {
-    let mut logs =
-        discover_recent_including_subagent_parents(&info.context.home, now, since_secs).await;
+    // Registered profile directories are host paths, so a WSL home reads only
+    // its own default directory.
+    let config_dirs = [info.context.home.join(".claude")];
+    let mut logs = discover_recent_including_subagent_parents(
+        &info.context.home,
+        &config_dirs,
+        now,
+        since_secs,
+    )
+    .await;
     for log in &mut logs {
         log.environment = info.context.environment.clone();
     }
@@ -489,10 +564,11 @@ pub async fn discover_recent_in_wsl(
 
 async fn discover_recent_including_subagent_parents(
     home: &Path,
+    config_dirs: &[PathBuf],
     now: i64,
     since_secs: i64,
 ) -> Vec<SessionLog> {
-    let project_dirs = all_log_dirs_in(home).await;
+    let project_dirs = all_log_dirs_in(config_dirs).await;
     let mut discovered: HashMap<String, SessionLog> =
         recent_files_with_exts(&project_dirs, now, since_secs, &["jsonl"])
             .await
@@ -520,7 +596,7 @@ async fn discover_recent_including_subagent_parents(
         }
     }
 
-    for log in interactive_fork_job_logs(home, &project_dirs, now - since_secs).await {
+    for log in interactive_fork_job_logs(config_dirs, &project_dirs, now - since_secs).await {
         // The job adapter enriches a title-only transcript with the explicit
         // parent and CWD, so it must replace the plain file candidate even when
         // both files have the same one-second mtime.
@@ -553,15 +629,27 @@ fn valid_claude_job_cwd(value: &str) -> bool {
 }
 
 async fn interactive_fork_job_logs(
-    home: &Path,
+    config_dirs: &[PathBuf],
     project_dirs: &[PathBuf],
     cutoff: i64,
 ) -> Vec<SessionLog> {
-    let jobs_root = home.join(".claude").join("jobs");
-    let Ok(mut entries) = tokio::fs::read_dir(&jobs_root).await else {
-        return Vec::new();
-    };
     let mut logs = Vec::new();
+    for config_dir in config_dirs {
+        interactive_fork_job_logs_in(&config_dir.join("jobs"), project_dirs, cutoff, &mut logs)
+            .await;
+    }
+    logs
+}
+
+async fn interactive_fork_job_logs_in(
+    jobs_root: &Path,
+    project_dirs: &[PathBuf],
+    cutoff: i64,
+    logs: &mut Vec<SessionLog>,
+) {
+    let Ok(mut entries) = tokio::fs::read_dir(jobs_root).await else {
+        return;
+    };
     let mut job_count = 0;
     while job_count < MAX_CLAUDE_JOB_COUNT {
         let Ok(Some(entry)) = entries.next_entry().await else {
@@ -636,7 +724,6 @@ async fn interactive_fork_job_logs(
             updated_at: Some(updated_at),
         });
     }
-    logs
 }
 
 /// Build a session from one Claude desktop session manifest.
@@ -775,7 +862,9 @@ mod tests {
         set_file_mtime(&transcript, 1_700_000_000);
         set_file_mtime(&state, 1_700_000_000);
 
-        let logs = interactive_fork_job_logs(home.path(), &[project], 1_699_999_999).await;
+        let logs =
+            interactive_fork_job_logs(&[home.path().join(".claude")], &[project], 1_699_999_999)
+                .await;
 
         assert_eq!(logs.len(), 1);
         let SessionSource::Inline { content, .. } = &logs[0].source else {
@@ -813,7 +902,8 @@ mod tests {
         .unwrap();
         set_file_mtime(&state, 1_700_000_000);
 
-        let logs = interactive_fork_job_logs(home.path(), &[], 1_699_999_999).await;
+        let logs =
+            interactive_fork_job_logs(&[home.path().join(".claude")], &[], 1_699_999_999).await;
 
         assert!(logs.is_empty());
     }
@@ -864,14 +954,14 @@ mod tests {
             .await
             .unwrap();
 
-        let result = all_log_dirs_in(home.path()).await;
+        let result = all_log_dirs_in(&[home.path().join(".claude")]).await;
         assert_eq!(result.len(), 3);
     }
 
     #[tokio::test]
     async fn test_all_log_dirs_returns_empty_when_no_projects_dir() {
         let home = TempDir::new().unwrap();
-        let result = all_log_dirs_in(home.path()).await;
+        let result = all_log_dirs_in(&[home.path().join(".claude")]).await;
         assert!(result.is_empty());
     }
 
@@ -889,7 +979,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = all_log_dirs_in(home.path()).await;
+        let result = all_log_dirs_in(&[home.path().join(".claude")]).await;
         assert_eq!(result.len(), 1);
     }
 
@@ -897,8 +987,80 @@ mod tests {
     async fn test_all_log_dirs_graceful_when_claude_dir_missing() {
         // Same for all_log_dirs: missing ~/.claude/ should not error.
         let home = TempDir::new().unwrap();
-        let result = all_log_dirs_in(home.path()).await;
+        let result = all_log_dirs_in(&[home.path().join(".claude")]).await;
         assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_discover_recent_reads_every_config_dir() {
+        let home = TempDir::new().unwrap();
+        let default_dir = home.path().join(".claude");
+        let profile_dir = home.path().join(".claude-work");
+        for (dir, session) in [
+            (&default_dir, "default-session"),
+            (&profile_dir, "work-session"),
+        ] {
+            let project = dir.join("projects").join("-Users-foo-bar");
+            tokio::fs::create_dir_all(&project).await.unwrap();
+            tokio::fs::write(project.join(format!("{session}.jsonl")), "{}")
+                .await
+                .unwrap();
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let logs = discover_recent_including_subagent_parents(
+            home.path(),
+            &[default_dir, profile_dir],
+            now,
+            3600,
+        )
+        .await;
+
+        let labels: Vec<String> = logs.iter().map(SessionLog::source_label).collect();
+        assert_eq!(labels.len(), 2);
+        assert!(labels.iter().any(|label| label.contains("default-session")));
+        assert!(labels.iter().any(|label| label.contains("work-session")));
+    }
+
+    #[test]
+    fn non_default_config_dirs_come_from_the_transcript_path() {
+        let home = Path::new("/home/avery");
+        assert_eq!(
+            non_default_config_dir(
+                Path::new("/home/avery/.claude-work/projects/-demo/session.jsonl"),
+                home
+            ),
+            Some(PathBuf::from("/home/avery/.claude-work"))
+        );
+        assert_eq!(
+            non_default_config_dir(
+                Path::new("/home/avery/.claude/projects/-demo/abc/subagents/agent-1.jsonl"),
+                home
+            ),
+            None
+        );
+        assert_eq!(
+            non_default_config_dir(Path::new("claude-desktop:abc"), home),
+            None
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(claude_profiles)]
+    fn test_config_dirs_add_registered_profiles_once() {
+        let home = Path::new("/home/avery");
+        set_profile_config_dirs(vec![
+            home.join(".claude-work"),
+            home.join(".claude"),
+            home.join(".claude-work"),
+        ]);
+        let dirs = config_dirs_in(home);
+        set_profile_config_dirs(Vec::new());
+
+        assert_eq!(dirs, vec![home.join(".claude"), home.join(".claude-work")]);
     }
 
     #[tokio::test]
@@ -1050,7 +1212,13 @@ mod tests {
         tokio::fs::write(&subagent, "{}\n").await.unwrap();
         set_file_mtime(&subagent, now - 5);
 
-        let logs = discover_recent_including_subagent_parents(home.path(), now, since_secs).await;
+        let logs = discover_recent_including_subagent_parents(
+            home.path(),
+            &[home.path().join(".claude")],
+            now,
+            since_secs,
+        )
+        .await;
 
         assert_eq!(logs.len(), 1);
         match &logs[0].source {
@@ -1091,7 +1259,13 @@ mod tests {
 
         track_subagent_sweeps(&parent);
 
-        let logs = discover_recent_including_subagent_parents(home.path(), now, since_secs).await;
+        let logs = discover_recent_including_subagent_parents(
+            home.path(),
+            &[home.path().join(".claude")],
+            now,
+            since_secs,
+        )
+        .await;
 
         assert_eq!(logs.len(), 1);
         assert!(matches!(&logs[0].source, SessionSource::File(path) if path == &parent));
@@ -1132,7 +1306,13 @@ mod tests {
 
         track_subagent_sweeps(&parent);
 
-        let logs = discover_recent_including_subagent_parents(home.path(), now, since_secs).await;
+        let logs = discover_recent_including_subagent_parents(
+            home.path(),
+            &[home.path().join(".claude")],
+            now,
+            since_secs,
+        )
+        .await;
 
         assert!(
             logs.is_empty(),
@@ -1202,7 +1382,13 @@ mod tests {
         tokio::fs::write(&subagent, "{}\n").await.unwrap();
         set_file_mtime(&subagent, now - 5);
 
-        let logs = discover_recent_including_subagent_parents(home.path(), now, since_secs).await;
+        let logs = discover_recent_including_subagent_parents(
+            home.path(),
+            &[home.path().join(".claude")],
+            now,
+            since_secs,
+        )
+        .await;
 
         assert_eq!(logs.len(), 1);
         match &logs[0].source {
@@ -1235,7 +1421,13 @@ mod tests {
         tokio::fs::write(&subagent, "{}\n").await.unwrap();
         set_file_mtime(&subagent, now - 5);
 
-        let logs = discover_recent_including_subagent_parents(home.path(), now, since_secs).await;
+        let logs = discover_recent_including_subagent_parents(
+            home.path(),
+            &[home.path().join(".claude")],
+            now,
+            since_secs,
+        )
+        .await;
 
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].updated_at, Some(now - 5));

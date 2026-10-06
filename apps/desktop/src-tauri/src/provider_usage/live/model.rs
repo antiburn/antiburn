@@ -334,6 +334,9 @@ pub struct ProviderUsageSnapshot {
     pub account_uuid: Option<String>,
     /// The provider's account email for local display, when known.
     pub account_email: Option<String>,
+    /// The reader's own name for the login this reading came from, such as a
+    /// Claude profile label. `None` when the reader did not name it.
+    pub account_label: Option<String>,
     /// The plan, when the source stated one. Never inferred.
     pub plan: Option<String>,
     /// A finer-grained tier within `plan`, when the source stated one. For

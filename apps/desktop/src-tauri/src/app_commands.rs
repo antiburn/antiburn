@@ -2,6 +2,7 @@ macro_rules! with_app_commands {
     ($callback:ident) => {
         $callback! {
             commands::add_scan_root => "add_scan_root",
+            claude_profiles::add_claude_profile => "add_claude_profile",
             remote_sessions::add_remote_host => "add_remote_host",
             commands::app_info => "app_info",
             commands::apply_prepared_burn_check_operation => "apply_prepared_burn_check_operation",
@@ -64,6 +65,7 @@ macro_rules! with_app_commands {
             commands::list_recent_sessions => "list_recent_sessions",
             commands::list_repositories => "list_repositories",
             commands::list_scan_roots => "list_scan_roots",
+            claude_profiles::list_claude_profiles => "list_claude_profiles",
             commands::main_window_content_ready => "main_window_content_ready",
             commands::main_window_ready => "main_window_ready",
             main_window::acknowledge_main_window_navigation_target => "acknowledge_main_window_navigation_target",
@@ -96,6 +98,8 @@ macro_rules! with_app_commands {
             commands::refresh_repositories => "refresh_repositories",
             commands::remove_scan_root => "remove_scan_root",
             jev_settings::remove_typesafe_api_key => "remove_typesafe_api_key",
+            claude_profiles::remove_claude_profile => "remove_claude_profile",
+            claude_profiles::rename_claude_profile => "rename_claude_profile",
             remote_sessions::remove_remote_host => "remove_remote_host",
             commands::request_folder_access => "request_folder_access",
             hud_commands::resize_overlay_window => "resize_overlay_window",

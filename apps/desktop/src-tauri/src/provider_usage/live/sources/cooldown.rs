@@ -56,6 +56,18 @@ const MIN_FAILURE_COOLDOWN: Duration = Duration::from_secs(60);
 /// a retry after a failure either.
 pub const FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
 
+/// The failure cooldown for a reader's explicit Retry, which asks with a
+/// `max_age` of zero. Short, so Retry reaches the provider, and not zero, so
+/// repeated clicks cannot send a burst of requests.
+const RETRY_FAILURE_COOLDOWN: Duration = Duration::from_secs(10);
+
+/// The success cooldown for a reader's explicit Retry. See
+/// [`success_cooldown`].
+const RETRY_SUCCESS_COOLDOWN: Duration = Duration::from_secs(60);
+
+/// The longest `Retry-After` a source honours.
+const MAX_HOLD_OFF: Duration = Duration::from_secs(3600);
+
 /// How old a cached reading must be before a failed attempt's
 /// [`FetchFailure::last_known`] replaces it.
 ///
@@ -88,6 +100,10 @@ struct Inner {
     error: Option<ProviderUsageError>,
     detail: Option<SourceErrorDetail>,
     last_attempt: Option<(Instant, bool)>,
+    /// No request before this instant: the provider's own `Retry-After`.
+    not_before: Option<Instant>,
+    /// `not_before` on the wall clock, for the views.
+    retry_at: Option<OffsetDateTime>,
 }
 
 impl Cooldown {
@@ -135,9 +151,14 @@ impl Cooldown {
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if off_cooldown(inner.last_attempt, max_age) {
+        let held = inner
+            .not_before
+            .is_some_and(|not_before| Instant::now() < not_before);
+        if !held && off_cooldown(inner.last_attempt, max_age) {
             match fetch() {
                 Ok(snapshot) => {
+                    inner.not_before = None;
+                    inner.retry_at = None;
                     inner.snapshot = snapshot;
                     inner.error = None;
                     inner.detail = None;
@@ -165,6 +186,7 @@ impl Cooldown {
                 snapshots: vec![snapshot],
                 error: Some(error),
                 detail: inner.detail,
+                ..SourceOutcome::default()
             },
             (None, Some(error)) => match inner.detail {
                 Some(detail) => SourceOutcome::failed_with_detail(error, detail),
@@ -172,6 +194,35 @@ impl Cooldown {
             },
             (None, None) => SourceOutcome::absent(),
         }
+    }
+
+    /// Send no request for `delay`, whatever a caller's `max_age` asks. A
+    /// source calls this with the provider's own `Retry-After`. This caps
+    /// the delay at [`MAX_HOLD_OFF`], so a malformed header cannot silence a
+    /// source for long.
+    pub fn hold_off(&self, delay: Duration) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let delay = delay.min(MAX_HOLD_OFF);
+        inner.not_before = Instant::now().checked_add(delay);
+        inner.retry_at = time::Duration::try_from(delay)
+            .ok()
+            .and_then(|delay| OffsetDateTime::now_utc().checked_add(delay));
+    }
+
+    /// When a held source asks again, while a hold set by [`Self::hold_off`]
+    /// is in force.
+    pub fn retry_at(&self) -> Option<OffsetDateTime> {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let held = inner
+            .not_before
+            .is_some_and(|not_before| Instant::now() < not_before);
+        if held { inner.retry_at } else { None }
     }
 
     /// Forget the last attempt so a test's next `poll` fetches again —
@@ -202,7 +253,21 @@ impl Cooldown {
     }
 }
 
+/// A Retry asks again only for a source whose last attempt failed. A source
+/// that succeeded keeps a floor, so a Retry costs no more than an open
+/// popover's polling.
+fn success_cooldown(max_age: Duration) -> Duration {
+    if max_age.is_zero() {
+        RETRY_SUCCESS_COOLDOWN
+    } else {
+        max_age
+    }
+}
+
 fn failure_cooldown(max_age: Duration) -> Duration {
+    if max_age.is_zero() {
+        return RETRY_FAILURE_COOLDOWN;
+    }
     max_age.clamp(MIN_FAILURE_COOLDOWN, FAILURE_COOLDOWN)
 }
 
@@ -264,7 +329,7 @@ fn off_cooldown(last: Option<(Instant, bool)>, max_age: Duration) -> bool {
         Some((at, succeeded)) => {
             at.elapsed()
                 >= if succeeded {
-                    max_age
+                    success_cooldown(max_age)
                 } else {
                     failure_cooldown(max_age)
                 }
@@ -305,6 +370,7 @@ mod tests {
 
     fn snapshot(observed_at: OffsetDateTime, percent: f64) -> ProviderUsageSnapshot {
         ProviderUsageSnapshot {
+            account_label: None,
             refusal_kind: None,
             provider: crate::provider_usage::providers::ANTHROPIC,
             account: None,
@@ -629,6 +695,46 @@ mod tests {
 
         assert!(outcome.snapshots.is_empty());
         assert_eq!(outcome.error, None);
+    }
+
+    #[test]
+    fn a_hold_off_blocks_even_a_retry_until_it_passes() {
+        let cooldown = Cooldown::new();
+        let calls = std::cell::Cell::new(0);
+        let fail = || {
+            calls.set(calls.get() + 1);
+            Err::<Option<ProviderUsageSnapshot>, FetchFailure>(
+                ProviderUsageError::RateLimited.into(),
+            )
+        };
+        cooldown.poll(at(1_000), Duration::ZERO, fail);
+        cooldown.hold_off(Duration::from_secs(600));
+        cooldown.open_for_test();
+        let outcome = cooldown.poll(at(1_000), Duration::ZERO, fail);
+
+        assert_eq!(calls.get(), 1);
+        assert_eq!(outcome.error, Some(ProviderUsageError::RateLimited));
+
+        cooldown.hold_off(Duration::ZERO);
+        cooldown.poll(at(1_000), Duration::ZERO, fail);
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn a_retry_waits_only_the_short_floor_after_a_failure() {
+        let failed = Some((Instant::now() - Duration::from_secs(15), false));
+        assert!(off_cooldown(failed, Duration::ZERO));
+        assert!(!off_cooldown(failed, DEFAULT_MAX_AGE));
+        let just_failed = Some((Instant::now(), false));
+        assert!(!off_cooldown(just_failed, Duration::ZERO));
+    }
+
+    #[test]
+    fn a_retry_leaves_a_recent_success_alone() {
+        let succeeded = Some((Instant::now() - Duration::from_secs(15), true));
+        assert!(!off_cooldown(succeeded, Duration::ZERO));
+        let long_ago = Some((Instant::now() - Duration::from_secs(61), true));
+        assert!(off_cooldown(long_ago, Duration::ZERO));
     }
 
     #[test]

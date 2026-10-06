@@ -15,8 +15,8 @@ use super::model::{
     UsageSource, UsageWindowKind, WindowRole,
 };
 use super::{
-    Detection, DetectionMap, LiveUsageSource, LoginCarrier, Presence, SourceOutcome, detect_all,
-    roster, sources, summarize, summarize_collected,
+    AccountFailure, Detection, DetectionMap, LiveUsageSource, LoginCarrier, Presence,
+    SourceOutcome, detect_all, roster, sources, summarize, summarize_collected,
 };
 use crate::store::HiddenMeters;
 
@@ -354,6 +354,7 @@ impl LiveUsageSource for Broken {
 
 fn snapshot(freshness: Freshness, observed: i64, percent: f64) -> ProviderUsageSnapshot {
     ProviderUsageSnapshot {
+        account_label: None,
         refusal_kind: None,
         provider: crate::provider_usage::providers::ANTHROPIC,
         account: Some("account-a".into()),
@@ -479,6 +480,56 @@ fn a_failed_source_reports_its_category_without_erasing_a_working_one() {
     // provider the failure left without a snapshot.
     assert_eq!(summary.errors[0].provider, "anthropic");
     assert_eq!(summary.errors[0].display_name, "Claude");
+}
+
+struct Profiles;
+
+impl LiveUsageSource for Profiles {
+    fn id(&self) -> &'static str {
+        "profiles"
+    }
+    fn provider(&self) -> &'static str {
+        crate::provider_usage::providers::ANTHROPIC
+    }
+    fn fetch(&self, _max_age: std::time::Duration) -> SourceOutcome {
+        let mut work = snapshot(Freshness::Fresh, NOW, 40.0);
+        work.account = Some("account-work".into());
+        work.account_label = Some("Claude Work".into());
+        SourceOutcome {
+            snapshots: vec![work],
+            error: Some(ProviderUsageError::RateLimited),
+            account_label: None,
+            account_failures: vec![AccountFailure {
+                account_label: "Claude Side".into(),
+                error: ProviderUsageError::Authentication,
+                detail: None,
+                retry_at: None,
+            }],
+            ..SourceOutcome::default()
+        }
+    }
+}
+
+#[test]
+fn each_named_login_reports_its_own_failure() {
+    let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Profiles)];
+    let summary = summarize(&sources, None, NOW, 0, MAX_AGE);
+
+    assert_eq!(summary.providers.len(), 1);
+    assert_eq!(
+        summary.providers[0].account_label.as_deref(),
+        Some("Claude Work")
+    );
+    assert_eq!(summary.errors.len(), 2);
+    assert_eq!(summary.errors[0].category, "rateLimited");
+    assert_eq!(summary.errors[0].account_label, None);
+    assert_eq!(summary.errors[0].display_name, "Claude");
+    assert_eq!(summary.errors[1].category, "authentication");
+    assert_eq!(
+        summary.errors[1].account_label.as_deref(),
+        Some("Claude Side")
+    );
+    assert_eq!(summary.errors[1].display_name, "Claude Side");
 }
 
 #[test]
@@ -802,6 +853,7 @@ fn weekly_scoped_snapshot(
     resets_at: i64,
 ) -> ProviderUsageSnapshot {
     ProviderUsageSnapshot {
+        account_label: None,
         refusal_kind: None,
         provider: crate::provider_usage::providers::ANTHROPIC,
         account: Some("account-a".into()),
@@ -1132,6 +1184,9 @@ fn only_a_clean_provider_snapshot_upgrades_detection() {
                         provider,
                         error: ProviderUsageError::Unavailable,
                         detail: None,
+                        account_label: None,
+                        retry_at: None,
+                        additional_login: false,
                     })
                     .into_iter()
                     .collect(),

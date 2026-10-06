@@ -108,6 +108,9 @@ pub enum EventName {
     /// A configured remote host was added, edited, or removed.
     #[cfg(feature = "analytics")]
     RemoteHostChanged,
+    /// A Claude profile was added, renamed, or removed.
+    #[cfg(feature = "analytics")]
+    ClaudeProfileChanged,
     /// A remote synchronization pass reached a terminal result.
     #[cfg(feature = "analytics")]
     RemoteSyncCompleted,
@@ -181,6 +184,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::SessionFiltersChanged,
     EventName::RemoteHostConnectionChecked,
     EventName::RemoteHostChanged,
+    EventName::ClaudeProfileChanged,
     EventName::RemoteSyncCompleted,
     EventName::ProjectFolderAction,
     EventName::QuotaIncidentsObserved,
@@ -228,6 +232,7 @@ impl EventName {
             EventName::SessionFiltersChanged => "antiburn.session_filters_changed",
             EventName::RemoteHostConnectionChecked => "antiburn.remote_host_connection_checked",
             EventName::RemoteHostChanged => "antiburn.remote_host_changed",
+            EventName::ClaudeProfileChanged => "antiburn.claude_profile_changed",
             EventName::RemoteSyncCompleted => "antiburn.remote_sync_completed",
             EventName::QuotaIncidentsObserved => "antiburn.quota_incidents_observed",
             EventName::ProviderIncidentsObserved => "antiburn.provider_incidents_observed",
@@ -807,6 +812,26 @@ pub enum RemoteHostChange {
     Removed,
     SyncEnabled,
     SyncDisabled,
+}
+
+/// A Claude profile lifecycle operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaudeProfileChange {
+    Added,
+    Renamed,
+    Removed,
+}
+
+#[cfg(feature = "analytics")]
+impl ClaudeProfileChange {
+    /// The closed `label` value the event carries.
+    pub fn label(self) -> &'static str {
+        match self {
+            ClaudeProfileChange::Added => "added",
+            ClaudeProfileChange::Renamed => "renamed",
+            ClaudeProfileChange::Removed => "removed",
+        }
+    }
 }
 
 /// A terminal remote synchronization result.
@@ -1893,6 +1918,7 @@ mod tests {
                 | EventName::SessionFiltersChanged
                 | EventName::RemoteHostConnectionChecked
                 | EventName::RemoteHostChanged
+                | EventName::ClaudeProfileChanged
                 | EventName::RemoteSyncCompleted
                 | EventName::QuotaIncidentsObserved
                 | EventName::ProviderIncidentsObserved
@@ -1908,10 +1934,33 @@ mod tests {
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            40,
+            41,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
+    }
+
+    #[test]
+    fn claude_profile_changes_use_the_documented_labels() {
+        let doc = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../docs/analytics.md"
+        ));
+        let row = doc
+            .lines()
+            .find(|line| line.contains("`antiburn.claude_profile_changed`"))
+            .expect("the catalog lists the event");
+        for change in [
+            ClaudeProfileChange::Added,
+            ClaudeProfileChange::Renamed,
+            ClaudeProfileChange::Removed,
+        ] {
+            assert!(
+                row.contains(&format!("`{}`", change.label())),
+                "{}",
+                change.label()
+            );
+        }
     }
 
     /// The public catalog in `docs/analytics.md` is a promise to a

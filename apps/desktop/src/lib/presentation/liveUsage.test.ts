@@ -9,6 +9,7 @@ import type {
   LiveUsageWindowPayload,
 } from "../ipc"
 import {
+  liveAccountName,
   liveAuthNote,
   liveDetectionNote,
   liveDisplayableProviders,
@@ -1153,5 +1154,50 @@ describe("liveWindowSweeps", () => {
     expect(liveWindowSweeps(window({ scopeModel: "Fable" }), false, ["claude-fable-5"])).toBe(
       false,
     )
+  })
+})
+
+describe("liveAccountName", () => {
+  it("prefers the reader's profile label", () => {
+    expect(liveAccountName(provider({ accountLabel: "Claude Work" }), 2, 3)).toBe("Claude Work")
+  })
+
+  it("numbers unlabelled accounts only when a provider has several", () => {
+    expect(liveAccountName(provider(), 2, 3)).toBe("Anthropic account 2")
+    expect(liveAccountName(provider({ accountLabel: "  " }), 1, 1)).toBe("Anthropic")
+  })
+})
+
+describe("account-scoped live errors", () => {
+  const rateLimited = {
+    source: "claude-usage-fetch",
+    provider: "anthropic",
+    displayName: "Claude",
+    category: "rateLimited",
+  }
+
+  it("keeps a profile reading live when only the default login failed", () => {
+    const work = provider({ accountKey: "work", accountLabel: "Claude Work" })
+    const live = summary({ providers: [work], errors: [rateLimited] })
+
+    expect(liveProviderStatus(live, work)).toEqual({ kind: "live" })
+    expect(liveUnavailableProviders(live)).toEqual([
+      expect.objectContaining({ provider: "anthropic", displayName: "Claude" }),
+    ])
+  })
+
+  it("attaches a profile's failure to that profile only", () => {
+    const personal = provider({ accountKey: "personal" })
+    const work = provider({ accountKey: "work", accountLabel: "Claude Work" })
+    const workFailed = {
+      ...rateLimited,
+      displayName: "Claude Work",
+      accountLabel: "Claude Work",
+    }
+    const live = summary({ providers: [personal, work], errors: [workFailed] })
+
+    expect(liveProviderStatus(live, personal)).toEqual({ kind: "live" })
+    expect(liveProviderStatus(live, work).kind).toBe("grace")
+    expect(liveUnavailableProviders(live)).toEqual([])
   })
 })

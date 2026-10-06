@@ -77,6 +77,7 @@ pub(super) fn allowance_usage_for_store(
     let fetch_start = range_start - ROLLING_LOOKBACK_SECS;
     let mut accounts = Vec::new();
     let quota_accounts = store.quota_accounts(now).map_err(fail)?;
+    let labels = crate::claude_profiles::account_labels(store);
     let mut turn_input = None;
     // One scan for every account's five-hour lane, instead of the full
     // range-and-resolve `attributed_turn_epochs` query this request would
@@ -209,9 +210,13 @@ pub(super) fn allowance_usage_for_store(
             &account.account_key,
             &account.lanes,
         )?;
+        // The reader's profile label names the account when it has one.
+        let display_name =
+            crate::claude_profiles::account_label(&labels, &account.provider, &account.account_key)
+                .unwrap_or(account.display_name);
         accounts.push(AllowanceUsageAccount {
             provider: account.provider,
-            display_name: account.display_name,
+            display_name,
             account_key: account.account_key,
             plan,
             utilization,

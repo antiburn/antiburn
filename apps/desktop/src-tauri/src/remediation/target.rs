@@ -266,6 +266,45 @@ pub(super) fn finding_scope(
     }
 }
 
+/// Whether a published Claude finding came from a profile session. See
+/// [`super::config::claude_profile_source`].
+pub(crate) fn passive_profile_session(
+    connection: &rusqlite::Connection,
+    finding: &CurrentFinding,
+) -> Result<bool> {
+    let Some(home) = antiburn_local::paths::home_dir() else {
+        return Ok(false);
+    };
+    profile_session_in(
+        connection,
+        &home,
+        &finding.environment_key,
+        &finding.agent,
+        &finding.session_id,
+    )
+}
+
+pub(crate) fn profile_session_in(
+    connection: &rusqlite::Connection,
+    home: &Path,
+    environment_key: &str,
+    agent: &str,
+    session_id: &str,
+) -> Result<bool> {
+    use rusqlite::OptionalExtension as _;
+    let source_label: Option<String> = connection
+        .query_row(
+            "SELECT source_label FROM session
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            rusqlite::params![environment_key, agent, session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(source_label.is_some_and(|label| {
+        super::config::claude_profile_source_at(AgentKind::Claude, environment_key, &label, home)
+    }))
+}
+
 pub(crate) fn passive_remediations(
     connection: &rusqlite::Connection,
     secret: &[u8; 32],
@@ -280,11 +319,17 @@ pub(crate) fn passive_remediations(
         let Some(agent) = crate::agents::kind_from_slug(&finding.agent) else {
             continue;
         };
+        // A profile session's evidence cannot prove a transition of the
+        // `~/.claude` control that a watch compares against.
+        if agent == AgentKind::Claude && passive_profile_session(connection, &finding)? {
+            continue;
+        }
         let canonical_workspace = finding
             .workspace_candidate()
             .and_then(|workspace| trusted_workspace_in(connection, workspace).ok().flatten());
         let identity = target_identity(secret, &finding, canonical_workspace.as_deref());
         let target = CachedTarget {
+            profile_session: false,
             findings: vec![finding],
             resource: None,
             target_key: identity.target_key.clone(),

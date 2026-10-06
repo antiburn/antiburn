@@ -30,6 +30,7 @@ import {
   liveWindows,
   orderedLiveAccounts,
   maxLiveUsedPercent,
+  liveAccountName,
 } from "../../lib/presentation/liveUsage"
 import { providerInitial } from "../../lib/presentation/providerUsage"
 import { SegmentedMeter } from "../ui/SegmentedMeter"
@@ -166,7 +167,7 @@ export function UsageLimitsBar({
               />
             ))}
             {unavailable.map((entry) => (
-              <UnavailableRadial key={entry.provider} entry={entry} />
+              <UnavailableRadial key={`${entry.provider}:${entry.displayName}`} entry={entry} />
             ))}
           </div>
           {disclosure(false)}
@@ -218,9 +219,7 @@ function accountDisplayName(
   accountNumbers: ReadonlyMap<string, number>,
   counts: ReadonlyMap<string, number>,
 ): string {
-  return (counts.get(provider.provider) ?? 0) > 1
-    ? `${provider.displayName} account ${accountNumbers.get(key)}`
-    : provider.displayName
+  return liveAccountName(provider, accountNumbers.get(key), counts.get(provider.provider) ?? 0)
 }
 
 /**

@@ -156,6 +156,11 @@ export const SETTINGS_SEARCH_TARGETS = {
     label: "Coding agents",
     aliases: ["harnesses", "enabled agents"],
   },
+  sourceClaudeProfiles: {
+    pane: "sources",
+    label: "Claude profiles",
+    aliases: ["claude accounts", "subscriptions", "CLAUDE_CONFIG_DIR", "config directory"],
+  },
   sourceRemoteHosts: {
     pane: "sources",
     label: "Remote hosts",

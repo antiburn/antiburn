@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-claude-profiles"
+description = "Enables the list_claude_profiles command without any pre-configured scope."
+commands.allow = ["list_claude_profiles"]
+
+[[permission]]
+identifier = "deny-list-claude-profiles"
+description = "Denies the list_claude_profiles command without any pre-configured scope."
+commands.deny = ["list_claude_profiles"]

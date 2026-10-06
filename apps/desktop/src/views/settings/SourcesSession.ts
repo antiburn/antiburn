@@ -18,6 +18,14 @@ import type {
   LocalRepositoryStatus,
 } from "../../lib/types/repository"
 import {
+  addClaudeProfile,
+  EMPTY_CLAUDE_PROFILES,
+  listClaudeProfiles,
+  removeClaudeProfile,
+  renameClaudeProfile,
+  type ClaudeProfilesPayload,
+} from "../../lib/claudeProfiles"
+import {
   addRemoteHost,
   checkRemoteHost,
   remoteHosts,
@@ -44,6 +52,7 @@ export type SourcesSnapshot = {
   /** True while the repository list is being (re)built from disk. */
   scanning: boolean
   remote: RemoteHostsSnapshot
+  claudeProfiles: ClaudeProfilesPayload
 }
 
 /** Narrow the shell's status string to the list's union. */
@@ -96,6 +105,7 @@ export class SourcesSession {
     permissions: EMPTY_PERMISSIONS,
     scanning: true,
     remote: remoteHosts.getSnapshot(),
+    claudeProfiles: EMPTY_CLAUDE_PROFILES,
   }
 
   getSnapshot = (): SourcesSnapshot => this.snapshot
@@ -174,6 +184,24 @@ export class SourcesSession {
     await navigator.clipboard.writeText(text || "No folder-access probes this run.")
   }
 
+  /** Pick a folder for a new Claude profile. Null when the reader cancels. */
+  pickClaudeProfileFolder = async (): Promise<string | null> => {
+    const picked = await open({ directory: true, multiple: false })
+    return typeof picked === "string" ? picked : null
+  }
+
+  addClaudeProfile = async (label: string, path: string): Promise<void> => {
+    this.update({ claudeProfiles: await addClaudeProfile(label, path) })
+  }
+
+  renameClaudeProfile = async (id: string, label: string): Promise<void> => {
+    this.update({ claudeProfiles: await renameClaudeProfile(id, label) })
+  }
+
+  removeClaudeProfile = async (id: string): Promise<void> => {
+    this.update({ claudeProfiles: await removeClaudeProfile(id) })
+  }
+
   checkRemoteHost = (sshAlias: string): Promise<RemoteHostPreflight> =>
     checkRemoteHost(sshAlias)
 
@@ -203,12 +231,15 @@ export class SourcesSession {
       if (generation === this.generation) this.update({ remote: remoteHosts.getSnapshot() })
     })
 
-    const [repos, scanRoots, permissions] = await Promise.all([
+    const [repos, scanRoots, permissions, claudeProfiles] = await Promise.all([
       listRepositories().catch(() => []),
       listScanRoots().catch(() => []),
       getFolderPermissions()
         .then((value) => value ?? EMPTY_PERMISSIONS)
         .catch(() => EMPTY_PERMISSIONS),
+      listClaudeProfiles()
+        .then((value) => value ?? EMPTY_CLAUDE_PROFILES)
+        .catch(() => EMPTY_CLAUDE_PROFILES),
     ])
     if (generation !== this.generation) return
 
@@ -217,6 +248,7 @@ export class SourcesSession {
       scanRoots,
       permissions,
       scanning: false,
+      claudeProfiles,
     })
   }
 

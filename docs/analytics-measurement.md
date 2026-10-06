@@ -542,6 +542,30 @@ unconfigured-build, environment-disablement, queue, and delivery rules remain
 unchanged. Validation must exercise the actual operation boundaries and their
 failure/cancellation branches as well as the closed wire schema.
 
+## Claude profiles measurement
+
+Product question: do readers with more than one Claude Code subscription add
+profiles, and how many do they keep? The metric is the share of active
+installations that persist at least one `claude_profile_changed` event with
+`added`, and the distribution of the added-profile bucket. The denominator is
+installations that open Settings → Sources. The answer decides whether the
+profile editor needs more discovery help, such as automatic detection.
+
+`claude_profile_changed` is a completed outcome. The backend records it after
+the profile list is saved: `added`, `renamed`, or `removed`, with the
+added-profile count in the existing bucket. The built-in profile is not
+counted. A rejected add, an invalid name, a failed write, or a closed dialog
+emits nothing, and a rename to the same name emits nothing. Volume is
+bounded by explicit edits and by the limit of 16 added profiles. No label,
+folder path, profile ID, account, or plan is serialized, and no new envelope
+fields are added.
+
+The Retry action on a failed limits seat has no event of its own. It is a
+recovery action for a state that `live_usage_state_observed` already reports
+when the seat is shown, and a successful retry reaches
+`usage_observed` like any other refresh. A separate event would count clicks
+without answering a different question.
+
 ## Event review contract
 
 ### Ignored Instructions
