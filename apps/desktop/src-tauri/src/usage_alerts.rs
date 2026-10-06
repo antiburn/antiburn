@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::dto::{LiveUsageFreshness, LiveUsageSummary};
+use crate::dto::{LiveUsageFreshness, LiveUsageSummary, ScanHistoryProgress};
 use crate::first_run_gate::{FirstRunGate, FirstRunStage};
 use crate::provider_usage;
 use crate::provider_usage::codex_rollout_history::{self, RolloutImportBatch};
@@ -363,6 +363,29 @@ fn learn_and_notify(app: &AppHandle) {
     if learn_limit_factors(app, store.inner()) {
         let _ = app.emit(LIMIT_ESTIMATES_CHANGED_EVENT, ());
     }
+}
+
+/// Learn factors again from older turns once the historical pass publishes
+/// them.
+///
+/// The insights worker calls this when its backlog drains. Learning can take
+/// samples from old Codex readings before the historical pass reads their
+/// sessions, and those samples keep zero dollars. This reopens them one time
+/// for each completed historical pass.
+pub(crate) fn learn_after_history(app: &AppHandle, history: &ScanHistoryProgress) {
+    let store = app.state::<Store>();
+    let Some(pass) = crate::scan::history::unlearned_pass(&store, history) else {
+        return;
+    };
+    let app = app.clone();
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<Store>();
+        if !provider_usage::factor::reopen_unattributed(&store) {
+            return;
+        }
+        crate::scan::history::mark_learned(&store, &pass);
+        learn_and_notify(&app);
+    }));
 }
 
 /// Learn factors once the first run publishes its turns.

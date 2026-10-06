@@ -24,6 +24,10 @@ use super::{EVENT_PROGRESS, ScanController, ScanTrigger, unix_now};
 /// again.
 const HISTORY_DONE_RETENTION_KEY: &str = "internal:historyDoneForRetentionDays";
 
+/// Marks which completed historical pass limit factor learning last reopened
+/// its samples for. Holds a value of [`HISTORY_DONE_RETENTION_KEY`].
+const HISTORY_LEARNED_RETENTION_KEY: &str = "internal:historyLearnedForRetentionDays";
+
 /// The age limit the historical pass applies, in seconds, or `None` when the
 /// current retention leaves nothing for it to do.
 ///
@@ -54,6 +58,30 @@ pub(crate) fn mark_done(store: &Store, retention_days: i32) {
 /// rather than reading the old retention's completion as still current.
 pub(crate) fn reset_done(store: &Store) {
     store.set_internal_value(HISTORY_DONE_RETENTION_KEY, "");
+    store.set_internal_value(HISTORY_LEARNED_RETENTION_KEY, "");
+}
+
+/// The completed historical pass that limit factor learning has not yet
+/// learned from, if there is one.
+///
+/// The pass is complete when `progress` is done, which includes the evidence
+/// for its sessions. Give the result to [`mark_learned`] after learning
+/// reopens its samples.
+pub(crate) fn unlearned_pass(store: &Store, progress: &ScanHistoryProgress) -> Option<String> {
+    if progress.state != ScanHistoryState::Done {
+        return None;
+    }
+    let done = store
+        .internal_value(HISTORY_DONE_RETENTION_KEY)
+        .filter(|value| !value.is_empty())?;
+    let learned = store.internal_value(HISTORY_LEARNED_RETENTION_KEY);
+    (learned.as_deref() != Some(done.as_str())).then_some(done)
+}
+
+/// Record that limit factor learning reopened its samples for `pass`, a
+/// value from [`unlearned_pass`].
+pub(crate) fn mark_learned(store: &Store, pass: &str) {
+    store.set_internal_value(HISTORY_LEARNED_RETENTION_KEY, pass);
 }
 
 fn done_for_current_retention(store: &Store, retention_days: i32) -> bool {
@@ -107,15 +135,18 @@ pub(crate) fn compute(store: &Store, now: i64, pass_running: bool) -> ScanHistor
 /// runs at most about once a second: the count query holds the store lock.
 /// Use `force` at the edges (a pass starts or ends, the backlog drains), so
 /// the last state always reaches the reader.
-pub(crate) fn push_progress(app: &AppHandle, force: bool) {
+///
+/// Returns the progress it pushed, or `None` when the throttle skipped it.
+pub(crate) fn push_progress(app: &AppHandle, force: bool) -> Option<ScanHistoryProgress> {
     let controller = app.state::<ScanController>();
     if !controller.throttle_history_emit() && !force {
-        return;
+        return None;
     }
     let store = app.state::<Store>();
     let progress = compute(&store, unix_now(), controller.history_pass_running());
-    let status = controller.update(|status| status.history = Some(progress));
+    let status = controller.update(|status| status.history = Some(progress.clone()));
     let _ = app.emit(EVENT_PROGRESS, status);
+    Some(progress)
 }
 
 /// Ask the scheduler for the one-time automatic historical pass, if the
@@ -252,6 +283,41 @@ mod tests {
         assert_eq!(
             compute(&store, 10_000, false).state,
             ScanHistoryState::Pending
+        );
+    }
+
+    #[test]
+    fn a_completed_pass_is_unlearned_once_until_reset() {
+        let store = store();
+        let retention = store.settings_snapshot().session_data_retention_days;
+        assert_eq!(
+            unlearned_pass(&store, &compute(&store, 10_000, false)),
+            None,
+            "a pass that has not run has nothing to learn from"
+        );
+
+        mark_done(&store, retention);
+        let pass = unlearned_pass(&store, &compute(&store, 10_000, false))
+            .expect("a completed pass is unlearned");
+        assert_eq!(
+            unlearned_pass(&store, &compute(&store, 10_000, true)),
+            None,
+            "a pass in flight is not complete"
+        );
+
+        mark_learned(&store, &pass);
+        assert_eq!(
+            unlearned_pass(&store, &compute(&store, 10_000, false)),
+            None
+        );
+
+        // A cleared index earns its own historical pass, and that pass is
+        // unlearned again.
+        reset_done(&store);
+        mark_done(&store, retention);
+        assert_eq!(
+            unlearned_pass(&store, &compute(&store, 10_000, false)),
+            Some(pass)
         );
     }
 }

@@ -564,6 +564,62 @@ fn the_recompute_window_upserts_a_late_arriving_turn_into_the_same_sample() {
 }
 
 #[test]
+fn reopening_prices_an_unattributed_sample_whose_turns_arrive_after_its_window() {
+    let store = memory_store();
+    observe_account(&store);
+    let priced = insert_period(&store, 0, 18_000);
+    let unpriced = insert_period(&store, 18_000, 36_000);
+    let key = insert_session(&store, "s1");
+    insert_turn(&store, &key, 150_000, 200_000, MODEL); // $1.00
+    push_observation(&store, priced, 100, 10.0, None);
+    push_observation(&store, priced, 200, 15.0, None);
+    push_observation(&store, unpriced, 18_100, 20.0, None);
+    push_observation(&store, unpriced, 18_200, 30.0, None);
+    learn(&store, 18_300);
+
+    // The historical pass publishes the turn long after the pair closed.
+    let old = insert_session(&store, "s2");
+    insert_turn(&store, &old, 18_150_000, 400_000, MODEL); // $2.00
+    learn(&store, 100_000);
+    assert_eq!(
+        sample_kind(&store, 18_100, 18_200),
+        "unattributed",
+        "a closed pair is not computed again on its own"
+    );
+
+    assert!(reopen_unattributed(&store));
+    let cursors: Vec<i64> = store
+        .lock()
+        .prepare("SELECT period_id FROM provider_limit_learn_cursor")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(cursors, vec![priced], "only the unpriced period reopens");
+
+    learn(&store, 100_000);
+    assert_eq!(sample_kind(&store, 18_100, 18_200), "delta");
+    assert_eq!(sample_kind(&store, 100, 200), "delta");
+    let samples = store
+        .all_delta_factor_samples(PROVIDER, &account(), LANE_FIVE_HOUR)
+        .unwrap();
+    assert_eq!(samples.len(), 2);
+}
+
+fn sample_kind(store: &Store, from_epoch: i64, to_epoch: i64) -> String {
+    store
+        .lock()
+        .query_row(
+            "SELECT kind FROM provider_limit_factor_sample
+              WHERE from_epoch = ?1 AND to_epoch = ?2",
+            params![from_epoch, to_epoch],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
 fn a_zero_percent_reading_never_seeds_a_sample() {
     let store = memory_store();
     observe_account(&store);

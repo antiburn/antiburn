@@ -333,11 +333,14 @@ async fn run_worker(app: tauri::AppHandle) {
         // `scan::history::maybe_start_automatic_pass`) is the backlog
         // draining; check it on every drain, not only after a scan pass.
         if !active {
-            crate::scan::history::push_progress(&backlog_app, true);
+            let history = crate::scan::history::push_progress(&backlog_app, true);
             crate::scan::history::maybe_start_automatic_pass(&backlog_app);
             // The first run's turns are now published, so limit factors can
             // learn from them.
             crate::usage_alerts::learn_after_first_publish(&backlog_app);
+            if let Some(history) = history {
+                crate::usage_alerts::learn_after_history(&backlog_app, &history);
+            }
         }
     };
     let analytics_app = app.clone();

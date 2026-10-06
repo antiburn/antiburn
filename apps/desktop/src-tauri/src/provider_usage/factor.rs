@@ -212,6 +212,29 @@ pub fn learn(store: &Store, now_epoch: i64) -> (Vec<LearnedFactor>, Vec<TouchedL
     (learned, touched)
 }
 
+/// Make every unattributed sample a candidate again.
+///
+/// A sample stays as it is after its interval closes, so a sample learned
+/// before its turns were published keeps zero dollars. Call this after a
+/// pass publishes turns that are older than the recompute window, such as
+/// the historical pass. Returns `false` when another pass holds the learn
+/// gate or the store fails, and the caller must try again later.
+pub fn reopen_unattributed(store: &Store) -> bool {
+    let Some(_in_flight) = store.try_begin_limit_factor_learn() else {
+        return false;
+    };
+    match store.reopen_unattributed_factor_samples() {
+        Ok(removed) => {
+            ::tracing::info!(event = "limit_factor_unattributed_reopened", removed);
+            true
+        }
+        Err(_) => {
+            ::tracing::warn!(event = "limit_factor_unattributed_reopen_failed");
+            false
+        }
+    }
+}
+
 /// The state one call to [`build_period_samples`] needs beyond the period
 /// itself: which pairs already have a sample, and how much work is left.
 struct SamplePass<'a> {

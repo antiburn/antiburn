@@ -968,6 +968,29 @@ impl Store {
         Ok(())
     }
 
+    /// Remove every unattributed sample and the learn cursors of their
+    /// periods, so the next passes price those pairs again.
+    ///
+    /// Returns the number of samples removed.
+    pub(crate) fn reopen_unattributed_factor_samples(&self) -> Result<usize> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "DELETE FROM provider_limit_learn_cursor
+              WHERE period_id IN (
+                  SELECT period_id FROM provider_limit_factor_sample
+                   WHERE kind = 'unattributed'
+              )",
+            [],
+        )?;
+        let removed = transaction.execute(
+            "DELETE FROM provider_limit_factor_sample WHERE kind = 'unattributed'",
+            [],
+        )?;
+        transaction.commit()?;
+        Ok(removed)
+    }
+
     /// Insert or replace one factor sample, keyed by its interval.
     pub(crate) fn upsert_factor_sample(&self, sample: &FactorSample) -> Result<()> {
         let connection = self.lock();
