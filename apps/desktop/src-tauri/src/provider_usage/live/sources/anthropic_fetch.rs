@@ -244,20 +244,18 @@ struct DesktopAppLocations {
     binary: Option<&'static str>,
 }
 
-/// Note Claude Desktop on a presence that found no login.
+/// Note whether Claude Desktop is installed, whatever login was found.
 ///
 /// Claude Desktop keeps its own sign-in, which antiburn does not read, so the
-/// app never makes the meter signed in. When no Claude Code login was found,
-/// the note can still say that the app is here instead of "Couldn't find
-/// Claude Code". Only file metadata is read.
+/// app never makes the meter signed in. The agent lists name the app even
+/// when a login was found, for example a Claude login that only Pi holds.
+/// The usage note names it only when no login was found. Only file metadata
+/// is read.
 fn with_claude_desktop(
     presence: Presence,
     probe: &impl PresenceProbe,
     app: &DesktopAppLocations,
 ) -> Presence {
-    if presence.detection == Detection::SignedIn {
-        return presence;
-    }
     let installed = app
         .paths
         .iter()
@@ -1860,7 +1858,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_desktop_is_noted_only_when_no_login_was_found() {
+    fn claude_desktop_is_noted_whatever_login_was_found() {
         const APP: &str = "/fixture/Applications/Claude.app";
         let mut probe = RecordingPresence::default();
         probe.paths.insert(APP.into(), Ok(true));
@@ -1874,12 +1872,22 @@ mod tests {
         assert_eq!(not_installed.detection, Detection::NotInstalled);
         assert_eq!(not_installed.desktop_app, Some(DesktopApp::ClaudeDesktop));
 
+        // A login does not hide the app. The agent lists still name it.
         let signed_in = with_claude_desktop(
             Presence::via(Detection::SignedIn, LoginCarrier::ClaudeKeychain),
             &probe,
             &app,
         );
-        assert_eq!(signed_in.desktop_app, None);
+        assert_eq!(signed_in.detection, Detection::SignedIn);
+        assert_eq!(signed_in.desktop_app, Some(DesktopApp::ClaudeDesktop));
+
+        let pi_only = with_claude_desktop(
+            Presence::via(Detection::SignedIn, LoginCarrier::Pi),
+            &probe,
+            &app,
+        );
+        assert_eq!(pi_only.carrier, Some(LoginCarrier::Pi));
+        assert_eq!(pi_only.desktop_app, Some(DesktopApp::ClaudeDesktop));
 
         // No app on disk: nothing is noted.
         let absent = with_claude_desktop(

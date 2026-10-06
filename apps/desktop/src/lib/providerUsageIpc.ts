@@ -506,7 +506,7 @@ export interface LiveUsageMeterPayload {
   carrier?: LiveLoginCarrier
   /** `carrier` as the reader would name it, e.g. "the Claude Code CLI (Keychain)". */
   carrierLabel?: string
-  /** The provider's desktop app, e.g. "Claude Desktop", when no login was found and it is installed. */
+  /** The provider's desktop app, e.g. "Claude Desktop", when it is installed, whatever login was found. */
   desktopAppLabel?: string
 }
 

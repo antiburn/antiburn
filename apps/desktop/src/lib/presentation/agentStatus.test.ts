@@ -96,6 +96,25 @@ describe("agentStatus", () => {
       line: "7 sessions",
     },
     {
+      name: "Claude Desktop beside a Claude login that only Pi holds",
+      sessions: 0,
+      meter: claude({
+        detection: "signedIn",
+        carrier: "pi",
+        carrierLabel: "Pi",
+        desktopAppLabel: "Claude Desktop",
+      }),
+      found: true,
+      line: "No sessions yet · Claude Desktop",
+    },
+    {
+      name: "Claude Desktop beside a Claude Code login",
+      sessions: 41,
+      meter: claude({ detection: "signedIn", desktopAppLabel: "Claude Desktop" }),
+      found: true,
+      line: "41 sessions · Claude Desktop · Signed in",
+    },
+    {
       name: "Pi found but not signed in",
       sessions: 0,
       meter: claude({ detection: "installedNotSignedIn", carrier: "pi", carrierLabel: "Pi" }),

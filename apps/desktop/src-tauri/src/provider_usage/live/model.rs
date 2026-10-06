@@ -91,8 +91,8 @@ pub struct Presence {
     /// Set when `detection` rests on a carrier, including the inconclusive
     /// Pi file. `None` when nothing was found or nothing could be checked.
     pub carrier: Option<LoginCarrier>,
-    /// The provider's desktop app, when detection found no login and the
-    /// app is installed.
+    /// The provider's desktop app, when it is installed. Set whatever login
+    /// detection found; the app's own sign-in is never read.
     #[serde(default)]
     pub desktop_app: Option<DesktopApp>,
 }

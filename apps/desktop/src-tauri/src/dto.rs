@@ -3003,8 +3003,8 @@ pub struct LiveUsageMeter {
     /// `carrier`'s display name, so the views never restate the enum.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carrier_label: Option<String>,
-    /// The provider's desktop app by name, when no login was found and the
-    /// app is installed. For example "Claude Desktop".
+    /// The provider's desktop app by name, when it is installed, whatever
+    /// login was found. For example "Claude Desktop".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub desktop_app_label: Option<String>,
 }

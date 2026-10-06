@@ -12,8 +12,9 @@ import { liveToolName } from "./liveUsage"
  * meter, so the login part applies to Claude, Codex and Antigravity.
  *
  * A login that Pi holds is Pi's, not the agent's. Pi uses the provider's
- * models, but it is a separate coding agent. So the line ignores a meter
- * whose login comes through Pi, and that login never makes an agent found.
+ * models, but it is a separate coding agent. So the line ignores a login
+ * that comes through Pi, and that login never makes an agent found. The
+ * provider's desktop app still belongs to the agent, so the line names it.
  */
 export interface AgentStatus {
   /** Sessions, a login, or the provider's desktop app turned up. */
@@ -49,7 +50,7 @@ export function agentStatus(
   const parts: string[] = []
   if (sessionsSeen > 0)
     parts.push(`${sessionsSeen} ${sessionsSeen === 1 ? "session" : "sessions"}`)
-  const desktopApp = ownMeter?.desktopAppLabel
+  const desktopApp = meter?.desktopAppLabel
   if (desktopApp) parts.push(desktopApp)
   const login = ownMeter ? loginPart(ownMeter, Boolean(desktopApp)) : null
   if (login) parts.push(login)
