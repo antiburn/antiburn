@@ -371,6 +371,47 @@ pub(crate) fn republish_after_settings_change(app: &AppHandle) {
 /// Every app-level refresh uses this path. This keeps milestone evaluation at
 /// the collection boundary, including when the visible popover finds a crossing
 /// between background ticks.
+/// Keep the previous reading of a provider whose check failed for a reason
+/// that passes by itself.
+///
+/// A source keeps its last good reading in memory through a failure. After a
+/// restart that memory is empty, so the first failed pass has no reading, and
+/// the reading restored from the store would be replaced by nothing. This
+/// function keeps the previous reading, marked stale, next to the error. It
+/// does not keep a reading when the reader must sign in again or turned the
+/// meter off: those states have a sign-in error or no error at all.
+fn carry_forward_readings(summary: &mut LiveUsageSummary, previous: &LiveUsageSummary) {
+    let carried: Vec<_> = summary
+        .errors
+        .iter()
+        .filter(|error| transient_failure(error))
+        .filter(|error| {
+            !summary
+                .providers
+                .iter()
+                .any(|provider| provider.provider == error.provider)
+        })
+        .filter_map(|error| {
+            previous
+                .providers
+                .iter()
+                .find(|provider| provider.provider == error.provider)
+        })
+        .map(|provider| crate::dto::LiveProviderUsage {
+            freshness: LiveUsageFreshness::Stale,
+            ..provider.clone()
+        })
+        .collect();
+    summary.providers.extend(carried);
+}
+
+/// Whether a failed check says nothing about the account itself: a rate
+/// limit, an unreachable endpoint, or a refresh that has not happened yet.
+fn transient_failure(error: &crate::dto::LiveUsageSourceError) -> bool {
+    matches!(error.category.as_str(), "rateLimited" | "unavailable")
+        || error.detail == Some(provider_usage::live::SourceErrorDetail::RefreshPending)
+}
+
 pub(crate) fn refresh_publish_and_evaluate(
     app: &AppHandle,
     max_age: Duration,
@@ -419,7 +460,7 @@ pub(crate) fn refresh_publish_and_evaluate(
     // provider (see `sources::collect`), and a provider that failed this
     // pass has no entry here at all.
     crate::analytics::record_usage_observed(app, &collected.snapshots);
-    let summary = provider_usage::live::summarize_collected(
+    let mut summary = provider_usage::live::summarize_collected(
         collected,
         provider_usage::live::roster(&live.sources, &hidden, &detection),
         store.as_deref(),
@@ -427,6 +468,7 @@ pub(crate) fn refresh_publish_and_evaluate(
         now,
         live.utc_offset_minutes(),
     );
+    carry_forward_readings(&mut summary, &live.snapshot());
     live.replace_snapshot(summary.clone(), store.as_deref());
     crate::tray::sync_usage(
         app,
@@ -732,6 +774,97 @@ mod tests {
         }
         live.store_detection(DetectionMap::default());
         assert!(live.detection_snapshot().is_empty());
+    }
+
+    fn claude_reading(observed_at: &str) -> LiveProviderUsage {
+        LiveProviderUsage {
+            provider: "anthropic".into(),
+            account_key: None,
+            display_name: "Claude".into(),
+            support: LiveUsageSupport::Live,
+            freshness: LiveUsageFreshness::Fresh,
+            source_label: "fixture".into(),
+            observed_at: observed_at.into(),
+            windows: vec![],
+            extra_usage: None,
+            reset_credits: None,
+            plan: None,
+            account_uuid: None,
+            account_email: None,
+        }
+    }
+
+    fn claude_error(
+        category: &str,
+        detail: Option<provider_usage::live::SourceErrorDetail>,
+    ) -> LiveUsageSourceError {
+        LiveUsageSourceError {
+            source: "claude-usage-fetch".into(),
+            provider: "anthropic".into(),
+            display_name: "Claude".into(),
+            category: category.into(),
+            detail,
+        }
+    }
+
+    fn failed_pass(error: LiveUsageSourceError) -> LiveUsageSummary {
+        LiveUsageSummary {
+            meters: Vec::new(),
+            providers: Vec::new(),
+            errors: vec![error],
+            generated_at: "2026-08-20T01:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn a_transient_failure_after_a_restart_keeps_the_previous_reading_stale() {
+        use provider_usage::live::SourceErrorDetail;
+        let previous = LiveUsageSummary {
+            meters: Vec::new(),
+            providers: vec![claude_reading("2026-08-20T00:00:00Z")],
+            errors: Vec::new(),
+            generated_at: "2026-08-20T00:00:00Z".into(),
+        };
+        for error in [
+            claude_error("rateLimited", None),
+            claude_error("unavailable", None),
+            claude_error("authentication", Some(SourceErrorDetail::RefreshPending)),
+        ] {
+            let mut summary = failed_pass(error);
+            carry_forward_readings(&mut summary, &previous);
+            assert_eq!(summary.providers.len(), 1);
+            assert_eq!(summary.providers[0].observed_at, "2026-08-20T00:00:00Z");
+            assert_eq!(summary.providers[0].freshness, LiveUsageFreshness::Stale);
+            assert_eq!(summary.errors.len(), 1, "the error stays visible");
+        }
+    }
+
+    #[test]
+    fn a_sign_in_failure_or_a_fresh_reading_is_not_replaced_by_the_previous_one() {
+        use provider_usage::live::SourceErrorDetail;
+        let previous = LiveUsageSummary {
+            meters: Vec::new(),
+            providers: vec![claude_reading("2026-08-20T00:00:00Z")],
+            errors: Vec::new(),
+            generated_at: "2026-08-20T00:00:00Z".into(),
+        };
+        for error in [
+            claude_error("authentication", None),
+            claude_error("authentication", Some(SourceErrorDetail::SignInRequired)),
+        ] {
+            let mut summary = failed_pass(error);
+            carry_forward_readings(&mut summary, &previous);
+            assert!(summary.providers.is_empty());
+        }
+
+        // A pass that already has a reading keeps its own.
+        let mut summary = failed_pass(claude_error("rateLimited", None));
+        summary
+            .providers
+            .push(claude_reading("2026-08-20T00:59:00Z"));
+        carry_forward_readings(&mut summary, &previous);
+        assert_eq!(summary.providers.len(), 1);
+        assert_eq!(summary.providers[0].observed_at, "2026-08-20T00:59:00Z");
     }
 
     #[test]
