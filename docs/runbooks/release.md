@@ -221,13 +221,11 @@ endpoint commonly produces 403. Do not change the role to Owner or add a secret
 fallback. Runtime or DLL-load errors require checking the pinned x64 toolchain
 and its `DOTNET_ROOT` configuration, especially on ARM64.
 
-#### Legacy unsigned waiver
+#### Required Windows signing
 
-`ALLOW_UNSIGNED_WINDOWS` is a repository variable. It permits a clearly labelled
-unsigned Windows build only when **all six Azure variables are absent**. With
-all six configured, signing is required even if the waiver is still `true`.
-A partial configuration fails; a signing failure cannot use the waiver.
-Remove the variable after signed release acceptance. macOS releases always
+Both Windows targets require Azure Authenticode signing. Missing configuration,
+signing failures, or failed verification stop the build. The former
+`ALLOW_UNSIGNED_WINDOWS` waiver is removed and has no effect. macOS releases
 require Developer ID signing and notarization.
 
 #### Enabling Windows installer signature enforcement
@@ -237,8 +235,8 @@ unsigned Windows packages. Activate strict bootstrap verification after the
 first signed production release passes Windows acceptance and becomes latest:
 
 1. Rehearse both Windows targets with the configured Azure signing profile.
-2. Remove `ALLOW_UNSIGNED_WINDOWS` and confirm both inventory entries use
-   `authenticode`.
+2. Confirm both inventory entries use `authenticode`; unsigned Windows builds
+   are no longer permitted.
 3. Extend `Assert-InstallerIntegrity` in the root `install.ps1` with
    `Get-AuthenticodeSignature`. Require `Valid` status and the expected antiburn
    publisher identity.

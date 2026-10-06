@@ -458,10 +458,8 @@ jobs:
       # are no detached signatures, and latest.json would point at downloads
       # nothing can verify.
       #
-      # Windows platform signing can be waived, but only deliberately and only
-      # loudly: set ALLOW_UNSIGNED_WINDOWS to `true`, and the draft says so in
-      # its own first line. macOS releases always require Developer ID signing
-      # and notarization. Nothing here ever fakes a signature.
+      # Windows requires Azure Authenticode signing. macOS requires Developer ID
+      # signing and notarization.
       - name: Check the signing credentials this build needs
         id: signing
         shell: bash
@@ -478,7 +476,6 @@ jobs:
           AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
           AZURE_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_SIGNING_ACCOUNT_NAME }}
           AZURE_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_SIGNING_CERTIFICATE_PROFILE_NAME }}
-          ALLOW_UNSIGNED_WINDOWS: ${{ vars.ALLOW_UNSIGNED_WINDOWS }}
         run: |
           set -euo pipefail
           missing=""
@@ -500,23 +497,16 @@ jobs:
               platform_signing=developer-id
               ;;
             Windows)
-              configured=0
               for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID AZURE_SIGNING_ENDPOINT AZURE_SIGNING_ACCOUNT_NAME AZURE_SIGNING_CERTIFICATE_PROFILE_NAME; do
-                if [[ -n "${!name:-}" ]]; then
-                  configured=$((configured + 1))
-                else
+                if [[ -z "${!name:-}" ]]; then
                   missing="${missing:+${missing}, }${name}"
                 fi
               done
-              if [[ "$configured" -eq 6 ]]; then
-                platform_signing=authenticode
-              elif [[ "$configured" -eq 0 && "${ALLOW_UNSIGNED_WINDOWS:-}" == "true" ]]; then
-                echo "::warning::Building the Windows installer WITHOUT an Authenticode signature, because ALLOW_UNSIGNED_WINDOWS is true. SmartScreen will warn on download."
-                platform_signing=unsigned
-              else
-                echo "::error::Missing Azure signing variables in the 'release' environment: ${missing}. A partial Azure configuration cannot use the unsigned waiver."
+              if [[ -n "$missing" ]]; then
+                echo "::error::Missing required Azure signing variables in the 'release' environment: ${missing}. Windows builds require Authenticode signing."
                 exit 1
               fi
+              platform_signing=authenticode
               ;;
             *)
               # Linux packages carry no platform code signature: neither the
