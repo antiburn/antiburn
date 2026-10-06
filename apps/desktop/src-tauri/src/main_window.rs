@@ -86,6 +86,7 @@ pub struct NavigationTargetRequest {
 struct SampleTarget {
     handle: String,
     target: SessionTarget,
+    incarnation: Option<u64>,
     created_at: Instant,
 }
 
@@ -417,6 +418,25 @@ impl MainWindowState {
         remote_host_id: Option<String>,
         now: Instant,
     ) -> Result<String, String> {
+        self.issue_sample_handle_for_incarnation(
+            agent,
+            session_id,
+            wsl_distro,
+            remote_host_id,
+            None,
+            now,
+        )
+    }
+
+    fn issue_sample_handle_for_incarnation(
+        &self,
+        agent: String,
+        session_id: String,
+        wsl_distro: Option<String>,
+        remote_host_id: Option<String>,
+        incarnation: Option<u64>,
+        now: Instant,
+    ) -> Result<String, String> {
         let mut targets = lock(&self.sample_targets);
         targets
             .retain(|entry| now.saturating_duration_since(entry.created_at) <= SAMPLE_HANDLE_TTL);
@@ -424,6 +444,7 @@ impl MainWindowState {
             entry.target.agent == agent
                 && entry.target.session_id == session_id
                 && entry.target.wsl_distro == wsl_distro
+                && entry.incarnation == incarnation
                 && entry.target.remote_host_id == remote_host_id
         }) {
             let mut entry = targets.remove(index).expect("the matched sample exists");
@@ -446,16 +467,27 @@ impl MainWindowState {
                 wsl_distro,
                 remote_host_id,
             },
+            incarnation,
             created_at: now,
         });
         Ok(handle)
     }
 
+    #[cfg(test)]
     pub fn resolve_sample_handle(
         &self,
         handle: &str,
         now: Instant,
     ) -> Result<SessionTarget, SampleTargetError> {
+        self.resolve_sample_handle_with_incarnation(handle, now)
+            .map(|(target, _)| target)
+    }
+
+    fn resolve_sample_handle_with_incarnation(
+        &self,
+        handle: &str,
+        now: Instant,
+    ) -> Result<(SessionTarget, Option<u64>), SampleTargetError> {
         let targets = lock(&self.sample_targets);
         let entry = targets
             .iter()
@@ -464,7 +496,7 @@ impl MainWindowState {
         if now.saturating_duration_since(entry.created_at) > SAMPLE_HANDLE_TTL {
             return Err(SampleTargetError::Expired);
         }
-        Ok(entry.target.clone())
+        Ok((entry.target.clone(), entry.incarnation))
     }
 
     fn request_navigation_target(
@@ -958,24 +990,55 @@ pub(crate) fn sample_payloads_from_store(
     let generations = store
         .source_generation_batch(&keys)
         .map_err(|error| error.to_string())?;
+    let findings = if store
+        .internal_value("internal:burnChecksEnabledAtEpochV1")
+        .is_some()
+    {
+        crate::insights_report::ignored_instruction_session_statuses(store.state_dir(), &keys)
+            .map_err(|error| error.to_string())?
+    } else {
+        vec![
+            crate::dto::IgnoredInstructionSessionStatus {
+                status: crate::dto::SessionHygieneStatus::NotAssessed,
+                reason: None,
+            };
+            keys.len()
+        ]
+    };
     let now = Instant::now();
     selected
         .into_iter()
         .zip(evidence)
         .zip(generations)
-        .map(|((sample, evidence), generation)| {
+        .zip(findings)
+        .map(|(((sample, evidence), generation), finding)| {
             let record = records
                 .remove(&sample_key(sample))
                 .ok_or("session metadata is unavailable")?;
             let activity = crate::commands::activity_entry(store, repositories, record, now_epoch)
                 .map_err(|error| error.to_string())?;
-            let navigation_handle = state.issue_sample_handle(
-                sample.agent.clone(),
-                sample.session_id.clone(),
-                activity.wsl_distro.clone(),
-                activity.remote_host_id.clone(),
-                now,
-            )?;
+            let navigation_handle = match sample.incarnation {
+                Some(incarnation) => state.issue_sample_handle_for_incarnation(
+                    sample.agent.clone(),
+                    sample.session_id.clone(),
+                    activity.wsl_distro.clone(),
+                    activity.remote_host_id.clone(),
+                    Some(incarnation),
+                    now,
+                )?,
+                None => state.issue_sample_handle(
+                    sample.agent.clone(),
+                    sample.session_id.clone(),
+                    activity.wsl_distro.clone(),
+                    activity.remote_host_id.clone(),
+                    now,
+                )?,
+            };
+            let mut hygiene = crate::commands::session_hygiene_payload(evidence, generation);
+            crate::commands::attach_ignored_instruction_statuses(
+                std::slice::from_mut(&mut hygiene),
+                [finding],
+            );
             Ok(BurnCheckSamplePayload {
                 navigation_handle,
                 title: sample_title(activity.title.as_deref()),
@@ -990,7 +1053,7 @@ pub(crate) fn sample_payloads_from_store(
                 cost: activity.cost,
                 models: activity.models,
                 model_runs: activity.model_runs,
-                hygiene: crate::commands::session_hygiene_payload(evidence, generation),
+                hygiene,
             })
         })
         .collect()
@@ -1071,28 +1134,33 @@ fn resolve_sample_for_open(
     handle: &str,
     now: Instant,
 ) -> Result<Result<SessionTarget, OpenBurnCheckSampleOutcome>, String> {
-    let target = match state.resolve_sample_handle(handle, now) {
-        Ok(target) => target,
-        Err(SampleTargetError::Expired) => {
-            return Ok(Err(OpenBurnCheckSampleOutcome::Expired));
-        }
-        Err(SampleTargetError::Unavailable) => {
-            return Ok(Err(OpenBurnCheckSampleOutcome::Unavailable));
-        }
-    };
-    let exists = store
-        .session(
-            &SessionKey::for_origin(
-                &target.agent,
-                &target.session_id,
-                target.wsl_distro.as_deref(),
-                target.remote_host_id.as_deref(),
-            )
-            .map_err(str::to_owned)?,
-        )
-        .map_err(|error| error.to_string())?
-        .is_some();
-    if exists {
+    let (target, expected_incarnation) =
+        match state.resolve_sample_handle_with_incarnation(handle, now) {
+            Ok(target) => target,
+            Err(SampleTargetError::Expired) => {
+                return Ok(Err(OpenBurnCheckSampleOutcome::Expired));
+            }
+            Err(SampleTargetError::Unavailable) => {
+                return Ok(Err(OpenBurnCheckSampleOutcome::Unavailable));
+            }
+        };
+    let key = SessionKey::for_origin(
+        &target.agent,
+        &target.session_id,
+        target.wsl_distro.as_deref(),
+        target.remote_host_id.as_deref(),
+    )
+    .map_err(str::to_owned)?;
+    let (presence, _) = store
+        .session_presence_for_keys(std::slice::from_ref(&key))
+        .map_err(|error| error.to_string())?;
+    let current_incarnation = presence
+        .iter()
+        .find(|presence| presence.key == key)
+        .map(|presence| presence.incarnation.0);
+    if current_incarnation.is_some()
+        && expected_incarnation.is_none_or(|expected| Some(expected) == current_incarnation)
+    {
         Ok(Ok(target))
     } else {
         Ok(Err(OpenBurnCheckSampleOutcome::Deleted))
@@ -2584,6 +2652,7 @@ mod tests {
             agent: agent.to_owned(),
             session_id: id.to_owned(),
             observed_at_ms,
+            incarnation: None,
         }
     }
 
@@ -2654,8 +2723,8 @@ mod tests {
     #[test]
     fn sample_payloads_skip_deleted_sessions_and_keep_each_target_independent() {
         let state = state();
-        let store = Store::open_in_memory(std::path::Path::new("/tmp/antiburn-sample-test"))
-            .expect("open store");
+        let directory = tempfile::tempdir().expect("create test directory");
+        let store = Store::open(directory.path()).expect("open store");
         let samples = [
             failed_sample("claude-code", "deleted", 10),
             failed_sample("claude-code", "claude", 9),
@@ -2818,6 +2887,55 @@ mod tests {
 
         assert!(matches!(
             resolve_sample_for_open(&state, &store, &handle, now),
+            Ok(Err(OpenBurnCheckSampleOutcome::Deleted))
+        ));
+    }
+
+    #[test]
+    fn a_sample_handle_cannot_open_a_recreated_session() {
+        let state = state();
+        let store = Store::open_in_memory(std::path::Path::new("/tmp/antiburn-sample-test"))
+            .expect("open store");
+        let record = crate::store::SessionRecord {
+            key: SessionKey::new("native", "claude-code", "same-id"),
+            source_kind: "file".into(),
+            source_label: "/sessions/same-id.jsonl".into(),
+            wsl_distro: None,
+            title: None,
+            title_source: None,
+            cwd: None,
+            surface: "cli".into(),
+            updated_at_epoch: Some(1),
+            activity_cursor: "first".into(),
+            activity_source: "event".into(),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+            source_fingerprint: None,
+        };
+        store
+            .upsert_sessions(std::slice::from_ref(&record), &[])
+            .unwrap();
+        let (presence, _) = store
+            .session_presence_for_keys(std::slice::from_ref(&record.key))
+            .unwrap();
+        let handle = state
+            .issue_sample_handle_for_incarnation(
+                "claude-code".into(),
+                "same-id".into(),
+                None,
+                None,
+                Some(presence[0].incarnation.0),
+                Instant::now(),
+            )
+            .unwrap();
+
+        store.delete_session(&record.key).unwrap();
+        store
+            .upsert_sessions(std::slice::from_ref(&record), &[])
+            .unwrap();
+
+        assert!(matches!(
+            resolve_sample_for_open(&state, &store, &handle, Instant::now()),
             Ok(Err(OpenBurnCheckSampleOutcome::Deleted))
         ));
     }

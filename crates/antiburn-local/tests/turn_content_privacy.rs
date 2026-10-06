@@ -4,18 +4,20 @@
 //! other table in the schema must never carry it. Deleting a session's turn
 //! rows must remove it completely.
 //!
-//! This file carries one fixture per vendor that stores content: Claude,
-//! Codex, OpenCode, and Pi. `cursor`, `antigravity`, and the generic JSONL
-//! fallback emit no `TurnContent` records at all. They never call
-//! `extract_content_parts` or push a `ContentPart`. So they have no
-//! content-privacy surface to test.
+//! This file carries fixtures for every characterized source that stores
+//! content: Claude, Codex, OpenCode, Pi, Cursor, and Antigravity. The generic
+//! JSONL fallback does not emit `TurnContent` records.
 
 use std::sync::Arc;
 
+use antiburn_local::analysis::ignored_instructions::{
+    INPUT_SELECTION, prepare_session_content, select_session_content,
+};
 use antiburn_local::analysis::{
-    CompositeSink, EvidenceSource, MemoryTurnRowStore, RawSource, SessionEvidenceAccumulator,
-    SessionInput, SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnRowSink,
-    TurnRowStore, TurnSessionKey, delete_turn_rows, normalize_source, reader_for,
+    CompositeSink, EvidenceSource, FenceScope, MemoryTurnRowStore, RawSource,
+    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SourceCapabilities,
+    SourceFormat, SourceKind, TurnRowSink, TurnRowStore, TurnSessionKey, delete_turn_rows,
+    normalize_source, query_turn_content_offset_selected, reader_for,
 };
 use rusqlite::Connection;
 use rusqlite::types::Value as SqlValue;
@@ -103,6 +105,7 @@ struct PrivacyRun {
     evidence_json: String,
     metrics_json: String,
     store: Arc<MemoryTurnRowStore>,
+    source_format: SourceFormat,
 }
 
 fn run_pipeline(
@@ -111,12 +114,22 @@ fn run_pipeline(
     source: RawSource,
     capabilities: SourceCapabilities,
 ) -> PrivacyRun {
+    let source_format = match (agent, &source) {
+        ("claude", _) => SourceFormat::ClaudeJsonl,
+        ("codex", _) => SourceFormat::CodexRolloutJsonl,
+        ("opencode", RawSource::Sqlite(_)) => SourceFormat::OpenCodeSqliteV2,
+        ("opencode", _) => SourceFormat::OpenCodeJsonl,
+        ("pi", _) => SourceFormat::PiV3Jsonl,
+        ("cursor", _) => SourceFormat::CursorCliAgentJsonl,
+        ("antigravity", _) => SourceFormat::AntigravityBrainJsonl,
+        _ => SourceFormat::Uncharacterized,
+    };
     let input = SessionInput {
         agent: agent.to_string(),
         session_id: session_id.to_string(),
         source,
         fork_parent_session_id: None,
-        source_format: Default::default(),
+        source_format,
     };
 
     // The normalized model never carries message text.
@@ -156,6 +169,7 @@ fn run_pipeline(
         evidence_json,
         metrics_json,
         store,
+        source_format: input.source_format,
     }
 }
 
@@ -217,6 +231,39 @@ fn assert_vendor_privacy(
             assert_confined_to_turn_content(connection, sentinel);
         }
     });
+
+    if antiburn_local::analysis::ignored_instructions::source_supported(run.source_format) {
+        let key = turn_key(agent, session_id);
+        let published = run.store.with_connection(|connection| {
+            query_turn_content_offset_selected(
+                connection,
+                &key,
+                &FenceScope::single(1),
+                None,
+                &Default::default(),
+                0,
+                INPUT_SELECTION,
+            )
+            .expect("query selected source content")
+        });
+        let content = prepare_session_content(session_id, run.source_format, published, Vec::new());
+        let selected = select_session_content(&content, INPUT_SELECTION);
+        assert!(
+            !selected.actions.is_empty(),
+            "{agent} selected content is non-empty"
+        );
+        assert!(selected.actions.iter().all(|action| {
+            action.kind != "user"
+                && action.kind != "user_text"
+                && action.kind != "thinking"
+                && (action.kind != "tool_result" || action.text.is_empty())
+        }));
+        assert_eq!(selected.field_availability.len(), 12);
+        assert!(selected.field_availability.iter().all(|field| {
+            !field.selected
+                || field.capability != antiburn_local::analysis::JevFieldCapability::Unavailable
+        }));
+    }
 
     // Deleting the session's turn rows — `delete_turn_rows`, the function
     // both `Store::delete_session` and `Store::clear_local_session_data`
@@ -505,6 +552,58 @@ fn opencode_turn_content_captures_sentinels_while_every_other_table_and_projecti
     );
 }
 
+#[test]
+fn opencode_sqlite_fields_reach_the_fenced_selected_input_path() {
+    const TOOL: &str = "SQLITE-OPENCODE-BAASH-SENTINEL";
+    const OUTPUT: &str = "SQLITE-OPENCODE-OUTPUT-SENTINEL";
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("opencode.db");
+    let connection = Connection::open(&path).expect("OpenCode database");
+    connection
+        .execute_batch(
+            "CREATE TABLE session (
+                 id TEXT PRIMARY KEY, parent_id TEXT, title TEXT,
+                 time_created INTEGER, time_updated INTEGER
+             );
+             CREATE TABLE message (
+                 id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
+                 time_updated INTEGER, data TEXT
+             );
+             CREATE TABLE part (
+                 id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+                 time_created INTEGER, time_updated INTEGER, data TEXT
+             );",
+        )
+        .expect("create OpenCode tables");
+    connection
+        .execute(
+            "INSERT INTO session VALUES ('content-privacy-opencode-sqlite', NULL, NULL, 1, 1)",
+            [],
+        )
+        .expect("insert session");
+    connection
+        .execute(
+            "INSERT INTO message VALUES ('m1', 'content-privacy-opencode-sqlite', 2, 2, ?1)",
+            [r#"{"role":"assistant","modelID":"model-a"}"#],
+        )
+        .expect("insert message");
+    connection
+        .execute(
+            "INSERT INTO part VALUES ('p1', 'm1', 'content-privacy-opencode-sqlite', 2, 2, ?1)",
+            [serde_json::json!({"type":"tool","tool":"bash","state":{"input":{"command":format!("cargo test {TOOL}"),"description":"PRIVATE-DESCRIPTION"},"output":OUTPUT}}).to_string()],
+        )
+        .expect("insert tool part");
+    drop(connection);
+
+    assert_vendor_privacy(
+        "opencode",
+        "content-privacy-opencode-sqlite",
+        RawSource::Sqlite(path),
+        SourceCapabilities::opencode(),
+        &[TOOL, OUTPUT],
+    );
+}
+
 /// A Pi transcript carrying one sentinel per captured content kind.
 fn pi_fixture() -> String {
     let lines = [
@@ -556,4 +655,598 @@ fn pi_turn_content_captures_sentinels_while_every_other_table_and_projection_sta
         SourceCapabilities::pi(),
         &[PI_USER, PI_ASSISTANT, PI_THINK, PI_TOOLIN, PI_RESULT],
     );
+}
+
+#[test]
+fn cursor_turn_content_is_confined_and_removed_after_session_deletion() {
+    const USER: &str = "PRIVACY-SENTINEL-cursor-user-8q22";
+    const ASSISTANT: &str = "PRIVACY-SENTINEL-cursor-assistant-9r33";
+    const TOOL_INPUT: &str = "PRIVACY-SENTINEL-cursor-tool-input-0s44";
+    const TOOL_RESULT: &str = "PRIVACY-SENTINEL-cursor-tool-result-1t55";
+    let source = format!(
+        "{{\"sessionId\":\"content-privacy-cursor\",\"cursor_source\":\"agent_transcript\"}}\n{{\"role\":\"user\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{USER}\"}}]}}}}\n{{\"role\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"tool-use\",\"name\":\"Shell\",\"input\":{{\"command\":\"{TOOL_INPUT}\"}}}},{{\"type\":\"text\",\"text\":\"{ASSISTANT}\"}}]}}}}\n{{\"role\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"tool_result\",\"content\":[{{\"type\":\"text\",\"text\":\"{TOOL_RESULT}\"}}]}}]}}}}\n"
+    );
+    assert_vendor_privacy(
+        "cursor",
+        "content-privacy-cursor",
+        RawSource::Jsonl(source),
+        SourceCapabilities::cursor(),
+        &[USER, ASSISTANT, TOOL_INPUT, TOOL_RESULT],
+    );
+}
+
+#[test]
+fn antigravity_turn_content_captures_sentinels_while_every_other_table_and_projection_stays_clean()
+{
+    assert_vendor_privacy(
+        "antigravity",
+        "content-privacy-antigravity",
+        RawSource::Jsonl(
+            include_str!(
+                "fixtures/antigravity_characterization/ignored_instructions_content.jsonl"
+            )
+            .to_owned(),
+        ),
+        SourceCapabilities::antigravity(),
+        &[
+            "ANTIGRAVITY-USER",
+            "The focused tests passed.",
+            "private reasoning stays local",
+            "cargo test --test focused",
+            "test result: ok",
+        ],
+    );
+}
+
+#[test]
+fn native_field_sentinels_remain_isolated_in_fenced_queries_and_projection() {
+    use antiburn_local::analysis::jev::{
+        JevFieldAvailabilityState, JevInputField, JevInputSelection,
+    };
+    let source = include_str!("fixtures/claude_characterization/selection_isolation.jsonl");
+    let run = run_pipeline(
+        "claude",
+        "selection-isolation",
+        RawSource::Jsonl(source.to_owned()),
+        SourceCapabilities::claude(),
+    );
+    let fields = [
+        (JevInputField::UserMessage, "ISO_USER"),
+        (JevInputField::AssistantMessage, "ISO_ASSISTANT"),
+        (JevInputField::BashCommandInput, "ISO_BASH_INPUT"),
+        (JevInputField::BashCommandOutput, "ISO_BASH_OUTPUT"),
+        (JevInputField::FileEditPath, "ISO_EDIT_PATH"),
+        (JevInputField::FileEditContent, "ISO_EDIT_CONTENT"),
+        (JevInputField::ReadFilePath, "ISO_READ_PATH"),
+        (JevInputField::ReadFileOutput, "ISO_READ_OUTPUT"),
+        (JevInputField::SearchFilesQuery, "ISO_SEARCH_QUERY"),
+        (JevInputField::SearchFilesOutput, "ISO_SEARCH_OUTPUT"),
+        (JevInputField::OtherToolInput, "ISO_OTHER_INPUT"),
+        (JevInputField::OtherToolOutput, "ISO_OTHER_OUTPUT"),
+    ];
+    run.store.with_connection(|connection| {
+        for (field, sentinel) in fields {
+            let selection = JevInputSelection::from_fields(&[field]);
+            let published = query_turn_content_offset_selected(
+                connection,
+                &turn_key("claude", "selection-isolation"),
+                &FenceScope::single(1),
+                None,
+                &Default::default(),
+                0,
+                selection,
+            )
+            .unwrap();
+            assert_eq!(published.parts.len(), 1, "{field:?}");
+            let selected = select_session_content(
+                &prepare_session_content(
+                    "selection-isolation",
+                    run.source_format,
+                    published,
+                    Vec::new(),
+                ),
+                selection,
+            );
+            let serialized = serde_json::to_string(&selected).unwrap();
+            for (_, candidate) in fields {
+                assert_eq!(
+                    serialized.contains(candidate),
+                    candidate == sentinel,
+                    "{field:?}: {candidate}"
+                );
+            }
+            assert!(!serialized.contains("ISO_PRIVATE_THINKING"));
+            let action = &selected.actions[0];
+            if matches!(
+                field,
+                JevInputField::BashCommandInput
+                    | JevInputField::FileEditPath
+                    | JevInputField::FileEditContent
+                    | JevInputField::ReadFilePath
+                    | JevInputField::SearchFilesQuery
+            ) {
+                assert_eq!(action.metadata.bindings.len(), 1, "{field:?}");
+                let binding = &action.metadata.bindings[0];
+                assert_eq!(binding.field, field);
+                let native: serde_json::Value =
+                    serde_json::from_str(source.lines().nth(1).unwrap()).unwrap();
+                let text = native.pointer(&binding.pointer).unwrap().as_str().unwrap();
+                assert_eq!(text.get(binding.start..binding.end), Some(sentinel));
+            } else {
+                assert!(action.metadata.bindings.is_empty());
+            }
+            let availability = selected
+                .field_availability
+                .iter()
+                .find(|value| value.field == field)
+                .unwrap();
+            assert_eq!(availability.state, JevFieldAvailabilityState::Observed);
+            assert_eq!(availability.observed_parts, 1);
+            assert_eq!(availability.malformed_parts, 0);
+        }
+    });
+}
+
+#[test]
+fn native_empty_text_is_observed_but_non_text_results_remain_unavailable() {
+    use antiburn_local::analysis::jev::{
+        JevFieldAvailabilityState, JevInputField, JevInputSelection,
+    };
+    let mut source =
+        include_str!("fixtures/claude_characterization/selection_isolation.jsonl").to_owned();
+    for sentinel in [
+        "ISO_USER",
+        "ISO_ASSISTANT",
+        "ISO_EDIT_CONTENT",
+        "ISO_BASH_OUTPUT",
+        "ISO_READ_OUTPUT",
+        "ISO_SEARCH_OUTPUT",
+    ] {
+        source = source.replace(sentinel, "");
+    }
+    source = source.replace(
+        "\"ISO_OTHER_OUTPUT\"",
+        r#"[{"type":"image","text":"UNSUPPORTED_IMAGE_TEXT"}]"#,
+    );
+    let run = run_pipeline(
+        "claude",
+        "empty-native-fields",
+        RawSource::Jsonl(source),
+        SourceCapabilities::claude(),
+    );
+    run.store.with_connection(|connection| {
+        for field in [
+            JevInputField::UserMessage,
+            JevInputField::AssistantMessage,
+            JevInputField::FileEditContent,
+            JevInputField::BashCommandOutput,
+            JevInputField::ReadFileOutput,
+            JevInputField::SearchFilesOutput,
+            JevInputField::OtherToolOutput,
+        ] {
+            let selection = JevInputSelection::from_fields(&[field]);
+            let published = query_turn_content_offset_selected(
+                connection,
+                &turn_key("claude", "empty-native-fields"),
+                &FenceScope::single(1),
+                None,
+                &Default::default(),
+                0,
+                selection,
+            )
+            .unwrap();
+            let selected = select_session_content(
+                &prepare_session_content(
+                    "empty-native-fields",
+                    run.source_format,
+                    published,
+                    Vec::new(),
+                ),
+                selection,
+            );
+            let availability = selected
+                .field_availability
+                .iter()
+                .find(|value| value.field == field)
+                .unwrap();
+            if field == JevInputField::OtherToolOutput {
+                assert_eq!(availability.state, JevFieldAvailabilityState::NotObserved);
+                assert!(selected.actions.is_empty());
+            } else {
+                assert_eq!(
+                    availability.state,
+                    JevFieldAvailabilityState::Observed,
+                    "{field:?}"
+                );
+                assert_eq!(availability.empty_parts, 1, "{field:?}");
+                assert_eq!(availability.malformed_parts, 0, "{field:?}");
+            }
+            assert!(
+                !serde_json::to_string(&selected)
+                    .unwrap()
+                    .contains("UNSUPPORTED_IMAGE_TEXT")
+            );
+        }
+    });
+}
+
+#[test]
+fn conflicting_native_call_ids_do_not_supply_selected_result_names() {
+    use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
+    let source = include_str!("fixtures/claude_characterization/selection_isolation.jsonl")
+        .replace(r#""id":"other-1""#, r#""id":"bash-1""#);
+    let run = run_pipeline(
+        "claude",
+        "conflicting-native-ids",
+        RawSource::Jsonl(source),
+        SourceCapabilities::claude(),
+    );
+    run.store.with_connection(|connection| {
+        let published = query_turn_content_offset_selected(connection,
+            &turn_key("claude", "conflicting-native-ids"), &FenceScope::single(1),
+            None, &Default::default(), 0,
+            JevInputSelection::from_fields(&[JevInputField::BashCommandOutput, JevInputField::OtherToolOutput])).unwrap();
+        assert!(published.parts.is_empty());
+        let raw: String = connection.query_row(
+            "SELECT CAST(content AS TEXT) FROM turn_content WHERE tool_call_id = 'bash-1' AND kind = 'tool_result'",
+            [], |row| row.get(0)).unwrap();
+        assert_eq!(raw, "ISO_BASH_OUTPUT", "ambiguous output remains local");
+    });
+}
+
+#[test]
+fn pi_non_text_result_blocks_do_not_supply_selected_output() {
+    use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
+    let mut records: Vec<serde_json::Value> = pi_fixture()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    records.last_mut().unwrap()["message"]["content"][0]["type"] = serde_json::json!("image");
+    let source = records
+        .iter()
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let run = run_pipeline(
+        "pi",
+        "pi-non-text-result",
+        RawSource::Jsonl(source),
+        SourceCapabilities::pi(),
+    );
+    run.store.with_connection(|connection| {
+        let published = query_turn_content_offset_selected(
+            connection,
+            &turn_key("pi", "pi-non-text-result"),
+            &FenceScope::single(1),
+            None,
+            &Default::default(),
+            0,
+            JevInputSelection::from_fields(&[JevInputField::BashCommandOutput]),
+        )
+        .unwrap();
+        assert!(published.parts.is_empty());
+    });
+}
+
+#[test]
+fn equivalent_native_requests_have_the_same_selected_meaning_for_all_six_formats() {
+    use antiburn_local::analysis::jev::JevInputField;
+    use serde_json::{Value, json};
+
+    let requests = [
+        ("bash", json!({"command":"printf equivalent"})),
+        (
+            "edit",
+            json!({"path":"src/equivalent.rs","oldText":"EXCLUDED_OLD","newText":"EXCLUDED_NEW"}),
+        ),
+        ("read", json!({"path":"src/reference.rs"})),
+        (
+            "grep",
+            json!({"pattern":"equivalent","path":"src","include":"*.rs","matches":"EXCLUDED_MATCH"}),
+        ),
+        ("notify", json!({"message":"equivalent notification"})),
+    ];
+    for (agent, encoded) in [
+        ("claude", false),
+        ("codex", true),
+        ("codex", false),
+        ("opencode", false),
+        ("pi", false),
+        ("cursor", false),
+        ("antigravity", false),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("opencode.db");
+        let mut records: Vec<Value> = Vec::new();
+        match agent {
+            "claude" => {
+                let mut blocks =
+                    vec![json!({"type":"text","text":"Equivalent assistant response."})];
+                blocks.extend(requests.iter().enumerate().map(|(index, (name, arguments))| json!({"type":"tool_use","id":format!("call-{index}"),"name":name,"input":arguments})));
+                records.push(json!({"type":"assistant","uuid":"assistant-record","message":{"role":"assistant","content":blocks}}));
+            }
+            "codex" => {
+                records.push(
+                    json!({"type":"session_meta","payload":{"id":"equivalent","cwd":"/synthetic"}}),
+                );
+                records.push(json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Equivalent assistant response."}]}}));
+                records.extend(requests.iter().enumerate().map(|(index, (name, arguments))| json!({"type":"response_item","payload":{"type":"function_call","call_id":format!("call-{index}"),"name":name,"arguments":if encoded { Value::String(arguments.to_string()) } else { arguments.clone() }}})));
+            }
+            "opencode" => {
+                let connection = Connection::open(&path).unwrap();
+                connection.execute_batch("CREATE TABLE session (id TEXT PRIMARY KEY); CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT); CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, data TEXT);").unwrap();
+                connection
+                    .execute("INSERT INTO session VALUES ('equivalent')", [])
+                    .unwrap();
+                connection
+                    .execute(
+                        "INSERT INTO message VALUES ('assistant-record', 'equivalent', ?1)",
+                        [json!({"role":"assistant","time":{"created":1000}}).to_string()],
+                    )
+                    .unwrap();
+                connection
+                    .execute(
+                        "INSERT INTO part VALUES ('text', 'assistant-record', ?1)",
+                        [
+                            json!({"type":"text","text":"Equivalent assistant response."})
+                                .to_string(),
+                        ],
+                    )
+                    .unwrap();
+                for (index, (name, arguments)) in requests.iter().enumerate() {
+                    connection.execute("INSERT INTO part VALUES (?1, 'assistant-record', ?2)", [format!("part-{index}"), json!({"type":"tool","tool":name,"callID":format!("call-{index}"),"state":{"status":"running","input":arguments}}).to_string()]).unwrap();
+                }
+            }
+            "pi" => {
+                records.push(json!({"type":"session","version":3,"id":"equivalent","timestamp":"2026-01-01T00:00:00Z","cwd":"/synthetic"}));
+                let mut blocks =
+                    vec![json!({"type":"text","text":"Equivalent assistant response."})];
+                blocks.extend(requests.iter().enumerate().map(|(index, (name, arguments))| json!({"type":"toolCall","id":format!("call-{index}"),"name":name,"arguments":arguments})));
+                records.push(json!({"type":"message","id":"assistant-record","parentId":null,"timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","content":blocks}}));
+            }
+            "cursor" => {
+                records.push(json!({"sessionId":"equivalent","cursor_source":"agent_transcript"}));
+                let mut blocks =
+                    vec![json!({"type":"text","text":"Equivalent assistant response."})];
+                blocks.extend(requests.iter().enumerate().map(|(index, (name, arguments))| json!({"type":"tool-use","id":format!("call-{index}"),"name":name,"input":arguments})));
+                records.push(json!({"role":"assistant","message":{"content":blocks}}));
+            }
+            "antigravity" => {
+                records.push(json!({"type":"PLANNER_RESPONSE","step_index":1,"content":"Equivalent assistant response.","tool_calls":requests.iter().map(|(name, arguments)| json!({"name":name,"args":arguments})).collect::<Vec<_>>()}));
+            }
+            _ => unreachable!(),
+        }
+        for (index, record) in records.iter_mut().enumerate() {
+            record["timestamp"] = json!(format!("2026-01-01T00:00:{index:02}Z"));
+        }
+        let source = if agent == "opencode" {
+            RawSource::Sqlite(path)
+        } else {
+            RawSource::Jsonl(
+                records
+                    .iter()
+                    .map(Value::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    + "\n",
+            )
+        };
+        let input = SessionInput {
+            agent: agent.to_owned(),
+            session_id: "equivalent".to_owned(),
+            source: source.clone(),
+            fork_parent_session_id: None,
+            source_format: SourceFormat::Uncharacterized,
+        };
+        let capabilities = reader_for(agent).capabilities(&input);
+        let run = run_pipeline(agent, "equivalent", source, capabilities);
+        run.store.with_connection(|connection| {
+            let published = query_turn_content_offset_selected(
+                connection,
+                &TurnSessionKey {
+                    environment_key: "native",
+                    agent,
+                    session_id: "equivalent",
+                },
+                &FenceScope::single(1),
+                None,
+                &Default::default(),
+                0,
+                INPUT_SELECTION,
+            )
+            .unwrap();
+            let selected = select_session_content(
+                &prepare_session_content("equivalent", run.source_format, published, Vec::new()),
+                INPUT_SELECTION,
+            );
+            assert_eq!(selected.actions.len(), 6, "{agent}: {selected:?}");
+            for action in selected
+                .actions
+                .iter()
+                .filter(|action| action.kind == "tool_input")
+            {
+                let unknown_tool = action.tool_name.as_deref() == Some("notify");
+                assert_eq!(
+                    action.metadata.bindings.is_empty(),
+                    encoded || unknown_tool,
+                    "{agent}: {action:?}"
+                );
+                assert!(
+                    action
+                        .metadata
+                        .bindings
+                        .iter()
+                        .all(|binding| binding.field != JevInputField::FileEditContent)
+                );
+                let index = requests
+                    .iter()
+                    .position(|(name, _)| Some(*name) == action.tool_name.as_deref())
+                    .unwrap();
+                use antiburn_local::analysis::jev_evidence::JevNativeFieldContainer;
+                let (prefix, container) = match agent {
+                    "claude" => (
+                        format!("/message/content/{}/input/", index + 1),
+                        JevNativeFieldContainer::Record,
+                    ),
+                    "pi" => (
+                        format!("/message/content/{}/arguments/", index + 1),
+                        JevNativeFieldContainer::Record,
+                    ),
+                    "codex" => (
+                        "/payload/arguments/".into(),
+                        JevNativeFieldContainer::Record,
+                    ),
+                    "opencode" => ("/state/input/".into(), JevNativeFieldContainer::Part),
+                    "cursor" => ("/input/".into(), JevNativeFieldContainer::ToolBlock),
+                    "antigravity" => (
+                        format!("/tool_calls/{index}/args/"),
+                        JevNativeFieldContainer::Step,
+                    ),
+                    _ => unreachable!(),
+                };
+                for binding in &action.metadata.bindings {
+                    assert_eq!(binding.container, container);
+                    let key = binding.pointer.strip_prefix(&prefix).unwrap();
+                    let native = requests[index].1.get(key).unwrap().as_str().unwrap();
+                    assert_eq!(native.get(binding.start..binding.end), Some(native));
+                }
+                assert_eq!(
+                    action.metadata.state,
+                    if agent == "opencode" {
+                        antiburn_local::analysis::jev_evidence::JevOperationState::Running
+                    } else {
+                        antiburn_local::analysis::jev_evidence::JevOperationState::Unknown
+                    }
+                );
+            }
+            assert!(
+                selected
+                    .actions
+                    .iter()
+                    .all(|action| action.authority == "assistant"),
+                "{agent}"
+            );
+            let expected = [
+                (
+                    JevInputField::AssistantMessage,
+                    "Equivalent assistant response.",
+                ),
+                (JevInputField::BashCommandInput, "printf equivalent"),
+                (
+                    JevInputField::FileEditPath,
+                    r#"{"paths":["src/equivalent.rs"]}"#,
+                ),
+                (
+                    JevInputField::ReadFilePath,
+                    r#"{"paths":["src/reference.rs"]}"#,
+                ),
+                (
+                    JevInputField::SearchFilesQuery,
+                    r#"{"include":"*.rs","path":"src","pattern":"equivalent"}"#,
+                ),
+                (
+                    JevInputField::OtherToolInput,
+                    r#"{"message":"equivalent notification"}"#,
+                ),
+            ];
+            for (field, expected_text) in expected {
+                assert!(
+                    selected
+                        .actions
+                        .iter()
+                        .any(|action| action.text == expected_text),
+                    "{agent}: {field:?}"
+                );
+                let availability = selected
+                    .field_availability
+                    .iter()
+                    .find(|availability| availability.field == field)
+                    .unwrap();
+                assert_eq!(availability.observed_parts, 1, "{agent}: {field:?}");
+                assert_eq!(availability.malformed_parts, 0, "{agent}: {field:?}");
+            }
+            let retained = serde_json::to_string(&selected).unwrap();
+            for excluded in ["EXCLUDED_OLD", "EXCLUDED_NEW", "EXCLUDED_MATCH"] {
+                assert!(!retained.contains(excluded), "{agent}: {excluded}");
+            }
+        });
+    }
+}
+
+#[test]
+fn antigravity_recorded_content_truncation_survives_without_marking_tool_arguments() {
+    use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
+    let run = run_pipeline("antigravity", "truncated-content", RawSource::Jsonl(serde_json::json!({"type":"PLANNER_RESPONSE","step_index":1,"created_at":"2026-01-01T00:00:01Z","model":"model-a","content":"partial response","truncated_fields":["content"],"tool_calls":[{"name":"bash","args":{"command":"printf request"}}]}).to_string()), SourceCapabilities::antigravity());
+    run.store.with_connection(|connection| {
+        let selection = JevInputSelection::from_fields(&[
+            JevInputField::AssistantMessage,
+            JevInputField::BashCommandInput,
+        ]);
+        let published = query_turn_content_offset_selected(
+            connection,
+            &turn_key("antigravity", "truncated-content"),
+            &FenceScope::single(1),
+            None,
+            &Default::default(),
+            0,
+            selection,
+        )
+        .unwrap();
+        let selected = select_session_content(
+            &prepare_session_content(
+                "truncated-content",
+                run.source_format,
+                published,
+                Vec::new(),
+            ),
+            selection,
+        );
+        let response = selected
+            .actions
+            .iter()
+            .find(|action| action.kind == "assistant")
+            .unwrap();
+        assert!(response.truncated);
+        let request = selected
+            .actions
+            .iter()
+            .find(|action| action.kind == "tool_input")
+            .unwrap();
+        assert!(!request.truncated);
+        assert_eq!(request.metadata.bindings.len(), 1);
+        assert_eq!(request.text, "printf request");
+    });
+}
+
+#[test]
+fn pi_subagent_filter_preserves_original_native_field_indexes() {
+    use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
+    let source = [
+        serde_json::json!({"type":"session","version":3,"id":"indexed-fields","timestamp":"2026-01-01T00:00:00Z","cwd":"/synthetic"}),
+        serde_json::json!({"type":"message","id":"assistant","parentId":null,"timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"child","name":"subagent","arguments":{"agent":"worker","task":"synthetic task"}},{"type":"toolCall","id":"read","name":"read","arguments":{"path":"src/é.rs"}}]}}),
+    ].iter().map(serde_json::Value::to_string).collect::<Vec<_>>().join("\n") + "\n";
+    let run = run_pipeline(
+        "pi",
+        "indexed-fields",
+        RawSource::Jsonl(source),
+        SourceCapabilities::pi(),
+    );
+    run.store.with_connection(|connection| {
+        let published = query_turn_content_offset_selected(
+            connection,
+            &turn_key("pi", "indexed-fields"),
+            &FenceScope::single(1),
+            None,
+            &Default::default(),
+            0,
+            JevInputSelection::from_fields(&[JevInputField::ReadFilePath]),
+        )
+        .unwrap();
+        assert_eq!(published.parts.len(), 1);
+        let bindings = &published.parts[0].part.metadata.bindings;
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].pointer, "/message/content/1/arguments/path");
+        assert_eq!(bindings[0].end, "src/é.rs".len());
+    });
 }

@@ -544,6 +544,48 @@ failure/cancellation branches as well as the closed wire schema.
 
 ## Event review contract
 
+### Ignored Instructions
+
+The product question is whether enabled checks reach useful findings and whether
+readers inspect evidence and copy a fix prompt. Report distinct reporting
+installations with a deliberately visible Ignored Instructions finding, evidence
+outcome, and prompt outcome. Use reporting installations on supporting app
+versions with a deliberate Burn Checks exposure as the visible-use denominator.
+Do not count background assessments, queued work, or historical assessment
+outcomes as visits or automatic adoption. Debug builds suppress reader events
+for this check. Saved enablement transitions, explicit backfill requests, and
+terminal assessment outcomes measure activation and published attempts, not
+unique sessions or provider calls.
+
+`ignored_instruction_observed` is owned by the visible Checks detail and
+evidence/prompt handlers. `label` is `finding`, `evidence`, or `prompt`;
+`detail` is `visible` for a finding, `available`/`unavailable`/`failed` for
+evidence, or `copied`/`unavailable`/`failed` for prompt action. The finding
+event needs deliberate selection and a visible failing detail. Evidence events
+need a current target request to settle while its action remains selected;
+stale responses do not count. Prompt events follow an explicit attempt, not
+automatic preparation. Repeated reader attempts may report again; they are not
+unique findings. No text, prompt, path, finding, session, key, or request ID
+is sent through analytics. TypeSafe receives selected instruction text,
+assistant text excerpts, Bash command input, edit/read paths, search queries with
+scope, and other-tool input through a separate channel. User messages, edit
+contents, read/search/command output, and other tool results are excluded.
+Segment reports at the
+first app version shipping these events.
+
+`ignored_instruction_lifecycle` is emitted when Settings enables or pauses Smart
+Burn Checks, saves or removes the key, changes the history window, or requests a
+historical run, and when an assessment publishes a terminal result. Labels are `enablement`,
+`history_window`, `backfill`, and `execution`. Details are respectively
+`enabled`/`disabled`, `future`/`7_days`/`30_days`, `requested`, and
+`completed`/`failed`. Intermediate ranges do not emit this event. Cached and
+retried work can finish an assessment without another provider call. These are
+assessment-level terminal outcomes, not whole-backfill completion events. A
+dispatched assessment has up to three total attempts, not three retries;
+previous attempts may have been charged. If dispatch outcome remains unresolved,
+Antiburn blocks further dispatch for that work. No provider response, input
+digest, session ID, key, selected text, or error text is sent.
+
 Every added or changed event must document:
 
 1. The product question, intended metric, denominator, and decision it supports.

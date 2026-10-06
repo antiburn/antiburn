@@ -136,6 +136,21 @@ export const SETTINGS_SEARCH_TARGETS = {
     platform: "macos",
   },
   sourceScanning: { pane: "sources", label: "Scanning", aliases: ["discovery", "rescan"] },
+  ignoredInstructions: {
+    pane: "checks",
+    label: "Ignored Instructions",
+    aliases: ["missed project instructions", "instruction conflicts"],
+  },
+  checkHistory: {
+    pane: "checks",
+    label: "Check history",
+    aliases: ["past sessions", "historical checks", "backfill"],
+  },
+  typeSafeApiKey: {
+    pane: "checks",
+    label: "API key",
+    aliases: ["TypeSafe API key", "Jev", "enable checks", "usage charges"],
+  },
   sourceAgents: {
     pane: "sources",
     label: "Coding agents",

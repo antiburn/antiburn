@@ -9,7 +9,7 @@ import {
   type MainWindowSessionIdentity,
 } from "../../lib/ipc"
 import type { MainViewId } from "../../lib/navigation/mainViews"
-import type { CHECK_LABELS } from "../../lib/presentation/checks"
+import type { CHECK_LABELS } from "../../lib/presentation/checkReport"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import {
   normalizeSessionFilters,

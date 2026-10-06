@@ -96,14 +96,14 @@ fn denominator_partitions_non_cohort_rows_by_reason() {
     // The cohort session carries no assistant turns, so the
     // zero-work denominator exclusion (CH-011b) keeps it out of
     // all three unused-source denominators:
-    // Six capability-eligible detectors remain.
+    // Six metric checks and one content-check source remain eligible.
     assert_eq!(
         report
             .detectors
             .iter()
             .map(|counts| counts.eligible)
             .sum::<u64>(),
-        6
+        7
     );
     // Missing effort and speed signals are unavailable outcomes,
     // not assessed results.
@@ -303,4 +303,51 @@ fn report_excludes_sessions_from_another_environment() {
             .iter()
             .all(|counts| { counts.eligible == 0 && counts.assessed == 0 })
     );
+}
+
+#[test]
+fn the_report_window_follows_last_activity_not_the_start_time() {
+    // Started long before the window, but a later turn kept it active
+    // inside it: the report now counts it, where it used to miss it.
+    let data_dir = TempDir::new().unwrap();
+    let store = Store::open(data_dir.path()).unwrap();
+    publish_evidence_with_mutators(
+        &store,
+        "started-before-active-inside",
+        50,
+        PublishedEvidence::Ready,
+        0,
+        |record| record.updated_at_epoch = Some(150),
+        |_| {},
+    );
+    let report = reduce_on_snapshot(
+        data_dir.path(),
+        request(),
+        &mut || {},
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(report.context.coverage.discovered, 1);
+
+    // Started inside the window, but nothing has happened since: a stale
+    // session with an old start no longer counts as current.
+    let data_dir = TempDir::new().unwrap();
+    let store = Store::open(data_dir.path()).unwrap();
+    publish_evidence_with_mutators(
+        &store,
+        "started-inside-active-before",
+        150,
+        PublishedEvidence::Ready,
+        0,
+        |record| record.updated_at_epoch = Some(50),
+        |_| {},
+    );
+    let report = reduce_on_snapshot(
+        data_dir.path(),
+        request(),
+        &mut || {},
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(report.context.coverage.discovered, 0);
 }

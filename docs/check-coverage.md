@@ -1,6 +1,6 @@
 # Burn Check Source Coverage
 
-Audit date: 2026-09-23.
+Audit date: 2026-10-02.
 
 This document covers local passive session evidence and the desktop's read-only
 current resource inventory. Session evidence supports historical claims. Current
@@ -40,6 +40,7 @@ release. A clean result still needs complete session facts and eligible activity
 | O    | Old model usage       |
 | F    | Fast mode overuse     |
 | C    | Cache churn           |
+| I    | Ignored Instructions  |
 
 ## Source Inventory
 
@@ -90,6 +91,10 @@ This manual matrix records implemented eligibility and audited source limits,
 not just binary capability flags. The inventory test checks keys and cell
 vocabulary; behavior tests separately check finding and clean gates.
 
+Ignored Instructions has separate evidence coverage below. Its input contract
+uses retained session content and instruction snapshots, not the metric gates
+in this matrix.
+
 | `SourceFormat`                 | D           | T           | S           | M           | B           | K           | O           | F           | C           |
 | ------------------------------ | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- |
 | `ClaudeJsonl`                  | Assessable  | Assessable  | Assessable  | Partial     | Partial     | Partial     | Assessable  | Assessable  | Assessable  |
@@ -126,6 +131,39 @@ vocabulary; behavior tests separately check finding and clean gates.
 | `DevinLocalSqlite`             | Unsupported | Unsupported | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
 | `Uncharacterized`              | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
 
+## Ignored Instructions Evidence
+
+The first-tier product matrix is the source of truth for reachable check
+support. Supported formats are `ClaudeJsonl`, `CodexRolloutJsonl`,
+`OpenCodeSqliteV2`, `PiV3Jsonl`, `CursorCliAgentJsonl`, `CursorCliStoreDb`,
+`CursorChatStoreDb`, `CursorIdeComposer`, `AntigravityBrainJsonl`, and
+`AntigravitySqlite`. Cursor store and composer routes retain normalized user
+and assistant text but may not retain native tool inputs. Antigravity SQLite
+needs assessable companion transcript content. Other Cursor and Antigravity
+formats remain unavailable. `OpenCodeJsonl` is also unavailable. Clean
+means no finding among sampled comparisons in a completed review, not that all
+session content is safe. Unsampled pairs remain a coverage gap. Observed
+current-file versions govern future actions; the first observation cannot
+prove earlier activation. An explicit history run can compare past actions to
+current files, but this does not prove historical activation. Missing recorded
+historical snapshots remain unavailable as proof.
+Provider failures and incomplete source evidence are different from sampling
+gaps and cannot produce Clean. Auto Fix, verification, and estimates are
+unsupported. A confident `not_applicable` answer can stop follow-up for that comparison.
+Other applicability answers need independent relationship and evidence
+judgments. Missing required evidence cannot establish a clean result.
+The per-field source limits and selection states are listed in
+[Smart Burn Checks selected-input coverage](smart-burn-checks.md#ignored-instructions-selected-input-coverage).
+
+Selected evidence now retains OpenCode's typed native lifecycle labels and
+field-filtered native string bindings. A completed label is not proof of a
+passing result; excluded outputs remain excluded. Other source lifecycle state,
+encoded-argument ranges, recorded platform, and native glob dialect remain
+unknown. Truncated known requests supply metadata and a malformed-field limit,
+not fabricated request text. Shared lexical path helpers need explicit recorded
+context and do not expand finding or clean-result eligibility. See the
+[recorded facts contract](smart-burn-checks.md#recorded-operation-and-path-facts).
+
 ## First-Tier Product Matrix
 
 Support means reachable product behavior, not a parser flag or an unused engine
@@ -143,8 +181,128 @@ verification, a reachable inventory target before it accepts an M/B/K prompt,
 and production editor policy plus a typed target operation before it accepts
 Auto Fix. The limit stays beside the row it qualifies.
 
+Ignored Instructions uses stored Jev assessments, including bounded local excerpts
+of each finding's compared instruction and action, and the current published
+content projection. Finding, sampled Clean, and prompt support are limited to
+the exact source formats listed above. The worker records observed
+instruction versions with session positions. A changed version applies to
+future actions, while a requested history run can compare older actions to
+current rules as a possible issue. Without an authoritative snapshot this is
+not proof those rules were active then. Clean covers sampled comparisons, not
+historical activation or exhaustive session coverage. Unresolved sampled
+comparisons remain unassessed.
+Auto Fix,
+verification, and estimates are unsupported. The check requires a user-supplied
+TypeSafe API key and sends selected instruction text, assistant text excerpts,
+and selected session fields to TypeSafe: Bash command input, file-edit paths,
+read-file paths, search queries with scope filters, and other-tool input. Bash
+input can include inline scripts, heredocs, and patches recorded in the command;
+dedicated edit-tool content stays excluded. A command request does not prove
+execution or success. User
+messages, edit content, read output, search output, Bash output, and other tool
+outputs are excluded. Selected paths can leave the machine. Sampling selects
+up to 256 high-priority rule/action pairs per review by word rarity, tool
+name, literal path, prohibition/tool-input risk, and recency. It spreads choices
+across rules and sources and probes low-overlap pairs. These signals cannot
+prove that omitted pairs are irrelevant. New activity leads later reviews;
+then older pairs not yet sampled reduce the remaining gap, unless new work
+adds pairs. Compatible typed answers persist across append, completion, and
+restart with source-bound identities and input/revision checks. Long text is
+split into overlapping byte ranges; not every range must be sent. Request
+size remains bounded, but this is not a per-session price or time cap. About
+60 seconds after worker start for an ordinary assessment is a goal, not a
+completion deadline or guarantee.
+Requests retain the rule text, provenance, scope, candidate action, and bounded
+same-branch evidence. One event window groups up to two rule targets around a
+candidate action, so the request sends shared event text once instead of
+repeating it for each rule. Instruction-file paths, line locations, and stable
+event IDs stay local. Earlier context is sent in source order within its array.
+Candidate actions include normalized assistant text (`assistant` content kind)
+and the selected input envelope for each recognized tool category. Edit and read
+inputs are reduced to paths; search inputs retain the query and scope filters.
+Malformed known tools and tools without a name do not fall through to other-tool
+input. Bash envelopes retain recorded execution context; search constraints
+reject arbitrary nested objects. Recorded `patchText` in an OpenCode
+`apply_patch` request supplies paths and operations when valid. Both patch
+rename paths remain selected, while dedicated edit content remains excluded.
+Selected actions retain no excluded normalized-field values. Native cross-agent
+fixtures and the 4,096-mask projection test cover this boundary. Tool lifecycle requests do not prove
+successful execution. OpenCode SQLite retains native lifecycle labels, but
+other source lifecycle states and unresolved path semantics remain unknown. The
+shared evidence module also supports output-enabled checks.
+Claude result names require exact call IDs in the same resolved branch; missing
+or conflicting joins remain unavailable. Native singleton-selection tests cover
+all twelve fields and private thinking. Explicit empty text is observed rather
+than inferred missing. These changes do not add output selection to Ignored
+Instructions or widen its clean-result eligibility.
+Tool results do not create candidate work. Pages interleave rules from each instruction
+source so a large global file cannot starve project rules. All six
+first-tier agents include shared global and project AGENTS.md files alongside
+their supported agent-specific sources. The Markdown reader uses headings and
+list structure to bound rule text. Text before the first heading scopes each
+headed rule but does not become a separate rule. It does not infer semantic rule types from
+keyword lists. Jev answers applicability, the action's relationship after the
+instruction's stated conditions and exceptions, whether omitted evidence could
+change that conclusion, and whether a completion-bound obligation lacks a
+completion boundary. A possible finding requires Jev probabilities of at least
+0.85 for applicability and conflict. If source, action, or context evidence is
+incomplete, it also requires at least 0.85 probability that the supplied
+evidence proves the result without omitted material; a likely finding uses 0.90
+and the existing stronger source/action gate. A completion-bound answer can
+mark a rule pending. A triggered prerequisite with unavailable evidence stays
+unassessed; it does not become a pending completion obligation. The reducer
+leaves conclusions that depend on omitted evidence unassessed. Truncated context does not block a direct conflict when
+supplied evidence establishes it. Partial assessment cannot support a clean
+result.
+
+For a supported single-path file-read request prerequisite, Jev identifies the
+literal prerequisite and triggering edit scope. Code compares selected read
+requests in the same recorded branch and scope. Complete prior history with
+known request paths can establish a missing earlier request. This finding is
+limited to request order; it does not prove successful reading or execution.
+Missing history, malformed paths, ambiguous reading requirements, alternative
+prerequisites, and unsupported literal bindings remain unassessed. A matching
+earlier request can satisfy request order without read output. Bounded prose
+context does not replace the exact selected request facts.
+Literal edit scopes support plain relative file and directory paths. Wildcards,
+variables, absolute paths, and paths that need alias resolution remain unknown.
+The reducer settles supported request order from exact facts after semantic
+rule and path binding. It does not change the publication thresholds.
+
+Approval-dependent rules cannot publish a finding or clean comparison without
+selected authoritative approval evidence. The current selection excludes that
+evidence. Assistant approval reports and admissions do not restore authority.
+A rule that prohibits claiming approval can still be assessed as observable
+assistant communication. Unclear permission dependence remains unassessed.
+Checkpoint reduction also requires permission classification. A prepared plan
+without classified exact observations cannot publish a guessed order result.
+
+The content reader orders events by their source positions and divides large
+sessions into bounded pages. If an older page may contain a required earlier
+step, the worker carries the newer candidate and its source identity forward.
+It adds matching earlier events from each older page and assesses the candidate
+again. The worker clears an earlier unassessed result only after the new page
+covers that candidate. Missing pages never prove that an approval or
+prerequisite did not happen.
+New activity is assessed after three minutes of inactivity. Appended new actions
+enter review even when compatible old judgments are reused. Settings can also
+queue sessions active in the selected 7-day or 30-day window. Historical runs
+freeze a cohort for Settings progress. Unchanged completed sessions are not
+requeued by another click; due failures, changed activity, or a new evaluator
+revision can be selected again. Startup requeues stale evidence when its verified
+source identity, generation, or parser, analyzer, or evidence-schema revision is
+old. Terminal source failures and unsupported evidence count as failed or
+skipped instead of waiting for analysis forever. Historical runs use the same source and evidence
+limits; they do not establish complete history outside the selected window.
+
 | Agent       | Check | Finding | Prompt | Auto Fix | Verification | Estimate | Reachability limit                                                                                                                           |
 | ----------- | ----- | ------- | ------ | -------- | ------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude Code | I     | Y       | Y      | N        | N            | N        | `ClaudeJsonl` only; Clean covers sampled post-observation comparisons, not all activity.                                                    |
+| Codex       | I     | Y       | Y      | N        | N            | N        | `CodexRolloutJsonl` only; Clean covers sampled post-observation comparisons.                                                                 |
+| OpenCode    | I     | Y       | Y      | N        | N            | N        | `OpenCodeSqliteV2` only; JSONL export is not enabled; Clean covers sampled post-observation comparisons.                                    |
+| Pi          | I     | Y       | Y      | N        | N            | N        | `PiV3Jsonl` only; Clean covers sampled post-observation comparisons.                                                                         |
+| Cursor      | I     | Y       | Y      | N        | N            | N        | `CursorCliAgentJsonl`, `CursorCliStoreDb`, `CursorChatStoreDb`, and `CursorIdeComposer`; normalized store/composer routes may omit tool inputs. |
+| Antigravity | I     | Y       | Y      | N        | N            | N        | `AntigravityBrainJsonl` and `AntigravitySqlite`; SQLite needs assessable companion transcript content.                                         |
 | Claude Code | D     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one supported current compaction control.                                                                                     |
 | Claude Code | T     | Y       | Y      | Y        | Y            | Y        | Verification needs a later complete lower control on the same route and model.                                                               |
 | Claude Code | S     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one exact named agent definition.                                                                                             |
@@ -190,7 +348,7 @@ Auto Fix. The limit stays beside the row it qualifies.
 | Cursor      | O     | FO      | Y      | N        | N            | Y        | Characterized direct timed-model observations reach findings and prompts, but never clean or physical attribution.                           |
 | Cursor      | F     | N       | N      | N        | N            | N        | No complete effective speed contract exists.                                                                                                 |
 | Cursor      | C     | N       | N      | N        | N            | N        | No compatible request-accounting contract exists.                                                                                            |
-| Antigravity | D     | FO      | Y      | N        | N            | Y        | Direct depth evidence is positive-only.                                                                                                      |
+| Antigravity | D     | FO      | Y      | N        | N            | Y        | Direct depth evidence is positive-only.                                                                                                       |
 | Antigravity | T     | N       | N      | N        | N            | N        | No complete effective effort contract exists.                                                                                                |
 | Antigravity | S     | N       | N      | N        | N            | N        | No persisted detector-grade delegation contract exists.                                                                                      |
 | Antigravity | M     | FO      | N      | N        | N            | Y        | Current inventory can produce a target; no Antigravity remediation recommendation exists.                                                    |
@@ -648,38 +806,39 @@ selectable current targets. It returns no prompt when no target is selectable.
 Every returned prompt has one durable `ABR-` reference and each selected target
 has a durable action attempt.
 
-| Agent and source                                                                                          | D   | T   | S   | M   | B   | K   | O   | F   | C   |
-| --------------------------------------------------------------------------------------------------------- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Claude Code, `ClaudeJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Codex, `CodexRolloutJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| OpenCode, `OpenCodeJsonl` or `OpenCodeSqliteV2`                                                           | Yes | No  | Yes | Yes | Yes | Yes | Yes | No  | Yes |
-| Pi, `PiV3Jsonl`                                                                                           | Yes | Yes | Yes | Yes | No  | Yes | Yes | No  | Yes |
-| Antigravity, `AntigravityJson`, `AntigravityBrainJsonl`, `AntigravityCascadeJson`, or `AntigravitySqlite` | Yes | No  | No  | No  | No  | No  | Yes | No  | No  |
+| Agent and source                                                                                          | D   | T   | S   | M   | B   | K   | O   | F   | C   | I   |
+| --------------------------------------------------------------------------------------------------------- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Claude Code, `ClaudeJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Codex, `CodexRolloutJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| OpenCode, `OpenCodeJsonl` or `OpenCodeSqliteV2`                                                           | Yes | No  | Yes | Yes | Yes | Yes | Yes | No  | Yes | Yes |
+| Pi, `PiV3Jsonl`                                                                                           | Yes | Yes | Yes | Yes | No  | Yes | Yes | No  | Yes | No  |
+| Cursor, `CursorCliAgentJsonl`                                                                             | No  | No  | No  | No  | No  | No  | No  | No  | No  | Yes |
+| Antigravity, `AntigravityJson`, `AntigravityBrainJsonl`, `AntigravityCascadeJson`, or `AntigravitySqlite` | Yes | No  | No  | No  | No  | No  | Yes | No  | No  | No  |
 
 ### Source-Format Remediation Matrix
 
 This exact matrix lists every `SourceFormat` once. Check-code lists are typed
-sets: `None` or slash-separated codes from D/T/S/M/B/K/O/F/C with no duplicates.
+sets: `None` or slash-separated codes from D/T/S/M/B/K/O/F/C/I with no duplicates.
 The rows describe reachable remediation, so a production recommendation without
 a reachable finding is not listed. Auto Fix columns describe production policy;
 each operation still needs an exact target binding at runtime.
 
 | `SourceFormat`                 | Prompt checks     | Model Auto Fix | Reasoning Auto Fix | Other Auto Fix checks | Verification checks |
 | ------------------------------ | ----------------- | -------------- | ------------------ | --------------------- | ------------------- |
-| `ClaudeJsonl`                  | D/T/S/M/B/K/O/F/C | O              | T                  | D/S/M/B/K/F           | T/O/F               |
-| `CodexRolloutJsonl`            | D/T/S/M/B/K/O/F/C | O              | T                  | D/S/M/K/F             | T/O/F               |
+| `ClaudeJsonl`                  | D/T/S/M/B/K/O/F/C/I | O              | T                  | D/S/M/B/K/F           | T/O/F               |
+| `CodexRolloutJsonl`            | D/T/S/M/B/K/O/F/C/I | O              | T                  | D/S/M/K/F             | T/O/F               |
 | `OpenCodeJsonl`                | D/S/M/B/K/O/C     | O              | None               | D/S/M/K               | O                   |
-| `OpenCodeSqliteV2`             | D/S/M/B/K/O/C     | O              | None               | D/S/M/K               | O                   |
-| `PiV3Jsonl`                    | D/T/S/M/K/O/C     | O              | T                  | D                     | T/O                 |
+| `OpenCodeSqliteV2`             | D/S/M/B/K/O/C/I   | O              | None               | D/S/M/K               | O                   |
+| `PiV3Jsonl`                    | D/T/S/M/K/O/C/I   | O              | T                  | D                     | T/O                 |
 | `OmpV3Jsonl`                   | None              | None           | None               | None                  | None                |
 | `CursorJsonl`                  | O                 | None           | None               | None                  | None                |
-| `CursorCliAgentJsonl`          | O                 | None           | None               | None                  | None                |
+| `CursorCliAgentJsonl`          | O/I               | None           | None               | None                  | None                |
 | `CursorCliStoreDb`             | O                 | None           | None               | None                  | None                |
 | `CursorChatStoreDb`            | O                 | None           | None               | None                  | None                |
 | `CursorIdeComposer`            | O                 | None           | None               | None                  | None                |
 | `CursorLegacyChatJson`         | None              | None           | None               | None                  | None                |
 | `AntigravityJson`              | D/O               | None           | None               | None                  | None                |
-| `AntigravityBrainJsonl`        | D/O               | None           | None               | None                  | None                |
+| `AntigravityBrainJsonl`        | D/O/I             | None           | None               | None                  | None                |
 | `AntigravityCascadeJson`       | D/O               | None           | None               | None                  | None                |
 | `AntigravityWorkspaceChatJson` | None              | None           | None               | None                  | None                |
 | `AntigravitySqlite`            | D/O               | None           | None               | None                  | None                |

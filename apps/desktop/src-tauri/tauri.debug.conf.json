@@ -1,6 +1,18 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "identifier": "ai.antiburn.desktop.debug",
+  "app": {
+    "security": {
+      "capabilities": [
+        "default",
+        "main-window",
+        "popover-peek",
+        "popover-peek-anchor",
+        "checks-remediation",
+        "checks-settings"
+      ]
+    }
+  },
   "bundle": {
     "createUpdaterArtifacts": false
   }

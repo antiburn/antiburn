@@ -126,6 +126,7 @@
   --color-check-fast-mode: var(--color-check-fast-mode-val);
   --color-check-cache: var(--color-check-cache-val);
   --color-check-depth: var(--color-check-depth-val);
+  --color-check-instructions: var(--color-check-instructions-val);
 
   /* Session-analysis chart tokens are theme-adaptive too and live in
    * ./session-analysis-colors.css. */
@@ -232,6 +233,7 @@
   --color-check-fast-mode-val: hsl(47 100% 30.5%);
   --color-check-cache-val: hsl(175.3 100% 35.5%);
   --color-check-depth-val: hsl(158 89% 39.6%);
+  --color-check-instructions-val: hsl(287 65% 52%);
   --burn-check-category-tint: 10%;
 
   /* Spacing rhythm (multiples of 4) */
@@ -349,6 +351,7 @@
     --color-check-fast-mode-val: hsl(57.6 91% 55.5%);
     --color-check-cache-val: hsl(174.3 74% 47.6%);
     --color-check-depth-val: hsl(156 75% 47.2%);
+    --color-check-instructions-val: hsl(287 75% 68%);
     --burn-check-category-tint: 14%;
     /* The system tertiary label is ~25% opacity in dark mode; bump to 62%,
        where small text reaches 4.5:1 on a card (same rationale as light
@@ -429,6 +432,7 @@
   --color-check-fast-mode-val: hsl(47 100% 30.5%);
   --color-check-cache-val: hsl(175.3 100% 35.5%);
   --color-check-depth-val: hsl(158 89% 39.6%);
+  --color-check-instructions-val: hsl(287 65% 52%);
   --burn-check-category-tint: 10%;
 }
 
@@ -516,6 +520,7 @@
   --color-check-fast-mode-val: hsl(57.6 91% 55.5%);
   --color-check-cache-val: hsl(174.3 74% 47.6%);
   --color-check-depth-val: hsl(156 75% 47.2%);
+  --color-check-instructions-val: hsl(287 75% 68%);
   --burn-check-category-tint: 14%;
 }
 

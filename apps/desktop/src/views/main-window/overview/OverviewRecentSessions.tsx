@@ -20,7 +20,7 @@ import { modelRunNames, modelRunShortPairs } from "../../../lib/presentation/mod
 import { formatTokenFigure } from "../../../lib/presentation/providerUsage"
 import { relativeTime } from "../../../lib/presentation/relativeTime"
 import { localSessionKey } from "../../../lib/presentation/localIdentity"
-import { sessionBurnCheckPresentation } from "../../../lib/presentation/burnChecks"
+import { sessionBurnCheckPresentation } from "../../../lib/presentation/checkStatus"
 import {
   INITIAL_SESSION_HYGIENE,
   sessionHygieneChecks,

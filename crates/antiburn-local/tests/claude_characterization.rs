@@ -151,8 +151,142 @@ fn fixture(name: &str) -> &'static str {
         "api_error_records" => {
             include_str!("fixtures/claude_characterization/api_error_records.jsonl")
         }
+        "native_tool_shapes" => {
+            include_str!("fixtures/claude_characterization/native_tool_shapes.jsonl")
+        }
         _ => panic!("unknown characterization fixture: {name}"),
     }
+}
+
+#[test]
+fn native_tool_shapes_preserve_tool_names_and_record_authority() {
+    let session = normalize_source(&input("native_tool_shapes")).expect("fixture must normalize");
+    let names: Vec<_> = session
+        .events
+        .iter()
+        .flat_map(|event| event.tools.iter().map(|tool| tool.name.as_str()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "Bash",
+            "Edit",
+            "MultiEdit",
+            "Write",
+            "Read",
+            "Grep",
+            "Glob",
+            "Task",
+            "mcp__orbit__lookup",
+            "Bash",
+            "Read",
+        ]
+    );
+    assert_eq!(
+        session.events[1].role,
+        antiburn_local::analysis::Role::Assistant
+    );
+    assert_eq!(session.events[2].role, antiburn_local::analysis::Role::User);
+    assert_eq!(
+        session.events[3].role,
+        antiburn_local::analysis::Role::Assistant
+    );
+    assert_eq!(session.events[4].role, antiburn_local::analysis::Role::Tool);
+}
+
+#[derive(Default)]
+struct ClaudeContentSink {
+    contents: Vec<antiburn_local::analysis::TurnContent>,
+}
+
+impl antiburn_local::analysis::RecordSink for ClaudeContentSink {
+    fn record(&mut self, record: antiburn_local::analysis::NormalizedRecord) {
+        if let antiburn_local::analysis::NormalizedRecord::TurnContent(content) = record {
+            self.contents.push(*content);
+        }
+    }
+
+    fn finish(&mut self, _summary: antiburn_local::analysis::SessionSummary) {}
+}
+
+#[test]
+fn mixed_user_text_and_tool_results_keep_authority_and_exact_native_ids() {
+    use antiburn_local::analysis::{ContentAuthority, ContentKind};
+
+    let input = input("native_tool_shapes");
+    let mut sink = ClaudeContentSink::default();
+    reader_for("claude")
+        .visit(&input, &mut sink)
+        .expect("native tool fixture must stream");
+
+    let parts: Vec<_> = sink
+        .contents
+        .iter()
+        .flat_map(|content| content.parts.iter())
+        .map(|part| {
+            (
+                part.kind,
+                part.authority,
+                part.text.as_str(),
+                part.tool_name.as_deref(),
+                part.tool_call_id.as_deref(),
+            )
+        })
+        .collect();
+    assert!(parts.contains(&(
+        ContentKind::UserText,
+        ContentAuthority::User,
+        "user text remains distinct",
+        None,
+        None,
+    )));
+    assert!(parts.contains(&(
+        ContentKind::ToolInput,
+        ContentAuthority::Assistant,
+        "{\"command\":\"printf 'hello'\",\"timeout\":1000}",
+        Some("Bash"),
+        Some("call-bash"),
+    )));
+    assert!(parts.contains(&(
+        ContentKind::ToolResult,
+        ContentAuthority::Tool,
+        "hello",
+        Some("Bash"),
+        Some("call-bash"),
+    )));
+    assert!(parts.contains(&(
+        ContentKind::ToolInput,
+        ContentAuthority::Assistant,
+        "{\"file_path\":\"synthetic.txt\"}",
+        Some("Read"),
+        Some("call-array"),
+    )));
+    assert!(parts.contains(&(
+        ContentKind::ToolResult,
+        ContentAuthority::Tool,
+        "exit status 1",
+        Some("Bash"),
+        Some("call-error"),
+    )));
+    assert!(parts.contains(&(
+        ContentKind::ToolResult,
+        ContentAuthority::Tool,
+        "synthetic first\n synthetic second",
+        Some("Read"),
+        Some("call-array"),
+    )));
+    assert!(parts.contains(&(
+        ContentKind::ToolResult,
+        ContentAuthority::Tool,
+        "synthetic unmatched result",
+        None,
+        Some("unmatched-call"),
+    )));
+    assert!(
+        !parts
+            .iter()
+            .any(|part| part.2.contains("ignored attachment"))
+    );
 }
 
 fn input(name: &str) -> SessionInput {
@@ -483,7 +617,7 @@ fn tool_definitions_are_unsupported_not_inferred_from_invocations() {
     ));
 }
 
-fn evidence_fixture_names() -> [&'static str; 32] {
+fn evidence_fixture_names() -> [&'static str; 33] {
     [
         "records_all_kinds",
         "timestamps_repeated_and_out_of_order",
@@ -517,6 +651,7 @@ fn evidence_fixture_names() -> [&'static str; 32] {
         "inline_sidechain_own_thread",
         "within_file_duplicate_uuid",
         "resume_replay",
+        "native_tool_shapes",
     ]
 }
 

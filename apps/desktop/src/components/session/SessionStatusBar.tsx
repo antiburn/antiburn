@@ -1,5 +1,5 @@
 import type { SessionHygieneEvidenceState } from "../../lib/insightsIpc"
-import { sessionBurnCheckPresentation } from "../../lib/presentation/burnChecks"
+import { sessionBurnCheckPresentation } from "../../lib/presentation/checkStatus"
 import type { SessionHygieneCheck } from "../../lib/presentation/sessionHygiene"
 import { BurnCheckStatus } from "../burn-checks/BurnCheckStatus"
 import { BURN_CHECK_MARKS, type BurnCheckMark } from "../burn-checks/burnCheckMarks"
@@ -43,6 +43,18 @@ const STATUS_MARK: Record<SessionHygieneCheck["status"], StatusMark> = {
     headingClass: "text-label-tertiary",
     textClass: "text-label-secondary",
   },
+  checking: {
+    ...BURN_CHECK_MARKS.notAssessed,
+    label: "Checking",
+    headingClass: "text-label-tertiary",
+    textClass: "text-label-secondary",
+  },
+  couldntCheck: {
+    ...BURN_CHECK_MARKS.notAssessed,
+    label: "Couldn't check",
+    headingClass: "text-label-tertiary",
+    textClass: "text-label-secondary",
+  },
 }
 
 function tooltipCheckTitle(check: SessionHygieneCheck): string {
@@ -52,7 +64,7 @@ function tooltipCheckTitle(check: SessionHygieneCheck): string {
 }
 
 function renderTooltip(checks: SessionHygieneCheck[]) {
-  const groups = (["finding", "clean", "notAssessed"] as const)
+  const groups = (["finding", "clean", "checking", "couldntCheck", "notAssessed"] as const)
     .map((status) => checks.filter((check) => check.status === status))
     .filter((group) => group.length > 0)
   return (

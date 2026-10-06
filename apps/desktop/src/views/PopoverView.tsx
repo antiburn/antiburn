@@ -30,7 +30,7 @@ import {
   type PopoverPeekData,
   type PopoverPeekTarget,
 } from "../lib/popoverPeekIpc"
-import { checksPresentation } from "../lib/presentation/checks"
+import { checksPresentation } from "../lib/presentation/checkReport"
 import { snoozedDetectorIds, useSnoozedBurnChecks } from "../lib/snoozedBurnChecks"
 import { sessionHygieneIdentities, useSessionHygiene } from "../lib/useSessionHygiene"
 import { remoteHosts } from "../lib/remoteHosts"

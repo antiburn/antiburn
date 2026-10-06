@@ -337,7 +337,10 @@ mod tests {
     #[test]
     fn hello_validation_rejects_an_unusable_helper_version() {
         // The desktop renders this string, and the remote host supplies it.
-        assert!(Hello::current().validate_compatibility().is_ok());
+        let mut compatible = Hello::current();
+        compatible.platform = "linux".to_owned();
+        compatible.architecture = "x86_64".to_owned();
+        assert!(compatible.validate_compatibility().is_ok());
 
         for unusable in [
             String::new(),
@@ -347,7 +350,7 @@ mod tests {
         ] {
             let hello = Hello {
                 helper_version: unusable,
-                ..Hello::current()
+                ..compatible.clone()
             };
             assert!(hello.validate_compatibility().is_err());
         }

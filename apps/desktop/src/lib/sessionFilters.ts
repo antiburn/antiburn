@@ -1,5 +1,5 @@
 import type { SessionListEntry } from "../components/session/SessionList"
-import { sessionBurnCheckPresentation } from "./presentation/burnChecks"
+import { sessionBurnCheckPresentation } from "./presentation/checkStatus"
 import { INITIAL_SESSION_HYGIENE, sessionHygieneChecks } from "./presentation/sessionHygiene"
 import type { BurnCheckDetectorId } from "./insightsIpc"
 import { visibleSessionHygieneChecks } from "./snoozedBurnChecks"

@@ -2,9 +2,11 @@ use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, params};
 
 use super::{
-    Remediation, RemediationEvidenceGuard, RemediationRecord, RemediationResult, RemediationState,
-    Store,
+    EvidenceClaim, Remediation, RemediationEvidenceGuard, RemediationRecord, RemediationResult,
+    RemediationState, SessionKey, Store,
 };
+
+mod history_progress;
 
 const MAX_JSON_BYTES: usize = 32_768;
 const MAX_AGGREGATE_WINS: usize = 1_000;
@@ -924,6 +926,109 @@ impl Store {
             |row| row.get(0),
         )?;
         Ok(usize::try_from(count).unwrap_or(0))
+    }
+
+    /// Claim the next pending or expired-lease evidence row for `agents`,
+    /// preferring the session most recently active.
+    ///
+    /// Same claim rules as the plain, arrival-ordered claim: pending or
+    /// expired-lease processing, a due `next_attempt_at_epoch`, and the same
+    /// `claim_fence + 1`/lease update. Only the candidate order differs: this
+    /// orders by the claimed session's `updated_at_epoch` descending (NULLs
+    /// last, so an unknown activity never jumps ahead of a known one), then
+    /// falls back to the existing tiebreakers so two candidates with the same
+    /// activity (or none) still claim deterministically. Analysis then runs
+    /// newest-first, so a current session never waits behind a history one
+    /// in the same backlog.
+    pub fn claim_next_evidence_by_recency(
+        &self,
+        agents: &[&str],
+        now_epoch: i64,
+        lease_secs: i64,
+    ) -> Result<Option<EvidenceClaim>> {
+        if agents.is_empty() {
+            return Ok(None);
+        }
+
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        let agent_placeholders = vec!["?"; agents.len()].join(", ");
+        let mut values: Vec<rusqlite::types::Value> = agents
+            .iter()
+            .map(|agent| rusqlite::types::Value::Text((*agent).to_string()))
+            .collect();
+        values.push(rusqlite::types::Value::Integer(now_epoch));
+        let now_parameter = values.len();
+        let candidate = transaction
+            .query_row(
+                &format!(
+                    "SELECT evidence.environment_key, evidence.agent, evidence.session_id
+                       FROM session_evidence AS evidence
+                       JOIN session
+                         ON session.environment_key = evidence.environment_key
+                        AND session.agent = evidence.agent
+                        AND session.session_id = evidence.session_id
+                      WHERE evidence.agent IN ({agent_placeholders})
+                        AND (
+                            evidence.status = 'pending'
+                            OR (evidence.status = 'processing'
+                                AND evidence.lease_expires_at_epoch <= ?{now_parameter})
+                        )
+                        AND (evidence.next_attempt_at_epoch IS NULL
+                             OR evidence.next_attempt_at_epoch <= ?{now_parameter})
+                      ORDER BY session.updated_at_epoch IS NULL, session.updated_at_epoch DESC,
+                               evidence.next_attempt_at_epoch,
+                               evidence.claimed_at_epoch,
+                               evidence.environment_key, evidence.agent, evidence.session_id
+                      LIMIT 1"
+                ),
+                rusqlite::params_from_iter(values.iter()),
+                |row| {
+                    Ok(SessionKey::new(
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some(key) = candidate else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+
+        transaction.execute(
+            "UPDATE session_evidence
+                SET status = 'processing', claim_fence = claim_fence + 1,
+                    claimed_at_epoch = ?4, lease_expires_at_epoch = ?5
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                key.environment_key,
+                key.agent,
+                key.session_id,
+                now_epoch,
+                now_epoch + lease_secs,
+            ],
+        )?;
+        let (source_generation, claim_fence, retry_count) = transaction.query_row(
+            "SELECT session.source_generation, evidence.claim_fence, evidence.retry_count
+               FROM session_evidence AS evidence
+               JOIN session
+                 ON session.environment_key = evidence.environment_key
+                AND session.agent = evidence.agent
+                AND session.session_id = evidence.session_id
+              WHERE evidence.environment_key = ?1
+                AND evidence.agent = ?2 AND evidence.session_id = ?3",
+            params![key.environment_key, key.agent, key.session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        transaction.commit()?;
+        Ok(Some(EvidenceClaim {
+            key,
+            source_generation,
+            claim_fence,
+            retry_count,
+        }))
     }
 }
 

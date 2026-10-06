@@ -1,699 +1,30 @@
+use super::ignored_instructions::{
+    current_ignored_instruction_result, ignored_instruction_findings,
+};
 use super::*;
 
-/// One fresh session assessment used by the generic remediation verifier.
-pub(crate) struct CurrentDetectorAssessment {
-    pub assessment: FindingAssessment,
-    pub clean_for_verification: bool,
-    pub observed_at_ms: i64,
-    pub finding_observed_at_ms: Vec<Option<i64>>,
-    pub started_at_ms: i64,
-    pub workspace_candidate: Option<PathBuf>,
-    pub source_format: antiburn_local::analysis::SourceFormat,
-    pub session_id: String,
-    pub control_observations: Vec<antiburn_local::analysis::ModelControlObservation>,
-    pub effective_reasoning_target_hash: Option<String>,
-    pub effective_reasoning_scope: Option<String>,
-}
-
-pub(crate) struct RemediationAssessments {
-    pub assessments: Vec<CurrentDetectorAssessment>,
-    pub named_resource_assessments: Vec<antiburn_local::remediation::NamedResourceAssessment>,
-    pub truncated: bool,
-}
-
-/// Reports whether current accepted evidence exists after an action boundary.
-pub(crate) fn has_current_evidence_after(
-    data_dir: &Path,
-    environment_key: &str,
-    agent: &str,
-    boundary_ms: i64,
-) -> Result<bool> {
-    let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
-    let sql = format!(
-        "SELECT EXISTS (
-            SELECT 1
-              FROM session s
-              JOIN session_evidence e
-                ON e.environment_key = s.environment_key
-               AND e.agent = s.agent
-               AND e.session_id = s.session_id
-             WHERE s.environment_key = ?1
-               AND s.agent = ?2
-               AND s.started_at_epoch > ?3
-               AND {CURRENT_EVIDENCE_PREDICATE}
-             LIMIT 1
-        )"
-    );
-    connection
-        .query_row(
-            &sql,
-            params![
-                environment_key,
-                agent,
-                boundary_ms.div_euclid(1_000),
-                PARSER_REVISION,
-                ANALYZER_REVISION,
-                EVIDENCE_SCHEMA_REVISION,
-            ],
-            |row| row.get(0),
-        )
-        .map_err(Into::into)
-}
-
-/// Reads a bounded set of fresh post-boundary detector assessments.
-pub(crate) fn remediation_assessments(
-    data_dir: &Path,
-    environment_key: &str,
-    agent: &str,
-    detector: DetectorId,
-    boundary_ms: i64,
-) -> Result<RemediationAssessments> {
-    let request = CurrentFindingsRequest {
-        environment_key: environment_key.to_owned(),
-        window: ReportWindow {
-            start_epoch: i64::MIN,
-            end_epoch: i64::MAX,
-        },
-        detector,
-    };
-    let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
-    let transaction = connection.unchecked_transaction()?;
-    let catalogs = ReportCatalogs::default();
-    let sql = CURRENT_FINDINGS_SQL
-        .replace("{current}", CURRENT_EVIDENCE_PREDICATE)
-        .replace(
-            "  ORDER BY",
-            "   AND s.agent = ?8\n   AND s.started_at_epoch > ?9\n  ORDER BY",
-        )
-        .replace("LIMIT ?8", "LIMIT ?10");
-    let mut statement = transaction.prepare(&sql)?;
-    let mut rows = statement.query(params![
-        request.environment_key,
-        request.window.start_epoch,
-        request.window.end_epoch,
-        PARSER_REVISION,
-        ANALYZER_REVISION,
-        EVIDENCE_SCHEMA_REVISION,
-        METRICS_SCHEMA_REVISION,
-        agent,
-        boundary_ms.div_euclid(1_000),
-        CURRENT_FINDING_SESSION_SCAN_BUDGET + 1,
-    ])?;
-    let cancel = AtomicBool::new(false);
-    let mut result = Vec::new();
-    let mut named_resource_assessments = Vec::new();
-    let mut sessions_scanned = 0;
-    let mut truncated = false;
-    while let Some(row) = rows.next()? {
-        let session = current_finding_session(row)?;
-        let Some(started_at_epoch) = session.started_at_epoch else {
-            continue;
-        };
-        sessions_scanned += 1;
-        if sessions_scanned > CURRENT_FINDING_SESSION_SCAN_BUDGET {
-            truncated = true;
-            break;
-        }
-        let observed_at_ms = match &session.evidence.time_range {
-            antiburn_local::analysis::EvidenceValue::Complete(range) => range.last_ts_ms,
-            antiburn_local::analysis::EvidenceValue::Partial {
-                observed: range, ..
-            } => {
-                if matches!(
-                    detector,
-                    DetectorId::UnusedMcpServers
-                        | DetectorId::UnusedBuiltInTools
-                        | DetectorId::UnusedSkills
-                ) {
-                    truncated = true;
-                }
-                range.last_ts_ms
-            }
-            antiburn_local::analysis::EvidenceValue::Unsupported => {
-                if matches!(
-                    detector,
-                    DetectorId::UnusedMcpServers
-                        | DetectorId::UnusedBuiltInTools
-                        | DetectorId::UnusedSkills
-                ) {
-                    truncated = true;
-                }
-                continue;
-            }
-        };
-        if observed_at_ms <= boundary_ms {
-            continue;
-        }
-        let assessment = assess_current_detector(
-            &transaction,
-            &session,
-            detector,
-            &catalogs,
-            &cancel,
-            &mut || {},
-        )?;
-        let clean_for_verification = assessment == FindingAssessment::Clean
-            || scoped_resource_clean_for_verification(
-                &transaction,
-                &session,
-                detector,
-                &catalogs,
-                &cancel,
-            )?;
-        let finding_observed_at_ms = match &assessment {
-            FindingAssessment::Findings(findings) => findings
-                .iter()
-                .map(|finding| finding_observation_ms(&session.evidence, finding))
-                .collect(),
-            _ => Vec::new(),
-        };
-        named_resource_assessments.extend(named_resource_assessments_for_session(
-            detector,
-            &session,
-            observed_at_ms,
-        ));
-        result.push(CurrentDetectorAssessment {
-            assessment,
-            clean_for_verification,
-            observed_at_ms,
-            finding_observed_at_ms,
-            started_at_ms: started_at_epoch.saturating_mul(1_000),
-            workspace_candidate: session.workspace_candidate,
-            source_format: session.evidence.capabilities.source_format,
-            session_id: session.session_id,
-            control_observations: match session.evidence.models {
-                antiburn_local::analysis::EvidenceValue::Complete(models)
-                | antiburn_local::analysis::EvidenceValue::Partial {
-                    observed: models, ..
-                } => models.control_observations,
-                antiburn_local::analysis::EvidenceValue::Unsupported => Vec::new(),
-            },
-            effective_reasoning_target_hash: session.effective_reasoning_target_hash,
-            effective_reasoning_scope: session.effective_reasoning_scope,
-        });
-    }
-    Ok(RemediationAssessments {
-        assessments: result,
-        named_resource_assessments,
-        truncated,
-    })
-}
-
-fn named_resource_assessments_for_session(
-    detector: DetectorId,
-    session: &CurrentFindingSession,
-    observed_at_ms: i64,
-) -> Vec<antiburn_local::remediation::NamedResourceAssessment> {
-    use antiburn_local::analysis::{CoverageReason, SourceOrigin, ToolClass};
-    use antiburn_local::remediation::{NamedResourceEvidence, NamedResourceObservation};
-
-    if !matches!(
-        detector,
-        DetectorId::UnusedMcpServers | DetectorId::UnusedBuiltInTools | DetectorId::UnusedSkills
-    ) {
-        return Vec::new();
-    }
-
-    let scopes = [
-        Some("global".to_owned()),
-        session
-            .workspace_candidate
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned()),
-    ];
-    let mut statuses = vec![None, None];
-    let mut resources = vec![Vec::new(), Vec::new()];
-    let mut merge_status = |status: antiburn_local::remediation::NamedResourceEvidence| {
-        for current in &mut statuses {
-            let replace = match current {
-                None => true,
-                Some(NamedResourceEvidence::Partial) => {
-                    !matches!(status, NamedResourceEvidence::Partial)
-                }
-                Some(NamedResourceEvidence::Capped) => false,
-                Some(NamedResourceEvidence::Ambiguous) => false,
-                Some(NamedResourceEvidence::HistoricalObservedSubset { .. }) => true,
-                Some(NamedResourceEvidence::Complete { .. }) => true,
-            };
-            if replace {
-                *current = Some(status.clone());
-            }
-        }
-    };
-    let status_for_reason = |reason: CoverageReason| match reason {
-        CoverageReason::CapExceeded => NamedResourceEvidence::Capped,
-        CoverageReason::AttributionIncomplete => NamedResourceEvidence::Ambiguous,
-        _ => NamedResourceEvidence::Partial,
-    };
-    let context_sources = match &session.evidence.context_sources {
-        antiburn_local::analysis::EvidenceValue::Unsupported => {
-            merge_status(NamedResourceEvidence::Partial);
-            None
-        }
-        antiburn_local::analysis::EvidenceValue::Partial { observed, reason } => {
-            merge_status(status_for_reason(*reason));
-            Some(observed)
-        }
-        antiburn_local::analysis::EvidenceValue::Complete(observed) => Some(observed),
-    };
-
-    match detector {
-        DetectorId::UnusedBuiltInTools => {
-            if let Some(status) = named_resource_status(&session.evidence.tools) {
-                merge_status(status);
-            }
-            let definitions = context_sources.and_then(|sources| match &sources.tool_definitions {
-                antiburn_local::analysis::EvidenceValue::Unsupported => {
-                    merge_status(NamedResourceEvidence::Partial);
-                    None
-                }
-                antiburn_local::analysis::EvidenceValue::Partial { observed, reason } => {
-                    merge_status(status_for_reason(*reason));
-                    Some(observed)
-                }
-                antiburn_local::analysis::EvidenceValue::Complete(observed) => Some(observed),
-            });
-            if let Some(definitions) = definitions {
-                for (name, definition) in definitions {
-                    resources[0].push(NamedResourceObservation {
-                        resource: name.clone(),
-                        used: definition.invoked,
-                    });
-                }
-            }
-        }
-        DetectorId::UnusedMcpServers | DetectorId::UnusedSkills => {
-            if let Some(status) = named_resource_status(&session.evidence.tools) {
-                merge_status(status);
-            }
-            let Some(sources) = context_sources else {
-                return named_resource_assessments_from_parts(
-                    session,
-                    observed_at_ms,
-                    scopes,
-                    statuses,
-                    resources,
-                );
-            };
-            let (kind, coverage) = if detector == DetectorId::UnusedMcpServers {
-                ("mcp", &sources.mcp_coverage)
-            } else {
-                ("skill", &sources.skill_coverage)
-            };
-            if let Some(status) = named_resource_status(coverage) {
-                merge_status(status);
-            }
-            let values = if kind == "mcp" {
-                &sources.mcp_servers
-            } else {
-                &sources.skills
-            };
-            for (name, source) in values {
-                let scope_index = match &source.origin {
-                    antiburn_local::analysis::EvidenceValue::Complete(SourceOrigin::Bundled)
-                    | antiburn_local::analysis::EvidenceValue::Complete(SourceOrigin::User) => 0,
-                    antiburn_local::analysis::EvidenceValue::Complete(SourceOrigin::Project) => 1,
-                    antiburn_local::analysis::EvidenceValue::Partial { reason, .. } => {
-                        merge_status(status_for_reason(*reason));
-                        continue;
-                    }
-                    antiburn_local::analysis::EvidenceValue::Unsupported
-                    | antiburn_local::analysis::EvidenceValue::Complete(
-                        SourceOrigin::Plugin | SourceOrigin::Unknown,
-                    ) => {
-                        merge_status(NamedResourceEvidence::Ambiguous);
-                        continue;
-                    }
-                };
-                if scopes[scope_index].is_none() {
-                    continue;
-                }
-                resources[scope_index].push(NamedResourceObservation {
-                    resource: name.clone(),
-                    used: source.invoked,
-                });
-            }
-            if let antiburn_local::analysis::EvidenceValue::Complete(tools) =
-                &session.evidence.tools
-                && tools
-                    .by_name
-                    .values()
-                    .any(|tool| tool.calls > 0 && matches!(tool.class, ToolClass::Unclassified))
-            {
-                merge_status(NamedResourceEvidence::Ambiguous);
-            }
-        }
-        _ => {}
-    }
-
-    named_resource_assessments_from_parts(session, observed_at_ms, scopes, statuses, resources)
-}
-
-fn named_resource_assessments_from_parts(
-    session: &CurrentFindingSession,
-    observed_at_ms: i64,
-    scopes: [Option<String>; 2],
-    statuses: Vec<Option<antiburn_local::remediation::NamedResourceEvidence>>,
-    resources: Vec<Vec<antiburn_local::remediation::NamedResourceObservation>>,
-) -> Vec<antiburn_local::remediation::NamedResourceAssessment> {
-    use antiburn_local::analysis::SourceFormat;
-    use antiburn_local::remediation::{NamedResourceAssessment, NamedResourceEvidence};
-
-    scopes
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, project_scope)| {
-            project_scope.map(|project_scope| NamedResourceAssessment {
-                observed_at_ms,
-                source_format: session.evidence.capabilities.source_format,
-                agent: session.agent.clone(),
-                project_scope,
-                evidence: statuses[index].clone().unwrap_or_else(|| {
-                    NamedResourceEvidence::HistoricalObservedSubset {
-                        resources: resources[index].clone(),
-                    }
-                }),
-            })
-        })
-        .filter(|assessment| {
-            assessment.source_format != SourceFormat::Uncharacterized
-                || !matches!(
-                    assessment.evidence,
-                    NamedResourceEvidence::HistoricalObservedSubset { .. }
-                )
-        })
-        .collect()
-}
-
-fn named_resource_status<T>(
-    value: &antiburn_local::analysis::EvidenceValue<T>,
-) -> Option<antiburn_local::remediation::NamedResourceEvidence> {
-    use antiburn_local::remediation::NamedResourceEvidence;
-
-    match value {
-        antiburn_local::analysis::EvidenceValue::Unsupported => {
-            Some(NamedResourceEvidence::Partial)
-        }
-        antiburn_local::analysis::EvidenceValue::Partial { reason, .. } => Some(match reason {
-            antiburn_local::analysis::CoverageReason::CapExceeded => NamedResourceEvidence::Capped,
-            antiburn_local::analysis::CoverageReason::AttributionIncomplete => {
-                NamedResourceEvidence::Ambiguous
-            }
-            _ => NamedResourceEvidence::Partial,
-        }),
-        antiburn_local::analysis::EvidenceValue::Complete(_) => None,
-    }
-}
-
-fn scoped_resource_clean_for_verification(
-    connection: &rusqlite::Connection,
-    session: &CurrentFindingSession,
-    detector: DetectorId,
-    catalogs: &ReportCatalogs,
-    cancel: &AtomicBool,
-) -> Result<bool> {
-    if !matches!(
-        detector,
-        DetectorId::UnusedBuiltInTools | DetectorId::UnusedMcpServers | DetectorId::UnusedSkills
-    ) {
-        return Ok(false);
-    }
-    let mut turn_probe = || {};
-    let mut resource_turn_probe = |_| {};
-    let mut probes = TokenBurnProbes {
-        turn: &mut turn_probe,
-        resource_turn: &mut resource_turn_probe,
-    };
-    let token_evidence = token_burn_evidence(
-        connection,
-        TokenBurnSessionKey {
-            environment_key: &session.environment_key,
-            agent: &session.agent,
-            session_id: &session.session_id,
-            published_fence: session.published_fence,
-            cwd: session
-                .workspace_candidate
-                .as_deref()
-                .and_then(Path::to_str),
-        },
-        session.initial_context.as_ref(),
-        &session.evidence,
-        &TokenBurnReportContext {
-            depth_cap: u128::from(catalogs.depth_cap_tokens),
-            catalogs,
-        },
-        cancel,
-        &mut probes,
-    )?;
-    Ok(antiburn_local::remediation::scoped_resource_no_finding(
-        detector,
-        &session.evidence,
-        catalogs,
-        Some(&token_evidence),
-    ))
-}
-
-/// A read-only aggregate for one exact old-model watch.
-#[derive(Debug)]
-pub(crate) struct OldModelRemediationEvidence {
-    pub observations: Vec<ModelVerificationObservation>,
-    pub replacement_tokens: Option<ModelTokens>,
-    pub measured_through_ms: Option<i64>,
-    pub recurrence_ms: Option<i64>,
-    pub evidence_revision: String,
-    pub token_overflow: bool,
-}
-
-/// Reads one stable evidence snapshot without loading transcript content.
-pub(crate) fn old_model_remediation_evidence(
-    data_dir: &Path,
-    remediation: &RemediationRecord,
-    definition: &WatchDefinition,
-    boundary_ms: i64,
-    fixed_at_ms: Option<i64>,
-) -> Result<OldModelRemediationEvidence> {
-    let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
-    let transaction = connection.unchecked_transaction()?;
-    let mut observations = Vec::new();
-    let mut replacement_tokens = ModelTokens::default();
-    let mut replacement_evidence = false;
-    let mut measured_through_ms: Option<i64> = None;
-    let mut recurrence_ms: Option<i64> = None;
-    let mut token_overflow = false;
-    let mut max_fence = 0_i64;
-    let mut turns = transaction.prepare(
-        "SELECT t.ts_ms, t.provider, t.api, t.model, t.effort, t.input_tokens,
-                t.output_tokens, t.cache_read_tokens, t.cache_write_tokens,
-                s.session_id, s.started_at_epoch, s.cwd, e.published_fence,
-                e.effective_model_target_hash, e.effective_model_scope,
-                e.effective_model, t.cache_write_1h_tokens
-           FROM turn t
-           JOIN session s USING (environment_key, agent, session_id)
-           JOIN session_evidence e USING (environment_key, agent, session_id)
-          WHERE t.environment_key = ?1 AND t.agent = ?2 AND t.role = 'assistant'
-            AND t.scope = 'main' AND t.ts_ms IS NOT NULL AND t.ts_ms > ?3
-            AND e.status = 'ready' AND e.analyzed_generation = s.source_generation
-            AND e.published_fence = t.claim_fence AND e.parser_revision = ?4
-            AND e.analyzer_revision = ?5 AND e.evidence_schema_revision = ?6
-          ORDER BY t.ts_ms, t.rowid",
-    )?;
-    let mut turn_rows = turns.query(params![
-        remediation.environment_key,
-        remediation.agent,
-        boundary_ms,
-        PARSER_REVISION,
-        ANALYZER_REVISION,
-        EVIDENCE_SCHEMA_REVISION
-    ])?;
-    while let Some(turn) = turn_rows.next()? {
-        let timestamp_ms: i64 = turn.get(0)?;
-        let started_at_epoch: Option<i64> = turn.get(10)?;
-        let fence: i64 = turn.get(12)?;
-        if !started_at_epoch.is_some_and(|started| started.saturating_mul(1_000) > boundary_ms) {
-            continue;
-        }
-        let attributed_target: Option<String> = turn.get(13)?;
-        let attributed_scope: Option<String> = turn.get(14)?;
-        let attributed_model: Option<String> = turn.get(15)?;
-        let provider: Option<String> = turn.get(1)?;
-        let api: Option<String> = turn.get(2)?;
-        let applies = model_attribution_matches(
-            definition,
-            &remediation.agent,
-            &remediation.scope_kind,
-            attributed_target.as_deref(),
-            attributed_scope.as_deref(),
-            attributed_model.as_deref(),
-            (provider.as_deref(), api.as_deref()),
-        );
-        if !applies {
-            continue;
-        }
-        max_fence = max_fence.max(fence);
-        measured_through_ms = Some(timestamp_ms);
-        let model: Option<String> = turn.get(3)?;
-        let Some(model) = model else { continue };
-        let observation = ModelVerificationObservation {
-            timestamp_ms,
-            scope: remediation.scope_key.clone(),
-            provider,
-            api,
-            model: model.clone(),
-        };
-        let route_matches =
-            observation.provider == definition.provider && observation.api == definition.api;
-        if route_matches
-            && definition.old_model.as_deref() == Some(model.as_str())
-            && fixed_at_ms.is_some_and(|fixed_at_ms| timestamp_ms > fixed_at_ms)
-        {
-            recurrence_ms.get_or_insert(timestamp_ms);
-        } else if route_matches
-            && definition.replacement.as_deref() == Some(model.as_str())
-            && recurrence_ms.is_none()
-        {
-            token_overflow |= !add_tokens(&mut replacement_tokens, turn)?;
-            replacement_evidence = !token_overflow;
-        }
-        if route_matches
-            && (definition.old_model.as_deref() == Some(model.as_str())
-                || definition.replacement.as_deref() == Some(model.as_str()))
-        {
-            observations.push(observation);
-        }
-    }
-    drop(turn_rows);
-    drop(turns);
-
-    Ok(OldModelRemediationEvidence {
-        observations,
-        replacement_tokens: replacement_evidence.then_some(replacement_tokens),
-        measured_through_ms,
-        recurrence_ms,
-        evidence_revision: format!(
-            "evidence-{}-{}-{max_fence}",
-            ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION
-        ),
-        token_overflow,
-    })
-}
-
-pub(crate) fn model_attribution_matches(
-    definition: &WatchDefinition,
-    agent: &str,
-    scope_kind: &str,
-    target_hash: Option<&str>,
-    attributed_scope: Option<&str>,
-    model: Option<&str>,
-    observed_route: (Option<&str>, Option<&str>),
-) -> bool {
-    let (observed_provider, observed_api) = observed_route;
-    let normalized_model = match agent {
-        "opencode" | "pi" | "omp" => {
-            let Some((provider, model)) = model.and_then(|value| value.split_once('/')) else {
-                return false;
-            };
-            if Some(provider) != definition.provider.as_deref()
-                || Some(provider) != observed_provider
-                || definition.api.as_deref() != observed_api
-            {
-                return false;
-            }
-            let target = antiburn_local::model_catalog::ModelTarget::new(
-                agent,
-                provider,
-                observed_api.unwrap_or_default(),
-                model,
-            );
-            if !matches!(
-                antiburn_local::model_catalog::ReviewedModelCatalog::default().resolve(&target),
-                antiburn_local::model_catalog::Support::Supported(_)
-            ) {
-                return false;
-            }
-            Some(model)
-        }
-        _ => model,
-    };
-    target_hash == definition.physical_target_key.as_deref()
-        && attributed_scope == Some(scope_kind)
-        && normalized_model.is_some_and(|model| {
-            definition.old_model.as_deref() == Some(model)
-                || definition.replacement.as_deref() == Some(model)
-        })
-}
-
-pub(crate) fn add_tokens(
-    target: &mut ModelTokens,
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<bool> {
-    Ok(checked_add_tokens(
-        target,
-        row.get(5)?,
-        row.get(6)?,
-        row.get(7)?,
-        row.get(8)?,
-        row.get(16)?,
-    ))
-}
-
-pub(crate) fn checked_add_tokens(
-    target: &mut ModelTokens,
-    input: u64,
-    output: u64,
-    cache_read: u64,
-    cache_creation: u64,
-    cache_creation_1h: u64,
-) -> bool {
-    let Some(input_tokens) = target.input_tokens.checked_add(input) else {
-        return false;
-    };
-    let Some(output_tokens) = target.output_tokens.checked_add(output) else {
-        return false;
-    };
-    let Some(cache_read_tokens) = target.cache_read_tokens.checked_add(cache_read) else {
-        return false;
-    };
-    let Some(cache_creation_tokens) = target.cache_creation_tokens.checked_add(cache_creation)
-    else {
-        return false;
-    };
-    let Some(cache_creation_1h_tokens) = target
-        .cache_creation_1h_tokens
-        .checked_add(cache_creation_1h)
-    else {
-        return false;
-    };
-    *target = ModelTokens {
-        input_tokens,
-        output_tokens,
-        cache_read_tokens,
-        cache_creation_tokens,
-        cache_creation_1h_tokens,
-    };
-    true
-}
-
 pub(crate) struct CurrentFindingSession {
-    evidence: SessionEvidence,
-    environment_key: String,
-    agent: String,
-    session_id: String,
-    source_generation: i64,
-    published_fence: i64,
-    source_fingerprint: Option<String>,
+    pub(super) evidence: SessionEvidence,
+    pub(super) environment_key: String,
+    pub(super) agent: String,
+    pub(super) session_id: String,
+    pub(super) source_generation: i64,
+    pub(super) incarnation: u64,
+    pub(super) published_fence: i64,
+    pub(super) source_fingerprint: Option<String>,
     processed_fingerprint: Option<String>,
     parser_revision: i64,
     analyzer_revision: i64,
     evidence_schema_revision: i64,
     metrics_schema_revision: i64,
-    started_at_epoch: Option<i64>,
-    workspace_candidate: Option<PathBuf>,
-    initial_context: Option<InitialContextBreakdown>,
+    pub(super) started_at_epoch: Option<i64>,
+    pub(super) workspace_candidate: Option<PathBuf>,
+    pub(super) initial_context: Option<InitialContextBreakdown>,
     effective_model_target_hash: Option<String>,
     effective_model_scope: Option<String>,
     effective_model: Option<String>,
-    effective_reasoning_target_hash: Option<String>,
-    effective_reasoning_scope: Option<String>,
+    pub(super) effective_reasoning_target_hash: Option<String>,
+    pub(super) effective_reasoning_scope: Option<String>,
     effective_reasoning: Option<String>,
 }
 
@@ -982,6 +313,25 @@ pub(crate) fn assess_current_detector(
     cancel: &AtomicBool,
     turn_probe: &mut dyn FnMut(),
 ) -> Result<FindingAssessment> {
+    if detector == DetectorId::IgnoredInstructions {
+        let Some(result) = current_ignored_instruction_result(connection, session)? else {
+            return Ok(FindingAssessment::Unavailable(
+                antiburn_local::remediation::FindingUnavailableReason::IncompleteEvidence,
+            ));
+        };
+        let Some(findings) = ignored_instruction_findings(session, &result) else {
+            return Ok(FindingAssessment::Unavailable(
+                antiburn_local::remediation::FindingUnavailableReason::EvidenceContractIncomplete,
+            ));
+        };
+        return if findings.is_empty() {
+            Ok(FindingAssessment::Unavailable(
+                antiburn_local::remediation::FindingUnavailableReason::IncompleteEvidence,
+            ))
+        } else {
+            Ok(FindingAssessment::Findings(findings))
+        };
+    }
     if !matches!(
         detector,
         DetectorId::UnusedBuiltInTools | DetectorId::UnusedMcpServers | DetectorId::UnusedSkills
@@ -1069,6 +419,7 @@ pub(crate) fn current_finding_session(
         effective_reasoning_target_hash: row.get(18)?,
         effective_reasoning_scope: row.get(19)?,
         effective_reasoning: row.get(20)?,
+        incarnation: row.get(21)?,
     })
 }
 
@@ -1090,6 +441,7 @@ pub(crate) fn current_finding(
         agent: session.agent.clone(),
         session_id: session.session_id.clone(),
         source_generation: session.source_generation,
+        incarnation: session.incarnation,
         published_fence: session.published_fence,
         source_fingerprint: session.source_fingerprint.clone(),
         processed_fingerprint: session.processed_fingerprint.clone(),
@@ -1146,6 +498,7 @@ pub(crate) fn finding_observation_ms(evidence: &SessionEvidence, finding: &Findi
         FindingCause::OldModelUsage { model, .. } | FindingCause::CacheChurn { model, .. } => {
             models?.by_model.get(model).map(|tokens| tokens.last_ts_ms)
         }
+        FindingCause::IgnoredInstructionConflict(evidence) => evidence.action_timestamp_ms,
         FindingCause::OveruseOfFastMode {
             provider,
             api,
@@ -1177,6 +530,7 @@ pub(crate) fn freshness_matches(cached: &CurrentFinding, session: &CurrentFindin
         && cached.agent == session.agent
         && cached.session_id == session.session_id
         && cached.source_generation == session.source_generation
+        && cached.incarnation == session.incarnation
         && cached.published_fence == session.published_fence
         && cached.source_fingerprint == session.source_fingerprint
         && cached.processed_fingerprint == session.processed_fingerprint
@@ -1190,13 +544,30 @@ pub(crate) fn freshness_matches(cached: &CurrentFinding, session: &CurrentFindin
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
-    use antiburn_local::analysis::{
-        ContextSourceEvidence, EvidenceSource, EvidenceValue, LoadedSource,
-        SessionEvidenceAccumulator, SessionTimeRange, SourceCapabilities, SourceKind, SourceOrigin,
-        ToolDefinition, TurnFacts,
+    use super::super::ignored_instructions::{
+        IgnoredInstructionSessionIdentity, ignored_instruction_findings_for_evidence,
+        ignored_instruction_result_for,
     };
+    use super::super::verification::named_resource_assessments_for_session;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use antiburn_local::analysis::ignored_instructions::{
+        AssessmentInput, IgnoredInstructionsCheck, InstructionProvenance, InstructionScope,
+        build_jev_context, prepare_session_content, snapshot_from_text,
+    };
+    use antiburn_local::analysis::jev::{
+        JevAnswer, JevQuestion, JevRequest, JevResponse, JevRunProgress, JevUsage, run_jev_check,
+    };
+    use antiburn_local::analysis::{
+        CompositeSink, ContextSourceEvidence, EvidenceSource, EvidenceValue, LoadedSource,
+        MemoryTurnRowStore, RawSource, SessionEvidenceAccumulator, SessionInput,
+        SessionMetricsAccumulator, SessionTimeRange, SourceCapabilities, SourceFormat, SourceKind,
+        SourceOrigin, ToolDefinition, TurnFacts, TurnRowSink, TurnRowStore, query_turn_content,
+        reader_for,
+    };
+    use antiburn_local::analysis::{FenceScope, TurnSessionKey};
+    use antiburn_local::remediation::FindingCause;
     use antiburn_local::remediation::{
         NamedResourceEvidence, NamedResourceVerificationTarget, VerificationOutcome,
         VerificationStage, VerificationUnknownReason, verify_named_resource_watch,
@@ -1324,6 +695,7 @@ mod tests {
             agent: "claude-code".into(),
             session_id: "later".into(),
             source_generation: 1,
+            incarnation: 1,
             published_fence: 1,
             source_fingerprint: None,
             processed_fingerprint: None,
@@ -1350,6 +722,494 @@ mod tests {
             agent: "claude-code".into(),
             project_scope: "global".into(),
             resource: resource.into(),
+        }
+    }
+
+    #[test]
+    fn failed_assessment_exposes_valid_partial_findings() {
+        use antiburn_local::analysis::ignored_instructions::{
+            ASSESSMENT_MODEL, AssessmentCoverage, AssessmentFinding, AssessmentResult,
+            FindingCertainty, InstructionProvenance, InstructionScope, RuleActionRef,
+        };
+
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE burn_check_assessment (
+                environment_key TEXT, agent TEXT, session_id TEXT, check_id TEXT,
+                incarnation INTEGER, source_generation INTEGER, source_fingerprint TEXT,
+                published_fence INTEGER, status TEXT, input_revision TEXT,
+                result_revision TEXT, result_json TEXT);",
+            )
+            .unwrap();
+        let mut evidence =
+            session_with_resource(DetectorId::UnusedMcpServers, "tool", None).evidence;
+        let result = AssessmentResult {
+            input_revision: "revision".to_owned(),
+            model_version: ASSESSMENT_MODEL.to_owned(),
+            findings: vec![AssessmentFinding {
+                id: "finding".to_owned(),
+                reference: RuleActionRef {
+                    instruction_id: "instruction".to_owned(),
+                    instruction_digest: "digest".to_owned(),
+                    rule_id: "rule".to_owned(),
+                    rule_heading: "Testing".to_owned(),
+                    start_line: 1,
+                    end_line: 1,
+                    source: "AGENTS.md".to_owned(),
+                    provenance: InstructionProvenance::RecordedInjection,
+                    scope: InstructionScope::Project,
+                    action_id: "action".to_owned(),
+                    action_digest: "action-digest".to_owned(),
+                    action_timestamp_ms: Some(100),
+                    action_stable: true,
+                },
+                instruction_excerpt: "Test instruction.".to_owned(),
+                instruction_excerpt_truncated: false,
+                action_excerpt: "Test action.".to_owned(),
+                action_excerpt_truncated: false,
+                nearby_context_ids: vec![],
+                counterevidence_ids: vec![],
+                certainty: FindingCertainty::Possible,
+                conflict_probability: 0.9,
+                applicability_probability: 0.9,
+                evidence_basis_probability: 0.9,
+                limitations: vec![],
+            }],
+            pending_rules: vec![],
+            unassessed_comparisons: vec!["later-action".to_owned()],
+            coverage: AssessmentCoverage {
+                eligible_rules: 1,
+                candidate_pairs: 2,
+                selected_comparisons: 2,
+                unselected_pairs: 0,
+                skipped_rules: vec![],
+                skipped_actions: vec![],
+                processing_limit_reached: true,
+                sampled_pass: false,
+                selector_revision: 0,
+                limitations: vec!["assessment_processing_incomplete".to_owned()],
+                reassessed_comparison_ids: Vec::new(),
+                reassessed_rule_ids: Vec::new(),
+                reassessed_finding_ids: Vec::new(),
+                instruction_sources: Vec::new(),
+            },
+            request_count: 1,
+            input_tokens: 10,
+            output_tokens: 1,
+        };
+        connection
+            .execute(
+                "INSERT INTO burn_check_assessment VALUES
+             ('native', 'claude-code', 'later', 'ignored_instructions', 1, 1,
+              NULL, 1, 'failed', 'revision', 'revision', ?1)",
+                [serde_json::to_string(&result).unwrap()],
+            )
+            .unwrap();
+        let stored = ignored_instruction_result_for(
+            &connection,
+            &evidence,
+            IgnoredInstructionSessionIdentity {
+                environment_key: "native",
+                agent: "claude-code",
+                session_id: "later",
+                incarnation: 1,
+                source_generation: 1,
+                source_fingerprint: None,
+                published_fence: 1,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(stored.unassessed_comparisons, vec!["later-action"]);
+        assert_eq!(
+            ignored_instruction_findings_for_evidence(&evidence, &stored)
+                .unwrap()
+                .len(),
+            1
+        );
+        for format in [
+            antiburn_local::analysis::SourceFormat::ClaudeJsonl,
+            antiburn_local::analysis::SourceFormat::CodexRolloutJsonl,
+            antiburn_local::analysis::SourceFormat::PiV3Jsonl,
+            antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+            antiburn_local::analysis::SourceFormat::CursorCliAgentJsonl,
+            antiburn_local::analysis::SourceFormat::AntigravityBrainJsonl,
+        ] {
+            evidence.capabilities.source_format = format;
+            assert_eq!(
+                ignored_instruction_findings_for_evidence(&evidence, &stored)
+                    .unwrap()
+                    .len(),
+                1,
+                "{format:?} finding reaches report conversion",
+            );
+        }
+        connection
+            .execute(
+                "UPDATE burn_check_assessment
+                    SET input_revision = 'new-revision', status = 'running'",
+                [],
+            )
+            .unwrap();
+        assert!(
+            ignored_instruction_result_for(
+                &connection,
+                &evidence,
+                IgnoredInstructionSessionIdentity {
+                    environment_key: "native",
+                    agent: "claude-code",
+                    session_id: "later",
+                    incarnation: 1,
+                    source_generation: 1,
+                    source_fingerprint: None,
+                    published_fence: 1,
+                },
+            )
+            .unwrap()
+            .is_none(),
+            "a queued revision does not publish old findings as current"
+        );
+        connection
+            .execute("UPDATE burn_check_assessment SET status = 'superseded'", [])
+            .unwrap();
+        assert!(
+            ignored_instruction_result_for(
+                &connection,
+                &evidence,
+                IgnoredInstructionSessionIdentity {
+                    environment_key: "native",
+                    agent: "claude-code",
+                    session_id: "later",
+                    incarnation: 1,
+                    source_generation: 1,
+                    source_fingerprint: None,
+                    published_fence: 1,
+                },
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn all_six_parsers_reach_a_persisted_report_finding() {
+        #[derive(Debug)]
+        struct ParserCase {
+            agent: &'static str,
+            format: SourceFormat,
+            source: RawSource,
+        }
+
+        let cases = vec![
+            ParserCase {
+                agent: "claude",
+                format: SourceFormat::ClaudeJsonl,
+                source: RawSource::Jsonl(
+                    r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"CLAUDE-USER"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"shell","input":{"cmd":"true"}}]}}
+{"type":"user","uuid":"r1","parentUuid":"a1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":"done"}]}}"#.to_owned(),
+                ),
+            },
+            ParserCase {
+                agent: "codex",
+                format: SourceFormat::CodexRolloutJsonl,
+                source: RawSource::Jsonl(
+                    r#"{"timestamp":"2026-08-01T10:00:00Z","type":"session_meta","payload":{"id":"codex-fixture","cwd":"/work","cli_version":"0.0.0-test","source":"cli"}}
+{"timestamp":"2026-08-01T10:00:01Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"CODEX-DEVELOPER"}]}}
+{"timestamp":"2026-08-01T10:00:02Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"cmd\":\"true\"}","call_id":"codex-call"}}
+{"timestamp":"2026-08-01T10:00:03Z","type":"response_item","payload":{"type":"function_call_output","output":"done","call_id":"codex-call"}}"#.to_owned(),
+                ),
+            },
+            ParserCase {
+                agent: "pi",
+                format: SourceFormat::PiV3Jsonl,
+                source: RawSource::Jsonl(
+                    r#"{"type":"session","version":3,"id":"pi-fixture","timestamp":"2026-01-01T00:00:00Z","cwd":"/work"}
+{"type":"message","id":"pi-user","timestamp":"2026-01-01T00:00:01Z","message":{"role":"user","content":[{"type":"text","text":"PI-USER"}]}}
+{"type":"message","id":"pi-assistant","parentId":"pi-user","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"pi-call","name":"shell","arguments":{"cmd":"true"}}]}}
+{"type":"message","id":"pi-result","parentId":"pi-assistant","timestamp":"2026-01-01T00:00:03Z","message":{"role":"toolResult","toolCallId":"pi-call","toolName":"shell","content":[{"type":"text","text":"done"}]}}"#.to_owned(),
+                ),
+            },
+            ParserCase {
+                agent: "opencode",
+                format: SourceFormat::OpenCodeSqliteV2,
+                source: RawSource::Sqlite(Default::default()),
+            },
+            ParserCase {
+                agent: "cursor",
+                format: SourceFormat::CursorCliAgentJsonl,
+                source: RawSource::Jsonl(
+                    r#"{"sessionId":"cursor-fixture","cursor_source":"agent_transcript"}
+{"role":"user","message":{"content":[{"type":"text","text":"CURSOR-USER"}]}}
+{"role":"assistant","message":{"content":[{"type":"tool-use","id":"cursor-call","name":"shell","input":{"cmd":"true"}}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_result","tool_call_id":"cursor-call","tool_name":"shell","content":"done"}]}}"#.to_owned(),
+                ),
+            },
+            ParserCase {
+                agent: "antigravity",
+                format: SourceFormat::AntigravityBrainJsonl,
+                source: RawSource::Jsonl(include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../crates/antiburn-local/tests/fixtures/antigravity_characterization/ignored_instructions_content.jsonl"
+                )).to_owned()),
+            },
+        ];
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE burn_check_assessment (
+                    environment_key TEXT, agent TEXT, session_id TEXT, check_id TEXT,
+                    incarnation INTEGER, source_generation INTEGER, source_fingerprint TEXT,
+                    published_fence INTEGER, status TEXT, input_revision TEXT,
+                    result_revision TEXT, result_json TEXT);",
+            )
+            .unwrap();
+
+        for (index, case) in cases.into_iter().enumerate() {
+            let description = format!("{} {:?}", case.agent, case.format);
+            let session_id = format!("persisted-parser-{index}");
+            let sqlite = if case.format == SourceFormat::OpenCodeSqliteV2 {
+                Some(tempfile::tempdir().unwrap())
+            } else {
+                None
+            };
+            let source = if let Some(directory) = sqlite.as_ref() {
+                let path = directory.path().join("opencode.db");
+                let connection = rusqlite::Connection::open(&path).unwrap();
+                connection
+                    .execute_batch(&format!(
+                        "CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, title TEXT, time_created INTEGER, time_updated INTEGER);
+                         CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+                         CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+                         INSERT INTO session VALUES ('{session_id}', NULL, NULL, 1000, 1002);
+                         INSERT INTO message VALUES ('m1', '{session_id}', 1001, 1001, '{{\"role\":\"user\"}}');
+                         INSERT INTO part VALUES ('p1', 'm1', '{session_id}', 1001, 1001, '{{\"type\":\"text\",\"text\":\"OPENCODE-USER\"}}');
+                         INSERT INTO message VALUES ('m2', '{session_id}', 1002, 1002, '{{\"role\":\"assistant\",\"modelID\":\"model-a\"}}');
+                         INSERT INTO part VALUES ('p2', 'm2', '{session_id}', 1002, 1002, '{{\"type\":\"tool\",\"id\":\"oc-call\",\"callID\":\"oc-call\",\"tool\":\"shell\",\"state\":{{\"status\":\"completed\",\"input\":{{\"cmd\":\"true\"}},\"output\":\"done\"}}}}');"
+                    ))
+                    .unwrap();
+                RawSource::Sqlite(path)
+            } else {
+                case.source
+            };
+            let input = SessionInput {
+                agent: case.agent.to_owned(),
+                session_id: session_id.clone(),
+                source,
+                source_format: case.format,
+                fork_parent_session_id: None,
+            };
+            let turn_store = MemoryTurnRowStore::new(case.agent, &session_id);
+            let metrics = SessionMetricsAccumulator::new(case.agent, &session_id);
+            let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+                agent: case.agent.to_owned(),
+                session_id: session_id.clone(),
+                kind: SourceKind::from(&input.source),
+                capabilities: ignored_instruction_capabilities(case.format),
+            });
+            let turn_rows = TurnRowSink::new(
+                Arc::clone(&turn_store) as Arc<dyn TurnRowStore>,
+                session_id.clone(),
+                None,
+            );
+            let mut sink = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
+            let visit = reader_for(case.agent).visit(&input, &mut sink).unwrap();
+            sink.observe_source_outcome(visit);
+            let key = TurnSessionKey {
+                environment_key: "native",
+                agent: case.agent,
+                session_id: &session_id,
+            };
+            let content = turn_store.with_connection(|connection| {
+                query_turn_content(connection, &key, &FenceScope::single(1)).unwrap()
+            });
+            let prepared = prepare_session_content(
+                &session_id,
+                case.format,
+                content,
+                vec![
+                    snapshot_from_text(
+                        "AGENTS.md",
+                        "- Do not run the shell command.".to_owned(),
+                        InstructionProvenance::RecordedInjection,
+                        InstructionScope::Project,
+                    )
+                    .unwrap(),
+                ],
+            );
+            assert!(
+                !prepared.actions.is_empty(),
+                "{description} parser yields actions"
+            );
+            let context = build_jev_context(&AssessmentInput {
+                content: prepared.clone(),
+                prior_history_complete: true,
+                activity_after_ms: None,
+                boundary_positions: BTreeMap::new(),
+                source_generation: 1,
+                source_fingerprint: None,
+                incarnation: 1,
+                comparison_after: None,
+            })
+            .unwrap();
+            let check = IgnoredInstructionsCheck;
+            let outcome = run_jev_check(
+                &check,
+                &context,
+                JevRunProgress::default(),
+                |batch| async move { Ok(synthetic_ignored_response(&batch.request)) },
+                |_| Ok(()),
+            )
+            .await
+            .unwrap();
+            assert!(outcome.complete, "{description} assessment completes");
+            assert!(
+                !outcome.result.findings.is_empty(),
+                "{description} yields a finding: {:#?}; responses: {:#?}",
+                outcome.result,
+                outcome.progress.results
+            );
+            let revision = outcome.result.input_revision.clone();
+            let result_json = serde_json::to_string(&outcome.result).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO burn_check_assessment VALUES
+                     ('native', ?1, ?2, 'ignored_instructions', 1, 1, NULL, 1,
+                      'completed', ?3, ?3, ?4)",
+                    rusqlite::params![case.agent, session_id, revision, result_json],
+                )
+                .unwrap();
+            let session_evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+                agent: case.agent.to_owned(),
+                session_id: session_id.clone(),
+                kind: SourceKind::from(&input.source),
+                capabilities: ignored_instruction_capabilities(case.format),
+            })
+            .evidence(&TurnFacts::default());
+            let stored = ignored_instruction_result_for(
+                &connection,
+                &session_evidence,
+                IgnoredInstructionSessionIdentity {
+                    environment_key: "native",
+                    agent: case.agent,
+                    session_id: &session_id,
+                    incarnation: 1,
+                    source_generation: 1,
+                    source_fingerprint: None,
+                    published_fence: 1,
+                },
+            )
+            .unwrap()
+            .expect(&description);
+            let findings =
+                ignored_instruction_findings_for_evidence(&session_evidence, &stored).unwrap();
+            assert!(
+                !findings.is_empty(),
+                "{description} persisted result is report-visible"
+            );
+            for finding in findings {
+                assert_eq!(finding.source_format, case.format);
+                let FindingCause::IgnoredInstructionConflict(evidence) = finding.cause() else {
+                    panic!("expected an ignored-instruction finding")
+                };
+                let action_id = &evidence.action_id;
+                assert!(
+                    prepared
+                        .actions
+                        .iter()
+                        .any(|action| action.reference.id == *action_id),
+                    "{description} report finding cites parsed content"
+                );
+                assert!(!finding.display().unwrap().observation.is_empty());
+            }
+        }
+    }
+
+    fn ignored_instruction_capabilities(format: SourceFormat) -> SourceCapabilities {
+        match format {
+            SourceFormat::ClaudeJsonl => SourceCapabilities::claude(),
+            SourceFormat::CodexRolloutJsonl => SourceCapabilities::codex(),
+            SourceFormat::PiV3Jsonl => SourceCapabilities::pi(),
+            SourceFormat::OpenCodeSqliteV2 => SourceCapabilities {
+                source_format: SourceFormat::OpenCodeSqliteV2,
+                ..SourceCapabilities::opencode()
+            },
+            SourceFormat::CursorCliAgentJsonl => SourceCapabilities {
+                source_format: SourceFormat::CursorCliAgentJsonl,
+                ..SourceCapabilities::cursor()
+            },
+            SourceFormat::AntigravityBrainJsonl => SourceCapabilities {
+                source_format: SourceFormat::AntigravityBrainJsonl,
+                ..SourceCapabilities::antigravity()
+            },
+            _ => unreachable!("test uses the six supported Ignored Instructions formats"),
+        }
+    }
+
+    fn synthetic_ignored_response(request: &JevRequest) -> JevResponse {
+        let answers = request
+            .questions
+            .iter()
+            .map(|(question_id, question)| {
+                let JevQuestion::Choice { criteria, .. } = question else {
+                    panic!("production questions use the typed choice contract")
+                };
+                let selected = if criteria.contains_key("conflict") {
+                    "conflict"
+                } else if criteria.contains_key("conflicting_action") {
+                    "conflicting_action"
+                } else if criteria.contains_key("self_contained") {
+                    "self_contained"
+                } else if criteria.contains_key("applies") {
+                    "applies"
+                } else if criteria.contains_key("independent") {
+                    "independent"
+                } else if criteria.contains_key("selected") {
+                    "selected"
+                } else if criteria.contains_key("not_read_rule") {
+                    "not_read_rule"
+                } else if criteria.contains_key("not_read_order") {
+                    "not_read_order"
+                } else {
+                    criteria
+                        .keys()
+                        .next()
+                        .map(String::as_str)
+                        .expect("choice questions have criteria")
+                }
+                .to_owned();
+                let other_probability = 0.01 / criteria.len().saturating_sub(1).max(1) as f64;
+                let probabilities = criteria
+                    .keys()
+                    .map(|choice| {
+                        (
+                            choice.clone(),
+                            if choice == &selected {
+                                0.99
+                            } else {
+                                other_probability
+                            },
+                        )
+                    })
+                    .collect();
+                (
+                    question_id.clone(),
+                    JevAnswer::Choice {
+                        choice: selected,
+                        probabilities,
+                        confidence: 0.99,
+                    },
+                )
+            })
+            .collect();
+        JevResponse {
+            model: request.model.clone(),
+            answers,
+            usage: JevUsage {
+                input_tokens: 20,
+                output_tokens: 2,
+            },
         }
     }
 

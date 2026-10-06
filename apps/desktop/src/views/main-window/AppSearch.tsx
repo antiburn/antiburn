@@ -1,6 +1,7 @@
 import { Search, X } from "lucide-react"
 import { useCallback, useId, useRef, useState } from "react"
 import { groupAppResults, type AppSearchResult } from "../../lib/appSearch"
+import { getCheckAvailability, onCheckAvailabilityChanged } from "../../lib/checkAvailability"
 
 export function AppSearch({
   onChoose,
@@ -13,12 +14,13 @@ export function AppSearch({
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [error, setError] = useState(false)
   const [pending, setPending] = useState(false)
+  const [checksAvailable, setChecksAvailable] = useState(false)
   const input = useRef<HTMLInputElement>(null)
   const dialog = useRef<HTMLDialogElement>(null)
   const choosing = useRef(false)
   const live = useRef(false)
   const id = useId()
-  const groups = groupAppResults(query)
+  const groups = groupAppResults(query, undefined, checksAvailable)
   const results = groups.flatMap((group) => group.results)
   const active = results.find((result) => result.id === selectedId) ?? results[0]
 
@@ -45,11 +47,28 @@ export function AppSearch({
   const mountDialog = useCallback((node: HTMLDialogElement | null) => {
     if (!node) return
     dialog.current = node
+    let mountedHere = true
     live.current = true
+    void getCheckAvailability()
+      .then((value) => {
+        if (mountedHere) setChecksAvailable(value.configured)
+      })
+      .catch(() => undefined)
+    let stop: (() => void) | undefined
+    void onCheckAvailabilityChanged((event) => {
+      if (mountedHere && event.status === "updated") {
+        setChecksAvailable(event.snapshot.configured)
+      }
+    }).then((unlisten) => {
+      if (mountedHere) stop = unlisten
+      else unlisten()
+    })
     node.showModal()
     input.current?.focus()
     return () => {
+      mountedHere = false
       live.current = false
+      stop?.()
       node.close()
       if (!choosing.current) {
         const target = document.querySelector<HTMLButtonElement>("[data-app-search-trigger]")

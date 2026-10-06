@@ -36,12 +36,12 @@ use crate::dto::{
     ActivityEntry, AgentScanState, AggregateWinsPayload, AppInfo,
     ApplyPreparedBurnCheckOperationOutcome, AutoFixUnavailableReason, BurnCheckDetectorId,
     BurnCheckRemediationProgressPayload, BurnCheckSnoozePayload, BurnCheckTargetListPayload,
-    ChecksReportPayload, CopyPromptFixBurnCheckOutcome, CopyPromptFixBurnCheckTargetOutcome,
-    DeferredPermissionDir, HygieneSummaryPayload, InsightsBacklog, LiveUsageSummary,
-    OrchestrationStatus, PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason,
-    ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload,
-    SessionHygieneRequest, SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary,
-    SessionRelation, SessionRelations, SubagentMember,
+    ChecksCategoryLifecyclePayload, ChecksReportPayload, CopyPromptFixBurnCheckOutcome,
+    CopyPromptFixBurnCheckTargetOutcome, DeferredPermissionDir, HygieneSummaryPayload,
+    InsightsBacklog, LiveUsageSummary, OrchestrationStatus, PrepareAutoFixBurnCheckTargetOutcome,
+    PromptFixUnavailableReason, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis,
+    SessionHygienePayload, SessionHygieneRequest, SessionIdentity, SessionLimitAllocation,
+    SessionLimitAllocationSummary, SessionRelation, SessionRelations, SubagentMember,
 };
 pub(crate) mod local_usage;
 pub(crate) mod quota;
@@ -52,7 +52,9 @@ use crate::insights_ipc::InsightsController;
 use crate::insights_report::ReportRequest;
 use crate::popover;
 use crate::provider_usage;
-use crate::remediation::{BurnCheckTargetContext, ControllerError, RemediationController};
+use crate::remediation::{
+    BurnCheckTargetContext, BurnCheckTargetEvidence, ControllerError, RemediationController,
+};
 use crate::repositories;
 use crate::scan::{self, ScanController, ScanTrigger};
 use crate::settings;
@@ -1269,6 +1271,22 @@ pub async fn scan_now(
     .await)
 }
 
+/// Run the dedicated historical pass now: Settings › General › Historical
+/// scan. Widens discovery past the current window, up to the retention
+/// limit — see `scan::history::window_secs`. Unlike [`scan_now`], a request
+/// dropped because a pass is already running is queued rather than lost,
+/// since no later routine pass would cover the same ground.
+#[tauri::command]
+pub async fn scan_history(app: tauri::AppHandle) -> CommandResult<ScanStatus> {
+    Ok(scan::run_pass(
+        &app,
+        None,
+        ScanTrigger::HistoricalScan,
+        scan::PassScope::Full,
+    )
+    .await)
+}
+
 /// Ask the scan in flight to stop at its next phase boundary.
 ///
 /// Everything it already persisted stays: a cancelled pass is a shorter pass,
@@ -1316,8 +1334,10 @@ pub fn get_insights_backlog(app: tauri::AppHandle) -> InsightsBacklog {
     }
 }
 
-/// Days of history the insights report covers.
-const INSIGHTS_WINDOW_DAYS: i64 = 30;
+/// Days of history the insights report covers. Shares
+/// [`crate::store::model::CURRENT_WINDOW_DAYS`] with discovery, so the report
+/// window and the discovery window can never drift apart.
+const INSIGHTS_WINDOW_DAYS: i64 = crate::store::model::CURRENT_WINDOW_DAYS as i64;
 
 fn epoch_now() -> i64 {
     SystemTime::now()
@@ -1360,6 +1380,8 @@ pub async fn get_checks_report(
     if consumer_id.is_empty() || consumer_id.len() > 128 {
         return Err(fail("the Checks consumer ID is invalid"));
     }
+    let report_consumer_id = consumer_id.clone();
+    let report_window = window.label().to_owned();
     let app = window.app_handle();
     crate::insights_worker::wake(app);
     let data_dir = app.state::<Store>().state_dir().to_path_buf();
@@ -1377,6 +1399,17 @@ pub async fn get_checks_report(
     crate::analytics::record_quota_incidents(app, &reduced.report.quota_pressure);
     crate::analytics::record_provider_incidents(app, &reduced.report.provider_incidents);
     let mut payload = ChecksReportPayload::from_reduced_report(&reduced);
+    if let Some(category) = payload
+        .categories
+        .iter_mut()
+        .find(|category| category.id == BurnCheckDetectorId::IgnoredInstructions)
+    {
+        category.sampled = crate::insights_report::has_published_sampled_instruction_assessment(
+            app.state::<Store>().state_dir(),
+            &request,
+        )
+        .map_err(fail)?;
+    }
     app.state::<RemediationController>()
         .apply_category_lifecycles(
             &app.state::<Store>(),
@@ -1384,8 +1417,59 @@ pub async fn get_checks_report(
             &request.environment_key,
         )
         .map_err(fail)?;
+    let ignored_instruction_work = app
+        .state::<Store>()
+        .burn_check_in_progress_count("ignored_instructions")
+        .map_err(fail)?;
+    if ignored_instruction_work > 0
+        && let Some(category) = payload
+            .categories
+            .iter_mut()
+            .find(|category| category.id == BurnCheckDetectorId::IgnoredInstructions)
+    {
+        apply_ignored_instruction_progress(category);
+    }
+    #[cfg(debug_assertions)]
+    if let Some(category) = payload
+        .categories
+        .iter()
+        .find(|category| category.id == BurnCheckDetectorId::IgnoredInstructions)
+    {
+        ::tracing::debug!(
+            event = "ignored_instruction_report_quality",
+            in_progress_sessions = ignored_instruction_work,
+            finding_sessions = category.finding,
+            clean_sessions = category.clean,
+            unavailable_sessions = category.unavailable,
+            lifecycle = ?category.lifecycle,
+        );
+    }
+    if !app
+        .state::<crate::jev_worker::WorkerHandle>()
+        .is_available()
+    {
+        payload
+            .categories
+            .retain(|category| category.id != crate::dto::BurnCheckDetectorId::IgnoredInstructions);
+    }
+    let finding_count = payload
+        .categories
+        .iter()
+        .map(|category| category.finding)
+        .sum::<u64>();
+    let clean_count = payload
+        .categories
+        .iter()
+        .map(|category| category.clean)
+        .sum::<u64>();
     ::tracing::debug!(
         event = "checks_report_finished",
+        consumer_id = %report_consumer_id,
+        window = %report_window,
+        categories = payload.categories.len(),
+        findings = finding_count,
+        clean = clean_count,
+        worker_woken = true,
         duration_ms = started_at.elapsed().as_millis() as u64,
         reduction_ms,
         lifecycle_ms = started_at.elapsed().as_millis() as u64 - reduction_ms,
@@ -1397,6 +1481,16 @@ pub async fn get_checks_report(
         payload
     };
     Ok(payload)
+}
+
+fn apply_ignored_instruction_progress(category: &mut crate::dto::ChecksCategoryPayload) {
+    category.lifecycle = if category.finding > 0 {
+        Some(ChecksCategoryLifecyclePayload::Failing)
+    } else if category.unavailable > 0 {
+        None
+    } else {
+        Some(ChecksCategoryLifecyclePayload::Passing)
+    };
 }
 
 fn current_burn_check_snoozes(store: &Store) -> CommandResult<Vec<BurnCheckSnoozePayload>> {
@@ -1476,8 +1570,10 @@ pub async fn list_burn_check_targets(
     detector: BurnCheckDetectorId,
 ) -> CommandResult<BurnCheckTargetListPayload> {
     ensure_checks_window(window.label())?;
+    let window_label = window.label().to_owned();
     let app = window.app_handle().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let started_at = Instant::now();
         let request = insights_report_request(epoch_now());
         let list = app
             .state::<RemediationController>()
@@ -1490,15 +1586,54 @@ pub async fn list_burn_check_targets(
                 },
             )
             .map_err(|_| "unable to list burn check targets".to_owned())?;
-        burn_check_target_list_payload(
+        let payload = burn_check_target_list_payload(
             &app.state::<crate::main_window::MainWindowState>(),
             &app.state::<Store>(),
             list,
             epoch_now(),
-        )
+        )?;
+        ::tracing::debug!(
+            event = "burn_check_targets_finished",
+            detector = ?detector,
+            window = %window_label,
+            targets = payload.targets.len(),
+            samples = payload.samples.len(),
+            truncated = payload.truncated,
+            duration_ms = started_at.elapsed().as_millis() as u64,
+        );
+        Ok(payload)
     })
     .await
     .map_err(|_| "unable to list burn check targets".to_owned())?
+}
+
+#[tauri::command]
+pub async fn get_burn_check_target_evidence(
+    window: tauri::WebviewWindow,
+    action_id: String,
+) -> CommandResult<BurnCheckTargetEvidence> {
+    ensure_checks_window(window.label())?;
+    let app = window.app_handle().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let started_at = Instant::now();
+        let evidence = app
+            .state::<RemediationController>()
+            .burn_check_target_evidence(&app.state::<Store>(), &action_id)
+            .map_err(|_| "unable to load burn check evidence".to_owned())?;
+        ::tracing::debug!(
+            event = "burn_check_evidence_finished",
+            status = if evidence.status == crate::remediation::BurnCheckEvidenceStatus::Available {
+                "available"
+            } else {
+                "unavailable"
+            },
+            items = evidence.items.len(),
+            duration_ms = started_at.elapsed().as_millis() as u64,
+        );
+        Ok(evidence)
+    })
+    .await
+    .map_err(|_| "unable to load burn check evidence".to_owned())?
 }
 
 #[tauri::command]
@@ -1936,10 +2071,60 @@ pub async fn get_session_hygiene(
         let store = app.state::<Store>();
         let rows = store.evidence_batch(&keys).map_err(fail)?;
         let source_generations = store.source_generation_batch(&keys).map_err(fail)?;
-        Ok(session_hygiene_payloads(rows, source_generations))
+        let checks_enabled = store
+            .internal_value("internal:burnChecksEnabledAtEpochV1")
+            .is_some();
+        let findings = if checks_enabled
+            && app
+                .state::<crate::jev_worker::WorkerHandle>()
+                .is_available()
+        {
+            crate::insights_report::ignored_instruction_session_statuses(store.state_dir(), &keys)
+                .map_err(fail)?
+        } else if checks_enabled {
+            vec![
+                crate::dto::IgnoredInstructionSessionStatus {
+                    status: crate::dto::SessionHygieneStatus::CouldntCheck,
+                    reason: Some("The TypeSafe API key is unavailable. Replace it in Settings."),
+                };
+                keys.len()
+            ]
+        } else {
+            vec![
+                crate::dto::IgnoredInstructionSessionStatus {
+                    status: crate::dto::SessionHygieneStatus::NotAssessed,
+                    reason: None,
+                };
+                keys.len()
+            ]
+        };
+        let mut payloads = session_hygiene_payloads(rows, source_generations);
+        attach_ignored_instruction_statuses(&mut payloads, findings);
+        Ok(payloads)
     })
     .await
     .map_err(fail)?
+}
+
+pub(crate) fn attach_ignored_instruction_statuses(
+    payloads: &mut [SessionHygienePayload],
+    statuses: impl IntoIterator<Item = crate::dto::IgnoredInstructionSessionStatus>,
+) {
+    for (payload, outcome) in payloads.iter_mut().zip(statuses) {
+        payload
+            .badges
+            .retain(|badge| badge.id != "ignoredInstructions");
+        if outcome.status != crate::dto::SessionHygieneStatus::NotAssessed {
+            payload.badges.push(crate::dto::SessionHygieneBadgePayload {
+                id: "ignoredInstructions",
+                status: outcome.status,
+                not_assessed_reason: None,
+                check_reason: outcome.reason,
+                accounting: None,
+                finding_evidence: None,
+            });
+        }
+    }
 }
 
 fn session_hygiene_payloads(
@@ -2102,6 +2287,7 @@ pub async fn set_repository_enabled(
             reason: crate::session_lifecycle::IndexChangeReason::Invalidated,
         },
     );
+    crate::jev_settings::changed(&app);
     if enabled {
         app.state::<ScanController>()
             .request(ScanTrigger::RepositoryToggle);
@@ -2299,6 +2485,10 @@ pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
         .map_err(fail)
     })
     .await?;
+    // A fresh index has not earned its historical pass yet, even under a
+    // retention that already covered the one this just dropped.
+    crate::scan::history::reset_done(&app.state::<Store>());
+    app.state::<ScanController>().reset_history_auto_request();
     // Report the broad removal and list invalidation before requesting index refill.
     crate::session_lifecycle::report(
         &app,
@@ -2704,6 +2894,9 @@ mod tests;
 
 #[cfg(test)]
 mod project_folder_tests {
+    use std::cell::RefCell;
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -2714,6 +2907,696 @@ mod project_folder_tests {
             serde_json::json!({"kind":"session","environmentKey":"ssh:host","agent":"claude-code","sessionId":"same","path":"/tmp"}),
         ] {
             assert!(serde_json::from_value::<ProjectFolderTarget>(value).is_err());
+        }
+    }
+
+    #[test]
+    fn an_ignored_instruction_result_adds_a_finding_to_the_session_badges() {
+        let mut payloads = [SessionHygienePayload {
+            badges: Vec::new(),
+            evidence_state: "ready",
+            unused_resources: None,
+        }];
+
+        attach_ignored_instruction_statuses(
+            &mut payloads,
+            [crate::dto::IgnoredInstructionSessionStatus {
+                status: crate::dto::SessionHygieneStatus::Finding,
+                reason: None,
+            }],
+        );
+
+        assert_eq!(payloads[0].badges.len(), 1);
+        assert_eq!(payloads[0].badges[0].id, "ignoredInstructions");
+        assert!(matches!(
+            payloads[0].badges[0].status,
+            crate::dto::SessionHygieneStatus::Finding
+        ));
+    }
+
+    #[test]
+    fn an_in_progress_instruction_check_stays_unassessed_until_evidence_is_available() {
+        let mut category = crate::dto::ChecksCategoryPayload {
+            id: BurnCheckDetectorId::IgnoredInstructions,
+            sampled: false,
+            lifecycle: None,
+            finding: 0,
+            agents: Vec::new(),
+            clean: 0,
+            unavailable: 7,
+            estimated_token_burn_basis_points: None,
+        };
+        apply_ignored_instruction_progress(&mut category);
+        assert_eq!(category.lifecycle, None);
+
+        category.unavailable = 0;
+        apply_ignored_instruction_progress(&mut category);
+        assert_eq!(
+            category.lifecycle,
+            Some(ChecksCategoryLifecyclePayload::Passing)
+        );
+
+        category.unavailable = 7;
+        category.finding = 1;
+        category.lifecycle = Some(ChecksCategoryLifecyclePayload::AwaitingVerification);
+        apply_ignored_instruction_progress(&mut category);
+        assert_eq!(
+            category.lifecycle,
+            Some(ChecksCategoryLifecyclePayload::Failing)
+        );
+    }
+
+    #[test]
+    fn every_enabled_instruction_check_gets_a_truthful_session_state() {
+        let statuses = [
+            crate::dto::IgnoredInstructionSessionStatus {
+                status: crate::dto::SessionHygieneStatus::Checking,
+                reason: Some("Waiting for current session evidence."),
+            },
+            crate::dto::IgnoredInstructionSessionStatus {
+                status: crate::dto::SessionHygieneStatus::Clean,
+                reason: None,
+            },
+            crate::dto::IgnoredInstructionSessionStatus {
+                status: crate::dto::SessionHygieneStatus::CouldntCheck,
+                reason: Some("The assessment limit was reached."),
+            },
+        ];
+        let mut payloads = statuses
+            .iter()
+            .map(|_| SessionHygienePayload {
+                badges: Vec::new(),
+                evidence_state: "ready",
+                unused_resources: None,
+            })
+            .collect::<Vec<_>>();
+
+        attach_ignored_instruction_statuses(&mut payloads, statuses);
+
+        assert_eq!(payloads.len(), 3);
+        assert!(payloads.iter().all(|payload| {
+            payload
+                .badges
+                .iter()
+                .any(|badge| badge.id == "ignoredInstructions")
+        }));
+        assert_eq!(
+            payloads[0].badges[0].check_reason,
+            Some("Waiting for current session evidence.")
+        );
+        assert_eq!(
+            payloads[2].badges[0].check_reason,
+            Some("The assessment limit was reached.")
+        );
+    }
+
+    #[test]
+    fn hud_locking_commands_dispatch_to_blocking_workers() {
+        let source = include_str!("../hud_commands.rs");
+        for name in [
+            "hide_overlay_window",
+            "resize_overlay_window",
+            "set_hud_detail_size",
+            "tear_off_overlay",
+            "set_hud_island",
+        ] {
+            let signature = format!("pub async fn {name}(");
+            let body = source
+                .split_once(&signature)
+                .unwrap_or_else(|| panic!("{name} must not run on the UI thread"))
+                .1
+                .split_once("\n}")
+                .expect("the command has a body")
+                .0;
+            let dispatch = body
+                .find("run_blocking(move ||")
+                .expect("a blocking worker");
+            let hud_call = body[dispatch..]
+                .find("antiburn_hud::")
+                .expect("a HUD operation")
+                + dispatch;
+            assert!(dispatch < hud_call, "{name} dispatches before locking");
+            assert!(body.contains(".await"), "{name} awaits completion");
+        }
+    }
+
+    #[test]
+    fn hud_notch_reads_do_not_dispatch_mutations_to_the_main_thread() {
+        let source = include_str!("../hud_commands.rs");
+        assert!(!source.contains("on_main_value(&app, antiburn_hud::settle_after_drag)"));
+        assert!(!source.contains("move |app| antiburn_hud::restore_dock(app, dock)"));
+        let restore = include_str!("../hud.rs")
+            .split_once("pub fn restore_at_launch(")
+            .unwrap()
+            .1;
+        let restore = restore.split_once("\n}").unwrap().0;
+        let dispatch = restore
+            .find("spawn_blocking")
+            .expect("startup dispatches to a worker");
+        let open = restore
+            .find("antiburn_hud::open")
+            .expect("startup opens the HUD");
+        assert!(dispatch < open);
+    }
+
+    #[test]
+    fn hud_hover_intent_stays_synchronous_and_outside_the_resize_lock() {
+        let commands = include_str!("../hud_commands.rs");
+        let hud = include_str!("../../crates/hud/src/lib.rs");
+        for name in ["show_hud_detail", "hide_hud_detail"] {
+            assert!(commands.contains(&format!("pub fn {name}(")));
+        }
+        let show = hud.split_once("pub fn show_detail(").unwrap().1;
+        let show = show.split_once("\n}").unwrap().0;
+        assert!(!show.contains("resize_apply_guard"));
+        assert!(!show.contains("spawn"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn hud_lock_contention_leaves_native_query_dispatch_responsive() {
+        let lock = std::sync::Arc::new(std::sync::Mutex::new(()));
+        let scale_lock = lock.clone();
+        let (query_tx, query_rx) = tokio::sync::oneshot::channel();
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        let scale = tokio::spawn(run_blocking(move || {
+            let _guard = scale_lock.lock().expect("scale lock");
+            query_tx.send(()).expect("native query dispatch");
+            reply_rx.recv_timeout(Duration::from_secs(5)).map_err(fail)
+        }));
+        query_rx
+            .await
+            .expect("scale holds the lock and requests the UI");
+        let (resize_tx, resize_rx) = tokio::sync::oneshot::channel();
+        let resize = tokio::spawn(run_blocking(move || {
+            resize_tx.send(()).expect("resize starts");
+            let _guard = lock.lock().expect("resize lock");
+            Ok(())
+        }));
+        tokio::time::timeout(Duration::from_secs(2), resize_rx)
+            .await
+            .expect("resize dispatch does not block the UI")
+            .expect("resize starts while scale holds the lock");
+        assert!(!resize.is_finished());
+        reply_tx
+            .send(())
+            .expect("the UI can answer the native query");
+        scale
+            .await
+            .expect("scale joins")
+            .expect("native query succeeds");
+        resize
+            .await
+            .expect("resize joins")
+            .expect("resize completes");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_command_work_keeps_the_current_thread_runtime_responsive() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let operation = tokio::spawn(run_blocking(move || {
+            let _ = started_tx.send(());
+            release_rx
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(fail)
+        }));
+
+        tokio::time::timeout(Duration::from_secs(2), started_rx)
+            .await
+            .expect("the blocking operation starts without occupying the runtime")
+            .expect("the blocking operation reports that it started");
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            tokio::time::sleep(Duration::from_millis(1)),
+        )
+        .await
+        .expect("the current-thread runtime advances while blocking work remains");
+        assert!(!operation.is_finished());
+        release_tx
+            .send(())
+            .expect("the blocking operation accepts release");
+        operation
+            .await
+            .expect("the command task joins")
+            .expect("the blocking operation succeeds");
+    }
+
+    #[test]
+    fn burn_check_remediation_rejects_unrelated_windows() {
+        assert!(ensure_checks_window(popover::LABEL).is_ok());
+        assert!(ensure_checks_window(crate::main_window::LABEL).is_ok());
+        assert!(ensure_checks_window("settings").is_err());
+        assert!(ensure_checks_window("onboarding").is_err());
+        assert!(ensure_checks_window(crate::popover_peek::LABEL).is_err());
+    }
+
+    #[test]
+    fn burn_check_snooze_command_rejects_malformed_stored_state() {
+        let store = Store::open_in_memory(Path::new("/tmp/antiburn-snooze-command-test")).unwrap();
+        store.save_burn_check_snoozes("not json").unwrap();
+
+        assert!(current_burn_check_snoozes(&store).is_err());
+    }
+
+    #[test]
+    fn burn_check_payload_keeps_check_samples_diverse_and_target_samples_independent() {
+        use crate::remediation::{
+            AutoFixAvailability, BurnCheckDisplayFacts, BurnCheckResourceKind,
+            BurnCheckSampleSession, BurnCheckScopeKind, BurnCheckTarget, BurnCheckTargetList,
+            BurnCheckVerificationLimit, PromptFixAvailability,
+        };
+        use crate::store::{AnalysisRecord, EvidenceCompletion, PublishedEvidence};
+        use antiburn_local::analysis::SourceFormat;
+        use antiburn_local::insights::DetectorId;
+        use antiburn_local::model::AgentKind;
+        use antiburn_local::remediation::{DisplayFacts, FindingDisplay};
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        let state = crate::main_window::MainWindowState::load(&store);
+        let agents = [
+            "claude-code",
+            "claude-code",
+            "claude-code",
+            "codex",
+            "codex",
+            "codex",
+        ];
+        let mut samples = Vec::new();
+        for (index, agent) in agents.into_iter().enumerate() {
+            let mut record = session_record("file", "/synthetic/private-source.jsonl");
+            record.key = SessionKey::new("native", agent, format!("private-session-{index}"));
+            record.title = Some(format!("Review {index}"));
+            record.cwd = Some("/synthetic/demo".into());
+            record.updated_at_epoch = Some(990 - index as i64);
+            record.source_fingerprint = Some(format!("fingerprint-{index}"));
+            store
+                .upsert_sessions(
+                    std::slice::from_ref(&record),
+                    &crate::agents::evidence_cohort(),
+                )
+                .unwrap();
+            let claim = store
+                .claim_next_evidence(&[agent], 1000, 60)
+                .unwrap()
+                .unwrap();
+            assert_eq!(claim.key, record.key);
+            let tokens = ModelTokens {
+                input_tokens: 1000,
+                output_tokens: 100,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                cache_creation_1h_tokens: 0,
+            };
+            let breakdown =
+                serde_json::to_string(&HashMap::from([("claude-sonnet-5", tokens)])).unwrap();
+            let mut evidence = super::tests::synthetic_evidence();
+            evidence.identity.agent = agent.into();
+            evidence.identity.session_id = record.key.session_id.clone();
+            assert!(
+                store
+                    .publish_projections(
+                        &AnalysisRecord {
+                            key: record.key.clone(),
+                            model_breakdown_json: breakdown.clone(),
+                            pricing_breakdown_json: breakdown,
+                            inclusive_models_json: "[]".into(),
+                            initial_context_json: None,
+                            source_summaries_json: None,
+                            provider_hints_json: None,
+                            source_fingerprint: record.source_fingerprint.clone().unwrap(),
+                            pricing_generation: 0,
+                            analyzed_generation: claim.source_generation,
+                            parser_revision: PARSER_REVISION,
+                            analyzer_revision: ANALYZER_REVISION,
+                            metrics_schema_revision: 0,
+                        },
+                        None,
+                        &EvidenceCompletion {
+                            claim_fence: claim.claim_fence,
+                            status: PublishedEvidence::Ready,
+                            evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
+                            evidence_json: serde_json::to_string(&evidence).unwrap(),
+                        },
+                        &[],
+                        &[],
+                    )
+                    .unwrap()
+            );
+            samples.push(BurnCheckSampleSession {
+                environment_key: record.key.environment_key,
+                agent: record.key.agent,
+                session_id: record.key.session_id,
+                observed_at_ms: 990_000 - index as i64,
+                incarnation: None,
+            });
+        }
+        let target = BurnCheckTarget {
+            finding_id: "finding".into(),
+            action_id: "action".into(),
+            finding: FindingDisplay {
+                detector: DetectorId::SessionsOverDepth,
+                agent: AgentKind::Claude,
+                source_format: SourceFormat::ClaudeJsonl,
+                observation: "Long session".into(),
+                certainty: None,
+                instruction_provenance: None,
+                facts: DisplayFacts {
+                    labels: Vec::new(),
+                    omitted: 0,
+                },
+            },
+            display: BurnCheckDisplayFacts {
+                resource_kind: BurnCheckResourceKind::Session,
+                resource_identity: None,
+                instruction_title: None,
+                current_value: None,
+                replacement_value: None,
+                scope_kind: BurnCheckScopeKind::Session,
+                quantity: None,
+                quantity_unit: None,
+                observation_count: 3,
+                first_observed_at_ms: 1,
+                last_observed_at_ms: 990_000,
+                estimate_method: None,
+                estimated_opportunity: None,
+                estimated_token_burn_basis_points: None,
+                verification_limit: BurnCheckVerificationLimit::CurrentEvidenceCannotProveFix,
+            },
+            occurrences: 3,
+            affected_sessions: Some(3),
+            project_name: None,
+            project_location: None,
+            project_path: None,
+            config_file: None,
+            auto_fix: AutoFixAvailability::Unavailable(
+                crate::remediation::AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
+            ),
+            prompt_fix: PromptFixAvailability::Available,
+            watch: None,
+            evidence_available: false,
+            coverage_limits: Vec::new(),
+            sample_sessions: samples[..3].to_vec(),
+            expires_at_epoch: 1600,
+        };
+        let mut overlapping_target = target.clone();
+        overlapping_target.sample_sessions = vec![samples[0].clone()];
+        let payload = burn_check_target_list_payload(
+            &state,
+            &store,
+            BurnCheckTargetList {
+                targets: vec![target, overlapping_target],
+                sample_sessions: samples,
+                truncated: false,
+            },
+            1000,
+        )
+        .unwrap();
+        assert_eq!(payload.samples.len(), 6);
+        assert_eq!(
+            payload
+                .samples
+                .iter()
+                .map(|sample| sample.agent.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "claude-code",
+                "claude-code",
+                "claude-code",
+                "codex",
+                "codex",
+                "codex"
+            ]
+        );
+        assert_eq!(payload.targets[0].samples.len(), 3);
+        assert!(
+            payload.targets[0]
+                .samples
+                .iter()
+                .all(|sample| sample.agent == "claude-code")
+        );
+        assert_eq!(payload.targets[1].samples.len(), 1);
+        assert_eq!(
+            payload.samples[0].navigation_handle,
+            payload.targets[1].samples[0].navigation_handle
+        );
+        for sample in &payload.samples {
+            assert!(sample.title.starts_with("Review "));
+            assert_eq!(sample.repo, "demo");
+            assert!(sample.is_active);
+            assert!(!sample.timestamp.is_empty());
+            assert!(sample.cost.is_some());
+            assert!(!sample.models.is_empty());
+            assert_eq!(sample.hygiene.evidence_state, "ready");
+            assert!(
+                state
+                    .resolve_sample_handle(&sample.navigation_handle, std::time::Instant::now())
+                    .is_ok()
+            );
+        }
+        let encoded = serde_json::to_string(&payload).unwrap();
+        for private in [
+            "sessionId",
+            "environmentKey",
+            "wslDistro",
+            "/synthetic/",
+            "private-session-",
+        ] {
+            assert!(!encoded.contains(private), "the payload exposes {private}");
+        }
+    }
+
+    #[test]
+    fn expected_auto_fix_failures_map_to_closed_outcomes() {
+        assert!(matches!(
+            apply_prepared_outcome(Err(ControllerError::TargetExpired)).unwrap(),
+            ApplyPreparedBurnCheckOperationOutcome::Expired
+        ));
+        assert!(matches!(
+            apply_prepared_outcome(Err(ControllerError::TargetChanged)).unwrap(),
+            ApplyPreparedBurnCheckOperationOutcome::Stale
+        ));
+        assert!(matches!(
+            apply_prepared_outcome(Err(ControllerError::ApplyFailed(
+                crate::agent_config::ApplyError::Conflict(
+                    crate::agent_config::ApplyConflict::ChangedContent
+                )
+            )))
+            .unwrap(),
+            ApplyPreparedBurnCheckOperationOutcome::Conflict
+        ));
+        assert!(apply_prepared_outcome(Err(ControllerError::Internal)).is_err());
+        assert!(matches!(
+            prepare_auto_fix_outcome(Err(ControllerError::TargetExpired)).unwrap(),
+            PrepareAutoFixBurnCheckTargetOutcome::Expired
+        ));
+    }
+
+    #[test]
+    fn auto_fix_success_reports_verification_availability() {
+        assert!(matches!(
+            apply_prepared_outcome(Ok(crate::remediation::AutoFixResult {
+                watch_id: "watch".into(),
+                verification_available: true,
+            }))
+            .unwrap(),
+            ApplyPreparedBurnCheckOperationOutcome::AppliedAwaitingVerification { .. }
+        ));
+        assert!(matches!(
+            apply_prepared_outcome(Ok(crate::remediation::AutoFixResult {
+                watch_id: "watch".into(),
+                verification_available: false,
+            }))
+            .unwrap(),
+            ApplyPreparedBurnCheckOperationOutcome::AppliedVerificationUnavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn expected_prompt_failures_map_to_closed_outcomes() {
+        assert!(matches!(
+            prompt_fix_outcome(Err(ControllerError::TargetNotFound)).unwrap(),
+            CopyPromptFixBurnCheckTargetOutcome::Unavailable {
+                reason: PromptFixUnavailableReason::TargetNotFound
+            }
+        ));
+        assert!(matches!(
+            prompt_fix_outcome(Err(ControllerError::PromptUnavailable(
+                antiburn_local::remediation::RemediationUnavailableReason::PromptSizeLimit
+            )))
+            .unwrap(),
+            CopyPromptFixBurnCheckTargetOutcome::Unavailable {
+                reason: PromptFixUnavailableReason::PromptSizeLimit
+            }
+        ));
+        assert!(matches!(
+            prompt_fix_outcome(Err(ControllerError::PromptUnavailable(
+                antiburn_local::remediation::RemediationUnavailableReason::ProtectedBuiltInTool
+            )))
+            .unwrap(),
+            CopyPromptFixBurnCheckTargetOutcome::Unavailable {
+                reason: PromptFixUnavailableReason::ProtectedBuiltInTool
+            }
+        ));
+        assert!(prompt_fix_outcome(Err(ControllerError::PersistenceFailed)).is_err());
+    }
+
+    #[test]
+    fn analytics_documentation_matches_the_installed_release() {
+        assert_eq!(
+            analytics_documentation_url("0.1.0-rc.5"),
+            "https://github.com/antiburn/antiburn/blob/antiburn-v0.1.0-rc.5/docs/analytics.md"
+        );
+    }
+
+    fn repository(key: &str, name: &str, root: &str) -> RepositoryRecord {
+        RepositoryRecord {
+            key: key.into(),
+            repo_name: name.into(),
+            full_name: format!("avery/{name}"),
+            status: "accessible".into(),
+            repo_root: Some(root.into()),
+            suspected_path: None,
+            worktree_count: 1,
+            session_count: 0,
+            wsl_distro: None,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn restarting_onboarding_retires_the_popover_before_opening_setup() {
+        let actions = RefCell::new(Vec::new());
+
+        restart_onboarding_surfaces(
+            || actions.borrow_mut().push("hide_popover"),
+            || {
+                actions.borrow_mut().push("open_onboarding");
+                Ok(())
+            },
+        )
+        .expect("the test transition succeeds");
+
+        assert_eq!(*actions.borrow(), ["hide_popover", "open_onboarding"]);
+    }
+
+    /// The report request covers thirty days, ends one past now (the end
+    /// bound is exclusive), and asks for the native scope only.
+    #[test]
+    fn the_insights_request_spans_thirty_days_of_the_native_scope() {
+        let request = insights_report_request(1_000_000_000);
+        assert_eq!(request.environment_key, "native");
+        assert_eq!(request.computed_at_epoch, 1_000_000_000);
+        assert_eq!(request.window.end_epoch, 1_000_000_001);
+        assert_eq!(
+            request.window.end_epoch - request.window.start_epoch,
+            30 * 86_400 + 1
+        );
+    }
+
+    #[test]
+    fn a_working_directory_is_labelled_by_the_repository_that_contains_it() {
+        let repositories = vec![repository("a", "widgets", "/home/avery/code/widgets")];
+        assert_eq!(
+            repository_label(&repositories, Some("/home/avery/code/widgets/src/api")),
+            "widgets"
+        );
+    }
+
+    #[test]
+    fn a_nested_clone_wins_over_the_repository_above_it() {
+        let repositories = vec![
+            repository("a", "widgets", "/home/avery/code/widgets"),
+            repository(
+                "b",
+                "vendored",
+                "/home/avery/code/widgets/third_party/vendored",
+            ),
+        ];
+        assert_eq!(
+            repository_label(
+                &repositories,
+                Some("/home/avery/code/widgets/third_party/vendored/src")
+            ),
+            "vendored"
+        );
+    }
+
+    #[test]
+    fn a_directory_outside_every_repository_falls_back_to_its_own_name() {
+        assert_eq!(repository_label(&[], Some("/tmp/scratch")), "scratch");
+        assert_eq!(repository_label(&[], Some("")), "");
+        assert_eq!(repository_label(&[], None), "");
+    }
+
+    #[test]
+    fn a_sibling_directory_is_not_mistaken_for_the_repository() {
+        let repositories = vec![repository("a", "widgets", "/home/avery/code/widgets")];
+        assert_eq!(
+            repository_label(&repositories, Some("/home/avery/code/widgets-legacy")),
+            "widgets-legacy",
+            "the fallback, not the neighbouring repository"
+        );
+    }
+
+    #[test]
+    fn epochs_render_as_the_iso_stamps_the_activity_list_parses() {
+        assert_eq!(iso_from_epoch(Some(0)), "1970-01-01T00:00:00Z");
+        assert_eq!(iso_from_epoch(Some(1_800_000_000)), "2027-01-15T08:00:00Z");
+        // A session with no activity still yields a parseable stamp rather
+        // than an empty string the list would drop.
+        assert_eq!(iso_from_epoch(None), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn a_ready_or_unsupported_fence_is_not_stale() {
+        assert!(!analysis_is_stale(Some(
+            crate::store::EvidenceStatus::Ready
+        )));
+        assert!(!analysis_is_stale(Some(
+            crate::store::EvidenceStatus::Unsupported
+        )));
+    }
+
+    #[test]
+    fn a_fence_left_by_a_requeue_or_a_running_pass_is_stale() {
+        // The served rows are the last winning publish's, but the evidence
+        // row itself is not terminal: a fresher pass is queued or running
+        // behind them.
+        assert!(analysis_is_stale(Some(
+            crate::store::EvidenceStatus::Pending
+        )));
+        assert!(analysis_is_stale(Some(
+            crate::store::EvidenceStatus::Processing
+        )));
+    }
+
+    #[test]
+    fn a_failed_pass_behind_an_earlier_publish_is_not_stale_on_its_own() {
+        // Nothing fresher is queued or running: the worker gave up. The
+        // served rows stay marked fresh until something requeues this row,
+        // at which point it reads `pending` again.
+        assert!(!analysis_is_stale(Some(
+            crate::store::EvidenceStatus::Failed
+        )));
+    }
+
+    fn session_record(source_kind: &str, source_label: &str) -> SessionRecord {
+        SessionRecord {
+            key: SessionKey::for_session("claude-code", "session-1", None),
+            source_kind: source_kind.into(),
+            source_label: source_label.into(),
+            wsl_distro: None,
+            title: None,
+            title_source: None,
+            cwd: None,
+            surface: "cli".into(),
+            updated_at_epoch: None,
+            activity_cursor: String::new(),
+            activity_source: "unknown".into(),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+            source_fingerprint: None,
         }
     }
 

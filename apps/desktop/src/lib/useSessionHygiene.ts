@@ -2,7 +2,11 @@ import { useMemo, useSyncExternalStore } from "react"
 
 import type { SessionListEntry } from "../components/session/SessionList"
 import { createExternalStore, type ExternalStore } from "./externalStore"
-import { getSessionHygiene, type SessionHygienePayload } from "./insightsIpc"
+import {
+  getSessionHygiene,
+  onChecksReportChanged,
+  type SessionHygienePayload,
+} from "./insightsIpc"
 import { onSessionIndexChanged, onSessionUpdated } from "./ipc"
 import { localSessionKey } from "./presentation/localIdentity"
 import { INITIAL_SESSION_HYGIENE } from "./presentation/sessionHygiene"
@@ -133,7 +137,7 @@ function createSessionHygieneStore(requestKey: string): ExternalStore<SessionHyg
         }
         refreshing = false
       }
-      const [stopIndexChange, stopUpdate] = await Promise.all([
+      const [stopIndexChange, stopUpdate, stopChecksChange] = await Promise.all([
         // Membership changed, or events were lost: re-read every requested
         // session rather than guessing which ones moved.
         onSessionIndexChanged(() => void refresh(sessions)),
@@ -160,11 +164,13 @@ function createSessionHygieneStore(requestKey: string): ExternalStore<SessionHyg
             void refresh([identity])
           }
         }),
+        onChecksReportChanged(() => void refresh(sessions)),
       ])
       return () => {
         active = false
         stopIndexChange()
         stopUpdate()
+        stopChecksChange()
       }
     },
   })
