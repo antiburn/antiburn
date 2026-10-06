@@ -96,10 +96,8 @@ remove_keychain_services() {
 desktop_apps() {
   {
     mdfind "kMDItemCFBundleIdentifier == '$BUNDLE_ID'" 2>/dev/null || true
-    for p in /Applications/Codex.app "$HOME/Applications/Codex.app" \
-             /Applications/ChatGPT.app "$HOME/Applications/ChatGPT.app"; do
-      [[ -d "$p" ]] && echo "$p"
-    done
+    # Spotlight can miss an app, so also check every app in the Applications folders.
+    for p in /Applications/*.app "$HOME"/Applications/*.app; do [[ -d "$p" ]] && echo "$p"; done
   } | sort -u | while IFS= read -r app; do
     [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Contents/Info.plist" 2>/dev/null)" == "$BUNDLE_ID" ]] \
       && echo "$app"
