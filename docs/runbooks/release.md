@@ -121,7 +121,8 @@ the signing service is hosted in another region.
 Basic includes 5,000 signatures per month at a published USD 9.99/month before
 tax. Each file signed consumes a signature. Tauri signs the app, NSIS plugin
 copies, uninstaller, and installer, so each release target uses several
-signatures. Check current [pricing](https://azure.microsoft.com/pricing/details/artifact-signing/)
+signatures. The Windows signing probe adds one signature per target and verifies
+live authentication before the full compile. Check current [pricing](https://azure.microsoft.com/pricing/details/artifact-signing/)
 before changing the subscription.
 
 Add these as **environment variables** under Settings → Environments → `release`:
