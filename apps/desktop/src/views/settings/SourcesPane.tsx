@@ -10,8 +10,16 @@ import { PushButton } from "../../components/ui/PushButton"
 import { StatusText } from "../../components/ui/StatusText"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { renderAgentIcon } from "../../lib/agentIcon"
-import { openFolderAccessSettings, scanNow } from "../../lib/ipc"
-import { AGENT_SLUGS, agentDisplayName } from "../../lib/presentation/agents"
+import { createExternalStore } from "../../lib/externalStore"
+import {
+  EMPTY_LIVE_USAGE,
+  getLiveUsage,
+  onLiveUsageChanged,
+  openFolderAccessSettings,
+  scanNow,
+} from "../../lib/ipc"
+import { agentListName, agentStatus, meterForAgent } from "../../lib/presentation/agentStatus"
+import { AGENT_SLUGS } from "../../lib/presentation/agents"
 import { scanStatusStore, withKnownAgents } from "../../lib/scanStatusStore"
 import type { LocalRepositoryItem } from "../../lib/types/repository"
 import { useFolderPermissionFlow } from "../../lib/useFolderPermissionFlow"
@@ -49,6 +57,18 @@ export function SourcesPane({ discoveryPaused, appVersion = "VERSION" }: Sources
     scanStatusStore.subscribe,
     scanStatusStore.getSnapshot,
   )
+
+  // Login detection for each agent's status line. Read the cached snapshot and
+  // follow updates; reading it also refreshes detection when limits are off.
+  // No refresh from here: this pane makes no provider requests.
+  const [liveStore] = useState(() =>
+    createExternalStore({
+      initial: EMPTY_LIVE_USAGE,
+      load: () => getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
+      subscribe: onLiveUsageChanged,
+    }),
+  )
+  const liveMeters = useSyncExternalStore(liveStore.subscribe, liveStore.getSnapshot).meters
 
   const handleRescanSessions = useCallback(async () => {
     const status = await scanNow().catch(() => null)
@@ -155,22 +175,21 @@ export function SourcesPane({ discoveryPaused, appVersion = "VERSION" }: Sources
               leave them out.
             </p>
             {agentRows.map((slug) => {
-              const sessions = sessionsByAgent.get(slug) ?? 0
+              const { line } = agentStatus(
+                sessionsByAgent.get(slug) ?? 0,
+                meterForAgent(slug, liveMeters),
+              )
               return (
                 <div key={slug} className="flex items-center gap-2.5 px-4 py-2">
                   <span className="flex w-5 shrink-0 justify-center">
                     {renderAgentIcon(slug, 15)}
                   </span>
-                  <span className="type-callout text-label">{agentDisplayName(slug)}</span>
-                  <span className="flex-1 type-footnote text-label-tertiary">
-                    {sessions > 0
-                      ? `${sessions} ${sessions === 1 ? "session" : "sessions"}`
-                      : ""}
-                  </span>
+                  <span className="type-callout text-label">{agentListName(slug)}</span>
+                  <span className="flex-1 type-footnote text-label-tertiary">{line}</span>
                   <ToggleSwitch
                     checked={!disabledAgents.includes(slug)}
                     onCheckedChange={(next) => setAgentEnabled(slug, next)}
-                    aria-label={`Show ${agentDisplayName(slug)} sessions`}
+                    aria-label={`Show ${agentListName(slug)} sessions`}
                   />
                 </div>
               )

@@ -13,8 +13,8 @@ import { PushButton } from "../../components/ui/PushButton"
 import { ScrollPane } from "../../components/ui/ScrollPane"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { renderAgentIcon } from "../../lib/agentIcon"
+import { agentListName, agentStatus, meterForAgent } from "../../lib/presentation/agentStatus"
 import { AGENT_SLUGS, agentDisplayName } from "../../lib/presentation/agents"
-import { liveDetectionMarker } from "../../lib/presentation/liveUsage"
 import { sessionHygieneCheckName } from "../../lib/presentation/sessionHygiene"
 import {
   getConsentDiagnostics,
@@ -157,15 +157,17 @@ function AgentsDetected({
   disabledAgents: readonly string[]
   onAgentEnabledChange: (slug: string, enabled: boolean) => void
 }) {
-  const detected = (scanStatus?.agents ?? [])
-    .filter((entry) => entry.sessionsSeen > 0)
-    .sort((a, b) => b.sessionsSeen - a.sessionsSeen)
-  const detectedSlugs = new Set(detected.map((entry) => entry.agent))
-  const quiet = AGENT_SLUGS.filter((slug) => !detectedSlugs.has(slug))
+  const sessionsByAgent = new Map(
+    (scanStatus?.agents ?? []).map((entry) => [entry.agent, entry.sessionsSeen]),
+  )
+  const statuses = AGENT_SLUGS.map((slug) => {
+    const sessions = sessionsByAgent.get(slug) ?? 0
+    return { slug, sessions, ...agentStatus(sessions, meterForAgent(slug, liveUsageMeters)) }
+  })
+  // Found agents lead, ordered by evidence; the rest keep registry order.
+  const found = statuses.filter((entry) => entry.found).sort((a, b) => b.sessions - a.sessions)
+  const quiet = statuses.filter((entry) => !entry.found).map((entry) => entry.slug)
   const isEnabled = (slug: string) => !disabledAgents.includes(slug)
-  const liveDetections = (liveUsageMeters ?? [])
-    .flatMap((meter) => liveDetectionMarker(meter) ?? [])
-    .join(" · ")
 
   return (
     <div className="flex h-full min-h-0 flex-col px-8">
@@ -176,43 +178,47 @@ function AgentsDetected({
         antiburn does constant background session scans from agents you enable.
       </p>
 
-      {liveDetections && (
-        <p className="mt-1.5 type-footnote text-label-tertiary">Detected: {liveDetections}</p>
-      )}
-
       <ScrollPane className="mt-3" viewportClassName="pr-1">
-        {detected.length > 0 ? (
-          <Card>
-            {detected.map((entry) => (
-              <div key={entry.agent} className="flex items-center gap-2.5 px-3 py-1.5">
-                <span className="flex w-5 shrink-0 justify-center">
-                  {renderAgentIcon(entry.agent, 16)}
-                </span>
-                <span className="type-callout font-semibold! text-label">
-                  {agentDisplayName(entry.agent)}
-                </span>
-                <span className="flex-1 type-footnote text-label-tertiary">
-                  {entry.sessionsSeen} {entry.sessionsSeen === 1 ? "session" : "sessions"}
-                </span>
-                <ToggleSwitch
-                  checked={isEnabled(entry.agent)}
-                  onCheckedChange={(next) => onAgentEnabledChange(entry.agent, next)}
-                  aria-label={`Show ${agentDisplayName(entry.agent)} sessions`}
-                />
-              </div>
-            ))}
-          </Card>
+        {found.length > 0 ? (
+          <>
+            <p className="mt-1 pb-1.5 type-footnote font-semibold! text-label-tertiary">
+              Found on this computer
+            </p>
+            <Card>
+              {found.map((entry) => (
+                <div key={entry.slug} className="flex items-center gap-2.5 px-3 py-1.5">
+                  <span className="flex w-5 shrink-0 justify-center">
+                    {renderAgentIcon(entry.slug, 16)}
+                  </span>
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="type-callout font-semibold! text-label">
+                      {agentListName(entry.slug)}
+                    </span>
+                    <span className="type-footnote text-label-tertiary">{entry.line}</span>
+                  </span>
+                  <ToggleSwitch
+                    checked={isEnabled(entry.slug)}
+                    onCheckedChange={(next) => onAgentEnabledChange(entry.slug, next)}
+                    aria-label={`Show ${agentListName(entry.slug)} sessions`}
+                  />
+                </div>
+              ))}
+            </Card>
+          </>
         ) : null}
 
         {quiet.length > 0 ? (
           <>
             <p
               className={cn(
-                "pb-1.5 type-footnote font-semibold! text-label-tertiary",
-                detected.length > 0 ? "mt-3.5" : "mt-1",
+                "type-footnote font-semibold! text-label-tertiary",
+                found.length > 0 ? "mt-3.5" : "mt-1",
               )}
             >
-              No sessions found
+              Not found
+            </p>
+            <p className="pb-1.5 type-footnote text-label-tertiary">
+              Turn one on and antiburn adds its sessions when they appear.
             </p>
             <Card className="grid grid-cols-2 divide-y-0">
               {quiet.map((slug, position) => (
@@ -228,12 +234,12 @@ function AgentsDetected({
                     {renderAgentIcon(slug, 14)}
                   </span>
                   <span className="flex-1 truncate type-footnote text-label-secondary">
-                    {agentDisplayName(slug)}
+                    {agentListName(slug)}
                   </span>
                   <ToggleSwitch
                     checked={isEnabled(slug)}
                     onCheckedChange={(next) => onAgentEnabledChange(slug, next)}
-                    aria-label={`Show ${agentDisplayName(slug)} sessions`}
+                    aria-label={`Show ${agentListName(slug)} sessions`}
                   />
                 </div>
               ))}

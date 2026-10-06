@@ -617,28 +617,11 @@ const LIVE_TOOLS: Readonly<Record<string, LiveTool>> = {
   [OPENAI]: { tool: "Codex" },
 }
 
-/** The tool's name for a detection marker, or the meter's own display name. */
-function liveToolName(meter: Pick<LiveUsageMeterPayload, "provider" | "displayName">): string {
+/** The meter's login tool, e.g. "Claude Code", or the meter's own display name. */
+export function liveToolName(
+  meter: Pick<LiveUsageMeterPayload, "provider" | "displayName">,
+): string {
   return LIVE_TOOLS[meter.provider]?.tool ?? meter.displayName
-}
-
-/**
- * A one-glyph summary of a meter's detection for a compact line, or null
- * when there is nothing definite to say.
- */
-export function liveDetectionMarker(
-  meter: Pick<LiveUsageMeterPayload, "provider" | "displayName" | "detection" | "carrierLabel">,
-): string | null {
-  const via = meter.carrierLabel === "Pi" ? " via Pi" : ""
-  switch (meter.detection) {
-    case "signedIn":
-      return `${liveToolName(meter)} ✓${via}`
-    case "notInstalled":
-    case "installedNotSignedIn":
-      return `${liveToolName(meter)} ✗${via}`
-    default:
-      return via ? `${liveToolName(meter)} ?${via}` : null
-  }
 }
 
 /**

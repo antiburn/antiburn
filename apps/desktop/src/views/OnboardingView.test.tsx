@@ -188,14 +188,16 @@ describe("OnboardingView", () => {
     ).toBeInTheDocument()
   })
 
-  it("shows detected login carriers and omits Codex while its detection is unknown", async () => {
+  it("adds each agent's login to its status line once detection answers", async () => {
     render(<OnboardingView />)
     fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
-    await waitFor(() => {
-      expect(screen.getByText("Detected: Claude Code ✓ · Antigravity ✗").textContent).toBe(
-        "Detected: Claude Code ✓ · Antigravity ✗",
-      )
-    })
+    await screen.findByRole("heading", { name: "Scan Locations: Agents" })
+    // Claude is signed in with no sessions yet, so it is found. Codex's
+    // detection is unknown and it has no sessions, so it is not.
+    expect(await screen.findByText("No sessions yet · Signed in")).toBeInTheDocument()
+    expect(screen.getByText("Found on this computer")).toBeInTheDocument()
+    expect(screen.getByRole("switch", { name: "Show Claude sessions" })).toBeInTheDocument()
+    expect(screen.queryByText(/^Detected:/)).not.toBeInTheDocument()
     expect(invoke).toHaveBeenCalledWith("get_live_usage", {
       utcOffsetMinutes: -new Date().getTimezoneOffset(),
     })
@@ -212,7 +214,7 @@ describe("OnboardingView", () => {
       name: "legacy fields",
       meters: [{ provider: "anthropic", displayName: "Claude", shown: true }],
     },
-  ])("omits the detection line for $name meters", async ({ meters }) => {
+  ])("finds nothing from $name meters", async ({ meters }) => {
     let resolveUsage!: (usage: LiveUsageSummaryPayload) => void
     mockCommands({
       get_live_usage: new Promise<LiveUsageSummaryPayload>((resolve) => {
@@ -222,16 +224,21 @@ describe("OnboardingView", () => {
     render(<OnboardingView />)
     fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
     await screen.findByRole("heading", { name: "Scan Locations: Agents" })
-    expect(screen.queryByText(/^Detected:/)).not.toBeInTheDocument()
+    expect(screen.queryByText("Found on this computer")).not.toBeInTheDocument()
     await act(async () => {
       resolveUsage({ ...LIVE_USAGE, meters })
     })
-    expect(screen.queryByText(/^Detected:/)).not.toBeInTheDocument()
+    expect(screen.queryByText("Found on this computer")).not.toBeInTheDocument()
+    expect(screen.getByText("Not found")).toBeInTheDocument()
   })
 
-  it("updates the detection line when an independent request finishes", async () => {
+  it("finds Claude Desktop without a Claude Code login and says what limits need", async () => {
     let resolveUsage!: (usage: LiveUsageSummaryPayload) => void
     mockCommands({
+      get_scan_status: {
+        ...SCAN_STATUS,
+        agents: [{ agent: "claude-code", lastCompletedAt: null, sessionsSeen: 41 }],
+      },
       get_live_usage: new Promise<LiveUsageSummaryPayload>((resolve) => {
         resolveUsage = resolve
       }),
@@ -239,7 +246,7 @@ describe("OnboardingView", () => {
     render(<OnboardingView />)
     fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
     await screen.findByRole("heading", { name: "Scan Locations: Agents" })
-    expect(screen.queryByText(/^Detected:/)).not.toBeInTheDocument()
+    expect(await screen.findByText("41 sessions")).toBeInTheDocument()
     await act(async () => {
       resolveUsage({
         ...LIVE_USAGE,
@@ -249,15 +256,21 @@ describe("OnboardingView", () => {
             provider: "anthropic",
             displayName: "Claude",
             shown: true,
-            detection: "installedNotSignedIn",
+            detection: "notInstalled",
+            desktopAppLabel: "Claude Desktop",
           },
         ],
       })
     })
-    expect(await screen.findByText("Detected: Codex ✓ · Claude Code ✗")).toBeInTheDocument()
+    expect(
+      await screen.findByText(
+        "41 sessions · Claude Desktop · Limits need Claude Code signed in",
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByText("No sessions yet · Signed in")).toBeInTheDocument()
   })
 
-  it("says when a login comes through Pi, proven or not", async () => {
+  it("says when a login comes through Pi", async () => {
     let resolveUsage!: (usage: LiveUsageSummaryPayload) => void
     mockCommands({
       get_live_usage: new Promise<LiveUsageSummaryPayload>((resolve) => {
@@ -290,9 +303,8 @@ describe("OnboardingView", () => {
         ],
       })
     })
-    expect(
-      await screen.findByText("Detected: Codex ✓ via Pi · Claude Code ? via Pi"),
-    ).toBeInTheDocument()
+    expect(await screen.findByText("No sessions yet · Signed in via Pi")).toBeInTheDocument()
+    expect(screen.getByRole("switch", { name: "Show Codex sessions" })).toBeInTheDocument()
   })
 
   it("still reaches Ready when the detection request rejects", async () => {
@@ -315,7 +327,7 @@ describe("OnboardingView", () => {
     expect(
       await screen.findByRole("heading", { name: "Scan Locations: Agents" }),
     ).toBeInTheDocument()
-    expect(screen.queryByText(/^Detected:/)).not.toBeInTheDocument()
+    expect(screen.queryByText("Found on this computer")).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
     expect(await screen.findByRole("heading", { name: "Ready" })).toBeInTheDocument()
@@ -431,9 +443,9 @@ describe("OnboardingView", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
     await screen.findByRole("heading", { name: "Scan Locations: Agents" })
 
-    // Detected agents lead with their evidence and start switched on.
-    expect(screen.getByText("304 sessions")).toBeInTheDocument()
-    expect(screen.getByRole("switch", { name: "Show Claude Code sessions" })).toBeChecked()
+    // Found agents lead with their evidence and start switched on.
+    expect(await screen.findByText("304 sessions · Signed in")).toBeInTheDocument()
+    expect(screen.getByRole("switch", { name: "Show Claude sessions" })).toBeChecked()
     // An agent with no sessions starts switched off.
     expect(screen.getByRole("switch", { name: "Show Devin sessions" })).not.toBeChecked()
 

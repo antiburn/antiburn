@@ -126,3 +126,46 @@ describe("SourcesPane folders without git", () => {
     await waitFor(() => expect(toggle).toBeChecked())
   })
 })
+
+describe("SourcesPane coding agents", () => {
+  it("names what each agent has on this computer and leaves the rest blank", async () => {
+    mockCommands({
+      get_scan_status: {
+        ...SCAN_STATUS,
+        agents: [
+          { agent: "claude-code", lastCompletedAt: null, sessionsSeen: 41 },
+          { agent: "codex", lastCompletedAt: null, sessionsSeen: 87 },
+          { agent: "cursor", lastCompletedAt: null, sessionsSeen: 12 },
+        ],
+      },
+      get_live_usage: {
+        providers: [],
+        errors: [],
+        generatedAt: "",
+        meters: [
+          { provider: "openai", displayName: "Codex", shown: true, detection: "signedIn" },
+          {
+            provider: "anthropic",
+            displayName: "Claude",
+            shown: true,
+            detection: "notInstalled",
+            desktopAppLabel: "Claude Desktop",
+          },
+        ],
+      },
+    })
+    render(<SourcesPane discoveryPaused={false} />)
+
+    expect(
+      await screen.findByText(
+        "41 sessions · Claude Desktop · Limits need Claude Code signed in",
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByText("87 sessions · Signed in")).toBeInTheDocument()
+    expect(screen.getByText("12 sessions")).toBeInTheDocument()
+    expect(screen.getByRole("switch", { name: "Show Claude sessions" })).toBeInTheDocument()
+    const devin = screen.getByRole("switch", { name: "Show Devin sessions" }).closest("div")!
+    expect(devin.textContent).toBe("Devin")
+    expect(invoke.mock.calls.some(([command]) => command === "refresh_live_usage")).toBe(false)
+  })
+})
