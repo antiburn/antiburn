@@ -2,6 +2,12 @@ name: Build remote helper
 
 on:
   workflow_call:
+    inputs:
+      version:
+        description: Temporary application version for a manual release build
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -21,6 +27,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node for manual version preparation
+        if: inputs.version != ''
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - name: Apply the manual build version
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: node scripts/prepare-app-version.mjs "$VERSION"
 
       - name: Install native musl compiler
         run: sudo apt-get update && sudo apt-get install -y musl-tools
