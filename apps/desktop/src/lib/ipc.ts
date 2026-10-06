@@ -5,7 +5,7 @@ import { settingsSearchRequest, type SettingsControlId } from "./settingsSearchT
  */
 
 import { invoke, isTauri } from "@tauri-apps/api/core"
-import { listen, type UnlistenFn } from "@tauri-apps/api/event"
+import { listen, type UnlistenFn } from "./tauriEvents"
 
 import { nativePeekBridge } from "./nativePeekBridge"
 import {

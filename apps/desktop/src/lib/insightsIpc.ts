@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core"
-import { listen, type UnlistenFn } from "@tauri-apps/api/event"
+import { listen, type UnlistenFn } from "./tauriEvents"
 
 import { hasShell } from "./ipc"
 import type { ActivityEntryPayload } from "./ipc"
