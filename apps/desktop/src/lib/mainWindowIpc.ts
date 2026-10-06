@@ -5,6 +5,7 @@ export interface MainWindowSessionIdentity {
   agent: string
   sessionId: string
   wslDistro: string | null
+  remoteHostId?: string | null | undefined
 }
 
 export type MainWindowSectionId = "overview" | "activity" | "burnChecks"
@@ -13,6 +14,7 @@ export type MainWindowSectionId = "overview" | "activity" | "burnChecks"
 interface MainWindowNavigationDestination {
   section: MainWindowSectionId
   target: MainWindowSessionIdentity | null
+  remoteHostId?: string | null
 }
 
 /** One revisioned request shared by event and renderer recovery paths. */
@@ -79,6 +81,12 @@ export async function openMainWindowSession(target: MainWindowSessionIdentity): 
 export async function openMainWindowSection(section: MainWindowSectionId): Promise<void> {
   if (!isTauri()) return
   await invoke("open_main_window_section", { section })
+}
+
+/** Open Sessions with one remote source and no other active facets. */
+export async function openMainWindowRemoteHost(remoteHostId: string): Promise<void> {
+  if (!isTauri()) return
+  await invoke("open_main_window_section", { section: "activity", remoteHostId })
 }
 
 /** Return the requested session identities that still exist in the local index. */

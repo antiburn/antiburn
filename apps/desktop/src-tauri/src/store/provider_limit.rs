@@ -342,6 +342,7 @@ const ATTRIBUTED_TURN_SQL: &str = "SELECT g.environment_key, g.agent, g.session_
                AND e.agent = t.agent AND e.session_id = t.session_id
                AND e.published_fence = t.claim_fence
              WHERE t.ts_ms > ?1 AND t.ts_ms <= ?2
+               AND t.environment_key NOT LIKE 'ssh:%'
              GROUP BY t.environment_key, t.agent, t.session_id, t.model, t.speed
        ) g
        JOIN session s
@@ -389,6 +390,7 @@ const ATTRIBUTED_TURN_BUCKET_SQL: &str = "SELECT g.environment_key, g.agent, g.s
                      AND e.agent = t.agent AND e.session_id = t.session_id
                      AND e.published_fence = t.claim_fence
                     WHERE t.ts_ms > ?1 AND t.ts_ms <= ?2
+                      AND t.environment_key NOT LIKE 'ssh:%'
                       AND (t.input_tokens > 0 OR t.output_tokens > 0
                            OR t.cache_read_tokens > 0 OR t.cache_write_tokens > 0)
                     LIMIT ?4
@@ -654,7 +656,8 @@ impl Store {
                      ON e.environment_key = t.environment_key
                     AND e.agent = t.agent AND e.session_id = t.session_id
                     AND e.published_fence = t.claim_fence
-                  WHERE t.ts_ms > ?1 AND t.ts_ms <= ?2",
+                  WHERE t.ts_ms > ?1 AND t.ts_ms <= ?2
+                    AND t.environment_key NOT LIKE 'ssh:%'",
             )?;
             let mut rows = statement.query(params![start_ms, end_ms])?;
             while let Some(row) = rows.next()? {

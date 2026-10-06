@@ -192,50 +192,58 @@ export function LocalRepositoryList({
         </div>
       )}
 
-      <ScrollPane>
-        {showPlaceholders ? (
-          <div aria-hidden data-testid="repository-list-placeholder" className="space-y-1 pb-3">
-            {Array.from({ length: PLACEHOLDER_ROWS }, (_, i) => (
-              <div key={i} className="flex items-start gap-3 px-2 py-2">
-                <div className="min-w-0 flex-1 space-y-1.5">
-                  <Skeleton className="h-3.5 w-40" />
-                  <Skeleton className="h-3 w-56" />
-                </div>
-                <Skeleton className="h-[15px] w-[26px] shrink-0 rounded-full" />
-              </div>
-            ))}
-          </div>
-        ) : repositories.length === 0 ? (
-          <div className="flex h-full items-center justify-center px-6 text-center">
-            <div className="flex max-w-[260px] flex-col items-center">
-              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-surface-secondary text-label-tertiary">
-                <FolderSearch size={20} strokeWidth={1.75} aria-hidden="true" />
-              </div>
-              <p className="type-callout font-medium text-label-secondary">{emptyTitle}</p>
-              <p className="mt-1.5 type-footnote text-label-tertiary">{emptyDescription}</p>
-              {onRefresh && (
-                <PushButton className="mt-3 gap-1.5" onClick={onRefresh} disabled={loading}>
-                  <Search size={12} aria-hidden="true" />
-                  Scan again
-                </PushButton>
-              )}
+      {!showPlaceholders && repositories.length === 0 ? (
+        // The empty state sits outside the scroll pane. The viewport content
+        // has no fixed height, so it cannot center the message.
+        <div className="flex flex-1 items-center justify-center px-6 text-center">
+          <div className="flex max-w-[260px] flex-col items-center">
+            <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-surface-secondary text-label-tertiary">
+              <FolderSearch size={20} strokeWidth={1.75} aria-hidden="true" />
             </div>
+            <p className="type-callout font-medium text-label-secondary">{emptyTitle}</p>
+            <p className="mt-1.5 type-footnote text-label-tertiary">{emptyDescription}</p>
+            {onRefresh && (
+              <PushButton className="mt-3 gap-1.5" onClick={onRefresh} disabled={loading}>
+                <Search size={12} aria-hidden="true" />
+                Scan again
+              </PushButton>
+            )}
           </div>
-        ) : (
-          <div className="pb-3">
-            {repositories.map((item) => (
-              <RepositoryRow
-                key={item.key}
-                item={item}
-                {...(onToggleRepository ? { onToggleRepository } : {})}
-                {...(onLocate ? { onLocate } : {})}
-                {...(onGrantAccess ? { onGrantAccess } : {})}
-                {...(wslIcon ? { wslIcon } : {})}
-              />
-            ))}
-          </div>
-        )}
-      </ScrollPane>
+        </div>
+      ) : (
+        <ScrollPane>
+          {showPlaceholders ? (
+            <div
+              aria-hidden
+              data-testid="repository-list-placeholder"
+              className="space-y-1 pb-3"
+            >
+              {Array.from({ length: PLACEHOLDER_ROWS }, (_, i) => (
+                <div key={i} className="flex items-start gap-3 px-2 py-2">
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <Skeleton className="h-3.5 w-40" />
+                    <Skeleton className="h-3 w-56" />
+                  </div>
+                  <Skeleton className="h-[15px] w-[26px] shrink-0 rounded-full" />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="pb-3">
+              {repositories.map((item) => (
+                <RepositoryRow
+                  key={item.key}
+                  item={item}
+                  {...(onToggleRepository ? { onToggleRepository } : {})}
+                  {...(onLocate ? { onLocate } : {})}
+                  {...(onGrantAccess ? { onGrantAccess } : {})}
+                  {...(wslIcon ? { wslIcon } : {})}
+                />
+              ))}
+            </div>
+          )}
+        </ScrollPane>
+      )}
     </div>
   )
 }

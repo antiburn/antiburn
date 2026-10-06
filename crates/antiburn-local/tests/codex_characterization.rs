@@ -9,9 +9,9 @@ use antiburn_local::analysis::{
     EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore, NormalizedSession, PartialReason,
     ProviderIncidentKind, QuotaHitSeverity, QuotaLimitKind, RawSource, RecordCoverage,
     SessionCollector, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
-    SessionMetricsAccumulator, SourceCapabilities, SourceClaim, SourceKind, TurnCounts, TurnFacts,
-    TurnRowSink, TurnRowStore, VisitOutcome, analyze_sources_with, append_only_guarantee,
-    normalize_source, reader_for,
+    SessionMetricsAccumulator, SourceCapabilities, SourceClaim, SourceKind, TurnContent,
+    TurnCounts, TurnFacts, TurnRowSink, TurnRowStore, VisitOutcome, analyze_sources_with,
+    append_only_guarantee, normalize_source, reader_for,
 };
 use antiburn_local::discovery::source_version::{
     FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of,
@@ -97,11 +97,14 @@ fn fixture(name: &str) -> &'static str {
         "eventless_protocol_records" => {
             include_str!("fixtures/codex_characterization/eventless_protocol_records.jsonl")
         }
+        "response_item_native_shapes" => {
+            include_str!("fixtures/codex_characterization/response_item_native_shapes.jsonl")
+        }
         _ => panic!("unknown Codex characterization fixture: {name}"),
     }
 }
 
-fn fixture_names() -> [&'static str; 25] {
+fn fixture_names() -> [&'static str; 26] {
     [
         "records_all_kinds",
         "malformed_between_valid",
@@ -128,7 +131,202 @@ fn fixture_names() -> [&'static str; 25] {
         "task_complete_errors",
         "reverted_fork",
         "eventless_protocol_records",
+        "response_item_native_shapes",
     ]
+}
+
+#[derive(Default)]
+struct ContentCapturingSink {
+    contents: Vec<TurnContent>,
+}
+
+impl antiburn_local::analysis::RecordSink for ContentCapturingSink {
+    fn record(&mut self, record: antiburn_local::analysis::NormalizedRecord) {
+        if let antiburn_local::analysis::NormalizedRecord::TurnContent(content) = record {
+            self.contents.push(*content);
+        }
+    }
+
+    fn finish(&mut self, _summary: antiburn_local::analysis::SessionSummary) {}
+}
+
+#[test]
+fn response_item_native_shapes_preserve_authority_inputs_and_exact_result_joins() {
+    use antiburn_local::analysis::{ContentAuthority, ContentKind};
+
+    let input = input("response_item_native_shapes");
+    let mut sink = ContentCapturingSink::default();
+    reader_for("codex")
+        .visit(&input, &mut sink)
+        .expect("native-shape fixture must stream");
+
+    let mut observed = Vec::new();
+    for content in &sink.contents {
+        for part in &content.parts {
+            observed.push((
+                part.kind,
+                part.authority,
+                part.text.as_str(),
+                part.tool_name.as_deref(),
+                part.tool_call_id.as_deref(),
+            ));
+        }
+    }
+    assert_eq!(
+        observed,
+        vec![
+            (
+                ContentKind::UserText,
+                ContentAuthority::User,
+                "synthetic user text",
+                None,
+                None
+            ),
+            (
+                ContentKind::AssistantText,
+                ContentAuthority::Assistant,
+                "synthetic assistant text",
+                None,
+                None
+            ),
+            (
+                ContentKind::UserText,
+                ContentAuthority::System,
+                "synthetic system policy",
+                None,
+                None
+            ),
+            (
+                ContentKind::UserText,
+                ContentAuthority::Developer,
+                "synthetic developer policy",
+                None,
+                None
+            ),
+            (
+                ContentKind::ToolInput,
+                ContentAuthority::Assistant,
+                "{\"cmd\":\"printf synthetic\"}",
+                Some("exec_command"),
+                Some("fn-exact-1")
+            ),
+            (
+                ContentKind::ToolResult,
+                ContentAuthority::Tool,
+                "synthetic command output",
+                Some("exec_command"),
+                Some("fn-exact-1")
+            ),
+            (
+                ContentKind::ToolInput,
+                ContentAuthority::Assistant,
+                "tools.apply_patch(\"*** Begin Patch\\n*** Add File: synthetic.txt\\n+synthetic body\\n*** End Patch\")",
+                Some("exec"),
+                Some("custom-exact-2")
+            ),
+            (
+                ContentKind::ToolResult,
+                ContentAuthority::Tool,
+                "synthetic patch result",
+                Some("exec"),
+                Some("custom-exact-2")
+            ),
+            (
+                ContentKind::ToolResult,
+                ContentAuthority::Tool,
+                "synthetic tool result",
+                None,
+                Some("search-exact-4")
+            ),
+            (
+                ContentKind::ToolInput,
+                ContentAuthority::Assistant,
+                r#"{"query":{"range":{"end":"synthetic-end","start":"synthetic-start"}}}"#,
+                Some("mcp__Calendar__read"),
+                Some("mcp-object-6")
+            ),
+            (
+                ContentKind::ToolResult,
+                ContentAuthority::Tool,
+                "synthetic calendar result",
+                Some("mcp__Calendar__read"),
+                Some("mcp-object-6")
+            ),
+            (
+                ContentKind::ToolInput,
+                ContentAuthority::Assistant,
+                r#"{"cmd":"printf nested-object","workdir":"/synthetic"}"#,
+                Some("exec_command"),
+                Some("fn-object-7")
+            ),
+            (
+                ContentKind::ToolResult,
+                ContentAuthority::Tool,
+                "synthetic nested command output",
+                Some("exec_command"),
+                Some("fn-object-7")
+            ),
+        ]
+    );
+
+    let (_, _, normalized) = collect(&input);
+    assert_eq!(normalized.events.len(), 17);
+    assert_eq!(
+        normalized.events[0].role,
+        antiburn_local::analysis::Role::User
+    );
+    assert_eq!(
+        normalized.events[1].role,
+        antiburn_local::analysis::Role::Assistant
+    );
+    assert_eq!(
+        normalized.events[2].role,
+        antiburn_local::analysis::Role::System
+    );
+    assert_eq!(
+        normalized.events[3].role,
+        antiburn_local::analysis::Role::System
+    );
+    assert_eq!(normalized.events[4].tools[0].name, "exec_command");
+    assert_eq!(normalized.events[6].tools[0].name, "apply_patch");
+    assert_eq!(normalized.events[8].tools[0].name, "local_shell");
+    assert_eq!(normalized.events[9].tools[0].name, "tool_search");
+    assert_eq!(normalized.events[11].tools[0].name, "web_search");
+    assert_eq!(normalized.events[13].tools[0].name, "mcp__Calendar__read");
+    assert_eq!(normalized.events[15].tools[0].name, "exec_command");
+    assert_eq!(
+        normalized
+            .events
+            .iter()
+            .filter(|event| event.is_compaction_boundary)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn native_calls_without_captured_content_remain_unavailable() {
+    let input = input("response_item_native_shapes");
+    let mut sink = ContentCapturingSink::default();
+    reader_for("codex")
+        .visit(&input, &mut sink)
+        .expect("native-shape fixture must stream");
+
+    let all_text = sink
+        .contents
+        .iter()
+        .flat_map(|content| &content.parts)
+        .map(|part| part.text.as_str())
+        .collect::<Vec<_>>();
+    for unavailable in [
+        "synthetic shell",
+        "synthetic tool query",
+        "synthetic web query",
+    ] {
+        assert!(!all_text.contains(&unavailable));
+    }
+    assert!(all_text.contains(&"synthetic tool result"));
+    assert!(!all_text.contains(&"synthetic web result"));
 }
 
 fn input(name: &str) -> SessionInput {

@@ -10,6 +10,50 @@ use antiburn_local::analysis::{
 };
 use antiburn_local::insights::ReportWindow;
 
+#[test]
+fn ignored_instruction_evidence_uses_the_saved_instruction_and_action_excerpts() {
+    let cause = FindingCause::IgnoredInstructionConflict(Box::new(
+        antiburn_local::remediation::IgnoredInstructionConflictEvidence {
+        assessment_revision: "revision".to_owned(),
+        assessment_finding_id: "finding".to_owned(),
+        instruction_id: "instruction".to_owned(),
+        instruction_digest: "instruction-digest".to_owned(),
+        instruction_excerpt: "Run the focused tests before committing.".to_owned(),
+        instruction_excerpt_truncated: false,
+        rule_id: "rule".to_owned(),
+        rule_heading: "Quality Review".to_owned(),
+        start_line: 4,
+        end_line: 6,
+        source: "home:.config/opencode/AGENTS.md".to_owned(),
+        provenance:
+            antiburn_local::analysis::ignored_instructions::InstructionProvenance::RecordedInjection,
+        instruction_scope: antiburn_local::analysis::ignored_instructions::InstructionScope::Global,
+        action_id: "action".to_owned(),
+        action_digest: "action-digest".to_owned(),
+        action_excerpt: "git commit -m 'Update Jev prompts'".to_owned(),
+        action_excerpt_truncated: false,
+        action_timestamp_ms: Some(1_000),
+        nearby_context_ids: Vec::new(),
+        counterevidence_ids: Vec::new(),
+        certainty: antiburn_local::analysis::ignored_instructions::FindingCertainty::Likely,
+        limitations: Box::default(),
+        },
+    ));
+
+    let saved = stored_instruction_evidence(&cause).unwrap();
+
+    assert_eq!(saved.status, BurnCheckEvidenceStatus::Available);
+    assert_eq!(saved.items.len(), 2);
+    assert_eq!(saved.items[0].label, BurnCheckEvidenceLabel::Instruction);
+    assert_eq!(
+        saved.items[0].excerpt,
+        "Run the focused tests before committing."
+    );
+    assert_eq!(saved.items[1].label, BurnCheckEvidenceLabel::ObservedAction);
+    assert_eq!(saved.items[1].excerpt, "git commit -m 'Update Jev prompts'");
+    assert_eq!(saved.items[1].observed_at_ms, Some(1_000));
+}
+
 const SOURCE_FORMATS: [SourceFormat; 32] = [
     SourceFormat::ClaudeJsonl,
     SourceFormat::CodexRolloutJsonl,
@@ -1194,24 +1238,31 @@ fn a_truncated_assessment_cannot_prove_a_fix() {
 }
 
 #[test]
-fn category_lifecycle_awaits_evidence_then_uses_current_findings() {
+fn category_lifecycle_keeps_pending_evidence_ahead_of_retained_findings() {
     assert_eq!(
-        resolve_category_lifecycle(1, 0, true),
+        resolve_category_lifecycle(DetectorId::ModelOverthinking, 1, 0, true),
         Some(crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification)
     );
     assert_eq!(
-        resolve_category_lifecycle(0, 1, true),
+        resolve_category_lifecycle(DetectorId::ModelOverthinking, 0, 1, true),
         Some(crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification)
     );
     assert_eq!(
-        resolve_category_lifecycle(1, 0, false),
+        resolve_category_lifecycle(DetectorId::IgnoredInstructions, 1, 0, true),
         Some(crate::dto::ChecksCategoryLifecyclePayload::Failing)
     );
     assert_eq!(
-        resolve_category_lifecycle(0, 1, false),
+        resolve_category_lifecycle(DetectorId::ModelOverthinking, 1, 0, false),
+        Some(crate::dto::ChecksCategoryLifecyclePayload::Failing)
+    );
+    assert_eq!(
+        resolve_category_lifecycle(DetectorId::ModelOverthinking, 0, 1, false),
         Some(crate::dto::ChecksCategoryLifecyclePayload::Passing)
     );
-    assert_eq!(resolve_category_lifecycle(0, 0, false), None);
+    assert_eq!(
+        resolve_category_lifecycle(DetectorId::ModelOverthinking, 0, 0, false),
+        None
+    );
 }
 
 #[test]
@@ -1231,6 +1282,57 @@ fn an_observed_resource_subset_cannot_prove_an_absent_target_fixed() {
         }],
     );
     assert!(matches!(result.outcome, VerificationOutcome::Unknown(_)));
+}
+
+#[test]
+fn instruction_evidence_excerpts_are_bounded_without_splitting_utf8() {
+    let text = "界".repeat(2_000);
+    let excerpt = bounded_evidence_excerpt(&text);
+    assert!(excerpt.len() <= 4096);
+    assert!(excerpt.is_char_boundary(excerpt.len()));
+    assert_eq!(excerpt, "界".repeat(1365));
+    assert_eq!(
+        unavailable_instruction_evidence().status,
+        BurnCheckEvidenceStatus::Unavailable
+    );
+}
+
+#[test]
+fn a_missing_optional_context_keeps_the_required_action_available() {
+    let context = BTreeSet::from(["optional-context"]);
+    let available = BTreeSet::from(["required-action".to_owned()]);
+    assert_eq!(
+        available_evidence_references("required-action", &context, &available),
+        Some((vec!["required-action".to_owned()], true))
+    );
+    assert_eq!(
+        available_evidence_references("missing-action", &context, &available),
+        None
+    );
+}
+
+#[test]
+fn project_instruction_root_uses_the_nested_session_worktree() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let worktree = temporary.path().join("feature-worktree");
+    std::fs::create_dir_all(worktree.join("packages/app/src")).expect("nested project path");
+    let initialized = std::process::Command::new("git")
+        .args(["-c", "init.defaultBranch=main", "init"])
+        .current_dir(&worktree)
+        .status()
+        .expect("run git init");
+    assert!(initialized.success());
+
+    let root = project_worktree_root(&worktree.join("packages/app/src"))
+        .expect("resolve nested worktree root");
+    assert_eq!(root, std::fs::canonicalize(worktree).unwrap());
+}
+
+#[test]
+fn only_checks_with_supported_verification_create_prompt_watches() {
+    assert!(!prompt_watch_supported([] as [DetectorId; 0]));
+    assert!(!prompt_watch_supported([DetectorId::IgnoredInstructions]));
+    assert!(prompt_watch_supported([DetectorId::OldModelUsage]));
 }
 
 #[test]
@@ -1621,6 +1723,7 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
     let display = BurnCheckDisplayFacts {
         resource_kind: BurnCheckResourceKind::Model,
         resource_identity: Some("old-model".into()),
+        instruction_title: None,
         current_value: Some("old-model".into()),
         replacement_value: Some("new-model".into()),
         scope_kind: BurnCheckScopeKind::Project,
@@ -1980,4 +2083,141 @@ fn listing_another_check_keeps_the_first_checks_target_ids() {
             .copy_prompt_fix_burn_check_targets(&store, &action_ids)
             .is_ok()
     );
+}
+
+fn project_folder_action_fixture() -> (
+    tempfile::TempDir,
+    Store,
+    RemediationController,
+    String,
+    SessionKey,
+    PathBuf,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let project = dir.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    store
+        .replace_repositories(&[crate::store::RepositoryRecord {
+            key: "project".into(),
+            repo_name: "project".into(),
+            full_name: "synthetic/project".into(),
+            status: "accessible".into(),
+            repo_root: Some(project.to_string_lossy().into_owned()),
+            suspected_path: None,
+            worktree_count: 1,
+            session_count: 1,
+            wsl_distro: None,
+            enabled: true,
+        }])
+        .unwrap();
+    crate::insights_report::tests::publish_reasoning_at_cwd(
+        &store,
+        "folder-session",
+        120,
+        120_000,
+        &project,
+        "max",
+    );
+    let controller = RemediationController::new(dir.path().to_owned());
+    let targets = controller
+        .list_burn_check_targets_at(
+            &store,
+            DetectorId::ModelOverthinking,
+            BurnCheckTargetContext {
+                environment_key: "native".into(),
+                window: ReportWindow {
+                    start_epoch: 100,
+                    end_epoch: 200,
+                },
+            },
+            TargetListOptions {
+                now: now_epoch(),
+                home: None,
+                cache_actions: true,
+            },
+        )
+        .unwrap();
+    assert_eq!(targets.targets.len(), 1);
+    assert_eq!(targets.targets[0].project_path.as_deref(), project.to_str());
+    let action_id = targets.targets[0].action_id.clone();
+    let key = SessionKey::new("native", "claude-code", "folder-session");
+    (dir, store, controller, action_id, key, project)
+}
+
+#[test]
+fn project_folder_action_resolves_the_issued_local_target() {
+    let (_dir, store, controller, action_id, _key, project) = project_folder_action_fixture();
+    assert_eq!(
+        controller.project_folder(&store, &action_id).unwrap(),
+        project.to_string_lossy()
+    );
+    assert!(matches!(
+        controller.project_folder(&store, "unknown-action"),
+        Err(ControllerError::TargetNotFound)
+    ));
+}
+
+#[test]
+fn project_folder_action_rejects_remote_origin_despite_matching_local_session_and_path() {
+    let (_dir, store, controller, action_id, key, project) = project_folder_action_fixture();
+    let mut remote = store.session(&key).unwrap().unwrap();
+    remote.key.environment_key = "ssh:host".into();
+    store
+        .upsert_sessions(&[remote], &crate::agents::evidence_cohort())
+        .unwrap();
+    let mut remote_target = controller.cached_target(&action_id, now_epoch()).unwrap();
+    remote_target.findings[0].environment_key = "ssh:host".into();
+    controller
+        .state
+        .lock()
+        .unwrap()
+        .targets
+        .get_mut(&DetectorId::ModelOverthinking)
+        .unwrap()
+        .push_back(TimedTarget {
+            id: "remote-action".into(),
+            value: remote_target,
+            created_at_epoch: now_epoch(),
+        });
+    assert!(matches!(
+        controller.project_folder(&store, "remote-action"),
+        Err(ControllerError::TargetNotFound)
+    ));
+    assert_eq!(
+        controller.project_folder(&store, &action_id).unwrap(),
+        project.to_string_lossy()
+    );
+}
+
+#[test]
+fn project_folder_action_rejects_expired_issued_target() {
+    let (_dir, store, controller, action_id, _key, _project) = project_folder_action_fixture();
+    controller
+        .state
+        .lock()
+        .unwrap()
+        .targets
+        .get_mut(&DetectorId::ModelOverthinking)
+        .unwrap()
+        .iter_mut()
+        .find(|target| target.id == action_id)
+        .unwrap()
+        .created_at_epoch = now_epoch() - ID_TTL.as_secs() as i64 - 1;
+    assert!(matches!(
+        controller.project_folder(&store, &action_id),
+        Err(ControllerError::TargetExpired)
+    ));
+}
+
+#[test]
+fn project_folder_action_rejects_deleted_session_despite_live_action_and_directory() {
+    let (_dir, store, controller, action_id, key, project) = project_folder_action_fixture();
+    store.delete_session(&key).unwrap();
+    assert!(project.is_dir());
+    assert!(controller.cached_target(&action_id, now_epoch()).is_ok());
+    assert!(matches!(
+        controller.project_folder(&store, &action_id),
+        Err(ControllerError::TargetNotFound)
+    ));
 }

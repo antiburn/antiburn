@@ -22,14 +22,23 @@ fn insert_session(store: &Store, session_id: &str) -> SessionKey {
 }
 
 fn insert_session_for_agent(store: &Store, session_id: &str, agent: &str) -> SessionKey {
-    let key = SessionKey::new("native", agent, session_id);
+    insert_session_in_environment(store, "native", session_id, agent)
+}
+
+fn insert_session_in_environment(
+    store: &Store,
+    environment_key: &str,
+    session_id: &str,
+    agent: &str,
+) -> SessionKey {
+    let key = SessionKey::new(environment_key, agent, session_id);
     store
         .upsert_sessions(
             &[SessionRecord {
                 key: key.clone(),
                 source_kind: "inline".to_string(),
                 source_label: "synthetic".to_string(),
-                wsl_distro: None,
+                wsl_distro: environment_key.strip_prefix("wsl:").map(str::to_owned),
                 title: None,
                 title_source: None,
                 cwd: None,
@@ -214,6 +223,56 @@ fn an_unbound_session_with_one_known_account_falls_back_to_it() {
     // claude-opus-4-6 test pricing: 5e-6 dollars per input token.
     assert!((dollars[0].input_usd - 1.0).abs() < 1e-9);
     assert_eq!(dollars[0].turn_count, 1);
+}
+
+#[test]
+fn cached_remote_turns_do_not_enter_local_provider_limit_inputs() {
+    let store = memory_store();
+    let native = insert_session_in_environment(&store, "native", "native", AGENT);
+    let wsl = insert_session_in_environment(&store, "wsl:ubuntu", "wsl", AGENT);
+    let legacy = insert_session_in_environment(&store, "legacy-local", "legacy", AGENT);
+    let remote = insert_session_in_environment(&store, "ssh:host-id", "remote", AGENT);
+    observe_account(&store, &account('a'));
+
+    for (key, ts_ms) in [
+        (&native, 100_000),
+        (&wsl, 200_000),
+        (&legacy, 300_000),
+        (&remote, 400_000),
+    ] {
+        insert_turn(&store, key, ts_ms, 100_000);
+    }
+
+    let mut dollars = store
+        .attributed_turn_dollars_between(PROVIDER, &account('a'), 0, 1_000, None)
+        .expect("query succeeds")
+        .expect("stays within the group bound");
+    dollars.sort_by(|left, right| left.key.environment_key.cmp(&right.key.environment_key));
+    assert_eq!(
+        dollars
+            .iter()
+            .map(|row| row.key.environment_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["legacy-local", "native", "wsl:ubuntu"]
+    );
+
+    let mut bucket_keys = store
+        .quota_turn_input(0, 1_000)
+        .expect("query succeeds")
+        .expect("stays within the turn bound")
+        .for_account(PROVIDER, &account('a'), None)
+        .by_bucket(None)
+        .into_iter()
+        .map(|row| row.key.environment_key)
+        .collect::<Vec<_>>();
+    bucket_keys.sort();
+    assert_eq!(bucket_keys, vec!["legacy-local", "native", "wsl:ubuntu"]);
+
+    let minutes = store
+        .attributed_turn_minutes(0, 1_000)
+        .expect("scan succeeds")
+        .for_account(PROVIDER, &account('a'));
+    assert_eq!(minutes, vec![60, 180, 300]);
 }
 
 #[test]
@@ -1093,7 +1152,7 @@ fn v52_widens_the_lane_check_and_resets_the_model_lane_cursor() {
 
     let store = Store::from_connection(connection, Path::new("/tmp/antiburn-v52-test").into())
         .expect("migration reaches the head");
-    assert_eq!(store.schema_version().unwrap(), 58);
+    assert_eq!(store.schema_version().unwrap(), 71);
 
     let connection = store.lock();
     let samples: i64 = connection

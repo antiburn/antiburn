@@ -1,7 +1,7 @@
 import type { ComponentPropsWithoutRef, Ref } from "react"
 
 import { cn } from "../../lib/cn"
-import type { BurnCheckPresentation } from "../../lib/presentation/burnChecks"
+import type { BurnCheckPresentation } from "../../lib/presentation/checkStatus"
 import { BurnCheckIndicator } from "./BurnCheckIndicator"
 
 type BurnCheckStatusProps = {

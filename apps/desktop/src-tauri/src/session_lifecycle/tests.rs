@@ -2253,9 +2253,15 @@ fn retention_reports_a_broad_purge_with_a_revision() {
         "the retention commit's own revision travels with the purge"
     );
     let settings = function_body(include_str!("../commands/mod.rs"), "set_settings");
+    let revision = settings
+        .find("let revision = store.revision();")
+        .expect("the settings path reads the committed revision");
+    let report = settings
+        .find("crate::retention::note_removed(&database_app, removed, revision);")
+        .expect("the settings path reports the committed revision");
     assert!(
-        settings.contains("let revision = store.revision();\n        crate::retention::note_removed(&database_app, removed, revision);"),
-        "the settings path reads the revision after the commit"
+        revision < report,
+        "the revision is read before it is reported"
     );
 }
 

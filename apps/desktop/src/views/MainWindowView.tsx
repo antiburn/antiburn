@@ -10,7 +10,7 @@ import { sessionHygieneIdentities, useSessionHygiene } from "../lib/useSessionHy
 import { MainActivityView } from "./main-window/MainActivityView"
 import { MainActivitySession, subjectForEntry } from "./main-window/MainActivitySession"
 import { BurnChecksView } from "./main-window/BurnChecksView"
-import { BurnChecksSession } from "./main-window/BurnChecksSession"
+import { BurnChecksController } from "./main-window/burn-checks/BurnChecksController"
 import { AppSearch } from "./main-window/AppSearch"
 import { resolveSettingsSearchTarget, type AppSearchResult } from "../lib/appSearch"
 import { MainWindowLayout } from "./main-window/MainWindowLayout"
@@ -59,7 +59,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     }
   })
   const [activitySession] = useState(() => new MainActivitySession())
-  const [burnChecksSession] = useState(() => new BurnChecksSession())
+  const [burnChecksSession] = useState(() => new BurnChecksController())
   const [navigationSession] = useState(
     () => new MainWindowNavigationSession(sections ? undefined : activitySession),
   )

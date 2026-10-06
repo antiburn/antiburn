@@ -1085,6 +1085,110 @@ async fn an_idle_touched_transcript_heals_mtime_recency_and_then_uses_size_gate(
 }
 
 #[tokio::test]
+async fn the_current_window_filter_drops_a_housekeeping_touched_old_session() {
+    let home = tempfile::TempDir::new().unwrap();
+    let path = home
+        .path()
+        .join(".claude/projects/-home-avery-code-widgets/old.jsonl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        concat!(
+            r#"{"type":"user","sessionId":"old","cwd":"/home/avery/code/widgets","timestamp":"2026-06-26T21:20:00Z"}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-06-26T21:30:15Z"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    // A small housekeeping-only append. The real conversation turn above
+    // stays inside the bounded tail, so the filter can still find it.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(
+            br#"{"type":"permission-mode","mode":"default","timestamp":"2026-08-19T17:08:00Z"}
+"#,
+        )
+        .unwrap();
+
+    let old_activity = time::OffsetDateTime::parse(
+        "2026-06-26T21:30:15Z",
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap()
+    .unix_timestamp();
+    // The file's mtime looks like right now, inside any current window; only
+    // the real event content tells the filter this session is history.
+    let now = old_activity + 60 * 86_400;
+    let cutoff = now - CURRENT_WINDOW_SECS;
+    assert!(old_activity < cutoff, "fixture must predate the cutoff");
+
+    let candidate = log(AgentKind::Claude, path, now);
+    let kept =
+        filter_current_window(vec![candidate], &std::collections::HashMap::new(), cutoff).await;
+    assert!(
+        kept.is_empty(),
+        "a session whose real last activity predates the cutoff must be dropped"
+    );
+}
+
+#[tokio::test]
+async fn the_current_window_filter_always_keeps_an_unknown_activity_source() {
+    // A non-file source never resolves an event timestamp at all, so the
+    // filter keeps it regardless of how far in the past the cutoff reaches.
+    let candidate = SessionLog {
+        agent_type: AgentKind::OpenCode,
+        source: SessionSource::Inline {
+            label: "inline".into(),
+            content: String::new(),
+        },
+        updated_at: Some(1_000),
+        environment: DiscoveryEnvironment::Native,
+    };
+    let kept =
+        filter_current_window(vec![candidate], &std::collections::HashMap::new(), i64::MAX).await;
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].1.activity_source, "unknown");
+}
+
+#[tokio::test]
+async fn describe_trusts_precomputed_activity_instead_of_recomputing_it() {
+    let home = tempfile::TempDir::new().unwrap();
+    let path = write_claude_session(home.path(), "precomputed-activity");
+    let candidate_log = log(AgentKind::Claude, path.clone(), 1_800_000_000);
+    let activity_key = SessionActivityKey::new(
+        candidate_log.environment.key(),
+        candidate_log.agent_type.slug(),
+        candidate_log.source_label(),
+    );
+    let mut precomputed = std::collections::HashMap::new();
+    precomputed.insert(
+        activity_key,
+        CandidateActivity {
+            updated_at_epoch: Some(424_242),
+            activity_source: "event".into(),
+            activity_cursor: "sentinel-cursor".into(),
+        },
+    );
+
+    let described = describe_with_gate(
+        vec![candidate_log],
+        home.path(),
+        &HashSet::new(),
+        &std::collections::HashMap::new(),
+        &precomputed,
+        false,
+    )
+    .await;
+
+    assert_eq!(described.records.len(), 1);
+    assert_eq!(described.records[0].updated_at_epoch, Some(424_242));
+    assert_eq!(described.records[0].activity_cursor, "sentinel-cursor");
+}
+
+#[tokio::test]
 async fn an_orchestrator_cursor_gates_unchanged_children_and_advances_on_child_growth() {
     let home = tempfile::TempDir::new().unwrap();
     let parent = write_claude_session(home.path(), "orchestrator");
@@ -1684,7 +1788,7 @@ fn a_fresh_controller_reports_a_clean_initial_status() {
 async fn a_second_request_before_the_scheduler_wakes_is_coalesced() {
     let controller = ScanController::default();
     controller.request(ScanTrigger::SettingsTransition);
-    controller.request(ScanTrigger::ManualRescan);
+    controller.request(ScanTrigger::RepositoryToggle);
 
     {
         let pending = controller
@@ -1702,6 +1806,57 @@ async fn a_second_request_before_the_scheduler_wakes_is_coalesced() {
     // ...and a second wait finds nothing further queued.
     let second = tokio::time::timeout(Duration::from_millis(0), controller.kick.notified()).await;
     assert!(second.is_err(), "only one notify should have been queued");
+}
+
+#[test]
+fn a_historical_scan_replaces_a_pending_automatic_trigger() {
+    let controller = ScanController::default();
+    controller.request(ScanTrigger::SettingsTransition);
+    controller.request(ScanTrigger::HistoricalScan);
+
+    let pending = controller
+        .pending_trigger
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        matches!(pending.as_ref(), Some(ScanTrigger::HistoricalScan)),
+        "the historical scan must survive, because it is the only trigger that widens discovery \
+         past the current window"
+    );
+}
+
+/// A manual rescan used to have the same priority as a historical scan; now
+/// it coalesces like any other explicit, current-window trigger.
+#[test]
+fn a_manual_rescan_coalesces_like_any_other_trigger() {
+    let controller = ScanController::default();
+    controller.request(ScanTrigger::SettingsTransition);
+    controller.request(ScanTrigger::ManualRescan);
+
+    let pending = controller
+        .pending_trigger
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        matches!(pending.as_ref(), Some(ScanTrigger::SettingsTransition)),
+        "the first trigger is kept, the second is dropped, same as two automatic triggers"
+    );
+}
+
+#[test]
+fn a_second_automatic_request_is_still_coalesced() {
+    let controller = ScanController::default();
+    controller.request(ScanTrigger::Launch);
+    controller.request(ScanTrigger::SettingsTransition);
+
+    let pending = controller
+        .pending_trigger
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        matches!(pending.as_ref(), Some(ScanTrigger::Launch)),
+        "two automatic triggers coalesce to the first, as before"
+    );
 }
 
 #[test]
@@ -1763,6 +1918,7 @@ fn refreshes_repositories_is_false_only_for_the_tick_and_the_watcher_triggers() 
         ScanTrigger::FolderAccessGranted,
         ScanTrigger::IndexCleared,
         ScanTrigger::ManualRescan,
+        ScanTrigger::HistoricalScan,
     ];
     for trigger in &refreshing {
         assert!(
@@ -2408,3 +2564,110 @@ fn assert_scheduler_source_contract(source: &str) {
 }
 
 mod producers;
+
+fn git_init(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir).expect("create repo dir");
+    let status = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir)
+        .status()
+        .expect("run git init");
+    assert!(status.success());
+}
+
+/// A parent folder that holds one repository and one plain folder, plus a
+/// transcript that edits a file in each.
+fn folder_of_repos(dir: &std::path::Path) -> (std::path::PathBuf, SessionRecord) {
+    let workspace = dir.join("workspace");
+    git_init(&workspace.join("app"));
+    std::fs::create_dir_all(workspace.join("notes")).expect("create plain folder");
+    let transcript = dir.join("session.jsonl");
+    let line = |path: std::path::PathBuf| {
+        serde_json::json!({"input": {"file_path": path.to_string_lossy()}}).to_string()
+    };
+    std::fs::write(&transcript, line(workspace.join("app/README.md"))).expect("write transcript");
+    let mut session = record("claude", "folder-session", Some(1_000));
+    session.source_label = transcript.to_string_lossy().into_owned();
+    (workspace, session)
+}
+
+#[tokio::test]
+async fn repo_admission_uses_the_repository_that_holds_the_cwd() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (workspace, session) = folder_of_repos(dir.path());
+    let app = workspace.join("app");
+
+    let admission = repo_admission(&session, &app.to_string_lossy(), false).await;
+
+    let RepoAdmission::Repository(root) = admission else {
+        panic!("expected the CWD repository, got {admission:?}");
+    };
+    assert_eq!(
+        root.canonicalize().expect("canonical root"),
+        app.canonicalize().expect("canonical app")
+    );
+}
+
+#[tokio::test]
+async fn repo_admission_files_a_parent_folder_session_under_the_repo_it_touched() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (workspace, session) = folder_of_repos(dir.path());
+
+    let admission = repo_admission(&session, &workspace.to_string_lossy(), false).await;
+
+    let expected = workspace.join("app").canonicalize().expect("canonical app");
+    assert_eq!(admission, RepoAdmission::InferredRepository(expected));
+}
+
+#[tokio::test]
+async fn repo_admission_keeps_a_folder_without_git_only_when_the_setting_is_on() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (workspace, session) = folder_of_repos(dir.path());
+    let notes = workspace.join("notes").to_string_lossy().into_owned();
+
+    assert_eq!(
+        repo_admission(&session, &notes, false).await,
+        RepoAdmission::Rejected
+    );
+    assert_eq!(
+        repo_admission(&session, &notes, true).await,
+        RepoAdmission::Folder
+    );
+}
+
+#[tokio::test]
+async fn repo_admission_rejects_a_cwd_that_git_cannot_read() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (workspace, session) = folder_of_repos(dir.path());
+    let missing = workspace.join("deleted").to_string_lossy().into_owned();
+
+    // Git fails for a reason other than "not a git repository", so the
+    // setting does not keep the session as a folder.
+    assert_eq!(
+        repo_admission(&session, &missing, true).await,
+        RepoAdmission::Rejected
+    );
+}
+
+#[tokio::test]
+async fn repo_admission_reads_only_file_transcripts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (workspace, mut session) = folder_of_repos(dir.path());
+    session.source_kind = "providerDb".into();
+
+    assert_eq!(
+        repo_admission(&session, &workspace.to_string_lossy(), false).await,
+        RepoAdmission::Rejected
+    );
+}
+
+#[test]
+fn the_current_window_mirrors_the_shared_constant() {
+    // `CURRENT_WINDOW_SECS` takes no trigger or retention input, so every
+    // routine pass gets the same window by construction. This pins the
+    // value itself against silent drift from `CURRENT_WINDOW_DAYS`.
+    assert_eq!(
+        CURRENT_WINDOW_SECS,
+        i64::from(crate::store::model::CURRENT_WINDOW_DAYS) * 86_400,
+    );
+}

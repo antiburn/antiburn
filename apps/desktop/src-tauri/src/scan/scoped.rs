@@ -596,7 +596,20 @@ async fn refresh_sessions_locked(
         previous_map.insert(key.clone(), record);
     }
 
-    let described = super::describe_with_states(logs, &home, &ignored, &previous_map).await;
+    // A watcher lane re-describes a known session on its own file change, so
+    // it is just as exposed to a housekeeping-only append as a full pass —
+    // the same filter keeps a stale touch from reading as current here too.
+    let (logs, precomputed) = super::current_window_candidates(logs, &previous_map, now).await;
+    let include_non_repo_folders = store.settings_snapshot().include_non_repo_folders;
+    let described = super::describe_with_gate(
+        logs,
+        &home,
+        &ignored,
+        &previous_map,
+        &precomputed,
+        include_non_repo_folders,
+    )
+    .await;
     let record_keys = described
         .records
         .iter()

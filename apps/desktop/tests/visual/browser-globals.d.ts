@@ -4,4 +4,5 @@ interface Window {
   __ANTIBURN_VISUAL_FAULT__?: string | null
   __ANTIBURN_VISUAL_HUD_RESIZES__?: Array<Record<string, unknown>>
   __ANTIBURN_VISUAL_HUD_DRAGS__?: string[]
+  __ANTIBURN_VISUAL_FINISH_REMOTE_CHECK__?: () => void
 }

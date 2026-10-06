@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
 
-import { sessionBurnCheckPresentation } from "../../lib/presentation/burnChecks"
+import { sessionBurnCheckPresentation } from "../../lib/presentation/checkStatus"
 import { BurnCheckIndicator } from "./BurnCheckIndicator"
 import { BurnCheckStatus } from "./BurnCheckStatus"
 import { BurnCheckSummary } from "./BurnCheckSummary"

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { APP_SEARCH_CATALOG, groupAppResults, searchApp } from "./appSearch"
 import { SETTINGS_PANES } from "./settingsPanes"
-import { CHECK_LABELS } from "./presentation/checks"
+import { CHECK_LABELS } from "./presentation/checkReport"
 import { AGENT_SLUGS } from "./presentation/agents"
 import {
   SETTINGS_SEARCH_TARGETS,

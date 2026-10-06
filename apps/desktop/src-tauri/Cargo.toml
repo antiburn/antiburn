@@ -14,13 +14,17 @@ exclude = ["crates/anchored-window", "crates/hud", "crates/main-window", "crates
 
 [package]
 name = "antiburn"
-version = "0.7.3"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.97"
 description = "antiburn desktop application: a tray/menu-bar shell over the local antiburn engine."
 license = "MIT"
 repository = "https://github.com/antiburn/antiburn"
 publish = false
+
+[[test]]
+name = "ignored_instructions"
+path = "eval/ignored_instructions/ignored_instructions.rs"
 
 [lib]
 # The Tauri entry point lives in the library so the binary is a thin launcher.
@@ -53,6 +57,7 @@ tauri-build = { version = "2", features = [] }
 # The local engine. The shell adds windows, tray, and IPC around it and owns
 # no analysis logic of its own.
 antiburn-local = { path = "../../../crates/antiburn-local" }
+antiburn-remote = { path = "../../../crates/antiburn-remote" }
 # The notification window provides mechanism only. Every gating decision stays
 # in src/notifications.rs.
 antiburn-nudge = { path = "crates/nudge" }
@@ -96,6 +101,8 @@ hmac = "0.13"
 # resolves rustls to below; the explicit `rustls` dependency installs that
 # same provider instead of a competing one.
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
+# Store the optional TypeSafe key in the user's native credential vault.
+keyring = { version = "3.6.3", default-features = false }
 # The app-owned local database. `bundled` compiles SQLite from source, so the
 # app never depends on a system library and CI needs no extra packages.
 # Held at 0.32 to match `antiburn-local`: `libsqlite3-sys` sets
@@ -160,6 +167,7 @@ portable-pty = "0.9.0"
 tauri-plugin-clipboard-manager = "2.3.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
 # Reads clock-tick and page-size units for the bounded analytics process sample.
 libc = { version = "0.2", optional = true }
 # Direct GTK access for one repair. `wayland_titlebar` clears the
@@ -175,6 +183,7 @@ gtk = "0.18"
 tauri-plugin-updater = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
 # macOS 13+ login-item registration for the main application. Unlike the
 # cross-platform plugin, this uses Apple's current System Settings-visible API.
 smappservice-rs = "0.1"
@@ -196,9 +205,10 @@ objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSAppl
 # match the nudge crate's pin so both share one plugin registration.
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 # Remove the existing material before Tauri adds its scaled replacement.
-window-vibrancy = "0.6"
+window-vibrancy = "0.8"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 # Per-user Run-key registration. Kept in Rust so executable paths are quoted
 # correctly and stale entries can be refreshed after an update.
 winreg = "0.56"

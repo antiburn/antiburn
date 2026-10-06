@@ -32,11 +32,25 @@ interface HygieneStatusPresentation extends BurnCheckMark {
 type AssessedHygieneCheck = SessionHygieneCheck & { status: "finding" | "clean" }
 
 function isAssessed(check: SessionHygieneCheck): check is AssessedHygieneCheck {
-  return check.status !== "notAssessed"
+  return check.status === "finding" || check.status === "clean"
 }
 
 /* One icon size for every status, so the trailing icon column lines up. */
 const STATUS_ICON_SIZE = 14
+
+function PendingHygieneRow({ check }: { check: SessionHygieneCheck }) {
+  return (
+    <div role="status" className="grid gap-0.5 py-1 type-body">
+      <p className="flex items-center justify-between gap-3">
+        <span className="text-label-secondary">{check.name}</span>
+        <span className="type-footnote text-label-tertiary">{check.title}</span>
+      </p>
+      {check.checkReason && (
+        <p className="type-footnote text-label-tertiary">{check.checkReason}</p>
+      )}
+    </div>
+  )
+}
 
 const STATUS_PRESENTATION: Record<AssessedHygieneCheck["status"], HygieneStatusPresentation> = {
   finding: {
@@ -210,13 +224,18 @@ export function HygieneBreakdown({
   const assessedChecks = checks.filter(isAssessed)
   const passing = assessedChecks.filter((check) => check.status === "clean")
   const findings = assessedChecks.filter((check) => check.status === "finding")
+  const pendingChecks = checks.filter(
+    (check) => check.status === "checking" || check.status === "couldntCheck",
+  )
   const rolledChecks = passing
   const assessedCount = passing.length + findings.length
   const allAssessedPass = passing.length === assessedCount
   const rollupLabel =
-    allAssessedPass && assessedCount < checks.length
-      ? "All assessed checks passed"
-      : `${passing.length}/${assessedCount} passed`
+    assessedCount === 0
+      ? "No checks assessed yet"
+      : allAssessedPass && assessedCount < checks.length
+        ? "All assessed checks passed"
+        : `${passing.length}/${assessedCount} passed`
 
   const explainers = sessionHygieneExplainers()
   const explainerFor = (checkId: SessionHygieneCheck["id"]) =>
@@ -238,13 +257,16 @@ export function HygieneBreakdown({
   // behind.
   const shownChecks = collapsePassing ? findings : [...findings, ...rolledChecks]
 
-  if (assessedCount === 0) return null
+  if (assessedCount === 0 && pendingChecks.length === 0) return null
 
   if (inlineGuidance) {
     return (
       <div className="session-checks-grid grid" aria-label="Session hygiene checks">
         {[...findings, ...passing].map((check) => (
           <InlineHygieneRow key={check.id} check={check} />
+        ))}
+        {pendingChecks.map((check) => (
+          <PendingHygieneRow key={check.id} check={check} />
         ))}
       </div>
     )
@@ -293,6 +315,9 @@ export function HygieneBreakdown({
           open={openCheck === check.id}
           onToggle={() => toggleCheck(check.id)}
         />
+      ))}
+      {pendingChecks.map((check) => (
+        <PendingHygieneRow key={check.id} check={check} />
       ))}
     </div>
   )

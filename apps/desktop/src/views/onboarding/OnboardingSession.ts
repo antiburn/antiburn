@@ -19,6 +19,7 @@ import {
   requestFolderAccess,
   scanNow,
   setRepositoryEnabled,
+  setSettings,
   type Interaction,
   type LiveUsageMeterPayload,
   type RepositoryItemPayload,
@@ -69,6 +70,8 @@ export type OnboardingSnapshot = {
   disabledAgents: string[]
   /** Draft of the Do Not Disturb opt-in, persisted by `finish`. */
   nudgesRespectDnd: boolean
+  /** Whether the scan keeps sessions from folders without git. Saved at once. */
+  includeNonRepoFolders: boolean
   /** The aggregate check numbers the Ready step shows. Null until fetched. */
   hygieneSummary: HygieneSummary | null
   recheckingPermissions: boolean
@@ -113,6 +116,9 @@ export class OnboardingSession {
   private agentChoicesTouched = false
   private hygieneTimer: ReturnType<typeof setInterval> | null = null
   private analyticsSteps = new Set<OnboardingStep>()
+  private nonRepoSaves: Promise<void> = Promise.resolve()
+  private nonRepoGesture = 0
+  private savedIncludeNonRepoFolders = false
 
   private snapshot: OnboardingSnapshot
 
@@ -132,6 +138,7 @@ export class OnboardingSession {
       liveUsageMeters: null,
       disabledAgents: [],
       nudgesRespectDnd: false,
+      includeNonRepoFolders: false,
       hygieneSummary: null,
       recheckingPermissions: false,
       finishing: false,
@@ -163,6 +170,32 @@ export class OnboardingSession {
 
   setNudgesRespectDnd = (enabled: boolean): void => {
     this.update({ nudgesRespectDnd: enabled, finishError: null })
+  }
+
+  /**
+   * Save the choice now, not at `finish`: the save starts a rescan, so the
+   * Ready step counts the sessions that the switch adds.
+   */
+  setIncludeNonRepoFolders = (enabled: boolean): Promise<void> => {
+    const gesture = ++this.nonRepoGesture
+    this.update({ includeNonRepoFolders: enabled })
+    // Save in gesture order, so an older save cannot finish last. Only the
+    // latest gesture updates the switch.
+    this.nonRepoSaves = this.nonRepoSaves.then(async () => {
+      try {
+        const saved = await setSettings({
+          ...(await getSettings()),
+          includeNonRepoFolders: enabled,
+        })
+        this.savedIncludeNonRepoFolders = saved.includeNonRepoFolders
+      } catch {
+        // Keep the last saved value.
+      }
+      if (gesture === this.nonRepoGesture) {
+        this.update({ includeNonRepoFolders: this.savedIncludeNonRepoFolders })
+      }
+    })
+    return this.nonRepoSaves
   }
 
   /**
@@ -315,6 +348,7 @@ export class OnboardingSession {
       if (generation !== this.generation) return
 
       applyTheme(settings.theme)
+      this.savedIncludeNonRepoFolders = settings.includeNonRepoFolders
       this.update({
         loadState: "ready",
         liveUsageMeters: null,
@@ -322,6 +356,7 @@ export class OnboardingSession {
         activityWindowDays: settings.activityWindowDays,
         launchAtLogin: settings.launchAtLogin,
         nudgesRespectDnd: settings.nudgesRespectDnd,
+        includeNonRepoFolders: settings.includeNonRepoFolders,
         analyticsSupported: info?.analyticsSupported ?? false,
         analyticsEnvironmentDisabled: info?.analyticsEnvironmentDisabled ?? false,
         scanRoots,

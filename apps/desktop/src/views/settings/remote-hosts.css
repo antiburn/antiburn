@@ -1,0 +1,124 @@
+.remote-hosts-card {
+  --remote-overflow-width: calc(var(--spacing) * 7);
+  container: remote-hosts / inline-size;
+}
+
+.remote-sync-row.ui-settings-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: var(--space-md);
+}
+
+.remote-sync-row.ui-settings-row > p {
+  grid-column: 1;
+}
+
+.remote-sync-row.ui-settings-row > p:nth-of-type(2) {
+  grid-row: 2;
+}
+
+.remote-sync-row > .ui-settings-row-control {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
+.remote-host-row {
+  display: grid;
+  grid-template-columns: calc(var(--spacing) * 3.5) minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--space-md);
+  row-gap: calc(var(--space-xs) / 2);
+}
+
+.remote-host-icon {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.remote-host-name {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.remote-host-toggle {
+  display: flex;
+  align-items: center;
+  justify-self: end;
+}
+
+.remote-host-metadata {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+}
+
+.remote-host-alias + .remote-host-sessions {
+  margin-inline-start: var(--space-xs);
+}
+
+.remote-host-actions {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  display: flex;
+  align-items: center;
+  justify-self: end;
+  gap: var(--space-md);
+}
+
+.remote-host-sync {
+  min-width: calc(var(--space-2xl) * 3 + var(--space-md));
+}
+
+.remote-host-sync,
+.remote-host-overflow {
+  position: relative;
+}
+
+.remote-host-sync::before,
+.remote-host-overflow::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--space-xs) / -2) 0;
+}
+
+.remote-host-overflow {
+  width: var(--remote-overflow-width);
+  height: var(--control-height-regular);
+  padding-inline: 0;
+}
+
+.remote-host-sessions::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--space-xs) * -1) 0;
+}
+
+.remote-host-message {
+  grid-column: 2 / -1;
+  margin-top: var(--space-xs);
+}
+
+@container remote-hosts (max-width: 520px) {
+  .remote-host-name,
+  .remote-host-metadata {
+    grid-column: 2 / -1;
+  }
+
+  .remote-host-actions {
+    grid-column: 2 / -1;
+    grid-row: 3;
+    margin-top: var(--space-md);
+  }
+}
+
+@container remote-hosts (max-width: 360px) {
+  .remote-sync-row > .ui-settings-row-control {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    padding-top: var(--space-sm);
+  }
+
+  .remote-sync-row.ui-settings-row > p {
+    grid-column: 1 / -1;
+  }
+}

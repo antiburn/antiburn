@@ -1420,3 +1420,35 @@ fn spill_folding_matches_sequential_application() {
         assert_eq!(reasons(&folded_events), reasons(&sequential_events));
     }
 }
+
+#[test]
+fn remote_facts_never_enter_live_or_pending_admission() {
+    for guard in [0, 10] {
+        let mut registry = Registry {
+            broad_through: Revision(guard),
+            ..Registry::default()
+        };
+        let mut out = Vec::new();
+        let fact = Existence {
+            agent: AgentKind::Claude,
+            incarnation: Incarnation(0),
+            at: BASE,
+            revision: Revision(1),
+            is_new: true,
+        };
+        let remote = SessionKey::new("ssh:host", "claude-code", "same");
+        let touch = registry.establish(&remote, fact, BASE, &mut out);
+        assert_eq!(touch, Touch::Stale);
+        registry.narrate(&remote, fact.agent, fact.at, fact.is_new, touch, &mut out);
+        assert!(out.is_empty());
+        assert!(registry.live.is_empty());
+        assert!(registry.pending.is_empty());
+        assert!(registry.deadlines.is_empty());
+        for environment in ["native", "wsl:Ubuntu"] {
+            let local = SessionKey::new(environment, "claude-code", "same");
+            let touch = registry.establish(&local, fact, BASE, &mut out);
+            assert_ne!(touch, Touch::Stale);
+            assert!(registry.live.contains_key(&local) || registry.pending.contains_key(&local));
+        }
+    }
+}

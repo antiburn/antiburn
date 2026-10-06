@@ -124,6 +124,7 @@ export interface ListedSession {
   agent: string
   sessionId?: string | undefined
   wslDistro?: string | null | undefined
+  remoteHostId?: string | null | undefined
   isActive: boolean
 }
 
@@ -131,7 +132,7 @@ export interface ListedSession {
 export function listInterests(entries: readonly ListedSession[]): SessionRefPayload[] {
   const refs: SessionRefPayload[] = []
   for (const entry of entries) {
-    if (entry.sessionId)
+    if (entry.sessionId && !entry.remoteHostId)
       refs.push(sessionInterest(entry.agent, entry.sessionId, entry.wslDistro))
   }
   return refs
@@ -145,8 +146,11 @@ export function withRegistryActivity<T extends ListedSession>(
   live: LiveSessionsSnapshot,
   entries: T[],
 ): T[] {
-  if (!live.ready) return entries
+  if (!live.ready && entries.every((entry) => !entry.remoteHostId || !entry.isActive))
+    return entries
   return entries.map((entry) => {
+    if (entry.remoteHostId) return entry.isActive ? { ...entry, isActive: false } : entry
+    if (!live.ready) return entry
     const isActive = registryActivity(
       live,
       sessionRefKey(sessionInterest(entry.agent, entry.sessionId ?? "", entry.wslDistro)),

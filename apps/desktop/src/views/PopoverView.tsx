@@ -30,9 +30,10 @@ import {
   type PopoverPeekData,
   type PopoverPeekTarget,
 } from "../lib/popoverPeekIpc"
-import { checksPresentation } from "../lib/presentation/checks"
+import { checksPresentation } from "../lib/presentation/checkReport"
 import { snoozedDetectorIds, useSnoozedBurnChecks } from "../lib/snoozedBurnChecks"
 import { sessionHygieneIdentities, useSessionHygiene } from "../lib/useSessionHygiene"
+import { remoteHosts } from "../lib/remoteHosts"
 import { PopoverSession } from "./popover/PopoverSession"
 import { ChecksSummary } from "./popover/ChecksView"
 import { foldActivityHeader } from "./popover/usageChartFold"
@@ -106,6 +107,11 @@ function ActivitySkeleton() {
 }
 
 export function PopoverView() {
+  const remoteState = useSyncExternalStore(
+    remoteHosts.subscribe,
+    remoteHosts.getSnapshot,
+    remoteHosts.getSnapshot,
+  )
   const [session] = useState(() => new PopoverSession())
   const [peekTriggers] = useState(createPopoverPeekTriggers)
   const state = useSyncExternalStore(
@@ -279,6 +285,7 @@ export function PopoverView() {
           ) : (
             <SessionList
               entries={state.entries}
+              remoteHosts={remoteState.hosts}
               snoozedDetectors={snoozedDetectors}
               days={windowDays}
               onOpenSession={(entry) => {
@@ -291,12 +298,17 @@ export function PopoverView() {
                 noteInteraction({
                   kind: "sessionOpened",
                   agent: entry.agent,
-                  environment: entry.wslDistro ? "wsl" : "native",
+                  environment: entry.remoteHostId
+                    ? "remote"
+                    : entry.wslDistro
+                      ? "wsl"
+                      : "native",
                 })
                 void openMainWindowSession({
                   agent: entry.agent,
                   sessionId: entry.sessionId,
                   wslDistro: entry.wslDistro ?? null,
+                  ...(entry.remoteHostId ? { remoteHostId: entry.remoteHostId } : {}),
                 })
               }}
               renderAgentIcon={renderAgentIcon}

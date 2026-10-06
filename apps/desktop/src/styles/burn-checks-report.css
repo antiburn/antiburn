@@ -41,6 +41,10 @@
   gap: calc(var(--space-xl) / 2);
 }
 
+.burn-checks-group-body[hidden] {
+  display: none;
+}
+
 .burn-checks-group-heading,
 .burn-checks-group > h2 {
   margin-block: 0 var(--space-sm);

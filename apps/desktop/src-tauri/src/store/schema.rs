@@ -11,10 +11,191 @@
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
-    V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
-    V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53, V54, V55, V56, V57, V58,
+    V1,
+    V2,
+    V3,
+    V4,
+    V5,
+    V6,
+    V7,
+    V8,
+    V9,
+    V10,
+    V11,
+    V12,
+    V13,
+    V14,
+    V15,
+    V16,
+    V17,
+    V18,
+    V19,
+    V20,
+    V21,
+    V22,
+    V23,
+    V24,
+    V25,
+    V26,
+    V27,
+    V28,
+    V29,
+    V30,
+    V31,
+    V32,
+    V33,
+    V34,
+    V35,
+    V36,
+    V37,
+    V38,
+    V39,
+    V40,
+    V41,
+    V42,
+    V43,
+    V44,
+    V45,
+    V46,
+    V47,
+    V48,
+    V49,
+    V50,
+    V51,
+    V52,
+    V53,
+    V54,
+    V55,
+    V56,
+    V57,
+    V58,
+    V59,
+    V60,
+    V61,
+    V62,
+    V63,
+    V64,
+    antiburn_local::analysis::TURN_SCHEMA_V11_SQL,
+    V66,
+    V67,
+    V68,
+    V69,
+    V70,
+    V71,
 ];
+
+const V69: &str = r#"
+CREATE TABLE burn_check_sampled_pair (
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    check_id TEXT NOT NULL,
+    comparison_id TEXT NOT NULL,
+    dependency_digest TEXT NOT NULL,
+    incarnation INTEGER NOT NULL,
+    action_id TEXT NOT NULL,
+    action_digest TEXT NOT NULL,
+    instruction_digest TEXT NOT NULL,
+    selector_revision INTEGER NOT NULL,
+    round INTEGER NOT NULL,
+    assessed INTEGER NOT NULL CHECK (assessed IN (0, 1)),
+    PRIMARY KEY (environment_key, agent, session_id, check_id, comparison_id, dependency_digest),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE burn_check_sample_origin (
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    check_id TEXT NOT NULL,
+    incarnation INTEGER NOT NULL,
+    boundary_positions_json TEXT NOT NULL CHECK (json_valid(boundary_positions_json)),
+    boundary_at_epoch INTEGER NOT NULL,
+    historical INTEGER NOT NULL CHECK (historical IN (0, 1)),
+    PRIMARY KEY (environment_key, agent, session_id, check_id),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+"#;
+
+const V68: &str = r#"
+CREATE TABLE burn_check_instruction_epoch (
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    instruction_digest TEXT NOT NULL,
+    incarnation INTEGER NOT NULL,
+    source_generation INTEGER NOT NULL,
+    positions_json TEXT NOT NULL CHECK(json_valid(positions_json)),
+    observed_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (environment_key, agent, session_id),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+"#;
+
+const V67: &str = r#"
+CREATE TABLE burn_check_work_answer (
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    check_id TEXT NOT NULL,
+    reuse_scope TEXT NOT NULL,
+    item_marker TEXT NOT NULL,
+    result_json TEXT NOT NULL CHECK(json_valid(result_json)),
+    updated_at_epoch INTEGER NOT NULL,
+    PRIMARY KEY (environment_key, agent, session_id, check_id, reuse_scope, item_marker)
+) STRICT;
+"#;
+
+const V66: &str = r#"
+CREATE TABLE burn_check_usage_reservation (
+    id TEXT PRIMARY KEY NOT NULL,
+    expires_at_epoch INTEGER NOT NULL,
+    session_key TEXT NOT NULL,
+    data TEXT NOT NULL
+);
+CREATE INDEX burn_check_usage_expiry ON burn_check_usage_reservation(expires_at_epoch);
+CREATE INDEX burn_check_usage_session ON burn_check_usage_reservation(session_key);
+INSERT INTO burn_check_usage_reservation
+SELECT json_extract(r.value, '$.id'), json_extract(r.value, '$.expires_at_epoch'),
+       json_extract(r.value, '$.session_key'), r.value
+FROM setting AS s, json_each(s.value, '$.reservations') AS r
+WHERE s.key = 'internal:burnCheckUsageLedgerV1';
+UPDATE setting SET value = json_set(value, '$.reservations', json('[]'))
+WHERE key = 'internal:burnCheckUsageLedgerV1';
+"#;
+
+const V64: &str = r#"
+CREATE TABLE burn_check_response_cache (
+    provider TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    returned_model TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    created_at_epoch INTEGER NOT NULL,
+    PRIMARY KEY (provider, request_digest)
+) STRICT;
+CREATE INDEX burn_check_response_cache_age ON burn_check_response_cache(created_at_epoch);
+CREATE TABLE burn_check_request_outcome (
+    request_identity TEXT PRIMARY KEY,
+    reservation_id TEXT NOT NULL,
+    created_at_epoch INTEGER NOT NULL
+) STRICT;
+CREATE INDEX burn_check_request_outcome_reservation ON burn_check_request_outcome(reservation_id);
+INSERT OR IGNORE INTO burn_check_response_cache
+SELECT json_extract(entry.value, '$.provider'),
+       json_extract(entry.value, '$.request_digest'),
+       json_extract(entry.value, '$.returned_model'),
+       json_extract(entry.value, '$.response_json'),
+       json_extract(entry.value, '$.input_tokens'),
+       json_extract(entry.value, '$.output_tokens'),
+       json_extract(entry.value, '$.created_at_epoch')
+FROM setting, json_each(CASE WHEN json_valid(setting.value) THEN setting.value ELSE '{}' END, '$.entries') AS entry
+WHERE setting.key = 'internal:burnCheckResponseCacheV1';
+DELETE FROM setting WHERE key = 'internal:burnCheckResponseCacheV1';
+"#;
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
 ///
@@ -30,7 +211,9 @@ pub const MIGRATIONS: &[&str] = &[
 /// current shape, not a prohibition on future migrations storing messages,
 /// tool activity, or file content recorded in a transcript. Any such migration
 /// must still be deliberate, bounded, covered by the local-data
-/// clear/delete/retention paths, and must not create a network or logging path.
+/// clear/delete/retention paths, and must not create a network or logging path
+/// except for the opt-in Smart Burn Checks assessment path documented in
+/// `docs/smart-burn-checks.md`.
 const V1: &str = r#"
 -- App settings, one row per key. Values are JSON scalars so a new preference
 -- is additive and needs no migration.
@@ -1127,16 +1310,6 @@ const V57: &str = r#"
 DROP TABLE IF EXISTS provider_usage_period_rollup;
 "#;
 
-/// v58 makes the next scan describe Claude sessions labelled `cli` again.
-/// Earlier scans labelled every session under `~/.claude/projects` as `cli`,
-/// including Claude Desktop and VS Code sessions. An empty activity cursor
-/// stops the scan from reusing the old record, so the scan reads the
-/// transcript head and stores the correct surface.
-const V58: &str = r#"
-UPDATE session SET activity_cursor = ''
-WHERE agent = 'claude-code' AND surface = 'cli';
-"#;
-
 /// v52 widens the factor sample and point lanes to admit a model-scoped
 /// weekly lane, such as Anthropic's supplemental "Fable" window, spelled
 /// `model:<slug>`. SQLite cannot alter a `CHECK` constraint in place, so both
@@ -1280,4 +1453,104 @@ CREATE UNIQUE INDEX remediation_active_passive_target
 CREATE UNIQUE INDEX remediation_active_action_target
     ON remediation (environment_key, agent, scope_kind, scope_key, target_key)
     WHERE state != 'recurred' AND origin = 'action';
+"#;
+
+/// v58 preserves authority and native tool identities for private content parts.
+const V58: &str = antiburn_local::analysis::TURN_SCHEMA_V9_SQL;
+
+/// v59 stores one generic, revision-bound assessment state per session and
+/// Burn Check. It stores derived progress and results, not source content or
+/// provider request bodies. Session deletion removes the row by cascade.
+const V59: &str = r#"
+CREATE TABLE burn_check_assessment (
+    environment_key          TEXT NOT NULL,
+    agent                    TEXT NOT NULL,
+    session_id               TEXT NOT NULL,
+    check_id                 TEXT NOT NULL,
+    incarnation              INTEGER NOT NULL,
+    boundary_generation      INTEGER,
+    boundary_activity_cursor TEXT,
+    boundary_at_epoch        INTEGER,
+    input_revision           TEXT,
+    evaluator_revision       TEXT,
+    source_generation        INTEGER,
+    source_fingerprint       TEXT,
+    published_fence          INTEGER,
+    status                   TEXT NOT NULL DEFAULT 'idle'
+        CHECK (status IN ('idle','queued','running','completed','failed','superseded')),
+    progress_json            TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+    result_json              TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
+    result_revision          TEXT,
+    request_count            INTEGER NOT NULL DEFAULT 0 CHECK (request_count >= 0),
+    created_at_epoch         INTEGER NOT NULL,
+    updated_at_epoch         INTEGER NOT NULL,
+    next_attempt_at_epoch    INTEGER,
+    lease_expires_at_epoch   INTEGER,
+    last_error_category      TEXT,
+    PRIMARY KEY (environment_key, agent, session_id, check_id),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+CREATE INDEX burn_check_assessment_queue
+    ON burn_check_assessment (status, next_attempt_at_epoch, lease_expires_at_epoch, updated_at_epoch);
+CREATE INDEX burn_check_assessment_revision
+    ON burn_check_assessment (environment_key, agent, session_id, check_id, input_revision);
+"#;
+
+/// v60 captures per-source turn positions at enablement independently of time.
+const V60: &str = r#"
+ALTER TABLE burn_check_assessment ADD COLUMN boundary_positions_json TEXT NOT NULL DEFAULT '{}'
+    CHECK (json_valid(boundary_positions_json));
+"#;
+
+/// v61 makes the latest cache-hit settlement idempotent for each assessment.
+const V61: &str = r#"
+ALTER TABLE burn_check_assessment ADD COLUMN last_usage_cache_hit_id TEXT;
+"#;
+
+/// v62 tracks the exact explicit historical cohort shown in Settings.
+const V62: &str = r#"
+ALTER TABLE burn_check_assessment ADD COLUMN history_batch_epoch INTEGER;
+UPDATE burn_check_assessment
+   SET history_batch_epoch = boundary_at_epoch
+ WHERE boundary_generation = -2;
+INSERT INTO setting (key, value)
+VALUES (
+    'internal:jevBurnCheckHistoryBatchEpochV1',
+    CAST(COALESCE((
+        SELECT max(boundary_at_epoch)
+          FROM burn_check_assessment
+         WHERE boundary_generation = -2), 0) AS TEXT)
+)
+ON CONFLICT(key) DO NOTHING;
+"#;
+
+/// v63 stores normalized tool-input fields for bounded check projection.
+const V63: &str = antiburn_local::analysis::TURN_SCHEMA_V10_SQL;
+
+/// v71 makes the next scan describe Claude sessions labelled `cli` again.
+/// Earlier scans labelled every session under `~/.claude/projects` as `cli`,
+/// including Claude Desktop and VS Code sessions. An empty activity cursor
+/// stops the scan from reusing the old record, so the scan reads the
+/// transcript head and stores the correct surface.
+const V71: &str = r#"
+UPDATE session SET activity_cursor = ''
+WHERE agent = 'claude-code' AND surface = 'cli';
+"#;
+
+/// v70 replaces [`V31`]'s Insights window index with one on last activity.
+///
+/// The Insights cohort, denominator, resource-use, and current-findings
+/// queries used to select their report window by `started_at_epoch`. They
+/// now select by last activity — `COALESCE(updated_at_epoch,
+/// started_at_epoch)`, falling back only when activity is unknown — so the
+/// report covers the same sessions discovery does. SQLite only matches an
+/// index to an expression named verbatim ([`V23`] established the same
+/// pattern), so the query's `WHERE` and `ORDER BY` both name this exact
+/// expression, and `session_insights_window` serves no query after this.
+const V70: &str = r#"
+DROP INDEX session_insights_window;
+CREATE INDEX session_insights_window_activity
+    ON session (environment_key, COALESCE(updated_at_epoch, started_at_epoch) DESC,
+                session_id DESC);
 "#;

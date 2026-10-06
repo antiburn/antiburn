@@ -175,11 +175,9 @@ fn ingest_and_publish(store: &Store, kind: AgentKind, session_id: &str, source: 
         crate::analysis::PassOutcome::Published,
         "the {kind:?} fixture must publish cleanly"
     );
-    // `evidence_pass_with_turn_rows` streams straight from the fixture. It
-    // has no scan step to stamp a fingerprint; the real worker's outer
-    // caller does that (see `run_record_pass_with`). Stamp it here, so this
-    // pass's cache record matches the session row's fingerprint. This
-    // mirrors `published_evidence_pass` in `tests.rs`.
+    // This fixture skips discovery. Stamp its source identity as the worker
+    // would, while keeping the aggregate analysis fingerprint separate.
+    pass.source_fingerprint = Some(fingerprint.clone());
     pass.analysis.fingerprint = fingerprint;
 
     let mut analysis_record = pass
@@ -201,12 +199,13 @@ fn ingest_and_publish(store: &Store, kind: AgentKind, session_id: &str, source: 
         evidence_json: serde_json::to_string(&evidence).expect("serialize evidence"),
     };
     let published = store
-        .publish_projections(
+        .publish_projections_with_source_fingerprint(
             &analysis_record,
             pass.analysis.started_at_epoch,
             &completion,
             &[],
             &[],
+            pass.source_fingerprint.as_deref(),
         )
         .expect("publish projections");
     assert!(
