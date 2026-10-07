@@ -12,7 +12,9 @@ import {
   INITIAL_LAST_PASS,
   advanceLastPass,
   deriveOverviewProgress,
+  firstFailingCheck,
   type LastPass,
+  type OverviewProgress,
   type ProgressInputs,
 } from "./overviewProgressStore"
 
@@ -672,5 +674,29 @@ describe("deriveOverviewProgress's Sessions display numbers", () => {
     expect(snapshot.sessions.displayCompleted).toBe(1)
     expect(snapshot.sessions.displayTotal).toBe(10)
     expect(snapshot.history).toBeNull()
+  })
+})
+
+describe("firstFailingCheck", () => {
+  it("picks the failing check with the highest estimated burn, the Checks list's top row", () => {
+    const progress = {
+      categories: [
+        { id: "unusedMcpServers", label: "", status: "needsFix", estimatedBurnBasisPoints: 10 },
+        {
+          id: "modelOverthinking",
+          label: "",
+          status: "passing",
+          estimatedBurnBasisPoints: 900,
+        },
+        { id: "unusedSkills", label: "", status: "needsFix", estimatedBurnBasisPoints: 300 },
+        {
+          id: "unusedBuiltInTools",
+          label: "",
+          status: "needsFix",
+          estimatedBurnBasisPoints: null,
+        },
+      ],
+    } as unknown as OverviewProgress
+    expect(firstFailingCheck(progress)).toBe("unusedSkills")
   })
 })

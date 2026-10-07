@@ -98,12 +98,15 @@ interface ChecksStep {
   deferredEvidence: number
 }
 
-export type FixStatus = "needsFix" | "awaitingVerification" | "passing" | "notChecked"
+export type FixStatus =
+  "needsFix" | "awaitingVerification" | "passing" | "notChecked" | "snoozed"
 
 export interface FixCategory {
   id: BurnCheckDetectorId
   label: string
   status: FixStatus
+  /** Hundredths of one percent; null when the check has no estimate. */
+  estimatedBurnBasisPoints: number | null
 }
 
 /**
@@ -170,8 +173,20 @@ export function fixesFound(progress: OverviewProgress): boolean {
 
 /** The first check the fixes step lists as needing a fix: where Enhance
  *  takes the reader in Burn Checks. */
+/** The failing check with the highest estimated burn: the top row of the
+ *  Checks list, which uses the same order. Ties keep report order. */
 export function firstFailingCheck(progress: OverviewProgress): BurnCheckDetectorId | undefined {
-  return progress.categories.find((category) => category.status === "needsFix")?.id
+  let top: FixCategory | undefined
+  for (const category of progress.categories) {
+    if (category.status !== "needsFix") continue
+    if (
+      !top ||
+      (category.estimatedBurnBasisPoints ?? -1) > (top.estimatedBurnBasisPoints ?? -1)
+    ) {
+      top = category
+    }
+  }
+  return top?.id
 }
 
 /** Where `flow` moves on this step's Next (or the fixes step's Done). The
@@ -306,7 +321,12 @@ function toFixCategory(category: ChecksCategoryPayload): FixCategory {
         : category.lifecycle === "passing"
           ? "passing"
           : "notChecked"
-  return { id: category.id, label: CHECK_LABELS[category.id], status }
+  return {
+    id: category.id,
+    label: CHECK_LABELS[category.id],
+    status,
+    estimatedBurnBasisPoints: category.estimatedTokenBurnBasisPoints ?? null,
+  }
 }
 
 /**

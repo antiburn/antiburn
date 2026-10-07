@@ -53,12 +53,33 @@ function capitalize(value: string): string {
   return value.length === 0 ? value : value[0]!.toUpperCase() + value.slice(1)
 }
 
-function fixesSubtitle(failing: FixCategory[]): string {
-  const phrases = failing.map((category) => CHECK_PROBLEM_PHRASES[category.id])
-  const shown = phrases.slice(0, 3)
-  const remaining = phrases.length - shown.length
-  const sentence = shown.map((phrase, index) => (index === 0 ? capitalize(phrase) : phrase))
-  return remaining > 0 ? `${sentence.join(", ")}, +${remaining} more` : sentence.join(", ")
+const COUNT_WORDS = [
+  "zero",
+  "one",
+  "two",
+  "three",
+  "four",
+  "five",
+  "six",
+  "seven",
+  "eight",
+  "nine",
+  "ten",
+]
+
+/** Spell out small counts, as in "Three fixable issues". */
+function countWord(count: number): string {
+  return COUNT_WORDS[count] ?? String(count)
+}
+
+function FixesList({ failing }: { failing: FixCategory[] }) {
+  return (
+    <ul className="mx-auto flex list-disc flex-col gap-(--space-sm) ps-6 text-start type-title-3 font-normal! text-label-secondary">
+      {failing.map((category) => (
+        <li key={category.id}>{capitalize(CHECK_PROBLEM_PHRASES[category.id])}</li>
+      ))}
+    </ul>
+  )
 }
 
 function StepProgressBar({
@@ -75,14 +96,15 @@ function StepProgressBar({
   const value = started ? completed / total : 0
 
   return (
-    <div className="flex items-center gap-x-3">
+    // The count sits under the bar, so the bar stays centred under the text.
+    <div className="flex flex-col items-center gap-(--space-xs)">
       <div
         role="progressbar"
         aria-label={title}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(value * 100)}
-        className="flex-1 h-2 overflow-hidden rounded-full bg-surface-tertiary opacity-70"
+        className="h-2 w-full overflow-hidden rounded-full bg-surface-tertiary opacity-70"
       >
         <div
           className="h-full rounded-full bg-brand-tint transition-[width] duration-medium ease-out"
@@ -90,7 +112,7 @@ function StepProgressBar({
         />
       </div>
 
-      <span className="type-body flex items-baseline justify-end tabular-nums">
+      <span className="type-callout flex items-baseline tabular-nums text-label-secondary">
         {!started ? (
           "Waiting"
         ) : (
@@ -268,9 +290,11 @@ function ChecksStepRow({
   snapshot: OverviewProgress
   isSteady: boolean
 }) {
-  const { windowSessions, pendingEvidence } = snapshot.checks
+  const { windowSessions, pendingEvidence, deferredEvidence } = snapshot.checks
   const started = isSteady || snapshot.sessions.done
-  const completed = Math.max(0, windowSessions - pendingEvidence)
+  // The step does not wait for deferred sessions, such as a live session, so
+  // the count does not wait for them either.
+  const completed = Math.max(0, windowSessions - (pendingEvidence - deferredEvidence))
 
   const data = { completed, started, title: "Run session checks", total: windowSessions }
 
@@ -283,11 +307,11 @@ function ChecksStepRow({
 
 /** The takeover's primary action, such as Next or Turn on live limits. */
 export const PRIMARY_BUTTON =
-  "rounded-control bg-brand-tint px-8 py-2.5 type-headline font-semibold! text-white shadow-[var(--shadow-raised)] transition-[filter] duration-fast hover:brightness-110 active:brightness-95 disabled:opacity-50"
+  "rounded-control bg-brand-tint px-10 py-3 type-title-3 font-semibold! text-white shadow-[var(--shadow-raised)] transition-[filter] duration-fast hover:brightness-110 active:brightness-95 disabled:opacity-50"
 
 /** The quiet way past a step's primary action, under it. */
 export const SKIP_BUTTON =
-  "type-footnote text-label-secondary underline underline-offset-[3px] hover:text-label"
+  "type-callout text-label-secondary underline underline-offset-[3px] hover:text-label"
 
 /**
  * One step's card chrome: a title, one or two lines of body copy, and the
@@ -299,23 +323,33 @@ function StepCard({
   transitionName,
   title,
   body,
+  bodyAction,
   children,
 }: {
   transitionName: string | undefined
   title: string
   body?: string
+  bodyAction?: ReactNode
   children?: ReactNode
 }) {
   return (
     <div
       style={transitionName ? { viewTransitionName: transitionName } : undefined}
-      className="flex w-full max-w-lg flex-col items-center gap-(--space-lg)"
+      className="flex w-full max-w-xl flex-col items-center gap-(--space-lg)"
     >
       <div className="flex flex-col gap-(--space-xs) text-center">
-        <h2 className="type-title-2 text-label">{title}</h2>
-        {body && <p className="type-body text-label-secondary">{body}</p>}
+        <h2 className="type-title-1 text-label">{title}</h2>
+        {body && (
+          // A narrow, balanced body wraps to lines of even width under the title.
+          <p className="mx-auto max-w-lg text-balance type-title-3 font-normal! text-label-secondary">
+            {body}
+            {bodyAction && <> {bodyAction}</>}
+          </p>
+        )}
       </div>
-      {children && <div className="flex w-full flex-col gap-(--space-md)">{children}</div>}
+      {children && (
+        <div className="mx-auto flex w-full max-w-lg flex-col gap-(--space-md)">{children}</div>
+      )}
     </div>
   )
 }
@@ -335,7 +369,7 @@ const STEP_COPY: Record<
   agents: {
     firstRun: {
       title: "Finding agents",
-      body: "Scanning the last 30 days of session logs to find out which coding agents you're using on this machine.",
+      body: "Scanning last 30 days of session logs for active coding agents.",
     },
     modal: {
       title: "Agents",
@@ -355,7 +389,7 @@ const STEP_COPY: Record<
   checks: {
     firstRun: {
       title: "Running session checks",
-      body: "antiburn checks for anti-patterns, especially problems with the context window, caching, and unused tools or skills.",
+      body: "Checking for anti-patterns: problems with context window, caching, and unused tools and skills.",
     },
     modal: {
       title: "Checks",
@@ -376,30 +410,63 @@ export function ProgressStepCard({
   progress,
   isSteady,
   transitionName,
+  bodyAction,
 }: {
   step: ProgressStepKey
   surface: ProgressStepSurface
   progress: OverviewProgress
   isSteady: boolean
   transitionName: string | undefined
+  /** Inline content after the body text, such as the first run's "More info" link. */
+  bodyAction?: ReactNode
 }) {
   const permissionFlow = useReadPermissionFlow(progress)
+  // The first run adds an ellipsis to the title while the step still runs.
+  const copy = (key: Exclude<ProgressStepKey, "fixes">, done: boolean) => {
+    const base = STEP_COPY[key][surface]
+    return surface === "firstRun" && !done ? { ...base, title: `${base.title}…` } : base
+  }
   switch (step) {
-    case "agents":
+    case "agents": {
+      const agentCopy = copy("agents", progress.agents.done)
+      const foundCount = progress.agents.rows.filter(
+        (row) => row.done && row.sessions > 0,
+      ).length
+      // The finished first run states the count in the title.
+      const title =
+        surface === "firstRun" && progress.agents.done
+          ? foundCount === 0
+            ? "No agents found"
+            : `${capitalize(countWord(foundCount))} ${pluralize(foundCount, "agent", "agents")} found`
+          : agentCopy.title
       return (
-        <StepCard transitionName={transitionName} {...STEP_COPY.agents[surface]}>
+        <StepCard
+          transitionName={transitionName}
+          bodyAction={bodyAction}
+          {...agentCopy}
+          title={title}
+        >
           <AgentsStepRow snapshot={progress} />
         </StepCard>
       )
+    }
     case "sessions":
       return (
-        <StepCard transitionName={transitionName} {...STEP_COPY.sessions[surface]}>
+        <StepCard
+          transitionName={transitionName}
+          bodyAction={bodyAction}
+          {...copy("sessions", progress.sessions.done)}
+        >
           <SessionsStepRow snapshot={progress} permissionFlow={permissionFlow} />
         </StepCard>
       )
     case "checks":
       return (
-        <StepCard transitionName={transitionName} {...STEP_COPY.checks[surface]}>
+        <StepCard
+          transitionName={transitionName}
+          bodyAction={bodyAction}
+          {...copy("checks", progress.checks.done)}
+        >
           <ChecksStepRow snapshot={progress} isSteady={isSteady} />
         </StepCard>
       )
@@ -412,15 +479,15 @@ export function ProgressStepCard({
             progress.checks.windowSessions === 0
               ? "No sessions in the last 30 days"
               : fixesFound(progress)
-                ? `${progress.failingCount} ${pluralize(progress.failingCount, "fix", "fixes")} found in your config`
+                ? `${capitalize(countWord(progress.failingCount))} fixable ${pluralize(progress.failingCount, "issue", "issues")} found in config`
                 : "No fixes needed"
           }
-          {...(fixesFound(progress)
-            ? { body: fixesSubtitle(failing) }
-            : progress.checks.windowSessions > 0
-              ? { body: "Your config already looks efficient." }
-              : {})}
-        />
+          {...(!fixesFound(progress) && progress.checks.windowSessions > 0
+            ? { body: "Your config already looks efficient." }
+            : {})}
+        >
+          {fixesFound(progress) && <FixesList failing={failing} />}
+        </StepCard>
       )
     }
   }

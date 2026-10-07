@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { OverviewFixes } from "./OverviewFixes"
@@ -41,9 +41,21 @@ function progress(overrides: Partial<OverviewProgress> = {}): OverviewProgress {
 }
 
 describe("OverviewFixes", () => {
+  it("opens the check when its row is clicked", () => {
+    snapshot = progress({
+      categories: [
+        { id: "modelOverthinking", label: "Model overthinking", status: "needsFix" },
+      ],
+    })
+    const onOpenCheck = vi.fn()
+    render(<OverviewFixes onOpenCheck={onOpenCheck} />)
+    fireEvent.click(screen.getByRole("button", { name: /Model overthinking/ }))
+    expect(onOpenCheck).toHaveBeenCalledWith("modelOverthinking")
+  })
+
   it("renders the config checks heading and nothing else", () => {
     snapshot = progress()
-    render(<OverviewFixes />)
+    render(<OverviewFixes onOpenCheck={() => {}} />)
     expect(screen.getByRole("heading", { name: "Config checks" })).toBeInTheDocument()
   })
 
@@ -56,7 +68,7 @@ describe("OverviewFixes", () => {
         { id: "overuseOfFastMode", label: "Overuse of fast mode", status: "notChecked" },
       ],
     })
-    render(<OverviewFixes />)
+    render(<OverviewFixes onOpenCheck={() => {}} />)
     expect(screen.getByText("Model overthinking").closest("li")).toHaveTextContent("needs fix")
     expect(screen.getByText("Cache churn").closest("li")).toHaveTextContent("passing")
     expect(screen.getByText("Old model usage").closest("li")).toHaveTextContent(
@@ -73,7 +85,7 @@ describe("OverviewFixes", () => {
         { id: "modelOverthinking", label: "Model overthinking", status: "needsFix" },
       ],
     })
-    render(<OverviewFixes />)
+    render(<OverviewFixes onOpenCheck={() => {}} />)
     const row = screen.getByText("Model overthinking").closest("li")!
     expect(row).toHaveTextContent("needs fix")
     // The phrase itself comes from CHECK_PROBLEM_PHRASES; this only checks the
@@ -83,7 +95,7 @@ describe("OverviewFixes", () => {
 
   it("renders no categories when none are reported", () => {
     snapshot = progress({ categories: [] })
-    render(<OverviewFixes />)
+    render(<OverviewFixes onOpenCheck={() => {}} />)
     expect(screen.getByRole("heading", { name: "Config checks" })).toBeInTheDocument()
     expect(screen.queryByRole("listitem")).toBeNull()
   })

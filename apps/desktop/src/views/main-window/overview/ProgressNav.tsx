@@ -14,13 +14,12 @@ import {
   fixesFound,
   openProgressStep,
   type OverviewProgress,
-  overviewProgress,
   type ProgressStepKey,
   progressStepTransitionName,
   rewindTo,
   stepDocked,
-  subscribeOverviewProgress,
 } from "./overviewProgressStore"
+import { useOverviewProgress } from "./useOverviewProgress"
 import { StepSettings } from "./stepSettings/StepSettings"
 
 const STEPS: readonly ProgressStepKey[] = ["agents", "sessions", "checks", "fixes"]
@@ -227,11 +226,7 @@ export function ProgressNav({
 }: {
   onOpenChecks: (check: BurnCheckDetectorId | undefined) => void
 }) {
-  const progress = useSyncExternalStore(
-    subscribeOverviewProgress,
-    overviewProgress,
-    overviewProgress,
-  )
+  const progress = useOverviewProgress()
   const triggerRefs = useRef(new Map<ProgressStepKey, HTMLButtonElement>())
   if (progress.mode === "pending") return null
 
