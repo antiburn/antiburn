@@ -4,7 +4,9 @@
 //! from the archive. See `docs/remediation.md`, "Memory archive".
 
 mod editor;
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 mod tests;
+#[cfg(all(test, windows))]
+mod windows_tests;
 
 pub(crate) use editor::{archive_memory, remove_index_line, restore_memory};

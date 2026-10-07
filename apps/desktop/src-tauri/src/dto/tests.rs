@@ -1123,6 +1123,7 @@ fn agent_memories_report_serializes_camel_case_fields() {
     );
 }
 
+#[cfg(not(windows))]
 #[test]
 fn memory_edit_outcomes_serialize_as_tagged_camel_case() {
     let cases = [

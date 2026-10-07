@@ -2194,7 +2194,7 @@ mod tests {
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            42,
+            43,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
