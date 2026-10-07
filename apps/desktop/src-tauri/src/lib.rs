@@ -50,6 +50,7 @@
 //! policy limits the webview to local application and IPC connections.
 
 pub mod agent_config;
+mod agent_memory;
 mod agents;
 mod analysis;
 mod analytics;

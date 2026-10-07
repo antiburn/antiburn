@@ -41,5 +41,5 @@ export function project(over: Partial<MemoryProject> = {}): MemoryProject {
 }
 
 export function report(projects: MemoryProject[] = [project()]): AgentMemoriesReport {
-  return { generatedAtMs: 1_000_000, projects }
+  return { generatedAtMs: 1_000_000, writesSupported: true, projects }
 }

@@ -1,8 +1,14 @@
-import { revealSource } from "../../../lib/ipc"
+import { noteInteraction, revealSource, type Interaction } from "../../../lib/ipc"
 import {
+  archiveAgentMemory,
   listAgentMemories,
+  removeAgentMemoryIndexLine,
+  restoreAgentMemory,
   type AgentMemoriesReport,
+  type DanglingIndexEntry,
+  type MemoryEditOutcome,
   type MemoryEntry,
+  type MemoryProject,
 } from "../../../lib/memoriesIpc"
 import { SurfaceExposureTracker } from "../../../lib/surfaceExposure"
 import { readCollapsedProjects, writeCollapsedProjects } from "./memoriesViewPrefs"
@@ -14,17 +20,53 @@ export interface MemoriesSnapshot {
   loading: boolean
   collapsedProjects: ReadonlySet<string>
   expandedMemories: ReadonlySet<string>
+  /** Memories deleted in this visit, by path. They stay in the stale report. */
+  archived: ReadonlyMap<string, ArchivedMemory>
+  /** The last failed action per memory path, or per `indexLineKey`. */
+  rowErrors: ReadonlyMap<string, RowError>
+  /** Index lines removed in this visit, by `indexLineKey`. */
+  removedIndexLines: ReadonlySet<string>
+  /** Projects whose MEMORY.md has a backup written by antiburn. */
+  indexBackupWritten: ReadonlySet<string>
+}
+
+export interface ArchivedMemory {
+  slug: string
+  archiveId: string
+  indexLineRemoved: boolean
+}
+
+export type RowError = "changedOnDisk" | "failed"
+
+/** The key of one index line in the removed set and in the row errors. */
+export function indexLineKey(slug: string, lineNumber: number): string {
+  return `${slug}:${lineNumber}`
 }
 
 export interface MemoriesAdapter {
   listMemories(): Promise<AgentMemoriesReport>
   reveal(path: string): Promise<void>
+  archive(
+    slug: string,
+    fileName: string,
+    expectedSizeBytes: number,
+    expectedModifiedMs: number | null,
+  ): Promise<MemoryEditOutcome>
+  restore(slug: string, archiveId: string): Promise<MemoryEditOutcome>
+  removeIndexLine(slug: string, lineNumber: number, target: string): Promise<MemoryEditOutcome>
+  noteInteraction(interaction: Interaction): void
   now(): number
 }
+
+type MemoryActionKind = Extract<Interaction, { kind: "memoryAction" }>["action"]
 
 const productionAdapter: MemoriesAdapter = {
   listMemories: () => listAgentMemories(),
   reveal: (path) => revealSource(path),
+  archive: archiveAgentMemory,
+  restore: restoreAgentMemory,
+  removeIndexLine: removeAgentMemoryIndexLine,
+  noteInteraction,
   now: () => Date.now(),
 }
 
@@ -67,6 +109,8 @@ export class MemoriesSession {
   private readonly activeListeners = new Set<() => void>()
   private loadVersion = 0
   private active = false
+  /** Counts activity changes. An edit that settles later must not land. */
+  private activity = 0
   private readonly exposure = new SurfaceExposureTracker()
 
   constructor(adapter: MemoriesAdapter = productionAdapter) {
@@ -77,6 +121,10 @@ export class MemoriesSession {
       loading: false,
       collapsedProjects: new Set(readCollapsedProjects()),
       expandedMemories: new Set(),
+      archived: new Map(),
+      rowErrors: new Map(),
+      removedIndexLines: new Set(),
+      indexBackupWritten: new Set(),
     }
   }
 
@@ -105,11 +153,19 @@ export class MemoriesSession {
     const active = this.activeListeners.size > 0
     if (active === this.active) return
     this.active = active
+    this.activity += 1
     // A load that started in an earlier activity period must not land.
     this.loadVersion += 1
     if (!active) {
       this.exposure.conceal("memories")
-      this.snapshot = { ...this.snapshot, loading: false }
+      // The next load reflects the disk, so this visit's edits are dropped.
+      this.snapshot = {
+        ...this.snapshot,
+        loading: false,
+        archived: new Map(),
+        rowErrors: new Map(),
+        removedIndexLines: new Set(),
+      }
       return
     }
     this.syncExposure()
@@ -127,7 +183,14 @@ export class MemoriesSession {
     try {
       const report = await this.adapter.listMemories()
       if (version !== this.loadVersion) return
-      this.update({ report, loading: false })
+      // Line numbers and paths in the new report are fresh. The old edits
+      // and errors no longer match them.
+      this.update({
+        report,
+        loading: false,
+        rowErrors: new Map(),
+        removedIndexLines: new Set(),
+      })
     } catch {
       if (version !== this.loadVersion) return
       this.update({ error: true, loading: false })
@@ -146,7 +209,144 @@ export class MemoriesSession {
 
   now = (): number => this.adapter.now()
 
-  reveal = (path: string): Promise<void> => this.adapter.reveal(path).catch(() => undefined)
+  reveal = (path: string): Promise<void> =>
+    this.adapter.reveal(path).then(
+      () => this.noteAction("reveal", "succeeded"),
+      () => this.noteAction("reveal", "failed"),
+    )
+
+  private noteAction(
+    action: MemoryActionKind,
+    outcome: Extract<Interaction, { kind: "memoryAction" }>["outcome"],
+  ): void {
+    this.adapter.noteInteraction({ kind: "memoryAction", action, outcome })
+  }
+
+  /** The analytics outcome for an edit that did not succeed. */
+  private failureOutcome(
+    outcome: MemoryEditOutcome | null,
+  ): "failed" | "changed_on_disk" | "unsupported" {
+    if (outcome?.outcome === "changedOnDisk" || outcome?.outcome === "missing") {
+      return "changed_on_disk"
+    }
+    if (outcome?.outcome === "unavailable" && outcome.reason === "automaticapplyunsupported") {
+      return "unsupported"
+    }
+    return "failed"
+  }
+
+  private setRowError(key: string, error: RowError): void {
+    this.update({ rowErrors: new Map(this.snapshot.rowErrors).set(key, error) })
+  }
+
+  private clearRowError(key: string): void {
+    if (!this.snapshot.rowErrors.has(key)) return
+    const rowErrors = new Map(this.snapshot.rowErrors)
+    rowErrors.delete(key)
+    this.update({ rowErrors })
+  }
+
+  /**
+   * Run one edit. The edit's interaction goes out exactly once, after the
+   * edit settles. The state only changes when the visit is still the same.
+   */
+  private async runEdit(
+    action: MemoryActionKind,
+    key: string,
+    edit: () => Promise<MemoryEditOutcome>,
+    succeeded: (outcome: MemoryEditOutcome) => boolean,
+    apply: (outcome: MemoryEditOutcome) => void,
+  ): Promise<void> {
+    const activity = this.activity
+    this.clearRowError(key)
+    const outcome = await edit().catch(() => null)
+    const sameVisit = activity === this.activity
+    if (outcome && succeeded(outcome)) {
+      if (sameVisit) apply(outcome)
+      this.noteAction(action, "succeeded")
+      return
+    }
+    const kind = this.failureOutcome(outcome)
+    this.noteAction(action, kind)
+    if (sameVisit)
+      this.setRowError(key, kind === "changed_on_disk" ? "changedOnDisk" : "failed")
+  }
+
+  /** Delete a memory by moving it into antiburn's archive. */
+  archive = (project: MemoryProject, memory: MemoryEntry): Promise<void> =>
+    this.runEdit(
+      "archive",
+      memory.path,
+      () =>
+        this.adapter.archive(
+          project.slug,
+          memory.fileName,
+          memory.sizeBytes,
+          memory.modifiedMs,
+        ),
+      (outcome) => outcome.outcome === "archived",
+      (outcome) => {
+        if (outcome.outcome !== "archived") return
+        const archived = new Map(this.snapshot.archived)
+        archived.set(memory.path, {
+          slug: project.slug,
+          archiveId: outcome.archiveId,
+          indexLineRemoved: outcome.indexLineRemoved,
+        })
+        const indexBackupWritten = outcome.indexLineRemoved
+          ? new Set(this.snapshot.indexBackupWritten).add(project.slug)
+          : this.snapshot.indexBackupWritten
+        this.update({ archived, indexBackupWritten })
+      },
+    )
+
+  /** Put a deleted memory back from the archive. */
+  undo = (memory: MemoryEntry): Promise<void> => {
+    const archived = this.snapshot.archived.get(memory.path)
+    if (!archived) return Promise.resolve()
+    return this.runEdit(
+      "restore",
+      memory.path,
+      () => this.adapter.restore(archived.slug, archived.archiveId),
+      // The file is already back when the restore target exists.
+      (outcome) => outcome.outcome === "restored" || outcome.outcome === "alreadyExists",
+      () => {
+        const next = new Map(this.snapshot.archived)
+        next.delete(memory.path)
+        this.update({ archived: next })
+        this.refresh()
+      },
+    )
+  }
+
+  /** Remove a dangling line from a project's MEMORY.md. */
+  removeIndexLine = (project: MemoryProject, entry: DanglingIndexEntry): Promise<void> => {
+    const key = indexLineKey(project.slug, entry.lineNumber)
+    // The report lists the line numbers of its own read. Lines removed since
+    // then moved the later lines up.
+    let lineNumber = entry.lineNumber
+    for (const removed of this.snapshot.removedIndexLines) {
+      const split = removed.lastIndexOf(":")
+      if (
+        removed.slice(0, split) === project.slug &&
+        Number(removed.slice(split + 1)) < entry.lineNumber
+      ) {
+        lineNumber -= 1
+      }
+    }
+    return this.runEdit(
+      "remove_index_line",
+      key,
+      () => this.adapter.removeIndexLine(project.slug, lineNumber, entry.target),
+      (outcome) => outcome.outcome === "indexLineRemoved",
+      () => {
+        this.update({
+          removedIndexLines: new Set(this.snapshot.removedIndexLines).add(key),
+          indexBackupWritten: new Set(this.snapshot.indexBackupWritten).add(project.slug),
+        })
+      },
+    )
+  }
 
   private syncExposure(): void {
     if (!this.active) return

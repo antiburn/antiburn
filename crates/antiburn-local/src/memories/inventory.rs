@@ -331,14 +331,14 @@ fn parse_frontmatter(text: &str) -> ParsedFrontmatter {
 
 /// Parses lines shaped like `- [title](target.md) — hook`. Other lines are
 /// ignored.
-fn parse_index(text: &str) -> Vec<IndexEntry> {
+pub fn parse_index(text: &str) -> Vec<IndexEntry> {
     text.lines()
         .enumerate()
         .filter_map(|(index, line)| parse_index_line(line, index + 1))
         .collect()
 }
 
-fn parse_index_line(line: &str, line_number: usize) -> Option<IndexEntry> {
+pub fn parse_index_line(line: &str, line_number: usize) -> Option<IndexEntry> {
     let rest = line.trim_start().strip_prefix(['-', '*'])?.trim_start();
     let rest = rest.strip_prefix('[')?;
     let (title, rest) = rest.split_once("](")?;

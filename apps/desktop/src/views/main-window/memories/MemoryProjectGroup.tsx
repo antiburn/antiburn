@@ -2,10 +2,11 @@ import { ChevronRight } from "lucide-react"
 
 import { CountPill } from "../../../components/ui/CountPill"
 import { cn } from "../../../lib/cn"
-import type { MemoryProject } from "../../../lib/memoriesIpc"
+import type { DanglingIndexEntry, MemoryEntry, MemoryProject } from "../../../lib/memoriesIpc"
 import { relativeTime } from "../../../lib/presentation/relativeTime"
-import { MemoryRow, RevealButton } from "./MemoryRow"
-import { sortMemories } from "./MemoriesSession"
+import type { MemoriesSnapshot } from "./MemoriesSession"
+import { indexLineKey, sortMemories } from "./MemoriesSession"
+import { DESTRUCTIVE_TEXT_BUTTON, MemoryRow, RevealButton, RowErrorNotice } from "./MemoryRow"
 
 function plural(count: number, word: string): string {
   return `${count} ${word}${count === 1 ? "" : "s"}`
@@ -21,22 +22,41 @@ const COLUMN_LABEL = "type-metadata uppercase tracking-wide text-label-tertiary"
 export function MemoryProjectGroup({
   project,
   collapsed,
-  expandedMemories,
+  state,
+  writesSupported,
   now,
   onToggleProject,
   onToggleMemory,
   onReveal,
+  onDelete,
+  onUndo,
+  onRemoveLine,
+  onReload,
 }: {
   project: MemoryProject
   collapsed: boolean
-  expandedMemories: ReadonlySet<string>
+  state: Pick<
+    MemoriesSnapshot,
+    "expandedMemories" | "archived" | "rowErrors" | "removedIndexLines" | "indexBackupWritten"
+  >
+  writesSupported: boolean
   now: number
   onToggleProject: () => void
   onToggleMemory: (path: string) => void
   onReveal: (path: string) => void
+  onDelete: (entry: MemoryEntry) => void
+  onUndo: (entry: MemoryEntry) => void
+  onRemoveLine: (entry: DanglingIndexEntry) => void
+  onReload: () => void
 }) {
-  const orphanCount = project.memories.filter((entry) => !entry.inIndex).length
-  const attention = project.dangling.length + orphanCount
+  const { expandedMemories, archived, rowErrors, removedIndexLines, indexBackupWritten } = state
+  // Deleted rows stay in the list but no longer count.
+  const live = project.memories.filter((entry) => !archived.has(entry.path))
+  const dangling = project.dangling.filter(
+    (entry) => !removedIndexLines.has(indexLineKey(project.slug, entry.lineNumber)),
+  )
+  const orphanCount = live.filter((entry) => !entry.inIndex).length
+  const attention = dangling.length + orphanCount
   const history =
     project.sessionCount === 0
       ? "no session history"
@@ -68,7 +88,7 @@ export function MemoryProjectGroup({
           <span className="truncate font-mono type-body-large text-label">
             {project.displayPath}
           </span>
-          <CountPill count={project.memories.length} aria-label="Memories" />
+          <CountPill count={live.length} aria-label="Memories" />
           {attention > 0 && (
             <span className="shrink-0 type-footnote text-system-orange">
               {attention} {attention === 1 ? "needs" : "need"} attention
@@ -86,10 +106,7 @@ export function MemoryProjectGroup({
               <>
                 <span className="font-mono type-callout text-label">MEMORY.md</span>
                 <span className="type-footnote text-label-tertiary">
-                  {entries(
-                    project.memories.filter((entry) => entry.inIndex).length +
-                      project.dangling.length,
-                  )}
+                  {entries(live.filter((entry) => entry.inIndex).length + dangling.length)}
                 </span>
                 <RevealButton onReveal={() => onReveal(project.indexPath!)} />
               </>
@@ -98,20 +115,53 @@ export function MemoryProjectGroup({
                 No MEMORY.md index: Claude cannot find these memories.
               </span>
             )}
+            {indexBackupWritten.has(project.slug) && (
+              <span className="type-footnote text-label-tertiary">
+                Backup written to MEMORY.md.antiburn-bak
+              </span>
+            )}
+            {!writesSupported && (
+              <span className="type-footnote text-label-tertiary">
+                Editing memories is not supported on Windows yet.
+              </span>
+            )}
           </div>
-          {project.dangling.length > 0 && (
+          {dangling.length > 0 && (
             <div>
               <p className="type-footnote text-system-orange">
-                {project.dangling.length === 1
+                {dangling.length === 1
                   ? "1 entry points to a missing file"
-                  : `${project.dangling.length} entries point to missing files`}
+                  : `${dangling.length} entries point to missing files`}
               </p>
               <ul className="font-mono type-footnote text-label-secondary">
-                {project.dangling.map((entry) => (
-                  <li key={`${entry.lineNumber}:${entry.target}`}>
-                    {entry.title} → {entry.target}
-                  </li>
-                ))}
+                {dangling.map((entry) => {
+                  const error = rowErrors.get(indexLineKey(project.slug, entry.lineNumber))
+                  return (
+                    <li key={`${entry.lineNumber}:${entry.target}`}>
+                      <span className="flex items-baseline gap-x-3">
+                        <span>
+                          {entry.title} → {entry.target}
+                        </span>
+                        {writesSupported && (
+                          <button
+                            type="button"
+                            onClick={() => onRemoveLine(entry)}
+                            className={DESTRUCTIVE_TEXT_BUTTON}
+                          >
+                            Remove line
+                          </button>
+                        )}
+                      </span>
+                      {error && (
+                        <RowErrorNotice
+                          error={error}
+                          failedText="Could not remove this line."
+                          onReload={onReload}
+                        />
+                      )}
+                    </li>
+                  )
+                })}
               </ul>
             </div>
           )}
@@ -129,8 +179,14 @@ export function MemoryProjectGroup({
                 entry={entry}
                 expanded={expandedMemories.has(entry.path)}
                 now={now}
+                archived={archived.get(entry.path)}
+                error={rowErrors.get(entry.path)}
+                writesSupported={writesSupported}
                 onToggle={() => onToggleMemory(entry.path)}
                 onReveal={() => onReveal(entry.path)}
+                onDelete={() => onDelete(entry)}
+                onUndo={() => onUndo(entry)}
+                onReload={onReload}
               />
             ))}
           </div>

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { AgentMemoriesReport } from "../../../lib/memoriesIpc"
+import type { AgentMemoriesReport, MemoryEditOutcome } from "../../../lib/memoriesIpc"
 import { entry, project, report } from "./memoriesFixtures"
 import { MemoriesSession, sortMemories, type MemoriesAdapter } from "./MemoriesSession"
 import type * as IpcModule from "../../../lib/ipc"
@@ -15,6 +15,14 @@ function setup(overrides: Partial<MemoriesAdapter> = {}) {
   const adapter: MemoriesAdapter = {
     listMemories: vi.fn().mockResolvedValue(report()),
     reveal: vi.fn().mockResolvedValue(undefined),
+    archive: vi.fn().mockResolvedValue({
+      outcome: "archived",
+      archiveId: "1-a.md",
+      indexLineRemoved: true,
+    }),
+    restore: vi.fn().mockResolvedValue({ outcome: "restored", indexLineRestored: true }),
+    removeIndexLine: vi.fn().mockResolvedValue({ outcome: "indexLineRemoved" }),
+    noteInteraction: noteInteraction,
     now: vi.fn(() => 1_000_000),
     ...overrides,
   }
@@ -163,10 +171,193 @@ describe("MemoriesSession", () => {
     stop()
   })
 
-  it("sends a reveal to the adapter", async () => {
+  it("sends a reveal to the adapter and measures it", async () => {
     const { adapter, session } = setup()
     await session.reveal("/p/a.md")
     expect(adapter.reveal).toHaveBeenCalledWith("/p/a.md")
+    expect(noteInteraction).toHaveBeenCalledWith({
+      kind: "memoryAction",
+      action: "reveal",
+      outcome: "succeeded",
+    })
+  })
+
+  it("measures a failed reveal as failed", async () => {
+    const { session } = setup({ reveal: vi.fn().mockRejectedValue(new Error("no")) })
+    await session.reveal("/p/a.md")
+    expect(memoryActions()).toEqual([{ action: "reveal", outcome: "failed" }])
+  })
+})
+
+function memoryActions() {
+  return noteInteraction.mock.calls
+    .map(([interaction]) => interaction)
+    .filter((interaction) => interaction.kind === "memoryAction")
+    .map(({ action, outcome }) => ({ action, outcome }))
+}
+
+describe("MemoriesSession edits", () => {
+  const target = project()
+  const memory = target.memories[0]!
+
+  async function active(overrides: Partial<MemoriesAdapter> = {}) {
+    const made = setup(overrides)
+    const stop = made.session.subscribe(() => undefined)
+    await flush()
+    return { ...made, stop }
+  }
+
+  it("archives with the listed size and time, then keeps the row", async () => {
+    const { adapter, session, stop } = await active()
+    await session.archive(target, { ...memory, sizeBytes: 12, modifiedMs: 34 })
+    expect(adapter.archive).toHaveBeenCalledWith("-p", "a.md", 12, 34)
+    expect(session.getSnapshot().archived.get(memory.path)).toEqual({
+      slug: "-p",
+      archiveId: "1-a.md",
+      indexLineRemoved: true,
+    })
+    expect(session.getSnapshot().indexBackupWritten.has("-p")).toBe(true)
+    expect(memoryActions()).toEqual([{ action: "archive", outcome: "succeeded" }])
+    stop()
+  })
+
+  it("does not claim a backup when no index line was removed", async () => {
+    const { session, stop } = await active({
+      archive: vi.fn().mockResolvedValue({
+        outcome: "archived",
+        archiveId: "1-a.md",
+        indexLineRemoved: false,
+      }),
+    })
+    await session.archive(target, memory)
+    expect(session.getSnapshot().indexBackupWritten.size).toBe(0)
+    stop()
+  })
+
+  it("marks a changed file and does not strike the row", async () => {
+    const { session, stop } = await active({
+      archive: vi.fn().mockResolvedValue({ outcome: "changedOnDisk" }),
+    })
+    await session.archive(target, memory)
+    expect(session.getSnapshot().archived.size).toBe(0)
+    expect(session.getSnapshot().rowErrors.get(memory.path)).toBe("changedOnDisk")
+    expect(memoryActions()).toEqual([{ action: "archive", outcome: "changed_on_disk" }])
+    stop()
+  })
+
+  it("treats a missing file as a change on disk", async () => {
+    const { session, stop } = await active({
+      archive: vi.fn().mockResolvedValue({ outcome: "missing" }),
+    })
+    await session.archive(target, memory)
+    expect(session.getSnapshot().rowErrors.get(memory.path)).toBe("changedOnDisk")
+    expect(memoryActions()).toEqual([{ action: "archive", outcome: "changed_on_disk" }])
+    stop()
+  })
+
+  it("reports an unsupported platform and other unavailable reasons differently", async () => {
+    const unsupported = await active({
+      archive: vi
+        .fn()
+        .mockResolvedValue({ outcome: "unavailable", reason: "automaticapplyunsupported" }),
+    })
+    await unsupported.session.archive(target, memory)
+    expect(unsupported.session.getSnapshot().rowErrors.get(memory.path)).toBe("failed")
+    expect(memoryActions()).toEqual([{ action: "archive", outcome: "unsupported" }])
+    unsupported.stop()
+
+    noteInteraction.mockClear()
+    const other = await active({
+      archive: vi.fn().mockResolvedValue({ outcome: "unavailable", reason: "symlinktarget" }),
+    })
+    await other.session.archive(target, memory)
+    expect(memoryActions()).toEqual([{ action: "archive", outcome: "failed" }])
+    other.stop()
+  })
+
+  it("marks a rejected edit as failed and never as succeeded", async () => {
+    const { session, stop } = await active({
+      archive: vi.fn().mockRejectedValue(new Error("boom")),
+    })
+    await session.archive(target, memory)
+    expect(session.getSnapshot().rowErrors.get(memory.path)).toBe("failed")
+    expect(memoryActions()).toEqual([{ action: "archive", outcome: "failed" }])
+    stop()
+  })
+
+  it("undoes a delete: restores, forgets the delete, and refreshes", async () => {
+    const { adapter, session, stop } = await active()
+    await session.archive(target, memory)
+    noteInteraction.mockClear()
+    await session.undo(memory)
+    expect(adapter.restore).toHaveBeenCalledWith("-p", "1-a.md")
+    expect(session.getSnapshot().archived.size).toBe(0)
+    expect(adapter.listMemories).toHaveBeenCalledTimes(2)
+    expect(memoryActions()).toEqual([{ action: "restore", outcome: "succeeded" }])
+    stop()
+  })
+
+  it("treats an existing restore target as restored", async () => {
+    const { adapter, session, stop } = await active({
+      restore: vi.fn().mockResolvedValue({ outcome: "alreadyExists" }),
+    })
+    await session.archive(target, memory)
+    await session.undo(memory)
+    expect(session.getSnapshot().archived.size).toBe(0)
+    expect(adapter.listMemories).toHaveBeenCalledTimes(2)
+    stop()
+  })
+
+  it("keeps the deleted row when an undo fails", async () => {
+    const { session, stop } = await active({
+      restore: vi.fn().mockResolvedValue({ outcome: "unavailable", reason: "writefailed" }),
+    })
+    await session.archive(target, memory)
+    noteInteraction.mockClear()
+    await session.undo(memory)
+    expect(session.getSnapshot().archived.size).toBe(1)
+    expect(session.getSnapshot().rowErrors.get(memory.path)).toBe("failed")
+    expect(memoryActions()).toEqual([{ action: "restore", outcome: "failed" }])
+    stop()
+  })
+
+  it("removes an index line and notes the backup", async () => {
+    const entryLine = { title: "Gone", target: "gone.md", lineNumber: 4 }
+    const { adapter, session, stop } = await active()
+    await session.removeIndexLine(target, entryLine)
+    expect(adapter.removeIndexLine).toHaveBeenCalledWith("-p", 4, "gone.md")
+    expect(session.getSnapshot().removedIndexLines.has("-p:4")).toBe(true)
+    expect(session.getSnapshot().indexBackupWritten.has("-p")).toBe(true)
+    expect(memoryActions()).toEqual([{ action: "remove_index_line", outcome: "succeeded" }])
+    stop()
+  })
+
+  it("moves a later line up after an earlier line was removed", async () => {
+    const { adapter, session, stop } = await active()
+    await session.removeIndexLine(target, { title: "A", target: "a.md", lineNumber: 2 })
+    await session.removeIndexLine(target, { title: "B", target: "b.md", lineNumber: 5 })
+    expect(adapter.removeIndexLine).toHaveBeenLastCalledWith("-p", 4, "b.md")
+    stop()
+  })
+
+  it("drops this visit's edits when the view is left", async () => {
+    const { session, stop } = await active()
+    await session.archive(target, memory)
+    await session.removeIndexLine(target, { title: "A", target: "a.md", lineNumber: 2 })
+    stop()
+    expect(session.getSnapshot().archived.size).toBe(0)
+    expect(session.getSnapshot().removedIndexLines.size).toBe(0)
+  })
+
+  it("still measures an edit that settles after the view was left", async () => {
+    const pending = deferred<MemoryEditOutcome>()
+    const { session, stop } = await active({ archive: vi.fn(() => pending.promise) })
+    const edit = session.archive(target, memory)
+    stop()
+    pending.resolve({ outcome: "archived", archiveId: "1-a.md", indexLineRemoved: false })
+    await edit
+    expect(session.getSnapshot().archived.size).toBe(0)
+    expect(memoryActions()).toEqual([{ action: "archive", outcome: "succeeded" }])
   })
 })
 

@@ -26,7 +26,8 @@ function MemoriesEmptyState() {
 
 /**
  * The main window's Memories section: every project's Claude Code memories
- * with what the stored tool calls say about their use. Read-only.
+ * with what the stored tool calls say about their use. A memory can be deleted
+ * (moved to the archive, with Undo) and a dangling index line removed.
  */
 export function MemoriesView({
   active,
@@ -42,7 +43,11 @@ export function MemoriesView({
   )
   const { report } = state
   const now = session.now()
-  const memoryCount = report?.projects.reduce((sum, p) => sum + p.memories.length, 0) ?? 0
+  const memoryCount =
+    report?.projects.reduce(
+      (sum, p) => sum + p.memories.filter((memory) => !state.archived.has(memory.path)).length,
+      0,
+    ) ?? 0
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-window">
@@ -86,11 +91,16 @@ export function MemoriesView({
                 key={project.slug}
                 project={project}
                 collapsed={state.collapsedProjects.has(project.slug)}
-                expandedMemories={state.expandedMemories}
+                state={state}
+                writesSupported={report.writesSupported}
                 now={now}
                 onToggleProject={() => session.toggleProject(project.slug)}
                 onToggleMemory={session.toggleMemory}
                 onReveal={(path) => void session.reveal(path)}
+                onDelete={(entry) => void session.archive(project, entry)}
+                onUndo={(entry) => void session.undo(entry)}
+                onRemoveLine={(entry) => void session.removeIndexLine(project, entry)}
+                onReload={session.refresh}
               />
             ))}
           </div>

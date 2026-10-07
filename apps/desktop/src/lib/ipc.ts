@@ -321,6 +321,11 @@ export type Interaction =
   | { kind: "appSearchOpened" }
   | { kind: "appSearchResultOpened"; category: "view" | "setting" | "stepSetting" | "check" }
   | { kind: "projectFolderAction"; action: "open" | "copy"; outcome: "succeeded" | "failed" }
+  | {
+      kind: "memoryAction"
+      action: "reveal" | "archive" | "restore" | "remove_index_line"
+      outcome: "succeeded" | "failed" | "changed_on_disk" | "unsupported"
+    }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" | "remote" }
   | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
   | {

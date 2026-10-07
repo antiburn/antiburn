@@ -625,7 +625,15 @@ Notes for what isn't expressible as a token:
   a `type-footnote` kind, and three `font-mono type-footnote tabular-nums` facts, with "—" for
   an unknown one. An open row adds a `surface-card/50` panel with a `font-mono type-footnote`
   metadata line, a `text-system-orange` line for a memory that is not in the index, the file
-  text in a `pre`, and a secondary push button that reveals the file. An empty page renders
+  text in a `pre`, and a secondary push button that reveals the file beside a plain-text
+  `type-footnote text-system-red-text hover:underline` Delete button (no confirm dialog; the
+  same recipe is Remove line on a dangling index entry). A deleted row stays in place with
+  its title and hook in `text-label-tertiary line-through`, its facts blank, and a
+  `type-footnote text-label-secondary` "Deleted" note beside an
+  `type-footnote font-medium text-accent hover:underline` Undo button. A failed action shows
+  a `role="alert"` `type-footnote text-system-orange` line with a Reload text button.
+  A `type-footnote text-label-tertiary` note beside the index row names the backup file
+  after an index edit. An empty page renders
   a centred `Brain` icon in tertiary ink over a `type-body` title and a `type-callout` caption.
 
 - **Limits page** — the scope picker is a pill that floats over the bottom centre of

@@ -3189,7 +3189,38 @@ pub struct LiveUsageSummary {
 #[serde(rename_all = "camelCase")]
 pub struct AgentMemoriesReport {
     pub generated_at_ms: i64,
+    /// False where the memory editor cannot write (Windows).
+    pub writes_supported: bool,
     pub projects: Vec<MemoryProjectDto>,
+}
+
+/// The result of one memory edit. `Archived`, `Restored` and `IndexLineRemoved`
+/// are the only outcomes that changed a file. Every other outcome left the
+/// memory directory untouched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "outcome",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum MemoryEditOutcome {
+    Archived {
+        archive_id: String,
+        index_line_removed: bool,
+    },
+    Restored {
+        index_line_restored: bool,
+    },
+    IndexLineRemoved,
+    /// A precondition failed.
+    ChangedOnDisk,
+    /// The file or the index line is already gone.
+    Missing,
+    /// The restore target exists.
+    AlreadyExists,
+    Unavailable {
+        reason: String,
+    },
 }
 
 /// One project folder with a memory directory.

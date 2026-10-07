@@ -16,7 +16,8 @@ use tauri::Manager;
 
 use super::{CommandResult, fail, run_blocking};
 use crate::dto::{
-    AgentMemoriesReport, DanglingIndexEntryDto, MemoryEntryDto, MemoryFactsDto, MemoryProjectDto,
+    AgentMemoriesReport, DanglingIndexEntryDto, MemoryEditOutcome, MemoryEntryDto, MemoryFactsDto,
+    MemoryProjectDto,
 };
 use crate::store::Store;
 use crate::store::memories::{ProjectSession, claude_sessions_by_project_slug, sessions_since};
@@ -65,6 +66,66 @@ pub async fn list_agent_memories(app: tauri::AppHandle) -> CommandResult<AgentMe
         }
     }
     Ok(build_report(gathered, &display_paths, now_ms()))
+}
+
+/// Moves one memory file into antiburn's archive and removes its index line.
+#[tauri::command]
+pub async fn archive_agent_memory(
+    app: tauri::AppHandle,
+    slug: String,
+    file_name: String,
+    expected_size_bytes: u64,
+    expected_modified_ms: Option<i64>,
+) -> CommandResult<MemoryEditOutcome> {
+    let (home, archive_root) = edit_roots(&app)?;
+    run_blocking(move || {
+        crate::agent_memory::archive_memory(
+            &home,
+            &archive_root,
+            &slug,
+            &file_name,
+            expected_size_bytes,
+            expected_modified_ms,
+        )
+    })
+    .await
+}
+
+/// Puts an archived memory file and its index line back.
+#[tauri::command]
+pub async fn restore_agent_memory(
+    app: tauri::AppHandle,
+    slug: String,
+    archive_id: String,
+) -> CommandResult<MemoryEditOutcome> {
+    let (home, archive_root) = edit_roots(&app)?;
+    run_blocking(move || {
+        crate::agent_memory::restore_memory(&home, &archive_root, &slug, &archive_id)
+    })
+    .await
+}
+
+/// Removes one dangling line from a project's `MEMORY.md`.
+#[tauri::command]
+pub async fn remove_agent_memory_index_line(
+    app: tauri::AppHandle,
+    slug: String,
+    line_number: usize,
+    target: String,
+) -> CommandResult<MemoryEditOutcome> {
+    let (home, _) = edit_roots(&app)?;
+    run_blocking(move || crate::agent_memory::remove_index_line(&home, &slug, line_number, &target))
+        .await
+}
+
+fn edit_roots(app: &tauri::AppHandle) -> CommandResult<(PathBuf, PathBuf)> {
+    let home = home_dir().ok_or_else(|| fail("The home folder is unavailable"))?;
+    let archive_root = app
+        .path()
+        .app_data_dir()
+        .map_err(fail)?
+        .join("memory-archive");
+    Ok((home, archive_root))
 }
 
 impl Gathered {
@@ -118,6 +179,7 @@ fn build_report(
     });
     AgentMemoriesReport {
         generated_at_ms,
+        writes_supported: cfg!(not(windows)),
         projects,
     }
 }

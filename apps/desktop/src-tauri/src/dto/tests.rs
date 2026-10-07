@@ -1046,6 +1046,7 @@ fn burn_check_sample_payload_exposes_no_session_identity() {
 fn agent_memories_report_serializes_camel_case_fields() {
     let report = AgentMemoriesReport {
         generated_at_ms: 9,
+        writes_supported: true,
         projects: vec![MemoryProjectDto {
             slug: "-work-app".to_string(),
             display_path: "/work/app".to_string(),
@@ -1086,6 +1087,7 @@ fn agent_memories_report_serializes_camel_case_fields() {
         serde_json::to_value(&report).unwrap(),
         serde_json::json!({
             "generatedAtMs": 9,
+            "writesSupported": true,
             "projects": [{
                 "slug": "-work-app",
                 "displayPath": "/work/app",
@@ -1119,4 +1121,48 @@ fn agent_memories_report_serializes_camel_case_fields() {
             }]
         })
     );
+}
+
+#[test]
+fn memory_edit_outcomes_serialize_as_tagged_camel_case() {
+    let cases = [
+        (
+            MemoryEditOutcome::Archived {
+                archive_id: "1-a.md".to_string(),
+                index_line_removed: true,
+            },
+            serde_json::json!({"outcome": "archived", "archiveId": "1-a.md", "indexLineRemoved": true}),
+        ),
+        (
+            MemoryEditOutcome::Restored {
+                index_line_restored: false,
+            },
+            serde_json::json!({"outcome": "restored", "indexLineRestored": false}),
+        ),
+        (
+            MemoryEditOutcome::IndexLineRemoved,
+            serde_json::json!({"outcome": "indexLineRemoved"}),
+        ),
+        (
+            MemoryEditOutcome::ChangedOnDisk,
+            serde_json::json!({"outcome": "changedOnDisk"}),
+        ),
+        (
+            MemoryEditOutcome::Missing,
+            serde_json::json!({"outcome": "missing"}),
+        ),
+        (
+            MemoryEditOutcome::AlreadyExists,
+            serde_json::json!({"outcome": "alreadyExists"}),
+        ),
+        (
+            MemoryEditOutcome::Unavailable {
+                reason: "unsafepath".to_string(),
+            },
+            serde_json::json!({"outcome": "unavailable", "reason": "unsafepath"}),
+        ),
+    ];
+    for (outcome, expected) in cases {
+        assert_eq!(serde_json::to_value(&outcome).unwrap(), expected);
+    }
 }
