@@ -64,7 +64,6 @@ function inputs(overrides: Partial<ProgressInputs> = {}): ProgressInputs {
   return {
     scanStatus: null,
     checksReport: null,
-    includeNonRepoFolders: false,
     deferred: [],
     onboardingCompleted: null,
     checksReportCurrent: false,
@@ -278,7 +277,6 @@ describe("deriveOverviewProgress in first-run mode", () => {
     agentsFound: [{ agent: "claude-code", sessions: 49, done: true }],
     sessionsDone: true,
     sessionsRead: { completed: 49, total: 49 },
-    sessionsGate: { kept: 49, outsideRepository: 0, excluded: 0, unreadable: 0 },
     checksDone: true,
     checksResult: { windowSessions: 49, deferredEvidence: 0 },
   }
@@ -353,27 +351,6 @@ describe("deriveOverviewProgress in first-run mode", () => {
       pendingEvidence: 1,
       deferredEvidence: 1,
     })
-  })
-
-  it("stays done when a live session goes pending again after a turn", () => {
-    const latch: FirstRunLatch = {
-      ...firstRunLatch,
-      checksDone: true,
-      checksResult: { windowSessions: 44, deferredEvidence: 0 },
-    }
-    const requeued = inputs({
-      checksReport: report({ evidenceSettled: false, windowSessions: 44, pendingEvidence: 1 }),
-      checksReportCurrent: true,
-    })
-    const snapshot = deriveOverviewProgress(
-      latch,
-      requeued,
-      "agents",
-      null,
-      true,
-      INITIAL_LAST_PASS,
-    )
-    expect(snapshot.checks.done).toBe(true)
   })
 })
 

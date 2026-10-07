@@ -78,13 +78,13 @@ export function PlanLimitsSection({
   settings,
   update,
 }: Pick<AppSettingsController, "settings" | "update">) {
-  const on = settings?.liveUsageEnabled ?? false
+  const on = Boolean(settings?.liveUsageEnabled && settings?.liveUsageStarted)
   // Live usage never ran at all until a reader passed the first-run gate (or
   // skipped it, which also leaves it unstarted). The switch must read as off
   // then, even though `liveUsageEnabled` defaults to true, or a Skip in the
   // takeover would show it on with nothing behind it.
   const liveUsageStarted = settings?.liveUsageStarted ?? false
-  const planLimitsOn = on && liveUsageStarted
+  const planLimitsOn = on
 
   // Turning the switch on starts live usage first, the same gate the
   // first-run takeover uses, so the Keychain prompt it can trigger on macOS
@@ -155,7 +155,7 @@ export function UsageMetersSection({
   update,
   live,
 }: Pick<AppSettingsController, "settings" | "update"> & { live: LiveUsageSummaryPayload }) {
-  const on = settings?.liveUsageEnabled ?? false
+  const on = Boolean(settings?.liveUsageEnabled && settings?.liveUsageStarted)
   const hidden = settings?.liveUsageHiddenProviders ?? []
   const meters = roster(live)
 

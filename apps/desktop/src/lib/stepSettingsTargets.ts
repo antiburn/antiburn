@@ -1,5 +1,3 @@
-import type { Platform } from "./platform"
-
 /**
  * A progress step that owns searchable controls. Narrower than
  * `StepSettingsStep` (`views/main-window/overview/stepSettings/StepSettings.tsx`):
@@ -105,20 +103,11 @@ export const STEP_SETTINGS_TARGETS = {
     step: StepSettingsSearchStep
     label: string
     aliases: readonly string[]
-    platform?: "macos"
-    platformLabels?: Partial<Record<Platform, string>>
   }
 >
 
 export type StepSettingsControlId = keyof typeof STEP_SETTINGS_TARGETS
 
-export function stepSettingsControlLabel(
-  control: StepSettingsControlId,
-  platform: Platform,
-): string {
-  // No target here carries a `platformLabels` override today, but every
-  // target is read through this common shape so a future one can.
-  const entry: { label: string; platformLabels?: Partial<Record<Platform, string>> } =
-    STEP_SETTINGS_TARGETS[control]
-  return entry.platformLabels?.[platform] ?? entry.label
+export function stepSettingsControlLabel(control: StepSettingsControlId): string {
+  return STEP_SETTINGS_TARGETS[control].label
 }

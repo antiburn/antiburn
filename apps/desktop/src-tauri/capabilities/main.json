@@ -81,8 +81,6 @@
     "allow-main-window-content-ready",
     "allow-main-window-health-ack",
     "allow-main-window-pending-health-check",
-    "allow-main-window-ready",
-    "allow-open-settings-window",
     "allow-peek-main-window-navigation-target",
     "allow-report-main-window-render-failure",
     "allow-report-main-window-render-status",

@@ -5,7 +5,7 @@
 // mocking.
 
 import type { ChecksReportPayload } from "../../../lib/insightsIpc"
-import type { AgentFoundCount, ReadGateCounts, ScanStatus } from "../../../lib/ipc"
+import type { AgentFoundCount, ScanStatus } from "../../../lib/ipc"
 
 export interface FirstRunInputs {
   scanStatus: ScanStatus | null
@@ -32,7 +32,6 @@ export interface FirstRunLatch {
   agentsFound: AgentFoundCount[]
   sessionsDone: boolean
   sessionsRead: { completed: number; total: number }
-  sessionsGate: ReadGateCounts | null
   checksDone: boolean
   checksResult: { windowSessions: number; deferredEvidence: number }
 }
@@ -48,54 +47,13 @@ export const INITIAL_FIRST_RUN_LATCH: FirstRunLatch = {
   agentsFound: [],
   sessionsDone: false,
   sessionsRead: { completed: 0, total: 0 },
-  sessionsGate: null,
   checksDone: false,
   checksResult: { windowSessions: 0, deferredEvidence: 0 },
 }
 
-/**
- * Advance the latch from one set of inputs.
- *
- * Decides "show the steps block" once, the first time
- * {@link FirstRunInputs.onboardingCompleted} is known: true (show the steps)
- * when the stored setting says the first run has not finished, false
- * otherwise. The answer then holds for the rest of the session (see
- * {@link resetFirstRunLatch} for `ftue:reset`).
- *
- * `onboardingCompleted` — not `ScanStatus.finishedAt` and not the checks
- * report's `evidenceSettled` — is the signal, because both of those are
- * ordinarily unsettled for a few seconds after every launch: `finished_at`
- * lives only in the in-memory `ScanController` and is cleared every time a
- * pass starts (`scan/mod.rs`), and `evidenceSettled` goes false while the
- * evidence worker catches up with whatever a live agent session wrote since
- * the last launch. An Overview that read either signal during that window
- * would misread an ordinary launch as a first run and show the steps block
- * every time. The stored setting survives across launches — cleared only by
- * an explicit reset — so it tells "never finished a first run" from
- * "finished one already" correctly. One accepted consequence: a
- * revision-bump re-ingest does not bring the steps block back, even though
- * it marks evidence unsettled again — intended, since the device already
- * finished a first run.
- *
- * The Agents and Sessions steps each latch their own numbers the first time they finish, so
- * a later routine pass — every 5 minutes, and every launch, per the scan
- * design — does not reset a checklist the reader already saw.
- *
- * The Agents step finishes once discovery has found every agent's sessions, read
- * straight from `foundByAgent`: non-empty, and every entry done. A full pass
- * now waits at the backend's first-run sessions gate before it moves past the
- * "finding" phase — until the reader presses Agents' Next — so `phase` alone
- * can stay `"finding"` long after discovery itself is done. Reading the
- * phase instead, as before, would never finish the Agents step during that wait.
- *
- * The Checks step latches when the worker has no work it can claim: every pending
- * session is deferred by a retry backoff. A live session changes during its
- * check, backs off, and goes pending again after each turn, so neither
- * `evidenceSettled` nor a live pending count can tell when the first check
- * is done. In the steps block, the Checks step also waits for the Sessions step and for a report
- * requested after the pass finished, so a report from before the pass saved
- * its sessions cannot latch an empty result.
- */
+// Decide once from the saved setting. Keep completed step results across routine scans.
+// A report must follow the finished read pass before Checks can complete.
+// Deferred evidence does not block progress: live sessions can requeue after every turn.
 export function advanceFirstRunLatch(
   latch: FirstRunLatch,
   inputs: FirstRunInputs,
@@ -118,7 +76,6 @@ export function advanceFirstRunLatch(
       ...next,
       sessionsDone: true,
       sessionsRead: inputs.scanStatus.read,
-      sessionsGate: inputs.scanStatus.gate,
     }
   }
   const report = inputs.checksReport
@@ -147,21 +104,4 @@ export function advanceFirstRunLatch(
  *  to re-decide against whatever stale status is still on hand. */
 export function resetFirstRunLatch(): FirstRunLatch {
   return { ...INITIAL_FIRST_RUN_LATCH, decided: true, showSteps: true }
-}
-
-/**
- * Un-latch the Sessions step, so the pass a reader's own "Include them" click
- * triggers replaces the read outcome they just asked to change — unlike a
- * routine tick, this pass has a reader waiting to see its result. The Checks step
- * un-latches too, because the pass adds sessions to check. The Agents step is
- * untouched: discovery does not depend on this setting.
- */
-export function unlatchSessionsOutcome(latch: FirstRunLatch): FirstRunLatch {
-  return {
-    ...latch,
-    sessionsDone: false,
-    sessionsGate: null,
-    checksDone: false,
-    checksResult: INITIAL_FIRST_RUN_LATCH.checksResult,
-  }
 }

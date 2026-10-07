@@ -144,14 +144,14 @@ Use reporting installations, not people. Installation IDs rotate after 30 days
 and reset after opt-out/re-enable. Do not add a stable identifier or use IP,
 user-agent, or device information to join rotations.
 
-| Question                                           | Definition after the first implementation                                                                                                                                                                                                          | Decision supported                                               |
-| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Question                                           | Definition after the first implementation                                                                                                                                                                                                                            | Decision supported                                               |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | Are people deliberately returning?                 | Daily/weekly distinct `anonymousId` with a user-initiated core `surface_viewed` event or `step_settings_viewed` for `checks` with detail `modal`. Exclude setup, other Settings-only visits, automatic restores, nudges merely appearing, and all background events. | Whether the core utility earns repeat attention.                 |
-| Does setup lead to visible value?                  | Among distinct IDs completing a new setup flow, fraction that see a core surface with `ready` data within 24 hours of completion. Also report empty, error, and timeout outcomes.                                                                  | Whether to improve setup or the first data experience.           |
-| Which features get used?                           | Distinct IDs viewing each core surface divided by engaged reporting IDs in the same interval and supporting versions/platforms. Separate ready-data reach from view reach.                                                                         | Which surfaces merit investment or improved discovery.           |
-| Do users return after value?                       | Among IDs first reaching ready data after new setup, observed return on day 1 and day 7 using deliberate core views. Include only cohorts whose full observation window has elapsed.                                                               | Whether activation translates into observed repeat use.          |
-| Where does the experience fail?                    | Per surface, fraction of reporting exposed IDs with empty, error, or loading-timeout states. For explicit operations, compare terminal outcomes with attempts separately.                                                                          | Which reliability issues block adoption.                         |
-| Does passive monitoring remain enabled and useful? | Report HUD/meter enablement, successful automatic exposure, data availability, and deliberate detail use separately.                                                                                                                               | Whether passive display features are configured and functioning. |
+| Does setup lead to visible value?                  | Among distinct IDs completing a new setup flow, fraction that see a core surface with `ready` data within 24 hours of completion. Also report empty, error, and timeout outcomes.                                                                                    | Whether to improve setup or the first data experience.           |
+| Which features get used?                           | Distinct IDs viewing each core surface divided by engaged reporting IDs in the same interval and supporting versions/platforms. Separate ready-data reach from view reach.                                                                                           | Which surfaces merit investment or improved discovery.           |
+| Do users return after value?                       | Among IDs first reaching ready data after new setup, observed return on day 1 and day 7 using deliberate core views. Include only cohorts whose full observation window has elapsed.                                                                                 | Whether activation translates into observed repeat use.          |
+| Where does the experience fail?                    | Per surface, fraction of reporting exposed IDs with empty, error, or loading-timeout states. For explicit operations, compare terminal outcomes with attempts separately.                                                                                            | Which reliability issues block adoption.                         |
+| Does passive monitoring remain enabled and useful? | Report HUD/meter enablement, successful automatic exposure, data availability, and deliberate detail use separately.                                                                                                                                                 | Whether passive display features are configured and functioning. |
 
 Use capture time for behavior, deduplicate retries by `messageId`, and allow a
 documented late-arrival window before finalizing cohorts. Segment by app version
@@ -181,14 +181,14 @@ when the wire field count stays unchanged.
 
 ### Visible use and value (implemented)
 
-| Event/change                                       | Trigger and safe dimensions                                                                                                                                                                                                              | Owner and volume rule                                                                                                                                                                                                                                                          |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `surface_viewed`                                   | Successful reveal or visible navigation. `label`: `activity`, `session_detail`, `provider_preview`, `checks_preview`, `hud`, `hud_detail`, `settings`, or `quota`. `detail`: `user` or `automatic`.                                      | Shell visibility transition plus surface controllers. One per actual transition; no event for prewarm, repeated show requests, data refresh, or hidden navigation. Only deliberate transitions qualify as engagement.                                                          |
-| `settings_pane_viewed`                             | Requested pane is selected and visible. `label`: the six existing Settings pane IDs.                                                                                                                                                   | `SettingsWindowSession`, including first opening and external pane requests. One per visible pane transition, with duplicate requests suppressed.                                                                                                                              |
-| `step_settings_viewed`                            | A progress step's settings become visible: the first-run takeover's "Show settings" disclosure opens, or the step's modal opens after the first run. `label`: `agents`, `limits`, `sessions`, or `checks`; `detail`: `first_run` or `modal`. | `StepSettingsDisclosure` and `ProgressNav`'s step modal. One per exposure (one open), not per re-render. `limits` only ever reports `first_run`. |
-| `surface_state_observed`                           | Data state presented on a visible surface. Same surface vocabulary; `detail`: `ready`, `empty`, `error`, or `loading_timeout`. Ready means a usable payload, not merely a mounted component or successful IPC response. | Surface controllers after both visibility and data readiness. At most once per distinct state per surface exposure; ignore stale asynchronous results. Use a documented 10-second visible initial-load timeout, canceled when hidden; later ready data can still emit `ready`. |
-| `live_usage_state_observed`                        | A provider state is presented on Activity, a provider preview, or a user-opened HUD. `label`: `anthropic`, `openai`, or `google`; `detail`: `fresh`, `stale`, `authentication`, `rate_limited`, `unavailable`, or `no_credentials`.      | Map existing presentation states, without an analytics-only provider request. Deduplicate each provider/state within a deliberate visit. `no_credentials` remains dormant. No account, plan name, balance, quota value, or raw response.                                       |
-| `onboarding_started`, extend `onboarding_finished` | Visible start or resume and committed completion of a setup flow. `label`: `new` or `restart`.                                                                                                                                           | Emit a start on the first visible start or resume in each app process. A quit and later resume emits another start with the persisted classification. Emit completion once per pending-to-complete transition. Preserve the four existing step events.                         |
+| Event/change                                       | Trigger and safe dimensions                                                                                                                                                                                                                  | Owner and volume rule                                                                                                                                                                                                                                                          |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `surface_viewed`                                   | Successful reveal or visible navigation. `label`: `activity`, `session_detail`, `provider_preview`, `checks_preview`, `hud`, `hud_detail`, `settings`, or `quota`. `detail`: `user` or `automatic`.                                          | Shell visibility transition plus surface controllers. One per actual transition; no event for prewarm, repeated show requests, data refresh, or hidden navigation. Only deliberate transitions qualify as engagement.                                                          |
+| `settings_pane_viewed`                             | Requested pane is selected and visible. `label`: the six existing Settings pane IDs.                                                                                                                                                         | `SettingsWindowSession`, including first opening and external pane requests. One per visible pane transition, with duplicate requests suppressed.                                                                                                                              |
+| `step_settings_viewed`                             | A progress step's settings become visible: the first-run takeover's "Show settings" disclosure opens, or the step's modal opens after the first run. `label`: `agents`, `limits`, `sessions`, or `checks`; `detail`: `first_run` or `modal`. | `StepSettingsDisclosure` and `ProgressNav`'s step modal. One per exposure (one open), not per re-render. `limits` only ever reports `first_run`.                                                                                                                               |
+| `surface_state_observed`                           | Data state presented on a visible surface. Same surface vocabulary; `detail`: `ready`, `empty`, `error`, or `loading_timeout`. Ready means a usable payload, not merely a mounted component or successful IPC response.                      | Surface controllers after both visibility and data readiness. At most once per distinct state per surface exposure; ignore stale asynchronous results. Use a documented 10-second visible initial-load timeout, canceled when hidden; later ready data can still emit `ready`. |
+| `live_usage_state_observed`                        | A provider state is presented on Activity, a provider preview, or a user-opened HUD. `label`: `anthropic`, `openai`, or `google`; `detail`: `fresh`, `stale`, `authentication`, `rate_limited`, `unavailable`, or `no_credentials`.          | Map existing presentation states, without an analytics-only provider request. Deduplicate each provider/state within a deliberate visit. `no_credentials` remains dormant. No account, plan name, balance, quota value, or raw response.                                       |
+| `onboarding_started`, extend `onboarding_finished` | Visible start or resume and committed completion of a setup flow. `label`: `new` or `restart`.                                                                                                                                               | Emit a start on the first visible start or resume in each app process. A quit and later resume emits another start with the persisted classification. Emit completion once per pending-to-complete transition. Preserve the four existing step events.                         |
 
 `surface_state_observed` also needs a closed `properties.origin` value of `user`
 or `automatic`, inherited from its exposure. This optional wire field lets
@@ -789,9 +789,9 @@ raw event timestamps is reading time plus work time, not work time alone.
 (`started`/`found`/`read`/`checked`), set the first time that step's own
 latched `done` flag turns true while the store is in `firstRun` mode;
 `steady`-mode installations — a device that already finished a first run —
-never enter this mode and never report any of it. `result` fires once, the instant the result first becomes showable
-(`resultReady`), immediately before the store commits `onboardingCompleted`
-through `finish_first_run`. The shell's `finish_first_run` records
+never enter this mode and never report any of it. `result` fires once when the
+Fixes step first opens. Done or Enhance then commits `onboardingCompleted`
+through `finish_first_run`; a failed command keeps the step open for a retry. The shell's `finish_first_run` records
 `antiburn.first_run_finished` itself, only when its save turns
 `onboardingCompleted` from false to true, so a failed save reports no
 finish. A wipe
@@ -803,16 +803,18 @@ the step. `bucket` is the discovery pass's session count, bucketed, present
 only with `found`. `detail` is `empty`, `clean`, or `fixes_found`, present
 only with `result`, derived the same way the Overview's own headline is:
 `empty` when the window has no sessions, `clean` when it has sessions and no
-finding, `fixes_found` otherwise. `antiburn.first_run_action` reports one of
-six closed labels — `folder_access_requested`, `folder_access_granted`,
-`include_non_repo_folders`, `live_usage_started`, `live_usage_skipped`,
+finding, `fixes_found` otherwise. `antiburn.first_run_action` currently reports
+five closed labels — `folder_access_requested`, `folder_access_granted`,
+`live_usage_started`, `live_usage_skipped`,
 `enhance_opened` — each
 only after its action actually fires: a real "Allow access" click, a folder
-the permission queue actually granted, a settings write that actually
-flipped `includeNonRepoFolders` from false to true, a `start_live_usage`
+the permission queue actually granted, a `start_live_usage`
 command that actually resolved, the live-limits step's Skip link, which
-starts no live usage at all, and the fixes step's Enhance, which finishes
-the first run and opens Burn Checks. The fixes step's Skip link finishes the
+starts no live usage at all, and the fixes step's Enhance after the finish
+command succeeds. A failed finish emits no `enhance_opened`. The schema retains
+`include_non_repo_folders` for compatibility, but the removed read-details
+action no longer emits it. The Sessions setting still emits `setting_toggled`.
+The fixes step's Skip link finishes the
 first run without a `first_run_action`, so `first_run_finished` minus
 `enhance_opened` counts the readers who skipped. No folder path, session identity, finding
 detail, or account identity reaches any of these three events. The Rust
@@ -831,7 +833,7 @@ which had no `found`/`checked` distinction and no result step at all.
 
 Tests: `event.rs` proves each step's facts are scoped to that step alone
 (`first_run_step_reached_carries_only_the_facts_its_own_step_defines`), the
-action vocabulary resolves to its five labels
+action vocabulary accepts its six labels, including the retained compatibility value
 (`first_run_action_uses_closed_vocabulary`), the finished event carries no
 properties (`first_run_finished_carries_no_properties`), and the Rust boundary
 rejects an unknown step, action, or result and an extra field on any of the
@@ -839,14 +841,10 @@ three shapes (`first_run_interactions_are_refused_at_the_boundary_for_unknown_va
 `overviewProgressStore.live.test.ts` drives the real store through a full
 first-run pass and asserts each step fires exactly once, in order, with the
 right `sessions`/`result` payload, that `steady` mode reports nothing, and
-that `enableNonRepoFolders` reports only on an actual transition.
-`OverviewFixes.test.tsx` proves `folder_access_requested` fires on the click
-and `folder_access_granted` fires only once the flow actually grants a folder.
-`OverviewProviderLimits.test.tsx` proves `live_usage_started` fires only after
-`start_live_usage` resolves. `OnboardingView.test.tsx` proves the onboarding
-window itself now sends no `note_interaction` call while stepping through its
-screens, confirming the retired step-viewed event is actually gone rather than
-merely undocumented.
+that a failed finish can be retried without reporting a successful Enhance.
+The live-store tests also cover the live-usage command and refresh order.
+The removed onboarding window has no renderer that can emit the retired
+step-viewed event.
 
 ## Step settings exposure (2026-10-05)
 

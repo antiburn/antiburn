@@ -168,7 +168,10 @@ message, URL, path, stack, rejection payload, session identity, or free-form
 text. Native accepts at most five reports per generation.
 
 The main window adds no scans or provider polling. Views gate presentation work
-on visibility rather than focus and consume existing native state. An
+on visibility rather than focus and consume existing native state. The Overview
+progress store keeps scan and settings events attached while hidden, but suspends
+report reductions and folder-permission reads. Reveal requests fresh snapshots;
+responses from a previous visibility period cannot replace them. An
 unfocused window can still be visible beside another application.
 
 Opening timing is local diagnostic evidence. Hidden-warm `elapsed_ms` now
@@ -401,7 +404,7 @@ Use these principles when adding or changing desktop windows:
 | Peek target policy and shell hooks                               | [`popover_peek.rs`](../apps/desktop/src-tauri/src/popover_peek.rs)                          |
 | Peek generations, concealment, and renderer destruction          | [`anchored-window`](../apps/desktop/src-tauri/crates/anchored-window/src/lib.rs)            |
 | Popover latency milestones and structured timing                 | [`timing.rs`](../apps/desktop/src-tauri/src/popover/timing.rs)                              |
-| First-run completion: menu-bar notice and popover prewarm        | [`commands/mod.rs`](../apps/desktop/src-tauri/src/commands/mod.rs)                           |
+| First-run completion: menu-bar notice and popover prewarm        | [`commands/mod.rs`](../apps/desktop/src-tauri/src/commands/mod.rs)                          |
 | Settings creation, destruction, and native Insights cancellation | [`settings.rs`](../apps/desktop/src-tauri/src/settings.rs)                                  |
 | Global close and destroyed-window routing                        | [`lib.rs`](../apps/desktop/src-tauri/src/lib.rs)                                            |
 | React readiness marker                                           | [`WindowReadyMarker.tsx`](../apps/desktop/src/components/WindowReadyMarker.tsx)             |

@@ -7,10 +7,8 @@ function fmt(value: number): string {
 }
 
 /**
- * A whole number that counts through every value between its old and new
- * value when it changes. The count takes `--duration-slow` in total, but
- * never moves more than one step in one frame, so a large change takes
- * longer. A new value during a count continues from the number on screen.
+ * A whole number that animates to its new value in `--duration-slow` when it
+ * changes. A new value during a count continues from the number on screen.
  * The first render and reduced motion show the value immediately.
  *
  * Assistive tech reads the target value only, not the steps.
@@ -29,16 +27,21 @@ export function CountUp({ value }: { value: number }) {
         setShown(value)
         return
       }
-      const direction = Math.sign(value - shownRef.current)
-      const stepMs = slowAnimationDurationMs() / Math.abs(value - shownRef.current)
-      let last = performance.now()
+      const start = shownRef.current
+      let lastShown = start
+      const startedAt = performance.now()
+      const duration = slowAnimationDurationMs()
       let frame = requestAnimationFrame(function tick(now) {
-        if (now - last >= stepMs) {
-          last = now
-          shownRef.current += direction
+        const progress = Math.min(1, (now - startedAt) / duration)
+        shownRef.current = Math.round(start + (value - start) * progress)
+        if (progress === 1) {
+          shownRef.current = value
+        }
+        if (shownRef.current !== lastShown) {
+          lastShown = shownRef.current
           setShown(shownRef.current)
         }
-        if (shownRef.current !== value) frame = requestAnimationFrame(tick)
+        if (progress < 1) frame = requestAnimationFrame(tick)
       })
       return () => cancelAnimationFrame(frame)
     },

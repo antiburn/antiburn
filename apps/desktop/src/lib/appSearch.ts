@@ -14,7 +14,6 @@ import {
 import {
   STEP_SETTINGS_STEP_LABELS,
   STEP_SETTINGS_TARGETS,
-  stepSettingsControlLabel,
   type StepSettingsControlId,
   type StepSettingsSearchStep,
 } from "./stepSettingsTargets"
@@ -102,24 +101,15 @@ export const APP_SEARCH_CATALOG: readonly AppSearchResult[] = [
     ...("platform" in entry ? { platform: entry.platform } : {}),
   })),
   ...Object.entries(STEP_SETTINGS_TARGETS).map(([control, value]) => {
-    // No target here carries a `platform` restriction today, but every
-    // target is read through this common shape so a future one can.
-    const entry: {
-      step: StepSettingsSearchStep
-      label: string
-      aliases: readonly string[]
-      platform?: "macos"
-    } = value
     return {
-      id: `step:${entry.step}:${control}`,
-      label: entry.label,
-      detail: `Overview · ${STEP_SETTINGS_STEP_LABELS[entry.step]}`,
-      aliases: entry.aliases,
+      id: `step:${value.step}:${control}`,
+      label: value.label,
+      detail: `Overview · ${STEP_SETTINGS_STEP_LABELS[value.step]}`,
+      aliases: value.aliases,
       target: {
         kind: "stepSetting" as const,
         control: control as StepSettingsControlId,
       },
-      ...(entry.platform ? { platform: entry.platform } : {}),
     }
   }),
   ...Object.entries(CHECK_DEFINITIONS).map(([check, { label, aliases }]) => ({
@@ -148,12 +138,6 @@ export function searchApp(
       (stepSettingsAvailable || result.target.kind !== "stepSetting"),
   )
     .map((result) => {
-      if (result.target.kind === "stepSetting") {
-        const label = stepSettingsControlLabel(result.target.control, platform)
-        return label === result.label
-          ? result
-          : { ...result, label, aliases: [...result.aliases, result.label] }
-      }
       if (result.target.kind !== "setting" || !result.target.control) return result
       const label = settingsControlLabel(result.target.control, platform)
       return label === result.label

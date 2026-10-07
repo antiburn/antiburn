@@ -30,6 +30,8 @@ const overviewProgressMock = vi.hoisted(() => ({
     openStepControl: null,
     openStepControlRevision: 0,
     stepShown: true,
+    actionPending: false,
+    actionError: null,
     agents: { done: true, rows: [] },
     sessions: {
       done: true,
@@ -37,8 +39,6 @@ const overviewProgressMock = vi.hoisted(() => ({
       total: 0,
       displayCompleted: 0,
       displayTotal: 0,
-      gate: null,
-      includeNonRepoFolders: false,
       deferred: [],
     },
     checks: { done: true, windowSessions: 0, pendingEvidence: 0, deferredEvidence: 0 },

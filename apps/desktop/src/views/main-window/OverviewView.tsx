@@ -100,7 +100,12 @@ export function OverviewView({
         allowance={state.allowance}
         allowanceLoading={state.allowanceLoading || !metricSettled}
         allowanceError={state.allowanceError}
-        allowanceCollecting={isFirstRun}
+        allowanceCollecting={
+          isFirstRun &&
+          progress.flow !== "done" &&
+          settings.liveUsageEnabled &&
+          settings.liveUsageStarted
+        }
         usageError={state.usageError}
         onRetryUsage={session.refresh}
         loading={loading}

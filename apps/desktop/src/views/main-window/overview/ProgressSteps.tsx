@@ -15,7 +15,6 @@ import {
   type FolderPermissionFlow,
 } from "../../../lib/useFolderPermissionFlow"
 import {
-  enableNonRepoFolders,
   fixesFound,
   type FixCategory,
   type HistoryProgress,
@@ -36,10 +35,6 @@ function useReadPermissionFlow(progress: OverviewProgress): FolderPermissionFlow
     void scanNow()
   })
 }
-
-// The Sessions step's gate details (outside a repository, excluded, unreadable)
-// are off while their copy is redesigned.
-const SHOW_READ_GATE_DETAILS: boolean = false
 
 function fmt(value: number): string {
   return value.toLocaleString()
@@ -66,13 +61,15 @@ function StepProgressBar({
   title,
   started,
   total,
+  emptyLabel,
 }: {
   completed: number
   title: string
   started: boolean
   total: number
+  emptyLabel: string
 }) {
-  const value = started ? completed / total : 0
+  const value = started ? (total === 0 ? 1 : completed / total) : 0
 
   return (
     <div className="flex items-center gap-x-3">
@@ -93,6 +90,8 @@ function StepProgressBar({
       <span className="type-body flex items-baseline justify-end tabular-nums">
         {!started ? (
           "Waiting"
+        ) : total === 0 ? (
+          emptyLabel
         ) : (
           <>
             <CountUp value={completed} />/<CountUp value={total} />
@@ -202,14 +201,15 @@ function SessionsStepRow({
   snapshot: OverviewProgress
   permissionFlow: FolderPermissionFlow
 }) {
-  const { done, displayCompleted, displayTotal, gate } = snapshot.sessions
-  const started = displayTotal > 0
+  const { done, displayCompleted, displayTotal } = snapshot.sessions
+  const started = done || displayTotal > 0
 
   const data = {
     completed: displayCompleted,
     started,
     title: "Read session data",
     total: displayTotal,
+    emptyLabel: "No sessions found",
   }
 
   return (
@@ -223,39 +223,6 @@ function SessionsStepRow({
           deferredCount={snapshot.sessions.deferred.length}
           permissionFlow={permissionFlow}
         />
-      )}
-
-      {SHOW_READ_GATE_DETAILS && done && gate && (
-        <div className="flex flex-col gap-0.5 type-footnote text-label-tertiary">
-          {gate.outsideRepository > 0 && (
-            <p>
-              {fmt(gate.outsideRepository)}{" "}
-              {pluralize(gate.outsideRepository, "session was", "sessions were")} outside a git
-              repository — they get no check results.{" "}
-              <button
-                type="button"
-                onClick={() => void enableNonRepoFolders()}
-                className="underline underline-offset-[3px] hover:text-label-secondary"
-              >
-                Include them
-              </button>
-            </p>
-          )}
-          {gate.excluded > 0 && (
-            <p>
-              {fmt(gate.excluded)} {pluralize(gate.excluded, "session was", "sessions were")} in
-              folders you excluded.
-            </p>
-          )}
-          {gate.unreadable > 0 && (
-            <p>
-              {fmt(gate.unreadable)} {pluralize(gate.unreadable, "session's", "sessions'")}{" "}
-              folder
-              {pluralize(gate.unreadable, "", "s")} {pluralize(gate.unreadable, "was", "were")}{" "}
-              missing or unreadable.
-            </p>
-          )}
-        </div>
       )}
     </div>
   )
@@ -272,7 +239,13 @@ function ChecksStepRow({
   const started = isSteady || snapshot.sessions.done
   const completed = Math.max(0, windowSessions - pendingEvidence)
 
-  const data = { completed, started, title: "Run session checks", total: windowSessions }
+  const data = {
+    completed,
+    started,
+    title: "Run session checks",
+    total: windowSessions,
+    emptyLabel: "No sessions to check",
+  }
 
   return (
     <div className="flex flex-col gap-2">

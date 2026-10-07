@@ -71,7 +71,11 @@ function summary(overrides: Partial<LiveUsageSummaryPayload> = {}): LiveUsageSum
 
 function pane(settings: Partial<AppSettings> = {}, update = vi.fn()) {
   render(
-    <UsagePane settings={{ ...SETTINGS, ...settings } as AppSettings} update={update} loaded />,
+    <UsagePane
+      settings={{ ...SETTINGS, liveUsageStarted: true, ...settings } as AppSettings}
+      update={update}
+      loaded
+    />,
   )
   return update
 }
@@ -153,6 +157,15 @@ describe("UsagePane", () => {
     expect(
       screen.getByRole("switch", { name: /keep my plan limits current/i }),
     ).not.toBeChecked()
+  })
+
+  it("keeps provider switches off until live usage has started", async () => {
+    getLiveUsage.mockResolvedValue(
+      summary({ meters: [{ provider: "anthropic", displayName: "Claude", shown: true }] }),
+    )
+    pane({ liveUsageEnabled: true, liveUsageStarted: false })
+
+    expect(await screen.findByRole("switch", { name: "Show Claude meter" })).toBeDisabled()
   })
 
   it("starts live usage once when turning the switch on before it has started", async () => {

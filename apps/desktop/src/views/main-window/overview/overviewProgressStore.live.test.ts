@@ -11,7 +11,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { AppSettings, ScanPhase, ScanStatus } from "../../../lib/ipcPayloads"
+import { DEFAULT_SETTINGS } from "../../../lib/ipc"
+import type { ScanPhase, ScanStatus } from "../../../lib/ipcPayloads"
 
 type Handler = (event: { payload: unknown }) => void
 
@@ -127,41 +128,7 @@ class FakeScanController {
   }
 }
 
-const DEFAULT_TEST_SETTINGS: AppSettings = {
-  theme: "system",
-  interfaceScalePercent: 100,
-  activityWindowDays: 7,
-  sessionDataRetentionDays: -1,
-  onboardingCompleted: true,
-  launchAtLogin: true,
-  trayIconVisible: true,
-  dockIconVisible: true,
-  autoUpdate: true,
-  discoveryPaused: false,
-  includeNonRepoFolders: false,
-  notificationsEnabled: true,
-  notifyUpdateAvailable: true,
-  notifyScanFailure: true,
-  nudgePlacement: "topRight",
-  nudgeAutoDismissSecs: 8,
-  notificationSound: true,
-  nudgesRespectDnd: false,
-  diskSpaceDisplay: "whenLow",
-  diskSpaceThresholdGb: 10,
-  notifyDiskSpaceLow: true,
-  milestones5h: [],
-  milestonesWeekly: [],
-  liveUsageEnabled: true,
-  liveUsageStarted: false,
-  liveUsageHiddenProviders: [],
-  disabledAgents: [],
-  analyticsEnabled: true,
-  overviewLimitsExpanded: true,
-  skillsMcpExpanded: false,
-  sessionBadgeMetric: "cost",
-  sessionFilter: "",
-  workingWeek: "seven",
-}
+const DEFAULT_TEST_SETTINGS = { ...DEFAULT_SETTINGS, onboardingCompleted: true }
 
 const SETTLED_REPORT = {
   evidenceSettled: true,
@@ -190,6 +157,8 @@ beforeEach(() => {
   })
   mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
     switch (command) {
+      case "get_main_window_visible":
+        return true
       case "get_scan_status":
         return controller.statusCommand()
       case "get_checks_report":
@@ -257,12 +226,6 @@ describe("overviewProgressStore's live IPC boundary", () => {
     await vi.waitFor(() => expect(overviewProgress().sessions.done).toBe(true))
     expect(overviewProgress().sessions.completed).toBe(49)
     expect(overviewProgress().sessions.total).toBe(49)
-    expect(overviewProgress().sessions.gate).toEqual({
-      kept: 49,
-      outsideRepository: 0,
-      excluded: 0,
-      unreadable: 0,
-    })
   })
 
   it("(b) latches steps 1 and 2 from a direct read when it subscribed after the pass finished", async () => {
@@ -284,17 +247,11 @@ describe("overviewProgressStore's live IPC boundary", () => {
     ])
     await vi.waitFor(() => expect(overviewProgress().sessions.done).toBe(true))
     expect(overviewProgress().sessions.completed).toBe(49)
-    expect(overviewProgress().sessions.gate).toEqual({
-      kept: 49,
-      outsideRepository: 0,
-      excluded: 0,
-      unreadable: 0,
-    })
   })
 })
 
 describe("overviewProgressStore vs. a scoped pass overlapping the subscribe point", () => {
-  it("(c) loses the finished full pass's outcome when a later pass has already reset it", async () => {
+  it("waits for the current pass when an earlier pass predates subscription", async () => {
     // The full launch pass completed (49 sessions, phase saving, gate set).
     runLaunchPass()
     expect(controller.statusCommand().phase).toBe("saving")
@@ -312,21 +269,18 @@ describe("overviewProgressStore vs. a scoped pass overlapping the subscribe poin
     stops.push(stop)
 
     await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("get_scan_status"))
-    // The 49 sessions the first pass actually found and read are gone from
-    // view: the steps read as not started, even though they are done.
-    expect(overviewProgress().agents.done).toBe(false)
     expect(overviewProgress().sessions.done).toBe(false)
+    runLaunchPass()
+    await vi.waitFor(() => expect(overviewProgress().sessions.done).toBe(true))
+    expect(overviewProgress().sessions.completed).toBe(49)
   })
 })
 
 describe("overviewProgressStore vs. a denied get_scan_status command", () => {
   it("(d) catches up agents/read from live events even when the direct read is denied", async () => {
-    // Simulates the main window's actual capability gap: `get_scan_status`
-    // has no `allow-get-scan-status` grant for the "main" window, so every
-    // direct read rejects. The live `scan:*` events still arrive (listening
-    // is a separate, unscoped grant), so a reader subscribed through the
-    // whole pass still sees it finish.
+    // Live events can recover from a failed initial status read.
     mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "get_main_window_visible") return true
       if (command === "get_scan_status") throw new Error("main-window: command not allowed")
       if (command === "get_checks_report") return SETTLED_REPORT
       if (command === "get_settings") return DEFAULT_TEST_SETTINGS
@@ -356,6 +310,7 @@ describe("overviewProgressStore vs. a denied get_scan_status command", () => {
     // so the decision — and the steps the Agents and Sessions steps never latch to —
     // resolve regardless.
     mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "get_main_window_visible") return true
       if (command === "get_scan_status") throw new Error("main-window: command not allowed")
       if (command === "get_checks_report") return SETTLED_REPORT
       if (command === "get_settings") return DEFAULT_TEST_SETTINGS
@@ -576,6 +531,27 @@ describe("overviewProgressStore's rewind", () => {
     expect(shown.overviewProgress().flow).toBe("sessions")
   })
 
+  it("keeps Fixes open after a failed finish and lets Enhance retry", async () => {
+    const store = await reachFixes("skip")
+    const invoke = mocks.invoke.getMockImplementation()!
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === "finish_first_run") throw new Error("save failed")
+      return invoke(command, args)
+    })
+    expect(await store.enhanceFixes()).toBe(false)
+    expect(mocks.invoke).not.toHaveBeenCalledWith("note_interaction", {
+      interaction: { kind: "firstRunAction", action: "enhance_opened" },
+    })
+    expect(store.overviewProgress()).toMatchObject({
+      flow: "fixes",
+      actionPending: false,
+      actionError: expect.any(String),
+    })
+    mocks.invoke.mockImplementation(invoke)
+    expect(await store.enhanceFixes()).toBe(true)
+    expect(store.overviewProgress()).toMatchObject({ flow: "done", actionError: null })
+  })
+
   it("records Enhance and finishes the first run the same way Done does", async () => {
     const store = await reachFixes("skip")
     await store.enhanceFixes()
@@ -609,35 +585,11 @@ describe("overviewProgressStore's first-run analytics", () => {
   }
 
   it("reports each funnel step once, then the result and the finish", async () => {
-    mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
-      switch (command) {
-        case "get_scan_status":
-          return controller.statusCommand()
-        case "get_checks_report":
-          return SETTLED_REPORT
-        case "cancel_checks_report":
-          return undefined
-        case "get_settings":
-          return { ...DEFAULT_TEST_SETTINGS, onboardingCompleted: false }
-        case "set_settings":
-          return { ...DEFAULT_TEST_SETTINGS, ...(args?.settings as object) }
-        case "get_folder_permissions":
-          return { deferred: [], granted: [], supported: true }
-        case "finish_first_run":
-          return { ...DEFAULT_TEST_SETTINGS, onboardingCompleted: true }
-        case "advance_first_run":
-          return undefined
-        case "start_live_usage":
-          return {
-            ...DEFAULT_TEST_SETTINGS,
-            onboardingCompleted: false,
-            liveUsageStarted: true,
-          }
-        case "note_interaction":
-          return undefined
-        default:
-          throw new Error(`Unexpected command: ${command}`)
-      }
+    const invoke = mocks.invoke.getMockImplementation()!
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === "get_settings")
+        return { ...DEFAULT_TEST_SETTINGS, onboardingCompleted: false }
+      return invoke(command, args)
     })
 
     const { subscribeOverviewProgress, overviewProgress, skipLiveLimits, nextStep } =
@@ -703,33 +655,6 @@ describe("overviewProgressStore's first-run analytics", () => {
   })
 })
 
-describe("overviewProgressStore's enableNonRepoFolders", () => {
-  it("fires include_non_repo_folders only on an actual transition", async () => {
-    const { subscribeOverviewProgress, enableNonRepoFolders } =
-      await import("./overviewProgressStore")
-    stops.push(subscribeOverviewProgress(() => undefined))
-    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("get_settings"))
-
-    await enableNonRepoFolders()
-    expect(mocks.invoke).toHaveBeenCalledWith("note_interaction", {
-      interaction: { kind: "firstRunAction", action: "include_non_repo_folders" },
-    })
-
-    mocks.invoke.mockClear()
-    // A device that already has the setting on must skip both the write and
-    // the event. Simulated by answering get_settings with it already true.
-    mocks.invoke.mockImplementation(async (command: string) => {
-      if (command === "get_settings") {
-        return { ...DEFAULT_TEST_SETTINGS, includeNonRepoFolders: true }
-      }
-      throw new Error(`Unexpected command: ${command}`)
-    })
-    await enableNonRepoFolders()
-    expect(mocks.invoke).not.toHaveBeenCalledWith("set_settings", expect.anything())
-    expect(mocks.invoke).not.toHaveBeenCalledWith("note_interaction", expect.anything())
-  })
-})
-
 describe("overviewProgressStore's steady mode", () => {
   it("does not change the Agents rows in the snapshot when a new full pass starts", async () => {
     // The device has scanned before: a full pass already ran and finished
@@ -753,5 +678,88 @@ describe("overviewProgressStore's steady mode", () => {
     expect(overviewProgress().agents.rows).toEqual([
       { agent: "claude-code", label: "Claude Code", sessions: 49, done: true },
     ])
+  })
+})
+
+describe("overview progress recovery", () => {
+  it("refreshes checks when a finished scan snapshot arrives after the first report", async () => {
+    runLaunchPass()
+    let resolveScan!: (status: ScanStatus) => void
+    const scan = new Promise<ScanStatus>((resolve) => {
+      resolveScan = resolve
+    })
+    const invoke = mocks.invoke.getMockImplementation()!
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === "get_scan_status") return scan
+      if (command === "get_settings")
+        return { ...DEFAULT_TEST_SETTINGS, onboardingCompleted: false }
+      return invoke(command, args)
+    })
+    const store = await import("./overviewProgressStore")
+    stops.push(store.subscribeOverviewProgress(() => undefined))
+    await vi.waitFor(() => expect(store.overviewProgress().checks.windowSessions).toBe(142))
+    expect(store.overviewProgress().checks.done).toBe(false)
+    resolveScan(controller.statusCommand())
+    await vi.waitFor(() => expect(store.overviewProgress().checks.done).toBe(true))
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "get_checks_report"),
+    ).toHaveLength(2)
+  })
+
+  it("releases hidden report work and ignores its late response after reveal", async () => {
+    let resolveReport!: (report: typeof SETTLED_REPORT) => void
+    const pending = new Promise<typeof SETTLED_REPORT>((resolve) => {
+      resolveReport = resolve
+    })
+    const invoke = mocks.invoke.getMockImplementation()!
+    let reportCalls = 0
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === "get_checks_report" && ++reportCalls === 1) return pending
+      return invoke(command, args)
+    })
+    const store = await import("./overviewProgressStore")
+    stops.push(store.subscribeOverviewProgress(() => undefined))
+    await vi.waitFor(() => expect(reportCalls).toBe(1))
+    const consumerId = mocks.invoke.mock.calls.find(
+      ([command]) => command === "get_checks_report",
+    )![1].consumerId
+    emit("main:visibility-changed", false)
+    expect(mocks.invoke).toHaveBeenCalledWith("cancel_checks_report", { consumerId })
+    const permissions = mocks.invoke.mock.calls.filter(
+      ([command]) => command === "get_folder_permissions",
+    ).length
+    emit("checks:report-changed", null)
+    runLaunchPass()
+    expect(reportCalls).toBe(1)
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "get_folder_permissions"),
+    ).toHaveLength(permissions)
+    emit("main:visibility-changed", true)
+    await vi.waitFor(() => expect(store.overviewProgress().checks.windowSessions).toBe(142))
+    resolveReport({ ...SETTLED_REPORT, windowSessions: 999 })
+    await pending
+    await Promise.resolve()
+    expect(store.overviewProgress().checks.windowSessions).toBe(142)
+  })
+
+  it("keeps the current step after a failed gate command and permits retry", async () => {
+    const store = await import("./overviewProgressStore")
+    stops.push(store.subscribeOverviewProgress(() => undefined))
+    await waitForListener("ftue:reset")
+    emit("ftue:reset", null)
+    const invoke = mocks.invoke.getMockImplementation()!
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === "advance_first_run") throw new Error("unavailable")
+      return invoke(command, args)
+    })
+    await store.nextStep()
+    expect(store.overviewProgress()).toMatchObject({
+      flow: "welcome",
+      actionPending: false,
+      actionError: expect.any(String),
+    })
+    mocks.invoke.mockImplementation(invoke)
+    await store.nextStep()
+    expect(store.overviewProgress()).toMatchObject({ flow: "agents", actionError: null })
   })
 })

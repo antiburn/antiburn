@@ -18,6 +18,7 @@ import {
   showLiveLimits,
   skipLiveLimits,
   subscribeOverviewProgress,
+  stepDone,
 } from "./overviewProgressStore"
 import { StepSettingsDisclosure } from "./stepSettings/StepSettingsDisclosure"
 
@@ -71,6 +72,7 @@ function LiveLimitsCard() {
       await showLiveLimits()
     } catch {
       setError("Could not start live limits. Try again.")
+    } finally {
       setBusy(false)
     }
   }
@@ -128,19 +130,6 @@ function LiveLimitsCard() {
   )
 }
 
-function stepDone(step: ProgressStepKey, progress: OverviewProgress): boolean {
-  switch (step) {
-    case "agents":
-      return progress.agents.done
-    case "sessions":
-      return progress.sessions.done
-    case "checks":
-      return progress.checks.done
-    case "fixes":
-      return true
-  }
-}
-
 function TakeoverStep({
   step,
   progress,
@@ -154,8 +143,7 @@ function TakeoverStep({
   // opens the first check that needs a fix.
   async function enhance() {
     const check = firstFailingCheck(progress)
-    await enhanceFixes()
-    onOpenChecks(check)
+    if (await enhanceFixes()) onOpenChecks(check)
   }
   return (
     <>
@@ -202,7 +190,10 @@ export function FirstRunTakeover({
   )
 
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-(--space-lg) p-(--space-2xl)">
+    <fieldset
+      disabled={progress.actionPending}
+      className="flex flex-1 flex-col items-center justify-center gap-(--space-lg) p-(--space-2xl)"
+    >
       {!progress.stepShown ? null : progress.flow === "welcome" ? (
         <WelcomeCard />
       ) : progress.flow === "limits" ? (
@@ -213,6 +204,11 @@ export function FirstRunTakeover({
         progress.flow === "fixes" ? (
         <TakeoverStep step={progress.flow} progress={progress} onOpenChecks={onOpenChecks} />
       ) : null}
-    </div>
+      {progress.actionError && (
+        <p role="alert" className="type-footnote text-system-red-text">
+          {progress.actionError}
+        </p>
+      )}
+    </fieldset>
   )
 }

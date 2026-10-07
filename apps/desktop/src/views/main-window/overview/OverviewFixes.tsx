@@ -39,7 +39,7 @@ export function OverviewFixes() {
   return (
     <section aria-label="Fixes" className="flex flex-col gap-(--space-sm)">
       <h2 className="type-caption text-label-secondary">Config checks</h2>
-      <ul className="flex flex-col gap-1">
+      <ul className="flex flex-col gap-1 px-px">
         {progress.categories.map((category) => (
           <CheckRow key={category.id} category={category} />
         ))}
