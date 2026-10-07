@@ -297,19 +297,26 @@ function StepCard({
   title,
   body,
   bodyAction,
+  childrenFirst = false,
   children,
 }: {
   transitionName: string | undefined
   title: string
   body?: string
   bodyAction?: ReactNode
+  /** Show the children above the title, not below the body. */
+  childrenFirst?: boolean
   children?: ReactNode
 }) {
+  const content = children && (
+    <div className="mx-auto flex w-full max-w-lg flex-col gap-(--space-md)">{children}</div>
+  )
   return (
     <div
       style={transitionName ? { viewTransitionName: transitionName } : undefined}
       className="flex w-full max-w-xl flex-col items-center gap-(--space-lg)"
     >
+      {childrenFirst && content}
       <div className="flex flex-col gap-(--space-xs) text-center">
         <h2 className="type-title-1 text-label">{title}</h2>
         {body && (
@@ -320,9 +327,7 @@ function StepCard({
           </p>
         )}
       </div>
-      {children && (
-        <div className="mx-auto flex w-full max-w-lg flex-col gap-(--space-md)">{children}</div>
-      )}
+      {!childrenFirst && content}
     </div>
   )
 }
@@ -418,6 +423,7 @@ export function ProgressStepCard({
           bodyAction={bodyAction}
           {...agentCopy}
           title={title}
+          childrenFirst
         >
           <AgentsStepRow snapshot={progress} />
         </StepCard>
