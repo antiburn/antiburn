@@ -452,7 +452,7 @@ export function ProgressStepCard({
             progress.checks.windowSessions === 0
               ? "No sessions in the last 30 days"
               : fixesFound(progress)
-                ? `${capitalize(countWord(progress.failingCount))} fixable ${pluralize(progress.failingCount, "issue", "issues")} found in config`
+                ? `${capitalize(countWord(progress.failingCount))} fixable ${pluralize(progress.failingCount, "issue", "issues")} found`
                 : "No fixes needed"
           }
           {...(!fixesFound(progress) && progress.checks.windowSessions > 0
