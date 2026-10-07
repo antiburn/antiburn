@@ -3229,7 +3229,8 @@ pub struct SessionMemoryTouchDto {
 
 /// The result of one memory edit. `Archived`, `Restored` and `IndexLineRemoved`
 /// are the only outcomes that changed a file. Every other outcome left the
-/// memory directory untouched.
+/// memory directory untouched. Only `Unavailable` exists where memory edits
+/// are not supported.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(
     tag = "outcome",
@@ -3237,19 +3238,25 @@ pub struct SessionMemoryTouchDto {
     rename_all_fields = "camelCase"
 )]
 pub enum MemoryEditOutcome {
+    #[cfg(not(windows))]
     Archived {
         archive_id: String,
         index_line_removed: bool,
     },
+    #[cfg(not(windows))]
     Restored {
         index_line_restored: bool,
     },
+    #[cfg(not(windows))]
     IndexLineRemoved,
     /// A precondition failed.
+    #[cfg(not(windows))]
     ChangedOnDisk,
     /// The file or the index line is already gone.
+    #[cfg(not(windows))]
     Missing,
     /// The restore target exists.
+    #[cfg(not(windows))]
     AlreadyExists,
     Unavailable {
         reason: String,
