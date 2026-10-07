@@ -11,6 +11,8 @@ pub(crate) struct Expected {
     pub(crate) reason: Option<String>,
     #[serde(default)]
     pub(crate) actions: Vec<usize>,
+    #[serde(default)]
+    pub(crate) rule_sections: Vec<usize>,
 }
 
 #[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
@@ -154,6 +156,9 @@ fn inventory_has_unique_labels_references_and_four_agents() {
             case.scenario.expected.verdict == "finding",
             case.scenario.expected.reason.as_deref() == Some("ignored_instruction_violation")
         );
+        if case.scenario.expected.verdict != "finding" {
+            assert!(case.scenario.expected.rule_sections.is_empty());
+        }
         for index in &case.scenario.expected.actions {
             assert!(*index < case.scenario.events.len());
         }

@@ -68,6 +68,13 @@ Non-findings omit reason and actions. The finding reason is the check-owned
 `ignored_instruction_violation`; no private reducer reason is invented for clean
 or unknown outcomes.
 
+Multi-rule findings specify `expected.rule_sections` as zero-based indices into
+the parsed instruction sections. Each selected section binds to each expected
+action. Single-rule findings can omit this field. Non-findings omit it and have
+no expected references. For the adjacent scan rules, `[1]` selects the conditional
+known-base rule, not the general scan rule. Scoring requires exact source ranges
+and action IDs; sibling rules do not make their citations interchangeable.
+
 `shape` optionally selects a Rust fixture builder: `long_history`, `long_text`,
 `truncated`, `missing_history`, `sibling_history`, or `current_file`.
 `authority_control: true` marks cases where publishing a finding or a clean result

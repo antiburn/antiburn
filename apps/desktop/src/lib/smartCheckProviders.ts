@@ -31,7 +31,7 @@ export type ConnectionDraft = {
 }
 export type CapabilitySource =
   "provider_metadata" | "runtime_metadata" | "documented_default" | "manual" | "unknown"
-export type CapabilityLimit = { value: number | null; source: CapabilitySource }
+type CapabilityLimit = { value: number | null; source: CapabilitySource }
 export type ModelCapabilities = {
   total_input_tokens: CapabilityLimit
   state_and_longest_question_tokens: CapabilityLimit

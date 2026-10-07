@@ -291,19 +291,39 @@ pub(crate) fn input(case: &Case) -> AssessmentInput {
 }
 
 pub(crate) fn expected_references(case: &Case) -> BTreeSet<EvidenceReference> {
+    if case.scenario.expected.actions.is_empty() {
+        return BTreeSet::new();
+    }
     let input = input(case);
     let instruction = &input.content.instructions[0];
-    assert_eq!(instruction.sections.len(), 1, "each scenario has one rule");
-    let section = &instruction.sections[0];
+    let rule_sections = if case.scenario.expected.rule_sections.is_empty() {
+        assert_eq!(
+            instruction.sections.len(),
+            1,
+            "{}: multi-rule findings require expected.rule_sections",
+            case.id
+        );
+        &[0][..]
+    } else {
+        case.scenario.expected.rule_sections.as_slice()
+    };
     case.scenario
         .expected
         .actions
         .iter()
-        .map(|index| EvidenceReference {
-            source: instruction.source.clone(),
-            start_line: section.start_line,
-            end_line: section.end_line,
-            action: format!("e{index}"),
+        .flat_map(|index| {
+            rule_sections.iter().map(move |section_index| {
+                let section = instruction
+                    .sections
+                    .get(*section_index)
+                    .expect("expected rule section exists");
+                EvidenceReference {
+                    source: instruction.source.clone(),
+                    start_line: section.start_line,
+                    end_line: section.end_line,
+                    action: format!("e{index}"),
+                }
+            })
         })
         .collect()
 }
@@ -355,6 +375,32 @@ pub(crate) fn findings_valid(result: &AssessmentResult, input: &AssessmentInput)
                 })
             })
     })
+}
+
+#[test]
+fn sibling_rules_bind_exact_expected_action_references() {
+    for mut case in crate::fixtures::select("context", Some("aislop-known-base-pr-missing-base"))
+        .expect("four agent cases")
+    {
+        let input = input(&case);
+        let instruction = &input.content.instructions[0];
+        assert_eq!(instruction.sections.len(), 2);
+        let expected = expected_references(&case);
+        assert_eq!(expected.len(), 1);
+        let conditional = &instruction.sections[1];
+        assert!(expected.contains(&EvidenceReference {
+            source: instruction.source.clone(),
+            start_line: conditional.start_line,
+            end_line: conditional.end_line,
+            action: "e2".to_owned(),
+        }));
+
+        case.scenario.expected.rule_sections = vec![0, 1];
+        let siblings = expected_references(&case);
+        assert_eq!(siblings.len(), 2);
+        assert!(expected.is_subset(&siblings));
+        assert!(siblings.iter().all(|reference| reference.action == "e2"));
+    }
 }
 
 #[test]

@@ -12,7 +12,6 @@ import type {
 } from "../../../../lib/checkAvailability"
 
 const getAvailability = vi.hoisted(() => vi.fn())
-const save = vi.hoisted(() => vi.fn())
 const providerInvoke = vi.hoisted(() => vi.fn())
 const remove = vi.hoisted(() => vi.fn())
 const setHistory = vi.hoisted(() => vi.fn())
@@ -73,7 +72,6 @@ const emptyAvailability = vi.hoisted(() => ({
 
 vi.mock("../../../../lib/checkAvailability", () => ({
   getCheckAvailability: getAvailability,
-  setTypeSafeApiKey: save,
   removeTypeSafeApiKey: remove,
   setCheckHistoryDays: setHistory,
   setSmartBurnChecksEnabled: setChecksEnabled,
@@ -109,7 +107,6 @@ beforeEach(() => {
   setCheckEnabled.mockClear()
   listen.mockClear()
   getAvailability.mockResolvedValue(emptyAvailability)
-  save.mockResolvedValue({ ...emptyAvailability, configured: true, savedKey: true })
   remove.mockResolvedValue(emptyAvailability)
   setHistory.mockImplementation(async (days: 0 | 7 | 30) => ({
     ...emptyAvailability,
@@ -232,7 +229,9 @@ it("restores a saved key without a Settings action", async () => {
   const toggle = await screen.findByRole("switch", { name: "Enable Smart Burn Checks" })
   expect(toggle).toHaveAttribute("aria-checked", "true")
   expect(screen.queryByText(/Smart Burn Checks on/)).not.toBeInTheDocument()
-  expect(save).not.toHaveBeenCalled()
+  expect(providerInvoke.mock.calls.some(([command]) => command === "save_system_one_connection")).toBe(
+    false,
+  )
   await waitFor(() => expect(screen.getByLabelText("TypeSafe API key")).toBeEnabled())
   expect(screen.getByLabelText("TypeSafe API key")).toHaveAttribute(
     "placeholder",

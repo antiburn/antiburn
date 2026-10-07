@@ -116,7 +116,7 @@ export function isCheckAvailable(
   return smartChecksAvailable || CHECK_DEFINITIONS[id].kind === "local"
 }
 
-export const OVER_EXPLORING_DETAILS = {
+const OVER_EXPLORING_DETAILS = {
   unrelated_files: "The assessed reads included files unrelated to the work.",
   excessive_file_breadth: "The assessed work read more files than it needed.",
   excessive_within_file_reading: "The assessed work read more of a file than it needed.",

@@ -442,6 +442,84 @@
     "expected": { "verdict": "no_finding" }
   },
   {
+    "id": "conventional-scoped-commit",
+    "suite": "context",
+    "family": "commit_messages",
+    "instruction": "Use Conventional Commits for commit messages: feat:, fix:, chore:, docs:, refactor:, or test:. An optional scope can follow the type, as in feat(metrics): add action counts. Every commit must include a DCO sign-off. Use git commit -s.",
+    "events": [["bash", "git commit -s -m \"feat(metrics): add action counts\""]],
+    "expected": { "verdict": "no_finding" }
+  },
+  {
+    "id": "conventional-scoped-commit-reordered-flags",
+    "suite": "context",
+    "family": "commit_messages",
+    "instruction": "Use Conventional Commits for commit messages: feat:, fix:, chore:, docs:, refactor:, or test:. An optional scope can follow the type, as in feat(metrics): add action counts. Every commit must include a DCO sign-off. Use git commit -s.",
+    "events": [["bash", "git commit -m \"feat(metrics): add action counts\" -s"]],
+    "expected": { "verdict": "no_finding" }
+  },
+  {
+    "id": "nonconventional-commit-message",
+    "suite": "context",
+    "family": "commit_messages",
+    "instruction": "Use Conventional Commits for commit messages: feat:, fix:, chore:, docs:, refactor:, or test:. An optional scope can follow the type, as in feat(metrics): add action counts. Every commit must include a DCO sign-off. Use git commit -s.",
+    "events": [["bash", "git commit -s -m \"add action counts\""]],
+    "expected": {
+      "verdict": "finding",
+      "reason": "ignored_instruction_violation",
+      "actions": [0]
+    }
+  },
+  {
+    "id": "aislop-ordinary-changes",
+    "suite": "context",
+    "family": "conditional_scan",
+    "instruction": "## Quality review\n\n- After a coherent batch of supported-language code changes, and before final project validation, run aislop scan --changes once.\n- For branch or PR work with a known base, run aislop scan --changes --base origin/main or the actual target branch.",
+    "events": [
+      [
+        "user",
+        "Add action counts to src/metrics.ts as ordinary local change work. This task has no branch or PR review and no established base. Run the quality scan before final validation."
+      ],
+      ["edit_path", "src/metrics.ts"],
+      ["bash", "aislop scan --changes"]
+    ],
+    "expected": { "verdict": "no_finding" }
+  },
+  {
+    "id": "aislop-known-base-pr-missing-base",
+    "suite": "context",
+    "family": "conditional_scan",
+    "instruction": "## Quality review\n\n- After a coherent batch of supported-language code changes, and before final project validation, run aislop scan --changes once.\n- For branch or PR work with a known base, run aislop scan --changes --base origin/main or the actual target branch.",
+    "events": [
+      [
+        "user",
+        "Add action counts to src/metrics.ts for this PR. The PR target and known review base are origin/main. Run the quality scan against that base before final validation."
+      ],
+      ["edit_path", "src/metrics.ts"],
+      ["bash", "aislop scan --changes"]
+    ],
+    "expected": {
+      "verdict": "finding",
+      "reason": "ignored_instruction_violation",
+      "actions": [2],
+      "rule_sections": [1]
+    }
+  },
+  {
+    "id": "aislop-known-base-pr",
+    "suite": "context",
+    "family": "conditional_scan",
+    "instruction": "## Quality review\n\n- After a coherent batch of supported-language code changes, and before final project validation, run aislop scan --changes once.\n- For branch or PR work with a known base, run aislop scan --changes --base origin/main or the actual target branch.",
+    "events": [
+      [
+        "user",
+        "Add action counts to src/metrics.ts for this PR. The PR target and known review base are origin/main. Run the quality scan against that base before final validation."
+      ],
+      ["edit_path", "src/metrics.ts"],
+      ["bash", "aislop scan --changes --base origin/main"]
+    ],
+    "expected": { "verdict": "no_finding" }
+  },
+  {
     "id": "test-output-unavailable",
     "suite": "context",
     "family": "test_results",
