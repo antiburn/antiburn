@@ -357,6 +357,8 @@ pub fn run() {
         app.manage(antiburn_nudge::NotificationGate::default());
 
         tray::create(app.handle())?;
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        tray::install_debug_app_menu(app.handle())?;
         tray::install_usage_meter(app.handle());
         if let Ok(settings) = app.state::<store::Store>().settings() {
             app_presence::apply_at_launch(app.handle(), &settings);
@@ -442,12 +444,19 @@ pub fn run() {
         let repeated = app.state::<RepeatedLaunch>();
         repeated.setup_ready.store(true, Ordering::Release);
         let repeated_launch = repeated.pending.swap(false, Ordering::AcqRel);
-        if launch_intent == launch_intent::LaunchIntent::Explicit || repeated_launch {
-            let trigger = if launch_intent == launch_intent::LaunchIntent::Explicit {
-                main_window::OpenTrigger::ColdLaunch
-            } else {
-                main_window::OpenTrigger::Interaction
-            };
+        // The menu-bar icon stays hidden during the first run, so a
+        // background launch then also opens the main window. Otherwise the
+        // app has no visible way in.
+        if launch_intent == launch_intent::LaunchIntent::Explicit
+            || repeated_launch
+            || !onboarding_completed
+        {
+            let trigger =
+                if launch_intent == launch_intent::LaunchIntent::Explicit || !repeated_launch {
+                    main_window::OpenTrigger::ColdLaunch
+                } else {
+                    main_window::OpenTrigger::Interaction
+                };
             if let Err(error) = open_launch_surface(app.handle(), trigger) {
                 ::tracing::warn!(
                     event = "launch_surface_open_failed",
@@ -676,7 +685,7 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
                     .app_handle()
                     .try_state::<store::Store>()
                     .map(|store| store.settings_snapshot())
-                    .is_some_and(|settings| !settings.tray_icon_visible);
+                    .is_some_and(|settings| !settings.tray_shown());
             match close_policy(window.label(), quit_when_main_closes) {
                 ClosePolicy::Allow => {}
                 ClosePolicy::HideMain => {

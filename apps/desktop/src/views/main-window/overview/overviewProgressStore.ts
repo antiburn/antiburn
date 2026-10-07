@@ -1,13 +1,3 @@
-// The Overview's progress store. Subscribes to the scan status store, the
-// checks report, and settings — the external-system boundary — so no
-// component needs an effect. Replaces the fake-timer prototype
-// (`ftuePrototype.ts`) with the real scan and check pipeline.
-//
-// Drives the first-run takeover (one step at a time, each gated on the
-// reader's own Next) and the permanent side-nav status rows. The
-// first-run-only latch lives in `firstRun.ts`; this module adds the flow
-// and the steady state on top of it.
-
 import {
   cancelChecksReport,
   getChecksReport,
@@ -25,15 +15,14 @@ import {
   onFtueReset,
   onSettingsChanged,
   refreshLiveUsage,
-  setSettings,
   startLiveUsage,
   type AgentFoundCount,
   type AppSettings,
   type FirstRunResult,
-  type ReadGateCounts,
   type ScanHistoryProgress,
   type ScanStatus,
 } from "../../../lib/ipc"
+import { getMainWindowVisible, onMainWindowVisibilityChanged } from "../../../lib/mainWindowIpc"
 import { agentDisplayName } from "../../../lib/presentation/agents"
 import { CHECK_LABELS } from "../../../lib/presentation/checkDefinitions"
 import { scanStatusStore } from "../../../lib/scanStatusStore"
@@ -43,14 +32,9 @@ import {
   INITIAL_FIRST_RUN_LATCH,
   advanceFirstRunLatch,
   resetFirstRunLatch,
-  unlatchSessionsOutcome,
   type FirstRunInputs,
   type FirstRunLatch,
 } from "./firstRun"
-
-/* -------------------------------------------------------------------------
- * Snapshot shape the Overview renders.
- * ---------------------------------------------------------------------- */
 
 interface FindRow {
   /** The agent's discovery slug, for its icon. */
@@ -80,9 +64,6 @@ interface SessionsStep {
    *  own to report. Equal to `completed`/`total` at every other time. */
   displayCompleted: number
   displayTotal: number
-  /** The gate outcome, once the read stage this session has finished once. */
-  gate: ReadGateCounts | null
-  includeNonRepoFolders: boolean
   /** Protected folders the last pass declined to read. Shown in the Read
    *  step, wherever that step's content shows. */
   deferred: DeferredPermissionDir[]
@@ -109,14 +90,7 @@ export interface FixCategory {
   estimatedBurnBasisPoints: number | null
 }
 
-/**
- * The background history pass's state, as the Overview shows it.
- *
- * `"pending"`: discovered but not started — the pass waits for the steady
- * scan to catch up. `"looking"`: running, and still discovering which older
- * sessions exist (the backend's `total` is 0 so far). `"reading"`: running,
- * with sessions to read (`total` set). `"done"`: finished.
- */
+/** History has no total until discovery finishes. */
 export type HistoryState = "pending" | "looking" | "reading" | "done"
 
 export interface HistoryProgress {
@@ -128,17 +102,11 @@ export interface HistoryProgress {
   total: number
 }
 
-/**
- * Where the first-run takeover is, in order. Meaningful only in `firstRun`
- * mode: a new first run starts at `"welcome"`, and `steady` mode behaves as
- * `"done"`.
- */
+/** Steady mode always exposes `done`. */
 export type FlowStep =
   "welcome" | "agents" | "limits" | "sessions" | "checks" | "fixes" | "done"
 
-/** A step with its own nav row and modal. `"limits"` and `"done"` have
- *  neither: the live limits step moves into the right-hand pane instead, and
- *  `"done"` is the takeover's end, not a step. */
+/** Limits docks into the provider pane instead of a nav row. */
 export type ProgressStepKey = "agents" | "sessions" | "checks" | "fixes"
 
 const FLOW_ORDER: readonly FlowStep[] = [
@@ -155,9 +123,6 @@ function flowIndex(step: FlowStep): number {
   return FLOW_ORDER.indexOf(step)
 }
 
-/** The flow stage reached once a step's own card has moved down to its nav
- *  row — the stage `nextStep` advances *to* when that step's Next (or the
- *  fixes step's Done) is pressed. */
 const STEP_DOCKED_AT: Record<ProgressStepKey, FlowStep> = {
   agents: "limits",
   sessions: "checks",
@@ -165,14 +130,10 @@ const STEP_DOCKED_AT: Record<ProgressStepKey, FlowStep> = {
   fixes: "done",
 }
 
-/** Whether the fixes step has fixes to show: the window has sessions, and
- *  at least one check fails. */
 export function fixesFound(progress: OverviewProgress): boolean {
   return progress.checks.windowSessions > 0 && progress.failingCount > 0
 }
 
-/** The first check the fixes step lists as needing a fix: where Enhance
- *  takes the reader in Burn Checks. */
 /** The failing check with the highest estimated burn: the top row of the
  *  Checks list, which uses the same order. Ties keep report order. */
 export function firstFailingCheck(progress: OverviewProgress): BurnCheckDetectorId | undefined {
@@ -189,42 +150,25 @@ export function firstFailingCheck(progress: OverviewProgress): BurnCheckDetector
   return top?.id
 }
 
-/** Where `flow` moves on this step's Next (or the fixes step's Done). The
- *  live limits step shows only while live usage is off: a reader who went
- *  back to the agents step after Show live limits has nothing to do there. */
+// Skip Limits on a revisit if live usage is already active.
 function nextFlow(from: ProgressStepKey, liveUsageOn: boolean): FlowStep {
   if (from === "agents" && liveUsageOn) return "sessions"
   return STEP_DOCKED_AT[from]
 }
 
-/**
- * Whether `step`'s card has already moved down to its nav row, at `flow`.
- *
- * Exported so a test, and `ProgressNav`, can derive row visibility from the
- * same rule the store uses for its own values: `steady`'s `flow` is always
- * `"done"` (see {@link deriveOverviewProgress}), so every step reads as
- * docked there without a separate steady-mode branch.
- */
 export function stepDocked(flow: FlowStep, step: ProgressStepKey): boolean {
   return flowIndex(flow) >= flowIndex(STEP_DOCKED_AT[step])
 }
 
-/** Shared by a step's takeover card and its nav row — or its open modal, see
- *  `ProgressNav.tsx` — so a view transition moves the one element between
- *  wherever it currently lives. */
+// Reuse the name when a card moves between the takeover, nav and modal.
 export function progressStepTransitionName(step: ProgressStepKey): string {
   return `progress-step-${step}`
 }
 
-/** Shared by the live limits card and the right-hand pane, so "Show live
- *  limits" moves the card into the pane as it appears. */
 export const LIVE_LIMITS_TRANSITION_NAME = "progress-live-limits"
 
-/** Shared by Recent sessions under the takeover and in the finished
- *  Overview, so the card moves to its place when the first run ends. */
 export const RECENT_SESSIONS_TRANSITION_NAME = "overview-recent-sessions"
 
-/** The same as {@link RECENT_SESSIONS_TRANSITION_NAME}, for the usage card. */
 export const USAGE_TRANSITION_NAME = "overview-usage"
 
 export interface OverviewProgress {
@@ -251,35 +195,23 @@ export interface OverviewProgress {
    * card moves to its place, so the next card appears only after it lands.
    */
   stepShown: boolean
+  actionPending: boolean
+  actionError: string | null
   agents: AgentsStep
   sessions: SessionsStep
   checks: ChecksStep
   /** Every category in the checks report, for the persistent checklist. */
   categories: FixCategory[]
   failingCount: number
-  /** The background history pass's progress. Null during the first-run
-   *  steps — the pass itself waits for the first run to finish, so there is
-   *  nothing to show until then — and whenever the backend reports no pass
-   *  under the current retention. */
+  /** Hide history until the first-run flow finishes. */
   history: HistoryProgress | null
 }
 
-/* -------------------------------------------------------------------------
- * Pure derivation. Exported so a test can drive it without any IPC mocking.
- * ---------------------------------------------------------------------- */
-
 export interface ProgressInputs extends FirstRunInputs {
-  includeNonRepoFolders: boolean
   deferred: DeferredPermissionDir[]
 }
 
-/**
- * The last finished pass's agents and read numbers. Every full scan pass
- * resets `ScanStatus.foundByAgent` and `read` at the start of the pass, so a
- * row that read them live would pulse and count up every 5 minutes. The
- * store keeps these instead, and only a docked row reads them (see
- * {@link advanceLastPass}).
- */
+/** Keep docked counts stable while a routine scan resets its live counters. */
 export interface LastPass {
   lastFound: AgentFoundCount[] | null
   lastRead: { completed: number; total: number } | null
@@ -287,15 +219,7 @@ export interface LastPass {
 
 export const INITIAL_LAST_PASS: LastPass = { lastFound: null, lastRead: null }
 
-/**
- * Keeps the last finished pass's agents and read numbers across a routine
- * pass that resets the live status to zero. `lastFound` updates once a pass
- * reaches `"saving"`, where each count is the sessions the read stage
- * admitted. Discovery's candidate counts are higher, so taking them would
- * make the row jump up and back down on each pass. `lastRead` updates once
- * a pass has left the read stage, whether it is still saving or has
- * finished.
- */
+// Saving counts contain admitted sessions; discovery counts include rejected candidates.
 export function advanceLastPass(previous: LastPass, status: ScanStatus | null): LastPass {
   if (!status) return previous
   let { lastFound, lastRead } = previous
@@ -329,13 +253,6 @@ function toFixCategory(category: ChecksCategoryPayload): FixCategory {
   }
 }
 
-/**
- * `exposedFlow` gates this the same way the rest of the Overview treats
- * `"done"`: a steady device is always there, and a first run reaches it only
- * once its last step closes. Before that point the history pass is still
- * running behind the scenes, but a reader mid-flow has nothing to do with
- * its number, so this returns null throughout the first-run steps.
- */
 function deriveHistory(
   exposedFlow: FlowStep,
   history: ScanHistoryProgress | undefined,
@@ -411,8 +328,6 @@ export function deriveOverviewProgress(
     displayTotal: historyToCount
       ? sessionsSource.total + historyToCount.total
       : sessionsSource.total,
-    gate: latch.sessionsDone ? latch.sessionsGate : null,
-    includeNonRepoFolders: inputs.includeNonRepoFolders,
     deferred: inputs.deferred,
   }
 
@@ -447,6 +362,8 @@ export function deriveOverviewProgress(
     openStepControl,
     openStepControlRevision,
     stepShown,
+    actionPending: false,
+    actionError: null,
     agents,
     sessions,
     checks,
@@ -456,19 +373,17 @@ export function deriveOverviewProgress(
   }
 }
 
-/* -------------------------------------------------------------------------
- * The live store: latch and flow state plus the IPC boundary that feeds it.
- * ---------------------------------------------------------------------- */
-
 let latch: FirstRunLatch = INITIAL_FIRST_RUN_LATCH
 let flow: FlowStep = "welcome"
 let openStep: ProgressStepKey | null = null
 let openStepControl: string | null = null
 let openStepControlRevision = 0
 let stepShown = true
+let actionPending = false
+let actionError: string | null = null
+let flowRevision = 0
 let liveScanStatus: ScanStatus | null = null
 let liveChecksReport: ChecksReportPayload | null = null
-let liveIncludeNonRepoFolders = false
 let liveOnboardingCompleted: boolean | null = null
 let liveUsageOn = false
 let liveDeferred: DeferredPermissionDir[] = []
@@ -492,7 +407,6 @@ function currentInputs(): ProgressInputs {
   return {
     scanStatus: liveScanStatus,
     checksReport: liveChecksReport,
-    includeNonRepoFolders: liveIncludeNonRepoFolders,
     deferred: liveDeferred,
     onboardingCompleted: liveOnboardingCompleted,
     checksReportCurrent: liveChecksReportCurrent,
@@ -522,6 +436,7 @@ function recompute(): void {
     openStepControl,
     openStepControlRevision,
   )
+  snapshot = { ...snapshot, actionPending, actionError }
   for (const listener of listeners) listener()
   maybeReportFirstRunSteps()
 }
@@ -532,15 +447,7 @@ function firstRunResult(progress: OverviewProgress): FirstRunResult {
   return progress.failingCount === 0 ? "clean" : "fixes_found"
 }
 
-/**
- * Report each fixed first-run funnel step the first time its work is done.
- *
- * One flag per step, so a later re-render of the same finished step reports
- * nothing. Only in `firstRun` mode; a steady-state device never reaches this.
- * The `result` step is reported separately, from {@link nextStep}, the
- * moment the fixes step first shows — not from here, since a step's work can
- * finish well before the reader presses its Next.
- */
+// Report completed work once. Report the result only when its step opens.
 function maybeReportFirstRunSteps(): void {
   if (snapshot.mode !== "firstRun") return
   if (!reportedFirstRunStarted) {
@@ -563,13 +470,13 @@ function maybeReportFirstRunSteps(): void {
 }
 
 function onScanStatus(status: ScanStatus | null): void {
-  const wasRunning = liveScanStatus?.running ?? false
+  const previous = liveScanStatus
   liveScanStatus = status
   lastPass = advanceLastPass(lastPass, status)
   if (status?.running) {
     scanRunsSeen += 1
     liveChecksReportCurrent = false
-  } else if (wasRunning) {
+  } else if (status && (previous == null || previous.running)) {
     // The pass saved its sessions. Request a report that includes them, and
     // re-read which protected folders still need permission.
     requestChecks?.()
@@ -587,7 +494,6 @@ function onChecksReport(report: ChecksReportPayload | null, current: boolean): v
 }
 
 function onSettings(settings: AppSettings): void {
-  liveIncludeNonRepoFolders = settings.includeNonRepoFolders
   liveOnboardingCompleted = settings.onboardingCompleted
   liveUsageOn = settings.liveUsageEnabled && settings.liveUsageStarted
   latch = advanceFirstRunLatch(latch, currentInputs())
@@ -595,6 +501,9 @@ function onSettings(settings: AppSettings): void {
 }
 
 function onReset(): void {
+  flowRevision += 1
+  actionPending = false
+  actionError = null
   latch = resetFirstRunLatch()
   flow = "welcome"
   openStep = null
@@ -603,9 +512,15 @@ function onReset(): void {
   // The wipe clears `onboardingCompleted`, so this device is a first run
   // again until the pass the reset triggers finishes it.
   liveOnboardingCompleted = false
+  // The wipe also clears every session the last pass found and read, so the
+  // step cards must not show the old pass, report or folders.
+  liveScanStatus = null
+  liveChecksReport = null
   liveChecksReportCurrent = false
-  // The wipe also clears every session the last pass found and read.
+  liveDeferred = []
   lastPass = INITIAL_LAST_PASS
+  // A checks report requested before the wipe is then not current.
+  scanRunsSeen += 1
   // The reset starts a new first run, so its funnel must report again.
   reportedFirstRunStarted = false
   reportedFirstRunFound = false
@@ -613,18 +528,14 @@ function onReset(): void {
   reportedFirstRunChecked = false
   reportedFirstRunResult = false
   recompute()
+  refreshFolderPermissions?.()
 }
 
-/**
- * Start live usage from the live limits step. On success, moves to the read
- * step and opens the backend's sessions gate. On failure, the flow stays on the
- * live limits step — nothing here mutates state before `startLiveUsage`
- * settles — so the caller's own catch can show an error line beside the
- * button.
- */
 export async function showLiveLimits(): Promise<void> {
-  if (flow !== "limits" || !stepShown) return
+  if (flow !== "limits" || !stepShown || actionPending) return
+  const revision = flowRevision
   await startLiveUsage()
+  if (revision !== flowRevision) return
   // Starting collects nothing. Ask for the first reading now, as Settings →
   // Usage does, so the pane does not wait for the next background pass.
   void refreshLiveUsage().catch(() => undefined)
@@ -632,103 +543,90 @@ export async function showLiveLimits(): Promise<void> {
   await moveTo("sessions")
 }
 
-/** Skip live usage and move to the Sessions step. Starts no live usage. */
 export function skipLiveLimits(): void {
-  if (flow !== "limits" || !stepShown) return
+  if (flow !== "limits" || !stepShown || actionPending) return
   noteInteraction({ kind: "firstRunAction", action: "live_usage_skipped" })
   void moveTo("sessions")
 }
 
-/**
- * Move the takeover to `to` in two view transitions. The first moves the
- * current card to its place and shows no card. The work of `to` starts when
- * that card lands. The second transition then shows the card for `to`.
- */
-async function moveTo(to: FlowStep): Promise<void> {
-  await withViewTransition(() => {
-    flow = to
-    openStep = null
-    stepShown = false
-    recompute()
-  })
-  if (to === "agents" || to === "sessions" || to === "checks") {
-    void advanceFirstRun(to)
-  } else if (to === "fixes" && !reportedFirstRunResult) {
-    reportedFirstRunResult = true
-    noteInteraction({
-      kind: "firstRunStepReached",
-      step: "result",
-      result: firstRunResult(snapshot),
+// Confirm the backend command before the next step becomes visible.
+async function moveTo(to: FlowStep): Promise<boolean> {
+  if (actionPending) return false
+  const revision = flowRevision
+  actionPending = true
+  actionError = null
+  recompute()
+  try {
+    if (to === "agents" || to === "sessions" || to === "checks") {
+      await advanceFirstRun(to)
+    } else if (to === "done") {
+      await finishFirstRun()
+    }
+    if (revision !== flowRevision) return false
+    await withViewTransition(() => {
+      if (revision !== flowRevision) return
+      flow = to
+      openStep = null
+      stepShown = false
+      recompute()
     })
-  } else if (to === "done") {
-    // `finish_first_run` records `first_run_finished` itself, only when it
-    // saves the change.
-    void finishFirstRun().catch((error: unknown) => {
-      console.error("finishFirstRun failed", error)
+    if (revision !== flowRevision) return false
+    if (to === "fixes" && !reportedFirstRunResult) {
+      reportedFirstRunResult = true
+      noteInteraction({
+        kind: "firstRunStepReached",
+        step: "result",
+        result: firstRunResult(snapshot),
+      })
+    }
+    await withViewTransition(() => {
+      if (revision !== flowRevision) return
+      stepShown = true
+      recompute()
     })
+    return true
+  } catch {
+    if (revision === flowRevision) {
+      stepShown = true
+      actionError = "Could not continue setup. Try again."
+    }
+    return false
+  } finally {
+    if (revision === flowRevision) {
+      actionPending = false
+      recompute()
+    }
   }
-  await withViewTransition(() => {
-    stepShown = true
-    recompute()
-  })
 }
 
-/** Whether the step the takeover currently shows has finished its work. */
-function currentStepDone(step: FlowStep): boolean {
-  switch (step) {
-    case "agents":
-      return snapshot.agents.done
-    case "sessions":
-      return snapshot.sessions.done
-    case "checks":
-      return snapshot.checks.done
-    case "fixes":
-      return true
-    default:
-      return false
-  }
+export function stepDone(step: ProgressStepKey, progress: OverviewProgress): boolean {
+  return step === "fixes" || progress[step].done
 }
 
-/**
- * Move the takeover to its next stage, from the reader's Next (or the fixes
- * step's Done). Refused while the current step's work is not done yet.
- *
- * Each move runs its own view transition, carrying the finished step's card
- * down into its nav row. `fixes` → `done` ends the first run.
- */
 export async function nextStep(): Promise<void> {
   const from = flow
   // `stepShown` is false while a move runs, so a second press cannot skip a
   // step.
-  if (!stepShown) return
+  if (!stepShown || actionPending) return
   if (from === "welcome") {
     await moveTo("agents")
     return
   }
   if (from !== "agents" && from !== "sessions" && from !== "checks" && from !== "fixes") return
-  if (!currentStepDone(from)) return
+  if (!stepDone(from, snapshot)) return
   await moveTo(nextFlow(from, liveUsageOn))
 }
 
-/**
- * Enhance on the fixes step: records the choice, then finishes the first run
- * the same way Done does.
- */
-export async function enhanceFixes(): Promise<void> {
-  if (flow !== "fixes" || !stepShown) return
-  noteInteraction({ kind: "firstRunAction", action: "enhance_opened" })
-  await moveTo("done")
+export async function enhanceFixes(): Promise<boolean> {
+  if (flow !== "fixes" || !stepShown || actionPending) return false
+  const finished = await moveTo("done")
+  if (finished) noteInteraction({ kind: "firstRunAction", action: "enhance_opened" })
+  return finished
 }
 
-/**
- * Take the first run back to a step whose card is in the nav, from a click
- * on its row. The row's card moves back up into the takeover, and the rows
- * of the later steps leave the nav. The backend gate stays where it is:
- * work that a step already started keeps running, and the step's Next
- * moves forward again without a new wait.
- */
+// Rewinding does not lower the backend gate or restart completed work.
 export function rewindTo(step: ProgressStepKey): void {
-  if (snapshot.mode !== "firstRun" || flow === "done" || !stepShown) return
+  if (snapshot.mode !== "firstRun" || flow === "done" || !stepShown || actionPending) return
   if (!stepDocked(flow, step)) return
   void withViewTransition(() => {
     flow = step
@@ -737,12 +635,7 @@ export function rewindTo(step: ProgressStepKey): void {
   })
 }
 
-/**
- * Open one step's modal over the current view. `control` names a search
- * target to reveal and focus inside it, without changing its value; omit it
- * for an ordinary nav-row open, which shows the modal with nothing singled
- * out.
- */
+/** A control target reveals and focuses its row without changing its value. */
 export function openProgressStep(key: ProgressStepKey, control?: string): void {
   void withViewTransition(() => {
     openStep = key
@@ -761,28 +654,11 @@ export function openProgressStep(key: ProgressStepKey, control?: string): void {
   }
 }
 
-/** Close the open step modal. */
 export function closeProgressStep(): void {
   void withViewTransition(() => {
     openStep = null
     recompute()
   })
-}
-
-/**
- * Turn on `includeNonRepoFolders`, so sessions outside a git repository are
- * kept. Reuses the Sources pane's own settings write (PR #661: changing this
- * setting already triggers a rescan). Un-latches the Sessions step's outcome, so that
- * rescan's gate counts — the ones the reader is waiting on — replace the
- * stale ones instead of being ignored like a routine pass.
- */
-export async function enableNonRepoFolders(): Promise<void> {
-  const current = await getSettings()
-  if (current.includeNonRepoFolders) return
-  await setSettings({ ...current, includeNonRepoFolders: true })
-  noteInteraction({ kind: "firstRunAction", action: "include_non_repo_folders" })
-  latch = unlatchSessionsOutcome(latch)
-  recompute()
 }
 
 /* ---- Ref-counted subscriptions: start on the first listener, stop on the
@@ -802,38 +678,75 @@ async function attach(thisGeneration: number, pending: Promise<() => void>): Pro
 
 async function start(): Promise<void> {
   const thisGeneration = ++generation
-  checksConsumerId = `overview-progress-${++nextConsumer}`
-  const consumerId = checksConsumerId
+  let visible = false
+  let visibilityRevision = 0
+  let settingsRevision = 0
+  let readGeneration = 0
+  let checksPending = false
+  let checksDirty = false
+  let permissionRequest = 0
 
   function refreshChecks(): void {
+    if (!visible) return
+    checksDirty = true
+    if (checksPending) return
+    checksPending = true
+    checksDirty = false
+    const read = readGeneration
     const runsAtRequest = scanRunsSeen
     const idleAtRequest = liveScanStatus?.running === false
-    void getChecksReport(consumerId)
+    void getChecksReport(checksConsumerId!)
       .then((report) => {
-        if (thisGeneration !== generation) return
+        if (thisGeneration !== generation || read !== readGeneration) return
         onChecksReport(report, idleAtRequest && runsAtRequest === scanRunsSeen)
       })
       .catch(() => undefined)
+      .finally(() => {
+        if (thisGeneration !== generation || read !== readGeneration) return
+        checksPending = false
+        if (checksDirty) refreshChecks()
+      })
   }
   requestChecks = refreshChecks
 
-  // Which protected folders still need permission, read directly rather
-  // than from a push event. Called once at start, and again whenever a scan
-  // pass finishes — a granted folder or a new protected folder only shows up
-  // through this read.
   function refreshPermissions(): void {
+    if (!visible) return
+    const request = ++permissionRequest
     void getFolderPermissions()
       .then((permissions) => {
-        if (thisGeneration !== generation) return
+        if (thisGeneration !== generation || request !== permissionRequest) return
         liveDeferred = permissions.deferred
-        latch = advanceFirstRunLatch(latch, currentInputs())
         recompute()
       })
       .catch(() => undefined)
   }
   refreshFolderPermissions = refreshPermissions
 
+  function setVisible(next: boolean): void {
+    if (visible === next) return
+    visible = next
+    readGeneration += 1
+    permissionRequest += 1
+    checksPending = false
+    if (!visible) {
+      if (checksConsumerId) void cancelChecksReport(checksConsumerId).catch(() => undefined)
+      checksConsumerId = null
+      return
+    }
+    checksConsumerId = `overview-progress-${++nextConsumer}`
+    refreshChecks()
+    refreshPermissions()
+  }
+
   await Promise.all([
+    attach(
+      thisGeneration,
+      onMainWindowVisibilityChanged((visible) => {
+        if (thisGeneration !== generation) return
+        visibilityRevision += 1
+        setVisible(visible)
+      }),
+    ),
     attach(
       thisGeneration,
       Promise.resolve(
@@ -851,7 +764,9 @@ async function start(): Promise<void> {
     attach(
       thisGeneration,
       onSettingsChanged((settings) => {
-        if (thisGeneration === generation) onSettings(settings)
+        if (thisGeneration !== generation) return
+        settingsRevision += 1
+        onSettings(settings)
       }),
     ),
     attach(
@@ -863,11 +778,20 @@ async function start(): Promise<void> {
   ])
   if (thisGeneration !== generation) return
   onScanStatus(scanStatusStore.getSnapshot())
-  refreshChecks()
-  refreshPermissions()
-  void getSettings().then((settings) => {
-    if (thisGeneration === generation) onSettings(settings)
-  })
+  const visibilityAtRead = visibilityRevision
+  void getMainWindowVisible()
+    .then((visible) => {
+      if (thisGeneration === generation && visibilityRevision === visibilityAtRead)
+        setVisible(visible)
+    })
+    .catch(() => undefined)
+  const settingsAtRead = settingsRevision
+  void getSettings()
+    .then((settings) => {
+      if (thisGeneration === generation && settingsRevision === settingsAtRead)
+        onSettings(settings)
+    })
+    .catch(() => undefined)
 }
 
 function stop(): void {

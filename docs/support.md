@@ -162,6 +162,9 @@ the tokens a transcript recorded. They are **API-equivalent estimates**, not a b
 
 - prices refresh at startup and hourly while the app runs; the snapshot date is
   shown in Settings → About;
+- a model uses its creator's price; when the creator no longer lists it, as with a
+  retired model, it uses the price its resellers agree on: all of them, or more
+  than half and at least three, where prices within 5% count as the same;
 - a model with no price in the catalog produces no figure rather than a wrong zero,
   and the provider's total is then labelled as a floor;
 - work done on another machine is not counted, because antiburn cannot see it.

@@ -2,7 +2,6 @@ import type { ComponentProps } from "react"
 import { Row } from "../../../../components/ui/Row"
 import { ToggleRow } from "../../../../components/ui/ToggleRow"
 import { SectionGroup } from "../../../../components/ui/SectionGroup"
-import { detectPlatform } from "../../../../lib/platform"
 import {
   stepSettingsControlLabel,
   type StepSettingsControlId,
@@ -24,7 +23,7 @@ export function StepSettingsRow({
   return (
     <Row
       {...props}
-      label={label ?? stepSettingsControlLabel(searchId, detectPlatform())}
+      label={label ?? stepSettingsControlLabel(searchId)}
       data-settings-control={searchId}
       tabIndex={-1}
     />
@@ -39,7 +38,7 @@ export function StepSettingsToggleRow({
   return (
     <ToggleRow
       {...props}
-      label={label ?? stepSettingsControlLabel(searchId, detectPlatform())}
+      label={label ?? stepSettingsControlLabel(searchId)}
       data-settings-control={searchId}
       tabIndex={-1}
     />
@@ -57,7 +56,7 @@ export function StepSettingsSectionGroup({
   return (
     <SectionGroup
       {...props}
-      {...(hideTitle ? {} : { title: stepSettingsControlLabel(searchId, detectPlatform()) })}
+      {...(hideTitle ? {} : { title: stepSettingsControlLabel(searchId) })}
       data-settings-control={searchId}
       tabIndex={-1}
     />

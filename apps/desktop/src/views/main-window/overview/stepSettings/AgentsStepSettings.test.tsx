@@ -38,6 +38,8 @@ function progress(overrides: Partial<OverviewProgress["agents"]> = {}): Overview
     openStepControl: null,
     openStepControlRevision: 0,
     stepShown: true,
+    actionPending: false,
+    actionError: null,
     agents: {
       done: true,
       rows: [{ agent: "codex", label: "Codex", sessions: 3, done: true }],
@@ -49,8 +51,6 @@ function progress(overrides: Partial<OverviewProgress["agents"]> = {}): Overview
       total: 3,
       displayCompleted: 3,
       displayTotal: 3,
-      gate: null,
-      includeNonRepoFolders: false,
       deferred: [],
     },
     checks: { done: true, windowSessions: 3, pendingEvidence: 0, deferredEvidence: 0 },

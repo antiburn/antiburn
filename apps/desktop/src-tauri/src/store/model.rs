@@ -1163,6 +1163,20 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    /// Whether the menu-bar icon shows now. The icon stays hidden until the
+    /// first run finishes, because the popover has no data before then and
+    /// the main window is the only place where the first run continues.
+    pub fn tray_shown(&self) -> bool {
+        self.tray_icon_visible && self.onboarding_completed
+    }
+
+    /// Whether the Dock icon shows now. During the first run the menu-bar
+    /// icon is hidden, so the Dock icon always shows and the reader can
+    /// still get back to the app.
+    pub fn dock_shown(&self) -> bool {
+        self.dock_icon_visible || !self.onboarding_completed
+    }
+
     /// Whether live usage collection may actually run right now.
     ///
     /// Two gates, both required, and both checked fresh on every pass rather

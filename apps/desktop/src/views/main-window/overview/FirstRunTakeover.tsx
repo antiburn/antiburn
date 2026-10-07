@@ -16,6 +16,7 @@ import {
   progressStepTransitionName,
   showLiveLimits,
   skipLiveLimits,
+  stepDone,
 } from "./overviewProgressStore"
 import { useOverviewProgress } from "./useOverviewProgress"
 import { MoreInfoToggle, StepSettingsPanel } from "./stepSettings/StepSettingsDisclosure"
@@ -70,6 +71,7 @@ function LiveLimitsCard() {
       await showLiveLimits()
     } catch {
       setError("Could not start live limits. Try again.")
+    } finally {
       setBusy(false)
     }
   }
@@ -131,19 +133,6 @@ function LiveLimitsCard() {
   )
 }
 
-function stepDone(step: ProgressStepKey, progress: OverviewProgress): boolean {
-  switch (step) {
-    case "agents":
-      return progress.agents.done
-    case "sessions":
-      return progress.sessions.done
-    case "checks":
-      return progress.checks.done
-    case "fixes":
-      return true
-  }
-}
-
 function TakeoverStep({
   step,
   progress,
@@ -157,8 +146,7 @@ function TakeoverStep({
   // opens the first check that needs a fix.
   async function enhance() {
     const check = firstFailingCheck(progress)
-    await enhanceFixes()
-    onOpenChecks(check)
+    if (await enhanceFixes()) onOpenChecks(check)
   }
   // Keep the step whose info is open, so the next step starts closed.
   const [infoStep, setInfoStep] = useState<ProgressStepKey | null>(null)
@@ -213,7 +201,10 @@ export function FirstRunTakeover({
   const progress = useOverviewProgress()
 
   return (
-    <div className="flex flex-1 flex-col items-center justify-center p-(--space-2xl)">
+    <fieldset
+      disabled={progress.actionPending}
+      className="flex flex-1 flex-col items-center justify-center p-(--space-2xl)"
+    >
       <div className="flex w-full max-w-xl flex-col items-center gap-(--space-lg)">
         {!progress.stepShown ? null : progress.flow === "welcome" ? (
           <WelcomeCard />
@@ -225,7 +216,12 @@ export function FirstRunTakeover({
           progress.flow === "fixes" ? (
           <TakeoverStep step={progress.flow} progress={progress} onOpenChecks={onOpenChecks} />
         ) : null}
+        {progress.actionError && (
+          <p role="alert" className="type-footnote text-system-red-text">
+            {progress.actionError}
+          </p>
+        )}
       </div>
-    </div>
+    </fieldset>
   )
 }

@@ -64,7 +64,7 @@ export function OverviewFixes({
       {showAllClear ? (
         <OverviewAllClear onShowChecks={() => setShowChecks(true)} />
       ) : (
-        <ul className="flex flex-col gap-1">
+        <ul className="flex flex-col gap-1 px-px">
           {progress.categories.map((category) => (
             <CheckRow key={category.id} category={category} onOpen={onOpenCheck} />
           ))}

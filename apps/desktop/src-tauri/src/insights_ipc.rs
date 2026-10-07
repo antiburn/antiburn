@@ -13,9 +13,10 @@
 //! snapshot and writes nothing, so a cancelled run cannot corrupt the
 //! durable evidence state.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use tokio::sync::watch;
@@ -48,13 +49,14 @@ impl Run {
 pub struct InsightsController {
     slot: Mutex<Option<Arc<Run>>>,
     consumers: Mutex<Consumers>,
+    next_consumer_request: AtomicU64,
     #[cfg(test)]
     cancel_requests: std::sync::atomic::AtomicUsize,
 }
 
 #[derive(Default)]
 struct Consumers {
-    checks: Option<String>,
+    checks: HashMap<u64, String>,
 }
 
 impl InsightsController {
@@ -69,23 +71,47 @@ impl InsightsController {
     /// This is the only cancellation signal. A new report request joins
     /// the running reduction instead of cancelling it.
     pub fn cancel(&self) {
-        #[cfg(test)]
-        self.cancel_requests.fetch_add(1, Ordering::SeqCst);
-        if let Some(run) = self.lock_slot().as_ref() {
+        let slot = self.lock_slot();
+        if let Some(run) = slot.as_ref().filter(|run| !run.finished()) {
+            #[cfg(test)]
+            self.cancel_requests.fetch_add(1, Ordering::SeqCst);
             run.cancel.store(true, Ordering::SeqCst);
         }
     }
 
     pub fn release_checks(&self, consumer_id: &str) {
         let mut consumers = self.lock_consumers();
-        if consumers.checks.as_deref() == Some(consumer_id) {
-            consumers.checks = None;
+        let count = consumers.checks.len();
+        consumers.checks.retain(|_, id| id != consumer_id);
+        let released = consumers.checks.len() < count;
+        if released && consumers.checks.is_empty() {
+            self.cancel();
         }
-        self.cancel_if_unused(&consumers);
     }
 
-    fn cancel_if_unused(&self, consumers: &Consumers) {
-        if consumers.checks.is_none() {
+    fn register_checks(&self, consumer_id: String) -> ConsumerRequest<'_> {
+        let request_id = self
+            .next_consumer_request
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
+        self.lock_consumers()
+            .checks
+            .insert(request_id, consumer_id.clone());
+        ConsumerRequest {
+            controller: self,
+            consumer_id,
+            request_id,
+        }
+    }
+
+    fn unregister_checks(&self, consumer_id: &str, request_id: u64) {
+        let mut consumers = self.lock_consumers();
+        let removed = consumers
+            .checks
+            .get(&request_id)
+            .is_some_and(|id| id == consumer_id)
+            && consumers.checks.remove(&request_id).is_some();
+        if removed && consumers.checks.is_empty() {
             self.cancel();
         }
     }
@@ -95,26 +121,30 @@ impl InsightsController {
         self.cancel_requests.load(Ordering::SeqCst)
     }
 
-    /// Resolves one report, sharing the running reduction when one runs.
-    async fn report(
-        &self,
-        data_dir: PathBuf,
-        request: ReportRequest,
-    ) -> Result<ReducedReport, String> {
-        self.report_with(request, move |request, cancel| {
-            reduce_report(data_dir, request, cancel)
-        })
-        .await
-    }
-
     pub async fn checks_report(
         &self,
         data_dir: PathBuf,
         request: ReportRequest,
         consumer_id: String,
     ) -> Result<ReducedReport, String> {
-        self.lock_consumers().checks = Some(consumer_id);
-        self.report(data_dir, request).await
+        self.report_for_consumer(consumer_id, request, move |request, cancel| {
+            reduce_report(data_dir, request, cancel)
+        })
+        .await
+    }
+
+    async fn report_for_consumer<F, Fut>(
+        &self,
+        consumer_id: String,
+        request: ReportRequest,
+        reduce: F,
+    ) -> Result<ReducedReport, String>
+    where
+        F: FnOnce(ReportRequest, Arc<AtomicBool>) -> Fut,
+        Fut: Future<Output = anyhow::Result<ReducedReport>> + Send + 'static,
+    {
+        let _consumer_request = self.register_checks(consumer_id);
+        self.report_with(request, reduce).await
     }
 
     async fn report_with<F, Fut>(
@@ -204,6 +234,19 @@ impl InsightsController {
         self.consumers
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+struct ConsumerRequest<'a> {
+    controller: &'a InsightsController,
+    consumer_id: String,
+    request_id: u64,
+}
+
+impl Drop for ConsumerRequest<'_> {
+    fn drop(&mut self) {
+        self.controller
+            .unregister_checks(&self.consumer_id, self.request_id);
     }
 }
 
@@ -407,21 +450,192 @@ mod tests {
         assert!(!controller.is_calculating());
     }
 
-    #[test]
-    fn releasing_the_last_consumer_cancels_the_reduction() {
+    #[tokio::test]
+    async fn a_finished_checks_request_unregisters_its_consumer() {
         let controller = InsightsController::default();
-        controller.lock_consumers().checks = Some("checks-1".to_string());
+        let report = controller
+            .report_for_consumer(
+                "checks-1".to_string(),
+                request(),
+                |request, _cancel| async move { Ok(empty_report(&request)) },
+            )
+            .await;
+        assert!(report.is_ok());
 
         controller.release_checks("checks-1");
-        assert_eq!(controller.cancel_requests(), 1);
+        assert_eq!(controller.cancel_requests(), 0);
     }
 
-    #[test]
-    fn an_old_checks_release_cannot_cancel_a_new_consumer() {
-        let controller = InsightsController::default();
-        controller.lock_consumers().checks = Some("new".to_string());
+    #[tokio::test]
+    async fn releasing_one_checks_consumer_keeps_the_other_consumers_report() {
+        let controller = Arc::new(InsightsController::default());
+        let reductions = Arc::new(AtomicUsize::new(0));
+        let base_started = Arc::new(AtomicBool::new(false));
+        let (release_base_tx, release_base_rx) = tokio::sync::oneshot::channel::<()>();
 
-        controller.release_checks("old");
+        let base = {
+            let controller = Arc::clone(&controller);
+            let reductions = Arc::clone(&reductions);
+            let base_started = Arc::clone(&base_started);
+            tokio::spawn(async move {
+                controller
+                    .report_with(request(), move |request, cancel| async move {
+                        reductions.fetch_add(1, Ordering::SeqCst);
+                        base_started.store(true, Ordering::SeqCst);
+                        release_base_rx.await.unwrap();
+                        assert!(!cancel.load(Ordering::SeqCst));
+                        Ok(empty_report(&request))
+                    })
+                    .await
+            })
+        };
+        while !base_started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+
+        let overview = {
+            let controller = Arc::clone(&controller);
+            let reductions = Arc::clone(&reductions);
+            tokio::spawn(async move {
+                controller
+                    .report_for_consumer(
+                        "overview".to_string(),
+                        request(),
+                        move |request, cancel| async move {
+                            reductions.fetch_add(1, Ordering::SeqCst);
+                            assert!(!cancel.load(Ordering::SeqCst));
+                            Ok(empty_report(&request))
+                        },
+                    )
+                    .await
+            })
+        };
+        while !controller
+            .lock_consumers()
+            .checks
+            .values()
+            .any(|id| id == "overview")
+        {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            controller
+                .lock_slot()
+                .as_ref()
+                .is_some_and(|run| !run.started.load(Ordering::SeqCst)),
+            "the overview waits on a fresh report behind the base run"
+        );
+
+        let popover = {
+            let controller = Arc::clone(&controller);
+            let reductions = Arc::clone(&reductions);
+            tokio::spawn(async move {
+                controller
+                    .report_for_consumer(
+                        "popover".to_string(),
+                        request(),
+                        move |request, cancel| async move {
+                            reductions.fetch_add(1, Ordering::SeqCst);
+                            assert!(!cancel.load(Ordering::SeqCst));
+                            Ok(empty_report(&request))
+                        },
+                    )
+                    .await
+            })
+        };
+        while !controller
+            .lock_consumers()
+            .checks
+            .values()
+            .any(|id| id == "popover")
+        {
+            tokio::task::yield_now().await;
+        }
+        tokio::task::yield_now().await;
+
+        // Both surfaces joined the queued report. Closing the popover must
+        // keep it alive for the overview's still-active request.
+        controller.release_checks("popover");
         assert_eq!(controller.cancel_requests(), 0);
+        release_base_tx.send(()).unwrap();
+        base.await.unwrap().unwrap();
+        overview.await.unwrap().unwrap();
+        popover.await.unwrap().unwrap();
+        assert_eq!(reductions.load(Ordering::SeqCst), 2);
+
+        controller.release_checks("overview");
+        assert_eq!(controller.cancel_requests(), 0);
+    }
+
+    #[tokio::test]
+    async fn overlapping_requests_with_one_consumer_release_independently() {
+        let controller = Arc::new(InsightsController::default());
+        let first_started = Arc::new(AtomicBool::new(false));
+        let second_started = Arc::new(AtomicBool::new(false));
+        let (release_first_tx, release_first_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_second_tx, release_second_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let first = {
+            let controller = Arc::clone(&controller);
+            let first_started = Arc::clone(&first_started);
+            tokio::spawn(async move {
+                controller
+                    .report_for_consumer(
+                        "same-surface".to_string(),
+                        request(),
+                        move |request, cancel| async move {
+                            first_started.store(true, Ordering::SeqCst);
+                            release_first_rx.await.unwrap();
+                            assert!(!cancel.load(Ordering::SeqCst));
+                            Ok(empty_report(&request))
+                        },
+                    )
+                    .await
+            })
+        };
+        while !first_started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+
+        let second = {
+            let controller = Arc::clone(&controller);
+            let second_started = Arc::clone(&second_started);
+            tokio::spawn(async move {
+                controller
+                    .report_for_consumer(
+                        "same-surface".to_string(),
+                        request(),
+                        move |request, cancel| async move {
+                            second_started.store(true, Ordering::SeqCst);
+                            release_second_rx.await.unwrap();
+                            if cancel.load(Ordering::SeqCst) {
+                                return Err(anyhow::Error::new(ReportCancelled));
+                            }
+                            Ok(empty_report(&request))
+                        },
+                    )
+                    .await
+            })
+        };
+        while controller
+            .lock_slot()
+            .as_ref()
+            .is_none_or(|run| run.started.load(Ordering::SeqCst))
+        {
+            tokio::task::yield_now().await;
+        }
+
+        release_first_tx.send(()).unwrap();
+        first.await.unwrap().unwrap();
+        while !second_started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+
+        // The first call completed and unregistered its token. The second
+        // call under the same surface ID must remain releasable.
+        controller.release_checks("same-surface");
+        release_second_tx.send(()).unwrap();
+        assert_eq!(second.await.unwrap().unwrap_err(), REPORT_CANCELLED_ERROR);
+        assert_eq!(controller.cancel_requests(), 1);
     }
 }

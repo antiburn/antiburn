@@ -3,33 +3,13 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { checksConfiguredStore } from "../../../lib/checkAvailability"
 import { ProgressNav } from "./ProgressNav"
-import type { FlowStep, OverviewProgress, ProgressStepKey } from "./overviewProgressStore"
+import type * as ProgressStore from "./overviewProgressStore"
+import type { FlowStep, OverviewProgress } from "./overviewProgressStore"
 
 let snapshot: OverviewProgress
 const openProgressStep = vi.fn()
 const closeProgressStep = vi.fn()
 const rewindTo = vi.fn()
-
-const FLOW_ORDER: readonly FlowStep[] = [
-  "limits",
-  "agents",
-  "sessions",
-  "checks",
-  "fixes",
-  "done",
-]
-const STEP_DOCKED_AT: Record<ProgressStepKey, FlowStep> = {
-  agents: "sessions",
-  sessions: "checks",
-  checks: "fixes",
-  fixes: "done",
-}
-
-// Mirrors `stepDocked` in `overviewProgressStore.ts` exactly: a pure index
-// comparison, safe to inline rather than load the real store module.
-function stepDocked(flow: FlowStep, step: ProgressStepKey): boolean {
-  return FLOW_ORDER.indexOf(flow) >= FLOW_ORDER.indexOf(STEP_DOCKED_AT[step])
-}
 
 const openChecks = vi.fn()
 
@@ -40,20 +20,18 @@ vi.mock("./stepSettings/StepSettings", () => ({
   StepSettings: ({ step }: { step: string }) => <div data-testid="step-settings">{step}</div>,
 }))
 
-vi.mock("./overviewProgressStore", () => ({
-  subscribeOverviewProgress: () => () => undefined,
-  overviewProgress: () => snapshot,
-  openProgressStep: (step: ProgressStepKey) => openProgressStep(step),
-  closeProgressStep: () => closeProgressStep(),
-  rewindTo: (step: ProgressStepKey) => rewindTo(step),
-  stepDocked,
-  progressStepTransitionName: (step: string) => `progress-step-${step}`,
-  enableNonRepoFolders: vi.fn(),
-  fixesFound: (progress: OverviewProgress) =>
-    progress.checks.windowSessions > 0 && progress.failingCount > 0,
-  firstFailingCheck: (progress: OverviewProgress) =>
-    progress.categories.find((category) => category.status === "needsFix")?.id,
-}))
+vi.mock("./overviewProgressStore", async () => {
+  const actual = await vi.importActual<typeof ProgressStore>("./overviewProgressStore")
+  return {
+    ...actual,
+    subscribeOverviewProgress: () => () => undefined,
+    overviewProgress: () => snapshot,
+    openProgressStep: (step: "agents" | "sessions" | "checks" | "fixes") =>
+      openProgressStep(step),
+    closeProgressStep: () => closeProgressStep(),
+    rewindTo: (step: "agents" | "sessions" | "checks" | "fixes") => rewindTo(step),
+  }
+})
 
 afterEach(() => vi.clearAllMocks())
 
@@ -81,6 +59,8 @@ function progress(
     openStep: null,
     openStepControl: null,
     openStepControlRevision: 0,
+    actionPending: false,
+    actionError: null,
     stepShown: true,
     agents: {
       done: true,
@@ -92,8 +72,6 @@ function progress(
       total: 7,
       displayCompleted: 7,
       displayTotal: 7,
-      gate: null,
-      includeNonRepoFolders: false,
       deferred: [],
     },
     checks: { done: true, windowSessions: 7, pendingEvidence: 0, deferredEvidence: 0 },
@@ -111,10 +89,19 @@ describe("ProgressNav's row visibility", () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it("renders no rows before the first step has docked", () => {
-    snapshot = progress("agents", "firstRun")
-    const { container } = render(<ProgressNav onOpenChecks={openChecks} />)
+  it("docks the Agents row after welcome and its card are complete", () => {
+    snapshot = progress("welcome", "firstRun")
+    const { container, rerender } = render(<ProgressNav onOpenChecks={openChecks} />)
     expect(container).toBeEmptyDOMElement()
+
+    snapshot = progress("agents", "firstRun")
+    rerender(<ProgressNav onOpenChecks={openChecks} />)
+    expect(container).toBeEmptyDOMElement()
+
+    snapshot = progress("limits", "firstRun")
+    rerender(<ProgressNav onOpenChecks={openChecks} />)
+    expect(screen.getByRole("button", { name: /Agents/ })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /^Sessions/ })).toBeNull()
   })
 
   it("adds a row as each step docks, in order", () => {
@@ -166,8 +153,6 @@ describe("ProgressNav's Sessions row and the history pass", () => {
         total: 114,
         displayCompleted: 114,
         displayTotal: 114,
-        gate: null,
-        includeNonRepoFolders: false,
         deferred: [],
         ...overrides,
       },
@@ -232,8 +217,6 @@ describe("ProgressNav's Sessions step card", () => {
         total: 114,
         displayCompleted: 432,
         displayTotal: 432,
-        gate: null,
-        includeNonRepoFolders: false,
         deferred: [],
       },
       history,

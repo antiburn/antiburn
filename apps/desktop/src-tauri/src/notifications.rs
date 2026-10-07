@@ -540,7 +540,7 @@ pub fn note_menu_bar_home(app: &AppHandle) {
     let tray_visible = app
         .try_state::<Store>()
         .map(|store| store.settings_snapshot())
-        .is_none_or(|settings| settings.tray_icon_visible);
+        .is_none_or(|settings| settings.tray_shown());
     if tray_visible {
         crate::nudges::anchor_next_to_the_tray(app);
     }
@@ -612,7 +612,7 @@ pub fn note_sample(app: &AppHandle, kind: Kind) {
             let tray_visible = app
                 .try_state::<Store>()
                 .map(|store| store.settings_snapshot())
-                .is_none_or(|settings| settings.tray_icon_visible);
+                .is_none_or(|settings| settings.tray_shown());
             if tray_visible {
                 crate::nudges::anchor_next_to_the_tray(app);
             }

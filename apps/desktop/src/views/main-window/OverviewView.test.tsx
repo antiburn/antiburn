@@ -34,6 +34,8 @@ const overviewProgressMock = vi.hoisted(() => ({
     openStepControl: null,
     openStepControlRevision: 0,
     stepShown: true,
+    actionPending: false,
+    actionError: null,
     agents: { done: true, rows: [] },
     sessions: {
       done: true,
@@ -41,8 +43,6 @@ const overviewProgressMock = vi.hoisted(() => ({
       total: 0,
       displayCompleted: 0,
       displayTotal: 0,
-      gate: null,
-      includeNonRepoFolders: false,
       deferred: [],
     },
     checks: { done: true, windowSessions: 0, pendingEvidence: 0, deferredEvidence: 0 },
@@ -65,14 +65,19 @@ vi.mock("./overview/OverviewUsage", () => ({
     metric,
     onMetricChange,
     loading,
+    allowanceCollecting,
   }: {
     metric: OverviewMetric
     onMetricChange: (metric: OverviewMetric) => void
     loading?: boolean
+    allowanceCollecting?: boolean
   }) => (
     <div>
       <output aria-label="Usage metric">{metric}</output>
       <output aria-label="Usage state">{loading ? "held" : "shown"}</output>
+      <output aria-label="Allowance collection">
+        {allowanceCollecting ? "collecting" : "idle"}
+      </output>
       <button onClick={() => onMetricChange("cost")}>Cost</button>
       <button onClick={() => onMetricChange("allowance")}>Subscription</button>
     </div>
@@ -188,7 +193,44 @@ function expectUsageState(state: "held" | "shown") {
   expect(screen.getByLabelText("Usage state")).toHaveTextContent(state)
 }
 
+describe("OverviewView first-run decision", () => {
+  it("shows neither the takeover nor the steady Overview until the first-run check answers", () => {
+    overviewProgressMock.current = { ...overviewProgressMock.current, mode: "pending" }
+    const view = setup(usage)
+    expect(screen.queryByLabelText("First-run takeover")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Usage metric")).not.toBeInTheDocument()
+
+    overviewProgressMock.current = {
+      ...overviewProgressMock.current,
+      mode: "firstRun",
+      flow: "welcome",
+    }
+    view.rerender(<OverviewView {...view.props} />)
+    expect(screen.getByLabelText("First-run takeover")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Usage metric")).not.toBeInTheDocument()
+  })
+})
+
 describe("OverviewView metric preference", () => {
+  it("shows allowance collection only during active first-run live usage", () => {
+    overviewProgressMock.current = {
+      ...overviewProgressMock.current,
+      mode: "firstRun",
+      flow: "checks",
+    }
+    appSettings.current = { liveUsageEnabled: true, liveUsageStarted: false } as AppSettings
+    const view = setup(usage)
+    expect(screen.getByLabelText("Allowance collection")).toHaveTextContent("idle")
+
+    appSettings.current = { liveUsageEnabled: true, liveUsageStarted: true } as AppSettings
+    view.rerender(<OverviewView {...view.props} />)
+    expect(screen.getByLabelText("Allowance collection")).toHaveTextContent("collecting")
+
+    overviewProgressMock.current = { ...overviewProgressMock.current, flow: "done" }
+    view.rerender(<OverviewView {...view.props} />)
+    expect(screen.getByLabelText("Allowance collection")).toHaveTextContent("idle")
+  })
+
   it("settles on cost only once both the allowance and live-usage reads land without a plan", () => {
     const view = setup(usage)
     view.update(allowance([]))

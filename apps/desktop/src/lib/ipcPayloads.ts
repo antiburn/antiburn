@@ -252,7 +252,7 @@ interface ReadProgress {
  * {@link ReadProgress.total} instead. A session the gate keeps under a
  * folder (`includeNonRepoFolders` on) counts in `kept`, not as an exclusion.
  */
-export interface ReadGateCounts {
+interface ReadGateCounts {
   /** Sessions the gate kept: in a repository, or in a folder when
    *  `includeNonRepoFolders` is on. */
   kept: number

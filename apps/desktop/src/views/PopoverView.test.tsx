@@ -1244,8 +1244,8 @@ describe("PopoverView", () => {
 
   it("never renders the first-run flow, whatever the flag says", async () => {
     // The first-run welcome card lives in the main window's Overview, and the
-    // shell sends the tray click there instead of here. A popover that could
-    // still draw it would be a second, unreachable copy.
+    // shell hides the menu-bar icon until the first run finishes. A popover
+    // that could still draw it would be a second, unreachable copy.
     mockCommands({ get_settings: { ...SETTINGS, onboardingCompleted: false } })
     render(<PopoverView />)
 

@@ -50,6 +50,10 @@ CI changes, and documentation that no user acts on stay out — see
 - Clear local index no longer corrupts sessions that were being checked when
   you cleared it. A check that started before the clear could count a
   session's turns twice, or leave it with no turns at all.
+- Codex sessions on retired models, such as `gpt-5-codex` and
+  `gpt-5.1-codex-max`, now show a cost. The price catalog no longer lists them
+  under OpenAI, so antiburn uses the price that most resellers agree on. Those
+  sessions also count toward learning your plan limits.
 
 ## [0.9.0] - 2026-09-29
 

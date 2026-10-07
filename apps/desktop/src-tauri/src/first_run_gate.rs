@@ -148,7 +148,7 @@ impl FirstRunGate {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
     use super::*;
@@ -224,12 +224,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wait_until_returns_false_once_cancelled_turns_true() {
+    async fn wait_until_observes_cancellation_during_the_wait() {
         let gate = FirstRunGate::new(false);
-        let cancelled = AtomicBool::new(true);
-        let opened = gate
-            .wait_until(FirstRunStage::Sessions, || cancelled.load(Ordering::SeqCst))
-            .await;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let polls = Arc::new(AtomicUsize::new(0));
+        let waiting = {
+            let gate = gate.clone();
+            let cancelled = Arc::clone(&cancelled);
+            let polls = Arc::clone(&polls);
+            tokio::spawn(async move {
+                gate.wait_until(FirstRunStage::Sessions, || {
+                    polls.fetch_add(1, Ordering::SeqCst);
+                    cancelled.load(Ordering::SeqCst)
+                })
+                .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while polls.load(Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the gate checks cancellation again while waiting");
+        cancelled.store(true, Ordering::SeqCst);
+        let opened = tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("the gate notices cancellation")
+            .expect("the wait task does not panic");
         assert!(!opened);
+        assert!(polls.load(Ordering::SeqCst) >= 2);
     }
 }

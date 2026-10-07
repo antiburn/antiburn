@@ -6,7 +6,6 @@ import {
   INITIAL_FIRST_RUN_LATCH,
   advanceFirstRunLatch,
   resetFirstRunLatch,
-  unlatchSessionsOutcome,
   type FirstRunInputs,
   type FirstRunLatch,
 } from "./firstRun"
@@ -186,12 +185,6 @@ describe("advanceFirstRunLatch", () => {
     expect(latch.agentsFound).toEqual([{ agent: "claude-code", sessions: 412, done: true }])
     expect(latch.sessionsDone).toBe(true)
     expect(latch.sessionsRead).toEqual({ completed: 500, total: 500 })
-    expect(latch.sessionsGate).toEqual({
-      kept: 480,
-      outsideRepository: 20,
-      excluded: 0,
-      unreadable: 0,
-    })
   })
 
   it("finishes the Agents step while the pass still waits at the sessions gate with phase 'finding'", () => {
@@ -263,7 +256,6 @@ describe("advanceFirstRunLatch the Checks step", () => {
     agentsDone: true,
     sessionsDone: true,
     sessionsRead: { completed: 44, total: 44 },
-    sessionsGate: { kept: 44, outsideRepository: 0, excluded: 0, unreadable: 0 },
   }
 
   it("finishes when every pending session is deferred, such as a live session", () => {
@@ -347,7 +339,6 @@ describe("resetFirstRunLatch", () => {
       agentsFound: [{ agent: "codex", sessions: 88, done: true }],
       sessionsDone: true,
       sessionsRead: { completed: 88, total: 88 },
-      sessionsGate: { kept: 88, outsideRepository: 0, excluded: 0, unreadable: 0 },
       checksDone: true,
       checksResult: { windowSessions: 88, deferredEvidence: 0 },
     }
@@ -358,28 +349,5 @@ describe("resetFirstRunLatch", () => {
     expect(latch.sessionsDone).toBe(false)
     expect(latch.checksDone).toBe(false)
     expect(latch).not.toEqual(settled)
-  })
-})
-
-describe("unlatchSessionsOutcome", () => {
-  it("un-latches steps 2 and 3, so the pass an 'Include them' click triggers replaces them", () => {
-    const done: FirstRunLatch = {
-      decided: true,
-      showSteps: true,
-      agentsDone: true,
-      agentsFound: [{ agent: "codex", sessions: 88, done: true }],
-      sessionsDone: true,
-      sessionsRead: { completed: 88, total: 88 },
-      sessionsGate: { kept: 68, outsideRepository: 20, excluded: 0, unreadable: 0 },
-      checksDone: true,
-      checksResult: { windowSessions: 68, deferredEvidence: 0 },
-    }
-    const latch = unlatchSessionsOutcome(done)
-    expect(latch.sessionsDone).toBe(false)
-    expect(latch.sessionsGate).toBeNull()
-    expect(latch.checksDone).toBe(false)
-    // Discovery is unaffected by this setting.
-    expect(latch.agentsDone).toBe(true)
-    expect(latch.agentsFound).toEqual([{ agent: "codex", sessions: 88, done: true }])
   })
 })

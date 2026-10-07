@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { FirstRunTakeover } from "./FirstRunTakeover"
+import type * as ProgressStore from "./overviewProgressStore"
 import type { FlowStep, OverviewProgress } from "./overviewProgressStore"
 
 let snapshot: OverviewProgress
@@ -9,7 +10,7 @@ const { showLiveLimits, skipLiveLimits, nextStep, enhanceFixes } = vi.hoisted(()
   showLiveLimits: vi.fn(async () => undefined),
   skipLiveLimits: vi.fn(),
   nextStep: vi.fn(async () => undefined),
-  enhanceFixes: vi.fn(async () => undefined),
+  enhanceFixes: vi.fn(async () => true),
 }))
 
 const platform = vi.hoisted(() => ({ macOS: true }))
@@ -24,14 +25,14 @@ vi.mock("./stepSettings/StepSettings", () => ({
   StepSettings: ({ step }: { step: string }) => <div data-testid="step-settings">{step}</div>,
 }))
 
-vi.mock("./overviewProgressStore", () => ({
+vi.mock("./overviewProgressStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof ProgressStore>()),
   subscribeOverviewProgress: () => () => undefined,
   overviewProgress: () => snapshot,
   showLiveLimits,
   skipLiveLimits,
   nextStep,
   enhanceFixes,
-  enableNonRepoFolders: vi.fn(),
   fixesFound: (progress: OverviewProgress) =>
     progress.checks.windowSessions > 0 && progress.failingCount > 0,
   LIVE_LIMITS_TRANSITION_NAME: "progress-live-limits",
@@ -50,6 +51,8 @@ function progress(flow: FlowStep, overrides: Partial<OverviewProgress> = {}): Ov
     openStepControl: null,
     openStepControlRevision: 0,
     stepShown: true,
+    actionPending: false,
+    actionError: null,
     agents: { done: false, rows: [] },
     sessions: {
       done: false,
@@ -57,8 +60,6 @@ function progress(flow: FlowStep, overrides: Partial<OverviewProgress> = {}): Ov
       total: 0,
       displayCompleted: 0,
       displayTotal: 0,
-      gate: null,
-      includeNonRepoFolders: false,
       deferred: [],
     },
     checks: { done: false, windowSessions: 0, pendingEvidence: 0, deferredEvidence: 0 },
@@ -164,8 +165,6 @@ describe("FirstRunTakeover's step cards", () => {
         total: 10,
         displayCompleted: 1,
         displayTotal: 10,
-        gate: null,
-        includeNonRepoFolders: false,
         deferred: [],
       },
     })
@@ -256,4 +255,26 @@ describe("FirstRunTakeover's step cards", () => {
     fireEvent.click(hide)
     expect(screen.queryByTestId("step-settings")).toBeNull()
   })
+})
+
+it("shows failed setup feedback and disables actions while a command is pending", () => {
+  snapshot = progress("welcome", { actionPending: true })
+  const { rerender } = render(<FirstRunTakeover onOpenChecks={openChecks} />)
+  expect(screen.getByRole("button", { name: "Get Started" })).toBeDisabled()
+  snapshot = progress("welcome", { actionError: "Could not continue setup. Try again." })
+  rerender(<FirstRunTakeover onOpenChecks={openChecks} />)
+  expect(screen.getByRole("alert")).toHaveTextContent("Could not continue setup")
+  expect(screen.getByRole("button", { name: "Get Started" })).toBeEnabled()
+})
+
+it("does not open Burn Checks when finishing setup fails", async () => {
+  enhanceFixes.mockResolvedValueOnce(false)
+  snapshot = progress("fixes", {
+    checks: { done: true, windowSessions: 2, pendingEvidence: 0, deferredEvidence: 0 },
+    failingCount: 1,
+  })
+  render(<FirstRunTakeover onOpenChecks={openChecks} />)
+  fireEvent.click(screen.getByRole("button", { name: "Enhance" }))
+  await vi.waitFor(() => expect(enhanceFixes).toHaveBeenCalled())
+  expect(openChecks).not.toHaveBeenCalled()
 })

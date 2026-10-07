@@ -274,6 +274,30 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
     Ok(tray)
 }
 
+/// Debug-only: add a Debug menu with "Reset First Run" to the macOS menu
+/// bar. The menu-bar icon is hidden during the first run, so its own reset
+/// item is out of reach then. Both items use the same ID, and Tauri sends
+/// every menu event to [`on_menu_event`], so one handler serves both.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub fn install_debug_app_menu(app: &AppHandle) -> tauri::Result<()> {
+    let menu = Menu::default(app)?;
+    let reset_first_run_item = MenuItem::with_id(
+        app,
+        MENU_RESET_FIRST_RUN,
+        RESET_FIRST_RUN_LABEL,
+        true,
+        None::<&str>,
+    )?;
+    menu.append(&tauri::menu::Submenu::with_items(
+        app,
+        "Debug",
+        true,
+        &[&reset_first_run_item],
+    )?)?;
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::default(app)?;
