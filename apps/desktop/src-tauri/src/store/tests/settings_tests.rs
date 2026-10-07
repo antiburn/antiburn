@@ -140,6 +140,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             milestones_5h: Milestones::selected([75, 90]),
             milestones_weekly: Milestones::none(),
             live_usage_enabled: true,
+            live_usage_started: true,
             live_usage_hidden_providers: HiddenMeters::default(),
             disabled_agents: DisabledAgents::parse("windsurf,kiro"),
             analytics_enabled: false,
@@ -350,6 +351,28 @@ fn settings_repair_malformed_stored_presence_values() {
 }
 
 #[test]
+fn live_usage_started_falls_back_to_onboarding_completed_for_older_installs() {
+    // A fresh install with no stored rows at all defaults to not started.
+    let fresh = store();
+    assert!(!fresh.settings().unwrap().live_usage_started);
+
+    // An install that finished setup before `internal:liveUsageStarted`
+    // existed wrote only `onboardingCompleted`. Nothing should change for it:
+    // live usage stays exactly as active as it already was.
+    let older_install = store();
+    {
+        let connection = older_install.lock();
+        connection
+            .execute(
+                "INSERT INTO setting (key, value) VALUES (?1, ?2)",
+                params!["onboardingCompleted", "true"],
+            )
+            .unwrap();
+    }
+    assert!(older_install.settings().unwrap().live_usage_started);
+}
+
+#[test]
 fn updating_settings_merges_against_the_latest_stored_value() {
     let store = store();
     store
@@ -376,55 +399,4 @@ fn updating_settings_merges_against_the_latest_stored_value() {
     assert!(!saved.launch_at_login);
     assert!(saved.onboarding_completed);
     assert_eq!(store.settings().unwrap(), saved);
-}
-
-#[test]
-fn restarting_onboarding_preserves_local_state_and_is_idempotent() {
-    let store = store();
-    let before = store
-        .save_settings(&AppSettings {
-            theme: ThemePreference::Dark,
-            activity_window_days: 14,
-            onboarding_completed: true,
-            launch_at_login: false,
-            analytics_enabled: false,
-            ..AppSettings::default()
-        })
-        .unwrap();
-    store
-        .upsert_sessions(&[session("abc", 2_000)], &crate::agents::evidence_cohort())
-        .unwrap();
-    store.add_scan_root("/home/avery/work").unwrap();
-    store.queue_analytics_event("app_launched", "{}").unwrap();
-
-    let (previous, restarted) = store.restart_onboarding().unwrap();
-
-    let mut expected = before.clone();
-    expected.onboarding_completed = false;
-    assert_eq!(previous, before);
-    assert_eq!(restarted, expected);
-    assert_eq!(store.settings().unwrap(), expected);
-    assert_eq!(store.session_count().unwrap(), 1);
-    assert_eq!(store.scan_roots().unwrap(), vec!["/home/avery/work"]);
-    assert_eq!(store.pending_analytics_events(10).unwrap().len(), 1);
-    assert!(store.onboarding_flow_is_restart());
-
-    let (previous_again, restarted_again) = store.restart_onboarding().unwrap();
-    assert_eq!(previous_again, expected);
-    assert_eq!(restarted_again, expected);
-}
-
-#[test]
-fn a_restarted_onboarding_flow_keeps_its_classification_after_relaunch() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = Store::open(directory.path()).unwrap();
-    store
-        .update_settings(|settings| settings.onboarding_completed = true)
-        .unwrap();
-    store.restart_onboarding().unwrap();
-    drop(store);
-
-    let reopened = Store::open(directory.path()).unwrap();
-    assert!(!reopened.settings().unwrap().onboarding_completed);
-    assert!(reopened.onboarding_flow_is_restart());
 }

@@ -228,6 +228,7 @@ describe("MainActivitySession", () => {
         return () => undefined
       },
       onLiveUsageChanged: async () => () => undefined,
+      onLimitEstimatesChanged: async () => () => undefined,
       onSessionIndexChanged: async () => () => undefined,
       onSessionUpdated: async () => () => undefined,
     }

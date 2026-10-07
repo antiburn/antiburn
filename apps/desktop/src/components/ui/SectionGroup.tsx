@@ -30,12 +30,14 @@ export function SectionGroup({
 } & Omit<HTMLAttributes<HTMLElement>, "title" | "onChange" | "children">) {
   return (
     <section {...rootProps} className={cn("space-y-2", className)}>
-      {title && (
-        <div className="flex items-center justify-between gap-2 px-1">
-          <h2 className="type-title-3 font-normal! text-label">{title}</h2>
-          {trailing}
-        </div>
-      )}
+      <div className="flex items-center justify-between gap-2 px-1">
+        {title && (
+          <>
+            <h2 className="type-title-3 font-normal! text-label">{title}</h2>
+            {trailing}
+          </>
+        )}
+      </div>
       {children}
     </section>
   )

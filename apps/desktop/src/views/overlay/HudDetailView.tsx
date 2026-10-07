@@ -1,4 +1,4 @@
-import { listen } from "@tauri-apps/api/event"
+import { listen } from "../../lib/tauriEvents"
 import { useCallback, useState, useSyncExternalStore } from "react"
 import { flushSync } from "react-dom"
 

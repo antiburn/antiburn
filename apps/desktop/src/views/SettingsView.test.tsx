@@ -348,84 +348,6 @@ describe("SettingsView", () => {
     )
   })
 
-  it("persists the monitoring switch as the same preference the popover pauses", async () => {
-    render(<SettingsView />)
-
-    const toggle = await screen.findByRole("switch", {
-      name: "Keep looking for new sessions",
-    })
-    // On by default: the stored preference is `discoveryPaused`, and this
-    // control is its inverse, so a reader is never asked to reason about a
-    // double negative.
-    expect(toggle).toBeChecked()
-
-    fireEvent.click(toggle)
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("set_settings", {
-        settings: { ...SETTINGS, discoveryPaused: true },
-      }),
-    )
-  })
-
-  it("reports what the index holds and when it last ran a historical scan", async () => {
-    render(<SettingsView />)
-
-    expect(await screen.findByText("42 · 3.5 MB")).toBeInTheDocument()
-    expect(screen.getByText(/Last scanned 5m ago/)).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole("button", { name: "Scan now" }))
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("scan_history"))
-  })
-
-  it("persists the activity window", async () => {
-    render(<SettingsView />)
-
-    const slider = await screen.findByRole("slider", { name: "Days of activity to show" })
-    fireEvent.change(slider, { target: { value: "14" } })
-
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("set_settings", {
-        settings: { ...SETTINGS, activityWindowDays: 14 },
-      }),
-    )
-  })
-
-  it("does not let an older failed write replace a newer saved value", async () => {
-    let rejectFirst: (error: Error) => void = () => {}
-    let resolveSecond: (settings: typeof SETTINGS) => void = () => {}
-    let write = 0
-    mockCommands({
-      set_settings: () => {
-        write += 1
-        if (write === 1) {
-          return new Promise((_, reject) => {
-            rejectFirst = reject
-          })
-        }
-        return new Promise((resolve) => {
-          resolveSecond = resolve
-        })
-      },
-    })
-    render(<SettingsView />)
-
-    const slider = await screen.findByRole("slider", { name: "Days of activity to show" })
-    const toggle = screen.getByRole("switch", { name: "Keep looking for new sessions" })
-    fireEvent.change(slider, { target: { value: "14" } })
-    fireEvent.click(toggle)
-    await waitFor(() => expect(write).toBe(2))
-
-    await act(async () => {
-      resolveSecond({ ...SETTINGS, activityWindowDays: 14, discoveryPaused: true })
-    })
-    await act(async () => {
-      rejectFirst(new Error("disk full"))
-    })
-
-    expect(slider).toHaveValue("14")
-    expect(toggle).not.toBeChecked()
-  })
-
   it("is honest that updates are unavailable in a build without the updater", async () => {
     render(<SettingsView />)
 
@@ -786,66 +708,6 @@ describe("SettingsView", () => {
     expect(invoke).not.toHaveBeenCalledWith("export_diagnostics", expect.anything())
   })
 
-  it("defaults session retention to forever and confirms a shorter period", async () => {
-    confirmDialog.mockResolvedValue(true)
-    render(<SettingsView />)
-
-    fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
-    const retention = await screen.findByRole("radiogroup", { name: "Session data retention" })
-    emit("settings:changed", SETTINGS)
-    expect(within(retention).getByRole("radio", { name: "Forever" })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    )
-
-    fireEvent.click(within(retention).getByRole("radio", { name: "30 days" }))
-
-    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
-    const [message] = confirmDialog.mock.calls[0] as [string]
-    expect(message).toMatch(/providers retain session history for only 30 days/i)
-    expect(message).toMatch(/transcript files are not touched/i)
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("set_settings", {
-        settings: { ...SETTINGS, sessionDataRetentionDays: 30 },
-      }),
-    )
-  })
-
-  it("keeps retention unchanged when shortening is declined", async () => {
-    confirmDialog.mockResolvedValue(false)
-    render(<SettingsView />)
-
-    fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
-    const retention = await screen.findByRole("radiogroup", { name: "Session data retention" })
-    emit("settings:changed", SETTINGS)
-    invoke.mockClear()
-    fireEvent.click(within(retention).getByRole("radio", { name: "90 days" }))
-
-    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
-    expect(invoke).not.toHaveBeenCalledWith("set_settings", expect.anything())
-    expect(within(retention).getByRole("radio", { name: "Forever" })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    )
-  })
-
-  it("widens retention to 90 days without confirmation", async () => {
-    render(<SettingsView />)
-
-    fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
-    const retention = await screen.findByRole("radiogroup", { name: "Session data retention" })
-    emit("settings:changed", { ...SETTINGS, sessionDataRetentionDays: 30 })
-    invoke.mockClear()
-    fireEvent.click(within(retention).getByRole("radio", { name: "90 days" }))
-
-    expect(confirmDialog).not.toHaveBeenCalled()
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("set_settings", {
-        settings: { ...SETTINGS, sessionDataRetentionDays: 90 },
-      }),
-    )
-  })
-
   it("states the local data-handling contract", async () => {
     render(<SettingsView />)
 
@@ -873,9 +735,6 @@ describe("SettingsView", () => {
     // Deleting a provider's own files is named as a non-feature rather than
     // left as a silence a reader would have to test for.
     expect(screen.getByText(/antiburn cannot do this, by design/i)).toBeInTheDocument()
-    expect(
-      screen.getByText(/shorter period keeps antiburn’s local index lighter/i),
-    ).toBeInTheDocument()
   })
 
   /// The analytics section is the one place this pane describes something
@@ -887,7 +746,7 @@ describe("SettingsView", () => {
     expect(
       await screen.findByRole("switch", { name: "Share product analytics" }),
     ).toBeInTheDocument()
-    expect(screen.getByText(/Sends app launches, onboarding progress/i)).toHaveTextContent(
+    expect(screen.getByText(/Sends app launches, first-run progress/i)).toHaveTextContent(
       "Never prompts, sessions, source code, filenames, or paths.",
     )
 
@@ -1038,20 +897,6 @@ describe("SettingsView", () => {
     ).toBeInTheDocument()
   })
 
-  it("adds a scan folder through the directory picker", async () => {
-    mockCommands({ add_scan_root: ["/home/avery/work"] })
-    openDialog.mockResolvedValue("/home/avery/work")
-    render(<SettingsView />)
-
-    fireEvent.click(screen.getByRole("tab", { name: "Sources" }))
-    fireEvent.click(await screen.findByRole("button", { name: "Add a folder…" }))
-
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("add_scan_root", { path: "/home/avery/work" }),
-    )
-    expect(await screen.findByText("/home/avery/work")).toBeInTheDocument()
-  })
-
   it("shows where the local database lives", async () => {
     render(<SettingsView />)
 
@@ -1189,7 +1034,7 @@ describe("SettingsView", () => {
     mockCommands({
       take_settings_pane: () => {
         requests += 1
-        return requests === 1 ? "sources" : null
+        return requests === 1 ? "privacy" : null
       },
     })
     render(
@@ -1199,7 +1044,7 @@ describe("SettingsView", () => {
     )
 
     await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "Sources" })).toHaveAttribute(
+      expect(screen.getByRole("tab", { name: "Privacy" })).toHaveAttribute(
         "aria-selected",
         "true",
       ),
@@ -1299,10 +1144,10 @@ describe("SettingsView", () => {
     render(<SettingsView />)
 
     await screen.findByRole("switch", { name: "Start at login" })
-    emit("settings:pane", "sources")
+    emit("settings:pane", "privacy")
 
     await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "Sources" })).toHaveAttribute(
+      expect(screen.getByRole("tab", { name: "Privacy" })).toHaveAttribute(
         "aria-selected",
         "true",
       ),
@@ -1331,51 +1176,6 @@ describe("SettingsView", () => {
       "aria-selected",
       "true",
     )
-  })
-
-  it("closes Settings only after onboarding restarts successfully", async () => {
-    let finishRestart!: () => void
-    const restart = new Promise<void>((resolve) => {
-      finishRestart = resolve
-    })
-    confirmDialog.mockResolvedValue(true)
-    mockCommands({ restart_onboarding: () => restart })
-    render(<SettingsView />)
-
-    fireEvent.click(await screen.findByRole("button", { name: "Run setup again…" }))
-
-    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
-    const [message] = confirmDialog.mock.calls[0] as [string]
-    expect(message).toMatch(/indexed sessions and current settings stay/i)
-    expect(message).toMatch(/returns the next time/i)
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("restart_onboarding"))
-    expect(closeWindow).not.toHaveBeenCalled()
-
-    finishRestart()
-
-    await waitFor(() => expect(closeWindow).toHaveBeenCalledTimes(1))
-  })
-
-  it("keeps onboarding unchanged when the restart is declined", async () => {
-    confirmDialog.mockResolvedValue(false)
-    render(<SettingsView />)
-
-    fireEvent.click(await screen.findByRole("button", { name: "Run setup again…" }))
-
-    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
-    expect(invoke).not.toHaveBeenCalledWith("restart_onboarding")
-  })
-
-  it("keeps an actionable error visible when setup cannot open", async () => {
-    confirmDialog.mockResolvedValue(true)
-    mockCommands({ restart_onboarding: new Error("window failed") })
-    render(<SettingsView />)
-
-    fireEvent.click(await screen.findByRole("button", { name: "Run setup again…" }))
-
-    expect(await screen.findByRole("status")).toHaveTextContent(/setup could not open/i)
-    expect(screen.getByRole("status")).toHaveTextContent(/try again or restart antiburn/i)
-    expect(closeWindow).not.toHaveBeenCalled()
   })
 })
 
@@ -1442,8 +1242,6 @@ describe("SettingsView — window chrome", () => {
 
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "General",
-      "Sources",
-      "Checks",
       "Notifications",
       "Usage",
       "Appearance",

@@ -6,7 +6,8 @@ pub(super) const CURRENT_EVIDENCE_PREDICATE: &str = "
     AND NOT (e.evidence_schema_revision IS NOT ?6)";
 
 pub(super) const DENOMINATOR_SQL: &str = "
-SELECT bucket, COUNT(*), SUM(awaiting_provider_support), SUM(evidence_pending)
+SELECT bucket, COUNT(*), SUM(awaiting_provider_support), SUM(evidence_pending),
+       SUM(evidence_deferred)
   FROM (
     SELECT CASE
              WHEN s.started_at_epoch IS NULL THEN 'unknown_start'
@@ -20,7 +21,9 @@ SELECT bucket, COUNT(*), SUM(awaiting_provider_support), SUM(evidence_pending)
            CASE WHEN s.started_at_epoch IS NOT NULL AND e.status IS NULL
                  THEN 1 ELSE 0 END AS awaiting_provider_support,
             CASE WHEN e.status = 'pending' OR e.status = 'processing'
-                 THEN 1 ELSE 0 END AS evidence_pending
+                 THEN 1 ELSE 0 END AS evidence_pending,
+            CASE WHEN e.status = 'pending' AND e.next_attempt_at_epoch > ?7
+                 THEN 1 ELSE 0 END AS evidence_deferred
       FROM session s
       LEFT JOIN session_evidence e
         ON e.environment_key = s.environment_key

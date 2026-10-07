@@ -231,6 +231,20 @@ describe("OverviewProviderLimits", () => {
     expect(screen.queryByText("Live")).toBeNull()
   })
 
+  it("holds placeholders for the roster from before live usage started", () => {
+    // The pre-start summary carries no stamp: nothing is collected yet, so
+    // the pane must not say that no provider is set up.
+    const { container } = render(
+      <OverviewProviderLimits live={liveSummary({ providers: [], generatedAt: "" })} />,
+    )
+    expect(screen.queryByText(/No providers set up/)).toBeNull()
+    expect(container.querySelector(".animate-pulse")).not.toBeNull()
+    expect(screen.getByRole("region", { name: "Provider limits" })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    )
+  })
+
   it("holds placeholders while loading", () => {
     const { container } = render(<OverviewProviderLimits live={null} loading />)
     expect(screen.queryByText(/No providers set up/)).toBeNull()

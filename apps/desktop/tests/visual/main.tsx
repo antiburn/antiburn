@@ -6,13 +6,11 @@ import { setHudTokenMapEnabled } from "../../src/lib/overlayWindow"
 import "../../src/styles.css"
 import "./visual.css"
 
-type Surface =
-  "main" | "settings" | "onboarding" | "popover" | "preview" | "hud" | "hud-detail" | "nudge"
+type Surface = "main" | "settings" | "popover" | "preview" | "hud" | "hud-detail" | "nudge"
 
 const SURFACES: readonly Surface[] = [
   "main",
   "settings",
-  "onboarding",
   "popover",
   "preview",
   "hud",
@@ -59,8 +57,6 @@ async function loadSurface(surface: Surface): Promise<ComponentType> {
       return (await import("../../src/views/MainWindowView")).MainWindowView
     case "settings":
       return (await import("../../src/views/SettingsView")).SettingsView
-    case "onboarding":
-      return (await import("../../src/views/OnboardingView")).OnboardingView
     case "popover":
       return (await import("../../src/views/PopoverView")).PopoverView
     case "preview":

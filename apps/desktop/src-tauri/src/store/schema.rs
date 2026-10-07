@@ -81,6 +81,7 @@ pub const MIGRATIONS: &[&str] = &[
     V68,
     V69,
     V70,
+    V71,
 ];
 
 const V69: &str = r#"
@@ -1542,4 +1543,32 @@ DROP INDEX session_insights_window;
 CREATE INDEX session_insights_window_activity
     ON session (environment_key, COALESCE(updated_at_epoch, started_at_epoch) DESC,
                 session_id DESC);
+"#;
+
+/// v71 gives every evidence claim a fence from one shared counter.
+///
+/// A claim used to add one to its own row's `claim_fence`. A session that
+/// is deleted or cleared and then discovered again gets a new evidence row
+/// that starts at `0`, so its first claim repeated the fence of a pass that
+/// started before the delete. That pass could then write turn rows into the
+/// new claim's fence, renew the new claim's lease, and delete the new
+/// claim's rows when it lost the publish race.
+///
+/// `evidence_claim_fence_seq` only increases. Deletes and
+/// `clear_local_session_data` never touch it. It starts above every fence
+/// stored today, so a fence a claim takes from it never matches an earlier
+/// pass for any session.
+const V71: &str = r#"
+CREATE TABLE evidence_claim_fence_seq (
+    id    INTEGER PRIMARY KEY CHECK (id = 1),
+    value INTEGER NOT NULL CHECK (value >= 0)
+) STRICT;
+INSERT INTO evidence_claim_fence_seq (id, value)
+SELECT 1, MAX(
+    COALESCE((SELECT MAX(claim_fence) FROM session_evidence), 0),
+    COALESCE((SELECT MAX(published_fence) FROM session_evidence), 0),
+    COALESCE((SELECT MAX(claim_fence) FROM turn), 0),
+    COALESCE((SELECT MAX(claim_fence) FROM session_coverage), 0),
+    COALESCE((SELECT MAX(published_fence) FROM burn_check_assessment), 0)
+);
 "#;

@@ -171,11 +171,6 @@ export const INITIAL_SESSION_HYGIENE: SessionHygienePayload = {
   unusedResources: null,
 }
 
-/** The reader-facing name of one check, with no verdict attached. */
-export function sessionHygieneCheckName(id: SessionHygieneBadgeId): string {
-  return CHECKS.find((check) => check.id === id)?.name ?? id
-}
-
 /** Every check's name and footer explainer, for the checks tab. */
 export function sessionHygieneExplainers(): Array<{
   id: SessionHygieneBadgeId

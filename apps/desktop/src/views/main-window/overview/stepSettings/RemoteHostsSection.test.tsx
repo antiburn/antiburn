@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { RemoteHost, RemoteHostsSnapshot } from "../../lib/remoteHosts"
+import type { RemoteHost, RemoteHostsSnapshot } from "../../../../lib/remoteHosts"
 import { RemoteHostsSection } from "./RemoteHostsSection"
 import type { SourcesSession } from "./SourcesSession"
 

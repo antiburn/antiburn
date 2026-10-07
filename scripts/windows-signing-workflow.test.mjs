@@ -51,7 +51,7 @@ function checkCredentials(overrides) {
   }
 }
 
-test("configured Azure signing takes precedence over the unsigned waiver", () => {
+test("configured Windows builds require Azure signing", () => {
   const result = checkCredentials({
     ...Object.fromEntries(
       azureVariables.map((name) => [name, "synthetic-value"]),
@@ -63,7 +63,7 @@ test("configured Azure signing takes precedence over the unsigned waiver", () =>
 });
 
 for (const missing of azureVariables) {
-  test(`missing ${missing} fails even with the unsigned waiver`, () => {
+  test(`missing ${missing} fails even with an obsolete unsigned waiver`, () => {
     const result = checkCredentials({
       ...Object.fromEntries(
         azureVariables.map((name) => [name, "synthetic-value"]),
@@ -77,14 +77,14 @@ for (const missing of azureVariables) {
   });
 }
 
-test("an unconfigured Windows release fails without an explicit waiver", () => {
+test("an unconfigured Windows release fails", () => {
   assert.notEqual(checkCredentials({}).status, 0);
 });
 
-test("the legacy waiver applies only when Azure signing is entirely unconfigured", () => {
+test("an obsolete unsigned waiver cannot permit an unsigned build", () => {
   const result = checkCredentials({ ALLOW_UNSIGNED_WINDOWS: "true" });
-  assert.equal(result.status, 0);
-  assert.equal(result.output, "platform_signing=unsigned\n");
+  assert.notEqual(result.status, 0);
+  assert.equal(result.output, "");
 });
 
 test("Azure signing cannot waive the updater key", () => {

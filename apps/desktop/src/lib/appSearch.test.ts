@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest"
-import { APP_SEARCH_CATALOG, groupAppResults, searchApp } from "./appSearch"
+import {
+  APP_SEARCH_CATALOG,
+  groupAppResults,
+  resolveStepSettingsSearchTarget,
+  searchApp,
+} from "./appSearch"
 import { SETTINGS_PANES } from "./settingsPanes"
 import { CHECK_LABELS } from "./presentation/checkReport"
 import { AGENT_SLUGS } from "./presentation/agents"
@@ -8,6 +13,7 @@ import {
   parseSettingsSearchRequest,
   settingsSearchRequest,
 } from "./settingsSearchTargets"
+import { STEP_SETTINGS_TARGETS } from "./stepSettingsTargets"
 
 describe("static app search", () => {
   it("keeps the top-level Sessions destination searchable", () => {
@@ -97,6 +103,13 @@ describe("static app search", () => {
         }),
       )
     }
+    for (const [control, entry] of Object.entries(STEP_SETTINGS_TARGETS)) {
+      expect(searchApp(entry.label, "macos")).toContainEqual(
+        expect.objectContaining({
+          target: { kind: "stepSetting", control },
+        }),
+      )
+    }
     for (const agent of AGENT_SLUGS) {
       expect(searchApp(agent)).toContainEqual(
         expect.objectContaining({
@@ -141,5 +154,32 @@ describe("static app search", () => {
       "privacy#__proto__",
     ])
       expect(parseSettingsSearchRequest(invalid)).toBeNull()
+  })
+  it("resolves a step-settings target to its owning step and control", () => {
+    for (const [control, target] of Object.entries(STEP_SETTINGS_TARGETS)) {
+      const key = control as keyof typeof STEP_SETTINGS_TARGETS
+      expect(resolveStepSettingsSearchTarget({ control: key })).toEqual({
+        step: target.step,
+        control,
+      })
+    }
+  })
+  it("excludes step-settings results while the first run has no modal to open", () => {
+    const [sample] = Object.keys(STEP_SETTINGS_TARGETS)
+    const label = STEP_SETTINGS_TARGETS[sample as keyof typeof STEP_SETTINGS_TARGETS].label
+
+    expect(searchApp(label, "macos", true, false)).toEqual([])
+    expect(
+      searchApp(label, "macos", true, true).some(
+        (result) => result.target.kind === "stepSetting",
+      ),
+    ).toBe(true)
+
+    expect(groupAppResults(label, "macos", true, false)).toEqual([])
+    expect(
+      groupAppResults(label, "macos", true, true).some((group) =>
+        group.results.some((result) => result.target.kind === "stepSetting"),
+      ),
+    ).toBe(true)
   })
 })

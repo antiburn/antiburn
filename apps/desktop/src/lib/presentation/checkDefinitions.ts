@@ -34,6 +34,33 @@ export const CHECK_DEFINITIONS = {
   },
 } as const satisfies Record<BurnCheckDetectorId, { label: string; aliases: readonly string[] }>
 
+/** The checks that run only after the reader sets them up in Settings →
+ *  Checks. Every other check always runs. */
+const SET_UP_CHECKS: readonly BurnCheckDetectorId[] = ["ignoredInstructions"]
+
+/** How many checks run. `setUpChecksConfigured` is the Checks pane's
+ *  `configured` state. A snoozed check still runs, so it counts. */
+export function enabledCheckCount(setUpChecksConfigured: boolean): number {
+  const all = Object.keys(CHECK_DEFINITIONS).length
+  return setUpChecksConfigured ? all : all - SET_UP_CHECKS.length
+}
+
 export const CHECK_LABELS = Object.fromEntries(
   Object.entries(CHECK_DEFINITIONS).map(([id, definition]) => [id, definition.label]),
 ) as Record<BurnCheckDetectorId, string>
+
+/** Short, plain problem phrases for a failing category. The Overview's
+ *  first-run summary lists these instead of the category label, so the
+ *  reader sees what is wrong, not just its name. */
+export const CHECK_PROBLEM_PHRASES: Record<BurnCheckDetectorId, string> = {
+  sessionsOverDepth: "sessions run long before compacting",
+  modelOverthinking: "thinking level is higher than the work needs",
+  overpoweredSubagents: "subagents run on the main model",
+  unusedMcpServers: "MCP servers are loaded but never called",
+  unusedBuiltInTools: "built-in tools are loaded but never used",
+  unusedSkills: "skills are injected but never used",
+  oldModelUsage: "sessions use old model versions",
+  overuseOfFastMode: "fast mode runs where it doesn't pay off",
+  cacheChurn: "cache is rehydrated more than it needs to be",
+  ignoredInstructions: "agents go against your AGENTS.md or CLAUDE.md rules",
+}
