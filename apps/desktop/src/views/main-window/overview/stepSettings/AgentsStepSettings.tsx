@@ -86,7 +86,10 @@ export function AgentsStepSettings() {
             <AgentRow
               key={slug}
               slug={slug}
-              status={agentStatus(sessionsByAgent.get(slug) ?? 0, meterForAgent(slug, liveMeters))}
+              status={agentStatus(
+                sessionsByAgent.get(slug) ?? 0,
+                meterForAgent(slug, liveMeters),
+              )}
               locations={locationsByAgent.get(slug) ?? []}
               enabled={!disabledAgents.includes(slug)}
               onEnabledChange={(next) => setAgentEnabled(slug, next)}

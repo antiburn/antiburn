@@ -797,7 +797,12 @@ describe("the failure surface", () => {
       "refreshPending",
       "desktopOnly",
     ]
-    const claudeSignInDetails = ["cliMissing", "signInRequired", "refreshPending", "desktopOnly"]
+    const claudeSignInDetails = [
+      "cliMissing",
+      "signInRequired",
+      "refreshPending",
+      "desktopOnly",
+    ]
     for (const provider of [undefined, "anthropic", "google", "openai", "unrecognized"]) {
       for (const category of categories) {
         for (const detail of details) {

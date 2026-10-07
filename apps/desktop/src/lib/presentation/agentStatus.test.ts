@@ -130,10 +130,7 @@ describe("agentStatus", () => {
 
   it("puts the session count in the facts column and the rest under the name", () => {
     expect(
-      agentStatus(
-        41,
-        claude({ detection: "notInstalled", desktopAppLabel: "Claude Desktop" }),
-      ),
+      agentStatus(41, claude({ detection: "notInstalled", desktopAppLabel: "Claude Desktop" })),
     ).toEqual({
       found: true,
       facts: "41 sessions",
