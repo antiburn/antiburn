@@ -571,6 +571,14 @@ export function liveUnavailableProviders(
   return unavailable
 }
 
+/**
+ * Whether a failure has a docs page to explain it. Only a Claude Desktop-only
+ * install does: nothing in antiburn can fix it, so the note links out.
+ */
+export function liveErrorHasDocs(detail?: LiveUsageSourceErrorDetail): boolean {
+  return detail === "desktopOnly"
+}
+
 /** A failure category as two or three words, for a row with no room. */
 export function liveUnavailableReason(
   category: string,
@@ -578,6 +586,7 @@ export function liveUnavailableReason(
 ): string {
   if (detail === "refreshPending") return "update pending"
   if (detail === "cliMissing") return "tool unavailable"
+  if (detail === "desktopOnly") return "not available for Claude Desktop"
   switch (category) {
     case "authentication":
       return "sign-in needed"
@@ -668,6 +677,9 @@ export function liveErrorNote(
   detail?: LiveUsageSourceErrorDetail,
 ): string {
   if (category === "authentication" && provider === ANTHROPIC) {
+    if (detail === "desktopOnly") {
+      return "Usage limits not available for Claude Desktop."
+    }
     if (detail === "cliMissing") {
       return "Couldn't update Claude usage. Open Claude Code to check your sign-in."
     }

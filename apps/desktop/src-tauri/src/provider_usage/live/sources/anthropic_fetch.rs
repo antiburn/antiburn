@@ -256,14 +256,39 @@ fn with_claude_desktop(
     probe: &impl PresenceProbe,
     app: &DesktopAppLocations,
 ) -> Presence {
-    let installed = app
-        .paths
+    let installed = claude_desktop_installed(probe, app);
+    presence.with_desktop_app(installed.then_some(DesktopApp::ClaudeDesktop))
+}
+
+/// Whether Claude Desktop is on disk. Only file metadata is read.
+fn claude_desktop_installed(probe: &impl PresenceProbe, app: &DesktopAppLocations) -> bool {
+    app.paths
         .iter()
         .any(|path| presence::path_exists(probe, path).unwrap_or(false))
         || app
             .binary
-            .is_some_and(|binary| probe.binary_present(binary));
-    presence.with_desktop_app(installed.then_some(DesktopApp::ClaudeDesktop))
+            .is_some_and(|binary| probe.binary_present(binary))
+}
+
+/// The failure a check reports when it found no Claude login at all and
+/// Claude Desktop is the only Claude app here.
+///
+/// Claude Desktop keeps its own sign-in, which antiburn does not read, so the
+/// limits cannot be checked. The views grey the meter and link to the docs.
+/// A `claude` on `PATH` means Claude Code is installed but signed out, which
+/// keeps the ordinary sign-in note, so this returns `None`.
+fn desktop_only_failure(
+    probe: &impl PresenceProbe,
+    app: &DesktopAppLocations,
+) -> Option<FetchFailure> {
+    if !claude_desktop_installed(probe, app) || probe.binary_present(BINARY) {
+        return None;
+    }
+    Some(FetchFailure {
+        error: ProviderUsageError::Authentication,
+        detail: Some(SourceErrorDetail::DesktopOnly),
+        last_known: None,
+    })
 }
 
 /// Claude Desktop on macOS: the app bundle.
@@ -821,6 +846,14 @@ impl ClaudeDirectFetch {
         }
     }
 
+    /// The metadata probe that detection and the Desktop-only check share.
+    fn presence_probe(&self) -> SystemPresenceProbe {
+        SystemPresenceProbe {
+            #[cfg(target_os = "macos")]
+            try_keychain: self.try_keychain,
+        }
+    }
+
     /// Read all credential carriers in their documented order. A Keychain
     /// read failure stays separate so a later live carrier can suppress it.
     ///
@@ -1030,10 +1063,7 @@ impl LiveUsageSource for ClaudeDirectFetch {
     }
 
     fn detect(&self, online: bool) -> Presence {
-        let probe = SystemPresenceProbe {
-            #[cfg(target_os = "macos")]
-            try_keychain: self.try_keychain,
-        };
+        let probe = self.presence_probe();
         let presence = detect_presence(
             &probe,
             self.credentials_path.as_deref(),
@@ -1139,7 +1169,12 @@ impl LiveUsageSource for ClaudeDirectFetch {
                 }
                 other => other.map_err(FetchFailure::from),
             };
-            with_carrier_error(fetched, carrier_error).map_err(|mut failure| {
+            let fetched = match with_carrier_error(fetched, carrier_error) {
+                Ok(None) => desktop_only_failure(&self.presence_probe(), &self.desktop_app)
+                    .map_or(Ok(None), Err),
+                other => other,
+            };
+            fetched.map_err(|mut failure| {
                 failure.last_known = native.as_ref().and_then(|native| {
                     cached
                         .filter(|cached| now - cached.observed_at <= cooldown::MAX_AGE)
@@ -1896,6 +1931,33 @@ mod tests {
             &app,
         );
         assert_eq!(absent.desktop_app, None);
+    }
+
+    #[test]
+    fn a_desktop_only_install_fails_with_its_own_detail() {
+        const APP: &str = "/fixture/Applications/Claude.app";
+        let app = DesktopAppLocations {
+            paths: vec![PathBuf::from(APP)],
+            binary: None,
+        };
+        let mut desktop_only = RecordingPresence::default();
+        desktop_only.paths.insert(APP.into(), Ok(true));
+
+        let failure = desktop_only_failure(&desktop_only, &app).expect("desktop only");
+        assert_eq!(failure.error, ProviderUsageError::Authentication);
+        assert_eq!(failure.detail, Some(SourceErrorDetail::DesktopOnly));
+        assert!(failure.last_known.is_none());
+
+        // Claude Code on PATH but signed out keeps the ordinary sign-in note.
+        let mut with_cli = RecordingPresence {
+            binary: true,
+            ..Default::default()
+        };
+        with_cli.paths.insert(APP.into(), Ok(true));
+        assert!(desktop_only_failure(&with_cli, &app).is_none());
+
+        // No Claude Desktop: no Claude app at all, so nothing to report.
+        assert!(desktop_only_failure(&RecordingPresence::default(), &app).is_none());
     }
 
     #[test]

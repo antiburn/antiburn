@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import type {
@@ -9,6 +9,9 @@ import type {
 } from "../../lib/ipc"
 
 import { UsageLimitsBar } from "./UsageLimitsBar"
+
+const invoke = vi.hoisted(() => vi.fn())
+vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
 
 const FORECAST = {
   unavailableReason: "sparseHistory",
@@ -705,6 +708,25 @@ describe("UsageLimitsBar — degraded state", () => {
   it("renders nothing when there are no providers and no errors", () => {
     bar({ live: liveSummary({ providers: [] }) })
     expect(screen.queryByTestId("usage-limits-bar")).not.toBeInTheDocument()
+  })
+
+  it("greys a Claude Desktop-only seat and links to the docs when open", async () => {
+    const live = liveSummary({
+      providers: [],
+      errors: [sourceError({ category: "authentication", detail: "desktopOnly" })],
+    })
+    const { rerender } = bar({ live })
+    expect(screen.getByTestId("usage-limits-unavailable")).toHaveAccessibleName(
+      "Claude, usage unavailable (not available for Claude Desktop)",
+    )
+
+    rerender(
+      <UsageLimitsBar live={live} expanded onToggleExpanded={vi.fn()} refreshing={false} />,
+    )
+    const group = screen.getByRole("group", { name: "Claude" })
+    expect(group).toHaveTextContent("Usage limits not available for Claude Desktop.")
+    fireEvent.click(within(group).getByRole("button", { name: "Learn more" }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_claude_desktop_limits_docs"))
   })
 
   it("keeps a failed provider on the bar instead of dropping it", () => {

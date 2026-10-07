@@ -1,6 +1,7 @@
 import { SettingsRow, SettingsSectionGroup, SettingsToggleRow } from "./SettingsSearchRows"
 import { useState, useSyncExternalStore } from "react"
 
+import { LimitsDocsLink } from "../../components/providerUsage/LimitsDocsLink"
 import { Card } from "../../components/ui/Card"
 import { Pane } from "../../components/ui/Pane"
 import { PushButton } from "../../components/ui/PushButton"
@@ -35,6 +36,7 @@ import {
 import { isMacOS } from "../../lib/platform"
 import {
   liveDetectionNote,
+  liveErrorHasDocs,
   liveErrorNote,
   liveSourceAge,
   liveUnavailableReason,
@@ -278,7 +280,11 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
                     disabled={!on}
                   />
                 }
-              ></Row>
+              >
+                {shown && !reading && failure && liveErrorHasDocs(failure.detail) && (
+                  <LimitsDocsLink />
+                )}
+              </Row>
             )
           })}
         </Card>

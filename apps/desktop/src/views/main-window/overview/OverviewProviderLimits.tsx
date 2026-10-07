@@ -6,6 +6,7 @@ import type {
 } from "../../../lib/providerUsageIpc"
 import {
   liveDisplayableProviders,
+  liveErrorHasDocs,
   liveErrorNote,
   liveGraceNote,
   livePlanAccountLabel,
@@ -15,6 +16,7 @@ import {
   orderedLiveAccounts,
 } from "../../../lib/presentation/liveUsage"
 
+import { LimitsDocsLink } from "../../../components/providerUsage/LimitsDocsLink"
 import { WindowMeterRow } from "../../../components/providerUsage/UsageLimitsBar"
 import { useStableAccountNumbers } from "../../../components/providerUsage/useStableAccountNumbers"
 import { Skeleton } from "../../../components/ui/Skeleton"
@@ -163,6 +165,12 @@ export function OverviewProviderLimits({
                         </h3>
                         <p className="type-footnote pt-(--space-md) text-label-secondary">
                           {liveErrorNote(entry.category, entry.provider, entry.detail)}
+                          {liveErrorHasDocs(entry.detail) && (
+                            <>
+                              {" "}
+                              <LimitsDocsLink />
+                            </>
+                          )}
                         </p>
                       </div>
                     </Fragment>

@@ -17,6 +17,7 @@ import type {
 } from "../../lib/presentation/liveUsage"
 import {
   liveDisplayableProviders,
+  liveErrorHasDocs,
   liveErrorNote,
   liveGraceNote,
   livePlanAccountLabel,
@@ -35,6 +36,7 @@ import { providerInitial } from "../../lib/presentation/providerUsage"
 import { SegmentedMeter } from "../ui/SegmentedMeter"
 import { SegmentFigure } from "../ui/SegmentFigure"
 import { Tooltip } from "../presentation/Tooltip"
+import { LimitsDocsLink } from "./LimitsDocsLink"
 import { providerMark } from "./ProviderUsagePrimitives"
 import { UsageRing } from "./UsageRing"
 import { useStableAccountNumbers } from "./useStableAccountNumbers"
@@ -513,6 +515,12 @@ function UnavailableGroup({
     >
       <p className="type-footnote text-label-secondary">
         {liveErrorNote(entry.category, entry.provider, entry.detail)}
+        {liveErrorHasDocs(entry.detail) && (
+          <>
+            {" "}
+            <LimitsDocsLink />
+          </>
+        )}
       </p>
       {action}
     </div>

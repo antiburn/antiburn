@@ -190,6 +190,9 @@ pub enum SourceErrorDetail {
     SignInRequired,
     /// The token expired and a delegated refresh has not run or settled yet.
     RefreshPending,
+    /// Only the provider's desktop app is installed. Its sign-in is its own,
+    /// and antiburn does not read it, so no limits can be checked.
+    DesktopOnly,
 }
 
 /// Why a payload was rejected outright rather than partly believed.

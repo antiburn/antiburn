@@ -483,6 +483,7 @@ export type LiveUsageSourceErrorDetail =
   | "cliMissing"
   | "signInRequired"
   | "refreshPending"
+  | "desktopOnly"
 
 /** Live provider usage as one snapshot. Mirrors Rust `LiveUsageSummary`. */
 export interface LiveUsageSummaryPayload {

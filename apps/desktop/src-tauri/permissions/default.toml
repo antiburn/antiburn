@@ -46,6 +46,7 @@ permissions = [
   "allow-list-scan-roots",
   "allow-note-interaction",
   "allow-open-analytics-documentation",
+  "allow-open-claude-desktop-limits-docs",
   "allow-open-folder-access-settings",
   "allow-open-github-repo",
   "allow-open-overlay-window",

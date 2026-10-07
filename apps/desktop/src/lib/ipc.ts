@@ -292,6 +292,12 @@ export async function restartOnboarding(): Promise<void> {
   await invoke("restart_onboarding")
 }
 
+/** Open the docs page on why Claude Desktop alone shows no usage limits. */
+export async function openClaudeDesktopLimitsDocs(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("open_claude_desktop_limits_docs")
+}
+
 /** Open the public analytics documentation in the system browser. */
 export async function openAnalyticsDocumentation(): Promise<void> {
   if (!hasShell()) return
