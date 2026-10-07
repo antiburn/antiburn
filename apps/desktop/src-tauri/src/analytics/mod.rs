@@ -154,6 +154,15 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
 }
 
 #[cfg(not(feature = "analytics"))]
+pub(crate) fn record_check_enablement_saved(
+    _app: &tauri::AppHandle,
+    detector: antiburn_local::checks::DetectorId,
+    _enabled: bool,
+) {
+    let _ = event::CheckEnablementId::from(detector);
+}
+
+#[cfg(not(feature = "analytics"))]
 pub fn record_remote_host_connection_checked(
     _app: &tauri::AppHandle,
     _outcome: event::RemoteConnectionOutcome,
@@ -1084,6 +1093,19 @@ mod enabled {
             } if surface != Surface::Settings => note_deliberate_activity(Instant::now()),
             _ => {}
         }
+    }
+
+    /// Record one successfully persisted change to a check's enabled state.
+    pub fn record_check_enablement_saved(
+        app: &tauri::AppHandle,
+        detector: antiburn_local::checks::DetectorId,
+        enabled: bool,
+    ) {
+        record_event(
+            app,
+            EventName::CheckEnablementSaved,
+            event::check_enablement_facts(detector, enabled),
+        );
     }
 
     fn deliberate_live_usage_observation(

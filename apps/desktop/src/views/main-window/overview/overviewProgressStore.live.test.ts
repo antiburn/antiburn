@@ -630,7 +630,7 @@ describe("overviewProgressStore's first-run analytics", () => {
     expect(steps.filter((call) => call.interaction.step === "checked")).toHaveLength(1)
     const result = steps.filter((call) => call.interaction.step === "result")
     expect(result).toHaveLength(1)
-    expect(result[0]?.interaction.result).toBe("clean")
+    expect(result[0]?.interaction.result).toBe("checks_disabled")
     // The shell command records `first_run_finished` after it saves.
     expect(
       noteInteractionCalls().filter(

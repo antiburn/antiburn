@@ -141,6 +141,9 @@ pub enum EventName {
     /// A saved TypeSafe setting, a history run request, or a terminal check result.
     #[cfg(feature = "analytics")]
     IgnoredInstructionLifecycle,
+    /// One check's enabled preference completed a persisted state transition.
+    #[cfg(feature = "analytics")]
+    CheckEnablementSaved,
     /// A progress step's settings became visible: the first-run "Show
     /// settings" disclosure opened, or the step's modal opened after the
     /// first run.
@@ -198,6 +201,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::FirstRunFinished,
     EventName::IgnoredInstructionObserved,
     EventName::IgnoredInstructionLifecycle,
+    EventName::CheckEnablementSaved,
     EventName::StepSettingsViewed,
 ];
 
@@ -245,6 +249,7 @@ impl EventName {
             EventName::FirstRunFinished => "antiburn.first_run_finished",
             EventName::IgnoredInstructionObserved => "antiburn.ignored_instruction_observed",
             EventName::IgnoredInstructionLifecycle => "antiburn.ignored_instruction_lifecycle",
+            EventName::CheckEnablementSaved => "antiburn.check_enablement_saved",
             EventName::StepSettingsViewed => "antiburn.step_settings_viewed",
         }
     }
@@ -568,6 +573,73 @@ pub enum Interaction {
     },
 }
 
+/// A stable, closed analytics identity for a check.
+///
+/// Keep this separate from arbitrary serialized keys so a future detector does
+/// not enter analytics until its measurement contract is reviewed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckEnablementId {
+    SessionsOverDepth,
+    ModelOverthinking,
+    OverpoweredSubagents,
+    UnusedMcpServers,
+    UnusedBuiltInTools,
+    UnusedSkills,
+    OldModelUsage,
+    OveruseOfFastMode,
+    CacheChurn,
+    IgnoredInstructions,
+}
+
+impl From<antiburn_local::checks::DetectorId> for CheckEnablementId {
+    fn from(detector: antiburn_local::checks::DetectorId) -> Self {
+        use antiburn_local::checks::DetectorId;
+
+        match detector {
+            DetectorId::SessionsOverDepth => Self::SessionsOverDepth,
+            DetectorId::ModelOverthinking => Self::ModelOverthinking,
+            DetectorId::OverpoweredSubagents => Self::OverpoweredSubagents,
+            DetectorId::UnusedMcpServers => Self::UnusedMcpServers,
+            DetectorId::UnusedBuiltInTools => Self::UnusedBuiltInTools,
+            DetectorId::UnusedSkills => Self::UnusedSkills,
+            DetectorId::OldModelUsage => Self::OldModelUsage,
+            DetectorId::OveruseOfFastMode => Self::OveruseOfFastMode,
+            DetectorId::CacheChurn => Self::CacheChurn,
+            DetectorId::IgnoredInstructions => Self::IgnoredInstructions,
+        }
+    }
+}
+
+impl CheckEnablementId {
+    #[cfg(feature = "analytics")]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::SessionsOverDepth => "sessions_over_depth",
+            Self::ModelOverthinking => "model_overthinking",
+            Self::OverpoweredSubagents => "overpowered_subagents",
+            Self::UnusedMcpServers => "unused_mcp_servers",
+            Self::UnusedBuiltInTools => "unused_built_in_tools",
+            Self::UnusedSkills => "unused_skills",
+            Self::OldModelUsage => "old_model_usage",
+            Self::OveruseOfFastMode => "overuse_of_fast_mode",
+            Self::CacheChurn => "cache_churn",
+            Self::IgnoredInstructions => "ignored_instructions",
+        }
+    }
+}
+
+#[cfg(feature = "analytics")]
+pub(crate) fn check_enablement_facts(
+    detector: antiburn_local::checks::DetectorId,
+    enabled: bool,
+) -> Facts {
+    Facts {
+        label: Some(CheckEnablementId::from(detector).as_str()),
+        detail: Some(if enabled { "enabled" } else { "disabled" }),
+        ..Facts::default()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IgnoredInstructionStage {
@@ -814,6 +886,7 @@ pub enum FirstRunStep {
 #[serde(rename_all = "snake_case")]
 pub enum FirstRunResult {
     Empty,
+    ChecksDisabled,
     Clean,
     FixesFound,
 }
@@ -1165,6 +1238,7 @@ wire_values!(FirstRunStep, {
 #[cfg(feature = "analytics")]
 wire_values!(FirstRunResult, {
     FirstRunResult::Empty => "empty",
+    FirstRunResult::ChecksDisabled => "checks_disabled",
     FirstRunResult::Clean => "clean",
     FirstRunResult::FixesFound => "fixes_found",
 });
@@ -2010,6 +2084,7 @@ mod tests {
                 | EventName::FirstRunStepReached
                 | EventName::FirstRunAction
                 | EventName::FirstRunFinished
+                | EventName::CheckEnablementSaved
                 | EventName::StepSettingsViewed => true,
                 EventName::IgnoredInstructionObserved | EventName::IgnoredInstructionLifecycle => {
                     true
@@ -2018,10 +2093,52 @@ mod tests {
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            41,
+            42,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
+    }
+
+    #[test]
+    fn check_enablement_ids_cover_every_detector_with_stable_values() {
+        use antiburn_local::checks::DetectorId;
+
+        let values: Vec<_> = DetectorId::ALL
+            .into_iter()
+            .map(|detector| CheckEnablementId::from(detector).as_str())
+            .collect();
+
+        assert_eq!(
+            values,
+            [
+                "sessions_over_depth",
+                "model_overthinking",
+                "overpowered_subagents",
+                "unused_mcp_servers",
+                "unused_built_in_tools",
+                "unused_skills",
+                "old_model_usage",
+                "overuse_of_fast_mode",
+                "cache_churn",
+                "ignored_instructions",
+            ]
+        );
+    }
+
+    #[test]
+    fn check_enablement_facts_carry_only_check_and_saved_state() {
+        use antiburn_local::checks::DetectorId;
+
+        let enabled = check_enablement_facts(DetectorId::UnusedSkills, true);
+        assert_eq!(enabled.label, Some("unused_skills"));
+        assert_eq!(enabled.detail, Some("enabled"));
+        assert!(enabled.bucket.is_none());
+        assert!(enabled.origin.is_none());
+
+        let disabled = check_enablement_facts(DetectorId::IgnoredInstructions, false);
+        assert_eq!(disabled.label, Some("ignored_instructions"));
+        assert_eq!(disabled.detail, Some("disabled"));
+        assert!(disabled.unrecognized_types.is_none());
     }
 
     /// The public catalog in `docs/analytics.md` is a promise to a
@@ -2481,6 +2598,7 @@ mod tests {
 
         for (result, expected) in [
             (FirstRunResult::Empty, "empty"),
+            (FirstRunResult::ChecksDisabled, "checks_disabled"),
             (FirstRunResult::Clean, "clean"),
             (FirstRunResult::FixesFound, "fixes_found"),
         ] {

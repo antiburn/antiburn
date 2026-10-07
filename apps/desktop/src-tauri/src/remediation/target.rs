@@ -272,8 +272,12 @@ pub(crate) fn passive_remediations(
     findings: Vec<CurrentFinding>,
     boundary_ms: i64,
 ) -> Result<Vec<PassiveRemediation>> {
+    let enabled = crate::store::enabled_checks_in(connection)?;
     let mut candidates = Vec::new();
     for finding in findings {
+        if !enabled.contains(&finding.finding.detector) {
+            continue;
+        }
         if finding.environment_key != "native" {
             continue;
         }
