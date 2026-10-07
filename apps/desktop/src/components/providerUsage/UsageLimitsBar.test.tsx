@@ -710,19 +710,14 @@ describe("UsageLimitsBar — degraded state", () => {
     expect(screen.queryByTestId("usage-limits-bar")).not.toBeInTheDocument()
   })
 
-  it("greys a Claude Desktop-only seat and links to the docs when open", async () => {
+  it("shows the Claude Desktop-only note with a docs link and no disclosure", async () => {
     const live = liveSummary({
       providers: [],
       errors: [sourceError({ category: "authentication", detail: "desktopOnly" })],
     })
-    const { rerender } = bar({ live })
-    expect(screen.getByTestId("usage-limits-unavailable")).toHaveAccessibleName(
-      "Claude, usage unavailable (not available for Claude Desktop)",
-    )
-
-    rerender(
-      <UsageLimitsBar live={live} expanded onToggleExpanded={vi.fn()} refreshing={false} />,
-    )
+    // Collapsed or not, the note shows: there is no meter to collapse to.
+    bar({ live })
+    expect(screen.queryByRole("button", { name: /usage limits/ })).not.toBeInTheDocument()
     const group = screen.getByRole("group", { name: "Claude" })
     expect(group).toHaveTextContent("Usage limits not available for Claude Desktop.")
     fireEvent.click(within(group).getByRole("button", { name: "Learn more" }))
@@ -733,12 +728,27 @@ describe("UsageLimitsBar — degraded state", () => {
     // The cold-start failure: the first fetch 429s with nothing cached, so
     // the error is the provider's only trace. The bar must not read as "your
     // Claude usage vanished".
+    // With no reading anywhere there is nothing to collapse to, so the note
+    // shows even when the meters are collapsed, with no disclosure.
     bar({ live: liveSummary({ providers: [], errors: [sourceError()] }) })
+    expect(screen.getByRole("group", { name: "Claude" })).toHaveTextContent(
+      "Claude rate limited usage checks.",
+    )
+    expect(screen.queryByTestId("usage-limits-unavailable")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /usage limits/ })).not.toBeInTheDocument()
+  })
+
+  it("keeps the unavailable seat beside a provider that has a reading", () => {
+    bar({
+      live: liveSummary({
+        providers: [liveProvider()],
+        errors: [sourceError({ provider: "openai", displayName: "Codex" })],
+      }),
+    })
     const seat = screen.getByTestId("usage-limits-unavailable")
-    expect(seat).toHaveAccessibleName("Claude, usage unavailable (rate limited)")
-    // The row states no words any more, so the failure has to survive on
-    // hover. It is also spelled out in full in the expanded listing.
-    expect(seat).toHaveAttribute("title", "Claude — rate limited")
+    expect(seat).toHaveAccessibleName("Codex, usage unavailable (rate limited)")
+    expect(seat).toHaveAttribute("title", "Codex — rate limited")
+    expect(screen.getByRole("button", { name: "Expand usage limits" })).toBeInTheDocument()
   })
 
   it.each<{ error: LiveUsageSourceErrorPayload; note: string }>([
@@ -845,8 +855,9 @@ describe("UsageLimitsBar — grace period", () => {
       }),
     })
     expect(screen.queryByRole("img", { name: /Claude at 42 percent/ })).not.toBeInTheDocument()
-    const seat = screen.getByTestId("usage-limits-unavailable")
-    expect(seat).toHaveAccessibleName("Claude, usage unavailable (rate limited)")
+    expect(screen.getByRole("group", { name: "Claude" })).toHaveTextContent(
+      "Claude rate limited usage checks.",
+    )
   })
 
   it("adds a muted grace line under the provider name in the expanded meters", () => {

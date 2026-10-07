@@ -11,7 +11,7 @@ export function LimitsDocsLink() {
     <button
       type="button"
       onClick={() => void openClaudeDesktopLimitsDocs()}
-      className="inline-flex items-center gap-1 type-footnote text-accent hover:underline"
+      className="inline-flex items-center gap-1 type-footnote text-label underline decoration-label/40 underline-offset-2"
     >
       Learn more <ExternalLink size={11} aria-hidden="true" />
     </button>
