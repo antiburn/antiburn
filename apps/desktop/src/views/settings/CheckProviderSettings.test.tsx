@@ -33,7 +33,6 @@ beforeEach(() => {
 async function setup(provider: SmartCheckProvider) {
   render(<CheckProviderSettings />)
   await waitFor(() => expect(screen.getByLabelText("TypeSafe API key")).toBeEnabled())
-  fireEvent.click(screen.getByRole("button", { name: "Use Ollama or another provider" }))
   fireEvent.change(screen.getByLabelText("Smart check provider"), {
     target: { value: provider },
   })
@@ -49,6 +48,28 @@ async function setup(provider: SmartCheckProvider) {
     fireEvent.change(screen.getByLabelText("Account ID"), { target: { value: "test-account" } })
 }
 
+it("shows the decision model flow without opening advanced settings", async () => {
+  await setup("jev")
+  expect(screen.getByText("Decision model")).toBeVisible()
+  expect(screen.queryByText("Model connection")).not.toBeInTheDocument()
+  expect(screen.queryByText(/Active connection:|Editing:/)).not.toBeInTheDocument()
+  const provider = screen.getByLabelText("Smart check provider")
+  const model = screen.getByLabelText("Provider model")
+  const credential = screen.getByLabelText("TypeSafe API key")
+  expect(provider).toBeVisible()
+  expect(model).toHaveValue(saved.profiles.jev?.model)
+  expect(model).toHaveAttribute("readonly")
+  expect(
+    provider.compareDocumentPosition(model) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy()
+  expect(
+    model.compareDocumentPosition(credential) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy()
+  expect(screen.getByRole("button", { name: "Save connection" })).toBeDisabled()
+  fireEvent.change(credential, { target: { value: "synthetic-secret" } })
+  expect(screen.getByRole("button", { name: "Save connection" })).toBeEnabled()
+})
+
 it.each(["jev", "ollama", "cloudflare", "custom"] as const)(
   "tests and saves the exact %s draft without changing the active snapshot during testing",
   async (provider) => {
@@ -59,7 +80,7 @@ it.each(["jev", "ollama", "cloudflare", "custom"] as const)(
         { target: { value: "synthetic-secret" } },
       )
     fireEvent.click(screen.getByRole("button", { name: "Test connection" }))
-    await screen.findByText("This draft passed the connection test.")
+    await screen.findByText("Connection test passed.")
     expect(saved.activeId).toBe("jev")
     const test = invoke.mock.calls.find(
       ([command]) => command === "test_system_one_connection",
@@ -72,7 +93,7 @@ it.each(["jev", "ollama", "cloudflare", "custom"] as const)(
     await screen.findByText("Connection saved and selected for Smart Burn Checks.")
     expect(invoke).toHaveBeenCalledWith("save_system_one_connection", { draft: test })
     expect(saved.activeId).toBe(provider)
-    expect(screen.queryByText("This draft passed the connection test.")).not.toBeInTheDocument()
+    expect(screen.queryByText("Connection test passed.")).not.toBeInTheDocument()
     expect(
       screen.getByLabelText(
         provider === "jev"
@@ -116,11 +137,11 @@ it("keeps failed drafts and active connection separate and never displays raw er
 it("invalidates test results and discovered limits on every draft edit", async () => {
   await setup("ollama")
   fireEvent.click(screen.getByRole("button", { name: "Test connection" }))
-  await screen.findByText("This draft passed the connection test.")
+  await screen.findByText("Connection test passed.")
   fireEvent.change(screen.getByLabelText("Base URL"), {
     target: { value: "https://remote.example" },
   })
-  expect(screen.queryByText("This draft passed the connection test.")).not.toBeInTheDocument()
+  expect(screen.queryByText("Connection test passed.")).not.toBeInTheDocument()
   invoke.mockResolvedValueOnce({
     model: "test-model",
     model_revision: "test-digest",
@@ -132,6 +153,7 @@ it("invalidates test results and discovered limits on every draft edit", async (
     rendering_reserve_tokens: 1024,
     tokenizer: { kind: "conservative_estimator", name: "test" },
   })
+  fireEvent.click(screen.getByRole("button", { name: "Model limits" }))
   fireEvent.click(screen.getByRole("button", { name: "Refresh model limits" }))
   await screen.findByText("Total input tokens: 8,192 · Provider metadata")
   expect(screen.getByText("Loaded context tokens: 4,096 · Loaded model metadata")).toBeVisible()
@@ -170,7 +192,12 @@ it("reconciles a provider change persisted before a failed save and retains the 
   })
   fireEvent.click(screen.getByRole("button", { name: "Save connection" }))
   await screen.findByRole("alert")
-  await screen.findByText("Active connection: Custom · test-model")
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: "Use saved connection" }),
+    ).not.toBeInTheDocument(),
+  )
+  expect(saved.activeId).toBe("custom")
   expect(screen.getByLabelText("Exact inference URL")).toHaveValue(
     "https://proxy.example/prefix/infer?mode=one",
   )
@@ -188,6 +215,7 @@ it("shows actionable Ollama protocol errors", async () => {
 
 it("shows invalid manual bounds inline and blocks calls", async () => {
   await setup("custom")
+  fireEvent.click(screen.getByRole("button", { name: "Model limits" }))
   fireEvent.change(screen.getByLabelText("Manual loaded context tokens"), {
     target: { value: "65537" },
   })
@@ -214,7 +242,7 @@ it("blocks duplicate operations and draft changes until a test completes", async
   expect(screen.getByLabelText("Provider model")).toBeDisabled()
   expect(screen.getByRole("button", { name: "Save connection" })).toBeDisabled()
   await act(async () => finish?.())
-  await screen.findByText("This draft passed the connection test.")
+  await screen.findByText("Connection test passed.")
 })
 
 it("restores saved profiles without a write and activates only on request", async () => {
@@ -222,6 +250,7 @@ it("restores saved profiles without a write and activates only on request", asyn
   await setup("custom")
   fireEvent.change(screen.getByLabelText("Saved connections"), { target: { value: "ollama" } })
   expect(screen.getByLabelText("Provider model")).toHaveValue("saved-model")
+  expect(screen.getByRole("option", { name: /Jev.*In use/ })).toBeInTheDocument()
   expect(invoke).not.toHaveBeenCalledWith("switch_system_one_connection", expect.anything())
   fireEvent.click(screen.getByRole("button", { name: "Use saved connection" }))
   await waitFor(() =>
@@ -238,7 +267,7 @@ it("removes the active credential and disables controls until the operation comp
   }
   await setup("jev")
   fireEvent.click(screen.getByRole("button", { name: "Test connection" }))
-  await screen.findByText("This draft passed the connection test.")
+  await screen.findByText("Connection test passed.")
   let finish: (() => void) | undefined
   invoke.mockImplementationOnce(
     () =>
@@ -258,7 +287,7 @@ it("removes the active credential and disables controls until the operation comp
       }),
   )
   fireEvent.click(screen.getByRole("button", { name: "Remove credential" }))
-  expect(screen.queryByText("This draft passed the connection test.")).not.toBeInTheDocument()
+  expect(screen.queryByText("Connection test passed.")).not.toBeInTheDocument()
   expect(invoke).toHaveBeenCalledWith("remove_system_one_credential", { connectionId: "jev" })
   expect(screen.getByRole("button", { name: "Remove credential" })).toBeDisabled()
   expect(screen.getByRole("button", { name: "Test connection" })).toBeDisabled()
@@ -274,7 +303,7 @@ it("removes the active credential and disables controls until the operation comp
   expect(screen.getByRole("button", { name: "Save connection" })).toBeDisabled()
   expect(screen.getByLabelText("TypeSafe API key")).not.toHaveAttribute("placeholder")
   expect(saved.activeId).toBe("jev")
-  expect(screen.getByText("Active connection: Jev (recommended) · jev-1.13.0")).toBeVisible()
+  expect(screen.getByLabelText("Provider model")).toHaveValue(saved.profiles.jev?.model)
   expect(invoke).not.toHaveBeenCalledWith("switch_system_one_connection", expect.anything())
 })
 
@@ -300,14 +329,14 @@ it.each(["jev", "ollama", "cloudflare", "custom"] as const)(
     expect(input).toHaveValue("")
     expect(screen.queryByText(/Re-enter saved credentials/)).not.toBeInTheDocument()
     expect(
-      screen.getByText(/Tests and model-limit refreshes use the saved credential reference/),
+      screen.getByText("Leave empty to use the saved credential, or enter a replacement."),
     ).toBeVisible()
     fireEvent.click(screen.getByRole("button", { name: "Test connection" }))
-    await screen.findByText("This draft passed the connection test.")
+    await screen.findByText("Connection test passed.")
     expect(invoke).toHaveBeenCalledWith("test_system_one_connection", {
       draft: { connection_id: provider, connection, credential: null },
     })
-    fireEvent.click(screen.getByRole("button", { name: "Use Ollama or another provider" }))
+    fireEvent.click(screen.getByRole("button", { name: "Model limits" }))
     fireEvent.click(screen.getByRole("button", { name: "Refresh model limits" }))
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Refresh model limits" })).toBeEnabled(),
@@ -318,7 +347,7 @@ it.each(["jev", "ollama", "cloudflare", "custom"] as const)(
     })
     fireEvent.change(input, { target: { value: "synthetic-replacement" } })
     fireEvent.click(screen.getByRole("button", { name: "Test connection" }))
-    await screen.findByText("This draft passed the connection test.")
+    await screen.findByText("Connection test passed.")
     expect(invoke).toHaveBeenCalledWith("test_system_one_connection", {
       draft: { connection_id: provider, connection, credential: "synthetic-replacement" },
     })
@@ -348,6 +377,8 @@ it.each([
     credential: { kind: "connection", id: "jev" },
   }
   await setup("jev")
+  if (action === "refresh")
+    fireEvent.click(screen.getByRole("button", { name: "Model limits" }))
   invoke.mockRejectedValueOnce(new Error(message))
   const button = screen.getByRole("button", {
     name:
@@ -383,7 +414,7 @@ it("keeps the active connection after a saved-profile switch fails with a safe r
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Use saved connection" })).toBeEnabled(),
   )
-  expect(screen.getByText("Active connection: Jev (recommended) · jev-1.13.0")).toBeVisible()
+  expect(saved.activeId).toBe("jev")
   expect(screen.getByLabelText("Provider model")).toHaveValue("saved-model")
 })
 
@@ -396,7 +427,7 @@ it("tests a migrated Jev key using its saved legacy reference", async () => {
   render(<CheckProviderSettings legacyKeySaved />)
   await waitFor(() => expect(screen.getByLabelText("TypeSafe API key")).toBeEnabled())
   fireEvent.click(screen.getByRole("button", { name: "Test connection" }))
-  await screen.findByText("This draft passed the connection test.")
+  await screen.findByText("Connection test passed.")
   expect(invoke).toHaveBeenCalledWith("test_system_one_connection", {
     draft: { connection_id: "jev", connection, credential: null },
   })
@@ -450,15 +481,36 @@ it.each(["smartCheckProvider", "smartCheckLimits", "typeSafeApiKey"])(
   },
 )
 
-it("uses keyboard-focusable disclosure and native form controls", async () => {
+it("keeps provider fields visible while model limits use a keyboard-focusable disclosure", async () => {
   await setup("custom")
-  const disclosure = screen.getByRole("button", { name: "Use Ollama or another provider" })
+  const disclosure = screen.getByRole("button", { name: "Model limits" })
   disclosure.focus()
   expect(disclosure).toHaveFocus()
-  expect(disclosure).toHaveAttribute("aria-expanded", "true")
+  expect(disclosure).toHaveAttribute("aria-expanded", "false")
+  expect(screen.queryByLabelText("Manual total input tokens")).not.toBeInTheDocument()
   fireEvent.click(disclosure)
   expect(disclosure).toHaveFocus()
-  expect(screen.queryByLabelText("Smart check provider")).not.toBeInTheDocument()
+  expect(disclosure).toHaveAttribute("aria-expanded", "true")
+  expect(screen.getByLabelText("Manual total input tokens")).toBeVisible()
   fireEvent.click(disclosure)
+  expect(disclosure).toHaveFocus()
+  expect(screen.getByLabelText("Smart check provider")).toBeVisible()
   expect(screen.getByLabelText("Response mode").tagName).toBe("SELECT")
+})
+
+it("reopens model limits for a new search request after dismissal", async () => {
+  const { rerender } = render(
+    <CheckProviderSettings control="smartCheckLimits" targetRevision={1} />,
+  )
+  await waitFor(() => expect(screen.getByLabelText("TypeSafe API key")).toBeEnabled())
+  const disclosure = screen.getByRole("button", { name: "Model limits" })
+  expect(disclosure).toHaveAttribute("aria-expanded", "true")
+  fireEvent.click(disclosure)
+  expect(disclosure).toHaveAttribute("aria-expanded", "false")
+  rerender(<CheckProviderSettings control="smartCheckLimits" targetRevision={2} />)
+  expect(disclosure).toHaveAttribute("aria-expanded", "true")
+  expect(screen.getByRole("button", { name: "Refresh model limits" })).toBeVisible()
+  expect(invoke.mock.calls.every(([command]) => command === "get_system_one_settings")).toBe(
+    true,
+  )
 })

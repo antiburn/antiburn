@@ -543,14 +543,14 @@ describe("BurnChecksView grouping", { timeout: 15_000 }, () => {
     const disclosure = await screen.findByRole("button", { name: "Not assessed (2)" })
     expect(disclosure).toHaveAttribute("aria-expanded", "false")
     expect(
-      screen.queryByRole("button", { name: /Ignored Instructions/ }),
+      screen.queryByRole("button", { name: /Ignored instructions/ }),
     ).not.toBeInTheDocument()
     const failed = screen.getByRole("button", { name: /Old model usage/ })
     expect(
       failed.compareDocumentPosition(disclosure) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0)
     fireEvent.click(disclosure)
-    const ignored = screen.getByRole("button", { name: "Ignored Instructions, Not assessed" })
+    const ignored = screen.getByRole("button", { name: "Ignored instructions, Not assessed" })
     expect(ignored).toBeVisible()
     expect(
       screen.getByRole("button", { name: "Excess cache rehydration, Not assessed" }),

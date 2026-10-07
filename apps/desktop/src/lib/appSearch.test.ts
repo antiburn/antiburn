@@ -56,7 +56,7 @@ describe("static app search", () => {
       HTMLElement.prototype.scrollIntoView = vi.fn()
       const result = searchApp("Skill Opportunities", platform)[0]!
       expect(result).toMatchObject({
-        label: "Skill Opportunities",
+        label: "Skill opportunities",
         target: { kind: "check", check: "skillOpportunities" },
       })
       if (result.target.kind !== "check") throw new Error("Expected a check destination")
@@ -78,7 +78,7 @@ describe("static app search", () => {
       })
       await screen.findByRole("button", { name: /Not assessed \(1\)/ })
       expect(
-        screen.queryByRole("button", { name: /Skill Opportunities/ }),
+        screen.queryByRole("button", { name: /Skill opportunities/ }),
       ).not.toBeInTheDocument()
       view.rerender(
         createElement(BurnChecksView, {
@@ -89,7 +89,7 @@ describe("static app search", () => {
         }),
       )
       const row = await screen.findByRole("button", {
-        name: /Skill Opportunities.*Not assessed/,
+        name: /Skill opportunities.*Not assessed/,
       })
       await waitFor(() => expect(row).toHaveFocus())
       expect(row).toHaveAttribute("aria-pressed", "true")

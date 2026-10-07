@@ -84,7 +84,7 @@ export const STEP_SETTINGS_TARGETS = {
   },
   ignoredInstructions: {
     step: "checks",
-    label: "Ignored Instructions",
+    label: "Ignored instructions",
     aliases: ["missed project instructions", "instruction conflicts"],
   },
   sessionsOverDepthCheck: {
@@ -139,17 +139,17 @@ export const STEP_SETTINGS_TARGETS = {
   },
   skillOpportunitiesCheck: {
     step: "checks",
-    label: "Enable Skill Opportunities",
+    label: "Enable skill opportunities",
     aliases: ["enable skill opportunities", "skill check preference"],
   },
   overExploringCheck: {
     step: "checks",
-    label: "Enable Over-exploring",
+    label: "Enable over-exploring",
     aliases: ["enable over-exploring", "reading check preference"],
   },
   scopeCreepCheck: {
     step: "checks",
-    label: "Enable Scope Creep",
+    label: "Enable scope creep",
     aliases: ["enable scope creep", "task scope preference"],
   },
   smartCheckProvider: {

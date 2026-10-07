@@ -30,7 +30,7 @@ describe("check row presentation", () => {
     expect(
       checkRowPresentation(category({ id: "scopeCreep", estimatedTokenBurnBasisPoints: null })),
     ).toMatchObject({
-      label: "Scope Creep",
+      label: "Scope creep",
       summary: "2/5 sessions failed",
       metric: null,
       costLine: null,
@@ -63,7 +63,7 @@ describe("check row presentation", () => {
   it("presents Skill Opportunities through the shared check row", () => {
     expect(
       checkRowPresentation(category({ id: "skillOpportunities", finding: 2, clean: 1 })),
-    ).toMatchObject({ label: "Skill Opportunities", summary: "2/3 sessions failed" })
+    ).toMatchObject({ label: "Skill opportunities", summary: "2/3 sessions failed" })
   })
 
   it("presents Over-exploring without inventing an estimate", () => {
@@ -100,7 +100,7 @@ describe("check row presentation", () => {
         [target(null)],
       ),
     ).toMatchObject({
-      label: "Skill Opportunities",
+      label: "Skill opportunities",
       summary,
       metric: null,
       costLine: null,
@@ -111,7 +111,7 @@ describe("check row presentation", () => {
     expect(
       checkRowPresentation(category({ id: "ignoredInstructions", finding: 2, clean: 0 })),
     ).toMatchObject({
-      label: "Ignored Instructions",
+      label: "Ignored instructions",
       summary: "2/2 sessions failed",
       metric: null,
     })

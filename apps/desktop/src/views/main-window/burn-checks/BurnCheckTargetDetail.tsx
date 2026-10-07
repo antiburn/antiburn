@@ -3,6 +3,7 @@ import { Info } from "lucide-react"
 
 import { ProjectFolderActions } from "../../../components/session/ProjectFolderActions"
 import { Tooltip } from "../../../components/presentation/Tooltip"
+import { Skeleton } from "../../../components/ui/Skeleton"
 import { performProjectFolderAction } from "../../../lib/projectFolder"
 import { noteInteraction, smartCheckForDetector } from "../../../lib/ipc"
 import "../../../styles/session-detail.css"
@@ -39,10 +40,12 @@ export function targetCostLine(target: BurnCheckTargetPayload): string | null {
 function EvidenceExcerpt({
   item,
   showMetadata = true,
+  showExplanation = true,
   citationPrefix,
 }: {
   item: BurnCheckTargetEvidencePayload["items"][number]
   showMetadata?: boolean
+  showExplanation?: boolean
   citationPrefix?: string
 }) {
   return (
@@ -50,7 +53,7 @@ function EvidenceExcerpt({
       {showMetadata && (
         <p className="type-caption text-label-tertiary">
           {item.sourceLabel}
-          {item.explanation ? ` · ${item.explanation}` : ""}
+          {showExplanation && item.explanation ? ` · ${item.explanation}` : ""}
         </p>
       )}
       <pre
@@ -77,38 +80,41 @@ function orderedEvidence(items: BurnCheckTargetEvidencePayload["items"]) {
   )
 }
 
-function EvidenceInfo({ details }: { details: string[] }) {
+export function EvidenceLimitsIcon({
+  details,
+  label = "About this evidence",
+}: {
+  details: string[]
+  label?: string
+}) {
   if (details.length === 0) return null
   return (
     <Tooltip
       label={
-        <ul className="list-disc space-y-1 pl-4">
-          {details.map((detail) => (
+        <ul className="list-disc space-y-1 pl-4 type-callout font-normal!">
+          {[...new Set(details)].map((detail) => (
             <li key={detail}>{detail}</li>
           ))}
         </ul>
       }
-      interactive
     >
-      <button
-        type="button"
-        className="burn-check-action rounded-control p-1 text-label-tertiary"
-        aria-label="About this evidence"
+      <span
+        tabIndex={0}
+        className="inline-flex shrink-0 text-label-tertiary"
+        aria-label={label}
       >
         <Info size={14} aria-hidden="true" />
-      </button>
+      </span>
     </Tooltip>
   )
 }
 
 function AssessmentDecision({
   contrast,
-  details,
   advisory = false,
   children,
 }: {
   contrast: string
-  details: string[]
   advisory?: boolean
   children: ReactNode
 }) {
@@ -119,9 +125,8 @@ function AssessmentDecision({
     >
       <div className="flex items-center gap-1.5">
         <h4 className="type-callout font-medium text-label">
-          {advisory ? "Why this was suggested" : "Why this was flagged"}
+          {advisory ? "Suggestion" : "Assessment"}
         </h4>
-        <EvidenceInfo details={details} />
       </div>
       <p className="type-callout text-label-secondary">{contrast}</p>
       {children}
@@ -133,18 +138,18 @@ function DecisionProof({
   proof,
   items,
   citationPrefix,
-  extraDetails = [],
+  navigationEnabled = true,
 }: {
   proof: NonNullable<BurnCheckTargetEvidencePayload["decisionProof"]>
   items: BurnCheckTargetEvidencePayload["items"]
   citationPrefix: string
-  extraDetails?: string[]
+  navigationEnabled?: boolean
 }) {
   const claims: Record<IgnoredInstructionDecisionCitationPayload["claim"], string> = {
-    rule_requirement: "Instruction requirement",
-    anchored_action: "Cited action",
-    prerequisite_contrast: "Prerequisite evidence",
-    observed_context: "Observed context",
+    rule_requirement: "Instruction",
+    anchored_action: "Action",
+    prerequisite_contrast: "Prerequisite",
+    observed_context: "Context",
   }
   if (
     !proof.citations.some((citation) => citation.claim === "rule_requirement") ||
@@ -166,8 +171,46 @@ function DecisionProof({
     )
   )
     return null
-  const details = [
-    ...extraDetails,
+  return (
+    <AssessmentDecision contrast={proof.contrast}>
+      <ul className="space-y-1">
+        {proof.citations.map((citation, index) => (
+          <li key={`${citation.claim}:${index}`} className="type-caption text-label-tertiary">
+            <ul className="flex flex-wrap gap-x-3 gap-y-1">
+              {citation.source_ids.map((id) => (
+                <li key={id}>
+                  <a
+                    href={
+                      navigationEnabled
+                        ? `#${citationPrefix}-${encodeURIComponent(id)}`
+                        : undefined
+                    }
+                    aria-disabled={!navigationEnabled || undefined}
+                    onClick={(event) => {
+                      if (!navigationEnabled) return
+                      const excerpt = document.getElementById(event.currentTarget.hash.slice(1))
+                      const disclosure = excerpt?.closest("details")
+                      if (disclosure) disclosure.open = true
+                      excerpt?.focus()
+                    }}
+                  >
+                    {citation.claim === "rule_requirement" ||
+                    citation.claim === "anchored_action"
+                      ? claims[citation.claim]
+                      : `${claims[citation.claim]} · ${items.find((item) => item.reference === id)?.sourceLabel}`}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </li>
+        ))}
+      </ul>
+    </AssessmentDecision>
+  )
+}
+
+function proofLimits(proof: NonNullable<BurnCheckTargetEvidencePayload["decisionProof"]>) {
+  return [
     ...proof.coverage.limitations,
     proof.coverage.source_complete
       ? "The saved source includes every event used by this check."
@@ -188,34 +231,52 @@ function DecisionProof({
         ]
       : []),
   ]
+}
+
+function evidenceLimits(
+  target: BurnCheckTargetPayload,
+  evidence: BurnCheckTargetEvidencePayload | undefined,
+  stale: boolean,
+) {
+  return [
+    ...(stale
+      ? ["Previous snapshot. Citation navigation is paused until current evidence loads."]
+      : []),
+    ...(evidence?.items.flatMap((item) => (item.limitation ? [item.limitation] : [])) ?? []),
+    ...(evidence?.status === "available" && evidence.decisionProof
+      ? proofLimits(evidence.decisionProof)
+      : []),
+    ...(target.finding.detector === "ignoredInstructions" && target.occurrenceCount > 1
+      ? ["These excerpts show one finding from this group."]
+      : []),
+    ...(target.finding.detector === "skillOpportunities"
+      ? [
+          "Current inventory does not prove availability during this session. Use this skill for similar future work.",
+        ]
+      : []),
+    ...(target.finding.detector === "scopeCreep"
+      ? [
+          "This assessment uses the latest recorded task scope and user approval. Assistant proposals and tool permission do not establish approval. Later approval does not prove earlier approval.",
+        ]
+      : []),
+  ]
+}
+
+export function SmartCheckEvidenceSkeleton() {
   return (
-    <AssessmentDecision contrast={proof.contrast} details={details}>
-      <ul className="space-y-1">
-        {proof.citations.map((citation, index) => (
-          <li key={`${citation.claim}:${index}`} className="type-caption text-label-tertiary">
-            {claims[citation.claim]} · {citation.source_ids.length} source
-            {citation.source_ids.length === 1 ? "" : "s"}
-            <ul>
-              {citation.source_ids.map((id) => (
-                <li key={id}>
-                  <a
-                    href={`#${citationPrefix}-${encodeURIComponent(id)}`}
-                    onClick={(event) => {
-                      const excerpt = document.getElementById(event.currentTarget.hash.slice(1))
-                      const disclosure = excerpt?.closest("details")
-                      if (disclosure) disclosure.open = true
-                      excerpt?.focus()
-                    }}
-                  >
-                    {items.find((item) => item.reference === id)?.sourceLabel}
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </li>
-        ))}
-      </ul>
-    </AssessmentDecision>
+    <div role="status" aria-label="Loading evidence" className="space-y-3">
+      <span className="sr-only">Loading evidence…</span>
+      <Skeleton className="h-16 w-full" />
+      <div className="space-y-2">
+        <Skeleton className="h-3 w-24" />
+        <Skeleton className="h-3 w-48 max-w-full" />
+        <Skeleton className="h-16 w-full" />
+      </div>
+      <div className="space-y-2">
+        <Skeleton className="h-3 w-24" />
+        <Skeleton className="h-20 w-full" />
+      </div>
+    </div>
   )
 }
 
@@ -224,6 +285,11 @@ type EvidenceState = {
   actionId: string
   status: "loading" | "loaded" | "failed"
   evidence?: BurnCheckTargetEvidencePayload
+  snapshot?: {
+    target: BurnCheckTargetPayload
+    evidence: BurnCheckTargetEvidencePayload
+    occurrenceId?: string
+  }
 }
 
 function IgnoredInstructionEvidence({
@@ -231,13 +297,16 @@ function IgnoredInstructionEvidence({
   state,
   sourcePath,
   retry,
+  navigationEnabled = true,
 }: {
   target: BurnCheckTargetPayload
   state: EvidenceState
   sourcePath: string | null
   retry: () => void
+  navigationEnabled?: boolean
 }) {
-  const citationPrefix = useId()
+  const citationId = useId()
+  const citationPrefix = `${citationId}-${encodeURIComponent(state.actionId)}`
   const items =
     state.status === "loaded" && state.evidence?.status === "available"
       ? state.evidence.items
@@ -248,45 +317,38 @@ function IgnoredInstructionEvidence({
     state.status === "loaded" && state.evidence?.status === "available"
       ? state.evidence.decisionProof
       : undefined
-  const itemLimitations = [
-    ...new Set(
-      items.map((item) => item.limitation).filter((value): value is string => Boolean(value)),
-    ),
-  ]
-
   return (
     <div className="space-y-3">
-      {decisionProof ? (
+      {decisionProof && (
         <DecisionProof
           proof={decisionProof}
           items={items}
           citationPrefix={citationPrefix}
-          extraDetails={itemLimitations}
+          navigationEnabled={navigationEnabled}
         />
-      ) : (
-        <EvidenceInfo details={itemLimitations} />
       )}
       <div className="space-y-1">
-        <p className="type-callout font-medium text-label">Instruction</p>
+        <p className="type-callout font-medium! text-label">
+          {instruction?.limitation?.includes("outdated instructions")
+            ? "Current instruction"
+            : "Instruction"}
+        </p>
         {instruction ? (
           <>
             <p className="type-caption text-label-tertiary">
               {instruction.sourceLabel}
               {instruction.startLine != null &&
-                ` · line${instruction.endLine !== instruction.startLine ? "s" : ""} ${instruction.startLine}${instruction.endLine !== instruction.startLine ? `–${instruction.endLine}` : ""}`}
+                ` · line${instruction.endLine != null && instruction.endLine !== instruction.startLine ? "s" : ""} ${instruction.startLine}${instruction.endLine != null && instruction.endLine !== instruction.startLine ? `–${instruction.endLine}` : ""}`}
             </p>
-            <EvidenceExcerpt item={instruction} citationPrefix={citationPrefix} />
+            <EvidenceExcerpt
+              item={instruction}
+              showMetadata={false}
+              citationPrefix={citationPrefix}
+            />
           </>
         ) : (
-          <p
-            role={state.status === "loading" ? "status" : undefined}
-            className="type-callout text-label-secondary"
-          >
-            {state.status === "loading"
-              ? "Loading the instruction…"
-              : (target.display.instructionTitle ??
-                sourcePath ??
-                "Instruction cited by this check")}
+          <p className="type-callout text-label-secondary">
+            {target.display.instructionTitle ?? sourcePath ?? "Instruction cited by this check"}
           </p>
         )}
       </div>
@@ -294,7 +356,11 @@ function IgnoredInstructionEvidence({
         <p className="type-callout font-medium text-label">Session action</p>
         {action ? (
           <>
-            <EvidenceExcerpt item={action} citationPrefix={citationPrefix} />
+            <EvidenceExcerpt
+              item={action}
+              showExplanation={false}
+              citationPrefix={citationPrefix}
+            />
             {action.observedAtMs != null && (
               <time
                 dateTime={new Date(action.observedAtMs).toISOString()}
@@ -305,15 +371,10 @@ function IgnoredInstructionEvidence({
             )}
           </>
         ) : (
-          <p
-            role={state.status === "loading" ? "status" : undefined}
-            className="type-callout text-label-secondary"
-          >
-            {state.status === "loading"
-              ? "Loading the cited session action…"
-              : state.status === "loaded" && state.evidence?.status === "unavailable"
-                ? "The cited session action is unavailable."
-                : target.finding.observation}
+          <p className="type-callout text-label-secondary">
+            {state.status === "loaded" && state.evidence?.status === "unavailable"
+              ? "The cited session action is unavailable."
+              : target.finding.observation}
           </p>
         )}
       </div>
@@ -337,7 +398,11 @@ function IgnoredInstructionEvidence({
                       {new Date(item.observedAtMs).toLocaleString()}
                     </time>
                   )}
-                  <EvidenceExcerpt item={item} citationPrefix={citationPrefix} />
+                  <EvidenceExcerpt
+                    item={item}
+                    showExplanation={false}
+                    citationPrefix={citationPrefix}
+                  />
                 </li>
               ))}
           </ol>
@@ -373,18 +438,18 @@ function instructionSourcePath(target: BurnCheckTargetPayload): string | null {
   return source
 }
 
-const outdatedInstructionsNote = "Note: this session may have run on outdated instructions."
-
 function AssessmentExplanation({
   target,
   evidence,
   citationPrefix,
   revealContext,
+  navigationEnabled = true,
 }: {
   target: BurnCheckTargetPayload
   evidence: BurnCheckTargetEvidencePayload
   citationPrefix: string
   revealContext: () => void
+  navigationEnabled?: boolean
 }) {
   const items = evidence.items
   const hasWork = items.some((item) => item.label === "observedAction")
@@ -403,19 +468,14 @@ function AssessmentExplanation({
       break
     case "skillOpportunities":
       if (hasScope && hasWork)
-        contrast =
-          "This recorded work matches a skill in your current inventory. Use it for similar future work; current inventory does not prove past availability."
+        contrast = "This recorded work matches a skill in your current inventory."
       break
   }
-  const limits = [
-    ...new Set(items.flatMap((item) => (item.limitation ? [item.limitation] : []))),
-  ]
   if (evidence.status !== "available") return null
-  if (!contrast) return <EvidenceInfo details={limits} />
+  if (!contrast) return null
   return (
     <AssessmentDecision
       contrast={contrast}
-      details={limits}
       advisory={target.finding.detector === "skillOpportunities"}
     >
       <ul className="space-y-1">
@@ -425,10 +485,19 @@ function AssessmentExplanation({
             className="type-caption text-label-tertiary"
           >
             <a
-              href={`#${citationPrefix}-${encodeURIComponent(item.reference)}`}
-              onClick={revealContext}
+              href={
+                navigationEnabled
+                  ? `#${citationPrefix}-${encodeURIComponent(item.reference)}`
+                  : undefined
+              }
+              aria-disabled={!navigationEnabled || undefined}
+              onClick={navigationEnabled ? revealContext : undefined}
             >
-              {item.sourceLabel}
+              {item.label === "instruction"
+                ? target.finding.detector === "skillOpportunities"
+                  ? "Current skill"
+                  : "Task scope"
+                : item.sourceLabel}
             </a>
           </li>
         ))}
@@ -457,71 +526,101 @@ export function BurnCheckTargetDetail({
     target.finding.detector === "overExploring"
       ? target.actionId
       : null
-  const citationPrefix = useId()
+  const citationId = useId()
   const [evidenceState, setEvidenceState] = useState<EvidenceState | null>(null)
   const [showContext, setShowContext] = useState(false)
   const request = useRef(0)
   const currentTargetElement = useRef<HTMLElement | null>(null)
   const autoLoadedFinding = useRef<string | null>(null)
   const loadedFinding = useRef<string | null>(null)
-  const loadEvidence = useCallback(
-    (actionId: string, findingId: string, detector: string) => {
-      const token = ++request.current
-      setEvidenceState({ findingId, actionId, status: "loading" })
-      void getBurnCheckTargetEvidence(actionId).then(
-        (evidence) => {
-          if (
-            token !== request.current ||
-            currentTargetElement.current?.dataset.findingId !== findingId ||
-            currentTargetElement.current?.dataset.evidenceActionId !== actionId
-          )
-            return
+  const loadEvidence = useCallback((snapshotTarget: BurnCheckTargetPayload) => {
+    const { actionId, findingId } = snapshotTarget
+    const detector = snapshotTarget.finding.detector
+    const token = ++request.current
+    setEvidenceState((previous) => ({
+      findingId,
+      actionId,
+      status: "loading",
+      ...(previous?.findingId === findingId && previous.snapshot
+        ? { snapshot: previous.snapshot }
+        : {}),
+    }))
+    void getBurnCheckTargetEvidence(actionId).then(
+      (evidence) => {
+        if (
+          token !== request.current ||
+          currentTargetElement.current?.dataset.findingId !== findingId ||
+          currentTargetElement.current?.dataset.evidenceActionId !== actionId
+        )
+          return
+        const check = smartCheckForDetector(detector)
+        if (check)
+          noteInteraction({
+            kind: "smartCheckObserved",
+            check,
+            observation: evidence
+              ? evidence.status === "available"
+                ? "evidence_available"
+                : "evidence_unavailable"
+              : "evidence_failed",
+          })
+        setEvidenceState((previous) => {
+          const retained = previous?.findingId === findingId ? previous.snapshot : undefined
+          const occurrence =
+            evidence?.occurrences?.find((item) => item.findingId === retained?.occurrenceId) ??
+            evidence?.occurrences?.[0]
+          const selectedEvidence = evidence && occurrence ? occurrence : evidence
+          return {
+            findingId,
+            actionId,
+            status: selectedEvidence ? "loaded" : "failed",
+            ...(selectedEvidence
+              ? {
+                  evidence: selectedEvidence,
+                  snapshot: {
+                    target: snapshotTarget,
+                    evidence: selectedEvidence,
+                    ...(occurrence ? { occurrenceId: occurrence.findingId } : {}),
+                  },
+                }
+              : retained
+                ? { snapshot: retained }
+                : {}),
+          }
+        })
+        if (evidence)
+          loadedFinding.current = smartCheckForDetector(detector)
+            ? `${findingId}:${actionId}`
+            : findingId
+      },
+      () => {
+        if (
+          token === request.current &&
+          currentTargetElement.current?.dataset.findingId === findingId &&
+          currentTargetElement.current?.dataset.evidenceActionId === actionId
+        ) {
           const check = smartCheckForDetector(detector)
           if (check)
             noteInteraction({
               kind: "smartCheckObserved",
               check,
-              observation: evidence
-                ? evidence.status === "available"
-                  ? "evidence_available"
-                  : "evidence_unavailable"
-                : "evidence_failed",
+              observation: "evidence_failed",
             })
-          setEvidenceState({
+          setEvidenceState((previous) => ({
             findingId,
             actionId,
-            status: evidence ? "loaded" : "failed",
-            ...(evidence ? { evidence } : {}),
-          })
-          if (evidence)
-            loadedFinding.current =
-              revisionEvidenceActionId != null ? `${findingId}:${actionId}` : findingId
-        },
-        () => {
-          if (
-            token === request.current &&
-            currentTargetElement.current?.dataset.findingId === findingId &&
-            currentTargetElement.current?.dataset.evidenceActionId === actionId
-          ) {
-            const check = smartCheckForDetector(detector)
-            if (check)
-              noteInteraction({
-                kind: "smartCheckObserved",
-                check,
-                observation: "evidence_failed",
-              })
-            setEvidenceState({ findingId, actionId, status: "failed" })
-          }
-        },
-      )
-    },
-    [revisionEvidenceActionId],
-  )
+            status: "failed",
+            ...(previous?.findingId === findingId && previous.snapshot
+              ? { snapshot: previous.snapshot }
+              : {}),
+          }))
+        }
+      },
+    )
+  }, [])
   const mounted = useCallback(
     (node: HTMLElement | null) => {
       if (!node) {
-        request.current += 1
-        autoLoadedFinding.current = null
         currentTargetElement.current = null
         return
       }
@@ -531,23 +630,38 @@ export function BurnCheckTargetDetail({
       const evidenceKey =
         revisionEvidenceActionId != null ? `${findingId}:${actionId}` : findingId
       if (
-        openEvidence &&
+        (openEvidence || node.dataset.evidenceOpen === "true") &&
         target.evidenceAvailable &&
         autoLoadedFinding.current !== evidenceKey &&
         loadedFinding.current !== evidenceKey
       ) {
         autoLoadedFinding.current = evidenceKey
-        loadEvidence(actionId, findingId, node.dataset.detector ?? "")
+        loadEvidence(target)
       }
     },
-    [target.evidenceAvailable, revisionEvidenceActionId, openEvidence, loadEvidence],
+    [target, revisionEvidenceActionId, openEvidence, loadEvidence],
   )
   const ignoredInstructions = target.finding.detector === "ignoredInstructions"
+  const snapshot =
+    evidenceState?.findingId === target.findingId ? evidenceState.snapshot : undefined
+  const staleEvidence =
+    snapshot != null &&
+    revisionEvidenceActionId != null &&
+    snapshot.target.actionId !== target.actionId
+  const displayedEvidenceState = snapshot
+    ? {
+        findingId: snapshot.target.findingId,
+        actionId: snapshot.target.actionId,
+        status: "loaded" as const,
+        evidence: snapshot.evidence,
+      }
+    : evidenceState
+  const citationPrefix = `${citationId}-${encodeURIComponent(displayedEvidenceState?.actionId ?? target.actionId)}`
   const hasInstructionExcerpt =
-    evidenceState?.findingId === target.findingId &&
-    evidenceState?.status === "loaded" &&
-    evidenceState.evidence?.status === "available" &&
-    evidenceState.evidence.items.some((item) => item.label === "instruction")
+    displayedEvidenceState?.findingId === target.findingId &&
+    displayedEvidenceState?.status === "loaded" &&
+    displayedEvidenceState.evidence?.status === "available" &&
+    displayedEvidenceState.evidence.items.some((item) => item.label === "instruction")
   const status = watchStatus(target)
   const guidance = CHECK_UI[target.finding.detector]
   const reasonDetail =
@@ -557,13 +671,21 @@ export function BurnCheckTargetDetail({
   const costLine = targetCostLine(target)
   const projectPath = target.projectPath
   const sourcePath = ignoredInstructions ? instructionSourcePath(target) : target.configFile
-  const hasEvidenceSelection =
-    evidenceState?.findingId === target.findingId &&
-    (revisionEvidenceActionId == null || evidenceState.actionId === target.actionId)
+  const hasEvidenceSelection = displayedEvidenceState?.findingId === target.findingId
+  const initialEvidenceLoading =
+    target.evidenceAvailable &&
+    !snapshot &&
+    (hasEvidenceSelection ? displayedEvidenceState.status === "loading" : openEvidence)
+  const limits = evidenceLimits(
+    snapshot?.target ?? target,
+    hasEvidenceSelection ? displayedEvidenceState.evidence : undefined,
+    staleEvidence,
+  )
   return (
     <article
       ref={mounted}
       data-evidence-action-id={target.actionId}
+      data-evidence-open={hasEvidenceSelection}
       data-finding-id={target.findingId}
       data-detector={target.finding.detector}
       className={
@@ -578,7 +700,10 @@ export function BurnCheckTargetDetail({
             <span className="burn-check-resource-icon">
               {renderAgentIcon(target.finding.agent, 16)}
             </span>
-            <span className="min-w-0 wrap-anywhere">{targetTitle(target)}</span>
+            <span className="flex min-w-0 items-baseline gap-1.5">
+              <span className="min-w-0 wrap-anywhere">{targetTitle(target)}</span>
+              <EvidenceLimitsIcon details={limits} />
+            </span>
           </h3>
         </div>
       </div>
@@ -621,7 +746,7 @@ export function BurnCheckTargetDetail({
           <div className="mt-2 space-y-1">
             <p className="type-body text-pretty text-label-secondary">
               {skillOpportunities
-                ? "This work matches a skill in your current inventory."
+                ? "Use matching skills for similar future work."
                 : target.finding.detector === "ignoredInstructions"
                   ? "Review the cited instruction and session action."
                   : guidance.recommendation}
@@ -629,22 +754,15 @@ export function BurnCheckTargetDetail({
             {reasonDetail &&
               !(
                 hasEvidenceSelection &&
-                evidenceState.status === "loaded" &&
-                evidenceState.evidence?.status === "unavailable"
+                displayedEvidenceState.status === "loaded" &&
+                (displayedEvidenceState.evidence?.status === "unavailable" ||
+                  (displayedEvidenceState.evidence?.items.some(
+                    (item) => item.label === "context",
+                  ) &&
+                    displayedEvidenceState.evidence.items.some(
+                      (item) => item.label === "observedAction",
+                    )))
               ) && <p className="type-callout text-label-secondary">{reasonDetail}</p>}
-            {skillOpportunities && (
-              <p className="type-callout text-label-secondary">
-                Use this skill for similar future work. Current inventory does not prove it was
-                available during this session.
-              </p>
-            )}
-            {scopeCreep && (
-              <p className="type-callout text-label-secondary">
-                This assessment uses the latest recorded task scope and user approval evidence.
-                Assistant proposals and tool permission do not establish approval. Later
-                approval does not prove the work was approved before it occurred.
-              </p>
-            )}
           </div>
         ) : null}
         {costLine && (
@@ -668,67 +786,72 @@ export function BurnCheckTargetDetail({
                     setShowContext(false)
                     return
                   }
-                  loadEvidence(target.actionId, target.findingId, target.finding.detector)
+                  loadEvidence(target)
                 }}
               >
                 {hasEvidenceSelection ? "Hide details" : "Show evidence"}
               </button>
             )}
-            {hasEvidenceSelection && (
-              <div className="mt-3 space-y-3">
+            {initialEvidenceLoading && (
+              <div className="mt-3 min-h-72" aria-busy="true">
+                <SmartCheckEvidenceSkeleton />
+              </div>
+            )}
+            {hasEvidenceSelection && !initialEvidenceLoading && (
+              <div
+                className="mt-3 min-h-72 space-y-3"
+                aria-busy={staleEvidence && evidenceState?.status !== "failed"}
+                data-snapshot-action-id={displayedEvidenceState.actionId}
+              >
+                {staleEvidence && evidenceState?.status !== "failed" && (
+                  <p role="status" className="sr-only">
+                    Showing previous evidence while the current snapshot loads.
+                  </p>
+                )}
+                {(snapshot || !ignoredInstructions) && evidenceState?.status === "failed" && (
+                  <div>
+                    <p role="alert" className="type-callout text-label-secondary">
+                      {snapshot
+                        ? "Could not refresh evidence. Showing the previous snapshot."
+                        : "Could not load evidence."}
+                    </p>
+                    <button
+                      type="button"
+                      className="burn-check-action mt-2 type-callout"
+                      onClick={() => loadEvidence(target)}
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
                 {ignoredInstructions ? (
                   <IgnoredInstructionEvidence
-                    target={target}
-                    state={evidenceState}
+                    target={snapshot?.target ?? target}
+                    state={displayedEvidenceState}
+                    navigationEnabled={!staleEvidence}
                     sourcePath={sourcePath ?? null}
-                    retry={() =>
-                      loadEvidence(target.actionId, target.findingId, target.finding.detector)
-                    }
+                    retry={() => loadEvidence(target)}
                   />
                 ) : (
                   <>
-                    {evidenceState.status === "loading" && (
-                      <p role="status" className="type-callout text-label-secondary">
-                        Loading evidence…
-                      </p>
-                    )}
-                    {evidenceState.status === "failed" && (
-                      <div>
-                        <p role="alert" className="type-callout text-label-secondary">
-                          Could not load evidence.
-                        </p>
-                        <button
-                          type="button"
-                          className="burn-check-action mt-2 type-callout"
-                          onClick={() =>
-                            loadEvidence(
-                              target.actionId,
-                              target.findingId,
-                              target.finding.detector,
-                            )
-                          }
-                        >
-                          Retry
-                        </button>
-                      </div>
-                    )}
-                    {evidenceState.status === "loaded" &&
-                      (evidenceState.evidence?.status === "unavailable" ? (
+                    {displayedEvidenceState.status === "loaded" &&
+                      (displayedEvidenceState.evidence?.status === "unavailable" ? (
                         <p role="status" className="type-callout text-label-secondary">
                           The original evidence is no longer available.
                         </p>
                       ) : (
                         <div>
-                          {evidenceState.evidence && (
+                          {displayedEvidenceState.evidence && (
                             <AssessmentExplanation
-                              target={target}
-                              evidence={evidenceState.evidence}
+                              target={snapshot?.target ?? target}
+                              evidence={displayedEvidenceState.evidence}
+                              navigationEnabled={!staleEvidence}
                               citationPrefix={citationPrefix}
                               revealContext={() => setShowContext(true)}
                             />
                           )}
                           <ol className="space-y-3">
-                            {orderedEvidence(evidenceState.evidence?.items ?? []).map(
+                            {orderedEvidence(displayedEvidenceState.evidence?.items ?? []).map(
                               (item) =>
                                 (item.label !== "context" || showContext) && (
                                   <li
@@ -745,7 +868,7 @@ export function BurnCheckTargetDetail({
                                             : "Session action"
                                           : item.label === "context"
                                             ? "Context"
-                                            : `${scopeCreep ? "Latest recorded task scope" : skillOpportunities ? "Current skill" : "Instruction"} · ${item.sourceLabel}${item.startLine ? ` · line${item.endLine !== item.startLine ? "s" : ""} ${item.startLine}${item.endLine !== item.startLine ? `–${item.endLine}` : ""}` : ""}`}
+                                            : `${scopeCreep ? "Latest task scope" : skillOpportunities ? "Current skill" : "Instruction"} · ${item.sourceLabel}${item.startLine ? ` · line${item.endLine != null && item.endLine !== item.startLine ? "s" : ""} ${item.startLine}${item.endLine != null && item.endLine !== item.startLine ? `–${item.endLine}` : ""}` : ""}`}
                                       </p>
                                       {item.observedAtMs != null && (
                                         <time
@@ -762,25 +885,29 @@ export function BurnCheckTargetDetail({
                                         Unavailable or changed since this assessment.
                                       </p>
                                     ) : (
-                                      <EvidenceExcerpt item={item} />
+                                      <EvidenceExcerpt
+                                        item={item}
+                                        showMetadata={item.label !== "instruction"}
+                                        showExplanation={
+                                          !(
+                                            skillOpportunities ||
+                                            scopeCreep ||
+                                            target.finding.detector === "overExploring"
+                                          )
+                                        }
+                                      />
                                     )}
-                                    {!skillOpportunities &&
-                                      item.limitation &&
-                                      item.excerpt !== "Instruction text unavailable." &&
-                                      item.limitation !== outdatedInstructionsNote && (
-                                        <p className="type-callout text-label-secondary">
-                                          {item.limitation}
-                                        </p>
-                                      )}
                                   </li>
                                 ),
                             )}
                           </ol>
                         </div>
                       ))}
-                    {evidenceState.status === "loaded" &&
-                      evidenceState.evidence?.status === "available" &&
-                      evidenceState.evidence.items.some((item) => item.label === "context") && (
+                    {displayedEvidenceState.status === "loaded" &&
+                      displayedEvidenceState.evidence?.status === "available" &&
+                      displayedEvidenceState.evidence.items.some(
+                        (item) => item.label === "context",
+                      ) && (
                         <button
                           type="button"
                           className="burn-check-action type-callout"
@@ -791,35 +918,6 @@ export function BurnCheckTargetDetail({
                         </button>
                       )}
                   </>
-                )}
-                {ignoredInstructions && evidenceState.status === "loaded" && (
-                  <section aria-label="Occurrences" className="space-y-3">
-                    <p className="type-caption text-label-tertiary">
-                      {`Showing ${Math.min(
-                        (evidenceState.evidence?.occurrences?.length ?? 0) + 1,
-                        target.occurrenceCount,
-                      )} of ${target.occurrenceCount} finding${target.occurrenceCount === 1 ? "" : "s"}.`}
-                    </p>
-                    {evidenceState.evidence?.occurrences?.map((occurrence, index) => (
-                      <details key={occurrence.findingId} className="space-y-3">
-                        <summary className="burn-check-action type-callout">
-                          Occurrence {index + 1}
-                        </summary>
-                        <IgnoredInstructionEvidence
-                          target={target}
-                          state={{ ...evidenceState, evidence: occurrence }}
-                          sourcePath={sourcePath ?? null}
-                          retry={() =>
-                            loadEvidence(
-                              target.actionId,
-                              target.findingId,
-                              target.finding.detector,
-                            )
-                          }
-                        />
-                      </details>
-                    ))}
-                  </section>
                 )}
               </div>
             )}

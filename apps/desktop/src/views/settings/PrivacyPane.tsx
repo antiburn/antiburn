@@ -111,7 +111,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             4px to the left of everything it introduces. */}
         <p className="type-body px-1 text-pretty text-label-secondary">
           antiburn reads the session files your coding agents already keep on this machine and
-          keeps its index locally. The optional Ignored Instructions check sends selected
+          keeps its index locally. The optional Ignored instructions check sends selected
           instruction text, assistant text excerpts, Bash command input, file-edit and read-file
           paths, search queries with scope filters, and other-tool inputs to TypeSafe when
           enabled in Settings → Checks. Bash input can include inline scripts, heredocs, and
@@ -137,7 +137,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             antiburn may keep session content and derived analysis in its own local store when
             they are needed for visibility or analysis. That can include messages, tool
             activity, file content recorded in a transcript, identities, paths, counts,
-            durations, token totals, and cost estimates. Only the optional Ignored Instructions
+            durations, token totals, and cost estimates. Only the optional Ignored instructions
             assessment sends selected instruction text, assistant text excerpts, Bash command
             input, file-edit and read-file paths, search queries with scope filters, and
             other-tool inputs to TypeSafe. Bash input can include inline scripts, heredocs, and
@@ -160,12 +160,12 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             credentials your own tools already stored; and, in a released build with the switch
             below on, it sends the anonymised product analytics listed below. Handing a provider
             back a credential it issued you is not a disclosure — it already has it. Enabling
-            Ignored Instructions in Settings → Checks sends selected instruction text, assistant
+            Ignored instructions in Settings → Checks sends selected instruction text, assistant
             text excerpts, Bash command input, file-edit and read-file paths, search queries
             with scope filters, and other-tool inputs to TypeSafe using your API key. Bash input
             can include inline scripts, heredocs, and patches recorded inside the command.
             Dedicated edit-tool content and tool-result text are excluded. Selected paths can
-            leave this machine. TypeSafe usage charges can apply. Pausing Smart Burn Checks
+            leave this machine. TypeSafe usage charges can apply. Pausing Smart burn checks
             keeps the saved key but stops new checks; remove the key separately in Settings →
             Checks. That pane shows bounded local token totals and estimated spend by model
             price version, without session identifiers or request content. Session deletion

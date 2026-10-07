@@ -719,7 +719,18 @@ Notes for what isn't expressible as a token:
   When Ignored Instructions reports priority sampling, place a small tertiary
   information icon next to its detail title. Its shared tooltip explains that
   likely conflicts are checked first and later checks can reduce the remaining
-  unassessed gap. The icon is a keyboard-focusable 24px target.
+  unassessed gap. Smart Check cards place evidence limits in the shared
+  `Tooltip`, immediately beside the actual card title, such as Git Style or
+  Quality Review. Do not add a separate Details heading. Use a lightweight 14px tertiary
+  info icon in a keyboard-focusable span. Open on hover or focus, with no button,
+  click toggle, control fill, or separate row. Keep source and historical-evidence
+  limits readable in the tooltip. Show instruction path and line metadata once.
+  Show the main occurrence inline without an occurrence picker or duplicate cards.
+  Initial evidence loads use the shared `Skeleton`: a 64px comparison block,
+  two compact metadata lines, a 64px instruction block, and an 80px action block.
+  The evidence body reserves a 288px minimum height while loading and after load.
+  Excerpts can grow beyond this minimum. Background refreshes keep the loaded
+  content and pause stale citation navigation instead of showing a skeleton.
   Session-card rows use a 2px interline gap inside unchanged 12px vertical card padding. A zero-failure result with at least one assessed check uses an outlined ring and tick, even
   when some checks are not assessed. Session cards keep the passing verdict visible above the title.
   Failed and non-result states keep their explicit verdict wording. Session cards use

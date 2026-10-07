@@ -131,7 +131,7 @@ it("shows every local and Smart check as an independent preference", () => {
   expect(screen.getByRole("heading", { name: "Smart Burn Checks" })).toBeInTheDocument()
   expect(screen.getAllByRole("switch")).toHaveLength(14)
   expect(screen.getByRole("switch", { name: "Session overdepth" })).toBeChecked()
-  expect(screen.getByRole("switch", { name: "Ignored Instructions" })).not.toBeChecked()
+  expect(screen.getByRole("switch", { name: "Ignored instructions" })).not.toBeChecked()
   expect(
     screen.getAllByText(/Enable Smart Burn Checks with an active provider connection below/),
   ).toHaveLength(4)
@@ -146,17 +146,17 @@ it("saves one check without changing its siblings", async () => {
 })
 
 it.each([
-  ["ignoredInstructions", "Ignored Instructions"],
-  ["skillOpportunities", "Enable Skill Opportunities"],
-  ["overExploring", "Enable Over-exploring"],
-  ["scopeCreep", "Enable Scope Creep"],
+  ["ignoredInstructions", "Ignored instructions"],
+  ["skillOpportunities", "Enable skill opportunities"],
+  ["overExploring", "Enable over-exploring"],
+  ["scopeCreep", "Enable scope creep"],
 ] as const)("saves %s independently of provider enablement", async (id, label) => {
   render(<ChecksStepSettings />)
   await waitFor(() => expect(screen.getByRole("switch", { name: label })).not.toBeChecked())
   fireEvent.click(screen.getByRole("switch", { name: label }))
   await waitFor(() => expect(setCheckEnabled).toHaveBeenCalledWith(id, true))
   expect(screen.getByRole("switch", { name: label })).toBeChecked()
-  expect(screen.getByRole("switch", { name: "Smart Burn Checks" })).not.toBeChecked()
+  expect(screen.getByRole("switch", { name: "Enable Smart Burn Checks" })).not.toBeChecked()
   expect(screen.getByRole("switch", { name: "Unused skills" })).toBeChecked()
 })
 
@@ -174,9 +174,10 @@ it.each(["macos", "windows", "linux"] as const)(
       throw new Error("Missing step settings container")
     HTMLElement.prototype.scrollIntoView = vi.fn()
     new SettingsTargetFocus().attach(container, request.step, request.control, 1)()
-    expect(
-      screen.getByRole("button", { name: "Use Ollama or another provider" }),
-    ).toHaveAttribute("aria-expanded", "true")
+    expect(screen.getByRole("button", { name: "Model limits" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    )
     expect(
       container
         .querySelector('[data-settings-control="smartCheckLimits"]')
@@ -228,7 +229,7 @@ it("saves a password draft and clears the key after native storage succeeds", as
 it("restores a saved key without a Settings action", async () => {
   getAvailability.mockResolvedValue({ ...emptyAvailability, savedKey: true, configured: true })
   render(<ChecksStepSettings />)
-  const toggle = await screen.findByRole("switch", { name: "Smart Burn Checks" })
+  const toggle = await screen.findByRole("switch", { name: "Enable Smart Burn Checks" })
   expect(toggle).toHaveAttribute("aria-checked", "true")
   expect(screen.queryByText(/Smart Burn Checks on/)).not.toBeInTheDocument()
   expect(save).not.toHaveBeenCalled()
@@ -247,7 +248,7 @@ it("pauses checks without removing the saved key", async () => {
     configured: false,
   })
   render(<ChecksStepSettings />)
-  const toggle = await screen.findByRole("switch", { name: "Smart Burn Checks" })
+  const toggle = await screen.findByRole("switch", { name: "Enable Smart Burn Checks" })
   fireEvent.click(toggle)
   await waitFor(() => expect(setChecksEnabled).toHaveBeenCalledWith(false))
   expect(toggle).toHaveAttribute("aria-checked", "false")
@@ -267,9 +268,12 @@ it("renders keyless Ollama as paused after the backend enablement change", async
       }),
   )
   render(<ChecksStepSettings />)
-  const toggle = screen.getByRole("switch", { name: "Smart Burn Checks" })
+  const toggle = screen.getByRole("switch", { name: "Enable Smart Burn Checks" })
   await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"))
-  await screen.findByText("Active connection: Ollama · saved-model")
+  await waitFor(() =>
+    expect(screen.getByLabelText("Smart check provider")).toHaveValue("ollama"),
+  )
+  expect(screen.getByLabelText("Provider model")).toHaveValue("saved-model")
   expect(screen.queryByRole("button", { name: "Remove credential" })).not.toBeInTheDocument()
   fireEvent.click(toggle)
   expect(toggle).toBeDisabled()
@@ -295,13 +299,14 @@ it("renders an active credential removal and the backend pause event together", 
   })
   getAvailability.mockResolvedValue({ ...emptyAvailability, configured: true })
   render(<ChecksStepSettings />)
-  const toggle = screen.getByRole("switch", { name: "Smart Burn Checks" })
+  const toggle = screen.getByRole("switch", { name: "Enable Smart Burn Checks" })
   await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"))
   fireEvent.click(await screen.findByRole("button", { name: "Remove credential" }))
   await screen.findByText("Credential removed.")
   expect(toggle).toHaveAttribute("aria-checked", "false")
   expect(screen.queryByRole("button", { name: "Remove credential" })).not.toBeInTheDocument()
-  expect(screen.getByText("Active connection: Jev (recommended) · jev-1.13.0")).toBeVisible()
+  expect(screen.getByLabelText("Smart check provider")).toHaveValue("jev")
+  expect(screen.getByLabelText("Provider model")).toHaveValue("jev-1.13.0")
 })
 
 it.each([
@@ -311,7 +316,7 @@ it.each([
   getAvailability.mockResolvedValue(emptyAvailability)
   setChecksEnabled.mockRejectedValueOnce(message)
   render(<ChecksStepSettings />)
-  const toggle = screen.getByRole("switch", { name: "Smart Burn Checks" })
+  const toggle = screen.getByRole("switch", { name: "Enable Smart Burn Checks" })
   await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"))
   fireEvent.click(toggle)
   expect(await screen.findByRole("alert")).toHaveTextContent(message)
@@ -362,6 +367,12 @@ it("shows bounded local usage and unknown outcomes separately", async () => {
     },
   })
   render(<ChecksStepSettings />)
+  expect(screen.getByRole("button", { name: "Model usage" })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  )
+  expect(screen.queryByText(/1,200 input tokens/)).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: "Model usage" }))
   await screen.findByText(/1,200 input tokens · \$0\.0000504 estimated · 3 requests/)
   expect(screen.getByText(/1 request outcomes are unknown/)).toBeInTheDocument()
 })
@@ -370,13 +381,15 @@ it("retains the previous status on refresh failure and clears the error after re
   const previous = { ...emptyAvailability, savedKey: true, configured: true }
   getAvailability.mockResolvedValueOnce(previous)
   const first = render(<ChecksStepSettings />)
-  await screen.findByRole("switch", { name: "Smart Burn Checks" })
+  await waitFor(() =>
+    expect(screen.getByRole("switch", { name: "Enable Smart Burn Checks" })).toBeChecked(),
+  )
   first.unmount()
 
   getAvailability.mockRejectedValueOnce(new Error("database"))
   const second = render(<ChecksStepSettings />)
   expect(await screen.findByRole("alert")).toHaveTextContent("Could not refresh check status")
-  expect(screen.getByRole("switch", { name: "Smart Burn Checks" })).toHaveAttribute(
+  expect(screen.getByRole("switch", { name: "Enable Smart Burn Checks" })).toHaveAttribute(
     "aria-checked",
     "true",
   )
@@ -396,7 +409,7 @@ it("shows an availability-event failure without clearing the last known usage", 
   }
   getAvailability.mockResolvedValue(availability)
   render(<ChecksStepSettings />)
-  const toggle = screen.getByRole("switch", { name: "Smart Burn Checks" })
+  const toggle = screen.getByRole("switch", { name: "Enable Smart Burn Checks" })
   await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"))
   await waitFor(() => expect(availabilityEvent.callback).not.toBeNull())
 
@@ -405,10 +418,13 @@ it("shows an availability-event failure without clearing the last known usage", 
   expect(screen.getByRole("alert")).toHaveTextContent("Could not refresh check status")
   expect(toggle).toHaveAttribute("aria-checked", "true")
 
+  fireEvent.click(screen.getByRole("button", { name: "Model usage" }))
+  expect(screen.getByText(/123 input tokens/)).toBeVisible()
+
   act(() => availabilityEvent.callback?.({ status: "updated", snapshot: emptyAvailability }))
 
   expect(screen.queryByRole("alert")).not.toBeInTheDocument()
-  expect(screen.getByRole("switch", { name: "Smart Burn Checks" })).toHaveAttribute(
+  expect(screen.getByRole("switch", { name: "Enable Smart Burn Checks" })).toHaveAttribute(
     "aria-checked",
     "false",
   )
@@ -445,14 +461,12 @@ it("explains the selected and excluded fields and gives the API key a full-width
   ).toBeInTheDocument()
   expect(
     screen.getByText(
-      /user and assistant messages, tool inputs and outputs, and current skill descriptions/,
+      /Checks send selected session content and skill descriptions to the provider in use/,
     ),
   ).toBeInTheDocument()
-  expect(screen.getByText(/Private thinking is excluded/)).toBeInTheDocument()
+  expect(screen.getByText(/excluding private thinking/)).toBeInTheDocument()
   expect(
-    screen.getByText(
-      /Data stays on this device only when the inference endpoint runs on this device/,
-    ),
+    screen.getByText(/Data stays local only when inference runs on this device/),
   ).toBeInTheDocument()
   expect(screen.getByLabelText("TypeSafe API key")).toHaveClass("w-full")
 })
@@ -560,13 +574,37 @@ it("confirms when every session in the history run finished", async () => {
   expect(screen.getByText("1 waiting to be checked · 10 check jobs complete")).toBeVisible()
 })
 
-it("keeps setup, history, and the API key in separate plain-language groups", () => {
+it("keeps setup, history, and the API key in separate plain-language groups", async () => {
   render(<ChecksStepSettings />)
   expect(screen.getByRole("heading", { name: "Smart Burn Checks" })).toBeInTheDocument()
   expect(screen.getByRole("heading", { name: "Past sessions" })).toBeInTheDocument()
-  expect(screen.getByRole("heading", { name: "Model connection" })).toBeInTheDocument()
-  expect(screen.getByText("Ignored Instructions")).toBeInTheDocument()
+  expect(screen.getByRole("heading", { name: "Decision model" })).toBeInTheDocument()
+  expect(screen.getByText("Ignored instructions")).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Model limits" })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  )
+  expect(screen.getByLabelText("Smart check provider")).toBeVisible()
+  expect(await screen.findByLabelText("Provider model")).toBeVisible()
+  expect(screen.getByLabelText("TypeSafe API key")).toBeVisible()
+  expect(screen.getByText(/A decision model reviews selected session content/)).toBeVisible()
+})
+
+it("requires a nonblank credential before saving an unsaved Jev connection", async () => {
+  providerInvoke.mockResolvedValue({
+    activeId: "jev",
+    profiles: { jev: defaultConnection("jev") },
+  })
+  render(<ChecksStepSettings />)
+  const input = screen.getByLabelText("TypeSafe API key")
+  await waitFor(() => expect(input).toBeEnabled())
+  const saveConnection = screen.getByRole("button", { name: "Save connection" })
+  expect(saveConnection).toBeDisabled()
+  fireEvent.change(input, { target: { value: "   " } })
+  expect(saveConnection).toBeDisabled()
+  fireEvent.change(input, { target: { value: "synthetic-key" } })
+  expect(saveConnection).toBeEnabled()
   expect(
-    screen.getByRole("button", { name: "Use Ollama or another provider" }),
-  ).toHaveAttribute("aria-expanded", "false")
+    providerInvoke.mock.calls.every(([command]) => command === "get_system_one_settings"),
+  ).toBe(true)
 })

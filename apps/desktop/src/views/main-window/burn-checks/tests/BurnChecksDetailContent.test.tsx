@@ -121,7 +121,7 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
     })
     fireEvent.click(
       await screen.findByRole("button", {
-        name: /Ignored Instructions, Awaiting verification/,
+        name: /Ignored instructions, Awaiting verification/,
       }),
     )
     expect(
@@ -281,12 +281,12 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
     const before = findingEvents().length
     await act(async () => session.refresh())
     expect(findingEvents()).toHaveLength(before)
-    const searchRow = screen.getByRole("button", { name: /Scope Creep, 1 failed/ })
+    const searchRow = screen.getByRole("button", { name: /Scope creep, 1 failed/ })
     searchRow.scrollIntoView = vi.fn()
     view.rerender(
       <BurnChecksView active session={session} focusedCheck="scopeCreep" focusRevision={1} />,
     )
-    expect(await screen.findByRole("button", { name: /Scope Creep, 1 failed/ })).toHaveFocus()
+    expect(await screen.findByRole("button", { name: /Scope creep, 1 failed/ })).toHaveFocus()
     expect(searchRow.scrollIntoView).toHaveBeenCalledWith({ block: "nearest" })
     expect(findingEvents()).toHaveLength(before)
     expect(
@@ -397,7 +397,7 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
     expect(await screen.findAllByText("Run tests before delivery.")).toHaveLength(2)
     expect(screen.getAllByText("Delivered without tests")).toHaveLength(2)
     expect(
-      screen.getByRole("button", { name: /Ignored Instructions, 1 failed/ }),
+      screen.getByRole("button", { name: /Ignored instructions, 1 failed/ }),
     ).toHaveAttribute("aria-pressed", "true")
     expect(screen.getAllByText("1/1 failed").length).toBeGreaterThan(0)
     expect(

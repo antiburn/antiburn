@@ -53,7 +53,7 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
   {
     id: "scopeCreep",
     serverOnly: true,
-    name: "Scope Creep",
+    name: "Scope creep",
     cleanTitle: "No scope creep in assessed work",
     findingTitle: "Scope creep found",
     notAssessedTitle: "Scope creep not assessed",
@@ -145,7 +145,7 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
   {
     id: "ignoredInstructions",
     serverOnly: true,
-    name: "Ignored Instructions",
+    name: "Ignored instructions",
     cleanTitle: "Instructions followed",
     findingTitle: "Instructions ignored",
     notAssessedTitle: "Instructions not assessed",
@@ -156,7 +156,7 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
   {
     id: "skillOpportunities",
     serverOnly: true,
-    name: "Skill Opportunities",
+    name: "Skill opportunities",
     cleanTitle: "No skill opportunity in assessed work",
     findingTitle: "Skill opportunity found",
     notAssessedTitle: "Skill opportunities not assessed",
@@ -260,7 +260,7 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
               ? "Checking instructions"
               : `Checking ${definition.name.toLowerCase()}`
             : definition.id === "scopeCreep" && badge.checkReason === "scope_context_too_large"
-              ? "Scope Creep · Task context exceeds the model limit."
+              ? "Scope creep · Task context exceeds the model limit."
               : definition.id === "ignoredInstructions"
                 ? "Couldn't check instructions"
                 : `Couldn't check ${definition.name.toLowerCase()}`,
@@ -273,7 +273,7 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
       ...badge,
       title:
         definition.id === "scopeCreep" && badge.checkReason === "scope_context_too_large"
-          ? "Scope Creep · Task context exceeds the model limit."
+          ? "Scope creep · Task context exceeds the model limit."
           : definition.notAssessedTitle,
       name: definition.name,
       detail,

@@ -61,8 +61,8 @@ describe("sessionHygieneChecks", () => {
         },
       ],
     }).find((check) => check.id === "scopeCreep")!
-    expect(check.name).toBe("Scope Creep")
-    expect(check.title).toBe("Scope Creep · Task context exceeds the model limit.")
+    expect(check.name).toBe("Scope creep")
+    expect(check.title).toBe("Scope creep · Task context exceeds the model limit.")
     expect(check.status).toBe("couldntCheck")
     expect(sessionHygieneDocumentation(check).guidance).toEqual([
       "Keep future work within the agreed task. Ask for approval before adding work.",

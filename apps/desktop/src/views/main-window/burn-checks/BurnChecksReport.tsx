@@ -1,10 +1,9 @@
 import "../../../styles/burn-checks-report.css"
 
-import { ChevronRight, Clock, Hourglass, Info } from "lucide-react"
+import { ChevronRight, Clock, Hourglass } from "lucide-react"
 import { useCallback, useRef, useState, type KeyboardEvent, type MouseEvent } from "react"
 
 import { BurnCheckFlame } from "../../../components/burn-checks/BurnCheckFlames"
-import { Tooltip } from "../../../components/presentation/Tooltip"
 import { BURN_CHECK_MARKS } from "../../../components/burn-checks/burnCheckMarks"
 import { ScrollPane } from "../../../components/ui/ScrollPane"
 import { Skeleton } from "../../../components/ui/Skeleton"
@@ -33,7 +32,11 @@ import { checkRowPresentation } from "../../checks/checkPresentation"
 import type { BurnChecksController, BurnChecksControllerSnapshot } from "./BurnChecksController"
 import { BurnCheckCategoryIcon } from "./BurnCheckCategoryIcon"
 import { BurnCheckDetail, CheckDetailActions, CHECK_SENTENCES } from "./BurnCheckDetail"
-import { BurnCheckTargetDetail } from "./BurnCheckTargetDetail"
+import {
+  BurnCheckTargetDetail,
+  EvidenceLimitsIcon,
+  SmartCheckEvidenceSkeleton,
+} from "./BurnCheckTargetDetail"
 import { BurnChecksHeader } from "./BurnChecksHeader"
 import { BurnChecksSavings } from "./BurnChecksSavings"
 import { BurnCheckDetailBody } from "./BurnCheckDetailBody"
@@ -51,7 +54,7 @@ function isUnusedResourceDetector(id: ChecksCategoryPayload["id"]) {
   return id === "unusedMcpServers" || id === "unusedBuiltInTools" || id === "unusedSkills"
 }
 
-function LoadingCheckDetail() {
+function LoadingCheckDetail({ smart = false }: { smart?: boolean }) {
   return (
     <article
       role="region"
@@ -59,17 +62,30 @@ function LoadingCheckDetail() {
       aria-busy="true"
       className="rounded-control bg-surface-card/75 p-4"
     >
-      <p role="status" className="sr-only">
-        Loading finding details.
-      </p>
+      {!smart && (
+        <p role="status" className="sr-only">
+          Loading finding details.
+        </p>
+      )}
       <Skeleton className="h-4 w-72 max-w-full" />
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Skeleton className="h-7 w-28" />
-        <Skeleton className="h-7 w-12" />
-      </div>
-      <div className="mt-3">
-        <Skeleton className="h-[17px] w-28" />
-      </div>
+      {smart ? (
+        <>
+          <Skeleton className="mt-3 h-3 w-48 max-w-full" />
+          <div className="mt-3 min-h-72">
+            <SmartCheckEvidenceSkeleton />
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Skeleton className="h-7 w-28" />
+            <Skeleton className="h-7 w-12" />
+          </div>
+          <div className="mt-3">
+            <Skeleton className="h-[17px] w-28" />
+          </div>
+        </>
+      )}
     </article>
   )
 }
@@ -148,7 +164,7 @@ function CheckDetailContent({
     return targets?.error ? (
       <TargetLoadError retry={() => session.loadTargets(check.id, true)} />
     ) : (
-      <LoadingCheckDetail />
+      <LoadingCheckDetail smart={smartCheckForDetector(check.id) !== undefined} />
     )
   }
   if (isUnusedResourceDetector(check.id)) {
@@ -289,23 +305,14 @@ function CheckDetail({
                   {presentation.label}
                 </h2>
                 {check.sampled === true && (
-                  <Tooltip
-                    label={
+                  <EvidenceLimitsIcon
+                    label="About priority sampling"
+                    details={[
                       check.id === "ignoredInstructions"
                         ? "Priority sampling checks likely instruction conflicts first. Later checks can reduce the remaining unassessed gap."
-                        : "This check assesses selected evidence. A pass means no finding in that sample. Unassessed work may remain."
-                    }
-                    side="bottom"
-                    delayMs={0}
-                  >
-                    <button
-                      type="button"
-                      aria-label="About priority sampling"
-                      className="inline-flex size-6 shrink-0 items-center justify-center rounded-control text-label-tertiary hover:text-label"
-                    >
-                      <Info size={14} aria-hidden="true" />
-                    </button>
-                  </Tooltip>
+                        : "This check assesses selected evidence. A pass means no finding in that sample. Unassessed work may remain.",
+                    ]}
+                  />
                 )}
               </div>
               {showFindingActions && (

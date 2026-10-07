@@ -1,18 +1,41 @@
-import { screen, waitFor } from "@testing-library/react"
+import { act, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 import { createElement } from "react"
 import { searchApp } from "../../../lib/appSearch"
 import { BurnChecksView } from "../BurnChecksView"
-import { aggregate, report, setup } from "./tests/burnChecksTestSupport"
+import { aggregate, deferred, report, setup } from "./tests/burnChecksTestSupport"
 
 describe("smart check report integration", () => {
+  it.each([
+    "ignoredInstructions",
+    "scopeCreep",
+    "overExploring",
+    "skillOpportunities",
+  ] as const)("reserves evidence space while %s target details load", async (id) => {
+    const pending = deferred<null>()
+    setup(pending.promise, false, aggregate, {
+      ...report,
+      categories: [{ ...report.categories[0]!, id }],
+    })
+    const loading = await screen.findByRole("region", { name: "Loading finding details" })
+    expect(loading).toHaveAttribute("aria-busy", "true")
+    expect(within(loading).getAllByRole("status")).toHaveLength(1)
+    const evidence = within(loading).getByRole("status", { name: "Loading evidence" })
+    expect(evidence.parentElement).toHaveClass("min-h-72")
+    expect(evidence.querySelectorAll("[data-placeholder]")).toHaveLength(6)
+    await act(async () => pending.resolve(null))
+    expect(
+      screen.queryByRole("region", { name: "Loading finding details" }),
+    ).not.toBeInTheDocument()
+  })
+
   it.each([
     ["macos", "over_exploring", "Over-exploring"],
     ["windows", "over_exploring", "Over-exploring"],
     ["linux", "over_exploring", "Over-exploring"],
-    ["macos", "scope_creep", "Scope Creep"],
-    ["windows", "scope_creep", "Scope Creep"],
-    ["linux", "scope_creep", "Scope Creep"],
+    ["macos", "scope_creep", "Scope creep"],
+    ["windows", "scope_creep", "Scope creep"],
+    ["linux", "scope_creep", "Scope creep"],
   ] as const)(
     "focuses %s search destination %s without changing values",
     async (platform, query, label) => {
@@ -76,7 +99,12 @@ describe("smart check report integration", () => {
           "No finding in the assessed sample across 3 sessions. Unassessed work may remain.",
         ),
       ).toBeVisible()
-      expect(screen.getByRole("button", { name: "About priority sampling" })).toBeVisible()
+      const info = screen.getByLabelText("About priority sampling")
+      expect(info.tagName).toBe("SPAN")
+      expect(info).toBeVisible()
+      expect(
+        screen.queryByRole("button", { name: "About priority sampling" }),
+      ).not.toBeInTheDocument()
       expect(screen.queryByText(/3 complete sessions/)).not.toBeInTheDocument()
     },
   )

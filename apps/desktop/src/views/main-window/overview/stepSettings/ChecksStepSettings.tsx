@@ -2,11 +2,11 @@ import { LoaderCircle } from "lucide-react"
 import { useState, useSyncExternalStore } from "react"
 
 import { Card } from "../../../../components/ui/Card"
+import { Disclosure } from "../../../../components/ui/Disclosure"
 import { PushButton } from "../../../../components/ui/PushButton"
 import { SegmentedControl } from "../../../../components/ui/SegmentedControl"
 import { SectionGroup } from "../../../../components/ui/SectionGroup"
 import { StatusText } from "../../../../components/ui/StatusText"
-import { ToggleSwitch } from "../../../../components/ui/ToggleSwitch"
 import {
   emptyCheckAvailability,
   getCheckAvailability,
@@ -245,17 +245,13 @@ export function ChecksStepSettings({
 
       <SectionGroup title="Smart Burn Checks">
         <Card>
-          <StepSettingsRow
+          <StepSettingsToggleRow
             searchId="smartChecksEnabled"
-            description="All Smart Burn Checks use the active model connection."
-          >
-            <ToggleSwitch
-              aria-label="Smart Burn Checks"
-              checked={state.configured}
-              disabled={busy}
-              onCheckedChange={(enabled) => void toggleChecks(enabled)}
-            />
-          </StepSettingsRow>
+            description="A decision model reviews selected session content to find instruction conflicts, scope creep, over-exploring, and skill opportunities."
+            checked={state.configured}
+            disabled={busy}
+            onChange={(enabled) => void toggleChecks(enabled)}
+          />
           {smartChecks.map(renderCheck)}
         </Card>
       </SectionGroup>
@@ -328,7 +324,7 @@ export function ChecksStepSettings({
         targetRevision={targetRevision}
         legacyKeySaved={state.savedKey}
       />
-      <SectionGroup title="Model usage">
+      <Disclosure label="Model usage">
         <p className="type-footnote text-label-secondary">{usage}</p>
         {state.usage.unknownOutcomes > 0 && (
           <p className="mt-1 type-footnote text-label-secondary">
@@ -336,7 +332,7 @@ export function ChecksStepSettings({
             not included in the estimate.
           </p>
         )}
-      </SectionGroup>
+      </Disclosure>
     </div>
   )
 }

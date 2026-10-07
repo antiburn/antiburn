@@ -70,8 +70,12 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
       sampled: true,
     }
     const first = setup(null, false, aggregate, { ...report, categories: [check] })
-    const info = await screen.findByRole("button", { name: "About priority sampling" })
+    const info = await screen.findByLabelText("About priority sampling")
     expect(info).toBeVisible()
+    expect(info.tagName).toBe("SPAN")
+    expect(info.previousElementSibling).toHaveTextContent("Ignored instructions")
+    fireEvent.click(info)
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
     fireEvent.pointerMove(info, { pointerType: "mouse" })
     expect(
       await screen.findByText(/Priority sampling checks likely instruction conflicts first/),
@@ -87,20 +91,16 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
       ...report,
       categories: [{ ...check, sampled: false }],
     })
-    await screen.findByRole("heading", { name: "Ignored Instructions" })
-    expect(
-      screen.queryByRole("button", { name: "About priority sampling" }),
-    ).not.toBeInTheDocument()
+    await screen.findByRole("heading", { name: "Ignored instructions" })
+    expect(screen.queryByLabelText("About priority sampling")).not.toBeInTheDocument()
     second.view.unmount()
 
     setup(null, false, aggregate, {
       ...report,
       categories: [{ ...report.categories[0]!, id: "ignoredInstructions" }],
     })
-    await screen.findByRole("heading", { name: "Ignored Instructions" })
-    expect(
-      screen.queryByRole("button", { name: "About priority sampling" }),
-    ).not.toBeInTheDocument()
+    await screen.findByRole("heading", { name: "Ignored instructions" })
+    expect(screen.queryByLabelText("About priority sampling")).not.toBeInTheDocument()
   })
 
   it("opens ignored instruction evidence through the report and keeps the ordinary prompt action", async () => {
@@ -149,7 +149,7 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
       aggregate,
       { ...report, categories: [check] },
     )
-    const row = await screen.findByRole("button", { name: /Ignored Instructions, 1 failed/ })
+    const row = await screen.findByRole("button", { name: /Ignored instructions, 1 failed/ })
     fireEvent.click(row)
     expect(
       screen.getByText("Some sessions didn't follow your agent instruction files properly."),

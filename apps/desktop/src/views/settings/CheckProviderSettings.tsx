@@ -9,7 +9,6 @@ import {
   type Connection,
   type ModelCapabilities,
 } from "../../lib/smartCheckProviders"
-import { stepSettingsControlLabel } from "../../lib/stepSettingsTargets"
 import { ProviderSettingsSession } from "./ProviderSettingsSession"
 import { StepSettingsRow as SettingsRow } from "../main-window/overview/stepSettings/StepSettingsSearchRows"
 
@@ -65,13 +64,11 @@ export function CheckProviderSettings({
   )
   const [disclosure, setDisclosure] = useState({ open: false, dismissedRevision: -1 })
   const searchOpen =
-    (control === "smartCheckProvider" || control === "smartCheckLimits") &&
-    disclosure.dismissedRevision !== targetRevision
+    control === "smartCheckLimits" && disclosure.dismissedRevision !== targetRevision
   const open = disclosure.open || searchOpen
   const current = state.drafts[state.selectedId]
   const connection = current?.draft.connection
   const provider = connection?.provider ?? "jev"
-  const active = state.saved?.profiles[state.saved.activeId]
   const savedConnection = state.saved?.profiles[state.selectedId]
   const hasSavedCredential =
     savedConnection?.credential?.kind === "legacy_type_safe"
@@ -116,26 +113,156 @@ export function CheckProviderSettings({
     !hasSavedCredential
 
   return (
-    <SectionGroup title="Model connection">
+    <SectionGroup title="Decision model">
       <Card>
+        <SettingsRow searchId="smartCheckProvider" label="Provider">
+          <div className="space-y-3">
+            <select
+              aria-label="Smart check provider"
+              className={inputClass}
+              value={provider}
+              disabled={state.busy || !state.saved}
+              onChange={(event) => {
+                const value = event.target.value
+                if (
+                  value === "jev" ||
+                  value === "ollama" ||
+                  value === "cloudflare" ||
+                  value === "custom"
+                )
+                  session.selectProvider(value)
+              }}
+            >
+              {Object.entries(SMART_CHECK_PROVIDERS).map(([id, entry]) => (
+                <option key={id} value={id}>
+                  {entry.label}
+                </option>
+              ))}
+            </select>
+            {state.saved && Object.keys(state.saved.profiles).length > 1 && (
+              <label className="block type-body text-label">
+                Saved connections
+                <select
+                  aria-label="Saved connections"
+                  className={inputClass}
+                  value={savedConnection ? state.selectedId : ""}
+                  disabled={state.busy}
+                  onChange={(event) => session.select(event.target.value)}
+                >
+                  <option value="" disabled>
+                    Unsaved connection
+                  </option>
+                  {Object.entries(state.saved.profiles).map(([id, profile]) => (
+                    <option key={id} value={id}>
+                      {SMART_CHECK_PROVIDERS[profile.provider].label} · {profile.model} · {id}
+                      {id === state.saved?.activeId ? " · In use" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {connection && provider !== "jev" && (
+              <>
+                <label className="block type-body text-label">
+                  {metadata.endpointLabel}
+                  <input
+                    aria-label={metadata.endpointLabel ?? undefined}
+                    className={inputClass}
+                    disabled={state.busy}
+                    value={
+                      connection.endpoint.kind === "provider_default"
+                        ? ""
+                        : connection.endpoint.value
+                    }
+                    onChange={(event) =>
+                      connection.endpoint.kind !== "provider_default" &&
+                      edit({
+                        endpoint: { ...connection.endpoint, value: event.target.value },
+                      })
+                    }
+                  />
+                </label>
+                <p className="type-footnote text-label-secondary">
+                  {provider === "ollama"
+                    ? "Adds /v1/systemone to this URL."
+                    : provider === "custom"
+                      ? "System One endpoint; uses this exact URL."
+                      : "Your Workers AI account ID."}
+                </p>
+                <label className="block type-body text-label">
+                  Model
+                  {provider === "cloudflare" ? (
+                    <select
+                      aria-label="Provider model"
+                      className={inputClass}
+                      value={connection.model}
+                      disabled={state.busy}
+                      onChange={(event) => edit({ model: event.target.value })}
+                    >
+                      <option value="clef">clef</option>
+                      <option value="clef-flash">clef-flash</option>
+                    </select>
+                  ) : (
+                    <input
+                      aria-label="Provider model"
+                      className={inputClass}
+                      value={connection.model}
+                      disabled={state.busy}
+                      onChange={(event) => edit({ model: event.target.value })}
+                    />
+                  )}
+                </label>
+                {provider === "custom" && (
+                  <label className="block type-body text-label">
+                    Response mode
+                    <select
+                      aria-label="Response mode"
+                      className={inputClass}
+                      value={connection.responseMode}
+                      disabled={state.busy}
+                      onChange={(event) =>
+                        edit({
+                          responseMode:
+                            event.target.value === "direct" ? "direct" : "cloudflare_envelope",
+                        })
+                      }
+                    >
+                      <option value="direct">Direct System One</option>
+                      <option value="cloudflare_envelope">Cloudflare envelope</option>
+                    </select>
+                  </label>
+                )}
+              </>
+            )}
+            {connection && provider === "jev" && (
+              <label className="block type-body text-label">
+                Model
+                <input
+                  aria-label="Provider model"
+                  className={inputClass}
+                  value={connection.model}
+                  readOnly
+                  disabled={state.busy}
+                />
+              </label>
+            )}
+          </div>
+        </SettingsRow>
         <SettingsRow
           searchId="typeSafeApiKey"
-          description={
+          label={
             provider === "jev"
-              ? "Jev is recommended. Enter your TypeSafe API key. Save the connection, then enable Smart Burn Checks."
-              : "Enter a credential only if this server needs one. An empty field keeps the saved credential."
+              ? "API key"
+              : provider === "cloudflare"
+                ? "API token"
+                : "Credential (optional)"
+          }
+          description={
+            hasSavedCredential
+              ? "Leave empty to use the saved credential, or enter a replacement."
+              : undefined
           }
         >
-          <p className="mt-2 type-footnote text-label-secondary">
-            Active connection:{" "}
-            {active
-              ? `${SMART_CHECK_PROVIDERS[active.provider].label} · ${active.model}`
-              : "Loading…"}
-          </p>
-          <p className="mt-1 type-footnote text-label-secondary">
-            Editing: {metadata.label}
-            {hasSavedCredential ? " · Saved credential" : ""}
-          </p>
           <input
             aria-label={
               provider === "jev"
@@ -180,13 +307,11 @@ export function CheckProviderSettings({
             )}
           </div>
           <p className="mt-2 type-footnote text-label-secondary">
-            Tests send synthetic input only. Tests and model-limit refreshes use the saved
-            credential reference when this field is empty. Enter a replacement to use it for
-            this draft. Provider charges may apply.
+            Tests use synthetic input. Provider charges may apply.
           </p>
           {current?.tested && (
             <p role="status" className="mt-2 type-footnote text-system-green">
-              This draft passed the connection test.
+              Connection test passed.
             </p>
           )}
           {state.busy && (
@@ -206,13 +331,13 @@ export function CheckProviderSettings({
           )}
         </SettingsRow>
         <SettingsRow
-          searchId="smartCheckProvider"
+          searchId="smartCheckLimits"
           trailing={
             <button
               type="button"
-              aria-label={stepSettingsControlLabel("smartCheckProvider")}
+              aria-label="Model limits"
               aria-expanded={open}
-              aria-controls="advanced-check-provider"
+              aria-controls="check-model-limits"
               className="flex h-6 w-6 items-center justify-center rounded-control text-label-secondary"
               onClick={() => setDisclosure({ open: !open, dismissedRevision: targetRevision })}
             >
@@ -221,186 +346,61 @@ export function CheckProviderSettings({
           }
         >
           {open && (
-            <div id="advanced-check-provider" className="mt-3 space-y-3">
-              <label className="block type-body text-label">
-                Provider
-                <select
-                  aria-label="Smart check provider"
-                  className={inputClass}
-                  value={provider}
-                  disabled={state.busy || !state.saved}
-                  onChange={(event) => {
-                    const value = event.target.value
-                    if (
-                      value === "jev" ||
-                      value === "ollama" ||
-                      value === "cloudflare" ||
-                      value === "custom"
-                    )
-                      session.selectProvider(value)
-                  }}
-                >
-                  {Object.entries(SMART_CHECK_PROVIDERS).map(([id, entry]) => (
-                    <option key={id} value={id}>
-                      {entry.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {state.saved && Object.keys(state.saved.profiles).length > 1 && (
-                <label className="block type-body text-label">
-                  Saved connections
-                  <select
-                    aria-label="Saved connections"
-                    className={inputClass}
-                    value={savedConnection ? state.selectedId : ""}
-                    disabled={state.busy}
-                    onChange={(event) => session.select(event.target.value)}
-                  >
-                    <option value="" disabled>
-                      Unsaved connection
-                    </option>
-                    {Object.entries(state.saved.profiles).map(([id, profile]) => (
-                      <option key={id} value={id}>
-                        {SMART_CHECK_PROVIDERS[profile.provider].label} · {profile.model} · {id}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
+            <div id="check-model-limits">
+              <p className="mt-2 type-footnote text-label-secondary">
+                Manual limits can lower the model's request bounds.
+              </p>
+              <PushButton
+                className="mt-2"
+                disabled={disabled}
+                onClick={() => void session.run("refresh")}
+              >
+                Refresh model limits
+              </PushButton>
               {connection && provider !== "jev" && (
-                <>
-                  <label className="block type-body text-label">
-                    {metadata.endpointLabel}
-                    <input
-                      aria-label={metadata.endpointLabel ?? undefined}
-                      className={inputClass}
-                      disabled={state.busy}
-                      value={
-                        connection.endpoint.kind === "provider_default"
-                          ? ""
-                          : connection.endpoint.value
-                      }
-                      onChange={(event) =>
-                        connection.endpoint.kind !== "provider_default" &&
-                        edit({
-                          endpoint: { ...connection.endpoint, value: event.target.value },
-                        })
-                      }
-                    />
-                  </label>
-                  <p className="type-footnote text-label-secondary">
-                    {provider === "ollama"
-                      ? "Antiburn adds /v1/systemone to this base URL. Remote Ollama sends data to that server."
-                      : provider === "custom"
-                        ? "Use a System One compatible endpoint. Antiburn uses this exact URL and adds no path."
-                        : "Antiburn uses the account-specific Workers AI route for the selected model."}
-                  </p>
-                  <label className="block type-body text-label">
-                    Model
-                    {provider === "cloudflare" ? (
-                      <select
-                        aria-label="Provider model"
-                        className={inputClass}
-                        value={connection.model}
-                        disabled={state.busy}
-                        onChange={(event) => edit({ model: event.target.value })}
-                      >
-                        <option value="clef">clef</option>
-                        <option value="clef-flash">clef-flash</option>
-                      </select>
-                    ) : (
+                <div className="mt-3 space-y-2">
+                  {(
+                    [
+                      ["totalInputTokens", "Manual total input tokens"],
+                      [
+                        "stateAndLongestQuestionTokens",
+                        "Manual state plus longest question tokens",
+                      ],
+                      ["runtimeContextTokens", "Manual loaded context tokens"],
+                    ] as const
+                  ).map(([field, label]) => (
+                    <label key={field} className="block type-body text-label">
+                      {label}
                       <input
-                        aria-label="Provider model"
-                        className={inputClass}
-                        value={connection.model}
+                        aria-label={label}
+                        type="number"
+                        min={1}
+                        max={65536}
+                        step={1}
                         disabled={state.busy}
-                        onChange={(event) => edit({ model: event.target.value })}
+                        value={connection.contextOverride?.[field] ?? ""}
+                        onChange={(event) => limits(field, event.target.value)}
+                        className={inputClass}
                       />
-                    )}
-                  </label>
-                  {provider === "custom" && (
-                    <label className="block type-body text-label">
-                      Response mode
-                      <select
-                        aria-label="Response mode"
-                        className={inputClass}
-                        value={connection.responseMode}
-                        disabled={state.busy}
-                        onChange={(event) =>
-                          edit({
-                            responseMode:
-                              event.target.value === "direct"
-                                ? "direct"
-                                : "cloudflare_envelope",
-                          })
-                        }
-                      >
-                        <option value="direct">Direct System One</option>
-                        <option value="cloudflare_envelope">Cloudflare envelope</option>
-                      </select>
                     </label>
+                  ))}
+                  {manualInvalid && (
+                    <p role="alert" className="type-footnote text-system-red-text">
+                      Use whole token limits from 1 to 65,536, or leave them empty.
+                    </p>
                   )}
-                </>
+                </div>
+              )}
+              {current?.capabilities && (
+                <CapabilityDetails capabilities={current.capabilities} />
               )}
             </div>
           )}
         </SettingsRow>
-        {open && (
-          <SettingsRow
-            searchId="smartCheckLimits"
-            description="Refresh reads available metadata or documented defaults. Manual values set upper bounds; they do not increase protocol limits. Unknown custom limits use conservative request bounds."
-          >
-            <PushButton
-              className="mt-2"
-              disabled={disabled}
-              onClick={() => void session.run("refresh")}
-            >
-              Refresh model limits
-            </PushButton>
-            {connection && provider !== "jev" && (
-              <div className="mt-3 space-y-2">
-                {(
-                  [
-                    ["totalInputTokens", "Manual total input tokens"],
-                    [
-                      "stateAndLongestQuestionTokens",
-                      "Manual state plus longest question tokens",
-                    ],
-                    ["runtimeContextTokens", "Manual loaded context tokens"],
-                  ] as const
-                ).map(([field, label]) => (
-                  <label key={field} className="block type-body text-label">
-                    {label}
-                    <input
-                      aria-label={label}
-                      type="number"
-                      min={1}
-                      max={65536}
-                      step={1}
-                      disabled={state.busy}
-                      value={connection.contextOverride?.[field] ?? ""}
-                      onChange={(event) => limits(field, event.target.value)}
-                      className={inputClass}
-                    />
-                  </label>
-                ))}
-                {manualInvalid && (
-                  <p role="alert" className="type-footnote text-system-red-text">
-                    Use whole token limits from 1 to 65,536, or leave them empty.
-                  </p>
-                )}
-              </div>
-            )}
-            {current?.capabilities && <CapabilityDetails capabilities={current.capabilities} />}
-          </SettingsRow>
-        )}
       </Card>
       <p className="mt-3 type-footnote text-label-secondary">
-        Smart Burn Checks can send selected instructions, user and assistant messages, tool
-        inputs and outputs, and current skill descriptions to the active provider. Private
-        thinking is excluded. Data stays on this device only when the inference endpoint runs on
-        this device. A local-looking proxy URL does not prove local inference.
+        Checks send selected session content and skill descriptions to the provider in use,
+        excluding private thinking. Data stays local only when inference runs on this device.
       </p>
     </SectionGroup>
   )

@@ -44,7 +44,7 @@ export const CHECK_DEFINITIONS = {
     description: "Checks recorded model versions against reviewed replacements.",
   },
   skillOpportunities: {
-    label: "Skill Opportunities",
+    label: "Skill opportunities",
     aliases: ["improve skills", "skill improvements", "skill suggestions"],
     kind: "smart",
     description:
@@ -57,7 +57,7 @@ export const CHECK_DEFINITIONS = {
     description: "Finds unrelated or excessive reading in supported session evidence.",
   },
   scopeCreep: {
-    label: "Scope Creep",
+    label: "Scope creep",
     aliases: ["scope_creep", "extra work", "agreed task", "task scope", "unapproved work"],
     kind: "smart",
     description: "Finds work beyond the agreed task in supported session evidence.",
@@ -75,7 +75,7 @@ export const CHECK_DEFINITIONS = {
     description: "Checks compatible request records for excess cache rehydration.",
   },
   ignoredInstructions: {
-    label: "Ignored Instructions",
+    label: "Ignored instructions",
     aliases: ["instruction conflicts", "missed agent rules", "AGENTS.md", "CLAUDE.md"],
     kind: "smart",
     description:
