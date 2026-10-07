@@ -129,16 +129,15 @@ function AgentRow({
       }
       facts={sessions > 0 && `${sessions} ${sessions === 1 ? "session" : "sessions"}`}
       controls={
-        sessions > 0 ? (
+        sessions > 0 && (
           <ToggleSwitch
             checked={enabled}
             onCheckedChange={onEnabledChange}
             aria-label={`Show ${agentDisplayName(slug)} sessions`}
           />
-        ) : (
-          searched && <span className="type-footnote text-label-tertiary">Not found</span>
         )
       }
+      status={sessions === 0 && searched ? "Not found" : undefined}
     >
       {open && (
         <ul id={listId} className="overflow-x-auto pt-1">
