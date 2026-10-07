@@ -669,6 +669,8 @@ fn reopening_unpriced_samples_makes_only_their_periods_candidates_again() {
     let unpriced = insert_period(&store, &account('a'), 0, 18_000, last_observed);
     let empty = insert_period(&store, &account('a'), 18_000, 36_000, last_observed);
     let priced = insert_period(&store, &account('a'), 36_000, 54_000, last_observed);
+    let unpriced_start = insert_period(&store, &account('a'), 54_000, 72_000, last_observed);
+    let priced_start = insert_period(&store, &account('a'), 72_000, 90_000, last_observed);
     let sample = |kind: &str, period_id: i64, from_epoch: i64, turn_count: i64| FactorSample {
         period_id: Some(period_id),
         input_usd: 0.0,
@@ -685,6 +687,18 @@ fn reopening_unpriced_samples_makes_only_their_periods_candidates_again() {
             },
             priced,
         ),
+        // A window-start sample keeps its kind at zero dollars.
+        (
+            sample("window_start", unpriced_start, 54_000, 4),
+            unpriced_start,
+        ),
+        (
+            FactorSample {
+                input_usd: 1.0,
+                ..sample("window_start", priced_start, 72_000, 4)
+            },
+            priced_start,
+        ),
     ] {
         store.upsert_factor_sample(&sample).unwrap();
         store
@@ -692,7 +706,7 @@ fn reopening_unpriced_samples_makes_only_their_periods_candidates_again() {
             .unwrap();
     }
 
-    assert_eq!(store.reopen_unpriced_factor_samples().unwrap(), 1);
+    assert_eq!(store.reopen_unpriced_factor_samples().unwrap(), 2);
 
     let kinds: Vec<(i64, String)> = store
         .lock()
@@ -706,17 +720,19 @@ fn reopening_unpriced_samples_makes_only_their_periods_candidates_again() {
         kinds,
         vec![
             (18_000, "unattributed".to_string()),
-            (36_000, "delta".to_string())
+            (36_000, "delta".to_string()),
+            (72_000, "window_start".to_string()),
         ],
-        "a sample with no turns has nothing a price could change"
+        "a sample with no turns, or with dollars, has nothing a price could change"
     );
-    let candidates: Vec<i64> = store
+    let mut candidates: Vec<i64> = store
         .provider_limit_candidate_periods(3 * 86_400 - 900)
         .unwrap()
         .into_iter()
         .map(|period| period.id)
         .collect();
-    assert_eq!(candidates, vec![unpriced]);
+    candidates.sort_unstable();
+    assert_eq!(candidates, vec![unpriced, unpriced_start]);
 }
 
 #[test]
