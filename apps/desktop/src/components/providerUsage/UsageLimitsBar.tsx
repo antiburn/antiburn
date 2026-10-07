@@ -17,8 +17,6 @@ import type {
 } from "../../lib/presentation/liveUsage"
 import {
   liveDisplayableProviders,
-  liveErrorHasDocs,
-  liveErrorNote,
   liveGraceNote,
   livePlanAccountLabel,
   liveProviderStatus,
@@ -31,13 +29,14 @@ import {
   liveWindows,
   orderedLiveAccounts,
   maxLiveUsedPercent,
+  providerGroupLabel,
 } from "../../lib/presentation/liveUsage"
 import { providerInitial } from "../../lib/presentation/providerUsage"
 import { SegmentedMeter } from "../ui/SegmentedMeter"
 import { SegmentFigure } from "../ui/SegmentFigure"
 import { Tooltip } from "../presentation/Tooltip"
-import { LimitsDocsLink } from "./LimitsDocsLink"
 import { providerMark } from "./ProviderUsagePrimitives"
+import { UnavailableNote } from "./UnavailableNote"
 import { UsageRing } from "./UsageRing"
 import { useStableAccountNumbers } from "./useStableAccountNumbers"
 
@@ -335,7 +334,7 @@ function ProviderGroup({
   return (
     <div
       role="group"
-      aria-label={plan ? `${displayName}, ${plan} plan` : displayName}
+      aria-label={providerGroupLabel(displayName, plan)}
       data-state={activation ?? "idle"}
       className="rounded-md px-2 py-2 transition-colors duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
       onMouseEnter={(event) =>
@@ -522,7 +521,7 @@ function UnavailableGroup({
   return (
     <div
       role="group"
-      aria-label={plan ? `${entry.displayName}, ${plan} plan` : entry.displayName}
+      aria-label={providerGroupLabel(entry.displayName, plan)}
       className="rounded-md px-2 py-2"
     >
       {/* The same eyebrow as a provider with meters, so the provider keeps
@@ -534,15 +533,7 @@ function UnavailableGroup({
         </h3>
         {action}
       </div>
-      <p className="type-footnote text-label-secondary">
-        {liveErrorNote(entry.category, entry.provider, entry.detail)}
-        {liveErrorHasDocs(entry.detail) && (
-          <>
-            {" "}
-            <LimitsDocsLink />
-          </>
-        )}
-      </p>
+      <UnavailableNote entry={entry} />
     </div>
   )
 }

@@ -630,6 +630,14 @@ const LIVE_TOOLS: Readonly<Record<string, LiveTool>> = {
   [OPENAI]: { tool: "Codex" },
 }
 
+/** A provider group's accessible name: the provider, then its plan when known. */
+export function providerGroupLabel(
+  displayName: string,
+  plan: string | null | undefined,
+): string {
+  return plan ? `${displayName}, ${plan} plan` : displayName
+}
+
 /** The meter's login tool, e.g. "Claude Code", or the meter's own display name. */
 export function liveToolName(
   meter: Pick<LiveUsageMeterPayload, "provider" | "displayName">,

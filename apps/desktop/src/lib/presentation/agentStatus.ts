@@ -1,6 +1,7 @@
 import type { LiveUsageMeterPayload } from "../providerUsageIpc"
 import { agentDisplayName, agentProvider } from "./agents"
 import { liveToolName } from "./liveUsage"
+import { sessionCountLabel } from "./providerUsage"
 
 /**
  * What an agent list says about one agent: what this computer has for it,
@@ -17,8 +18,6 @@ import { liveToolName } from "./liveUsage"
  * provider's desktop app still belongs to the agent, so the line names it.
  */
 export interface AgentStatus {
-  /** Sessions, a login, or the provider's desktop app turned up. */
-  found: boolean
   /** The session count for the facts column, or "" when there is nothing to say. */
   facts: string
   /** The desktop app and login, for the line under the name, or "". */
@@ -59,12 +58,8 @@ export function agentStatus(
     ownMeter?.detection === "signedIn" || ownMeter?.detection === "installedNotSignedIn"
   const found = sessionsSeen > 0 || signedInOrInstalled || Boolean(desktopApp)
   const facts =
-    sessionsSeen > 0
-      ? `${sessionsSeen} ${sessionsSeen === 1 ? "session" : "sessions"}`
-      : found
-        ? "No sessions yet"
-        : ""
-  return { found, facts, note: notes.join(" · ") }
+    sessionsSeen > 0 ? sessionCountLabel(sessionsSeen) : found ? "No sessions yet" : ""
+  return { facts, note: notes.join(" · ") }
 }
 
 /** The login half of the line, or null when detection has nothing definite. */

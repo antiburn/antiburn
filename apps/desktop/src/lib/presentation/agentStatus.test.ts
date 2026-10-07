@@ -15,38 +15,33 @@ describe("agentStatus", () => {
     name: string
     sessions: number
     meter?: LiveUsageMeterPayload
-    found: boolean
     line: string
   }>([
-    { name: "nothing at all", sessions: 0, found: false, line: "" },
-    { name: "sessions, no meter", sessions: 12, found: true, line: "12 sessions" },
-    { name: "one session", sessions: 1, found: true, line: "1 session" },
+    { name: "nothing at all", sessions: 0, line: "" },
+    { name: "sessions, no meter", sessions: 12, line: "12 sessions" },
+    { name: "one session", sessions: 1, line: "1 session" },
     {
       name: "sessions and a login",
       sessions: 87,
       meter: claude({ detection: "signedIn" }),
-      found: true,
       line: "87 sessions · Signed in",
     },
     {
       name: "a login and no sessions",
       sessions: 0,
       meter: claude({ detection: "signedIn" }),
-      found: true,
       line: "No sessions yet · Signed in",
     },
     {
       name: "Claude Desktop only, with sessions",
       sessions: 41,
       meter: claude({ detection: "notInstalled", desktopAppLabel: "Claude Desktop" }),
-      found: true,
       line: "41 sessions · Claude Desktop · Limits need Claude Code signed in",
     },
     {
       name: "Claude Desktop only, chat only",
       sessions: 0,
       meter: claude({ detection: "notInstalled", desktopAppLabel: "Claude Desktop" }),
-      found: true,
       line: "No sessions yet · Claude Desktop · Limits need Claude Code signed in",
     },
     {
@@ -57,42 +52,36 @@ describe("agentStatus", () => {
         detection: "notInstalled",
         desktopAppLabel: "Claude Desktop",
       }),
-      found: true,
       line: "41 sessions · Claude Desktop",
     },
     {
       name: "the CLI installed but not signed in",
       sessions: 3,
       meter: claude({ detection: "installedNotSignedIn" }),
-      found: true,
       line: "3 sessions · Not signed in",
     },
     {
       name: "the tool not installed",
       sessions: 0,
       meter: claude({ detection: "notInstalled" }),
-      found: false,
       line: "",
     },
     {
       name: "detection not run yet",
       sessions: 5,
       meter: claude({ detection: "unknown" }),
-      found: true,
       line: "5 sessions",
     },
     {
       name: "a Claude login that only Pi holds",
       sessions: 0,
       meter: claude({ detection: "signedIn", carrier: "pi", carrierLabel: "Pi" }),
-      found: false,
       line: "",
     },
     {
       name: "Claude sessions beside a login that only Pi holds",
       sessions: 7,
       meter: claude({ detection: "signedIn", carrier: "pi", carrierLabel: "Pi" }),
-      found: true,
       line: "7 sessions",
     },
     {
@@ -104,27 +93,23 @@ describe("agentStatus", () => {
         carrierLabel: "Pi",
         desktopAppLabel: "Claude Desktop",
       }),
-      found: true,
       line: "No sessions yet · Claude Desktop",
     },
     {
       name: "Claude Desktop beside a Claude Code login",
       sessions: 41,
       meter: claude({ detection: "signedIn", desktopAppLabel: "Claude Desktop" }),
-      found: true,
       line: "41 sessions · Claude Desktop · Signed in",
     },
     {
       name: "Pi found but not signed in",
       sessions: 0,
       meter: claude({ detection: "installedNotSignedIn", carrier: "pi", carrierLabel: "Pi" }),
-      found: false,
       line: "",
     },
-  ])("says $name", ({ sessions, meter, found, line }) => {
+  ])("says $name", ({ sessions, meter, line }) => {
     // The table reads as one line: the facts column, then the note under the name.
     const status = agentStatus(sessions, meter)
-    expect(status.found).toBe(found)
     expect([status.facts, status.note].filter(Boolean).join(" · ")).toBe(line)
   })
 
@@ -132,7 +117,6 @@ describe("agentStatus", () => {
     expect(
       agentStatus(41, claude({ detection: "notInstalled", desktopAppLabel: "Claude Desktop" })),
     ).toEqual({
-      found: true,
       facts: "41 sessions",
       note: "Claude Desktop · Limits need Claude Code signed in",
     })

@@ -6,17 +6,16 @@ import type {
 } from "../../../lib/providerUsageIpc"
 import {
   liveDisplayableProviders,
-  liveErrorHasDocs,
-  liveErrorNote,
   liveGraceNote,
   livePlanAccountLabel,
   liveProviderStatus,
   liveUnavailableProviders,
   liveWindows,
   orderedLiveAccounts,
+  providerGroupLabel,
 } from "../../../lib/presentation/liveUsage"
 
-import { LimitsDocsLink } from "../../../components/providerUsage/LimitsDocsLink"
+import { UnavailableNote } from "../../../components/providerUsage/UnavailableNote"
 import { WindowMeterRow } from "../../../components/providerUsage/UsageLimitsBar"
 import { useStableAccountNumbers } from "../../../components/providerUsage/useStableAccountNumbers"
 import { Skeleton } from "../../../components/ui/Skeleton"
@@ -140,7 +139,7 @@ export function OverviewProviderLimits({
 
                         <div
                           role="group"
-                          aria-label={plan ? `${displayName}, ${plan} plan` : displayName}
+                          aria-label={providerGroupLabel(displayName, plan)}
                           className="min-w-0"
                         >
                           <h3 className="min-w-0 type-footnote truncate">
@@ -166,11 +165,7 @@ export function OverviewProviderLimits({
 
                       <div
                         role="group"
-                        aria-label={
-                          entry.planLabel
-                            ? `${entry.displayName}, ${entry.planLabel} plan`
-                            : entry.displayName
-                        }
+                        aria-label={providerGroupLabel(entry.displayName, entry.planLabel)}
                         className="min-w-0"
                       >
                         <h3 className="type-footnote truncate font-medium tracking-wide text-label">
@@ -179,15 +174,7 @@ export function OverviewProviderLimits({
                             <span className="text-label-secondary"> · {entry.planLabel}</span>
                           )}
                         </h3>
-                        <p className="type-footnote pt-(--space-md) text-label-secondary">
-                          {liveErrorNote(entry.category, entry.provider, entry.detail)}
-                          {liveErrorHasDocs(entry.detail) && (
-                            <>
-                              {" "}
-                              <LimitsDocsLink />
-                            </>
-                          )}
-                        </p>
+                        <UnavailableNote entry={entry} className="pt-(--space-md)" />
                       </div>
                     </Fragment>
                   ))}

@@ -1582,14 +1582,20 @@ fn parse_profile(body: &str) -> Option<ClaudeIdentity> {
     })
 }
 
-fn read_claude_json_identity(path: &Path) -> Option<ClaudeIdentity> {
+/// The `oauthAccount` object from `~/.claude.json`, if the file is small
+/// enough to read and parses.
+fn read_claude_json_account(path: &Path) -> Option<Value> {
     let metadata = fs::metadata(path).ok()?;
     if metadata.len() > MAX_CLAUDE_JSON_BYTES {
         return None;
     }
     let contents = fs::read_to_string(path).ok()?;
-    let value: Value = serde_json::from_str(&contents).ok()?;
-    let account = value.get("oauthAccount")?;
+    let mut value: Value = serde_json::from_str(&contents).ok()?;
+    Some(value.get_mut("oauthAccount")?.take())
+}
+
+fn read_claude_json_identity(path: &Path) -> Option<ClaudeIdentity> {
+    let account = read_claude_json_account(path)?;
     Some(ClaudeIdentity {
         uuid: non_empty_str(account.get("accountUuid")),
         email: non_empty_str(account.get("emailAddress")),
@@ -1605,13 +1611,7 @@ fn read_claude_json_identity(path: &Path) -> Option<ClaudeIdentity> {
 /// `claude_max`) and `organizationRateLimitTier` (for example
 /// `default_claude_max_20x`) are read. The file holds no token.
 fn read_claude_json_plan(path: &Path) -> Option<crate::dto::LiveProviderPlan> {
-    let metadata = fs::metadata(path).ok()?;
-    if metadata.len() > MAX_CLAUDE_JSON_BYTES {
-        return None;
-    }
-    let contents = fs::read_to_string(path).ok()?;
-    let value: Value = serde_json::from_str(&contents).ok()?;
-    plan_from_oauth_account(value.get("oauthAccount")?)
+    plan_from_oauth_account(&read_claude_json_account(path)?)
 }
 
 /// `claude_max` names the plan `max`, matching the profile endpoint's names.

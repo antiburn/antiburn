@@ -156,7 +156,7 @@ remove_installer_path_block() {
   local profile="$1"
   [[ -f "$profile" ]] && grep -qF '# >>> Codex installer >>>' "$profile" || return 0
   if [[ $apply -eq 0 ]]; then say "  would remove the Codex installer PATH block from: $profile"; return 0; fi
-  if [[ $backup -eq 1 ]]; then
+  if [[ $backup -eq 1 && "$profile" == "$HOME"/* ]]; then
     mkdir -p "$backup_root/HOME/$(dirname "${profile#"$HOME"/}")"
     cp -p "$profile" "$backup_root/HOME/${profile#"$HOME"/}"
   fi

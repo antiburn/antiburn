@@ -138,8 +138,8 @@ pub trait LiveUsageSource: Send + Sync {
     fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome;
 
     /// The plan the provider's own tools wrote to a local file, for a failure
-    /// with no reading to carry it. Asked only after a fetch that failed and
-    /// proved nothing. Never reads a secret.
+    /// with no reading to carry it. Asked only after a `DesktopOnly` failure,
+    /// when no other login can own a different plan. Never reads a secret.
     fn local_plan(&self) -> Option<crate::dto::LiveProviderPlan> {
         None
     }
