@@ -6,6 +6,7 @@ import type {
   ProviderUsageDayPayload,
   ProviderUsageWindowsPayload,
 } from "../../../lib/providerUsageIpc"
+import { cn } from "../../../lib/cn"
 import { SegmentedControl } from "../../../components/ui/SegmentedControl"
 import { OverviewAllowanceBackdrop } from "./OverviewAllowanceBackdrop"
 import { OverviewAllowanceTotals } from "./OverviewAllowanceTotals"
@@ -87,9 +88,18 @@ export function OverviewUsage({
           rangeEndEpoch={allowance?.rangeEndEpoch ?? 0}
         />
       )}
-      {/* One header row: the figures on the left, the unit tabs on the right. */}
-      <div className="flex items-start gap-(--space-lg)">
-        <div className="@container min-w-0 flex-1">
+      {/* One header row: the figures on the left, the unit tabs on the right.
+          When the figures cannot stay side by side next to the tabs, the
+          tabs wrap to a row above them (wrap-reverse), so the figures keep
+          the full width. Under wrap-reverse, items-end aligns to the top.
+          The basis is the width at which `HeroFigures` stacks its cells. */}
+      <div className="flex flex-wrap-reverse items-end gap-x-(--space-lg) gap-y-(--space-sm)">
+        <div
+          className={cn(
+            "@container min-w-0 flex-1",
+            metric === "cost" || chartAccounts.length > 2 ? "basis-[540px]" : "basis-[360px]",
+          )}
+        >
           {metric === "cost" ? (
             !costFailed && <OverviewSpendTotals totals={totals} loading={loading} />
           ) : (
@@ -111,7 +121,7 @@ export function OverviewUsage({
           ariaLabel="Usage unit"
           variant="text-tabs"
           size="large"
-          className="shrink-0"
+          className="ms-auto shrink-0"
         />
       </div>
 

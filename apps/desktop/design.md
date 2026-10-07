@@ -890,7 +890,7 @@ Notes for what isn't expressible as a token:
   them: the Cost tab's daily spend by agent, and the Subscription tab's weekly fill and 5-hour
   peaks in `context-stroke` tints. The chart has no axes. It scales to its own peak so low usage
   still fills the card, and fades toward the top. The figures and the unit tabs share the top
-  row. A date row (every 7 days and "Today") and then the key close the card, and the lower half shows a tooltip for each day:
+  row; when the figures need the full width to stay side by side, the tabs move to a row above. A date row (every 7 days and "Today") and then the key close the card, and the lower half shows a tooltip for each day:
   a `UsageBannerTip` card with the day's figure and one row and share bar per layer. The
   hovered day takes a faint band, and on the Cost tab the other days' columns dim. With more
   than one subscription account, a figure picks the account the banner draws.
