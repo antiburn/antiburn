@@ -64,9 +64,20 @@ run() { if [[ $apply -eq 1 ]]; then "$@"; else say "  would run: $*"; fi; }
 
 # Paths already listed or removed in this run, one per line.
 seen=$'\n'
+# The real path of a directory, or the path unchanged when it is not one.
+real_dir() { (cd -P "$1" 2>/dev/null && pwd) || printf '%s\n' "$1"; }
+
 remove_path() {
   local p="$1"
   [[ -e "$p" || -L "$p" ]] || return 0
+  # Never remove /, HOME, or a folder above HOME, even through an env var
+  # such as CLAUDE_CONFIG_DIR or CODEX_HOME, or a symlink to one of them.
+  local real home
+  real=$(real_dir "$p"); home=$(real_dir "$HOME")
+  if [[ "$real" == "/" || "$home" == "$real" || "$home" == "$real"/* ]]; then
+    say "  WARNING: refusing to remove: $p"
+    return 0
+  fi
   [[ "$seen" == *$'\n'"$p"$'\n'* ]] && return 0
   seen+="$p"$'\n'
   if [[ $apply -eq 0 ]]; then say "  would remove: $p"; return 0; fi
