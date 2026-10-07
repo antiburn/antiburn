@@ -467,6 +467,12 @@ fn native_codex_skill_inventory_requires_workspace_trust_and_valid_definitions()
     )
     .unwrap();
     let store = Store::open(directory.path()).unwrap();
+    for detector in [
+        antiburn_local::checks::DetectorId::SkillOpportunities,
+        antiburn_local::checks::DetectorId::ScopeCreep,
+    ] {
+        store.set_check_enabled(detector, true).unwrap();
+    }
     store
         .capture_burn_check_boundaries(
             &[crate::scope_creep_worker::CHECK_ID, "skill_opportunities"],

@@ -1,7 +1,7 @@
 # Remote sessions
 
 Antiburn can copy supported coding-agent sessions from a remote host over SSH
-and analyze the copies on your computer. Manage hosts in **Settings → Sources →
+and analyze the copies on your computer. Manage hosts in **Sessions step settings →
 Remote hosts**. Use the **Source** filter in Sessions to combine Local with any
 remote hosts. A small computer icon identifies a remote session; its tooltip
 names the host.

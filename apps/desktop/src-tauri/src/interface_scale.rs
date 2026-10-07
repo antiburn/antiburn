@@ -103,9 +103,6 @@ pub fn reconcile_existing(app: &tauri::AppHandle, scale: InterfaceScale) -> Resu
             errors.push(format!("{label}: {error}"));
         }
     }
-    if let Err(error) = crate::onboarding::reconcile_interface_scale(app, scale) {
-        errors.push(format!("{}: {error}", crate::onboarding::LABEL));
-    }
     if let Err(error) = crate::settings::reconcile_interface_scale(app, scale) {
         errors.push(format!("{}: {error}", crate::settings::LABEL));
     }

@@ -5,7 +5,7 @@ import {
   type ProviderSettings,
   type SmartCheckProvider,
 } from "../../lib/smartCheckProviders"
-import { searchApp, resolveSettingsSearchTarget } from "../../lib/appSearch"
+import { searchApp, resolveStepSettingsSearchTarget } from "../../lib/appSearch"
 import { CheckProviderSettings } from "./CheckProviderSettings"
 import { SettingsTargetFocus } from "./SettingsTargetFocus"
 
@@ -427,11 +427,13 @@ it.each(["smartCheckProvider", "smartCheckLimits", "typeSafeApiKey"])(
           ? "Model limits"
           : "TypeSafe API key",
       "macos",
-    ).find((result) => result.target.kind === "setting" && result.target.control === control)
+    ).find(
+      (result) => result.target.kind === "stepSetting" && result.target.control === control,
+    )
     expect(result).toBeDefined()
-    if (!result || result.target.kind !== "setting")
+    if (!result || result.target.kind !== "stepSetting")
       throw new Error("Missing search destination")
-    const request = resolveSettingsSearchTarget(result.target)
+    const request = resolveStepSettingsSearchTarget(result.target)
     const { container } = render(
       <CheckProviderSettings control={request.control} targetRevision={1} />,
     )

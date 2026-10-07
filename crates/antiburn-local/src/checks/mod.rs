@@ -6,7 +6,7 @@ pub mod scope_creep;
 pub mod skill_opportunities;
 
 mod id;
-pub use id::DetectorId;
+pub use id::{DetectorId, DetectorSelection};
 
 mod assessment;
 mod cache_churn;

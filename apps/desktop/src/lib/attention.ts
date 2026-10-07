@@ -1,5 +1,5 @@
 import type { StorageHealthPayload } from "./ipc"
-import type { SettingsPane } from "./settingsPanes"
+import type { MainWindowOverviewStep } from "./mainWindowIpc"
 
 /**
  * Which attention banners the popover should be showing, derived from state the
@@ -25,8 +25,10 @@ import type { SettingsPane } from "./settingsPanes"
 /** Which problem a banner describes. Doubles as its dismissal key. */
 export type AttentionKind = "storage" | "sourceAccess"
 
-/** What pressing a banner's action does. */
-type AttentionAction = { kind: "openSettings"; pane: SettingsPane } | { kind: "rescan" }
+/** What pressing a banner's action does. `openOverviewStep` opens the main
+ *  window's Overview on that step's settings modal. */
+type AttentionAction =
+  { kind: "openOverviewStep"; step: MainWindowOverviewStep } | { kind: "rescan" }
 
 export interface AttentionBanner {
   id: AttentionKind
@@ -80,7 +82,7 @@ export function attentionBanners({ repositories, storage }: AttentionInput): Att
           ? `The system is blocking antiburn from reading ${first}. Its sessions are missing from this list.`
           : `The system is blocking antiburn from reading ${blocked.length} repositories. Their sessions are missing from this list.`,
       actionLabel: "Review",
-      action: { kind: "openSettings", pane: "sources" },
+      action: { kind: "openOverviewStep", step: "sessions" },
       dismissLabel: "Dismiss the repository-access warning",
     })
   }

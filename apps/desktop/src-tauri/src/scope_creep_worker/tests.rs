@@ -66,6 +66,24 @@ fn production_loader_uses_original_enrollment_and_keeps_pre_enrollment_scope() {
 }
 
 impl NativeFixture {
+    fn paged() -> Self {
+        let fixture = Self::new(0);
+        for index in 0..9 {
+            fixture.append(
+                2 + index * 2,
+                "assistant",
+                json!({"type":"tool","tool":"write","callID":format!("write-{index}"),
+                    "state":{"status":"completed","input":{"filePath":format!("/synthetic/billing-{index}.rs"),"content":"new billing feature"},"output":"File written successfully."}}),
+            );
+            fixture.append(
+                3 + index * 2,
+                "user",
+                json!({"type":"text","text":"Continue the parser fix. Do not change billing."}),
+            );
+        }
+        fixture
+    }
+
     pub(crate) fn new(groups: usize) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let source_path = directory.path().join("opencode.db");
@@ -75,6 +93,9 @@ impl NativeFixture {
             CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
             INSERT INTO session VALUES ('scope', NULL, 1000, 9000);").unwrap();
         let store = Store::open(directory.path()).unwrap();
+        store
+            .set_check_enabled(antiburn_local::checks::DetectorId::ScopeCreep, true)
+            .unwrap();
         store.capture_burn_check_boundaries(&[CHECK_ID], 0).unwrap();
         let fixture = Self {
             directory,
@@ -418,7 +439,7 @@ fn persisted_native_scope_approval_withdraws_findings_and_saved_prompt_citations
 
 #[test]
 fn every_selected_and_followup_request_retains_full_latest_scope() {
-    let fixture = NativeFixture::new(10);
+    let fixture = NativeFixture::paged();
     let candidate = fixture.publish();
     let input = load_input(
         &fixture.store,
@@ -426,6 +447,8 @@ fn every_selected_and_followup_request_retains_full_latest_scope() {
         &ModelCapabilities::jev_default(),
     )
     .unwrap();
+    assert_eq!(input.plan.prepared.groups.len(), 9);
+    let all_results = results(&input, false);
     let mut sampling = new_sampling().unwrap();
     sampling
         .synchronize(
@@ -447,25 +470,26 @@ fn every_selected_and_followup_request_retains_full_latest_scope() {
         );
         assert_eq!(plan.prepared.groups.len(), 1);
         for item in &plan.work_items {
-            let initial = results(&input, false)
-                .into_iter()
+            let initial = all_results
+                .iter()
                 .find(|result| result.work_item_id == item.id)
                 .unwrap();
             let followup = input
                 .check
-                .reconcile(item, &initial, input.check.context())
+                .reconcile(item, initial, input.check.context())
                 .unwrap()
                 .unwrap();
             assert_eq!(followup.window, item.window);
         }
-        let selected_results = results(&input, false)
-            .into_iter()
+        let selected_results = all_results
+            .iter()
             .filter(|result| {
                 plan.work_items.iter().any(|item| {
                     result.work_item_id == item.id
                         || result.work_item_id == format!("{}::followup", item.id)
                 })
             })
+            .cloned()
             .collect::<Vec<_>>();
         let reduction = input.check.reduce(&plan, &selected_results, true).unwrap();
         record_completion(&mut sampling, &job, &reduction).unwrap();
@@ -479,7 +503,7 @@ fn every_selected_and_followup_request_retains_full_latest_scope() {
     while let Some(job) = restored.choose_job() {
         next.insert(job.candidate);
     }
-    assert_eq!(selected.union(&next).count(), 10);
+    assert_eq!(selected.union(&next).count(), 9);
 }
 
 #[test]
@@ -647,7 +671,7 @@ fn publication_gate_rejects_partial_clean_and_changed_revisions_or_work_bindings
 
 #[test]
 fn persisted_cursor_resumes_a_bounded_run_and_provider_change_keeps_fair_order() {
-    let fixture = NativeFixture::new(10);
+    let fixture = NativeFixture::paged();
     let candidate = fixture.publish();
     let input = load_input(
         &fixture.store,

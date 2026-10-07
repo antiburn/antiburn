@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-live-usage"
+description = "Enables the start_live_usage command without any pre-configured scope."
+commands.allow = ["start_live_usage"]
+
+[[permission]]
+identifier = "deny-start-live-usage"
+description = "Denies the start_live_usage command without any pre-configured scope."
+commands.deny = ["start_live_usage"]

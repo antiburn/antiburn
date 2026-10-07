@@ -29,7 +29,10 @@
 //! the persisted creation identity of one session row.
 
 mod burn_check;
+mod check_preferences;
+pub(crate) use check_preferences::{check_preferences_snapshot_in, enabled_checks_in};
 pub(crate) mod codex_rollout_checkpoint;
+mod evidence_queue;
 pub mod model;
 pub(crate) mod provider_limit;
 pub(crate) mod provider_usage_history;
@@ -75,8 +78,8 @@ use settings::read_settings;
 
 pub use burn_check::{
     BurnCheckAssessment, BurnCheckCandidate, BurnCheckFailure, BurnCheckHistoryStatus,
-    BurnCheckInput, BurnCheckReservation, BurnCheckSampleOrigin, BurnCheckSampledPair,
-    BurnCheckUsageSummary, CachedAssessmentResponse,
+    BurnCheckInput, BurnCheckRequestAdmission, BurnCheckReservation, BurnCheckSampleOrigin,
+    BurnCheckSampledPair, BurnCheckUsageSummary, CachedAssessmentResponse,
 };
 pub use model::{
     ActiveCursor, AnalysisRecord, AppSettings, DisabledAgents, DiskSpaceDisplay, EvidenceClaim,
@@ -466,6 +469,7 @@ impl Store {
             state_dir,
         };
         store.migrate()?;
+        store.check_preferences_snapshot()?;
         store.update_settings_snapshot(&store.settings()?);
         Ok(store)
     }
@@ -1746,205 +1750,6 @@ impl Store {
         Ok(delete_stale_source_resume(&connection, &current)?)
     }
 
-    /// Claim the next eligible evidence row for an enabled agent.
-    pub fn claim_next_evidence(
-        &self,
-        agents: &[&str],
-        now_epoch: i64,
-        lease_secs: i64,
-    ) -> Result<Option<EvidenceClaim>> {
-        if agents.is_empty() {
-            return Ok(None);
-        }
-
-        let mut connection = self.lock();
-        let transaction = connection.transaction()?;
-        let agent_placeholders = vec!["?"; agents.len()].join(", ");
-        let mut values: Vec<rusqlite::types::Value> = agents
-            .iter()
-            .map(|agent| rusqlite::types::Value::Text((*agent).to_string()))
-            .collect();
-        values.push(rusqlite::types::Value::Integer(now_epoch));
-        let now_parameter = values.len();
-        let candidate = transaction
-            .query_row(
-                &format!(
-                    "SELECT evidence.environment_key, evidence.agent, evidence.session_id
-                       FROM session_evidence AS evidence
-                       JOIN session
-                         ON session.environment_key = evidence.environment_key
-                        AND session.agent = evidence.agent
-                        AND session.session_id = evidence.session_id
-                      WHERE evidence.agent IN ({agent_placeholders})
-                        AND (
-                            evidence.status = 'pending'
-                            OR (evidence.status = 'processing'
-                                AND evidence.lease_expires_at_epoch <= ?{now_parameter})
-                        )
-                        AND (evidence.next_attempt_at_epoch IS NULL
-                             OR evidence.next_attempt_at_epoch <= ?{now_parameter})
-                      ORDER BY evidence.next_attempt_at_epoch,
-                               evidence.claimed_at_epoch,
-                               evidence.environment_key, evidence.agent, evidence.session_id
-                      LIMIT 1"
-                ),
-                rusqlite::params_from_iter(values.iter()),
-                |row| {
-                    Ok(SessionKey::new(
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let Some(key) = candidate else {
-            transaction.commit()?;
-            return Ok(None);
-        };
-
-        transaction.execute(
-            "UPDATE session_evidence
-                SET status = 'processing', claim_fence = claim_fence + 1,
-                    claimed_at_epoch = ?4, lease_expires_at_epoch = ?5
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-            params![
-                key.environment_key,
-                key.agent,
-                key.session_id,
-                now_epoch,
-                now_epoch + lease_secs,
-            ],
-        )?;
-        let (source_generation, claim_fence, retry_count) = transaction.query_row(
-            "SELECT session.source_generation, evidence.claim_fence, evidence.retry_count
-               FROM session_evidence AS evidence
-               JOIN session
-                 ON session.environment_key = evidence.environment_key
-                AND session.agent = evidence.agent
-                AND session.session_id = evidence.session_id
-              WHERE evidence.environment_key = ?1
-                AND evidence.agent = ?2 AND evidence.session_id = ?3",
-            params![key.environment_key, key.agent, key.session_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
-        transaction.commit()?;
-        Ok(Some(EvidenceClaim {
-            key,
-            source_generation,
-            claim_fence,
-            retry_count,
-        }))
-    }
-
-    /// Extend a claim when its fence and source generation remain current.
-    pub fn renew_evidence_lease(
-        &self,
-        claim: &EvidenceClaim,
-        now_epoch: i64,
-        lease_secs: i64,
-    ) -> Result<bool> {
-        let connection = self.lock();
-        let updated = connection.execute(
-            "UPDATE session_evidence AS evidence
-                SET claimed_at_epoch = ?6, lease_expires_at_epoch = ?7
-              WHERE evidence.environment_key = ?1
-                AND evidence.agent = ?2 AND evidence.session_id = ?3
-                AND evidence.status = 'processing' AND evidence.claim_fence = ?4
-                AND EXISTS (
-                    SELECT 1 FROM session
-                     WHERE session.environment_key = evidence.environment_key
-                       AND session.agent = evidence.agent
-                        AND session.session_id = evidence.session_id
-                        AND session.source_generation = ?5
-                )",
-            params![
-                claim.key.environment_key,
-                claim.key.agent,
-                claim.key.session_id,
-                claim.claim_fence,
-                claim.source_generation,
-                now_epoch,
-                now_epoch + lease_secs,
-            ],
-        )?;
-        Ok(updated > 0)
-    }
-
-    /// Record a retry or terminal failure for a current claim.
-    pub fn fail_evidence(
-        &self,
-        claim: &EvidenceClaim,
-        failure: EvidenceFailure,
-        last_error: &str,
-    ) -> Result<bool> {
-        let mut connection = self.lock();
-        let transaction = connection.transaction()?;
-        let updated = match failure {
-            EvidenceFailure::Retry {
-                next_attempt_at_epoch,
-                counts_as_attempt,
-            } => transaction.execute(
-                "UPDATE session_evidence AS evidence
-                    SET status = 'pending', retry_count = retry_count + ?8,
-                        last_error = ?6, claimed_at_epoch = NULL,
-                        lease_expires_at_epoch = NULL, next_attempt_at_epoch = ?7
-                  WHERE evidence.environment_key = ?1
-                    AND evidence.agent = ?2 AND evidence.session_id = ?3
-                    AND evidence.status = 'processing' AND evidence.claim_fence = ?4
-                    AND EXISTS (
-                        SELECT 1 FROM session
-                         WHERE session.environment_key = evidence.environment_key
-                           AND session.agent = evidence.agent
-                           AND session.session_id = evidence.session_id
-                           AND session.source_generation = ?5
-                    )",
-                params![
-                    claim.key.environment_key,
-                    claim.key.agent,
-                    claim.key.session_id,
-                    claim.claim_fence,
-                    claim.source_generation,
-                    last_error,
-                    next_attempt_at_epoch,
-                    i64::from(counts_as_attempt),
-                ],
-            )?,
-            EvidenceFailure::Failed { revisions } => transaction.execute(
-                "UPDATE session_evidence AS evidence
-                    SET status = 'failed', retry_count = retry_count + 1,
-                        analyzed_generation = ?5, parser_revision = ?7,
-                        analyzer_revision = ?8, evidence_schema_revision = ?9,
-                        evidence_json = NULL,
-                        last_error = ?6, claimed_at_epoch = NULL,
-                        lease_expires_at_epoch = NULL, next_attempt_at_epoch = NULL
-                  WHERE evidence.environment_key = ?1
-                    AND evidence.agent = ?2 AND evidence.session_id = ?3
-                    AND evidence.status = 'processing' AND evidence.claim_fence = ?4
-                    AND EXISTS (
-                        SELECT 1 FROM session
-                         WHERE session.environment_key = evidence.environment_key
-                           AND session.agent = evidence.agent
-                           AND session.session_id = evidence.session_id
-                           AND session.source_generation = ?5
-                    )",
-                params![
-                    claim.key.environment_key,
-                    claim.key.agent,
-                    claim.key.session_id,
-                    claim.claim_fence,
-                    claim.source_generation,
-                    last_error,
-                    revisions.parser_revision,
-                    revisions.analyzer_revision,
-                    revisions.evidence_schema_revision,
-                ],
-            )?,
-        };
-        transaction.commit()?;
-        Ok(updated > 0)
-    }
-
     /// Forget all locally stored session data: every session, its analysis, its
     /// relations, and the per-agent scan bookkeeping. Returns how many sessions
     /// were dropped.
@@ -1965,6 +1770,8 @@ impl Store {
     ///
     /// `session_incarnation_seq` is kept: a session discovered again after a
     /// clear must get a higher incarnation than its cleared row.
+    /// `evidence_claim_fence_seq` is kept for the same reason: a pass that
+    /// started before the clear must not share a fence with a new claim.
     ///
     /// Returns how many sessions it removed and the revision after the
     /// commit. Every session row is absent at that revision.
@@ -2340,8 +2147,14 @@ impl Store {
                 publication_epoch.unix_timestamp(),
                 correction_replay,
             )?;
-            let findings =
-                crate::insights_report::publication_findings_in(&transaction, &record.key)?;
+            let enabled_detectors = antiburn_local::insights::DetectorSelection::from_enabled(
+                enabled_checks_in(&transaction)?,
+            );
+            let findings = crate::insights_report::publication_findings_in(
+                &transaction,
+                &record.key,
+                &enabled_detectors,
+            )?;
             let candidates = crate::remediation::passive_remediations(
                 &transaction,
                 remediation_secret

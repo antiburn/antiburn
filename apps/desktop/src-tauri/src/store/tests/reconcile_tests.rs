@@ -33,6 +33,11 @@ fn parser_50_requeues_legacy_path_only_reads_and_rejects_their_resume_state() {
     };
     {
         let conn = store.lock();
+        conn.execute(
+            "UPDATE evidence_claim_fence_seq SET value = MAX(value, 4) WHERE id = 1",
+            [],
+        )
+        .unwrap();
         conn.execute("UPDATE turn_content SET normalized_fields_json = json_remove(normalized_fields_json, '$.values.read_file_request')", []).unwrap();
         conn.execute(
             "UPDATE session_evidence SET parser_revision = 49, published_fence = 4",

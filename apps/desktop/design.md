@@ -21,7 +21,7 @@ sources:
   - src/components/burn-checks/burn-check-summary.css
   - src/views/main-window/overview/overview.css
   - src/views/main-window/quota/quota.css
-  - src/views/settings/remote-hosts.css
+  - src/views/main-window/overview/stepSettings/remote-hosts.css
 colors:
   # Concrete token colors use modern HSL function syntax.
   # Use the shortest value that keeps the same 8-bit RGB channels.
@@ -962,7 +962,7 @@ The supported percentages live in `interface-scale.json`: 90, 100, 110, 125, 150
 type, spacing, radius, or icon tokens by that factor in CSS.
 
 All app-owned web surfaces follow the same saved preference: main window, Settings,
-onboarding, popover, previews, HUD, HUD detail, and nudges. Native menus, traffic lights,
+popover, previews, HUD, HUD detail, and nudges. Native menus, traffic lights,
 and operating-system notifications retain native sizing. Before revealing a new surface,
 the native window owner applies zoom and supplies its geometry. Existing main-window
 bounds remain under user control. Preferred utility-window bounds grow with interface
@@ -972,23 +972,20 @@ multiplied by the interface scale. The extra pixel protects its 720px navigation
 breakpoint from native rounding. The minimum updates when scale or monitor changes
 and is capped by the available work area after native chrome. Compact Settings
 navigation remains a fallback only when the display cannot fit the scaled minimum.
-Onboarding also resizes around its current center during live scale changes,
-clamps to its current monitor's work area, and preserves its renderer and step.
 
 Layout responds to the resulting **CSS viewport**, not physical pixels, screen labels,
 or `devicePixelRatio`. Below 720px, main and Settings navigation use a modal drawer with
 Escape dismissal and focus restoration. Arrow keys select tabs without closing the
 drawer; activation closes it. Settings rows stack controls at a 360px container width.
-Onboarding source columns stack below 720px and retain scrolling. Constrained surfaces
-must reflow or scroll; reducing the chosen zoom to fit is not allowed.
+Constrained surfaces must reflow or scroll; reducing the chosen zoom to fit is not allowed.
 Below 720px, Overview stacks usage and provider limits in one full-width column.
 Each pane retains its own bounded vertical scroll area; the wide layout stays unchanged.
 
 `styles/interface-scale.css` owns these adaptations. The shell supplies
 `--interface-scale` only to preserve native chrome geometry. On macOS,
 `--native-titlebar-clearance` is `40px / --interface-scale`, preserving a 40 native
-logical pixel band at every preset, including 90%. Settings and onboarding keep
-their content below it; the main toolbar shares it outside the traffic-light inset.
+logical pixel band at every preset, including 90%. Settings keeps its content below
+it; the main toolbar shares it outside the traffic-light inset.
 The main toolbar reserves 78 native logical pixels horizontally for traffic lights.
 Its web controls scale horizontally; hover fills stay inside the fixed native-height band.
 Windows and Linux have web-owned titlebars: their 40 CSS pixel height and caption controls

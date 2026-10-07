@@ -447,7 +447,7 @@ fn scope_citations_cover_the_complete_latest_scope_and_bound_work() {
         .unwrap();
     let target = &targets.targets[0];
     let cached = controller
-        .cached_target(&target.action_id, now_epoch())
+        .cached_target(&fixture.store, &target.action_id, now_epoch())
         .unwrap();
     let FindingCause::ScopeCreep(scope) = cached.finding().cause() else {
         unreachable!()

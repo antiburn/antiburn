@@ -9,10 +9,9 @@ import {
   type Connection,
   type ModelCapabilities,
 } from "../../lib/smartCheckProviders"
-import { settingsControlLabel } from "../../lib/settingsSearchTargets"
-import { detectPlatform } from "../../lib/platform"
+import { stepSettingsControlLabel } from "../../lib/stepSettingsTargets"
 import { ProviderSettingsSession } from "./ProviderSettingsSession"
-import { SettingsRow } from "./SettingsSearchRows"
+import { StepSettingsRow as SettingsRow } from "../main-window/overview/stepSettings/StepSettingsSearchRows"
 
 const inputClass =
   "mt-2 min-h-[var(--control-height-regular)] w-full rounded-control border border-separator bg-input-fill px-3 type-body text-label"
@@ -211,7 +210,7 @@ export function CheckProviderSettings({
           trailing={
             <button
               type="button"
-              aria-label={settingsControlLabel("smartCheckProvider", detectPlatform())}
+              aria-label={stepSettingsControlLabel("smartCheckProvider")}
               aria-expanded={open}
               aria-controls="advanced-check-provider"
               className="flex h-6 w-6 items-center justify-center rounded-control text-label-secondary"

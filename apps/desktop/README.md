@@ -5,16 +5,18 @@ companion around the local [`antiburn-local`](../../crates/antiburn-local) engin
 
 The app finds coding-agent sessions on this machine, analyzes them with the
 local engine, and shows activity, session findings, and API-equivalent cost
-estimates. Settings → Sources can sync supported sessions from configured Linux
+estimates. The Sessions step settings can sync supported sessions from configured Linux
 SSH hosts to a private local cache; see [remote sessions](../../docs/remote-sessions.md).
 The session index stays on this device. The app needs no antiburn account,
 server, or backend.
 
 ## Data and network requests
 
-- **Smart assessments:** Settings → Checks runs Ignored Instructions, Scope
+- **Smart assessments:** The Checks step settings configure Ignored Instructions, Scope
   Creep, Over-exploring, and Skill Opportunities through Jev, Ollama, Cloudflare,
-  or Custom. Jev is the default; saved connections retain their settings when
+  or Custom. Each check has an enabled preference; Smart Checks also require
+  the group control and a configured connection. Newly introduced checks start
+  off until enabled. Jev is the default; saved connections retain their settings when
   switched. Credentials use native storage or memory. Ignored Instructions
   sends selected instruction text, assistant excerpts, Bash command input,
   file-edit and read paths, search queries with scope filters, and other-tool
@@ -44,7 +46,7 @@ server, or backend.
   version. Development builds do not register it.
 - **Analytics:** Official release builds send closed product events through the
   [analytics channel](src-tauri/src/analytics). Events contain no session or
-  instruction content. The Ready screen explains analytics, and Settings →
+  instruction content. The first-run Overview explains analytics, and Settings →
   Privacy provides the opt-out. Default source and development builds exclude
   the analytics client.
 
@@ -171,7 +173,7 @@ ANTIBURN_EVAL_PROVIDER=ollama-nimble ANTIBURN_EVAL_LIMIT=3 cargo test --manifest
 ```
 
 See [`docs/debugging.md`](../../docs/debugging.md) for development modes,
-debug-profile isolation, developer tools, logs, onboarding tests, sample
+debug-profile isolation, developer tools, logs, first-run tests, sample
 notifications, and the updater simulator.
 
 ## What keeps the app local
@@ -226,10 +228,11 @@ checks, recovery, bounds, and privacy.
 ## Shell behavior
 
 See [Desktop window renderer lifecycle](../../docs/window-renderer-lifecycle.md)
-for the shared readiness handshake, onboarding prewarm, popover eviction,
+for the shared readiness handshake, first-run prewarm, popover eviction,
 Settings teardown, and the memory rules behind those policies.
 
-- **Main window.** Explicit launch opens the main window after onboarding.
+- **Main window.** Explicit launch opens the main window directly, on a fresh
+  install as well as every later one; there is no separate first-run window.
   It uses native window controls and participates in application switching.
   Closing hides it while monitoring continues, except on Windows and Linux
   when the system-tray icon is hidden; closing then exits. Opening it again
@@ -243,8 +246,8 @@ Settings teardown, and the memory rules behind those policies.
   uses a persistent 220px sidebar with dense desktop rows. Burn checks is the
   default section. Sessions shows the session list and selected detail. The
   sidebar Settings action opens the existing Settings window. Command+,
-  (Control+, on Windows and Linux) opens it from the main window, onboarding,
-  and popover; see the [main-window validation runbook](../../docs/runbooks/main-window.md).
+  (Control+, on Windows and Linux) opens it from the main window and popover;
+  see the [main-window validation runbook](../../docs/runbooks/main-window.md).
 - **Tray item.** Primary click toggles the popover. Secondary click opens a
   menu with Open antiburn, Pin Window, Settings, and Quit. Native application
   menus also provide Quit. On macOS, the antiburn application menu provides
@@ -276,14 +279,14 @@ Settings teardown, and the memory rules behind those policies.
   means "keep this on screen while I work", and a relaunch ends that work.
   Pinning also re-shows the popover, because opening the tray menu is what
   took focus away from it in the first place.
-- **First run.** A 680×480 decorated window of its own, opened at launch while
-  onboarding is unfinished — a fresh install should not have to discover the
-  menu-bar glyph before it is told anything. While
-  it is unfinished the tray click goes here rather than to the popover, which
-  has nothing to show yet, and antiburn is an ordinary Dock application so the
-  window can be reached again once something else takes focus. Finishing it
-  puts the onboarding window away and opens the main window. The existing
-  notification still identifies the menu-bar companion.
+- **First run.** No separate window: the main window opens at launch, at its
+  ordinary default size, and its Overview is the whole setup experience —
+  finding sessions, reading them, and running checks, with its own welcome
+  pitch and privacy line shown until the first step docks. There is nothing
+  to discover before the main window itself, and the tray click behaves
+  normally throughout, opening the popover like any other launch. Finishing
+  the first run fires the existing notification that identifies the menu-bar
+  companion and warms the popover's hidden renderer for the first click.
 - **Settings.** An ordinary decorated window, created on demand and destroyed
   on close. A source list on the left, one pane on the right; every control
   writes through immediately. Remote-host connection forms save explicitly after
@@ -293,10 +296,10 @@ Settings teardown, and the memory rules behind those policies.
   Windows and Linux keep the ordinary application launcher as their recovery
   route when the system-tray icon is hidden. Closing the main window then exits
   the app instead of leaving an invisible resident process.
-- **Popover lifetime.** Finishing onboarding starts one hidden renderer before
-  the onboarding window retires. After it becomes ready, the handoff renderer
-  stays warm for up to 60 seconds. The first reveal consumes that lease; later
-  dismissals hide the resident renderer without scheduling destruction.
+- **Popover lifetime.** Finishing the first run starts one hidden renderer.
+  After it becomes ready, the handoff renderer stays warm for up to 60
+  seconds. The first reveal consumes that lease; later dismissals hide the
+  resident renderer without scheduling destruction.
 - **Local store.** One SQLite database under the app data directory
   (`ai.antiburn.desktop`, or `ai.antiburn.desktop.debug` for a development
   build — see above) holds preferences, scan roots, and the local session data
@@ -305,8 +308,8 @@ Settings teardown, and the memory rules behind those policies.
   is never modified or deleted. Migrations are embedded and versioned by the
   `user_version` pragma.
 - **Scanning.** A single background task refreshes what the app knows: once at
-  launch (after onboarding), shortly after a watched transcript changes, every
-  five minutes as a reconciliation fallback, and on demand. A metadata poll
+  launch, unless discovery is paused, shortly after a watched transcript
+  changes, every five minutes as a reconciliation fallback, and on demand. A metadata poll
   checks active native file sessions every five seconds and waits fifteen
   seconds when none are active. It detects writes that produce no watcher event.
   Watcher and metadata-poll refreshes
@@ -344,7 +347,7 @@ Settings teardown, and the memory rules behind those policies.
   visible. A delayed state-aware retry covers macOS transitions that happen
   within one second of showing the Dock icon.
 
-Settings, onboarding, and native macOS hover previews have dedicated HTML and
+Settings and native macOS hover previews have dedicated HTML and
 TypeScript entries. The resident shell uses URL fragments for the nudge and overlay, with the popover
 as its default. Each window owns one surface until the shell releases it.
 
@@ -371,8 +374,8 @@ These build-level limits affect desktop development:
 - Launch at login is applied only by builds carrying the Cargo `distribution`
   feature, which CI sets for packaged releases. macOS 13+ uses the system's
   main-app service, Windows uses the per-user Run key, and Linux writes an
-  escaped Desktop Entry. New installs are asked on the Ready step (default on),
-  General reflects the same preference, and development runs — including
+  escaped Desktop Entry. New installs default it on without asking; General
+  reflects the same preference, and development runs — including
   `cargo run --release` — never change the machine's login items.
 - Agent icons use three tiers, in `src/lib/agentIcon.tsx`: a brand mark for
   agents with a recorded vendor logo, a letter tile for known agents without

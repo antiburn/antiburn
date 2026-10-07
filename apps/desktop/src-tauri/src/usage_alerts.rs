@@ -5,16 +5,9 @@
 //! something: the Usage surface shows a provider's own limits, asked for
 //! directly with the reader's own credentials.
 //!
-//! Milestone notifications are gated on `AppSettings::live_usage_active` —
-//! the Settings → Usage switch (on by default) *and* onboarding having
-//! finished — and that pairing is deliberate rather than leftover. Both
-//! consequences of the switch depend on the same traffic: a milestone is a
-//! statement about a threshold being *crossed*, which needs readings that
-//! keep moving, and only the sources this switch unlocks ever make a request
-//! to find out whether one has. So the one switch buys both, and its copy
-//! names both. The onboarding half of the gate holds even while the switch
-//! itself defaults on: no credential is read, and no request or subprocess
-//! runs, until the reader has actually seen this app once.
+//! `AppSettings::live_usage_active` gates provider requests and milestone
+//! notifications. It requires both the Usage switch and an explicit start
+//! from setup or Settings. Setup can start live usage before it finishes.
 
 use std::future;
 use std::time::Duration;
@@ -22,6 +15,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::dto::{LiveUsageFreshness, LiveUsageSummary};
+use crate::first_run_gate::{FirstRunGate, FirstRunStage};
 use crate::provider_usage;
 use crate::provider_usage::codex_rollout_history::{self, RolloutImportBatch};
 use crate::provider_usage::live::working_week::WorkingClock;
@@ -63,28 +57,52 @@ const ROLLOUT_CONTINUATION_DELAY: Duration = Duration::from_millis(250);
 /// seconds rather than a handful of `TICK`s.
 pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
+    let gate = app.state::<FirstRunGate>().inner().clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(STARTUP_DELAY).await;
-        let mut interval = tokio::time::interval(TICK);
+        // During the first run, the Codex history import starts when the
+        // reader opens the Sessions step, not after the startup delay. Its
+        // readings are then ready when the checks step publishes the turns.
+        let mut first_run_kick = gate.stage() != FirstRunStage::Done;
+        let sessions_step = gate.wait_until(FirstRunStage::Sessions, || false);
+        tokio::pin!(sessions_step);
+        let mut interval =
+            tokio::time::interval_at(tokio::time::Instant::now() + STARTUP_DELAY, TICK);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut rollout_due = None;
+        // Readings imported since the last learning pass.
+        let mut imported = 0usize;
         loop {
-            tokio::select! {
+            let batch = tokio::select! {
+                reached = &mut sessions_step, if first_run_kick => {
+                    first_run_kick = false;
+                    if reached {
+                        rollout_due = Some(tokio::time::Instant::now());
+                    }
+                    continue;
+                }
                 _ = interval.tick() => {
                     rollout_due = None;
                     let app = app.clone();
-                    if let Some(batch) = blocking::run(move |blocking| run_pass(&app, blocking)).await {
-                        schedule_rollout_continuation(&mut rollout_due, batch);
-                    }
+                    blocking::run(move |blocking| run_pass(&app, blocking)).await
                 }
                 _ = wait_for_rollout_continuation(rollout_due) => {
                     rollout_due = None;
                     let app = app.clone();
-                    if let Some(batch) = blocking::run(move |blocking| run_rollout_import(&app, blocking)).await {
-                        schedule_rollout_continuation(&mut rollout_due, batch);
-                    }
+                    blocking::run(move |blocking| run_rollout_import(&app, blocking)).await
                 }
+            };
+            let Some(batch) = batch else {
+                continue;
+            };
+            imported += batch.imported_observations;
+            // Learn once the import has nothing more to read at once, so the
+            // Overview gets the new estimates without a wait for the next tick.
+            if !batch.continue_soon && imported > 0 {
+                imported = 0;
+                let app = app.clone();
+                blocking::run(move |_blocking| learn_and_notify(&app)).await;
             }
+            schedule_rollout_continuation(&mut rollout_due, batch);
         }
     })
 }
@@ -297,10 +315,7 @@ fn run_pass(app: &AppHandle, _blocking: blocking::Thread) -> RolloutImportBatch 
     // Factor learning uses only local durable inputs. It must run without
     // provider network collection, and after the rollout import so a
     // freshly imported reading can seed a sample the same pass it lands.
-    let now = crate::scan::unix_now();
-    let (learned, touched) = crate::provider_usage::factor::learn(store.inner(), now);
-    crate::analytics::record_limit_factor_observed(app, &learned);
-    crate::analytics::record_quota_window_closed(app, store.inner(), &touched, now);
+    learn_limit_factors(app, store.inner());
     // Read fresh each pass, and default to not acting: an unreadable
     // preference is not permission (same rule as every notifier).
     let Ok(settings) = store.settings() else {
@@ -310,6 +325,53 @@ fn run_pass(app: &AppHandle, _blocking: blocking::Thread) -> RolloutImportBatch 
     batch
 }
 
+/// The event that tells each webview that the limit estimates changed.
+/// Mirrors `LIMIT_ESTIMATES_CHANGED_EVENT` in `src/lib/ipc.ts`.
+pub(crate) const LIMIT_ESTIMATES_CHANGED_EVENT: &str = "limit-estimates:changed";
+
+/// Run one factor learning pass, if the first run lets learning price turns.
+///
+/// Returns `true` when the pass ran and at least one lane has a factor.
+pub(crate) fn learn_limit_factors(app: &AppHandle, store: &Store) -> bool {
+    if app
+        .try_state::<FirstRunGate>()
+        .is_some_and(|gate| !gate.limit_learning_ready())
+    {
+        return false;
+    }
+    let now = crate::scan::unix_now();
+    let (learned, touched) = provider_usage::factor::learn(store, now);
+    crate::analytics::record_limit_factor_observed(app, &learned);
+    crate::analytics::record_quota_window_closed(app, store, &touched, now);
+    !learned.is_empty()
+}
+
+/// Learn factors now, and tell the webviews to read the estimates again.
+///
+/// Call this on a blocking thread.
+fn learn_and_notify(app: &AppHandle) {
+    let Some(store) = app.try_state::<Store>() else {
+        return;
+    };
+    if learn_limit_factors(app, store.inner()) {
+        let _ = app.emit(LIMIT_ESTIMATES_CHANGED_EVENT, ());
+    }
+}
+
+/// Learn factors once the first run publishes its turns.
+///
+/// The insights worker calls this when its backlog drains. Only the first
+/// drain at or after the checks step does work: before it, learning waits.
+pub(crate) fn learn_after_first_publish(app: &AppHandle) {
+    if !app.state::<FirstRunGate>().mark_turns_published() {
+        return;
+    }
+    let app = app.clone();
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        learn_and_notify(&app);
+    }));
+}
+
 /// Run one Codex rollout-history import batch on its own, for the
 /// scheduler's continuation wake-up between full ticks.
 fn run_rollout_import(app: &AppHandle, _blocking: blocking::Thread) -> RolloutImportBatch {
@@ -317,6 +379,13 @@ fn run_rollout_import(app: &AppHandle, _blocking: blocking::Thread) -> RolloutIm
 }
 
 fn run_rollout_import_inner(app: &AppHandle) -> RolloutImportBatch {
+    // The first run reads no session files before the Sessions step.
+    if app
+        .try_state::<FirstRunGate>()
+        .is_some_and(|gate| gate.stage() < FirstRunStage::Sessions)
+    {
+        return RolloutImportBatch::default();
+    }
     let Some(store) = app.try_state::<Store>() else {
         return RolloutImportBatch::default();
     };
@@ -655,7 +724,7 @@ mod tests {
     #[test]
     fn the_claude_reset_diagnostic_requires_every_product_gate() {
         let mut settings = crate::store::AppSettings {
-            onboarding_completed: true,
+            live_usage_started: true,
             ..crate::store::AppSettings::default()
         };
         assert!(claude_limit_reset_diagnostic_allowed(true, &settings));

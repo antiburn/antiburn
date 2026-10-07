@@ -1,8 +1,10 @@
-//! Native TypeSafe credentials and Settings-only authorization.
+//! Native TypeSafe credentials and authorized window controls.
 
+use antiburn_local::checks::DetectorId;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
+use crate::dto::BurnCheckDetectorId;
 use crate::jev::config::{
     CredentialReference, SystemOneConnection, SystemOneEndpoint, SystemOneProvider,
 };
@@ -26,11 +28,16 @@ const CONNECTION_PENDING_KEY: &str = "internal:smartChecksConnectionChangePendin
 const CONNECTION_REMOVAL_KEY: &str = "internal:smartChecksCredentialRemovalPendingV1";
 pub(crate) const AVAILABILITY_EVENT: &str = "checks:availability-changed";
 static CREDENTIAL_CHANGE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static CHECK_CHANGE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static STARTUP_ERROR: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
 
 fn enroll_registered_checks(store: &Store) -> Result<(), &'static str> {
+    let enabled = store
+        .enabled_checks()
+        .map_err(|_| "Could not read check preferences.")?;
     let ids = crate::jev::worker::registered_checks()
         .iter()
+        .filter(|check| DetectorId::from_key(check.id()).is_some_and(|id| enabled.contains(&id)))
         .map(|check| check.id())
         .collect::<Vec<_>>();
     store
@@ -40,8 +47,10 @@ fn enroll_registered_checks(store: &Store) -> Result<(), &'static str> {
 }
 
 fn registered_history_status(store: &Store) -> anyhow::Result<BurnCheckHistoryStatus> {
+    let enabled = store.enabled_checks()?;
     let checks = crate::jev::worker::registered_checks()
         .iter()
+        .filter(|check| DetectorId::from_key(check.id()).is_some_and(|id| enabled.contains(&id)))
         .map(|check| {
             (
                 check.id(),
@@ -75,12 +84,21 @@ pub(crate) struct CheckAvailability {
     usage: BurnCheckUsageSummary,
     history_days: u8,
     backfill: BurnCheckBackfillSummary,
+    checks: Vec<CheckChoice>,
+    revision: u64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CheckChoice {
+    id: BurnCheckDetectorId,
+    enabled: bool,
 }
 
 #[derive(Clone, Serialize)]
 #[serde(tag = "status", content = "snapshot", rename_all = "snake_case")]
 enum CheckAvailabilityEvent {
-    Updated(CheckAvailability),
+    Updated(Box<CheckAvailability>),
     Failed,
 }
 
@@ -482,7 +500,7 @@ pub(crate) fn get_system_one_settings(
     window: WebviewWindow,
     store: tauri::State<'_, Store>,
 ) -> Result<SystemOneSettings, String> {
-    settings_only(&window).map_err(str::to_owned)?;
+    checks_settings_window(&window).map_err(str::to_owned)?;
     let saved = profiles(&store).map_err(str::to_owned)?;
     Ok(SystemOneSettings {
         active_id: saved.active_id,
@@ -495,7 +513,7 @@ pub(crate) async fn test_system_one_connection(
     window: WebviewWindow,
     mut draft: SystemOneDraft,
 ) -> Result<(), String> {
-    settings_only(&window).map_err(str::to_owned)?;
+    checks_settings_window(&window).map_err(str::to_owned)?;
     let provider = draft.connection.provider;
     let result = async {
         {
@@ -625,7 +643,7 @@ pub(crate) async fn save_system_one_connection(
     window: WebviewWindow,
     draft: SystemOneDraft,
 ) -> Result<SystemOneSettings, String> {
-    settings_only(&window).map_err(str::to_owned)?;
+    checks_settings_window(&window).map_err(str::to_owned)?;
     let _change = CREDENTIAL_CHANGE.lock().await;
     let provider = draft.connection.provider;
     let result = save_connection(
@@ -702,7 +720,7 @@ pub(crate) async fn switch_system_one_connection(
     window: WebviewWindow,
     connection_id: String,
 ) -> Result<SystemOneSettings, String> {
-    settings_only(&window).map_err(str::to_owned)?;
+    checks_settings_window(&window).map_err(str::to_owned)?;
     let _change = CREDENTIAL_CHANGE.lock().await;
     let result = switch_connection(
         &app.state::<Store>(),
@@ -782,7 +800,7 @@ pub(crate) async fn refresh_system_one_limits(
     connection: SystemOneConnection,
     credential: Option<String>,
 ) -> Result<antiburn_local::analysis::jev::capabilities::ModelCapabilities, String> {
-    settings_only(&window).map_err(str::to_owned)?;
+    checks_settings_window(&window).map_err(str::to_owned)?;
     let credential = {
         let _change = CREDENTIAL_CHANGE.lock().await;
         ensure_no_pending_removal(&window.state::<Store>()).map_err(str::to_owned)?;
@@ -820,7 +838,7 @@ pub(crate) async fn remove_system_one_credential(
     window: WebviewWindow,
     connection_id: String,
 ) -> Result<(), String> {
-    settings_only(&window).map_err(str::to_owned)?;
+    checks_settings_window(&window).map_err(str::to_owned)?;
     let _change = CREDENTIAL_CHANGE.lock().await;
     let store = app.state::<Store>();
     let result = remove_connection_credential(
@@ -960,11 +978,15 @@ pub(crate) fn restore_at_launch(app: &AppHandle) {
     });
 }
 
-fn settings_only(window: &WebviewWindow) -> Result<(), &'static str> {
-    if window.label() == crate::settings::LABEL {
+fn checks_settings_window(window: &WebviewWindow) -> Result<(), &'static str> {
+    checks_settings_label(window.label())
+}
+
+fn checks_settings_label(label: &str) -> Result<(), &'static str> {
+    if matches!(label, crate::settings::LABEL | crate::main_window::LABEL) {
         Ok(())
     } else {
-        Err("This action is available only in Settings.")
+        Err("This action is available only in the main window or Settings.")
     }
 }
 
@@ -974,6 +996,9 @@ pub(crate) fn read_check_availability(
     saved_key: bool,
     error: Option<&'static str>,
 ) -> Result<CheckAvailability, &'static str> {
+    let (enabled_checks, revision) = store
+        .check_preferences_snapshot()
+        .map_err(|_| "Could not read check preferences from the local database.")?;
     let status = registered_history_status(store)
         .map_err(|_| "Could not read check history from the local database.")?;
     let backfill = BurnCheckBackfillSummary::from(status);
@@ -990,6 +1015,14 @@ pub(crate) fn read_check_availability(
             .filter(|days| matches!(days, 0 | 7 | 30))
             .unwrap_or(0),
         backfill,
+        checks: DetectorId::ALL
+            .into_iter()
+            .map(|detector| CheckChoice {
+                id: detector.into(),
+                enabled: enabled_checks.contains(&detector),
+            })
+            .collect(),
+        revision,
     })
 }
 
@@ -1047,7 +1080,7 @@ impl From<BurnCheckHistoryStatus> for BurnCheckBackfillSummary {
 
 pub(crate) fn changed(app: &AppHandle) {
     let event = match availability(app) {
-        Ok(snapshot) => CheckAvailabilityEvent::Updated(snapshot),
+        Ok(snapshot) => CheckAvailabilityEvent::Updated(Box::new(snapshot)),
         Err(_) => CheckAvailabilityEvent::Failed,
     };
     let _ = app.emit(AVAILABILITY_EVENT, event);
@@ -1056,7 +1089,7 @@ pub(crate) fn changed(app: &AppHandle) {
 
 pub(crate) fn progress_changed(app: &AppHandle) {
     let event = match availability(app) {
-        Ok(snapshot) => CheckAvailabilityEvent::Updated(snapshot),
+        Ok(snapshot) => CheckAvailabilityEvent::Updated(Box::new(snapshot)),
         Err(_) => CheckAvailabilityEvent::Failed,
     };
     let _ = app.emit(AVAILABILITY_EVENT, event);
@@ -1068,7 +1101,7 @@ pub(crate) async fn set_smart_burn_checks_enabled(
     window: WebviewWindow,
     enabled: bool,
 ) -> Result<CheckAvailability, String> {
-    settings_only(&window).map_err(str::to_owned)?;
+    checks_settings_window(&window).map_err(str::to_owned)?;
     let _change = CREDENTIAL_CHANGE.lock().await;
     let store = app.state::<Store>().inner().clone();
     let connection = active_connection(&store).map_err(str::to_owned)?;
@@ -1141,12 +1174,69 @@ pub(crate) fn get_check_availability(app: AppHandle) -> Result<CheckAvailability
 }
 
 #[tauri::command]
+pub(crate) fn set_check_enabled(
+    app: AppHandle,
+    window: WebviewWindow,
+    detector: BurnCheckDetectorId,
+    enabled: bool,
+) -> Result<CheckAvailability, String> {
+    checks_settings_window(&window).map_err(str::to_owned)?;
+    let _change = CHECK_CHANGE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let detector = DetectorId::from(detector);
+    let store = app.state::<Store>();
+    if store
+        .check_enabled(detector)
+        .map_err(|_| "Could not read the check preference.".to_owned())?
+        == enabled
+    {
+        return availability(&app).map_err(str::to_owned);
+    }
+    let smart = crate::jev::worker::registered_check_ids().contains(&detector);
+    let save = || {
+        store.set_check_enabled_with_smart_transition(
+            detector,
+            enabled,
+            smart,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        )
+    };
+    let changed_preference = if smart {
+        app.state::<WorkerHandle>()
+            .persist_check_transition(detector.key(), save)
+    } else {
+        save()
+    }
+    .map_err(|_| "Could not save the check preference.".to_owned())?;
+    if !changed_preference {
+        return availability(&app).map_err(str::to_owned);
+    }
+    app.state::<crate::insights_ipc::InsightsController>()
+        .cancel();
+    crate::session_lifecycle::report(
+        &app,
+        crate::session_lifecycle::SyncObservation::IndexChanged {
+            reason: crate::session_lifecycle::IndexChangeReason::Invalidated,
+        },
+    );
+    crate::jev::worker::wake(&app);
+    changed(&app);
+    crate::analytics::record_check_enablement_saved(&app, detector, enabled);
+    availability(&app).map_err(str::to_owned)
+}
+
+fn resume_after_key_save(was_enabled: bool, replacing: bool, was_configured: bool) -> bool {
+    was_enabled || (replacing && !was_configured)
+}
+
+#[tauri::command]
 pub(crate) async fn set_typesafe_api_key(
     app: AppHandle,
     window: WebviewWindow,
     key: Option<String>,
 ) -> Result<CheckAvailability, String> {
-    settings_only(&window).map_err(str::to_owned)?;
+    checks_settings_window(&window).map_err(str::to_owned)?;
     let _change = CREDENTIAL_CHANGE.lock().await;
     ensure_no_pending_removal(&app.state::<Store>()).map_err(str::to_owned)?;
     if app
@@ -1184,6 +1274,7 @@ pub(crate) async fn set_typesafe_api_key(
     }
     let key = key.map(|key| key.trim().to_owned());
     let replacing = key.is_some();
+    let was_configured = saved_key_marker(&app.state::<Store>());
     let was_enabled = app
         .state::<Store>()
         .internal_value(ENABLED_AT_KEY)
@@ -1198,7 +1289,7 @@ pub(crate) async fn set_typesafe_api_key(
     app.state::<WorkerHandle>().suspend_system_one();
     let store = app.state::<Store>().inner().clone();
     #[cfg(feature = "analytics")]
-    let first_enablement = replacing && !was_enabled;
+    let first_enablement = replacing && !was_configured;
     if replacing && was_enabled {
         store
             .set_internal_value_checked(CREDENTIAL_CHANGE_PENDING_KEY, "true")
@@ -1218,7 +1309,8 @@ pub(crate) async fn set_typesafe_api_key(
     .await
     .map_err(|_| "Credential storage is unavailable.".to_owned())?
     .map_err(str::to_owned)?;
-    if replacing || was_enabled {
+    let resume_after_save = resume_after_key_save(was_enabled, replacing, was_configured);
+    if resume_after_save {
         enroll_registered_checks(&store).map_err(str::to_owned)?;
     }
     if replacing {
@@ -1245,7 +1337,7 @@ pub(crate) async fn set_typesafe_api_key(
         read_connection_credential(&connection).map_err(str::to_owned)?
     };
     app.state::<WorkerHandle>()
-        .set_system_one_connection(connection, credential)
+        .install_system_one_connection(connection, credential, resume_after_save)
         .map_err(|_| "Saved Smart Burn Checks provider settings are invalid.".to_owned())?;
     #[cfg(feature = "analytics")]
     if first_enablement {
@@ -1266,7 +1358,7 @@ pub(crate) async fn remove_typesafe_api_key(
     app: AppHandle,
     window: WebviewWindow,
 ) -> Result<CheckAvailability, String> {
-    settings_only(&window).map_err(str::to_owned)?;
+    checks_settings_window(&window).map_err(str::to_owned)?;
     let _change = CREDENTIAL_CHANGE.lock().await;
     let had_saved_key = saved_key_marker(&app.state::<Store>());
     if !had_saved_key && !app.state::<WorkerHandle>().is_available() {
@@ -1340,7 +1432,7 @@ pub(crate) fn set_check_history_days(
     window: WebviewWindow,
     days: u8,
 ) -> Result<CheckAvailability, String> {
-    settings_only(&window).map_err(str::to_owned)?;
+    checks_settings_window(&window).map_err(str::to_owned)?;
     if !matches!(days, 0 | 7 | 30) {
         return Err("Choose future checks, 7 days, or 30 days.".to_owned());
     }
@@ -1377,7 +1469,7 @@ pub(crate) fn run_check_backfill(
     app: AppHandle,
     window: WebviewWindow,
 ) -> Result<BackfillRunResult, String> {
-    settings_only(&window).map_err(str::to_owned)?;
+    checks_settings_window(&window).map_err(str::to_owned)?;
     if !app.state::<WorkerHandle>().is_available()
         || app.state::<WorkerHandle>().authentication_rejected()
         || app
@@ -1401,10 +1493,17 @@ pub(crate) fn run_check_backfill(
             crate::analysis::projection_revisions(),
         )
         .map_err(|_| "Could not refresh session evidence for this check.".to_owned())?;
+    let enabled = store
+        .enabled_checks()
+        .map_err(|_| "Could not read check preferences.".to_owned())?;
     let checks = crate::jev::worker::registered_checks()
         .iter()
+        .filter(|check| DetectorId::from_key(check.id()).is_some_and(|id| enabled.contains(&id)))
         .map(|check| (check.id(), check.evaluator_revision()))
         .collect::<Vec<_>>();
+    if checks.is_empty() {
+        return Err("Turn on a Smart Burn Check before checking past sessions.".to_owned());
+    }
     let queued = app
         .state::<Store>()
         .enqueue_burn_checks_for_revisions(
@@ -1466,6 +1565,9 @@ mod tests {
         for restore in [true, false] {
             let store =
                 Store::open_in_memory(Path::new("/tmp/antiburn-registry-settings-test")).unwrap();
+            for detector in crate::jev::worker::registered_check_ids() {
+                store.set_check_enabled(detector, true).unwrap();
+            }
             store.set_internal_value(ENABLED_AT_KEY, "123");
             let worker = WorkerHandle::default();
             if restore {
@@ -2277,6 +2379,47 @@ mod tests {
         assert_eq!(
             serde_json::to_value(CheckAvailabilityEvent::Failed).unwrap(),
             serde_json::json!({"status":"failed"})
+        );
+    }
+
+    #[test]
+    fn check_mutations_accept_only_main_and_settings_windows() {
+        assert!(super::checks_settings_label(crate::main_window::LABEL).is_ok());
+        assert!(super::checks_settings_label(crate::settings::LABEL).is_ok());
+        assert!(super::checks_settings_label("popover").is_err());
+    }
+
+    #[test]
+    fn replacing_a_saved_key_preserves_a_paused_master_switch() {
+        assert!(!super::resume_after_key_save(false, true, true));
+        assert!(super::resume_after_key_save(true, true, true));
+        assert!(super::resume_after_key_save(false, true, false));
+    }
+
+    #[test]
+    fn availability_lists_all_checks_and_excludes_disabled_checks_from_history() {
+        let store = Store::open_in_memory(Path::new("/tmp/antiburn-check-availability")).unwrap();
+        let snapshot = super::read_check_availability(&store, false, false, None).unwrap();
+        assert_eq!(
+            snapshot.checks.len(),
+            antiburn_local::checks::DetectorId::COUNT
+        );
+        for choice in &snapshot.checks {
+            let detector = antiburn_local::checks::DetectorId::from(choice.id);
+            assert_eq!(choice.enabled, store.check_enabled(detector).unwrap());
+        }
+        store
+            .set_check_enabled(
+                antiburn_local::checks::DetectorId::IgnoredInstructions,
+                false,
+            )
+            .unwrap();
+        assert_eq!(super::registered_history_status(&store).unwrap().total, 0);
+        assert_eq!(
+            super::read_check_availability(&store, false, false, None)
+                .unwrap()
+                .revision,
+            1
         );
     }
 

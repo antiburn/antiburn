@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core"
-import { listen, type UnlistenFn } from "@tauri-apps/api/event"
+import { listen, type UnlistenFn } from "./tauriEvents"
 
 import { hasShell } from "./ipc"
 import type { ActivityEntryPayload } from "./ipc"
@@ -45,8 +45,15 @@ export interface ChecksReportPayload {
   smartChecksAvailable?: boolean
   /** False while this report snapshot still has queued or running evidence work. */
   evidenceSettled: boolean
+  /** Sessions the report window's denominator counts, regardless of evidence
+   *  state. `pendingEvidence` is the subset of this total still queued or
+   *  processing. */
+  windowSessions: number
   /** Sessions with evidence queued or processing for this report window. */
   pendingEvidence: number
+  /** The subset of `pendingEvidence` that waits for a retry backoff, for
+   *  example a live session whose transcript changed during its check. */
+  deferredEvidence: number
   /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 10000. */
   estimatedTokenBurnBasisPoints: number | null
   /** Aggregate burn indexed by the active detector bit mask in canonical detector order. */
@@ -534,23 +541,6 @@ export interface SessionHygienePayload {
   unusedResources: SessionUnusedResources | null
 }
 
-/**
- * Aggregate hygiene numbers for the sessions in the activity window.
- * Mirrors Rust `HygieneSummaryPayload`.
- */
-export interface HygieneSummary {
-  /** Sessions in the window, after the disabled-agent display filter. */
-  totalSessions: number
-  /** Sessions whose analysis reached a terminal state. */
-  settledSessions: number
-  /** Sessions with current ready evidence, so the checks ran. */
-  analyzedSessions: number
-  /** Analyzed sessions with at least one finding. */
-  failingSessions: number
-  /** Badge id of the most frequent finding, when any session fails. */
-  mostCommonFinding: SessionHygieneBadgeId | null
-}
-
 /** The real local detector results and bounded session navigation targets. */
 export async function getChecksReport(consumerId: string): Promise<ChecksReportPayload | null> {
   if (!hasShell()) return null
@@ -652,12 +642,6 @@ export async function cancelChecksReport(consumerId: string): Promise<void> {
 /** Run after the evidence worker publishes every item in its current queue. */
 export async function onChecksReportChanged(handler: () => void): Promise<UnlistenFn> {
   return listen("checks:report-changed", handler)
-}
-
-/** The aggregate hygiene numbers for the sessions in the activity window. */
-export async function getHygieneSummary(): Promise<HygieneSummary | null> {
-  if (!hasShell()) return null
-  return invoke<HygieneSummary>("get_hygiene_summary")
 }
 
 /** The hygiene badges reduced from a bounded set of stored evidence rows. */

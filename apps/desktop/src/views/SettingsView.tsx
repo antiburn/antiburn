@@ -6,9 +6,7 @@ import {
   Palette,
   ShieldCheck,
   SlidersHorizontal,
-  FolderGit2,
   Gauge,
-  ListChecks,
 } from "lucide-react"
 import { useState, useSyncExternalStore, type ReactNode } from "react"
 
@@ -22,12 +20,10 @@ import { useViewportWidth } from "../lib/viewport"
 import { SETTINGS_PANES, isSettingsPane, type SettingsPane } from "../lib/settingsPanes"
 import { AboutPane } from "./settings/AboutPane"
 import { AppearancePane } from "./settings/AppearancePane"
-import { ChecksPane } from "./settings/ChecksPane"
 import { GeneralPane } from "./settings/GeneralPane"
 import { NotificationsPane } from "./settings/NotificationsPane"
 import { PrivacyPane } from "./settings/PrivacyPane"
 import { SettingsWindowSession } from "./settings/SettingsWindowSession"
-import { SourcesPane } from "./settings/SourcesPane"
 import { UsagePane } from "./settings/UsagePane"
 import { useAppSettings } from "./settings/useAppSettings"
 
@@ -50,15 +46,12 @@ import { useAppSettings } from "./settings/useAppSettings"
  */
 
 // Setup comes first, then the panes that change what the app does, then the
-// two panes that explain it. Sources follows General because it controls where
-// antiburn looks for sessions. Privacy and About close the list. Each of the
-// two answers a question about the app instead of changing its behavior.
+// two panes that explain it. Privacy and About close the list. Each of
+// the two answers a question about the app instead of changing its behavior.
 // Software update lives inside About, with the build it updates, rather than
 // as a pane of its own.
 const PANE_ICONS: Record<SettingsPane, LucideIcon> = {
   general: SlidersHorizontal,
-  sources: FolderGit2,
-  checks: ListChecks,
   notifications: Bell,
   usage: Gauge,
   appearance: Palette,
@@ -78,15 +71,8 @@ export function SettingsView() {
   const controller = useAppSettings()
   const [targetFocus] = useState(() => new SettingsTargetFocus())
   const paneRenderers: Record<SettingsPane, () => ReactNode> = {
-    general: () => <GeneralPane {...controller} info={info} />,
+    general: () => <GeneralPane {...controller} />,
     appearance: () => <AppearancePane {...controller} />,
-    sources: () => (
-      <SourcesPane
-        discoveryPaused={controller.settings.discoveryPaused}
-        appVersion={info?.appVersion ?? "VERSION"}
-      />
-    ),
-    checks: () => <ChecksPane control={control} targetRevision={targetRevision} />,
     privacy: () => <PrivacyPane {...controller} info={info} />,
     notifications: () => <NotificationsPane {...controller} />,
     usage: () => <UsagePane {...controller} />,

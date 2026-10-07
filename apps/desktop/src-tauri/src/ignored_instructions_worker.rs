@@ -17,12 +17,14 @@ use antiburn_local::analysis::{
 use antiburn_local::platform::git;
 use tauri::Emitter;
 
+#[cfg(test)]
 use crate::jev::client::TypeSafeClient;
+#[cfg(test)]
+use crate::jev::worker::WorkerHandle;
 use crate::jev::worker::{
-    BatchExecution, CandidateExecution, CheckPolicy, JevCheckDescriptor, WorkerHandle,
-    error_category, run_prepared_check, unix_now, wake,
+    BatchExecution, CandidateExecution, CheckPolicy, JevCheckDescriptor, error_category,
+    run_prepared_check, unix_now, wake,
 };
-use crate::session_lifecycle::SessionEvents;
 use crate::store::{
     BurnCheckAssessment, BurnCheckCandidate, BurnCheckFailure, BurnCheckInput,
     BurnCheckSampleOrigin, BurnCheckSampledPair, SELECTED_CONTENT_PROGRESS_REVISION,
@@ -332,27 +334,27 @@ impl JevCheckDescriptor for IgnoredInstructionsDescriptor {
         &'a self,
         execution: CandidateExecution<'a>,
     ) -> crate::jev::worker::WorkerFuture<'a> {
-        Box::pin(run_candidate(
-            execution.app,
-            execution.store,
-            execution.candidate,
-            execution.client,
-            execution.handle,
-            execution.key_generation,
-            execution.events,
-        ))
+        Box::pin(run_candidate(execution))
     }
 }
 
-async fn run_candidate(
-    app: &tauri::AppHandle,
-    store: &Store,
-    candidate: &BurnCheckCandidate,
-    client: TypeSafeClient,
-    handle: &WorkerHandle,
-    key_generation: u64,
-    events: &SessionEvents,
-) -> anyhow::Result<()> {
+async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> {
+    let CandidateExecution {
+        app,
+        store,
+        candidate,
+        client,
+        handle,
+        key_generation,
+        events,
+    } = execution;
+    let check_generation = handle.check_generation(CHECK_ID);
+    if !handle.key_is_current(key_generation)
+        || !handle.check_is_current(CHECK_ID, check_generation)
+        || !store.check_enabled(antiburn_local::checks::DetectorId::IgnoredInstructions)?
+    {
+        return Ok(());
+    }
     let candidate_started = Instant::now();
     let input_preparation_started = Instant::now();
     let capabilities = handle.resolve_capabilities(key_generation).await?;
@@ -678,7 +680,10 @@ async fn run_candidate(
         request_count = outcome.progress.request_count,
         elapsed_ms = execution_started.elapsed().as_millis(),
     );
-    if !handle.key_is_current(key_generation) {
+    if !handle.key_is_current(key_generation)
+        || !handle.check_is_current(CHECK_ID, check_generation)
+        || !store.check_enabled(antiburn_local::checks::DetectorId::IgnoredInstructions)?
+    {
         store.supersede_burn_check_assessment(&input, unix_now())?;
         return Ok(());
     }
@@ -858,6 +863,13 @@ async fn run_candidate(
         carried_comparisons = cursor.carried_comparisons.len(),
         advancing,
     );
+    if !handle.key_is_current(key_generation)
+        || !handle.check_is_current(CHECK_ID, check_generation)
+        || !store.check_enabled(antiburn_local::checks::DetectorId::IgnoredInstructions)?
+    {
+        store.supersede_burn_check_assessment(&input, unix_now())?;
+        return Ok(());
+    }
     let published = if advancing {
         let Some(published) = handle.with_current_generation(key_generation, || {
             store.fail_burn_check_assessment_with_result(

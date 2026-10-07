@@ -79,11 +79,58 @@ impl DetectorId {
     }
 }
 
+/// Selects the detectors that may run during one report reduction.
+///
+/// Engine callers use [`Self::all`] by default. Product surfaces can pass a
+/// narrower snapshot without changing parsing, indexing, or shared evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetectorSelection {
+    enabled: [bool; DetectorId::COUNT],
+}
+
+impl DetectorSelection {
+    pub const fn all() -> Self {
+        Self {
+            enabled: [true; DetectorId::COUNT],
+        }
+    }
+
+    pub const fn none() -> Self {
+        Self {
+            enabled: [false; DetectorId::COUNT],
+        }
+    }
+
+    pub fn from_enabled(detectors: impl IntoIterator<Item = DetectorId>) -> Self {
+        let mut selection = Self::none();
+        for detector in detectors {
+            selection.enabled[detector.index()] = true;
+        }
+        selection
+    }
+
+    pub const fn contains(&self, detector: DetectorId) -> bool {
+        self.enabled[detector.index()]
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = DetectorId> + '_ {
+        DetectorId::ALL
+            .into_iter()
+            .filter(|detector| self.contains(*detector))
+    }
+}
+
+impl Default for DetectorSelection {
+    fn default() -> Self {
+        Self::all()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::DetectorId;
+    use super::{DetectorId, DetectorSelection};
 
     #[test]
     fn detector_keys_are_unique_and_round_trip() {
@@ -124,5 +171,20 @@ mod tests {
         for detector in DetectorId::ALL {
             assert_eq!(1u16 << detector.index(), mask & (1u16 << detector.index()));
         }
+    }
+
+    #[test]
+    fn detector_selection_supports_all_none_and_subsets() {
+        assert_eq!(DetectorSelection::all().iter().count(), DetectorId::COUNT);
+        assert_eq!(DetectorSelection::none().iter().count(), 0);
+
+        let selection = DetectorSelection::from_enabled([
+            DetectorId::SessionsOverDepth,
+            DetectorId::UnusedSkills,
+        ]);
+        assert!(selection.contains(DetectorId::SessionsOverDepth));
+        assert!(selection.contains(DetectorId::UnusedSkills));
+        assert!(!selection.contains(DetectorId::IgnoredInstructions));
+        assert_eq!(selection.iter().count(), 2);
     }
 }

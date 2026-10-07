@@ -412,11 +412,11 @@ export function SessionFiltersHeader({
       }
       actions={
         <div className="session-filter-actions flex shrink-0 items-center gap-2">
-          <Tooltip label="Change time range in Settings. Active sessions are always included.">
+          <Tooltip label="Change time range in Overview. Active sessions are always included.">
             <button
               type="button"
               className="session-filter-target relative inline-flex shrink-0 items-center whitespace-nowrap rounded-control px-1 py-1 type-caption text-label-secondary hover:bg-surface-hover hover:text-label"
-              aria-label={`${days === 1 ? "Today" : `Last ${days} days`}, change time range in Settings`}
+              aria-label={`${days === 1 ? "Today" : `Last ${days} days`}, change time range in Overview`}
               onClick={onChangeTimeRange}
             >
               {days === 1 ? "Today" : `${days} days`}

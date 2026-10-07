@@ -128,6 +128,12 @@ impl Store {
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
         let current_evidence = super::super::revision_sql::current_evidence("e", "s");
+        if internal_value_in(&transaction, ENABLED_AT_KEY)?.is_none()
+            || !check_id_enabled_in(&transaction, &input.check_id)?
+        {
+            transaction.commit()?;
+            return Ok(BurnCheckReservation::Stale);
+        }
         let row: Option<(i64, String, Option<i64>, bool)> = transaction
             .query_row(
                 &format!("SELECT request_count, status, lease_expires_at_epoch,

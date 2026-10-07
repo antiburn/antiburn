@@ -332,6 +332,9 @@ fn assert_native_scope_source((agent, session, format, records): (&str, &str, So
     let records = records_with_work(agent, records);
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path()).unwrap();
+    store
+        .set_check_enabled(antiburn_local::checks::DetectorId::ScopeCreep, true)
+        .unwrap();
     store.capture_burn_check_boundaries(&[CHECK_ID], 0).unwrap();
     let mut candidate = publish(&store, agent, session, format, &records, directory.path());
     if agent == "claude-code" {

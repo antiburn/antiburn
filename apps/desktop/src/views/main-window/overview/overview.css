@@ -1,7 +1,7 @@
 .overview-chart {
-  --overview-chart-height: 90px;
+  --overview-chart-height: 120px;
   display: flex;
-  flex: 1 1 auto;
+  flex: none;
   flex-direction: column;
   min-block-size: 0;
 }
@@ -24,7 +24,7 @@
 }
 
 .overview-chart-placeholder {
-  flex: 1 1 auto;
+  flex: none;
   min-block-size: var(--overview-chart-height);
   border-radius: var(--radius-small);
   background-color: var(--overview-placeholder-fill, transparent);

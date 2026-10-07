@@ -2,14 +2,15 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 
 use antiburn_local::analysis::jev::{
     JevCheck, JevCheckPlan, JevError, JevExecutionOutcome, JevOrchestrationPermit, JevRequestBatch,
     JevResponse, JevRunProgress, JevSessionContext, MAX_REQUEST_TOKENS, run_jev_check_prepared,
 };
+use antiburn_local::checks::DetectorId;
 use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
 use tokio::sync::Notify;
@@ -18,8 +19,8 @@ use crate::jev::client::TypeSafeClient;
 use crate::jev::config::{SystemOneConnection, SystemOneEndpoint, SystemOneProvider};
 use crate::session_lifecycle::{SessionEvents, SessionRef};
 use crate::store::{
-    BurnCheckCandidate, BurnCheckInput, BurnCheckReservation, CachedAssessmentResponse, SessionKey,
-    Store,
+    BurnCheckCandidate, BurnCheckInput, BurnCheckRequestAdmission, BurnCheckReservation,
+    CachedAssessmentResponse, SessionKey, Store,
 };
 
 const RETRY_ATTEMPTS: usize = 3;
@@ -172,9 +173,18 @@ pub(crate) fn registered_checks() -> &'static [&'static dyn JevCheckDescriptor] 
     ]
 }
 
+pub(crate) fn registered_check_ids() -> Vec<DetectorId> {
+    registered_checks()
+        .iter()
+        .map(|check| DetectorId::from_key(check.id()).expect("registered checks have detector IDs"))
+        .collect()
+}
+
 /// Shared credential and wake state for the Jev worker.
 pub(crate) struct WorkerHandle {
     wake: Notify,
+    request_admission: Mutex<()>,
+    check_generations: Mutex<std::collections::BTreeMap<String, u64>>,
     system_one: RwLock<(SystemOneConnection, Option<String>)>,
     key_generation: AtomicU64,
     runtime_enabled: AtomicBool,
@@ -259,6 +269,10 @@ impl WorkerHandle {
         enabled: bool,
     ) -> Result<(), crate::jev::config::ConnectionValidationError> {
         connection.validate()?;
+        let _admission = self
+            .request_admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut active = self
             .system_one
             .write()
@@ -279,6 +293,10 @@ impl WorkerHandle {
 
     /// Disable dispatch and clear the secret. Keep the selected connection.
     pub(crate) fn suspend_system_one(&self) {
+        let _admission = self
+            .request_admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut active = self
             .system_one
             .write()
@@ -359,6 +377,58 @@ impl WorkerHandle {
             && !self.authentication_rejected()
     }
 
+    pub(crate) fn check_generation(&self, check_id: &str) -> u64 {
+        self.check_generations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(check_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn check_is_current(&self, check_id: &str, generation: u64) -> bool {
+        self.check_generation(check_id) == generation
+    }
+
+    pub(crate) fn persist_check_transition<T, E>(
+        &self,
+        check_id: &str,
+        persist: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        let _admission = self
+            .request_admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let result = persist()?;
+        let mut generations = self
+            .check_generations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let generation = generations.entry(check_id.to_owned()).or_default();
+        *generation = generation.saturating_add(1);
+        self.wake.notify_one();
+        Ok(result)
+    }
+
+    fn admit_if_current<T>(
+        &self,
+        key_generation: u64,
+        check_id: &str,
+        check_generation: u64,
+        admit: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<Option<T>> {
+        let _admission = self
+            .request_admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !self.key_is_current(key_generation)
+            || !self.check_is_current(check_id, check_generation)
+        {
+            return Ok(None);
+        }
+        admit().map(Some)
+    }
+
     pub(crate) fn is_available(&self) -> bool {
         let active = self
             .system_one
@@ -383,6 +453,10 @@ impl WorkerHandle {
         store: &Store,
         generation: u64,
     ) -> anyhow::Result<bool> {
+        let _admission = self
+            .request_admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         self.with_current_generation(generation, || {
             self.authentication_rejected.store(true, Ordering::Release);
             self.wake.notify_one();
@@ -397,6 +471,8 @@ impl Default for WorkerHandle {
     fn default() -> Self {
         Self {
             wake: Notify::new(),
+            request_admission: Mutex::new(()),
+            check_generations: Mutex::new(std::collections::BTreeMap::new()),
             system_one: RwLock::new((SystemOneConnection::jev_default(), None)),
             key_generation: AtomicU64::new(0),
             runtime_enabled: AtomicBool::new(false),
@@ -480,6 +556,7 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                 if !handle.key_is_current(key_generation) {
                     break;
                 }
+                let generation = handle.check_generation(check.id());
                 let candidates = match store.burn_check_candidates_for_revision(
                     check.id(),
                     &check.evaluator_revision(),
@@ -497,12 +574,20 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                         continue;
                     }
                 };
-                scheduled.push((check, std::collections::VecDeque::from(candidates)));
+                scheduled.push((
+                    (check, generation),
+                    std::collections::VecDeque::from(candidates),
+                ));
             }
             let mut next_check = 0;
-            while let Some((check, candidate)) = next_candidate(&mut scheduled, &mut next_check) {
+            while let Some(((check, check_generation), candidate)) =
+                next_candidate(&mut scheduled, &mut next_check)
+            {
                 if !handle.key_is_current(key_generation) {
                     break;
+                }
+                if !handle.check_is_current(check.id(), check_generation) {
+                    continue;
                 }
                 let future = check.run_candidate(CandidateExecution {
                     app: &app,
@@ -514,11 +599,18 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                     events: &events,
                 });
                 tokio::pin!(future);
+                let mut cancellation = tokio::time::interval(Duration::from_millis(250));
                 let mut observation = tokio::time::interval(Duration::from_secs(5));
                 observation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 let result = loop {
                     tokio::select! {
                         result = &mut future => break result,
+                        _ = cancellation.tick() => {
+                            if !handle.key_is_current(key_generation)
+                                || !handle.check_is_current(check.id(), check_generation) {
+                                break Ok(());
+                            }
+                        }
                         _ = observation.tick(), if check.id() == "skill_opportunities" => {
                             reconcile_skill_candidate(&app, &store, &handle, key_generation, &candidate);
                         }
@@ -769,6 +861,29 @@ async fn execute_batch(
     batch: std::sync::Arc<JevRequestBatch>,
     notify: &(dyn Fn() + Sync),
 ) -> Result<JevResponse, JevError> {
+    let handle = execution.handle;
+    let check_id = execution.input.check_id.clone();
+    let check_generation = handle.check_generation(&check_id);
+    let future = execute_batch_inner(execution, batch, notify, check_generation);
+    tokio::pin!(future);
+    loop {
+        tokio::select! {
+            result = &mut future => return result,
+            () = tokio::time::sleep(Duration::from_millis(250)) => {
+                if !handle.check_is_current(&check_id, check_generation) {
+                    return Err(JevError::Cancelled);
+                }
+            }
+        }
+    }
+}
+
+async fn execute_batch_inner(
+    execution: BatchContext<'_>,
+    batch: std::sync::Arc<JevRequestBatch>,
+    notify: &(dyn Fn() + Sync),
+    check_generation: u64,
+) -> Result<JevResponse, JevError> {
     let BatchContext {
         store,
         input,
@@ -925,11 +1040,23 @@ async fn execute_batch(
         {
             return Err(JevError::Cancelled);
         }
-        if !store
-            .track_burn_check_requests(&request_identities, &reservation_id, unix_now())
+        let Some(admission) = handle
+            .admit_if_current(key_generation, &input.check_id, check_generation, || {
+                store.admit_burn_check_requests(
+                    input,
+                    &request_identities,
+                    &reservation_id,
+                    unix_now(),
+                )
+            })
             .map_err(|_| JevError::ProviderUnavailable)?
-        {
-            return Err(JevError::RequestOutcomeUnknown);
+        else {
+            return Err(JevError::Cancelled);
+        };
+        match admission {
+            BurnCheckRequestAdmission::Admitted => {}
+            BurnCheckRequestAdmission::Stale => return Err(JevError::Cancelled),
+            BurnCheckRequestAdmission::Unresolved => return Err(JevError::RequestOutcomeUnknown),
         }
         dispatch.rejected = false;
         let (connection, credential) = handle.active_system_one();
@@ -1545,6 +1672,42 @@ mod tests {
         assert_eq!(
             store.internal_value("internal:typesafeAuthRejectedV1"),
             None
+        );
+    }
+
+    #[test]
+    fn check_transitions_fence_only_the_changed_check_and_failed_writes_keep_work_current() {
+        let (_, _, handle, generation) = checkpoint_fixture();
+        let ignored = handle.check_generation("ignored_instructions");
+        let scope = handle.check_generation("scope_creep");
+        assert!(
+            handle
+                .persist_check_transition("ignored_instructions", || Err::<(), _>("write"))
+                .is_err()
+        );
+        assert!(handle.check_is_current("ignored_instructions", ignored));
+        let during_write = std::cell::Cell::new(None);
+        handle
+            .persist_check_transition("ignored_instructions", || {
+                during_write.set(Some(handle.check_generation("ignored_instructions")));
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .unwrap();
+        assert!(!handle.check_is_current("ignored_instructions", during_write.get().unwrap()));
+        assert!(handle.check_is_current("scope_creep", scope));
+        assert!(
+            handle
+                .admit_if_current::<()>(generation, "ignored_instructions", ignored, || panic!(
+                    "stale check dispatch"
+                ))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            handle
+                .admit_if_current(generation, "scope_creep", scope, || Ok(7))
+                .unwrap(),
+            Some(7)
         );
     }
 
@@ -2508,11 +2671,24 @@ mod tests {
                 *self.completed.lock().unwrap()
             }
         }
-        let mocks = ["mock-a", "mock-b", "mock-c", "mock-d"].map(|id| MockDescriptor {
+        let mocks = [
+            "ignored_instructions",
+            "skill_opportunities",
+            "over_exploring",
+            "scope_creep",
+        ]
+        .map(|id| MockDescriptor {
             id,
             completed: std::sync::Mutex::new(0),
         });
         let (store, base_input, handle, generation) = checkpoint_fixture();
+        store
+            .lock()
+            .execute("DELETE FROM burn_check_assessment", [])
+            .unwrap();
+        for detector in registered_check_ids() {
+            store.set_check_enabled(detector, true).unwrap();
+        }
         for check in &mocks {
             let input = BurnCheckInput {
                 check_id: check.id().into(),
@@ -2560,12 +2736,12 @@ mod tests {
         assert_eq!(
             completed,
             [
-                ("mock-a", 1),
-                ("mock-b", 1),
-                ("mock-c", 1),
-                ("mock-d", 1),
-                ("mock-a", 2),
-                ("mock-b", 2)
+                ("ignored_instructions", 1),
+                ("skill_opportunities", 1),
+                ("over_exploring", 1),
+                ("scope_creep", 1),
+                ("ignored_instructions", 2),
+                ("skill_opportunities", 2)
             ]
         );
         handle
@@ -2617,7 +2793,7 @@ mod tests {
                 .unwrap();
             completed.push((check.id(), page));
         }
-        assert_eq!(&completed[6..], [("mock-c", 2), ("mock-d", 2)]);
+        assert_eq!(&completed[6..], [("over_exploring", 2), ("scope_creep", 2)]);
         for check in &mocks {
             let input = BurnCheckInput {
                 check_id: check.id().into(),

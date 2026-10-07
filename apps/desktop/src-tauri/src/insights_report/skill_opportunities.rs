@@ -489,6 +489,9 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n");
             let store = crate::store::Store::open(directory.path()).unwrap();
+            for detector in [DetectorId::SkillOpportunities, DetectorId::ScopeCreep] {
+                store.set_check_enabled(detector, true).unwrap();
+            }
             store
                 .capture_burn_check_boundaries(
                     &[crate::scope_creep_worker::CHECK_ID, "skill_opportunities"],
@@ -516,6 +519,10 @@ mod tests {
     #[test]
     fn opencode_skill_report_uses_the_same_publication_gate() {
         let fixture = crate::scope_creep_worker::tests::NativeFixture::new(1);
+        fixture
+            .store
+            .set_check_enabled(DetectorId::SkillOpportunities, true)
+            .unwrap();
         let source =
             rusqlite::Connection::open(fixture.directory.path().join("opencode.db")).unwrap();
         source.execute_batch("UPDATE message SET time_created = time_created + 4102444800000, time_updated = time_updated + 4102444800000; UPDATE part SET time_created = time_created + 4102444800000, time_updated = time_updated + 4102444800000;").unwrap();

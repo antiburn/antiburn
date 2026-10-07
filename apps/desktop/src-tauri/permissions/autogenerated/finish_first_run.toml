@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-finish-first-run"
+description = "Enables the finish_first_run command without any pre-configured scope."
+commands.allow = ["finish_first_run"]
+
+[[permission]]
+identifier = "deny-finish-first-run"
+description = "Denies the finish_first_run command without any pre-configured scope."
+commands.deny = ["finish_first_run"]

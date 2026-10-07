@@ -15,7 +15,7 @@ describe("attentionBanners", () => {
     ).toEqual([])
   })
 
-  it("raises a source-access banner that goes to the pane which can fix it", () => {
+  it("raises a source-access banner that goes to the step which can fix it", () => {
     const [banner, ...rest] = attentionBanners({
       repositories: [repository("widgets", "permission_denied")],
       storage: HEALTHY_STORAGE,
@@ -25,7 +25,7 @@ describe("attentionBanners", () => {
     expect(banner?.id).toBe("sourceAccess")
     expect(banner?.message).toContain("widgets")
     expect(banner?.actionLabel).toBe("Review")
-    expect(banner?.action).toEqual({ kind: "openSettings", pane: "sources" })
+    expect(banner?.action).toEqual({ kind: "openOverviewStep", step: "sessions" })
     // Short, so a screen-reader user is not read the whole sentence twice.
     expect(banner?.dismissLabel).toBe("Dismiss the repository-access warning")
   })

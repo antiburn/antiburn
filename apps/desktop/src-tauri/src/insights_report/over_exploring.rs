@@ -133,6 +133,9 @@ mod tests {
         for (agent, session, format, records) in native_sources::read_sources() {
             let directory = tempfile::tempdir().unwrap();
             let store = crate::store::Store::open(directory.path()).unwrap();
+            for detector in [DetectorId::OverExploring, DetectorId::ScopeCreep] {
+                store.set_check_enabled(detector, true).unwrap();
+            }
             store
                 .capture_burn_check_boundaries(&[CHECK_ID, crate::scope_creep_worker::CHECK_ID], 0)
                 .unwrap();

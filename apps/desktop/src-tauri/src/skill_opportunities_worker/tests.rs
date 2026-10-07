@@ -65,6 +65,12 @@ fn native_skill_requests_and_document_selections_prepare_without_asserting_succe
             .unwrap();
         }
         let store = crate::store::Store::open(directory.path()).unwrap();
+        for detector in [
+            antiburn_local::checks::DetectorId::SkillOpportunities,
+            antiburn_local::checks::DetectorId::ScopeCreep,
+        ] {
+            store.set_check_enabled(detector, true).unwrap();
+        }
         store
             .capture_burn_check_boundaries(
                 &[
@@ -396,6 +402,9 @@ fn durable_input_for_key(
     key: crate::store::SessionKey,
 ) -> crate::store::BurnCheckInput {
     use crate::store::SessionRecord;
+    store
+        .set_check_enabled(antiburn_local::checks::DetectorId::SkillOpportunities, true)
+        .unwrap();
     store
         .capture_burn_check_boundaries(&[super::SKILL_OPPORTUNITIES_CHECK_ID], 0)
         .unwrap();

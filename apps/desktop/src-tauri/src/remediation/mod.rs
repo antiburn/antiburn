@@ -116,6 +116,19 @@ const PREPARED_CACHE_LIMIT: usize = 8;
 const PREPARED_CACHE_BYTES: usize = 4 * 1024 * 1024;
 const TARGET_DOMAIN: &[u8] = b"antiburn/remediation-target/v2\0";
 const PROMPT_REFERENCE_PREFIX: &str = "Remediation reference: ABR-";
+const SMART_CHECKS_ENABLED_AT_KEY: &str = "internal:burnChecksEnabledAtEpochV1";
+
+fn smart_check_master_generation(store: &Store, detector: DetectorId) -> Option<String> {
+    crate::jev::worker::registered_check_ids()
+        .contains(&detector)
+        .then(|| store.internal_value(SMART_CHECKS_ENABLED_AT_KEY))
+        .flatten()
+}
+
+fn smart_check_master_available(store: &Store, detector: DetectorId) -> bool {
+    !crate::jev::worker::registered_check_ids().contains(&detector)
+        || store.internal_value(SMART_CHECKS_ENABLED_AT_KEY).is_some()
+}
 
 fn unavailable_instruction_evidence() -> BurnCheckTargetEvidence {
     BurnCheckTargetEvidence {
@@ -608,6 +621,8 @@ struct TargetListOptions<'a> {
 struct TimedTarget {
     id: String,
     value: CachedTarget,
+    check_preferences_revision: u64,
+    smart_master_generation: Option<String>,
     created_at_epoch: i64,
 }
 
@@ -616,6 +631,8 @@ struct PreparedAutoFix {
     target: CachedTarget,
     prepared: Option<PreparedOperation>,
     retained_bytes: usize,
+    check_preferences_revision: u64,
+    smart_master_generation: Option<String>,
     created_at_epoch: i64,
     completed: Option<AutoFixResult>,
 }
@@ -665,6 +682,13 @@ impl RemediationController {
         &self,
         store: &Store,
     ) -> Result<BurnCheckRemediationProgress, ControllerError> {
+        let mut enabled = store
+            .enabled_checks()
+            .map_err(|_| ControllerError::PersistenceFailed)?;
+        if store.internal_value(SMART_CHECKS_ENABLED_AT_KEY).is_none() {
+            enabled
+                .retain(|detector| !crate::jev::worker::registered_check_ids().contains(detector));
+        }
         let records = store
             .remediations_with_display_snapshots(MAX_REMEDIATION_PROGRESS_RECORDS)
             .map_err(|_| ControllerError::PersistenceFailed)?;
@@ -677,6 +701,9 @@ impl RemediationController {
             let Some(detector) = DetectorId::from_key(&definition.detector) else {
                 continue;
             };
+            if !enabled.contains(&detector) {
+                continue;
+            }
             let Ok(snapshot) = parse_display_snapshot(&retained.snapshot.display_snapshot_json)
             else {
                 continue;
@@ -802,13 +829,38 @@ impl RemediationController {
         context: BurnCheckTargetContext,
         options: TargetListOptions<'_>,
     ) -> Result<BurnCheckTargetList, ControllerError> {
+        let (enabled, check_preferences_revision) = store
+            .check_preferences_snapshot()
+            .map_err(|_| ControllerError::PersistenceFailed)?;
+        if !enabled.contains(&detector) {
+            return Ok(BurnCheckTargetList {
+                targets: Vec::new(),
+                sample_sessions: Vec::new(),
+                truncated: false,
+            });
+        }
+        let smart_master_generation = smart_check_master_generation(store, detector);
+        if !smart_check_master_available(store, detector) {
+            return Ok(BurnCheckTargetList {
+                targets: Vec::new(),
+                sample_sessions: Vec::new(),
+                truncated: false,
+            });
+        }
         if matches!(
             detector,
             DetectorId::UnusedMcpServers
                 | DetectorId::UnusedBuiltInTools
                 | DetectorId::UnusedSkills
         ) {
-            return self.list_resource_targets(store, detector, context, options);
+            return self.list_resource_targets(
+                store,
+                detector,
+                context,
+                options,
+                check_preferences_revision,
+                smart_master_generation,
+            );
         }
         let page = insights_report::list_current_findings(
             &self.data_dir,
@@ -970,9 +1022,23 @@ impl RemediationController {
                 cached.push(TimedTarget {
                     id,
                     value: target,
+                    check_preferences_revision,
+                    smart_master_generation: smart_master_generation.clone(),
                     created_at_epoch: options.now,
                 });
             }
+        }
+        if !self.check_policy_matches(
+            store,
+            detector,
+            check_preferences_revision,
+            smart_master_generation.as_deref(),
+        )? {
+            return Ok(BurnCheckTargetList {
+                targets: Vec::new(),
+                sample_sessions: Vec::new(),
+                truncated: false,
+            });
         }
         if !options.cache_actions {
             return Ok(BurnCheckTargetList {
@@ -996,6 +1062,8 @@ impl RemediationController {
         detector: DetectorId,
         context: BurnCheckTargetContext,
         options: TargetListOptions<'_>,
+        check_preferences_revision: u64,
+        smart_master_generation: Option<String>,
     ) -> Result<BurnCheckTargetList, ControllerError> {
         let request = insights_report::ReportRequest {
             environment_key: context.environment_key.clone(),
@@ -1106,9 +1174,23 @@ impl RemediationController {
                 cached.push(TimedTarget {
                     id,
                     value: target,
+                    check_preferences_revision,
+                    smart_master_generation: smart_master_generation.clone(),
                     created_at_epoch: options.now,
                 });
             }
+        }
+        if !self.check_policy_matches(
+            store,
+            detector,
+            check_preferences_revision,
+            smart_master_generation.as_deref(),
+        )? {
+            return Ok(BurnCheckTargetList {
+                targets: Vec::new(),
+                sample_sessions: Vec::new(),
+                truncated: false,
+            });
         }
         if !options.cache_actions {
             return Ok(BurnCheckTargetList {
@@ -1152,7 +1234,7 @@ impl RemediationController {
         store: &Store,
         action_id: &str,
     ) -> Result<String, ControllerError> {
-        let target = self.cached_target(action_id, now_epoch())?;
+        let target = self.cached_target(store, action_id, now_epoch())?;
         if target.scope_kind != "project" {
             return Err(ControllerError::TargetNotFound);
         }
@@ -1188,7 +1270,7 @@ impl RemediationController {
         action_id: &str,
     ) -> Result<PromptFixResult, ControllerError> {
         let now = now_epoch();
-        let target = self.cached_target(action_id, now)?;
+        let target = self.cached_target(store, action_id, now)?;
         self.revalidate(&target)?;
         let base_prompt = remediation_prompt(target.finding())
             .map_err(ControllerError::PromptUnavailable)?
@@ -1228,7 +1310,7 @@ impl RemediationController {
         store: &Store,
         action_id: &str,
     ) -> Result<BurnCheckTargetEvidence, ControllerError> {
-        let target = match self.cached_target(action_id, now_epoch()) {
+        let target = match self.cached_target(store, action_id, now_epoch()) {
             Ok(target) => target,
             Err(ControllerError::TargetNotFound | ControllerError::TargetExpired) => {
                 return Ok(unavailable_instruction_evidence());
@@ -1739,6 +1821,13 @@ impl RemediationController {
         detector: DetectorId,
         context: BurnCheckTargetContext,
     ) -> Result<CheckPromptFixResult, ControllerError> {
+        if !store
+            .check_enabled(detector)
+            .map_err(|_| ControllerError::PersistenceFailed)?
+            || !smart_check_master_available(store, detector)
+        {
+            return Err(ControllerError::CheckPromptUnavailable);
+        }
         let targets = self.list_burn_check_targets(store, detector, context)?;
         let now = now_epoch();
         if targets.targets.is_empty() {
@@ -1764,7 +1853,7 @@ impl RemediationController {
             let selected = targets
                 .targets
                 .iter()
-                .map(|target| self.cached_target(&target.action_id, now))
+                .map(|target| self.cached_target(store, &target.action_id, now))
                 .collect::<Result<Vec<_>, _>>()?;
             let (reference, prompt_group_id) =
                 self.prompt_reference_for_targets(store, &selected)?;
@@ -1803,7 +1892,7 @@ impl RemediationController {
             if action_ids.iter().filter(|id| *id == action_id).count() != 1 {
                 return Err(ControllerError::CheckPromptUnavailable);
             }
-            targets.push(self.cached_target(action_id, now)?);
+            targets.push(self.cached_target(store, action_id, now)?);
         }
         let detector = targets[0].finding().detector;
         if targets
@@ -1922,7 +2011,15 @@ impl RemediationController {
         action_id: &str,
         now: i64,
     ) -> Result<AutoFixReview, ControllerError> {
-        let target = self.cached_target(action_id, now)?;
+        let initial_check_preferences_revision = store
+            .check_preferences_revision()
+            .map_err(|_| ControllerError::PersistenceFailed)?;
+        let initial_master_marker = store.internal_value(SMART_CHECKS_ENABLED_AT_KEY);
+        let target = self.cached_target(store, action_id, now)?;
+        let initial_smart_master_generation = crate::jev::worker::registered_check_ids()
+            .contains(&target.finding().detector)
+            .then_some(initial_master_marker)
+            .flatten();
         self.revalidate(&target)?;
         if let Some(watch) = store
             .latest_remediation_for_target(
@@ -2039,6 +2136,23 @@ impl RemediationController {
                 AutoFixSetting::FastMode => AutoFixSideEffect::ResponsesMayTakeLonger,
             },
         };
+        let (enabled, check_preferences_revision) = store
+            .check_preferences_snapshot()
+            .map_err(|_| ControllerError::PersistenceFailed)?;
+        if check_preferences_revision != initial_check_preferences_revision {
+            return Err(ControllerError::TargetChanged);
+        }
+        if smart_check_master_generation(store, target.finding().detector)
+            != initial_smart_master_generation
+        {
+            return Err(ControllerError::TargetChanged);
+        }
+        if !smart_check_master_available(store, target.finding().detector) {
+            return Err(ControllerError::TargetNotFound);
+        }
+        if !enabled.contains(&target.finding().detector) {
+            return Err(ControllerError::TargetNotFound);
+        }
         let mut state = self.state.lock().map_err(|_| ControllerError::Internal)?;
         prune_prepared(&mut state, now);
         while state.prepared.len() >= PREPARED_CACHE_LIMIT
@@ -2055,6 +2169,8 @@ impl RemediationController {
             target,
             prepared: Some(prepared),
             retained_bytes,
+            check_preferences_revision,
+            smart_master_generation: initial_smart_master_generation,
             created_at_epoch: now,
             completed: None,
         });
@@ -2075,7 +2191,16 @@ impl RemediationController {
         prepared_operation_id: &str,
         now: i64,
     ) -> Result<AutoFixResult, ControllerError> {
-        let (target, prepared) = {
+        let (enabled, check_preferences_revision) = store
+            .check_preferences_snapshot()
+            .map_err(|_| ControllerError::PersistenceFailed)?;
+        let current_smart_master_generation = store.internal_value(SMART_CHECKS_ENABLED_AT_KEY);
+        let (
+            target,
+            prepared,
+            prepared_check_preferences_revision,
+            prepared_smart_master_generation,
+        ) = {
             let mut state = self.state.lock().map_err(|_| ControllerError::Internal)?;
             let index = state
                 .prepared
@@ -2091,21 +2216,60 @@ impl RemediationController {
             if let Some(result) = &entry.completed {
                 return Ok(result.clone());
             }
+            if entry.check_preferences_revision != check_preferences_revision {
+                state.prepared.remove(index);
+                return Err(ControllerError::TargetChanged);
+            }
+            if !enabled.contains(&entry.target.finding().detector) {
+                state.prepared.remove(index);
+                return Err(ControllerError::TargetNotFound);
+            }
+            if crate::jev::worker::registered_check_ids().contains(&entry.target.finding().detector)
+                && entry.smart_master_generation != current_smart_master_generation
+            {
+                state.prepared.remove(index);
+                return Err(ControllerError::TargetChanged);
+            }
             let prepared = entry.prepared.take().ok_or(ControllerError::Conflict)?;
-            (entry.target.clone(), prepared)
+            (
+                entry.target.clone(),
+                prepared,
+                entry.check_preferences_revision,
+                entry.smart_master_generation.clone(),
+            )
         };
         if let Err(error) = self.revalidate_prepared(store, &target, &prepared) {
             self.remove_prepared(prepared_operation_id);
             return Err(error);
         }
-        let watch =
-            match self.start_watch(store, &target, RemediationState::Reserved, None, now, None) {
-                Ok(watch) => watch,
-                Err(error) => {
-                    self.remove_prepared(prepared_operation_id);
-                    return Err(error);
-                }
-            };
+        if !self.check_policy_matches(
+            store,
+            target.finding().detector,
+            prepared_check_preferences_revision,
+            prepared_smart_master_generation.as_deref(),
+        )? {
+            self.remove_prepared(prepared_operation_id);
+            return Err(ControllerError::TargetChanged);
+        }
+        let (remediation, guards) =
+            self.watch_input(&target, RemediationState::Reserved, None, now, None)?;
+        let watch = match store
+            .create_or_reuse_remediations_for_enabled_check(
+                &[(remediation, guards)],
+                target.finding().detector,
+                prepared_check_preferences_revision,
+                prepared_smart_master_generation.as_deref(),
+            )
+            .map_err(|_| ControllerError::PersistenceFailed)?
+            .and_then(|mut watches| watches.pop())
+            .ok_or(ControllerError::TargetChanged)
+        {
+            Ok(watch) => watch,
+            Err(error) => {
+                self.remove_prepared(prepared_operation_id);
+                return Err(error);
+            }
+        };
         if watch.state != RemediationState::Reserved {
             self.remove_prepared(prepared_operation_id);
             return Err(ControllerError::AutoFixUnavailable(
@@ -2196,6 +2360,13 @@ impl RemediationController {
 
     pub fn aggregate_wins(&self, store: &Store) -> Result<AggregateWins, ControllerError> {
         let now_ms = now_epoch().saturating_mul(1_000);
+        let mut enabled = store
+            .enabled_checks()
+            .map_err(|_| ControllerError::PersistenceFailed)?;
+        if store.internal_value(SMART_CHECKS_ENABLED_AT_KEY).is_none() {
+            enabled
+                .retain(|detector| !crate::jev::worker::registered_check_ids().contains(detector));
+        }
         let snoozed = store
             .burn_check_snoozes()
             .map_err(|_| ControllerError::PersistenceFailed)?
@@ -2209,9 +2380,12 @@ impl RemediationController {
         let wins = rows
             .into_iter()
             .filter(|row| {
-                !snoozed
+                enabled
                     .iter()
                     .any(|detector| detector.key() == row.contribution.detector_id)
+                    && !snoozed
+                        .iter()
+                        .any(|detector| detector.key() == row.contribution.detector_id)
             })
             .map(|row| {
                 let verified_boundary_ms = row.verified_boundary_ms;
@@ -2556,7 +2730,16 @@ impl RemediationController {
         })
     }
 
-    fn cached_target(&self, id: &str, now: i64) -> Result<CachedTarget, ControllerError> {
+    fn cached_target(
+        &self,
+        store: &Store,
+        id: &str,
+        now: i64,
+    ) -> Result<CachedTarget, ControllerError> {
+        let (enabled, check_preferences_revision) = store
+            .check_preferences_snapshot()
+            .map_err(|_| ControllerError::PersistenceFailed)?;
+        let current_smart_master_generation = store.internal_value(SMART_CHECKS_ENABLED_AT_KEY);
         let state = self.state.lock().map_err(|_| ControllerError::Internal)?;
         let entry = state
             .targets
@@ -2567,7 +2750,38 @@ impl RemediationController {
         if now.saturating_sub(entry.created_at_epoch) > ID_TTL.as_secs() as i64 {
             return Err(ControllerError::TargetExpired);
         }
+        if entry.check_preferences_revision != check_preferences_revision {
+            return Err(ControllerError::TargetChanged);
+        }
+        if crate::jev::worker::registered_check_ids().contains(&entry.value.finding().detector)
+            && entry.smart_master_generation != current_smart_master_generation
+        {
+            return Err(ControllerError::TargetChanged);
+        }
+        if !smart_check_master_available(store, entry.value.finding().detector) {
+            return Err(ControllerError::TargetNotFound);
+        }
+        if !enabled.contains(&entry.value.finding().detector) {
+            return Err(ControllerError::TargetNotFound);
+        }
         Ok(entry.value.clone())
+    }
+
+    fn check_policy_matches(
+        &self,
+        store: &Store,
+        detector: DetectorId,
+        expected_revision: u64,
+        expected_smart_master_generation: Option<&str>,
+    ) -> Result<bool, ControllerError> {
+        let (enabled, current_revision) = store
+            .check_preferences_snapshot()
+            .map_err(|_| ControllerError::PersistenceFailed)?;
+        Ok(enabled.contains(&detector)
+            && current_revision == expected_revision
+            && smart_check_master_available(store, detector)
+            && smart_check_master_generation(store, detector).as_deref()
+                == expected_smart_master_generation)
     }
 
     fn reduce_resource_report(
@@ -2936,6 +3150,20 @@ impl RemediationController {
         if !prompt_watch_supported(targets.iter().map(|target| target.finding().detector)) {
             return Ok((Vec::new(), prompt.to_owned()));
         }
+        let detector = targets
+            .first()
+            .map(|target| target.finding().detector)
+            .ok_or(ControllerError::TargetNotFound)?;
+        let (enabled, check_preferences_revision) = store
+            .check_preferences_snapshot()
+            .map_err(|_| ControllerError::PersistenceFailed)?;
+        if !enabled.contains(&detector) {
+            return Err(ControllerError::TargetNotFound);
+        }
+        let smart_master_generation = smart_check_master_generation(store, detector);
+        if !smart_check_master_available(store, detector) {
+            return Err(ControllerError::TargetNotFound);
+        }
         let watch_inputs = targets
             .iter()
             .map(|target| {
@@ -2954,7 +3182,12 @@ impl RemediationController {
             })
             .collect::<Result<Vec<_>, ControllerError>>()?;
         let watches = store
-            .create_or_reuse_remediations(&watch_inputs)
+            .create_or_reuse_remediations_for_enabled_check(
+                &watch_inputs,
+                detector,
+                check_preferences_revision,
+                smart_master_generation.as_deref(),
+            )
             .map_err(|_| ControllerError::PersistenceFailed)?
             .ok_or(ControllerError::TargetChanged)?;
         for (target, watch) in targets.iter().zip(watches.iter()) {
@@ -2979,6 +3212,7 @@ impl RemediationController {
         Ok((watches, stored_prompt))
     }
 
+    #[cfg(all(test, not(windows)))]
     fn start_watch(
         &self,
         store: &Store,
@@ -2988,11 +3222,28 @@ impl RemediationController {
         now: i64,
         prompt_group_id: Option<&str>,
     ) -> Result<RemediationRecord, ControllerError> {
+        let (enabled, check_preferences_revision) = store
+            .check_preferences_snapshot()
+            .map_err(|_| ControllerError::PersistenceFailed)?;
+        if !enabled.contains(&target.finding().detector) {
+            return Err(ControllerError::TargetNotFound);
+        }
+        let smart_master_generation =
+            smart_check_master_generation(store, target.finding().detector);
+        if !smart_check_master_available(store, target.finding().detector) {
+            return Err(ControllerError::TargetNotFound);
+        }
         let (remediation, guards) =
             self.watch_input(target, state, boundary_ms, now, prompt_group_id)?;
         store
-            .create_or_reuse_remediation(&remediation, &guards)
+            .create_or_reuse_remediations_for_enabled_check(
+                &[(remediation, guards)],
+                target.finding().detector,
+                check_preferences_revision,
+                smart_master_generation.as_deref(),
+            )
             .map_err(|_| ControllerError::PersistenceFailed)?
+            .and_then(|mut watches| watches.pop())
             .ok_or(ControllerError::TargetChanged)
     }
 

@@ -11,6 +11,12 @@ import {
   SETTINGS_SEARCH_TARGETS,
   type SettingsControlId,
 } from "./settingsSearchTargets"
+import {
+  STEP_SETTINGS_STEP_LABELS,
+  STEP_SETTINGS_TARGETS,
+  type StepSettingsControlId,
+  type StepSettingsSearchStep,
+} from "./stepSettingsTargets"
 
 export type SettingsSearchTarget =
   | { kind: "setting"; pane: SettingsPane; control?: never }
@@ -20,6 +26,7 @@ export type AppSearchTarget =
   | { kind: "view"; section: Exclude<MainViewId, "activity">; filters?: never }
   | { kind: "view"; section: "activity"; filters?: SessionFilters }
   | SettingsSearchTarget
+  | { kind: "stepSetting"; control: StepSettingsControlId }
   | { kind: "check"; check: BurnCheckDetectorId }
 
 export function resolveSettingsSearchTarget(target: SettingsSearchTarget): {
@@ -29,6 +36,15 @@ export function resolveSettingsSearchTarget(target: SettingsSearchTarget): {
   return target.control
     ? { pane: SETTINGS_SEARCH_TARGETS[target.control].pane, control: target.control }
     : { pane: target.pane, control: undefined }
+}
+
+/** The Overview step a `stepSetting` target opens, and the control to focus
+ *  inside it. */
+export function resolveStepSettingsSearchTarget(target: { control: StepSettingsControlId }): {
+  step: StepSettingsSearchStep
+  control: StepSettingsControlId
+} {
+  return { step: STEP_SETTINGS_TARGETS[target.control].step, control: target.control }
 }
 
 function viewTarget(section: MainViewId): AppSearchTarget {
@@ -84,6 +100,18 @@ export const APP_SEARCH_CATALOG: readonly AppSearchResult[] = [
     },
     ...("platform" in entry ? { platform: entry.platform } : {}),
   })),
+  ...Object.entries(STEP_SETTINGS_TARGETS).map(([control, value]) => {
+    return {
+      id: `step:${value.step}:${control}`,
+      label: value.label,
+      detail: `Overview · ${STEP_SETTINGS_STEP_LABELS[value.step]}`,
+      aliases: value.aliases,
+      target: {
+        kind: "stepSetting" as const,
+        control: control as StepSettingsControlId,
+      },
+    }
+  }),
   ...Object.entries(CHECK_DEFINITIONS).map(([check, { label, aliases }]) => ({
     id: `check:${check}`,
     label,
@@ -97,6 +125,7 @@ export function searchApp(
   query: string,
   platform: Platform = detectPlatform(),
   checksAvailable = true,
+  stepSettingsAvailable = true,
 ): AppSearchResult[] {
   const normalized = query.trim().toLocaleLowerCase().slice(0, 200)
   const words = normalized.split(/\s+/).filter(Boolean)
@@ -104,7 +133,8 @@ export function searchApp(
     (result) =>
       (!result.platform || result.platform === platform) &&
       (result.target.kind !== "check" ||
-        isCheckAvailable(result.target.check, checksAvailable)),
+        isCheckAvailable(result.target.check, checksAvailable)) &&
+      (stepSettingsAvailable || result.target.kind !== "stepSetting"),
   )
     .map((result) => {
       if (result.target.kind !== "setting" || !result.target.control) return result
@@ -135,14 +165,16 @@ export function groupAppResults(
   query: string,
   platform?: Platform,
   checksAvailable = true,
+  stepSettingsAvailable = true,
 ): AppSearchGroup[] {
-  const results = searchApp(query, platform, checksAvailable)
+  const results = searchApp(query, platform, checksAvailable, stepSettingsAvailable)
   const best = query.trim() ? results[0] : undefined
   const remaining = results.filter((result) => result !== best)
   const groups: AppSearchGroup[] = best ? [{ label: "Best match", results: [best] }] : []
   for (const [kind, label] of [
     ["view", "Features"],
     ["setting", "Settings"],
+    ["stepSetting", "Overview"],
     ["check", "Checks"],
   ] as const) {
     const matches = remaining.filter((result) => result.target.kind === kind).slice(0, 5)

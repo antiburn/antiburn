@@ -52,6 +52,8 @@ it("filters Scope Creep badges and preserves its canonical aggregate bit", () =>
   const report = activeChecksReport(
     {
       evidenceSettled: true,
+      windowSessions: 1,
+      deferredEvidence: 0,
       pendingEvidence: 0,
       estimatedTokenBurnBasisPoints: 300,
       categories,
@@ -219,7 +221,9 @@ describe("snoozed burn checks", () => {
       activeChecksReport(
         {
           evidenceSettled: true,
+          windowSessions: 0,
           pendingEvidence: 0,
+          deferredEvidence: 0,
           estimatedTokenBurnBasisPoints: 900,
           estimatedTokenBurnBasisPointsByDetectorMask: Array.from({ length: 512 }, (_, mask) =>
             mask === 1 << 8 ? 300 : null,
@@ -235,7 +239,9 @@ describe("snoozed burn checks", () => {
     const report = activeChecksReport(
       {
         evidenceSettled: true,
+        windowSessions: 0,
         pendingEvidence: 0,
+        deferredEvidence: 0,
         estimatedTokenBurnBasisPoints: 900,
         estimatedTokenBurnBasisPointsByDetectorMask: Array.from({ length: 512 }, (_, mask) =>
           mask === ((1 << 6) | (1 << 8)) ? 850 : null,
@@ -272,7 +278,9 @@ describe("snoozed burn checks", () => {
   it("preserves the estimate when snoozing an absent category", () => {
     const report = {
       evidenceSettled: true,
+      windowSessions: 0,
       pendingEvidence: 0,
+      deferredEvidence: 0,
       estimatedTokenBurnBasisPoints: 900,
       categories: [
         {

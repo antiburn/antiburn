@@ -29,15 +29,6 @@ use serde::Serialize;
 pub enum EventName {
     /// The application started.
     AppLaunched,
-    /// A new or explicitly restarted setup flow finished.
-    #[cfg(feature = "analytics")]
-    OnboardingFinished,
-    /// A new or explicitly restarted setup flow became visible.
-    #[cfg(feature = "analytics")]
-    OnboardingStarted,
-    /// One fixed onboarding step became visible.
-    #[cfg(feature = "analytics")]
-    OnboardingStepViewed,
     /// A discovery pass completed, with a bucketed count of what it found.
     #[cfg(feature = "analytics")]
     ScanCompleted,
@@ -135,12 +126,29 @@ pub enum EventName {
     AppSearchResultOpened,
     /// The reader saved a different application interface size preset.
     InterfaceScaleChanged,
+    /// The first-run Overview reached a fixed funnel step.
+    #[cfg(feature = "analytics")]
+    FirstRunStepReached,
+    /// A deliberate action in the first-run Overview completed.
+    #[cfg(feature = "analytics")]
+    FirstRunAction,
+    /// The first-run Overview's result first showed.
+    #[cfg(feature = "analytics")]
+    FirstRunFinished,
     /// A reader viewed an Ignored Instructions finding or acted on its evidence or prompt.
     #[cfg(feature = "analytics")]
     IgnoredInstructionObserved,
     /// A saved TypeSafe setting, a history run request, or a terminal check result.
     #[cfg(feature = "analytics")]
     IgnoredInstructionLifecycle,
+    /// One check's enabled preference completed a persisted state transition.
+    #[cfg(feature = "analytics")]
+    CheckEnablementSaved,
+    /// A progress step's settings became visible: the first-run "Show
+    /// settings" disclosure opened, or the step's modal opened after the
+    /// first run.
+    #[cfg(feature = "analytics")]
+    StepSettingsViewed,
 }
 
 /// Every event this application may send.
@@ -154,9 +162,6 @@ pub enum EventName {
 #[cfg(all(test, feature = "analytics"))]
 pub const EVERY_EVENT: &[EventName] = &[
     EventName::AppLaunched,
-    EventName::OnboardingFinished,
-    EventName::OnboardingStarted,
-    EventName::OnboardingStepViewed,
     EventName::ScanCompleted,
     EventName::SettingToggled,
     EventName::AnalyticsOptedOut,
@@ -191,8 +196,13 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::AppSearchOpened,
     EventName::AppSearchResultOpened,
     EventName::InterfaceScaleChanged,
+    EventName::FirstRunStepReached,
+    EventName::FirstRunAction,
+    EventName::FirstRunFinished,
     EventName::IgnoredInstructionObserved,
     EventName::IgnoredInstructionLifecycle,
+    EventName::CheckEnablementSaved,
+    EventName::StepSettingsViewed,
 ];
 
 #[cfg(feature = "analytics")]
@@ -200,9 +210,6 @@ impl EventName {
     pub fn as_str(self) -> &'static str {
         match self {
             EventName::AppLaunched => "antiburn.app_launched",
-            EventName::OnboardingFinished => "antiburn.onboarding_finished",
-            EventName::OnboardingStarted => "antiburn.onboarding_started",
-            EventName::OnboardingStepViewed => "antiburn.onboarding_step_viewed",
             EventName::ScanCompleted => "antiburn.scan_completed",
             EventName::SettingToggled => "antiburn.setting_toggled",
             EventName::AnalyticsOptedOut => "antiburn.analytics_opted_out",
@@ -237,8 +244,13 @@ impl EventName {
             EventName::AppSearchOpened => "antiburn.app_search_opened",
             EventName::AppSearchResultOpened => "antiburn.app_search_result_opened",
             EventName::InterfaceScaleChanged => "antiburn.interface_scale_changed",
+            EventName::FirstRunStepReached => "antiburn.first_run_step_reached",
+            EventName::FirstRunAction => "antiburn.first_run_action",
+            EventName::FirstRunFinished => "antiburn.first_run_finished",
             EventName::IgnoredInstructionObserved => "antiburn.ignored_instruction_observed",
             EventName::IgnoredInstructionLifecycle => "antiburn.ignored_instruction_lifecycle",
+            EventName::CheckEnablementSaved => "antiburn.check_enablement_saved",
+            EventName::StepSettingsViewed => "antiburn.step_settings_viewed",
         }
     }
 }
@@ -461,10 +473,6 @@ pub enum Interaction {
         action: ProjectFolderAction,
         outcome: ProjectFolderOutcome,
     },
-    /// A fixed onboarding step became visible.
-    OnboardingStepViewed {
-        step: OnboardingStep,
-    },
     /// A session was opened from the activity list. `agent` deserializes into
     /// the engine's own closed enum, so an unrecognised slug is a rejected
     /// command rather than a new value appearing in the data.
@@ -545,6 +553,107 @@ pub enum Interaction {
         action: SessionFilterAction,
         agent: Option<AgentKind>,
     },
+    /// The first-run Overview reached a fixed funnel step.
+    FirstRunStepReached {
+        step: FirstRunStep,
+        /// The discovery pass's total session count. Present only when
+        /// `step` is `found`; bucketed before it reaches [`Facts`].
+        sessions: Option<u32>,
+        /// Which result first showed. Present only when `step` is `result`.
+        result: Option<FirstRunResult>,
+    },
+    /// A deliberate action in the first-run Overview completed.
+    FirstRunAction {
+        action: FirstRunActionKind,
+    },
+    /// The first-run Overview's result first showed.
+    FirstRunFinished {},
+    /// A progress step's settings became visible. `limits` only ever
+    /// carries `first_run`: after the first run, its settings live in
+    /// Settings → Usage, which reports its own `settings_pane_viewed`
+    /// instead. Nothing here enforces that pairing — it holds because the
+    /// only caller for `limits` is the first-run disclosure — so it is
+    /// documented, not typed.
+    StepSettingsViewed {
+        label: StepSettingsLabel,
+        detail: StepSettingsDetail,
+    },
+}
+
+/// A stable, closed analytics identity for a check.
+///
+/// Keep this separate from arbitrary serialized keys so a future detector does
+/// not enter analytics until its measurement contract is reviewed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckEnablementId {
+    SessionsOverDepth,
+    ModelOverthinking,
+    OverpoweredSubagents,
+    UnusedMcpServers,
+    UnusedBuiltInTools,
+    UnusedSkills,
+    OldModelUsage,
+    OveruseOfFastMode,
+    CacheChurn,
+    IgnoredInstructions,
+    SkillOpportunities,
+    OverExploring,
+    ScopeCreep,
+}
+
+impl From<antiburn_local::checks::DetectorId> for CheckEnablementId {
+    fn from(detector: antiburn_local::checks::DetectorId) -> Self {
+        use antiburn_local::checks::DetectorId;
+
+        match detector {
+            DetectorId::SessionsOverDepth => Self::SessionsOverDepth,
+            DetectorId::ModelOverthinking => Self::ModelOverthinking,
+            DetectorId::OverpoweredSubagents => Self::OverpoweredSubagents,
+            DetectorId::UnusedMcpServers => Self::UnusedMcpServers,
+            DetectorId::UnusedBuiltInTools => Self::UnusedBuiltInTools,
+            DetectorId::UnusedSkills => Self::UnusedSkills,
+            DetectorId::OldModelUsage => Self::OldModelUsage,
+            DetectorId::OveruseOfFastMode => Self::OveruseOfFastMode,
+            DetectorId::CacheChurn => Self::CacheChurn,
+            DetectorId::IgnoredInstructions => Self::IgnoredInstructions,
+            DetectorId::SkillOpportunities => Self::SkillOpportunities,
+            DetectorId::OverExploring => Self::OverExploring,
+            DetectorId::ScopeCreep => Self::ScopeCreep,
+        }
+    }
+}
+
+impl CheckEnablementId {
+    #[cfg(feature = "analytics")]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::SessionsOverDepth => "sessions_over_depth",
+            Self::ModelOverthinking => "model_overthinking",
+            Self::OverpoweredSubagents => "overpowered_subagents",
+            Self::UnusedMcpServers => "unused_mcp_servers",
+            Self::UnusedBuiltInTools => "unused_built_in_tools",
+            Self::UnusedSkills => "unused_skills",
+            Self::OldModelUsage => "old_model_usage",
+            Self::OveruseOfFastMode => "overuse_of_fast_mode",
+            Self::CacheChurn => "cache_churn",
+            Self::IgnoredInstructions => "ignored_instructions",
+            Self::SkillOpportunities => "skill_opportunities",
+            Self::OverExploring => "over_exploring",
+            Self::ScopeCreep => "scope_creep",
+        }
+    }
+}
+
+#[cfg(feature = "analytics")]
+pub(crate) fn check_enablement_facts(
+    detector: antiburn_local::checks::DetectorId,
+    enabled: bool,
+) -> Facts {
+    Facts {
+        label: Some(CheckEnablementId::from(detector).as_str()),
+        detail: Some(if enabled { "enabled" } else { "disabled" }),
+        ..Facts::default()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -829,7 +938,6 @@ pub enum SurfaceState {
 pub enum SettingsPane {
     General,
     Appearance,
-    Sources,
     Privacy,
     Notifications,
     Usage,
@@ -855,24 +963,6 @@ pub enum LiveUsageState {
     RateLimited,
     Unavailable,
     NoCredentials,
-}
-
-/// Which setup lifecycle is active.
-#[cfg(feature = "analytics")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OnboardingFlow {
-    New,
-    Restart,
-}
-
-/// A screen in the fixed first-run flow.
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OnboardingStep {
-    Welcome,
-    AgentsDetected,
-    SourcesAndRepos,
-    Ready,
 }
 
 /// Where an agent ran. Two values, and neither names anything: a WSL
@@ -912,6 +1002,7 @@ pub enum HistoryDirection {
 pub enum SearchCategory {
     View,
     Setting,
+    StepSetting,
     Check,
 }
 
@@ -935,6 +1026,62 @@ pub enum SessionFilterAction {
     SourceRemoteHostAdded,
     SourceRemoteHostRemoved,
     ClearedAll,
+}
+
+/// A fixed step in the first-run Overview's funnel.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FirstRunStep {
+    Started,
+    Found,
+    Read,
+    Checked,
+    Result,
+}
+
+/// Which result the first-run Overview showed. Present only alongside
+/// [`FirstRunStep::Result`].
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FirstRunResult {
+    Empty,
+    ChecksDisabled,
+    Clean,
+    FixesFound,
+}
+
+/// A deliberate action the first-run Overview can report.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FirstRunActionKind {
+    FolderAccessRequested,
+    FolderAccessGranted,
+    IncludeNonRepoFolders,
+    LiveUsageStarted,
+    LiveUsageSkipped,
+    EnhanceOpened,
+}
+
+/// A progress step whose settings a reader can view. Narrower than the
+/// renderer's own `StepSettingsStep`: `fixes` has no settings to report and
+/// never reaches this enum.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StepSettingsLabel {
+    Agents,
+    Limits,
+    Sessions,
+    Checks,
+}
+
+/// Which surface showed the step's settings.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StepSettingsDetail {
+    /// The first-run takeover's "Show settings" disclosure opened.
+    FirstRun,
+    /// The progress-nav step modal opened, after the first run.
+    Modal,
 }
 
 /// A privacy-safe result from checking one remote host connection.
@@ -978,13 +1125,6 @@ impl Interaction {
     /// The event and the facts this interaction becomes.
     pub fn resolve(self) -> (EventName, Facts) {
         match self {
-            Interaction::OnboardingStepViewed { step } => (
-                EventName::OnboardingStepViewed,
-                Facts {
-                    label: Some(step.as_str()),
-                    ..Facts::default()
-                },
-            ),
             Interaction::SessionOpened { agent, environment } => (
                 EventName::SessionOpened,
                 Facts {
@@ -1137,6 +1277,35 @@ impl Interaction {
                     ..Facts::default()
                 },
             ),
+            Interaction::FirstRunStepReached {
+                step,
+                sessions,
+                result,
+            } => (
+                EventName::FirstRunStepReached,
+                Facts {
+                    label: Some(step.as_str()),
+                    bucket: sessions.map(|count| bucket(count as u64)),
+                    detail: result.map(FirstRunResult::as_str),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::FirstRunAction { action } => (
+                EventName::FirstRunAction,
+                Facts {
+                    label: Some(action.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::FirstRunFinished {} => (EventName::FirstRunFinished, Facts::default()),
+            Interaction::StepSettingsViewed { label, detail } => (
+                EventName::StepSettingsViewed,
+                Facts {
+                    label: Some(label.as_str()),
+                    detail: Some(detail.as_str()),
+                    ..Facts::default()
+                },
+            ),
         }
     }
 }
@@ -1214,7 +1383,7 @@ wire_values!(SessionFilterKind, {
 #[cfg(feature = "analytics")]
 wire_values!(HistoryDirection, { HistoryDirection::Back => "back", HistoryDirection::Forward => "forward" });
 #[cfg(feature = "analytics")]
-wire_values!(SearchCategory, { SearchCategory::View => "view", SearchCategory::Setting => "setting", SearchCategory::Check => "check" });
+wire_values!(SearchCategory, { SearchCategory::View => "view", SearchCategory::Setting => "setting", SearchCategory::StepSetting => "step_setting", SearchCategory::Check => "check" });
 #[cfg(feature = "analytics")]
 wire_values!(IgnoredInstructionStage, {
     IgnoredInstructionStage::Finding => "finding",
@@ -1249,6 +1418,33 @@ wire_values!(SessionFilterAction, {
     SessionFilterAction::SourceRemoteHostAdded => "source_remote_host_added",
     SessionFilterAction::SourceRemoteHostRemoved => "source_remote_host_removed",
     SessionFilterAction::ClearedAll => "cleared_all",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(FirstRunStep, {
+    FirstRunStep::Started => "started",
+    FirstRunStep::Found => "found",
+    FirstRunStep::Read => "read",
+    FirstRunStep::Checked => "checked",
+    FirstRunStep::Result => "result",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(FirstRunResult, {
+    FirstRunResult::Empty => "empty",
+    FirstRunResult::ChecksDisabled => "checks_disabled",
+    FirstRunResult::Clean => "clean",
+    FirstRunResult::FixesFound => "fixes_found",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(FirstRunActionKind, {
+    FirstRunActionKind::FolderAccessRequested => "folder_access_requested",
+    FirstRunActionKind::FolderAccessGranted => "folder_access_granted",
+    FirstRunActionKind::IncludeNonRepoFolders => "include_non_repo_folders",
+    FirstRunActionKind::LiveUsageStarted => "live_usage_started",
+    FirstRunActionKind::LiveUsageSkipped => "live_usage_skipped",
+    FirstRunActionKind::EnhanceOpened => "enhance_opened",
 });
 
 #[cfg(feature = "analytics")]
@@ -1312,11 +1508,24 @@ wire_values!(SurfaceState, {
 wire_values!(SettingsPane, {
     SettingsPane::General => "general",
     SettingsPane::Appearance => "appearance",
-    SettingsPane::Sources => "sources",
     SettingsPane::Privacy => "privacy",
     SettingsPane::Notifications => "notifications",
     SettingsPane::Usage => "usage",
     SettingsPane::About => "about",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(StepSettingsLabel, {
+    StepSettingsLabel::Agents => "agents",
+    StepSettingsLabel::Limits => "limits",
+    StepSettingsLabel::Sessions => "sessions",
+    StepSettingsLabel::Checks => "checks",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(StepSettingsDetail, {
+    StepSettingsDetail::FirstRun => "first_run",
+    StepSettingsDetail::Modal => "modal",
 });
 
 #[cfg(feature = "analytics")]
@@ -1357,24 +1566,6 @@ wire_values!(LiveUsageState, {
     LiveUsageState::Unavailable => "unavailable",
     LiveUsageState::NoCredentials => "no_credentials",
 });
-
-#[cfg(feature = "analytics")]
-wire_values!(OnboardingFlow, {
-    OnboardingFlow::New => "new",
-    OnboardingFlow::Restart => "restart",
-});
-
-#[cfg(feature = "analytics")]
-impl OnboardingStep {
-    fn as_str(self) -> &'static str {
-        match self {
-            OnboardingStep::Welcome => "welcome",
-            OnboardingStep::AgentsDetected => "agents_detected",
-            OnboardingStep::SourcesAndRepos => "sources_and_repos",
-            OnboardingStep::Ready => "ready",
-        }
-    }
-}
 
 #[cfg(feature = "analytics")]
 impl Environment {
@@ -2313,15 +2504,12 @@ mod tests {
         fn listed(event: EventName) -> bool {
             match event {
                 EventName::AppLaunched
-                | EventName::OnboardingFinished
-                | EventName::OnboardingStepViewed
                 | EventName::ScanCompleted
                 | EventName::SettingToggled
                 | EventName::AnalyticsOptedOut
                 | EventName::SessionOpened
                 | EventName::ErrorOccurred
                 | EventName::UnrecognizedRecordsObserved
-                | EventName::OnboardingStarted
                 | EventName::SurfaceViewed
                 | EventName::SettingsPaneViewed
                 | EventName::SurfaceStateObserved
@@ -2350,16 +2538,67 @@ mod tests {
                 | EventName::AppSearchOpened
                 | EventName::AppSearchResultOpened
                 | EventName::InterfaceScaleChanged
-                | EventName::IgnoredInstructionObserved
-                | EventName::IgnoredInstructionLifecycle => true,
+                | EventName::FirstRunStepReached
+                | EventName::FirstRunAction
+                | EventName::FirstRunFinished
+                | EventName::CheckEnablementSaved
+                | EventName::StepSettingsViewed => true,
+                EventName::IgnoredInstructionObserved | EventName::IgnoredInstructionLifecycle => {
+                    true
+                }
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            40,
+            42,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
+    }
+
+    #[test]
+    fn check_enablement_ids_cover_every_detector_with_stable_values() {
+        use antiburn_local::checks::DetectorId;
+
+        let values: Vec<_> = DetectorId::ALL
+            .into_iter()
+            .map(|detector| CheckEnablementId::from(detector).as_str())
+            .collect();
+
+        assert_eq!(
+            values,
+            [
+                "sessions_over_depth",
+                "model_overthinking",
+                "overpowered_subagents",
+                "unused_mcp_servers",
+                "unused_built_in_tools",
+                "unused_skills",
+                "old_model_usage",
+                "overuse_of_fast_mode",
+                "cache_churn",
+                "ignored_instructions",
+                "skill_opportunities",
+                "over_exploring",
+                "scope_creep",
+            ]
+        );
+    }
+
+    #[test]
+    fn check_enablement_facts_carry_only_check_and_saved_state() {
+        use antiburn_local::checks::DetectorId;
+
+        let enabled = check_enablement_facts(DetectorId::UnusedSkills, true);
+        assert_eq!(enabled.label, Some("unused_skills"));
+        assert_eq!(enabled.detail, Some("enabled"));
+        assert!(enabled.bucket.is_none());
+        assert!(enabled.origin.is_none());
+
+        let disabled = check_enablement_facts(DetectorId::IgnoredInstructions, false);
+        assert_eq!(disabled.label, Some("ignored_instructions"));
+        assert_eq!(disabled.detail, Some("disabled"));
+        assert!(disabled.unrecognized_types.is_none());
     }
 
     /// The public catalog in `docs/analytics.md` is a promise to a
@@ -2438,13 +2677,6 @@ mod tests {
     /// anything the renderer supplied verbatim.
     #[test]
     fn an_interaction_resolves_to_this_files_own_constants() {
-        let (name, facts) = Interaction::OnboardingStepViewed {
-            step: OnboardingStep::SourcesAndRepos,
-        }
-        .resolve();
-        assert_eq!(name, EventName::OnboardingStepViewed);
-        assert_eq!(facts.label, Some("sources_and_repos"));
-
         let (name, facts) = Interaction::SessionOpened {
             agent: AgentKind::Claude,
             environment: Environment::Wsl,
@@ -2756,6 +2988,13 @@ mod tests {
                 EventName::AppSearchResultOpened,
                 Some("check"),
             ),
+            (
+                Interaction::AppSearchResultOpened {
+                    category: SearchCategory::StepSetting,
+                },
+                EventName::AppSearchResultOpened,
+                Some("step_setting"),
+            ),
         ];
         for (interaction, expected_name, expected_label) in cases {
             let (name, facts) = interaction.resolve();
@@ -2768,6 +3007,151 @@ mod tests {
             serde_json::json!({"kind":"appSearchResultOpened","category":"session"}),
         ] {
             assert!(serde_json::from_value::<Interaction>(value).is_err());
+        }
+    }
+
+    /// Each fixed funnel step carries only the facts the catalog documents
+    /// for it: `found` buckets its raw session count rather than sending it
+    /// exact, and `result` carries the closed result vocabulary. The other
+    /// steps carry neither.
+    #[test]
+    fn first_run_step_reached_carries_only_the_facts_its_own_step_defines() {
+        let (name, facts) = Interaction::FirstRunStepReached {
+            step: FirstRunStep::Started,
+            sessions: None,
+            result: None,
+        }
+        .resolve();
+        assert_eq!(name, EventName::FirstRunStepReached);
+        assert_eq!(facts.label, Some("started"));
+        assert_eq!(facts.bucket, None);
+        assert_eq!(facts.detail, None);
+
+        let (_, facts) = Interaction::FirstRunStepReached {
+            step: FirstRunStep::Found,
+            sessions: Some(49),
+            result: None,
+        }
+        .resolve();
+        assert_eq!(facts.label, Some("found"));
+        assert_eq!(facts.bucket, Some(bucket(49)));
+        assert_eq!(facts.bucket, Some("10-49"));
+        assert_eq!(facts.detail, None);
+
+        let (_, facts) = Interaction::FirstRunStepReached {
+            step: FirstRunStep::Read,
+            sessions: None,
+            result: None,
+        }
+        .resolve();
+        assert_eq!(facts.label, Some("read"));
+        assert_eq!(facts.bucket, None);
+
+        let (_, facts) = Interaction::FirstRunStepReached {
+            step: FirstRunStep::Checked,
+            sessions: None,
+            result: None,
+        }
+        .resolve();
+        assert_eq!(facts.label, Some("checked"));
+        assert_eq!(facts.bucket, None);
+
+        for (result, expected) in [
+            (FirstRunResult::Empty, "empty"),
+            (FirstRunResult::ChecksDisabled, "checks_disabled"),
+            (FirstRunResult::Clean, "clean"),
+            (FirstRunResult::FixesFound, "fixes_found"),
+        ] {
+            let (_, facts) = Interaction::FirstRunStepReached {
+                step: FirstRunStep::Result,
+                sessions: None,
+                result: Some(result),
+            }
+            .resolve();
+            assert_eq!(facts.label, Some("result"));
+            assert_eq!(facts.bucket, None);
+            assert_eq!(facts.detail, Some(expected));
+        }
+    }
+
+    #[test]
+    fn first_run_action_uses_closed_vocabulary() {
+        for (action, expected) in [
+            (
+                FirstRunActionKind::FolderAccessRequested,
+                "folder_access_requested",
+            ),
+            (
+                FirstRunActionKind::FolderAccessGranted,
+                "folder_access_granted",
+            ),
+            (
+                FirstRunActionKind::IncludeNonRepoFolders,
+                "include_non_repo_folders",
+            ),
+            (FirstRunActionKind::LiveUsageStarted, "live_usage_started"),
+            (FirstRunActionKind::LiveUsageSkipped, "live_usage_skipped"),
+            (FirstRunActionKind::EnhanceOpened, "enhance_opened"),
+        ] {
+            let (name, facts) = Interaction::FirstRunAction { action }.resolve();
+            assert_eq!(name, EventName::FirstRunAction);
+            assert_eq!(facts.label, Some(expected));
+        }
+    }
+
+    #[test]
+    fn step_settings_viewed_uses_closed_vocabulary() {
+        for (label, expected_label) in [
+            (StepSettingsLabel::Agents, "agents"),
+            (StepSettingsLabel::Limits, "limits"),
+            (StepSettingsLabel::Sessions, "sessions"),
+            (StepSettingsLabel::Checks, "checks"),
+        ] {
+            for (detail, expected_detail) in [
+                (StepSettingsDetail::FirstRun, "first_run"),
+                (StepSettingsDetail::Modal, "modal"),
+            ] {
+                let (name, facts) = Interaction::StepSettingsViewed { label, detail }.resolve();
+                assert_eq!(name, EventName::StepSettingsViewed);
+                assert_eq!(facts.label, Some(expected_label));
+                assert_eq!(facts.detail, Some(expected_detail));
+            }
+        }
+        for value in [
+            serde_json::json!({"kind":"stepSettingsViewed","label":"usage","detail":"modal"}),
+            serde_json::json!({"kind":"stepSettingsViewed","label":"agents","detail":"settings"}),
+            serde_json::json!({"kind":"stepSettingsViewed","label":"agents","detail":"modal","extra":true}),
+        ] {
+            assert!(serde_json::from_value::<Interaction>(value).is_err());
+        }
+    }
+
+    #[test]
+    fn first_run_finished_carries_no_properties() {
+        let (name, facts) = Interaction::FirstRunFinished {}.resolve();
+        assert_eq!(name, EventName::FirstRunFinished);
+        assert_eq!(facts.label, None);
+        assert_eq!(facts.bucket, None);
+        assert_eq!(facts.detail, None);
+    }
+
+    /// The renderer cannot send an unlisted step, action, or result, and
+    /// cannot attach a property the schema does not define for that shape.
+    #[test]
+    fn first_run_interactions_are_refused_at_the_boundary_for_unknown_values() {
+        for value in [
+            serde_json::json!({"kind":"firstRunStepReached","step":"welcome"}),
+            serde_json::json!({"kind":"firstRunStepReached","step":"result","result":"broken"}),
+            serde_json::json!({"kind":"firstRunStepReached","step":"started","path":"/private"}),
+            serde_json::json!({"kind":"firstRunAction","action":"folder_opened"}),
+            serde_json::json!({"kind":"firstRunAction","action":"live_usage_stopped"}),
+            serde_json::json!({"kind":"firstRunAction"}),
+            serde_json::json!({"kind":"firstRunFinished","result":"clean"}),
+        ] {
+            assert!(
+                serde_json::from_value::<Interaction>(value.clone()).is_err(),
+                "{value}"
+            );
         }
     }
 }

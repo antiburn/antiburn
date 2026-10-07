@@ -3,17 +3,18 @@
 mod cache;
 mod usage;
 
-pub use cache::CachedAssessmentResponse;
 use cache::RESPONSE_CACHE_KEY;
+pub use cache::{BurnCheckRequestAdmission, CachedAssessmentResponse};
 pub use usage::BurnCheckUsageSummary;
 use usage::UsageLedgerSummary;
 
+use antiburn_local::checks::DetectorId;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{SessionKey, SessionRecord, Store, session_from_row};
+use super::{SessionKey, SessionRecord, Store, enabled_checks_in, session_from_row};
 
 const ENABLED_AT_KEY: &str = "internal:burnChecksEnabledAtEpochV1";
 const CHECK_ENABLED_AT_PREFIX: &str = "internal:burnCheckEnabledAtEpochV1:";
@@ -104,6 +105,12 @@ pub struct BurnCheckHistoryStatus {
     pub completed: usize,
     pub skipped: usize,
     pub failed: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BurnCheckHistoryCheck {
+    pub check_id: String,
+    pub evaluator_revision: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -421,7 +428,21 @@ impl Store {
         })
         .collect()
     }
-    /// Freeze the selected historical window at click time.
+    /// Freeze the selected checks and historical window at click time.
+    pub fn enqueue_burn_checks_for(
+        &self,
+        now: i64,
+        days: u8,
+        checks: &[BurnCheckHistoryCheck],
+    ) -> anyhow::Result<usize> {
+        let revisions = checks
+            .iter()
+            .map(|check| (check.check_id.as_str(), check.evaluator_revision.clone()))
+            .collect::<Vec<_>>();
+        self.enqueue_burn_checks_for_revisions(&revisions, now, days)
+    }
+
+    #[cfg(test)]
     pub fn enqueue_burn_checks(&self, now: i64, days: u8) -> anyhow::Result<usize> {
         self.enqueue_burn_checks_for_revisions(
             &[(
@@ -453,6 +474,11 @@ impl Store {
         let transaction = connection.transaction()?;
         if internal_value_in(&transaction, ENABLED_AT_KEY)?.is_none() {
             anyhow::bail!("TypeSafe checks are not enabled");
+        }
+        for (check_id, _) in checks {
+            if !check_id_enabled_in(&transaction, check_id)? {
+                anyhow::bail!("No Smart Burn Checks are enabled");
+            }
         }
         let ids = serde_json::to_string(&checks.iter().map(|(id, _)| id).collect::<Vec<_>>())?;
         let active: bool = transaction.query_row(
@@ -516,7 +542,7 @@ impl Store {
                FROM session s
                LEFT JOIN burn_check_assessment a
                  ON a.environment_key = s.environment_key AND a.agent = s.agent
-                 AND a.session_id = s.session_id AND a.check_id = ?4
+                  AND a.session_id = s.session_id AND a.check_id = ?4
                WHERE s.updated_at_epoch >= ?1 AND s.updated_at_epoch <= ?2
                   AND EXISTS (
                       SELECT 1 FROM turn AS t
@@ -574,6 +600,26 @@ impl Store {
         Ok(total)
     }
 
+    pub fn historical_burn_check_status_for(
+        &self,
+        now_epoch: i64,
+        idle_secs: i64,
+        checks: &[BurnCheckHistoryCheck],
+    ) -> anyhow::Result<BurnCheckHistoryStatus> {
+        let revisions = checks
+            .iter()
+            .map(|check| {
+                (
+                    check.check_id.as_str(),
+                    idle_secs,
+                    check.evaluator_revision.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.historical_burn_check_status_for_checks(&revisions, now_epoch)
+    }
+
+    #[cfg(test)]
     pub fn historical_burn_check_status(
         &self,
         now_epoch: i64,
@@ -595,7 +641,13 @@ impl Store {
         now_epoch: i64,
     ) -> anyhow::Result<BurnCheckHistoryStatus> {
         let connection = self.lock();
-        let checks = serde_json::to_string(checks)?;
+        let mut enabled = Vec::new();
+        for check in checks {
+            if check_id_enabled_in(&connection, check.0)? {
+                enabled.push(check);
+            }
+        }
+        let checks = serde_json::to_string(&enabled)?;
         let evidence_current = super::revision_sql::current_evidence("evidence", "session");
         let e_current = super::revision_sql::current_evidence("e", "s");
         connection
@@ -652,7 +704,7 @@ impl Store {
                 JOIN json_each(:checks) AS registered ON a.check_id = json_extract(registered.value, '$[0]')
                 JOIN session s USING (environment_key, agent, session_id)
                 LEFT JOIN session_evidence e USING (environment_key, agent, session_id)
-               WHERE a.boundary_generation = -2
+                WHERE a.boundary_generation = -2
                  AND a.history_batch_epoch = CAST((
                        SELECT value FROM setting WHERE key = :history_batch_key) AS INTEGER)
                   AND EXISTS (
@@ -708,67 +760,11 @@ impl Store {
         check_ids: &[&str],
         now_epoch: i64,
     ) -> anyhow::Result<usize> {
-        if check_ids.is_empty() {
-            return Ok(0);
-        }
-        if check_ids.iter().any(|id| id.is_empty() || id.len() > 256) {
-            anyhow::bail!("Burn Check ID is invalid");
-        }
-
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
-        transaction.execute(
-            "INSERT INTO setting (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO NOTHING",
-            rusqlite::params![ENABLED_AT_KEY, now_epoch.to_string()],
-        )?;
-        let mut total = 0;
-        for check_id in check_ids {
-            let enabled_key = format!("{CHECK_ENABLED_AT_PREFIX}{check_id}");
-            if internal_value_in(&transaction, &enabled_key)?.is_some() {
-                continue;
-            }
-            let enabled_at = if *check_id == "ignored_instructions" {
-                internal_value_in(&transaction, ENABLED_AT_KEY)?
-                    .ok_or_else(|| anyhow::anyhow!("Burn Check enable epoch is unavailable"))?
-            } else {
-                now_epoch.to_string()
-            };
-            transaction.execute(
-                "INSERT INTO setting (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO NOTHING",
-                rusqlite::params![enabled_key, enabled_at],
-            )?;
-            loop {
-                let count = transaction.execute(
-                    "INSERT INTO burn_check_assessment (
-                         environment_key, agent, session_id, check_id, incarnation,
-                           boundary_generation, boundary_activity_cursor, boundary_at_epoch,
-                           boundary_positions_json,
-                           status, created_at_epoch, updated_at_epoch)
-                      SELECT s.environment_key, s.agent, s.session_id, ?1, s.incarnation,
-                          s.source_generation, s.activity_cursor, ?2,
-                          (SELECT COALESCE(json_group_object(source_key, last_index), '{}')
-                              FROM (SELECT source_key, MAX(turn_index) AS last_index FROM turn
-                                     WHERE environment_key = s.environment_key
-                                       AND agent = s.agent AND session_id = s.session_id
-                                     GROUP BY source_key)), 'idle', ?2, ?2
-                        FROM session s
-                       WHERE NOT EXISTS (SELECT 1 FROM burn_check_assessment a
-                           WHERE a.environment_key = s.environment_key AND a.agent = s.agent
-                             AND a.session_id = s.session_id AND a.check_id = ?1)
-                       ORDER BY s.environment_key, s.agent, s.session_id
-                       LIMIT 256
-                     ON CONFLICT(environment_key, agent, session_id, check_id) DO NOTHING",
-                    rusqlite::params![check_id, now_epoch],
-                )?;
-                total += count;
-                if count < 256 {
-                    break;
-                }
-            }
-        }
+        let captured = capture_burn_check_boundaries_in(&transaction, check_ids, now_epoch, true)?;
         transaction.commit()?;
-        Ok(total)
+        Ok(captured)
     }
 
     /// Stop new work while preserving completed assessment results.
@@ -780,11 +776,21 @@ impl Store {
             "UPDATE burn_check_assessment
                 SET status = 'superseded', last_error_category = 'cancelled',
                     lease_expires_at_epoch = NULL, next_attempt_at_epoch = NULL
-              WHERE status IN ('queued', 'running')",
+              WHERE status IN ('queued', 'running')
+                 OR (status = 'failed' AND last_error_category = 'continuing')",
             [],
         )?;
         transaction.commit()?;
         Ok(())
+    }
+
+    /// Cancel only one check's unfinished work and retain completed results.
+    pub fn cancel_burn_check(&self, check_id: &str) -> anyhow::Result<usize> {
+        if DetectorId::from_key(check_id).is_none() {
+            anyhow::bail!("Burn Check ID is invalid");
+        }
+        let connection = self.lock();
+        cancel_burn_check_in(&connection, check_id)
     }
 
     /// Make rejected-key assessments eligible after a replacement credential is saved.
@@ -823,6 +829,9 @@ impl Store {
         limit: usize,
     ) -> anyhow::Result<Vec<BurnCheckCandidate>> {
         let connection = self.lock();
+        if !check_id_enabled_in(&connection, check_id)? {
+            return Ok(Vec::new());
+        }
         let Some(enabled_at) = internal_value_in(&connection, ENABLED_AT_KEY)?
             .and_then(|value| value.parse::<i64>().ok())
         else {
@@ -1129,6 +1138,10 @@ impl Store {
         }
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
+        if !check_id_enabled_in(&transaction, &input.check_id)? {
+            transaction.commit()?;
+            return Ok(false);
+        }
         if internal_value_in(&transaction, ENABLED_AT_KEY)?.is_none() {
             transaction.commit()?;
             return Ok(false);
@@ -1812,6 +1825,147 @@ fn insert_work_answers(
         )?;
     }
     Ok(())
+}
+
+pub(super) fn capture_burn_check_boundaries_in(
+    connection: &rusqlite::Connection,
+    check_ids: &[&str],
+    now_epoch: i64,
+    enable_master: bool,
+) -> anyhow::Result<usize> {
+    if check_ids.is_empty() {
+        return Ok(0);
+    }
+    if check_ids
+        .iter()
+        .any(|id| DetectorId::from_key(id).is_none())
+    {
+        anyhow::bail!("Burn Check ID is invalid");
+    }
+    let master_enabled_at = internal_value_in(connection, ENABLED_AT_KEY)?;
+    if enable_master && master_enabled_at.is_none() {
+        connection.execute(
+            "INSERT INTO setting (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![ENABLED_AT_KEY, now_epoch.to_string()],
+        )?;
+    }
+    let mut sessions = connection.prepare(
+        "SELECT environment_key, agent, session_id, incarnation,
+                source_generation, activity_cursor
+           FROM session",
+    )?;
+    let rows = sessions
+        .query_map([], |row| {
+            Ok((
+                SessionKey::new(
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ),
+                row.get::<_, u64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(sessions);
+
+    let mut captured = 0;
+    for check_id in check_ids {
+        let enabled_key = format!("{CHECK_ENABLED_AT_PREFIX}{check_id}");
+        if enable_master
+            && master_enabled_at.is_some()
+            && internal_value_in(connection, &enabled_key)?.is_some()
+        {
+            continue;
+        }
+        let enabled_at = if enable_master && *check_id == "ignored_instructions" {
+            master_enabled_at
+                .clone()
+                .unwrap_or_else(|| now_epoch.to_string())
+        } else {
+            now_epoch.to_string()
+        };
+        connection.execute(
+            "INSERT INTO setting (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![enabled_key, enabled_at],
+        )?;
+        for (key, incarnation, generation, cursor) in &rows {
+            captured += connection.execute(
+                "INSERT INTO burn_check_assessment (
+                     environment_key, agent, session_id, check_id, incarnation,
+                     boundary_generation, boundary_activity_cursor, boundary_at_epoch,
+                     boundary_positions_json, status, created_at_epoch, updated_at_epoch)
+                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                      (SELECT COALESCE(json_group_object(source_key, last_index), '{}')
+                         FROM (SELECT source_key, MAX(turn_index) AS last_index FROM turn
+                                WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                                GROUP BY source_key)), 'idle', ?8, ?8)
+                 ON CONFLICT(environment_key, agent, session_id, check_id) DO UPDATE SET
+                     incarnation = excluded.incarnation,
+                     boundary_generation = excluded.boundary_generation,
+                     boundary_activity_cursor = excluded.boundary_activity_cursor,
+                     boundary_at_epoch = excluded.boundary_at_epoch,
+                     boundary_positions_json = excluded.boundary_positions_json,
+                     input_revision = CASE WHEN burn_check_assessment.status = 'completed'
+                         THEN burn_check_assessment.input_revision ELSE NULL END,
+                     evaluator_revision = CASE WHEN burn_check_assessment.status = 'completed'
+                         THEN burn_check_assessment.evaluator_revision ELSE NULL END,
+                     source_generation = CASE WHEN burn_check_assessment.status = 'completed'
+                         THEN burn_check_assessment.source_generation ELSE NULL END,
+                     source_fingerprint = CASE WHEN burn_check_assessment.status = 'completed'
+                         THEN burn_check_assessment.source_fingerprint ELSE NULL END,
+                     published_fence = CASE WHEN burn_check_assessment.status = 'completed'
+                         THEN burn_check_assessment.published_fence ELSE NULL END,
+                     status = CASE WHEN burn_check_assessment.status = 'completed'
+                         THEN 'completed' ELSE 'idle' END,
+                     progress_json = CASE WHEN burn_check_assessment.status = 'completed'
+                         THEN burn_check_assessment.progress_json ELSE '{}' END,
+                     updated_at_epoch = excluded.updated_at_epoch,
+                     next_attempt_at_epoch = NULL,
+                     lease_expires_at_epoch = NULL,
+                     last_error_category = NULL
+                   WHERE ?10 AND (?9 OR burn_check_assessment.last_error_category IS NOT 'cancelled')",
+                rusqlite::params![
+                    key.environment_key,
+                    key.agent,
+                    key.session_id,
+                    check_id,
+                    incarnation,
+                    generation,
+                    cursor,
+                    now_epoch,
+                    !enable_master,
+                    !enable_master || master_enabled_at.is_none(),
+                ],
+            )?;
+        }
+    }
+    Ok(captured)
+}
+
+pub(super) fn cancel_burn_check_in(
+    connection: &rusqlite::Connection,
+    check_id: &str,
+) -> anyhow::Result<usize> {
+    Ok(connection.execute(
+        "UPDATE burn_check_assessment
+            SET status = 'superseded', last_error_category = 'cancelled',
+                lease_expires_at_epoch = NULL, next_attempt_at_epoch = NULL
+          WHERE check_id = ?1
+            AND (status IN ('queued', 'running')
+                 OR (status = 'failed' AND last_error_category = 'continuing'))",
+        [check_id],
+    )?)
+}
+
+fn check_id_enabled_in(connection: &rusqlite::Connection, check_id: &str) -> anyhow::Result<bool> {
+    let Some(detector) = DetectorId::from_key(check_id) else {
+        return Ok(false);
+    };
+    Ok(enabled_checks_in(connection)?.contains(&detector))
 }
 
 fn digest_parts<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {

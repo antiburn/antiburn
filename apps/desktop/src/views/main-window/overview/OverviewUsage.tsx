@@ -6,6 +6,7 @@ import type {
   ProviderUsageDayPayload,
   ProviderUsageWindowsPayload,
 } from "../../../lib/providerUsageIpc"
+import { cn } from "../../../lib/cn"
 import { SegmentedControl } from "../../../components/ui/SegmentedControl"
 import { OverviewAllowanceChart } from "./OverviewAllowanceChart"
 import { OverviewAllowanceTotals } from "./OverviewAllowanceTotals"
@@ -38,6 +39,7 @@ export function OverviewUsage({
   allowance,
   allowanceLoading = false,
   allowanceError = false,
+  allowanceCollecting = false,
   usageError = false,
   onRetryUsage,
   loading = false,
@@ -49,6 +51,7 @@ export function OverviewUsage({
   allowance: AllowanceUsageSummaryPayload | null
   allowanceLoading?: boolean
   allowanceError?: boolean
+  allowanceCollecting?: boolean
   usageError?: boolean
   onRetryUsage?: () => void
   loading?: boolean
@@ -65,7 +68,16 @@ export function OverviewUsage({
     chartAccounts[0] ??
     null
 
+  // Prototype: the chart starts closed on every load. A headline figure
+  // opens it on that account; the same figure again closes it.
+  const [chartOpen, setChartOpen] = useState(false)
+
   function selectTab(next: string): void {
+    if (chartOpen && selectedAccount && accountTabKey(selectedAccount) === next) {
+      setChartOpen(false)
+      return
+    }
+    setChartOpen(true)
     setSelectedTabKey(next)
     writeOverviewViewPrefs({ accountTabKey: next })
   }
@@ -73,7 +85,7 @@ export function OverviewUsage({
   return (
     <section
       aria-label="Usage"
-      className="overview-usage flex min-h-0 flex-1 flex-col gap-(--space-lg)"
+      className="overview-usage flex min-h-0 flex-col gap-(--space-md)"
     >
       <SegmentedControl
         options={METRICS}
@@ -113,30 +125,30 @@ export function OverviewUsage({
             utilizationSpanDays={allowance?.utilizationSpanDays ?? 0}
             loading={allowanceLoading}
             error={allowanceError}
+            collecting={allowanceCollecting}
+            selectedKey={chartOpen && selectedAccount ? accountTabKey(selectedAccount) : null}
+            onSelect={selectTab}
           />
 
           {!allowanceFailed && (
-            <OverviewAllowanceChart
-              account={selectedAccount}
-              rangeStartEpoch={allowance?.rangeStartEpoch ?? 0}
-              rangeEndEpoch={allowance?.rangeEndEpoch ?? 0}
-              loading={allowanceLoading}
-              controls={
-                chartAccounts.length >= 2 && (
-                  <SegmentedControl
-                    options={chartAccounts.map((account) => ({
-                      value: accountTabKey(account),
-                      label: account.displayName,
-                    }))}
-                    value={selectedAccount ? accountTabKey(selectedAccount) : ""}
-                    onChange={selectTab}
-                    ariaLabel="Provider"
-                    variant="text-tabs"
-                    size="regular"
+            <div
+              inert={!chartOpen}
+              className={cn(
+                "-mt-(--space-md) grid transition-[grid-template-rows,opacity] duration-medium",
+                chartOpen ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+              )}
+            >
+              <div className="min-h-0 overflow-hidden">
+                <div className="pt-(--space-md)">
+                  <OverviewAllowanceChart
+                    account={selectedAccount}
+                    rangeStartEpoch={allowance?.rangeStartEpoch ?? 0}
+                    rangeEndEpoch={allowance?.rangeEndEpoch ?? 0}
+                    loading={allowanceLoading}
                   />
-                )
-              }
-            />
+                </div>
+              </div>
+            </div>
           )}
         </>
       )}

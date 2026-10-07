@@ -17,7 +17,15 @@ usage estimates are not a spending cap or provider invoice.
 
 ## Setup, controls, and local data
 
-Open **Settings → Checks**, enable Smart Burn Checks, and configure a connection.
+Open the **Checks** step settings to choose checks. Each local and Smart Burn
+Check has an app-wide enabled preference. Existing local checks retain their
+enabled behavior when this control is introduced; Ignored Instructions retains
+the consent already saved for its group. Newly introduced checks start off
+until the reader opts in.
+
+Smart Burn Checks also require the Smart Checks group to be active and a
+configured provider connection. The group control and provider setup do not
+replace or reset the individual choices.
 Jev is the default. **Use Ollama or another provider** opens Ollama, Cloudflare,
 and Custom setup. Saved connections retain their settings when switched. Model
 capabilities govern preparation, packing, transport, validation, and reduction.
@@ -26,9 +34,11 @@ a local or remote base URL serving `/v1/systemone`; an ordinary chat endpoint
 does not establish this protocol. Cloudflare accepts Clef or Clef Flash with an
 account ID and credential. Custom uses the exact endpoint with direct System One
 or Cloudflare-envelope response decoding.
-The setting controls automatic checks. You can choose future sessions or start a
-7- or 30-day history review there. The history window applies to the requested
-review; it does not prove which instructions were active during older actions.
+You can choose future sessions or start a 7- or 30-day
+history review there. A history request includes only enabled eligible Smart
+Checks. Enabling a check does not silently add the disabled interval to a
+history run. The history window applies to the requested review; it does not
+prove which instructions were active during older actions.
 
 Pause checks to stop new assessments while keeping saved connections. Credentials
 use native credential storage or memory, not the session database. Removing a
@@ -39,14 +49,21 @@ Data** also removes local sessions, check state, unresolved requests, and usage
 totals. See the [privacy policy](privacy-policy.md) for retention and data
 handling details.
 
+Disabling one check stops its check-specific work and hides its active findings,
+counts, and actions. Antiburn retains completed results, compatible cached
+answers, remediation history, and incurred usage. Re-enabling can make retained
+compatible results eligible again; local checks can recompute from retained
+evidence. If every check is off, the product reports that no checks are enabled
+and does not describe the sessions as Clean or Passed.
+
 ## Registered checks
 
 The shared worker runs all four checks. Scope Creep, Over-exploring, and Skill
 Opportunities accept native Claude Code, Codex, OpenCode SQLite v2, and Pi
 sources under the pinned retained-root contracts in
 [session coverage](session-coverage.md#retained-root-smart-check-inputs).
-They use the same master setting, provider connection, history controls, and
-Checks views. Four descriptors use
+They use individual enabled preferences, the same master setting, provider
+connection, history controls, and Checks views. Four descriptors use
 one worker, including Ignored Instructions.
 
 Scope Creep compares substantial optional performed work with the full latest
@@ -317,7 +334,7 @@ Instructions.
 
 The desktop `JevCheckWorker` trait connects a check to product work. It supplies
 the check ID and processes one stored session candidate. The shared
-`jev_worker` scheduler finds candidates, and `execute_jev_batch` handles
+`crate::jev::worker` scheduler finds candidates, and `execute_jev_batch` handles
 transport, cache, reservations, retries, cancellation, and safe error reporting.
 The scheduler does not inspect instruction rules or define findings.
 

@@ -12,10 +12,10 @@ pnpm --dir apps/desktop node scripts/test-interface-scale.mjs
 
 The runner checks the fixture's TypeScript before starting Playwright. Append
 `--grep "interface-scale smoke"` for the short interaction pass. Use
-`--grep "issue 507 targeted journeys"` for Settings and onboarding, or
+`--grep "issue 507 targeted journeys"` for Settings, or
 `--grep "interface-scale error recovery"` for asserted error presentations.
 
-The populated matrix covers eight surfaces at 90, 100, 110, 125, 150, 175, and
+The populated matrix covers seven surfaces at 90, 100, 110, 125, 150, 175, and
 200 percent, in light and dark, with normal and constrained layouts. Additional
 input-state variants run at constrained 200% in dark. These variants are not a
 full state-by-scale-by-theme matrix.
@@ -35,15 +35,15 @@ Query parameters select the fixture inputs:
 /tests/visual/?surface=popover&state=long&scale=200&theme=dark
 ```
 
-Surfaces: `main`, `settings`, `onboarding`, `popover`, `preview`, `hud`,
+Surfaces: `main`, `settings`, `popover`, `preview`, `hud`,
 `hud-detail`, and `nudge`. Input states: `populated`, `empty`, `loading`, `error`,
 and `long`. A state name does not prove that the corresponding UI is visible.
-For example, onboarding's generic error input can still show Welcome, and
+A surface with no error-state wiring can still show its ordinary content, and
 Settings can show defaults while a read is pending. Do not count these captures
 as verified error or loading presentations.
 
 Dedicated fault tests assert actual session-analysis, interface-size save,
-onboarding bootstrap, and preview-data errors. They exercise recovery where the
+and preview-data errors. They exercise recovery where the
 product supplies a retry. The preview supplies a pointer-away instruction, not
 a retry button. The fixture does not invent unavailable UI states.
 
@@ -74,9 +74,8 @@ scale, and return from detail with Back. Check focus restoration, including a
 repeated external request for the same session.
 
 The targeted journeys cover the seven current Settings panes: General, Privacy,
-Notifications, Usage, Sources, Appearance, and About. They also cover all four
-onboarding steps: Welcome, Agents, Repos, and Ready. At 200% in both themes,
-these journeys generate 22 pane/step captures. Update this inventory when the
+Notifications, Usage, Sources, Appearance, and About. At 200% in both themes,
+these journeys generate 14 pane captures. Update this inventory when the
 navigation changes; historical capture counts are not current coverage.
 
 ## Native desktop release checks
@@ -122,10 +121,10 @@ at 90% and 200%, in light and dark where appearance matters:
 - Exercise the scale picker, reset, native View menu, and platform shortcuts
   from main, Settings, and popover. Check all presets, newly opened surfaces,
   and persistence after quitting and relaunching the app.
-- Check all Settings panes and onboarding steps. Change scale while onboarding
-  is open; verify that both the window and content adapt, navigation stays
-  reachable, and long lists scroll. Confirm that main-window resizing remains
-  user-controlled.
+- Check all Settings panes and the main window's first-run Overview steps.
+  Change scale while the first run is showing; verify that both the window and
+  content adapt, navigation stays reachable, and long lists scroll. Confirm
+  that main-window resizing remains user-controlled.
 - Drag Settings smaller at each scale. Verify that its scale-aware minimum keeps
   sidebar navigation visible when the display has room. Check the smaller-display
   fallback, then move back to a larger display and verify that the minimum updates.

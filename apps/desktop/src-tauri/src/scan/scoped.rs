@@ -601,6 +601,9 @@ async fn refresh_sessions_locked(
     // the same filter keeps a stale touch from reading as current here too.
     let (logs, precomputed) = super::current_window_candidates(logs, &previous_map, now).await;
     let include_non_repo_folders = store.settings_snapshot().include_non_repo_folders;
+    // A targeted refresh covers a handful of sessions a watcher burst named;
+    // it is not the surface the first-run progress reads, so it reports no
+    // read progress.
     let described = super::describe_with_gate(
         logs,
         &home,
@@ -608,6 +611,7 @@ async fn refresh_sessions_locked(
         &previous_map,
         &precomputed,
         include_non_repo_folders,
+        &mut |_, _, _| {},
     )
     .await;
     let record_keys = described

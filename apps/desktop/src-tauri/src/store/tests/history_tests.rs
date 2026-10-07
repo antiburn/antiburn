@@ -754,6 +754,9 @@ fn continuing_instruction_pages_count_as_in_progress_work() {
 fn registered_history_counts_check_session_jobs_and_uses_each_idle_policy() {
     let store = store();
     let checks = crate::jev::worker::registered_checks();
+    for detector in crate::jev::worker::registered_check_ids() {
+        store.set_check_enabled(detector, true).unwrap();
+    }
     let ids = checks.iter().map(|check| check.id()).collect::<Vec<_>>();
     let revisions = checks
         .iter()
@@ -874,6 +877,9 @@ fn registered_history_counts_check_session_jobs_and_uses_each_idle_policy() {
 #[test]
 fn shared_history_request_is_atomic_and_another_check_running_blocks_a_new_batch() {
     let store = store();
+    store
+        .set_check_enabled(antiburn_local::checks::DetectorId::ScopeCreep, true)
+        .unwrap();
     let record = session("atomic-history", NOW - 200);
     store
         .upsert_sessions(
@@ -883,18 +889,18 @@ fn shared_history_request_is_atomic_and_another_check_running_blocks_a_new_batch
         .unwrap();
     add_session_content(&store, &record);
     store
-        .capture_burn_check_boundaries(&["ignored_instructions", "future_check"], NOW - 300)
+        .capture_burn_check_boundaries(&["ignored_instructions", "scope_creep"], NOW - 300)
         .unwrap();
     let checks = [
         ("ignored_instructions", "first".to_owned()),
-        ("future_check", "second".to_owned()),
+        ("scope_creep", "second".to_owned()),
     ];
     let initial_batch = store.internal_value("internal:jevBurnCheckHistoryBatchEpochV1");
     store
         .lock()
         .execute_batch(
             "CREATE TEMP TRIGGER fail_history BEFORE UPDATE ON burn_check_assessment
-         WHEN NEW.check_id = 'future_check' AND NEW.boundary_generation = -2
+         WHEN NEW.check_id = 'scope_creep' AND NEW.boundary_generation = -2
          BEGIN SELECT RAISE(ABORT, 'injected history failure'); END;",
         )
         .unwrap();
@@ -929,7 +935,7 @@ fn shared_history_request_is_atomic_and_another_check_running_blocks_a_new_batch
     store
         .lock()
         .execute(
-            "UPDATE burn_check_assessment SET status = 'running' WHERE check_id = 'future_check'",
+            "UPDATE burn_check_assessment SET status = 'running' WHERE check_id = 'scope_creep'",
             [],
         )
         .unwrap();
@@ -949,7 +955,7 @@ fn shared_history_request_is_atomic_and_another_check_running_blocks_a_new_batch
         .historical_burn_check_status_for_checks(
             &[
                 ("ignored_instructions", 0, "first".into()),
-                ("future_check", 0, "second".into()),
+                ("scope_creep", 0, "second".into()),
             ],
             NOW + 1,
         )
@@ -961,6 +967,9 @@ fn shared_history_request_is_atomic_and_another_check_running_blocks_a_new_batch
 #[test]
 fn historical_revision_refresh_preserves_boundary_and_obeys_retry_before_queueing() {
     let store = store();
+    store
+        .set_check_enabled(antiburn_local::checks::DetectorId::ScopeCreep, true)
+        .unwrap();
     let record = session("stale-history-retry", NOW - 200);
     store
         .upsert_sessions(
@@ -970,10 +979,10 @@ fn historical_revision_refresh_preserves_boundary_and_obeys_retry_before_queuein
         .unwrap();
     add_session_content(&store, &record);
     store
-        .capture_burn_check_boundaries(&["future_check"], NOW - 300)
+        .capture_burn_check_boundaries(&["scope_creep"], NOW - 300)
         .unwrap();
     store
-        .enqueue_burn_checks_for_revisions(&[("future_check", "old".into())], NOW, 7)
+        .enqueue_burn_checks_for_revisions(&[("scope_creep", "old".into())], NOW, 7)
         .unwrap();
     store.lock().execute(
         "UPDATE session_evidence SET status = 'ready',
@@ -992,19 +1001,19 @@ fn historical_revision_refresh_preserves_boundary_and_obeys_retry_before_queuein
         .unwrap();
     assert!(
         store
-            .burn_check_candidates_for_revision("future_check", "new", NOW + 1, 0, 10)
+            .burn_check_candidates_for_revision("scope_creep", "new", NOW + 1, 0, 10)
             .unwrap()
             .is_empty()
     );
     assert_eq!(
         store
-            .enqueue_burn_checks_for_revisions(&[("future_check", "new".into())], NOW + 1, 30)
+            .enqueue_burn_checks_for_revisions(&[("scope_creep", "new".into())], NOW + 1, 30)
             .unwrap(),
         0
     );
     assert_eq!(
         store
-            .burn_check_assessment(&record.key, "future_check")
+            .burn_check_assessment(&record.key, "scope_creep")
             .unwrap()
             .unwrap()
             .progress_json,
@@ -1016,12 +1025,12 @@ fn historical_revision_refresh_preserves_boundary_and_obeys_retry_before_queuein
         .unwrap();
     assert!(
         store
-            .burn_check_candidates_for_revision("future_check", "new", NOW + 1, 0, 10)
+            .burn_check_candidates_for_revision("scope_creep", "new", NOW + 1, 0, 10)
             .unwrap()
             .is_empty()
     );
     let candidate = store
-        .burn_check_candidates_for_revision("future_check", "new", NOW + 60, 0, 10)
+        .burn_check_candidates_for_revision("scope_creep", "new", NOW + 60, 0, 10)
         .unwrap()
         .pop()
         .unwrap();
@@ -1030,7 +1039,7 @@ fn historical_revision_refresh_preserves_boundary_and_obeys_retry_before_queuein
     assert_eq!(candidate.boundary_positions.get("*"), Some(&0));
     let input = BurnCheckInput {
         key: candidate.session.key.clone(),
-        check_id: "future_check".into(),
+        check_id: "scope_creep".into(),
         incarnation: candidate.incarnation,
         source_generation: candidate.source_generation,
         source_fingerprint: candidate.source_fingerprint.clone(),

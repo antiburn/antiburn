@@ -19,6 +19,12 @@ fn native_reads_reach_preparation_history_and_source_bound_publication() {
     for (agent, session, format, records) in native_sources::read_sources() {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path()).unwrap();
+        for detector in [
+            antiburn_local::checks::DetectorId::OverExploring,
+            antiburn_local::checks::DetectorId::ScopeCreep,
+        ] {
+            store.set_check_enabled(detector, true).unwrap();
+        }
         store
             .capture_burn_check_boundaries(&[CHECK_ID, crate::scope_creep_worker::CHECK_ID], 0)
             .unwrap_or_else(|error| panic!("{agent}: {error:?}"));
@@ -206,6 +212,12 @@ fn original_incomplete_codex_read_fixture_remains_deferred() {
     let (agent, session, format, records) = native_sources::sources()[0];
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path()).unwrap();
+    for detector in [
+        antiburn_local::checks::DetectorId::OverExploring,
+        antiburn_local::checks::DetectorId::ScopeCreep,
+    ] {
+        store.set_check_enabled(detector, true).unwrap();
+    }
     store.capture_burn_check_boundaries(&[CHECK_ID], 0).unwrap();
     let candidate =
         native_sources::publish(&store, agent, session, format, records, directory.path());
@@ -317,6 +329,9 @@ pub(crate) fn fixture(directory: Option<&Path>, ending: &str) -> (Store, BurnChe
         .unwrap_or_else(|| {
             Store::open_in_memory(Path::new("/tmp/antiburn-over-exploring-tests")).unwrap()
         });
+    store
+        .set_check_enabled(antiburn_local::checks::DetectorId::OverExploring, true)
+        .unwrap();
     store.capture_burn_check_boundaries(&[CHECK_ID], 0).unwrap();
     let key = SessionKey::new("native", "opencode", "investigation");
     store
