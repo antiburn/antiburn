@@ -469,6 +469,7 @@ motion:
   segmented-indicator: "120ms ease-out slide; reduced motion swaps to a 60ms per-segment crossfade"
   anchored-content: "100ms opacity-only crossfade after native geometry commits; reduced motion uses 60ms"
   text-roll: "300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease"
+  overview-all-clear: "one-shot draw-in in src/views/main-window/overview/overview.css; the passed-check mark pops from 0.85 to full size over 500ms with a slight overshoot, its ring draws round from the top over 600ms, its tick strokes in over 300ms from 450ms; the mark keeps its last frame; at 700ms 18 confetti pieces (round-capped dashes, 2px stroke, in burn-check-pass-fill, brand, system gold, green and indigo) fade in as they fly out from the mark's centre over 1200ms, turn, drop 24px and fade; a click on the mark throws another burst; reduced motion shows the mark complete through the shared rule and renders no confetti"
   overview-entrance: "700ms ease-out; the chart reveals from the left with a clip-path inset, the headline figures fade in; plays once per app run and is recorded on animationend; reduced motion clamps it through the shared rule"
   tray-usage-meter: "launch: 1.5s column-by-column depletion; later changes: 300ms column-by-column"
   hud-led-blink: "steps(1) loop; --led-period 300ms to 3s on eight geometric rungs, set per segment from the spend rate; 300ms is the flash-safety cap for a 6px dot"
@@ -861,6 +862,13 @@ Notes for what isn't expressible as a token:
 - **Window chrome** — a window that hides its native title bar owns the drag strip and the matching
   top clearance in the webview; a window that keeps native decorations must not reserve that space.
   Keep that decision in the window's own layout, not in the shared primitives.
+- **Overview all-clear** — when every config check passes or is snoozed, the Overview replaces
+  its config checks list with a bare all-clear block, centred in the free space above Recent
+  sessions: the Checks list's passed mark (`BURN_CHECK_MARKS.clean`) at 72px in
+  `burn-check-pass-fill`, and a `type-title-3` regular-weight `label-secondary` line "All checks
+  passed or snoozed". "All checks" is a link in the line's own grey with a faint underline; it darkens on hover and brings the list back until the user leaves the Overview. The mark throws short stroke confetti in theme colours as its tick lands, and again on click. The block drops
+  the "Config checks" heading and has no card fill. Its draw-in is `overview-all-clear` under
+  `motion`. The block is the one place the Overview celebrates; keep it to this state.
 - **Data views** — a view that shows figures (Session Detail, the Overview) keeps the home
   screen's density of styles. One data size per view: every figure, row, and data label is
   `type-body`; hierarchy comes from ink and weight, and size changes are reserved for a hero

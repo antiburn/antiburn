@@ -1,9 +1,11 @@
+import { useState } from "react"
 import { Circle, CircleAlert, CircleCheck } from "lucide-react"
 
 import { cn } from "../../../lib/cn"
 import type { BurnCheckDetectorId } from "../../../lib/insightsIpc"
 import { CHECK_PROBLEM_PHRASES } from "../../../lib/presentation/checkDefinitions"
 import { type FixCategory, type FixStatus } from "./overviewProgressStore"
+import { OverviewAllClear } from "./OverviewAllClear"
 import { useOverviewProgress } from "./useOverviewProgress"
 
 function statusLabel(status: FixStatus): string {
@@ -28,20 +30,46 @@ function statusLabel(status: FixStatus): string {
  * style, so it shows the same way in `firstRun` and `steady` mode alike.
  */
 export function OverviewFixes({
+  active = true,
   onOpenCheck,
 }: {
+  active?: boolean
   onOpenCheck: (check: BurnCheckDetectorId) => void
 }) {
   const progress = useOverviewProgress()
+  const [showChecks, setShowChecks] = useState(false)
+  // The Overview stays mounted when another view shows. When the user leaves
+  // it, the list closes, so the all-clear mark shows again on return.
+  const [wasActive, setWasActive] = useState(active)
+  if (active !== wasActive) {
+    setWasActive(active)
+    if (!active) setShowChecks(false)
+  }
+  const allClear =
+    progress.categories.length > 0 &&
+    progress.categories.every(
+      (category) => category.status === "passing" || category.status === "snoozed",
+    )
+
+  const showAllClear = allClear && !showChecks
 
   return (
-    <section aria-label="Fixes" className="flex flex-col gap-(--space-sm)">
-      <h2 className="type-caption text-label-secondary">Config checks</h2>
-      <ul className="flex flex-col gap-1">
-        {progress.categories.map((category) => (
-          <CheckRow key={category.id} category={category} onOpen={onOpenCheck} />
-        ))}
-      </ul>
+    // The all-clear card centres in the free space above Recent sessions.
+    <section
+      aria-label="Fixes"
+      className={cn("flex flex-col gap-(--space-sm)", showAllClear && "grow justify-center")}
+    >
+      {/* The all-clear card says it all, so the heading shows only over the list. */}
+      {!showAllClear && <h2 className="type-caption text-label-secondary">Config checks</h2>}
+      {showAllClear ? (
+        <OverviewAllClear onShowChecks={() => setShowChecks(true)} />
+      ) : (
+        <ul className="flex flex-col gap-1">
+          {progress.categories.map((category) => (
+            <CheckRow key={category.id} category={category} onOpen={onOpenCheck} />
+          ))}
+        </ul>
+      )}
     </section>
   )
 }

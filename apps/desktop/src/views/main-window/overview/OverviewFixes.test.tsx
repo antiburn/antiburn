@@ -99,4 +99,44 @@ describe("OverviewFixes", () => {
     expect(screen.getByRole("heading", { name: "Config checks" })).toBeInTheDocument()
     expect(screen.queryByRole("listitem")).toBeNull()
   })
+
+  it("celebrates when every check passes or is snoozed, and shows the list on request", () => {
+    snapshot = progress({
+      categories: [
+        { id: "modelOverthinking", label: "Model overthinking", status: "passing" },
+        { id: "unusedSkills", label: "Unused skills", status: "snoozed" },
+      ],
+    } as Partial<OverviewProgress>)
+    render(<OverviewFixes onOpenCheck={() => {}} />)
+    expect(screen.getByText(/passed or snoozed/)).toHaveTextContent(
+      "All checks passed or snoozed",
+    )
+    expect(screen.queryByRole("heading", { name: "Config checks" })).toBeNull()
+    expect(screen.queryByRole("button", { name: /Model overthinking/ })).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "All checks" }))
+    expect(screen.getByRole("button", { name: /Model overthinking/ })).toBeInTheDocument()
+  })
+
+  it("shows the list, not the celebration, while a check needs a fix", () => {
+    snapshot = progress({
+      categories: [
+        { id: "modelOverthinking", label: "Model overthinking", status: "passing" },
+        { id: "unusedSkills", label: "Unused skills", status: "needsFix" },
+      ],
+    } as Partial<OverviewProgress>)
+    render(<OverviewFixes onOpenCheck={() => {}} />)
+    expect(screen.queryByText("All checks passed or snoozed")).toBeNull()
+  })
+
+  it("shows the celebration again after the user leaves the Overview and returns", () => {
+    snapshot = progress({
+      categories: [{ id: "modelOverthinking", label: "Model overthinking", status: "passing" }],
+    } as Partial<OverviewProgress>)
+    const { rerender } = render(<OverviewFixes active onOpenCheck={() => {}} />)
+    fireEvent.click(screen.getByRole("button", { name: "All checks" }))
+    expect(screen.queryByText(/passed or snoozed/)).toBeNull()
+    rerender(<OverviewFixes active={false} onOpenCheck={() => {}} />)
+    rerender(<OverviewFixes active onOpenCheck={() => {}} />)
+    expect(screen.getByText(/passed or snoozed/)).toBeInTheDocument()
+  })
 })

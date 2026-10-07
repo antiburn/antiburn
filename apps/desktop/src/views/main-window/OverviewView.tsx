@@ -170,7 +170,7 @@ export function OverviewView({
 
             {usageCard}
 
-            <OverviewFixes onOpenCheck={onOpenChecks} />
+            <OverviewFixes active={active} onOpenCheck={onOpenChecks} />
 
             {recentSessions}
           </div>
