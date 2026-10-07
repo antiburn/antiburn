@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { checksConfiguredStore } from "../../../lib/checkAvailability"
+import { checkAvailabilityStore, emptyCheckAvailability } from "../../../lib/checkAvailability"
 import { ProgressNav } from "./ProgressNav"
 import type * as ProgressStore from "./overviewProgressStore"
 import type { FlowStep, OverviewProgress } from "./overviewProgressStore"
@@ -112,13 +112,42 @@ describe("ProgressNav's row visibility", () => {
     expect(screen.getByRole("button", { name: /^To fix/ })).toBeInTheDocument()
   })
 
-  it("counts the checks that run, with Ignored Instructions only once it is set up", () => {
+  it("counts only selected checks that can currently run", () => {
+    const selected = emptyCheckAvailability.checks.map((check) => ({
+      ...check,
+      enabled: check.id !== "ignoredInstructions",
+    }))
+    act(() =>
+      checkAvailabilityStore.set({
+        ...emptyCheckAvailability,
+        revision: 1,
+        checks: selected,
+      }),
+    )
     snapshot = progress("done", "steady")
     render(nav())
     expect(navValue(/^Checks/)).toBe("9")
-    act(() => checksConfiguredStore.set(true))
+    act(() =>
+      checkAvailabilityStore.set({
+        ...emptyCheckAvailability,
+        revision: 2,
+        configured: true,
+        checks: selected.map((check) => ({ ...check, enabled: true })),
+      }),
+    )
     expect(navValue(/^Checks/)).toBe("10")
-    act(() => checksConfiguredStore.set(false))
+    act(() =>
+      checkAvailabilityStore.set({
+        ...emptyCheckAvailability,
+        revision: 3,
+        configured: true,
+        checks: selected.map((check) => ({
+          ...check,
+          enabled: check.id === "unusedSkills" ? false : check.enabled,
+        })),
+      }),
+    )
+    expect(navValue(/^Checks/)).toBe("8")
   })
 
   it("shows the failing count on the To fix row", () => {

@@ -990,9 +990,17 @@ pub(crate) fn sample_payloads_from_store(
     let generations = store
         .source_generation_batch(&keys)
         .map_err(|error| error.to_string())?;
-    let findings = if store
+    let (enabled_checks, check_preferences_revision) = store
+        .check_preferences_snapshot()
+        .map_err(|error| error.to_string())?;
+    let enabled_selection =
+        antiburn_local::insights::DetectorSelection::from_enabled(enabled_checks.iter().copied());
+    let smart_checks_enabled = store
         .internal_value("internal:burnChecksEnabledAtEpochV1")
-        .is_some()
+        .is_some();
+    let findings = if enabled_checks
+        .contains(&antiburn_local::insights::DetectorId::IgnoredInstructions)
+        && smart_checks_enabled
     {
         crate::insights_report::ignored_instruction_session_statuses(store.state_dir(), &keys)
             .map_err(|error| error.to_string())?
@@ -1006,7 +1014,7 @@ pub(crate) fn sample_payloads_from_store(
         ]
     };
     let now = Instant::now();
-    selected
+    let payloads = selected
         .into_iter()
         .zip(evidence)
         .zip(generations)
@@ -1034,7 +1042,11 @@ pub(crate) fn sample_payloads_from_store(
                     now,
                 )?,
             };
-            let mut hygiene = crate::commands::session_hygiene_payload(evidence, generation);
+            let mut hygiene = crate::commands::session_hygiene_payload_with_selection(
+                evidence,
+                generation,
+                &enabled_selection,
+            );
             crate::commands::attach_ignored_instruction_statuses(
                 std::slice::from_mut(&mut hygiene),
                 [finding],
@@ -1056,7 +1068,19 @@ pub(crate) fn sample_payloads_from_store(
                 hygiene,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    if store
+        .check_preferences_revision()
+        .map_err(|error| error.to_string())?
+        != check_preferences_revision
+        || store
+            .internal_value("internal:burnChecksEnabledAtEpochV1")
+            .is_some()
+            != smart_checks_enabled
+    {
+        return Err("check preferences changed while publishing session samples".to_owned());
+    }
+    Ok(payloads)
 }
 
 fn sample_key(sample: &BurnCheckSampleSession) -> SessionKey {

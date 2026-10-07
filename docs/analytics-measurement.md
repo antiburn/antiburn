@@ -587,6 +587,32 @@ previous attempts may have been charged. If dispatch outcome remains unresolved,
 Antiburn blocks further dispatch for that work. No provider response, input
 digest, session ID, key, selected text, or error text is sent.
 
+### Per-check enablement
+
+The product question is which checks people deliberately keep active, so the
+team can improve individual checks and the placement of their controls. Report
+distinct reporting installations with `antiburn.check_enablement_saved`, split
+by the closed check `label` and `detail`. Use reporting installations on app
+versions that contain per-check controls as the denominator. This measures
+saved transitions, not current adoption: installations that keep their defaults
+or never change a check produce no event.
+
+The persistence command owns the event. It emits once only after one check's
+stored preference changes successfully and any required transition work
+completes. `label` is `sessions_over_depth`, `model_overthinking`,
+`overpowered_subagents`, `unused_mcp_servers`, `unused_built_in_tools`,
+`unused_skills`, `old_model_usage`, `overuse_of_fast_mode`, `cache_churn`, or
+`ignored_instructions`; `detail` is `enabled` or `disabled`. A closed Rust enum
+maps every supported detector to this allowlist. No-op requests, failed or
+canceled saves, automatic migration and restoration, remounts, refreshes, and
+provider or master-gate changes emit nothing. Maximum volume is one event per
+successful persisted transition. No finding, session, project, path, key,
+provider state, source evidence, or work content is sent.
+
+Segment reporting at the first app version that ships this event. Do not merge
+it with `ignored_instruction_lifecycle`: that older event retains its Smart
+Checks group, TypeSafe setup, history, and execution meanings.
+
 Every added or changed event must document:
 
 1. The product question, intended metric, denominator, and decision it supports.
@@ -768,7 +794,7 @@ them, so a funnel across versions must keep the two event families apart.
 
 Question: where does a new install's first run lose readers — never starting,
 or dropping between Agents, Read, Check, and the result — and which result
-(empty, clean, fixes found) do readers who finish actually land on? Metric:
+(empty, checks disabled, clean, fixes found) do readers who finish actually land on? Metric:
 reporting installations reaching each `antiburn.first_run_step_reached` label,
 as a funnel with `started` at the base, divided by reporting installations
 overall in the same app-version cohort. This decides whether the steps block's
@@ -800,10 +826,12 @@ that must report its own funnel.
 
 Properties: `label` is `started`, `found`, `read`, `checked`, or `result` —
 the step. `bucket` is the discovery pass's session count, bucketed, present
-only with `found`. `detail` is `empty`, `clean`, or `fixes_found`, present
-only with `result`, derived the same way the Overview's own headline is:
-`empty` when the window has no sessions, `clean` when it has sessions and no
-finding, `fixes_found` otherwise. `antiburn.first_run_action` currently reports
+only with `found`. `detail` is `empty`, `checks_disabled`, `clean`, or
+`fixes_found`, present only with `result`, derived the same way the Overview's
+own headline is: `empty` when the window has no sessions, `checks_disabled`
+when sessions exist but no checks are enabled, `clean` when enabled checks find
+no issue, and `fixes_found` otherwise. Reports must not include
+`checks_disabled` in the Clean numerator. `antiburn.first_run_action` currently reports
 five closed labels — `folder_access_requested`, `folder_access_granted`,
 `live_usage_started`, `live_usage_skipped`,
 `enhance_opened` — each
@@ -830,6 +858,8 @@ earlier versions have no `first_run_step_reached`/`first_run_action`/
 `first_run_finished` events to compare against, and a `first_run` funnel
 cannot be joined against the retired step-viewed event's four-step vocabulary,
 which had no `found`/`checked` distinction and no result step at all.
+Segment `checks_disabled` from the first app version that adds per-check
+enablement; earlier versions cannot produce that detail.
 
 Tests: `event.rs` proves each step's facts are scoped to that step alone
 (`first_run_step_reached_carries_only_the_facts_its_own_step_defines`), the

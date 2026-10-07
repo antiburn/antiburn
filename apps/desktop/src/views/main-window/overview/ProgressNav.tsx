@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react"
 
 import { CountUp } from "../../../components/ui/CountUp"
-import { checksConfiguredStore } from "../../../lib/checkAvailability"
+import { checkAvailabilityStore, emptyCheckAvailability } from "../../../lib/checkAvailability"
 import { cn } from "../../../lib/cn"
 import { enabledCheckCount } from "../../../lib/presentation/checkDefinitions"
 import type { BurnCheckDetectorId } from "../../../lib/insightsIpc"
@@ -27,6 +27,7 @@ function rowContent(
   step: ProgressStepKey,
   progress: OverviewProgress,
   enabledChecks: number,
+  checkAvailabilityLoaded: boolean,
 ): { value: number; pulsing: boolean } {
   switch (step) {
     case "agents": {
@@ -50,7 +51,10 @@ function rowContent(
       }
     }
     case "checks":
-      return { value: enabledChecks, pulsing: !progress.checks.done }
+      return {
+        value: checkAvailabilityLoaded ? enabledChecks : progress.categories.length,
+        pulsing: !progress.checks.done || !checkAvailabilityLoaded,
+      }
     case "fixes": {
       return { value: progress.failingCount, pulsing: false }
     }
@@ -66,12 +70,17 @@ function ProgressRow({
   progress: OverviewProgress
   onOpen: () => void
 }) {
-  const configured = useSyncExternalStore(
-    checksConfiguredStore.subscribe,
-    checksConfiguredStore.getSnapshot,
+  const availability = useSyncExternalStore(
+    checkAvailabilityStore.subscribe,
+    checkAvailabilityStore.getSnapshot,
   )
   const label = STEP_LABELS[step]
-  const { value, pulsing } = rowContent(step, progress, enabledCheckCount(configured))
+  const { value, pulsing } = rowContent(
+    step,
+    progress,
+    enabledCheckCount(availability.checks, availability.configured),
+    availability !== emptyCheckAvailability,
+  )
   // During the first run a row takes the reader back to its step. Once the
   // first run is done, it opens the step's destination.
   const rewinds = progress.mode === "firstRun" && progress.flow !== "done"

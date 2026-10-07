@@ -61,7 +61,10 @@ describe("static app search", () => {
       control: "analytics",
     })
     expect(searchApp("MCP").filter(({ id }) => id === "check:unusedMcpServers")).toHaveLength(1)
-    expect(searchApp("cache misses")[0]?.target).toEqual({ kind: "check", check: "cacheChurn" })
+    expect(searchApp("cache misses")[0]?.target).toEqual({
+      kind: "setting",
+      control: "cacheChurnCheck",
+    })
     expect(searchApp("  SOuNd  ")[0]?.label).toBe("Sound")
   })
   it("groups and bounds matches, with no session-data group in PR1", () => {

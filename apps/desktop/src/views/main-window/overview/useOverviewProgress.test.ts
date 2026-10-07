@@ -47,6 +47,12 @@ describe("withSnoozes", () => {
     expect(result.failingCount).toBe(1)
   })
 
+  it("holds back failing checks until the snoozes are known", () => {
+    const result = withSnoozes(progress, new Set(), false)
+    expect(result.failingCount).toBe(0)
+    expect(result.categories.some((category) => category.status === "needsFix")).toBe(false)
+  })
+
   it("returns the same progress when nothing is snoozed", () => {
     expect(withSnoozes(progress, new Set())).toBe(progress)
   })

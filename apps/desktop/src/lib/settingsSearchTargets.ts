@@ -80,6 +80,51 @@ export const SETTINGS_SEARCH_TARGETS = {
     label: "Keep session data",
     aliases: ["retention", "storage", "history"],
   },
+  sessionsOverDepthCheck: {
+    pane: "checks",
+    label: "Session overdepth",
+    aliases: ["long sessions", "context depth", "enable check"],
+  },
+  modelOverthinkingCheck: {
+    pane: "checks",
+    label: "Model overthinking",
+    aliases: ["reasoning effort", "thinking budget", "enable check"],
+  },
+  overpoweredSubagentsCheck: {
+    pane: "checks",
+    label: "Overpowered subagents",
+    aliases: ["expensive subagents", "model routing", "enable check"],
+  },
+  unusedMcpServersCheck: {
+    pane: "checks",
+    label: "Unused MCP servers",
+    aliases: ["unused servers", "MCP tools", "enable check"],
+  },
+  unusedBuiltInToolsCheck: {
+    pane: "checks",
+    label: "Unused built-in tools",
+    aliases: ["tool definitions", "built in tools", "enable check"],
+  },
+  unusedSkillsCheck: {
+    pane: "checks",
+    label: "Unused skills",
+    aliases: ["skill instructions", "enable check"],
+  },
+  oldModelUsageCheck: {
+    pane: "checks",
+    label: "Old model usage",
+    aliases: ["outdated models", "model versions", "enable check"],
+  },
+  overuseOfFastModeCheck: {
+    pane: "checks",
+    label: "Fast mode overuse",
+    aliases: ["fast mode", "priority", "enable check"],
+  },
+  cacheChurnCheck: {
+    pane: "checks",
+    label: "Excess cache rehydration",
+    aliases: ["prompt cache", "cache misses", "enable check"],
+  },
   ignoredInstructions: {
     pane: "checks",
     label: "Ignored Instructions",
