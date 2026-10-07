@@ -142,6 +142,14 @@
   animation: overview-all-clear-draw 300ms ease-out 450ms both;
 }
 
+/* The motion clamp keeps the delay, so the tick stays undrawn for it. Under
+   reduced motion, draw the tick at once. */
+@media (prefers-reduced-motion: reduce) {
+  .overview-all-clear-tick {
+    animation-delay: 0ms;
+  }
+}
+
 @keyframes overview-all-clear-pop {
   from {
     transform: scale(0.85);
