@@ -49,7 +49,8 @@ CI changes, and documentation that no user acts on stay out — see
 
 - The Agents list shows "Not found" instead of a switch for an agent antiburn
   has not detected. Every agent is on by default. Agents that an older setup
-  switched off only because they had no sessions are on again.
+  switched off because they had no sessions, and that still have none, are on
+  again.
 - Clear local index no longer corrupts sessions that were being checked when
   you cleared it. A check that started before the clear could count a
   session's turns twice, or leave it with no turns at all.
