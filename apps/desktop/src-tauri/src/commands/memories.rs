@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 
 use antiburn_local::discovery::agents::path_codec::decode_hyphenated_absolute_path;
 use antiburn_local::memories::inventory::{
-    HookSource, MemoryProjectInventory, scan_claude_memory_projects,
+    HookSource, MemoryProjectInventory, scan_claude_memory_project, scan_claude_memory_projects,
 };
 use antiburn_local::memories::usage::{
-    MemoryUsageFacts, aggregate_memory_facts, query_memory_tool_calls,
+    MemoryAction, MemoryUsageFacts, aggregate_memory_facts, query_memory_tool_calls,
+    query_memory_tool_calls_for_session,
 };
 use antiburn_local::paths::home_dir;
 use tauri::Manager;
@@ -17,10 +18,10 @@ use tauri::Manager;
 use super::{CommandResult, fail, run_blocking};
 use crate::dto::{
     AgentMemoriesReport, DanglingIndexEntryDto, MemoryEditOutcome, MemoryEntryDto, MemoryFactsDto,
-    MemoryProjectDto,
+    MemoryProjectDto, SessionMemoriesPayload, SessionMemoriesRequest, SessionMemoryTouchDto,
 };
-use crate::store::Store;
 use crate::store::memories::{ProjectSession, claude_sessions_by_project_slug, sessions_since};
+use crate::store::{SessionKey, Store};
 
 /// What one scan reads, before the display paths are known.
 struct Gathered {
@@ -66,6 +67,115 @@ pub async fn list_agent_memories(app: tauri::AppHandle) -> CommandResult<AgentMe
         }
     }
     Ok(build_report(gathered, &display_paths, now_ms()))
+}
+
+/// Lists the memories that one session read or wrote.
+///
+/// The command reads through its own connection, like [`list_agent_memories`].
+#[tauri::command]
+pub async fn get_session_memories(
+    app: tauri::AppHandle,
+    request: SessionMemoriesRequest,
+) -> CommandResult<SessionMemoriesPayload> {
+    let Some(home) = home_dir() else {
+        return Ok(SessionMemoriesPayload::default());
+    };
+    let store = app.state::<Store>().inner().clone();
+    run_blocking(move || {
+        let reader = store
+            .open_reader(crate::UI_READ_STORE_BUSY_TIMEOUT)
+            .map_err(fail)?;
+        session_memories_for_store(&reader, &home, request)
+    })
+    .await
+}
+
+/// [`get_session_memories`]'s body, over a borrowed [`Store`] and home folder,
+/// so a test can run it without a Tauri app.
+fn session_memories_for_store(
+    store: &Store,
+    home: &Path,
+    request: SessionMemoriesRequest,
+) -> CommandResult<SessionMemoriesPayload> {
+    let key = SessionKey::for_origin(
+        &request.agent,
+        &request.session_id,
+        request.wsl_distro.as_deref(),
+        request.remote_host_id.as_deref(),
+    )
+    .map_err(str::to_owned)?;
+    if key.remote_host_id().is_some() || key.agent != "claude-code" {
+        return Ok(SessionMemoriesPayload::default());
+    }
+    let calls = {
+        let connection = store.lock();
+        query_memory_tool_calls_for_session(
+            &connection,
+            home,
+            &key.environment_key,
+            &key.session_id,
+        )
+        .map_err(fail)?
+    };
+
+    // One row per (path, action).
+    let mut grouped: HashMap<(PathBuf, bool), SessionMemoryTouchDto> = HashMap::new();
+    let mut titles: HashMap<String, HashMap<PathBuf, String>> = HashMap::new();
+    for call in calls {
+        let written = call.action == MemoryAction::Written;
+        let entry = grouped
+            .entry((call.path.clone(), written))
+            .or_insert_with(|| {
+                let file_name = call
+                    .path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                SessionMemoryTouchDto {
+                    slug: call.slug.clone(),
+                    path: path_text(&call.path),
+                    file_name,
+                    title: String::new(),
+                    action: if written { "written" } else { "referenced" }.to_owned(),
+                    count: 0,
+                    last_ms: None,
+                    exists: call.path.is_file(),
+                }
+            });
+        entry.count = entry.count.saturating_add(1);
+        entry.last_ms = entry.last_ms.max(call.ts_ms);
+        titles.entry(call.slug).or_default();
+    }
+    for (slug, map) in &mut titles {
+        if let Some(project) = scan_claude_memory_project(home, slug) {
+            for memory in project.memories {
+                map.insert(memory.path, memory.title);
+            }
+        }
+    }
+    let mut entries: Vec<SessionMemoryTouchDto> = grouped
+        .into_iter()
+        .map(|((path, _), mut entry)| {
+            entry.title = titles
+                .get(&entry.slug)
+                .and_then(|map| map.get(&path))
+                .cloned()
+                .unwrap_or_else(|| {
+                    path.file_stem()
+                        .map(|stem| stem.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                });
+            entry
+        })
+        .collect();
+    // `None` sorts below `Some`, so the reversed order puts it last.
+    entries.sort_by(|a, b| {
+        b.last_ms
+            .cmp(&a.last_ms)
+            .then_with(|| a.title.cmp(&b.title))
+            .then_with(|| a.action.cmp(&b.action))
+    });
+    Ok(SessionMemoriesPayload { entries })
 }
 
 /// Moves one memory file into antiburn's archive and removes its index line.
@@ -260,6 +370,7 @@ mod tests {
     use antiburn_local::memories::inventory::{IndexEntry, MemoryFile};
 
     use super::*;
+    use crate::store::SessionRecord;
 
     fn session(id: &str, cwd: Option<&str>, started: i64, last: Option<i64>) -> ProjectSession {
         ProjectSession {
@@ -345,5 +456,88 @@ mod tests {
         let none_facts = &report.projects[2].memories[0].facts;
         assert!(!none_facts.has_history);
         assert_eq!(none_facts.sessions_since_written, None);
+    }
+
+    fn memories_request(session_id: &str, remote: Option<&str>) -> SessionMemoriesRequest {
+        SessionMemoriesRequest {
+            agent: "claude-code".into(),
+            session_id: session_id.into(),
+            wsl_distro: None,
+            remote_host_id: remote.map(str::to_owned),
+        }
+    }
+
+    fn add_tool_input(conn: &rusqlite::Connection, rowid: i64, session: &str, ts: i64, cmd: &str) {
+        conn.execute(
+            "INSERT INTO turn (rowid, environment_key, agent, session_id, claim_fence,
+                source_key, thread_id, turn_index, scope, role, ts_ms, input_tokens,
+                cache_read_tokens, cache_write_tokens, output_tokens, is_compaction_boundary)
+             VALUES (?1, 'native', 'claude-code', ?2, 1, 'src', 'th', ?1, 'main',
+                'assistant', ?3, 0, 0, 0, 0, 0)",
+            (rowid, session, ts),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO turn_content (turn_rowid, part_index, kind, content, truncated,
+                authority, tool_name, normalized_fields_json)
+             VALUES (?1, 0, 'tool_input', CAST(?2 AS BLOB), 0, 'assistant', 'Bash', NULL)",
+            (rowid, serde_json::json!({ "command": cmd }).to_string()),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn session_memories_group_by_path_and_action_with_titles() {
+        let home = tempfile::tempdir().unwrap();
+        let memory = home.path().join(".claude/projects/-work-app/memory");
+        std::fs::create_dir_all(&memory).unwrap();
+        std::fs::write(memory.join("a.md"), "---\nname: Alpha\n---\nbody\n").unwrap();
+        let a = memory.join("a.md");
+        let gone = memory.join("gone.md");
+        let store = Store::open_in_memory(Path::new("/tmp/antiburn-memories-test")).unwrap();
+        let record = |id: &str| SessionRecord {
+            key: SessionKey::new("native", "claude-code", id),
+            source_kind: "file".into(),
+            source_label: format!("/h/.claude/projects/-work-app/{id}.jsonl"),
+            wsl_distro: None,
+            title: None,
+            title_source: None,
+            cwd: None,
+            surface: "cli".into(),
+            updated_at_epoch: None,
+            activity_cursor: String::new(),
+            activity_source: "mtime".into(),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+            source_fingerprint: None,
+        };
+        store
+            .upsert_sessions(&[record("s1"), record("s2")], &[])
+            .unwrap();
+        {
+            let conn = store.lock();
+            add_tool_input(&conn, 1, "s1", 100, &format!("cat {}", a.display()));
+            add_tool_input(&conn, 2, "s1", 300, &format!("cat {}", a.display()));
+            add_tool_input(&conn, 3, "s1", 200, &format!("cat {}", gone.display()));
+            add_tool_input(&conn, 4, "s2", 900, &format!("cat {}", a.display()));
+        }
+        let payload =
+            session_memories_for_store(&store, home.path(), memories_request("s1", None)).unwrap();
+        assert_eq!(payload.entries.len(), 2);
+        let first = &payload.entries[0];
+        assert_eq!(first.title, "Alpha");
+        assert_eq!(first.count, 2);
+        assert_eq!(first.last_ms, Some(300));
+        assert_eq!(first.action, "referenced");
+        assert!(first.exists);
+        assert_eq!(first.slug, "-work-app");
+        let second = &payload.entries[1];
+        assert_eq!(second.title, "gone");
+        assert!(!second.exists);
+
+        let remote =
+            session_memories_for_store(&store, home.path(), memories_request("s1", Some("h")))
+                .unwrap();
+        assert!(remote.entries.is_empty());
     }
 }

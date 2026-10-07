@@ -128,6 +128,40 @@ describe("MemoriesSession", () => {
     expect(setup().session.getSnapshot().expandedMemories.size).toBe(0)
   })
 
+  it("focus un-collapses the project, expands the row and numbers each request", () => {
+    const { session } = setup()
+    session.toggleProject("-p")
+    session.focus("-p", "/p/memory/a.md")
+    let snapshot = session.getSnapshot()
+    expect(snapshot.collapsedProjects.has("-p")).toBe(false)
+    expect(setup().session.getSnapshot().collapsedProjects.has("-p")).toBe(false)
+    expect(snapshot.expandedMemories.has("/p/memory/a.md")).toBe(true)
+    const first = snapshot.focusRequest!
+    expect(first.path).toBe("/p/memory/a.md")
+    session.focus("-p", "/p/memory/a.md")
+    snapshot = session.getSnapshot()
+    expect(snapshot.focusRequest!.revision).toBeGreaterThan(first.revision)
+  })
+
+  it("focusHandled clears only the matching revision", () => {
+    const { session } = setup()
+    session.focus("-p", "/p/memory/a.md")
+    const { revision } = session.getSnapshot().focusRequest!
+    session.focusHandled(revision - 1)
+    expect(session.getSnapshot().focusRequest).not.toBeNull()
+    session.focusHandled(revision)
+    expect(session.getSnapshot().focusRequest).toBeNull()
+  })
+
+  it("drops a pending focus request when the view is left", async () => {
+    const { session } = setup()
+    const stop = session.subscribe(() => undefined)
+    await flush()
+    session.focus("-p", "/p/memory/a.md")
+    stop()
+    expect(session.getSnapshot().focusRequest).toBeNull()
+  })
+
   it("exposes the surface with its state and conceals it when inactive", async () => {
     const { adapter, session } = setup()
     const stop = session.subscribe(() => undefined)

@@ -323,7 +323,7 @@ export type Interaction =
   | { kind: "projectFolderAction"; action: "open" | "copy"; outcome: "succeeded" | "failed" }
   | {
       kind: "memoryAction"
-      action: "reveal" | "archive" | "restore" | "remove_index_line"
+      action: "reveal" | "archive" | "restore" | "remove_index_line" | "open_from_session"
       outcome: "succeeded" | "failed" | "changed_on_disk" | "unsupported"
     }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" | "remote" }

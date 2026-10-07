@@ -62,6 +62,7 @@
     "allow-archive-agent-memory",
     "allow-restore-agent-memory",
     "allow-remove-agent-memory-index-line",
+    "allow-get-session-memories",
     "allow-list-recent-sessions",
     "allow-list-repositories",
     "allow-list-scan-roots",

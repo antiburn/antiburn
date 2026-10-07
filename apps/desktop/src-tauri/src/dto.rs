@@ -3194,6 +3194,39 @@ pub struct AgentMemoriesReport {
     pub projects: Vec<MemoryProjectDto>,
 }
 
+/// Request for `get_session_memories`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMemoriesRequest {
+    pub agent: String,
+    pub session_id: String,
+    pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
+}
+
+/// The memories that one session read or wrote.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMemoriesPayload {
+    pub entries: Vec<SessionMemoryTouchDto>,
+}
+
+/// One memory file and one way a session touched it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMemoryTouchDto {
+    pub slug: String,
+    pub path: String,
+    pub file_name: String,
+    pub title: String,
+    /// `referenced` or `written`.
+    pub action: String,
+    pub count: u32,
+    pub last_ms: Option<i64>,
+    /// The file is still on disk.
+    pub exists: bool,
+}
+
 /// The result of one memory edit. `Archived`, `Restored` and `IndexLineRemoved`
 /// are the only outcomes that changed a file. Every other outcome left the
 /// memory directory untouched.

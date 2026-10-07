@@ -101,6 +101,7 @@ export function MemoriesView({
                 onUndo={(entry) => void session.undo(entry)}
                 onRemoveLine={(entry) => void session.removeIndexLine(project, entry)}
                 onReload={session.refresh}
+                onFocusHandled={session.focusHandled}
               />
             ))}
           </div>

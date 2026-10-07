@@ -172,6 +172,15 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
             )
             selectSection("quota")
           }}
+          onOpenMemory={(target) => {
+            noteInteraction({
+              kind: "memoryAction",
+              action: "open_from_session",
+              outcome: "succeeded",
+            })
+            memoriesSession.focus(target.slug, target.path)
+            selectSection("memories")
+          }}
         />
       ),
     },

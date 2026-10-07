@@ -55,7 +55,23 @@ vi.mock("./main-window/overview/overviewProgressStore", () => ({
 }))
 vi.mock("./main-window/overview/ProgressNav", () => ({ ProgressNav: () => null }))
 
-vi.mock("./main-window/MainActivityView", () => ({ MainActivityView: () => <p>Sessions</p> }))
+vi.mock("./main-window/MainActivityView", () => ({
+  MainActivityView: ({
+    onOpenMemory,
+  }: {
+    onOpenMemory?: (target: { slug: string; path: string }) => void
+  }) => (
+    <div>
+      <p>Sessions</p>
+      <button
+        type="button"
+        onClick={() => onOpenMemory?.({ slug: "-p", path: "/p/memory/a.md" })}
+      >
+        Open memory
+      </button>
+    </div>
+  ),
+}))
 vi.mock("./main-window/BurnChecksView", () => ({
   BurnChecksView: () => <p>Burn checks workspace</p>,
 }))
@@ -688,6 +704,18 @@ describe("MainWindowView", () => {
       })
       fireEvent.click(screen.getByRole("button", { name: "Back" }))
       expect(screen.getByRole("tabpanel", { name: "Limits" })).toBeVisible()
+    })
+
+    it("opens a session's memory in the Memories view and measures it", () => {
+      render(<MainWindowView />)
+      fireEvent.click(tab("Sessions"))
+      fireEvent.click(screen.getByRole("button", { name: "Open memory" }))
+      expect(screen.getByRole("tabpanel", { name: "Memories" })).toBeVisible()
+      expect(noteInteraction).toHaveBeenCalledWith({
+        kind: "memoryAction",
+        action: "open_from_session",
+        outcome: "succeeded",
+      })
     })
 
     it("keeps Limits mounted after navigating away, instead of unmounting it", () => {

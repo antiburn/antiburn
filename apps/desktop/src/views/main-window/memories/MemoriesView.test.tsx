@@ -1,4 +1,12 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { entry, project, report } from "./memoriesFixtures"
@@ -183,6 +191,20 @@ describe("MemoriesView", () => {
     fireEvent.click(screen.getByRole("button", { name: /Beta/ }))
     expect(screen.getByText("Alpha body")).toBeVisible()
     expect(screen.getByText("Beta body")).toBeVisible()
+  })
+
+  it("focuses the requested row once and clears the request", async () => {
+    const scroll = vi.fn()
+    Element.prototype.scrollIntoView = scroll
+    const { session } = setup()
+    await screen.findByRole("button", { name: /Alpha/ })
+    act(() => session.focus("-p", "/p/memory/a.md"))
+    const row = screen.getByRole("button", { name: /Alpha/ })
+    expect(row).toHaveFocus()
+    expect(row).toHaveAttribute("aria-expanded", "true")
+    expect(scroll).toHaveBeenCalledTimes(1)
+    expect(scroll).toHaveBeenCalledWith({ block: "center" })
+    expect(session.getSnapshot().focusRequest).toBeNull()
   })
 
   it("hides a collapsed project's rows", async () => {

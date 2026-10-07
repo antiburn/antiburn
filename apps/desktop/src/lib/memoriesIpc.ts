@@ -62,6 +62,41 @@ export async function listAgentMemories(): Promise<AgentMemoriesReport> {
   return invoke<AgentMemoriesReport>("list_agent_memories")
 }
 
+/** Mirrors Rust `SessionMemoriesRequest`. */
+export interface SessionMemoriesRequest {
+  agent: string
+  sessionId: string
+  wslDistro: string | null
+  remoteHostId: string | null
+}
+
+/** Mirrors Rust `SessionMemoryTouchDto`: one memory file and one way a
+ *  session touched it. */
+export interface SessionMemoryTouch {
+  slug: string
+  path: string
+  fileName: string
+  title: string
+  action: "referenced" | "written"
+  count: number
+  lastMs: number | null
+  /** The file is still on disk. */
+  exists: boolean
+}
+
+/** Mirrors Rust `SessionMemoriesPayload`. */
+export interface SessionMemoriesPayload {
+  entries: SessionMemoryTouch[]
+}
+
+/** The memories one session read or wrote. Empty outside the desktop shell. */
+export async function getSessionMemories(
+  request: SessionMemoriesRequest,
+): Promise<SessionMemoriesPayload> {
+  if (!hasShell()) return { entries: [] }
+  return invoke<SessionMemoriesPayload>("get_session_memories", { request })
+}
+
 /** Mirrors Rust `MemoryEditOutcome`. Only the first three outcomes changed a
  *  file; the others left the memory folder untouched. */
 export type MemoryEditOutcome =

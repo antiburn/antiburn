@@ -690,6 +690,7 @@ pub enum MemoryActionKind {
     Archive,
     Restore,
     RemoveIndexLine,
+    OpenFromSession,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -1100,6 +1101,7 @@ impl Interaction {
                         MemoryActionKind::Archive => "archive",
                         MemoryActionKind::Restore => "restore",
                         MemoryActionKind::RemoveIndexLine => "remove_index_line",
+                        MemoryActionKind::OpenFromSession => "open_from_session",
                     }),
                     detail: Some(match outcome {
                         MemoryActionOutcome::Succeeded => "succeeded",
@@ -1681,6 +1683,7 @@ mod tests {
             ("archive", "changed_on_disk"),
             ("restore", "failed"),
             ("remove_index_line", "unsupported"),
+            ("open_from_session", "succeeded"),
         ];
         for (action, outcome) in cases {
             let interaction: Interaction = serde_json::from_value(serde_json::json!({

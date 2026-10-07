@@ -120,6 +120,18 @@ pub fn scan_claude_memory_projects(home: &Path) -> Vec<MemoryProjectInventory> {
     projects
 }
 
+/// Scans one `home/.claude/projects/<slug>/memory/` directory.
+pub fn scan_claude_memory_project(home: &Path, slug: &str) -> Option<MemoryProjectInventory> {
+    scan_project(
+        slug,
+        &home
+            .join(".claude")
+            .join("projects")
+            .join(slug)
+            .join("memory"),
+    )
+}
+
 fn scan_project(slug: &str, memory_dir: &Path) -> Option<MemoryProjectInventory> {
     let names = memory_file_names(memory_dir)?;
     let index_file = memory_dir.join(INDEX_FILE);
@@ -381,6 +393,16 @@ mod tests {
         let mut projects = scan_claude_memory_projects(home);
         assert_eq!(projects.len(), 1);
         projects.remove(0)
+    }
+
+    #[test]
+    fn scans_a_single_project() {
+        let (home, memory) = fixture();
+        write(&memory, "a.md", "---\nname: A\n---\nbody\n");
+        let project = scan_claude_memory_project(home.path(), "-work-app").unwrap();
+        assert_eq!(project.slug, "-work-app");
+        assert_eq!(project.memories.len(), 1);
+        assert!(scan_claude_memory_project(home.path(), "-other").is_none());
     }
 
     #[test]

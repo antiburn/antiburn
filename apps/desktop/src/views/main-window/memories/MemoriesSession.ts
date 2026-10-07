@@ -28,6 +28,14 @@ export interface MemoriesSnapshot {
   removedIndexLines: ReadonlySet<string>
   /** Projects whose MEMORY.md has a backup written by antiburn. */
   indexBackupWritten: ReadonlySet<string>
+  /** A request to scroll to and focus one memory row. The row clears it. */
+  focusRequest: FocusRequest | null
+}
+
+interface FocusRequest {
+  path: string
+  /** Grows with each request, so a repeat request for one path still acts. */
+  revision: number
 }
 
 export interface ArchivedMemory {
@@ -108,6 +116,7 @@ export class MemoriesSession {
   private readonly listeners = new Set<() => void>()
   private readonly activeListeners = new Set<() => void>()
   private loadVersion = 0
+  private focusRevision = 0
   private active = false
   /** Counts activity changes. An edit that settles later must not land. */
   private activity = 0
@@ -125,6 +134,7 @@ export class MemoriesSession {
       rowErrors: new Map(),
       removedIndexLines: new Set(),
       indexBackupWritten: new Set(),
+      focusRequest: null,
     }
   }
 
@@ -165,6 +175,7 @@ export class MemoriesSession {
         archived: new Map(),
         rowErrors: new Map(),
         removedIndexLines: new Set(),
+        focusRequest: null,
       }
       return
     }
@@ -205,6 +216,26 @@ export class MemoriesSession {
 
   toggleMemory = (path: string): void => {
     this.update({ expandedMemories: toggled(this.snapshot.expandedMemories, path) })
+  }
+
+  /** Open one memory: show its project, expand the row, and ask the row to take focus. */
+  focus = (slug: string, path: string): void => {
+    let collapsedProjects = this.snapshot.collapsedProjects
+    if (collapsedProjects.has(slug)) {
+      collapsedProjects = toggled(collapsedProjects, slug)
+      writeCollapsedProjects(collapsedProjects)
+    }
+    this.update({
+      collapsedProjects,
+      expandedMemories: new Set(this.snapshot.expandedMemories).add(path),
+      focusRequest: { path, revision: ++this.focusRevision },
+    })
+  }
+
+  /** The row took focus. Clear the request if no newer one replaced it. */
+  focusHandled = (revision: number): void => {
+    if (this.snapshot.focusRequest?.revision !== revision) return
+    this.update({ focusRequest: null })
   }
 
   now = (): number => this.adapter.now()

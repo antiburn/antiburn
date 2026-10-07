@@ -8,6 +8,7 @@ macro_rules! with_app_commands {
             commands::memories::archive_agent_memory => "archive_agent_memory",
             commands::memories::restore_agent_memory => "restore_agent_memory",
             commands::memories::remove_agent_memory_index_line => "remove_agent_memory_index_line",
+            commands::memories::get_session_memories => "get_session_memories",
             commands::session_locations::agent_session_locations => "agent_session_locations",
             commands::app_info => "app_info",
             commands::apply_prepared_burn_check_operation => "apply_prepared_burn_check_operation",

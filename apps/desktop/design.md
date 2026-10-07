@@ -635,6 +635,14 @@ Notes for what isn't expressible as a token:
   A `type-footnote text-label-tertiary` note beside the index row names the backup file
   after an index edit. An empty page renders
   a centred `Brain` icon in tertiary ink over a `type-body` title and a `type-callout` caption.
+  Session detail's Tools tab ends with a "Memories touched" block: a `type-caption
+text-label-tertiary` heading over one `grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-x-4
+gap-y-1` grid whose rows are `grid-cols-subgrid`. A row is a `type-body text-label` title
+  over a `font-mono type-footnote text-label-tertiary` file name, a `type-footnote
+text-label-secondary` "read ×N" or "written ×N", a `font-mono type-footnote tabular-nums`
+  time (or "—"), and a `type-footnote text-accent hover:underline` "Show in Memories" text
+  button, or a `text-label-tertiary` "deleted" note. The button opens the Memories page with
+  that row open and focused.
 
 - **Limits page** — the scope picker is a pill that floats over the bottom centre of
   the page, in the shape of the session detail's section picker and in its selected

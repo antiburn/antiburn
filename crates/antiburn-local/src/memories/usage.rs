@@ -44,15 +44,7 @@ pub struct MemoryUsageFacts {
     pub session_ids: BTreeSet<String>,
 }
 
-/// Returns every memory path that a Claude Code tool input names.
-pub fn query_memory_tool_calls(
-    conn: &Connection,
-    home: &Path,
-) -> rusqlite::Result<Vec<MemoryToolCall>> {
-    // The `kind` and `tool_name` terms come first so that SQLite never reads
-    // `tool_result` content.
-    let mut statement = conn.prepare(
-        "SELECT t.environment_key, t.session_id, t.ts_ms, t.scope,
+const CALL_SELECT: &str = "SELECT t.environment_key, t.session_id, t.ts_ms, t.scope,
                 c.tool_name, c.content, c.normalized_fields_json
            FROM turn_content AS c
            JOIN turn AS t ON t.rowid = c.turn_rowid
@@ -60,9 +52,39 @@ pub fn query_memory_tool_calls(
             AND t.agent = 'claude-code'
             AND c.tool_name IN ('Read', 'Write', 'Edit', 'MultiEdit', 'Bash')
             AND (instr(c.normalized_fields_json, ?1) > 0
-                 OR instr(c.content, ?1) > 0)",
-    )?;
-    let mut rows = statement.query([MEMORY_MARKER])?;
+                 OR instr(c.content, ?1) > 0)";
+
+/// Returns every memory path that a Claude Code tool input names.
+pub fn query_memory_tool_calls(
+    conn: &Connection,
+    home: &Path,
+) -> rusqlite::Result<Vec<MemoryToolCall>> {
+    // The `kind` and `tool_name` terms come first so that SQLite never reads
+    // `tool_result` content.
+    let mut statement = conn.prepare(CALL_SELECT)?;
+    let rows = statement.query([MEMORY_MARKER])?;
+    collect_calls(rows, home)
+}
+
+/// Returns the memory paths that one session named. Delegated (subagent)
+/// calls count as the session's own.
+pub fn query_memory_tool_calls_for_session(
+    conn: &Connection,
+    home: &Path,
+    environment_key: &str,
+    session_id: &str,
+) -> rusqlite::Result<Vec<MemoryToolCall>> {
+    let mut statement = conn.prepare(&format!(
+        "{CALL_SELECT} AND t.environment_key = ?2 AND t.session_id = ?3"
+    ))?;
+    let rows = statement.query((MEMORY_MARKER, environment_key, session_id))?;
+    collect_calls(rows, home)
+}
+
+fn collect_calls(
+    mut rows: rusqlite::Rows<'_>,
+    home: &Path,
+) -> rusqlite::Result<Vec<MemoryToolCall>> {
     let mut calls = Vec::new();
     while let Some(row) = rows.next()? {
         let environment_key: String = row.get(0)?;
@@ -387,5 +409,29 @@ mod tests {
             .collect();
         keys.sort();
         assert_eq!(keys, ["MEMORY.md", "a.md", "b.md", "tilde.md"]);
+    }
+
+    #[test]
+    fn session_query_returns_only_the_requested_session() {
+        let conn = connection();
+        let a = format!("{MEM}/a.md");
+        let mut mine = bash(&format!("cat {a}"));
+        mine.session = "s1";
+        let mut delegated = bash(&format!("cat {a}"));
+        delegated.session = "s1";
+        delegated.scope = "delegated";
+        let mut other = bash(&format!("cat {a}"));
+        other.session = "s2";
+        for (index, seed) in [mine, delegated, other].into_iter().enumerate() {
+            seed.insert(&conn, index + 1);
+        }
+        let calls =
+            query_memory_tool_calls_for_session(&conn, Path::new(HOME), "native", "s1").unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().all(|call| call.session_id == "s1"));
+        assert!(calls.iter().any(|call| call.delegated));
+        let none =
+            query_memory_tool_calls_for_session(&conn, Path::new(HOME), "other", "s1").unwrap();
+        assert!(none.is_empty());
     }
 }

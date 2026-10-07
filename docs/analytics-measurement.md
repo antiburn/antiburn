@@ -718,6 +718,7 @@ period. Read the event by `label` and `detail`:
 | `archive`           | `succeeded`, `failed`, `changed_on_disk`, `unsupported`  | How often people delete a memory. `changed_on_disk` counts stale views, not errors. |
 | `restore`           | `succeeded`, `failed`, `changed_on_disk`, `unsupported`  | Undo use. A high restore-to-archive ratio means deletes are regretted. |
 | `remove_index_line` | `succeeded`, `failed`, `changed_on_disk`, `unsupported`  | How often people clear a dangling index line.                |
+| `open_from_session` | `succeeded`                                              | How often a session detail row opens a memory in the Memories view. |
 
 Exclusions: `unsupported` installations (Windows) cannot act, so leave them
 out of the archive and restore rates. The event carries no count, path, name,

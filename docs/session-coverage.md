@@ -567,8 +567,10 @@ per project, and bytes per project. Usage facts come from `Read`, `Write`,
 holds. A `Bash` reference matches path text in the command, so a command that
 builds the path from variables or a relative `cd` is not found. The index
 injection attachment is not parsed. Claude Code prunes old transcripts, so a
-memory with no recorded call has unknown history, not no use. Codex and Cursor
-have no file-based memory and are not covered.
+memory with no recorded call has unknown history, not no use. Session detail
+lists the memories that one Claude Code session referenced or wrote, from the
+same tool-input evidence. Codex and Cursor have no file-based memory and are
+not covered.
 
 ## Known Contract Gaps
 

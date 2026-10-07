@@ -32,12 +32,18 @@ export function MemoryProjectGroup({
   onUndo,
   onRemoveLine,
   onReload,
+  onFocusHandled,
 }: {
   project: MemoryProject
   collapsed: boolean
   state: Pick<
     MemoriesSnapshot,
-    "expandedMemories" | "archived" | "rowErrors" | "removedIndexLines" | "indexBackupWritten"
+    | "expandedMemories"
+    | "archived"
+    | "rowErrors"
+    | "removedIndexLines"
+    | "indexBackupWritten"
+    | "focusRequest"
   >
   writesSupported: boolean
   now: number
@@ -48,8 +54,16 @@ export function MemoryProjectGroup({
   onUndo: (entry: MemoryEntry) => void
   onRemoveLine: (entry: DanglingIndexEntry) => void
   onReload: () => void
+  onFocusHandled: (revision: number) => void
 }) {
-  const { expandedMemories, archived, rowErrors, removedIndexLines, indexBackupWritten } = state
+  const {
+    expandedMemories,
+    archived,
+    rowErrors,
+    removedIndexLines,
+    indexBackupWritten,
+    focusRequest,
+  } = state
   // Deleted rows stay in the list but no longer count.
   const live = project.memories.filter((entry) => !archived.has(entry.path))
   const dangling = project.dangling.filter(
@@ -187,6 +201,8 @@ export function MemoryProjectGroup({
                 onDelete={() => onDelete(entry)}
                 onUndo={() => onUndo(entry)}
                 onReload={onReload}
+                focusRequested={focusRequest?.path === entry.path}
+                onFocused={() => focusRequest && onFocusHandled(focusRequest.revision)}
               />
             ))}
           </div>

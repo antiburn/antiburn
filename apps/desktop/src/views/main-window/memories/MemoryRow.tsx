@@ -95,6 +95,8 @@ export function MemoryRow({
   onDelete,
   onUndo,
   onReload,
+  focusRequested = false,
+  onFocused,
 }: {
   entry: MemoryEntry
   expanded: boolean
@@ -107,6 +109,9 @@ export function MemoryRow({
   onDelete: () => void
   onUndo: () => void
   onReload: () => void
+  /** Scroll this row to the middle and focus its header, then call `onFocused`. */
+  focusRequested?: boolean
+  onFocused?: () => void
 }) {
   const deleted = archived !== undefined
   const open = expanded && !deleted
@@ -117,6 +122,16 @@ export function MemoryRow({
     <>
       <button
         type="button"
+        ref={
+          focusRequested
+            ? (button) => {
+                if (!button) return
+                button.scrollIntoView({ block: "center" })
+                button.focus()
+                onFocused?.()
+              }
+            : undefined
+        }
         onClick={onToggle}
         aria-expanded={open}
         title={known ? undefined : NO_HISTORY_NOTE}

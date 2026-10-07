@@ -1166,3 +1166,33 @@ fn memory_edit_outcomes_serialize_as_tagged_camel_case() {
         assert_eq!(serde_json::to_value(&outcome).unwrap(), expected);
     }
 }
+
+#[test]
+fn session_memories_dtos_use_camel_case() {
+    let request: SessionMemoriesRequest = serde_json::from_value(serde_json::json!({
+        "agent": "claude-code",
+        "sessionId": "s1",
+        "wslDistro": null,
+        "remoteHostId": "h",
+    }))
+    .unwrap();
+    assert_eq!(request.session_id, "s1");
+    assert_eq!(request.remote_host_id.as_deref(), Some("h"));
+    let payload = SessionMemoriesPayload {
+        entries: vec![SessionMemoryTouchDto {
+            slug: "-work-app".to_string(),
+            path: "/h/.claude/projects/-work-app/memory/a.md".to_string(),
+            file_name: "a.md".to_string(),
+            title: "A".to_string(),
+            action: "written".to_string(),
+            count: 2,
+            last_ms: None,
+            exists: false,
+        }],
+    };
+    let json = serde_json::to_value(&payload).unwrap();
+    assert_eq!(json["entries"][0]["fileName"], "a.md");
+    assert_eq!(json["entries"][0]["action"], "written");
+    assert_eq!(json["entries"][0]["lastMs"], serde_json::Value::Null);
+    assert_eq!(json["entries"][0]["exists"], false);
+}
