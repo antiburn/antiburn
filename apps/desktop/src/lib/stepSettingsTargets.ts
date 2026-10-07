@@ -87,6 +87,51 @@ export const STEP_SETTINGS_TARGETS = {
     label: "Ignored Instructions",
     aliases: ["missed project instructions", "instruction conflicts"],
   },
+  sessionsOverDepthCheck: {
+    step: "checks",
+    label: "Session overdepth",
+    aliases: ["long sessions", "context depth", "enable check"],
+  },
+  modelOverthinkingCheck: {
+    step: "checks",
+    label: "Model overthinking",
+    aliases: ["reasoning effort", "thinking budget", "enable check"],
+  },
+  overpoweredSubagentsCheck: {
+    step: "checks",
+    label: "Overpowered subagents",
+    aliases: ["expensive subagents", "model routing", "enable check"],
+  },
+  unusedMcpServersCheck: {
+    step: "checks",
+    label: "Unused MCP servers",
+    aliases: ["unused servers", "MCP tools", "enable check"],
+  },
+  unusedBuiltInToolsCheck: {
+    step: "checks",
+    label: "Unused built-in tools",
+    aliases: ["tool definitions", "built in tools", "enable check"],
+  },
+  unusedSkillsCheck: {
+    step: "checks",
+    label: "Unused skills",
+    aliases: ["skill instructions", "enable check"],
+  },
+  oldModelUsageCheck: {
+    step: "checks",
+    label: "Old model usage",
+    aliases: ["outdated models", "model versions", "enable check"],
+  },
+  overuseOfFastModeCheck: {
+    step: "checks",
+    label: "Fast mode overuse",
+    aliases: ["fast mode", "priority", "enable check"],
+  },
+  cacheChurnCheck: {
+    step: "checks",
+    label: "Excess cache rehydration",
+    aliases: ["prompt cache", "cache misses", "enable check"],
+  },
   checkHistory: {
     step: "checks",
     label: "Check history",
