@@ -2726,7 +2726,7 @@ impl RemediationController {
         Ok((watches, stored_prompt))
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(windows)))]
     fn start_watch(
         &self,
         store: &Store,

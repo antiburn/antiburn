@@ -219,11 +219,21 @@ impl WorkerHandle {
             .unwrap_or_default()
     }
 
-    pub(crate) fn advance_check_generation(&self, check_id: &str) -> u64 {
+    pub(crate) fn persist_check_transition<T, E>(
+        &self,
+        check_id: &str,
+        persist: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
         let _admission = self
             .request_admission
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let result = persist()?;
+        self.advance_check_generation_inner(check_id);
+        Ok(result)
+    }
+
+    fn advance_check_generation_inner(&self, check_id: &str) -> u64 {
         let mut generations = self
             .check_generations
             .lock()
@@ -993,10 +1003,30 @@ mod tests {
         let first = handle.check_generation("first");
         let second = handle.check_generation("second");
 
-        handle.advance_check_generation("first");
+        handle
+            .persist_check_transition("first", || Ok::<_, std::convert::Infallible>(()))
+            .unwrap();
 
         assert!(!handle.check_is_current("first", first));
         assert!(handle.check_is_current("second", second));
+    }
+
+    #[test]
+    fn persisted_transition_invalidates_work_snapshotted_during_the_write() {
+        let handle = WorkerHandle::default();
+        let snapshot = std::cell::Cell::new(None);
+
+        handle
+            .persist_check_transition("first", || {
+                snapshot.set(Some(handle.check_generation("first")));
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .unwrap();
+
+        let snapshot = snapshot.get().unwrap();
+        assert_eq!(snapshot, 0);
+        assert!(!handle.check_is_current("first", snapshot));
+        assert_eq!(handle.check_generation("first"), 1);
     }
 
     #[test]

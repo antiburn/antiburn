@@ -406,19 +406,21 @@ pub(crate) fn set_check_enabled(
     }
 
     let smart = crate::jev_worker::registered_check_ids().contains(&detector);
-    if smart {
-        app.state::<WorkerHandle>()
-            .advance_check_generation(detector.key());
-    }
-
-    let changed_preference = store
-        .set_check_enabled_with_smart_transition(
+    let save = || {
+        store.set_check_enabled_with_smart_transition(
             detector,
             enabled,
             smart,
             time::OffsetDateTime::now_utc().unix_timestamp(),
         )
-        .map_err(|_| "Could not save the check preference.".to_owned())?;
+    };
+    let changed_preference = if smart {
+        app.state::<WorkerHandle>()
+            .persist_check_transition(detector.key(), save)
+    } else {
+        save()
+    }
+    .map_err(|_| "Could not save the check preference.".to_owned())?;
     if !changed_preference {
         return availability(&app).map_err(str::to_owned);
     }

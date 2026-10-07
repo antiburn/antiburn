@@ -118,21 +118,6 @@ export async function runCheckBackfill(): Promise<{
   return invoke<{ queued: number; availability: CheckAvailability }>("run_check_backfill")
 }
 
-/** Whether the checks that need setup are configured, kept current from
- *  the availability event. False until the first read, and after a failed
- *  one. */
-export const checksConfiguredStore = createExternalStore<boolean>({
-  initial: false,
-  load: () =>
-    getCheckAvailability()
-      .then((value) => value.configured)
-      .catch(() => false),
-  subscribe: (set) =>
-    onCheckAvailabilityChanged((event) => {
-      if (event.status === "updated") set(event.snapshot.configured)
-    }),
-})
-
 /** The complete availability snapshot for consumers such as Overview counts.
  * Events and mutation responses carry a backend revision so older snapshots
  * cannot undo a newer preference on screen. */
