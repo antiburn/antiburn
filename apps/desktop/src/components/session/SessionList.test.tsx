@@ -316,9 +316,23 @@ describe("SessionList — rows", () => {
     ).toHaveTextContent("unknown")
   })
 
-  it("shows no limit when live usage confirms the provider reports none", () => {
+  it("shows no limit badge for a session with no usage", () => {
     list({
       entries: [entry()],
+      badgeMetric: "fiveHourPercent",
+      liveUsage: liveUsageWithWindow("anthropic", "Claude", {
+        id: "five-hour",
+        kind: "rolling",
+      }),
+    })
+
+    expect(screen.queryByText("unknown")).toBeNull()
+    expect(screen.queryByText("no limit")).toBeNull()
+  })
+
+  it("shows no limit when live usage confirms the provider reports none", () => {
+    list({
+      entries: [entry({ totalTokens: 1_200 })],
       badgeMetric: "weeklyPercent",
       // The only reported window is a five-hour one, so a weekly badge can
       // affirmatively say Claude has no weekly limit for this session.
@@ -335,7 +349,7 @@ describe("SessionList — rows", () => {
 
   it("shows the five-hour limit as unknown when a live window exists but this session has no share", () => {
     list({
-      entries: [entry()],
+      entries: [entry({ totalTokens: 1_200 })],
       badgeMetric: "fiveHourPercent",
       liveUsage: liveUsageWithWindow("anthropic", "Claude", {
         id: "five-hour",

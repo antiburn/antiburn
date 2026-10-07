@@ -252,7 +252,7 @@ describe("SessionFiltersHeader", () => {
       const onChangeTimeRange = vi.fn()
       render(<SessionFiltersHeader {...props({ days, onChangeTimeRange })} />)
       const control = screen.getByRole("button", {
-        name: `${days === 1 ? "Today" : `Last ${days} days`}, change time range in Settings`,
+        name: `${days === 1 ? "Today" : `Last ${days} days`}, change time range in Overview`,
       })
       expect(control).toHaveTextContent(days === 1 ? "Today" : `${days} days`)
       fireEvent.click(control)

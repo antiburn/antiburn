@@ -1,138 +1,17 @@
-import { SettingsRow, SettingsToggleRow } from "./SettingsSearchRows"
-import { useCallback, useState, useSyncExternalStore } from "react"
-import { confirm } from "@tauri-apps/plugin-dialog"
+import { SettingsToggleRow } from "./SettingsSearchRows"
 
 import { Card } from "../../components/ui/Card"
 import { Pane } from "../../components/ui/Pane"
-import { PushButton } from "../../components/ui/PushButton"
-import { RangeSlider } from "../../components/ui/RangeSlider"
 import { SectionGroup } from "../../components/ui/SectionGroup"
-import { StatusText } from "../../components/ui/StatusText"
-import {
-  cancelScan,
-  closeCurrentWindow,
-  restartOnboarding,
-  scanHistory,
-  type AppInfo,
-  type ScanHistoryProgress,
-  type ScanStatus,
-} from "../../lib/ipc"
 import { isMacOS } from "../../lib/platform"
-import { relativeTime } from "../../lib/presentation/relativeTime"
-import { scanStatusStore } from "../../lib/scanStatusStore"
 import type { AppSettingsController } from "./useAppSettings"
 
-/** Narrowest and widest activity-list windows, mirroring the store's clamp. */
-// Mirrors the shell's MIN/MAX_ACTIVITY_DAYS: the ceiling equals the store's
-// display range only; indexed sessions outside it remain stored.
-const MIN_DAYS = 1
-const MAX_DAYS = 14
-
-function dayLabel(days: number): string {
-  return days === 1 ? "1 day" : `${days} days`
-}
-
-/** A byte count at a readable scale. Two significant places is enough for a
- *  settings row: the question being answered is "is this large?". */
-export function byteLabel(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 KB"
-  const units = ["KB", "MB", "GB"]
-  let value = bytes / 1024
-  let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024
-    unit += 1
-  }
-  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`
-}
-
-/** What the historical-scan row says about the last (or current) pass. */
-export function scanSummary(status: ScanStatus | null): string {
-  if (status?.running) return "Scanning now…"
-  if (status?.error) return "The last scan did not finish."
-  if (status?.cancelled) return "The last scan was stopped before it finished."
-  if (status?.finishedAt) return `Last scanned ${relativeTime(status.finishedAt)}.`
-  return "Nothing has been scanned yet."
-}
+export type GeneralPaneProps = AppSettingsController
 
 /**
- * What the historical pass has found beyond the current window, under the
- * retention setting. Empty when there is nothing to say: either retention
- * keeps only the current window, or no status has arrived yet. `completed`
- * also counts sessions that failed or were unsupported, so the copy says
- * "processed", not "read". While monitoring is paused, a pending pass waits
- * for monitoring to resume.
+ * General preferences: menu bar, Dock, and login behavior.
  */
-export function historyScanSummary(
-  history: ScanHistoryProgress | undefined,
-  monitoringPaused: boolean,
-): string {
-  if (!history) return ""
-  switch (history.state) {
-    case "none":
-      return ""
-    case "pending":
-      return monitoringPaused
-        ? " It will read your full history when monitoring resumes, or when you scan now."
-        : " It will also read your full history once the current scan is caught up."
-    case "running":
-      return ` It has also found ${history.total} older session${history.total === 1 ? "" : "s"} so far, ${history.completed} processed.`
-    case "done":
-      return history.total > 0
-        ? ` It has also processed ${history.total} older session${history.total === 1 ? "" : "s"}.`
-        : ""
-  }
-}
-
-export interface GeneralPaneProps extends AppSettingsController {
-  /** Absent until the shell answers; `null` outside the shell entirely. */
-  info: AppInfo | null
-}
-
-/**
- * General preferences: how much history the popover shows, whether antiburn
- * keeps looking on its own, and how much it has accumulated.
- *
- * The monitoring toggle controls whether antiburn continues to scan in the background.
- */
-export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps) {
-  const [restartingSetup, setRestartingSetup] = useState(false)
-  const [restartFailed, setRestartFailed] = useState(false)
-  const scanStatus = useSyncExternalStore(
-    scanStatusStore.subscribe,
-    scanStatusStore.getSnapshot,
-  )
-
-  const handleScan = useCallback(async () => {
-    const status = await scanHistory().catch(() => null)
-    if (status) scanStatusStore.set(status)
-  }, [])
-
-  const handleCancel = useCallback(async () => {
-    const status = await cancelScan().catch(() => null)
-    if (status) scanStatusStore.set(status)
-  }, [])
-
-  async function handleRestartOnboarding() {
-    setRestartFailed(false)
-    try {
-      const proceed = await confirm(
-        "Setup opens at the Welcome step. Your indexed sessions and current settings stay on this machine. If you close setup before you finish, it returns the next time you open antiburn.",
-        { title: "Run setup again?", kind: "warning", okLabel: "Run setup again" },
-      )
-      if (!proceed) return
-
-      setRestartingSetup(true)
-      await restartOnboarding()
-      await closeCurrentWindow()
-    } catch {
-      setRestartFailed(true)
-    } finally {
-      setRestartingSetup(false)
-    }
-  }
-
-  const running = scanStatus?.running ?? false
+export function GeneralPane({ settings, update, loaded }: GeneralPaneProps) {
   const macOS = isMacOS()
   const trayRequired = macOS && !settings.dockIconVisible
   const dockRequired = macOS && !settings.trayIconVisible
@@ -144,73 +23,6 @@ export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps
 
   return (
     <Pane title="General">
-      {/* Monitoring leads: whether antiburn is looking at all is the pane's
-          primary switch, and everything below describes what the looking
-          produced. */}
-      <SectionGroup title="Monitoring">
-        <Card>
-          <SettingsToggleRow
-            searchId="monitoring"
-            description="antiburn re-reads your agents' session files while the popover is open. Turning this off stops the background pass — everything already indexed stays readable, and you can still scan on demand."
-            checked={!settings.discoveryPaused}
-            onChange={(next) => void update({ discoveryPaused: !next })}
-          />
-          <SettingsRow
-            searchId="historicalScan"
-            description={`Read every session file antiburn can find on this machine, from the start. ${scanSummary(
-              scanStatus,
-            )}${historyScanSummary(scanStatus?.history, settings.discoveryPaused)}`}
-            trailing={
-              running ? (
-                <PushButton onClick={() => void handleCancel()}>Stop</PushButton>
-              ) : (
-                <PushButton onClick={() => void handleScan()}>Scan now</PushButton>
-              )
-            }
-          />
-        </Card>
-      </SectionGroup>
-
-      <SectionGroup title="Activity">
-        <Card>
-          <SettingsRow
-            searchId="recentDays"
-            description={`Sessions and the popover show activity from the last ${dayLabel(
-              settings.activityWindowDays,
-            )}. Active sessions are always included. This changes the list, not storage; indexed sessions outside the window remain on this machine.`}
-            trailing={
-              <span className="type-body tabular-nums text-label-secondary">
-                {dayLabel(settings.activityWindowDays)}
-              </span>
-            }
-          >
-            <RangeSlider
-              className="mt-2 w-full"
-              value={settings.activityWindowDays}
-              min={MIN_DAYS}
-              max={MAX_DAYS}
-              ariaLabel="Days of activity to show"
-              ariaValueText={dayLabel(settings.activityWindowDays)}
-              onChange={(days) => void update({ activityWindowDays: days })}
-            />
-          </SettingsRow>
-        </Card>
-      </SectionGroup>
-
-      <SectionGroup title="Local storage">
-        <Card>
-          <SettingsRow
-            searchId="indexedSessions"
-            description="What antiburn currently has on this machine. Settings → Privacy controls how long indexed session data stays. Your agents' own files are never touched."
-            trailing={
-              <span className="type-body tabular-nums text-label-secondary">
-                {info ? `${info.indexedSessions} · ${byteLabel(info.databaseBytes)}` : "—"}
-              </span>
-            }
-          />
-        </Card>
-      </SectionGroup>
-
       <SectionGroup title="Application">
         <Card>
           <SettingsToggleRow
@@ -247,31 +59,6 @@ export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps
             checked={settings.launchAtLogin}
             onChange={(next) => void update({ launchAtLogin: next })}
           />
-        </Card>
-      </SectionGroup>
-
-      <SectionGroup title="Setup">
-        <Card>
-          <SettingsRow
-            searchId="setup"
-            description="Return to the Welcome step and review the setup choices. Indexed sessions, scan folders, repository choices, and current preferences stay on this machine."
-            trailing={
-              <PushButton
-                onClick={() => void handleRestartOnboarding()}
-                disabled={restartingSetup}
-              >
-                {restartingSetup ? "Opening…" : "Run setup again…"}
-              </PushButton>
-            }
-          >
-            <div role="status" aria-live="polite" aria-atomic="true">
-              {restartFailed && (
-                <StatusText tone="secondary" className="mt-1.5">
-                  Setup could not open. Try again or restart antiburn.
-                </StatusText>
-              )}
-            </div>
-          </SettingsRow>
         </Card>
       </SectionGroup>
     </Pane>

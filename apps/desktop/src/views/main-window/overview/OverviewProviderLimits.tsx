@@ -64,7 +64,9 @@ function MeterGroup({ windows, now }: { windows: LiveUsageWindowPayload[]; now: 
  * dots as it grows. The stale tag floats in the top-right corner.
  *
  * The card sits beside the Overview page, in its own scrolling column. It
- * shows no local cost figure; those belong to the totals above it.
+ * shows no local cost figure; those belong to the totals above it. The
+ * caller renders this only once live usage is enabled and started — the
+ * pane itself has nothing to say before that.
  */
 export function OverviewProviderLimits({
   live,
@@ -87,19 +89,22 @@ export function OverviewProviderLimits({
     limited.map(({ key, reading }) => ({ key, provider: reading.provider })),
   )
   const at = live ? Date.parse(live.generatedAt) || 0 : 0
+  // A summary with no stamp is the roster from before live usage started:
+  // nothing is collected yet, so it is not an answer.
+  const pending = loading || (live !== null && live.generatedAt === "")
   const nothing = !live || (limited.length === 0 && unavailable.length === 0)
 
   return (
     <section
       aria-label="Provider limits"
-      aria-busy={loading || undefined}
+      aria-busy={pending || undefined}
       className="relative px-(--space-lg) py-(--space-lg)"
     >
-      {nothing && !loading ? (
+      {nothing && !pending ? (
         <p className="type-callout text-label-secondary">No providers set up for limits yet.</p>
       ) : (
         <div className="flex flex-col gap-(--space-xl)">
-          {loading
+          {pending
             ? ["first", "second"].map((seat) => (
                 <div key={seat} className="flex flex-col gap-y-(--space-lg)">
                   <Skeleton className="h-3 w-28" />

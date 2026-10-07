@@ -16,13 +16,24 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::Notify;
 
 const CACHE_FILE: &str = "model-pricing.json";
-const CACHE_SCHEMA: u32 = 1;
+// Version 2 adds the reseller majority rule. A version 1 cache still loads,
+// but drops its ETag, so the next refresh downloads and rebuilds the table.
+const CACHE_SCHEMA: u32 = 2;
+const LEGACY_CACHE_SCHEMA: u32 = 1;
 const MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_MODELS: usize = 50_000;
 const MAX_MODEL_ID_BYTES: usize = 512;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const RETRY_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const REQUEST_COOLDOWN_SECS: u64 = 15 * 60;
+
+/// The fewest resellers that can set a bare price by majority alone.
+const MIN_RESELLER_MAJORITY: usize = 3;
+
+/// How far apart, as a fraction, two reseller rates can be and still agree.
+/// Resellers round the same price in different ways, such as 0.125 and 0.13
+/// dollars for one million cache-read tokens.
+const RESELLER_RATE_TOLERANCE: f64 = 0.05;
 
 // These provider IDs identify model creators, not price values.
 const ORIGIN_PROVIDERS: &[&str] = &[
@@ -113,6 +124,7 @@ impl PricingState {
 
         match read_snapshot(&state.cache_path) {
             Ok(Some(snapshot)) => {
+                let etag = reusable_etag(&snapshot);
                 antiburn_local::analysis::install_runtime_pricing(snapshot.models);
                 *state
                     .version
@@ -121,7 +133,7 @@ impl PricingState {
                 *state
                     .etag
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = snapshot.etag;
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = etag;
                 state.mark_ready();
             }
             Ok(None) => {}
@@ -198,9 +210,20 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
             let success = match refresh(&app).await {
                 Ok(invalidated) => {
                     if invalidated {
-                        // The session limit badge prices each session's cost
-                        // against the current pricing table on every read, so
-                        // no durable estimate needs a re-price here.
+                        // Session costs use the current pricing table on every
+                        // read. Limit factor samples keep the dollars from when
+                        // they were computed, so open the ones with no priced
+                        // turns again. The next learning pass prices them.
+                        let reopen_app = app.clone();
+                        drop(tauri::async_runtime::spawn_blocking(move || {
+                            let store = reopen_app.state::<crate::store::Store>();
+                            if let Err(error) = store.reopen_unpriced_factor_samples() {
+                                ::tracing::warn!(
+                                    event = "limit_factor_unpriced_reopen_failed",
+                                    error = %error
+                                );
+                            }
+                        }));
                         crate::session_lifecycle::report(
                             &app,
                             crate::session_lifecycle::SyncObservation::IndexChanged {
@@ -354,9 +377,12 @@ fn snapshot_from_catalog(
         }
     }
 
+    // A reseller can list a model under its creator's namespace, such as
+    // "google/sample-model". That ID is also the key of the creator's own
+    // entry, so a bare price only fills a key that has no price yet.
     for (model_id, candidates) in bare_candidates {
         if let Some(pricing) = select_bare_pricing(&candidates) {
-            models.insert(model_id, pricing);
+            models.entry(model_id).or_insert(pricing);
         }
     }
 
@@ -377,7 +403,15 @@ fn snapshot_from_catalog(
     })
 }
 
-/// Use a creator's rate or a multi-provider consensus for a bare model ID.
+/// Use a creator's rate, or the rate the resellers agree on, for a bare
+/// model ID.
+///
+/// Resellers agree when all of them, and at least two, give the same rate, or
+/// when more than half of them, and at least [`MIN_RESELLER_MAJORITY`], do.
+/// The majority covers a retired model: the creator no longer lists it, and
+/// some resellers sell it at a discount. Rates within
+/// [`RESELLER_RATE_TOLERANCE`] of each other are the same rate. The chosen
+/// rate is the one that most resellers agree with, and the lowest of those.
 fn select_bare_pricing(candidates: &[(String, ModelPricing)]) -> Option<ModelPricing> {
     let origins = candidates
         .iter()
@@ -390,14 +424,45 @@ fn select_bare_pricing(candidates: &[(String, ModelPricing)]) -> Option<ModelPri
             .all(|pricing| *pricing == *first)
             .then(|| (*first).clone());
     }
-    if candidates.len() < 2 {
-        return None;
-    }
-    let first = &candidates.first()?.1;
-    candidates
+    let (pricing, count) = candidates
         .iter()
-        .all(|(_, pricing)| pricing == first)
-        .then(|| first.clone())
+        .map(|(_, pricing)| {
+            let agreeing = candidates
+                .iter()
+                .filter(|(_, other)| rates_agree(pricing, other))
+                .count();
+            (pricing, agreeing)
+        })
+        .max_by(|(left, left_count), (right, right_count)| {
+            left_count
+                .cmp(right_count)
+                .then_with(|| rate_sum(right).total_cmp(&rate_sum(left)))
+        })?;
+    let unanimous = count == candidates.len() && count >= 2;
+    let majority = count * 2 > candidates.len() && count >= MIN_RESELLER_MAJORITY;
+    (unanimous || majority).then(|| pricing.clone())
+}
+
+fn pricing_rates(pricing: &ModelPricing) -> [f64; 4] {
+    [
+        pricing.input_cost_per_token,
+        pricing.output_cost_per_token,
+        pricing.cache_read_cost_per_token,
+        pricing.cache_write_cost_per_token,
+    ]
+}
+
+fn rates_agree(left: &ModelPricing, right: &ModelPricing) -> bool {
+    pricing_rates(left)
+        .into_iter()
+        .zip(pricing_rates(right))
+        .all(|(left, right)| {
+            (left - right).abs() <= RESELLER_RATE_TOLERANCE * left.abs().max(right.abs())
+        })
+}
+
+fn rate_sum(pricing: &ModelPricing) -> f64 {
+    pricing_rates(pricing).into_iter().sum()
 }
 
 fn add_candidate(
@@ -464,8 +529,18 @@ fn read_snapshot(path: &Path) -> Result<Option<PricingSnapshot>> {
     Ok(Some(snapshot))
 }
 
+/// The ETag the next refresh may send for a cached snapshot. A legacy
+/// snapshot has none, so the next refresh downloads and rebuilds the table.
+fn reusable_etag(snapshot: &PricingSnapshot) -> Option<String> {
+    (snapshot.schema == CACHE_SCHEMA)
+        .then(|| snapshot.etag.clone())
+        .flatten()
+}
+
 fn validate_snapshot(snapshot: &PricingSnapshot) -> Result<()> {
-    if snapshot.schema != CACHE_SCHEMA || snapshot.source != "models.dev" {
+    if !matches!(snapshot.schema, CACHE_SCHEMA | LEGACY_CACHE_SCHEMA)
+        || snapshot.source != "models.dev"
+    {
         bail!("unsupported pricing cache format");
     }
     if snapshot.models.is_empty()
@@ -645,6 +720,164 @@ mod tests {
             convert_cost(&cost(1.0, 2.0)).unwrap(),
         )];
         assert!(select_bare_pricing(&candidates).is_none());
+    }
+
+    fn resellers(rates: &[(f64, f64)]) -> Vec<(String, ModelPricing)> {
+        rates
+            .iter()
+            .enumerate()
+            .map(|(index, (input, output))| {
+                (
+                    format!("reseller-{index}"),
+                    convert_cost(&cost(*input, *output)).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn two_resellers_that_agree_set_the_bare_price() {
+        let pricing = select_bare_pricing(&resellers(&[(1.25, 10.0), (1.25, 10.0)])).unwrap();
+        assert_eq!(pricing.input_cost_per_token, 1.25e-6);
+        assert!(select_bare_pricing(&resellers(&[(1.25, 10.0), (1.0, 8.0)])).is_none());
+    }
+
+    #[test]
+    fn a_reseller_majority_prices_a_model_its_creator_no_longer_lists() {
+        // `gpt-5.1-codex-max` on 2026-10-06: most resellers charge the
+        // creator's last rate, and a few charge less.
+        let pricing = select_bare_pricing(&resellers(&[
+            (1.25, 10.0),
+            (1.25, 10.0),
+            (1.25, 10.0),
+            (1.1, 9.0),
+            (1.0, 8.0),
+        ]))
+        .unwrap();
+        assert_eq!(pricing.input_cost_per_token, 1.25e-6);
+        assert_eq!(pricing.output_cost_per_token, 10e-6);
+    }
+
+    #[test]
+    fn resellers_that_round_the_same_rate_differently_still_agree() {
+        // `gpt-5-codex` on 2026-10-07: four resellers charge the creator's
+        // last rate, but give its cache-read rate as 0.125 or 0.13.
+        let with_cache_read = |input: f64, output: f64, cache_read: f64| {
+            convert_cost(&ModelsDevCost {
+                input: Some(input),
+                output: Some(output),
+                cache_read: Some(cache_read),
+                cache_write: None,
+            })
+            .unwrap()
+        };
+        let candidates = [
+            ("abacus", with_cache_read(1.25, 10.0, 0.125)),
+            ("azure", with_cache_read(1.25, 10.0, 0.13)),
+            (
+                "azure-cognitive-services",
+                with_cache_read(1.25, 10.0, 0.13),
+            ),
+            (
+                "helicone",
+                with_cache_read(1.25, 10.0, 0.125_000_000_000_000_03),
+            ),
+            ("jiekou", with_cache_read(1.125, 9.0, 1.125)),
+            ("opencode", with_cache_read(1.07, 8.5, 0.107)),
+        ]
+        .map(|(provider, pricing)| (provider.to_string(), pricing));
+
+        let pricing = select_bare_pricing(&candidates).unwrap();
+        assert_eq!(pricing.input_cost_per_token, 1.25e-6);
+        assert!(
+            (pricing.cache_read_cost_per_token - 0.125e-6).abs() < 1e-15,
+            "the lowest of the agreeing rates"
+        );
+    }
+
+    #[test]
+    fn a_split_or_small_reseller_majority_sets_no_bare_price() {
+        assert!(
+            select_bare_pricing(&resellers(&[(1.25, 10.0), (1.25, 10.0), (1.0, 8.0)])).is_none(),
+            "two resellers are not enough for a majority"
+        );
+        assert!(
+            select_bare_pricing(&resellers(&[
+                (1.25, 10.0),
+                (1.25, 10.0),
+                (1.25, 10.0),
+                (1.0, 8.0),
+                (1.0, 8.0),
+                (1.0, 8.0),
+            ]))
+            .is_none(),
+            "half is not a majority"
+        );
+    }
+
+    #[test]
+    fn a_creator_rate_still_wins_over_a_reseller_majority() {
+        let mut candidates = resellers(&[(1.0, 8.0), (1.0, 8.0), (1.0, 8.0)]);
+        candidates.push((
+            "openai".to_string(),
+            convert_cost(&cost(1.25, 10.0)).unwrap(),
+        ));
+        let pricing = select_bare_pricing(&candidates).unwrap();
+        assert_eq!(pricing.input_cost_per_token, 1.25e-6);
+    }
+
+    #[test]
+    fn a_reseller_price_never_replaces_a_provider_s_own_entry() {
+        let model = |input: f64, output: f64| ModelsDevModel {
+            last_updated: Some("2026-09-01".to_string()),
+            cost: Some(cost(input, output)),
+            experimental: None,
+        };
+        let mut catalog = BTreeMap::from([(
+            "google".to_string(),
+            ModelsDevProvider {
+                models: BTreeMap::from([("sample-image".to_string(), model(0.5, 60.0))]),
+            },
+        )]);
+        for reseller in ["reseller-a", "reseller-b", "reseller-c"] {
+            catalog.insert(
+                reseller.to_string(),
+                ModelsDevProvider {
+                    models: BTreeMap::from([("google/sample-image".to_string(), model(0.5, 3.0))]),
+                },
+            );
+        }
+
+        let snapshot = snapshot_from_catalog(catalog, None).unwrap();
+        assert_eq!(
+            snapshot.models["google/sample-image"].output_cost_per_token,
+            60e-6
+        );
+    }
+
+    #[test]
+    fn a_legacy_cache_still_validates_but_drops_its_etag() {
+        let mut snapshot = PricingSnapshot {
+            schema: LEGACY_CACHE_SCHEMA,
+            source: "models.dev".to_string(),
+            version: "2026-10-06".to_string(),
+            fetched_at: "2026-10-06T00:00:00Z".to_string(),
+            etag: Some("old".to_string()),
+            models: HashMap::from([(
+                "sample-model".to_string(),
+                convert_cost(&cost(1.0, 2.0)).unwrap(),
+            )]),
+        };
+        assert!(
+            validate_snapshot(&snapshot).is_ok(),
+            "the legacy prices still load"
+        );
+        assert_eq!(reusable_etag(&snapshot), None);
+
+        snapshot.schema = CACHE_SCHEMA;
+        assert_eq!(reusable_etag(&snapshot), Some("old".to_string()));
+        snapshot.schema = CACHE_SCHEMA + 1;
+        assert!(validate_snapshot(&snapshot).is_err());
     }
 
     #[test]

@@ -2,11 +2,13 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use antiburn_local::analysis::jev::{JevError, JevRequestBatch, JevResponse, MAX_REQUEST_TOKENS};
+use antiburn_local::checks::DetectorId;
 use sha2::{Digest, Sha256};
 use tauri::Manager;
 use tokio::sync::Notify;
@@ -14,8 +16,8 @@ use tokio::sync::Notify;
 use crate::jev_client::TypeSafeClient;
 use crate::session_lifecycle::{SessionEvents, SessionRef};
 use crate::store::{
-    BurnCheckCandidate, BurnCheckInput, BurnCheckReservation, CachedAssessmentResponse, SessionKey,
-    Store,
+    BurnCheckCandidate, BurnCheckHistoryCheck, BurnCheckInput, BurnCheckRequestAdmission,
+    BurnCheckReservation, CachedAssessmentResponse, SessionKey, Store,
 };
 
 const PROVIDER_ID: &str = "typesafe-systemone";
@@ -111,30 +113,67 @@ pub(crate) struct CandidateExecution<'a> {
     pub(crate) client: TypeSafeClient,
     pub(crate) handle: &'a WorkerHandle,
     pub(crate) key_generation: u64,
+    pub(crate) check_generation: u64,
     pub(crate) events: &'a SessionEvents,
 }
 
 /// Supplies check policy to the shared scheduler and transport.
 pub(crate) trait JevCheckWorker: Send + Sync {
-    fn id(&self) -> &'static str;
+    fn detector(&self) -> DetectorId;
+
+    fn id(&self) -> &'static str {
+        self.detector().key()
+    }
 
     fn evaluator_revision(&self) -> String;
 
+    fn supports_history(&self) -> bool {
+        false
+    }
+
     fn run_candidate<'a>(&'a self, execution: CandidateExecution<'a>) -> WorkerFuture<'a>;
+}
+
+pub(crate) fn registered_checks() -> [&'static dyn JevCheckWorker; 1] {
+    [&crate::ignored_instructions_worker::CHECK]
+}
+
+pub(crate) fn registered_check_ids() -> Vec<DetectorId> {
+    registered_checks()
+        .into_iter()
+        .map(JevCheckWorker::detector)
+        .collect()
+}
+
+pub(crate) fn registered_history_checks() -> Vec<BurnCheckHistoryCheck> {
+    registered_checks()
+        .into_iter()
+        .filter(|check| check.supports_history())
+        .map(|check| BurnCheckHistoryCheck {
+            check_id: check.id().to_owned(),
+            evaluator_revision: check.evaluator_revision(),
+        })
+        .collect()
 }
 
 /// Shared credential and wake state for Jev workers.
 #[derive(Default)]
 pub(crate) struct WorkerHandle {
     wake: Notify,
+    request_admission: Mutex<()>,
     api_key: RwLock<Option<String>>,
     key_generation: AtomicU64,
     authentication_rejected: AtomicBool,
+    check_generations: Mutex<std::collections::BTreeMap<String, u64>>,
 }
 
 impl WorkerHandle {
     /// Supply a key loaded from the native credential store.
     pub(crate) fn set_api_key(&self, api_key: Option<String>) {
+        let _admission = self
+            .request_admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut current = self
             .api_key
             .write()
@@ -171,6 +210,63 @@ impl WorkerHandle {
             && !self.authentication_rejected()
     }
 
+    pub(crate) fn check_generation(&self, check_id: &str) -> u64 {
+        self.check_generations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(check_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn persist_check_transition<T, E>(
+        &self,
+        check_id: &str,
+        persist: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        let _admission = self
+            .request_admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let result = persist()?;
+        self.advance_check_generation_inner(check_id);
+        Ok(result)
+    }
+
+    fn advance_check_generation_inner(&self, check_id: &str) -> u64 {
+        let mut generations = self
+            .check_generations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let generation = generations.entry(check_id.to_owned()).or_default();
+        *generation = generation.saturating_add(1);
+        self.wake.notify_one();
+        *generation
+    }
+
+    pub(crate) fn check_is_current(&self, check_id: &str, generation: u64) -> bool {
+        self.check_generation(check_id) == generation
+    }
+
+    fn admit_if_current<T>(
+        &self,
+        key_generation: u64,
+        check_id: &str,
+        check_generation: u64,
+        admit: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<Option<T>> {
+        let _admission = self
+            .request_admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !self.key_is_current(key_generation)
+            || !self.check_is_current(check_id, check_generation)
+        {
+            return Ok(None);
+        }
+        admit().map(Some)
+    }
+
     pub(crate) fn is_available(&self) -> bool {
         self.api_key
             .read()
@@ -183,6 +279,10 @@ impl WorkerHandle {
     }
 
     pub(crate) fn reject_authentication(&self) {
+        let _admission = self
+            .request_admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         self.authentication_rejected.store(true, Ordering::Release);
         self.wake.notify_one();
     }
@@ -197,7 +297,7 @@ pub(crate) fn wake(app: &tauri::AppHandle) {
 pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let checks: [&dyn JevCheckWorker; 1] = [&crate::ignored_instructions_worker::CHECK];
+        let checks = registered_checks();
         let mut lifecycle = app.state::<SessionEvents>().subscribe();
         let mut poll = tokio::time::interval(Duration::from_secs(POLL_SECS));
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -240,12 +340,21 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                         continue;
                     }
                 };
-                scheduled.push((check, std::collections::VecDeque::from(candidates)));
+                scheduled.push((
+                    check,
+                    handle.check_generation(check.id()),
+                    std::collections::VecDeque::from(candidates),
+                ));
             }
             let mut next_check = 0;
-            while let Some((check, candidate)) = next_candidate(&mut scheduled, &mut next_check) {
+            while let Some(((check, check_generation), candidate)) =
+                next_candidate(&mut scheduled, &mut next_check)
+            {
                 if !handle.key_is_current(key_generation) {
                     break;
+                }
+                if !handle.check_is_current(check.id(), check_generation) {
+                    continue;
                 }
                 let result = check
                     .run_candidate(CandidateExecution {
@@ -255,6 +364,7 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                         client: client.clone(),
                         handle: &handle,
                         key_generation,
+                        check_generation,
                         events: &events,
                     })
                     .await;
@@ -275,15 +385,15 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
 }
 
 fn next_candidate<T: Copy, C>(
-    scheduled: &mut [(T, std::collections::VecDeque<C>)],
+    scheduled: &mut [(T, u64, std::collections::VecDeque<C>)],
     next: &mut usize,
-) -> Option<(T, C)> {
+) -> Option<((T, u64), C)> {
     for _ in 0..scheduled.len() {
         let index = *next % scheduled.len();
         *next = (index + 1) % scheduled.len();
-        let (check, candidates) = &mut scheduled[index];
+        let (check, generation, candidates) = &mut scheduled[index];
         if let Some(candidate) = candidates.pop_front() {
-            return Some((*check, candidate));
+            return Some(((*check, *generation), candidate));
         }
     }
     None
@@ -296,9 +406,27 @@ pub(crate) struct BatchExecution<'a> {
     pub(crate) client: TypeSafeClient,
     pub(crate) handle: &'a WorkerHandle,
     pub(crate) key_generation: u64,
+    pub(crate) check_generation: u64,
     pub(crate) events: &'a SessionEvents,
     pub(crate) idle_secs: i64,
     pub(crate) lease_secs: i64,
+}
+
+#[derive(Clone, Copy)]
+struct ExecutionFence<'a> {
+    handle: &'a WorkerHandle,
+    key_generation: u64,
+    check_id: &'a str,
+    check_generation: u64,
+}
+
+impl ExecutionFence<'_> {
+    fn is_current(self) -> bool {
+        self.handle.key_is_current(self.key_generation)
+            && self
+                .handle
+                .check_is_current(self.check_id, self.check_generation)
+    }
 }
 
 struct DispatchGuard<'a> {
@@ -344,12 +472,19 @@ pub(crate) async fn execute_jev_batch(
         client,
         handle,
         key_generation,
+        check_generation,
         events,
         idle_secs,
         lease_secs,
     } = execution;
+    let fence = ExecutionFence {
+        handle,
+        key_generation,
+        check_id: &input.check_id,
+        check_generation,
+    };
     let resident_bytes = antiburn_local::analysis::jev::jev_batch_resident_bytes(&batch)?;
-    if !handle.key_is_current(key_generation)
+    if !fence.is_current()
         || session_is_active(events, &input.key)
         || !store
             .renew_burn_check_assessment(input, unix_now(), lease_secs, idle_secs)
@@ -407,26 +542,18 @@ pub(crate) async fn execute_jev_batch(
         {
             return Err(JevError::RequestOutcomeUnknown);
         }
-        let _slot = acquire_budget(
-            request_slots().acquire(),
-            handle,
-            key_generation,
-            events,
-            &input.key,
-        )
-        .await?;
+        let _slot = acquire_budget(request_slots().acquire(), fence, events, &input.key).await?;
         let _bytes = acquire_budget(
             request_bytes().acquire_many(
                 u32::try_from(resident_bytes).map_err(|_| JevError::RequestSerialization)?,
             ),
-            handle,
-            key_generation,
+            fence,
             events,
             &input.key,
         )
         .await?;
         let started = std::time::Instant::now();
-        if !handle.key_is_current(key_generation) || session_is_active(events, &input.key) {
+        if !fence.is_current() || session_is_active(events, &input.key) {
             return Err(JevError::Cancelled);
         }
         if !store
@@ -459,16 +586,8 @@ pub(crate) async fn execute_jev_batch(
         let estimated_tokens = u64::try_from(batch.serialized_bytes.div_ceil(3))
             .unwrap_or(MAX_REQUEST_TOKENS)
             .min(MAX_REQUEST_TOKENS);
-        wait_for_provider(
-            &reservation_id,
-            estimated_tokens,
-            handle,
-            key_generation,
-            events,
-            &input.key,
-        )
-        .await?;
-        if !handle.key_is_current(key_generation)
+        wait_for_provider(&reservation_id, estimated_tokens, fence, events, &input.key).await?;
+        if !fence.is_current()
             || session_is_active(events, &input.key)
             || !store
                 .renew_burn_check_assessment(input, unix_now(), lease_secs, idle_secs)
@@ -476,11 +595,25 @@ pub(crate) async fn execute_jev_batch(
         {
             return Err(JevError::Cancelled);
         }
-        if !store
-            .track_burn_check_requests(&request_identities, &reservation_id, unix_now())
+        let Some(admission) = handle
+            .admit_if_current(key_generation, &input.check_id, check_generation, || {
+                store.admit_burn_check_requests(
+                    input,
+                    &request_identities,
+                    &reservation_id,
+                    unix_now(),
+                )
+            })
             .map_err(|_| JevError::ProviderUnavailable)?
-        {
-            return Err(JevError::RequestOutcomeUnknown);
+        else {
+            return Err(JevError::Cancelled);
+        };
+        match admission {
+            BurnCheckRequestAdmission::Admitted => {}
+            BurnCheckRequestAdmission::Stale => return Err(JevError::Cancelled),
+            BurnCheckRequestAdmission::Unresolved => {
+                return Err(JevError::RequestOutcomeUnknown);
+            }
         }
         dispatch.rejected = false;
         let call = client.evaluate_async(&batch.request);
@@ -491,7 +624,7 @@ pub(crate) async fn execute_jev_batch(
                     break result;
                 }
                 () = tokio::time::sleep(Duration::from_millis(250)) => {
-                    if !handle.key_is_current(key_generation) || session_is_active(events, &input.key) {
+                    if !fence.is_current() || session_is_active(events, &input.key) {
                         store.settle_burn_check_usage(&reservation_id, None, unix_now())
                             .map_err(|_| JevError::ProviderUnavailable)?;
                         dispatch.settled = true;
@@ -602,8 +735,7 @@ pub(crate) async fn execute_jev_batch(
                 crate::jev_settings::changed(app);
                 if !wait_for_retry(
                     retry_delay(&error, attempt).unwrap_or_default(),
-                    handle,
-                    key_generation,
+                    fence,
                     events,
                     &input.key,
                 )
@@ -649,14 +781,13 @@ pub(crate) async fn execute_jev_batch(
 
 async fn wait_for_retry(
     delay: Duration,
-    handle: &WorkerHandle,
-    key_generation: u64,
+    fence: ExecutionFence<'_>,
     events: &SessionEvents,
     key: &SessionKey,
 ) -> bool {
     let deadline = tokio::time::Instant::now() + delay;
     loop {
-        if !handle.key_is_current(key_generation) || session_is_active(events, key) {
+        if !fence.is_current() || session_is_active(events, key) {
             return false;
         }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -670,13 +801,12 @@ async fn wait_for_retry(
 async fn wait_for_provider(
     reservation_id: &str,
     estimated_tokens: u64,
-    handle: &WorkerHandle,
-    generation: u64,
+    fence: ExecutionFence<'_>,
     events: &SessionEvents,
     key: &SessionKey,
 ) -> Result<(), JevError> {
     loop {
-        if !handle.key_is_current(generation) || session_is_active(events, key) {
+        if !fence.is_current() || session_is_active(events, key) {
             return Err(JevError::Cancelled);
         }
         let admitted = provider_pacing()
@@ -707,14 +837,13 @@ fn request_was_rejected(error: &JevError) -> bool {
 
 async fn acquire_budget<T>(
     acquire: impl Future<Output = Result<T, tokio::sync::AcquireError>>,
-    handle: &WorkerHandle,
-    generation: u64,
+    fence: ExecutionFence<'_>,
     events: &SessionEvents,
     key: &SessionKey,
 ) -> Result<T, JevError> {
     tokio::pin!(acquire);
     loop {
-        if !handle.key_is_current(generation) || session_is_active(events, key) {
+        if !fence.is_current() || session_is_active(events, key) {
             return Err(JevError::Cancelled);
         }
         tokio::select! {
@@ -843,10 +972,12 @@ mod tests {
         let mut scheduled = [
             (
                 "first",
+                1,
                 std::collections::VecDeque::from(["recent", "history-1", "history-2"]),
             ),
             (
                 "second",
+                2,
                 std::collections::VecDeque::from(["recent", "history-1"]),
             ),
         ];
@@ -856,14 +987,46 @@ mod tests {
         assert_eq!(
             order,
             [
-                ("first", "recent"),
-                ("second", "recent"),
-                ("first", "history-1"),
-                ("second", "history-1"),
-                ("first", "history-2")
+                (("first", 1), "recent"),
+                (("second", 2), "recent"),
+                (("first", 1), "history-1"),
+                (("second", 2), "history-1"),
+                (("first", 1), "history-2")
             ]
         );
         assert!(next_candidate::<&str, &str>(&mut [], &mut next).is_none());
+    }
+
+    #[test]
+    fn advancing_one_check_generation_does_not_cancel_another() {
+        let handle = WorkerHandle::default();
+        let first = handle.check_generation("first");
+        let second = handle.check_generation("second");
+
+        handle
+            .persist_check_transition("first", || Ok::<_, std::convert::Infallible>(()))
+            .unwrap();
+
+        assert!(!handle.check_is_current("first", first));
+        assert!(handle.check_is_current("second", second));
+    }
+
+    #[test]
+    fn persisted_transition_invalidates_work_snapshotted_during_the_write() {
+        let handle = WorkerHandle::default();
+        let snapshot = std::cell::Cell::new(None);
+
+        handle
+            .persist_check_transition("first", || {
+                snapshot.set(Some(handle.check_generation("first")));
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .unwrap();
+
+        let snapshot = snapshot.get().unwrap();
+        assert_eq!(snapshot, 0);
+        assert!(!handle.check_is_current("first", snapshot));
+        assert_eq!(handle.check_generation("first"), 1);
     }
 
     #[test]
@@ -964,6 +1127,13 @@ mod tests {
         let handle = WorkerHandle::default();
         handle.set_api_key(Some("synthetic-key".to_owned()));
         let generation = handle.key_generation.load(Ordering::Acquire);
+        let check_generation = handle.check_generation("ignored_instructions");
+        let fence = ExecutionFence {
+            handle: &handle,
+            key_generation: generation,
+            check_id: "ignored_instructions",
+            check_generation,
+        };
         let events = SessionEvents::default();
         let key = SessionKey::new("native", "claude", "synthetic-session");
         let bytes = request_bytes();
@@ -978,13 +1148,7 @@ mod tests {
             handle.set_api_key(None);
         };
         let (outcome, ()) = tokio::join!(
-            acquire_budget(
-                request_bytes().acquire_many(1),
-                &handle,
-                generation,
-                &events,
-                &key
-            ),
+            acquire_budget(request_bytes().acquire_many(1), fence, &events, &key),
             revoke
         );
         assert!(matches!(outcome, Err(JevError::Cancelled)));
@@ -1004,6 +1168,13 @@ mod tests {
         let handle = WorkerHandle::default();
         handle.set_api_key(Some("synthetic-key".to_owned()));
         let generation = handle.key_generation.load(Ordering::Acquire);
+        let check_generation = handle.check_generation("ignored_instructions");
+        let fence = ExecutionFence {
+            handle: &handle,
+            key_generation: generation,
+            check_id: "ignored_instructions",
+            check_generation,
+        };
         let events = SessionEvents::default();
         let key = SessionKey::new("native", "claude", "synthetic-session");
         let revoke = async {
@@ -1011,13 +1182,7 @@ mod tests {
             handle.set_api_key(None);
         };
         let (outcome, ()) = tokio::join!(
-            acquire_budget(
-                semaphore.acquire_many(1),
-                &handle,
-                generation,
-                &events,
-                &key
-            ),
+            acquire_budget(semaphore.acquire_many(1), fence, &events, &key),
             revoke
         );
         assert!(matches!(outcome, Err(JevError::Cancelled)));
@@ -1030,14 +1195,20 @@ mod tests {
         let handle = WorkerHandle::default();
         handle.set_api_key(Some("synthetic-key".to_owned()));
         let generation = handle.key_generation.load(Ordering::Acquire);
+        let check_generation = handle.check_generation("ignored_instructions");
+        let fence = ExecutionFence {
+            handle: &handle,
+            key_generation: generation,
+            check_id: "ignored_instructions",
+            check_generation,
+        };
         handle.set_api_key(None);
         let events = SessionEvents::default();
 
         assert!(
             !wait_for_retry(
                 Duration::from_secs(30),
-                &handle,
-                generation,
+                fence,
                 &events,
                 &SessionKey::new("native", "claude", "synthetic-session"),
             )

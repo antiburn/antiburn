@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -460,22 +459,6 @@ fn repository(key: &str, name: &str, root: &str) -> RepositoryRecord {
     }
 }
 
-#[test]
-fn restarting_onboarding_retires_the_popover_before_opening_setup() {
-    let actions = RefCell::new(Vec::new());
-
-    restart_onboarding_surfaces(
-        || actions.borrow_mut().push("hide_popover"),
-        || {
-            actions.borrow_mut().push("open_onboarding");
-            Ok(())
-        },
-    )
-    .expect("the test transition succeeds");
-
-    assert_eq!(*actions.borrow(), ["hide_popover", "open_onboarding"]);
-}
-
 /// The report request covers thirty days, ends one past now (the end
 /// bound is exclusive), and asks for the native scope only.
 #[test]
@@ -775,6 +758,26 @@ pub(super) fn synthetic_evidence() -> SessionEvidence {
 const SYNTHETIC_GENERATION: Option<i64> = Some(1);
 
 #[test]
+fn checks_report_policy_excludes_smart_checks_while_the_master_is_paused() {
+    use antiburn_local::insights::DetectorId;
+
+    let enabled = BTreeSet::from([
+        DetectorId::SessionsOverDepth,
+        DetectorId::IgnoredInstructions,
+    ]);
+    let paused = checks_report_selection(enabled.clone(), false);
+    let running = checks_report_selection(enabled, true);
+
+    assert!(paused.contains(DetectorId::SessionsOverDepth));
+    assert!(!paused.contains(DetectorId::IgnoredInstructions));
+    assert!(running.contains(DetectorId::IgnoredInstructions));
+    assert_ne!(
+        checks_report_policy_revision(7, false),
+        checks_report_policy_revision(7, true),
+    );
+}
+
+#[test]
 fn session_hygiene_preserves_queue_states_without_a_false_clean_result() {
     let missing = session_hygiene_payload(None, SYNTHETIC_GENERATION);
     assert_eq!(missing.evidence_state, "pending");
@@ -810,6 +813,22 @@ fn session_hygiene_preserves_queue_states_without_a_false_clean_result() {
             .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed)),
         "a pending row with no prior evidence has nothing to serve"
     );
+}
+
+#[test]
+fn session_hygiene_omits_every_result_when_no_checks_are_enabled() {
+    let payload = session_hygiene_payload_with_selection(
+        Some(evidence_row(
+            crate::store::EvidenceStatus::Ready,
+            Some(synthetic_evidence()),
+        )),
+        SYNTHETIC_GENERATION,
+        &DetectorSelection::none(),
+    );
+
+    assert_eq!(payload.evidence_state, "ready");
+    assert!(payload.badges.is_empty());
+    assert!(payload.unused_resources.is_none());
 }
 
 /// Debug strings of a payload's badge statuses, in badge order — a

@@ -3,22 +3,6 @@ import { isSettingsPane, type SettingsPane } from "./settingsPanes"
 
 /** Stable targets keep navigation independent of translated or edited labels. */
 export const SETTINGS_SEARCH_TARGETS = {
-  monitoring: {
-    pane: "general",
-    label: "Keep looking for new sessions",
-    aliases: ["automatic scan", "watch"],
-  },
-  historicalScan: { pane: "general", label: "Historical scan", aliases: ["import", "rescan"] },
-  recentDays: {
-    pane: "general",
-    label: "Show the last",
-    aliases: ["days", "recent sessions", "date range"],
-  },
-  indexedSessions: {
-    pane: "general",
-    label: "Indexed sessions",
-    aliases: ["storage", "database size"],
-  },
   trayIcon: {
     pane: "general",
     label: "Show in menubar",
@@ -36,7 +20,6 @@ export const SETTINGS_SEARCH_TARGETS = {
     platform: "macos",
   },
   startAtLogin: { pane: "general", label: "Start at login", aliases: ["startup", "launch"] },
-  setup: { pane: "general", label: "Run setup again", aliases: ["onboarding"] },
   theme: {
     pane: "appearance",
     label: "Appearance",
@@ -56,11 +39,6 @@ export const SETTINGS_SEARCH_TARGETS = {
     pane: "privacy",
     label: "Share product analytics",
     aliases: ["telemetry", "tracking", "opt out"],
-  },
-  retention: {
-    pane: "privacy",
-    label: "Keep session data",
-    aliases: ["retention", "storage", "history"],
   },
   clearIndex: {
     pane: "privacy",
@@ -134,52 +112,6 @@ export const SETTINGS_SEARCH_TARGETS = {
     label: "Notify when low",
     aliases: ["disk space alert"],
     platform: "macos",
-  },
-  sourceScanning: { pane: "sources", label: "Scanning", aliases: ["discovery", "rescan"] },
-  ignoredInstructions: {
-    pane: "checks",
-    label: "Ignored Instructions",
-    aliases: ["missed project instructions", "instruction conflicts"],
-  },
-  checkHistory: {
-    pane: "checks",
-    label: "Check history",
-    aliases: ["past sessions", "historical checks", "backfill"],
-  },
-  typeSafeApiKey: {
-    pane: "checks",
-    label: "API key",
-    aliases: ["TypeSafe API key", "Jev", "enable checks", "usage charges"],
-  },
-  sourceAgents: {
-    pane: "sources",
-    label: "Coding agents",
-    aliases: ["harnesses", "enabled agents"],
-  },
-  sourceRemoteHosts: {
-    pane: "sources",
-    label: "Remote hosts",
-    aliases: ["ssh", "remote sessions", "other computers"],
-  },
-  sourceAutomaticSync: {
-    pane: "sources",
-    label: "Sync frequency",
-    aliases: ["automatic sync", "remote schedule", "sync interval"],
-  },
-  sourceFolders: {
-    pane: "sources",
-    label: "Scan folders",
-    aliases: ["directories", "folder access", "paths"],
-  },
-  sourceRepositories: {
-    pane: "sources",
-    label: "Repositories",
-    aliases: ["projects", "repo", "enabled repositories"],
-  },
-  sourceNonRepoFolders: {
-    pane: "sources",
-    label: "Include folders without git",
-    aliases: ["non-repo folders", "missing sessions", "not a repository"],
   },
   usageMeters: {
     pane: "usage",

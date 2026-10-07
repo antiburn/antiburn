@@ -6,8 +6,8 @@
  * app-shell contract's height.
  *
  * There was a fourth, shorter than all of them, for the first-run flow. That
- * flow has its own window now (`src-tauri/src/onboarding.rs`) and is no
- * longer a popover surface at all.
+ * flow now lives in the main window's Overview and is no longer a popover
+ * surface at all.
  *
  * The Usage breakdown now lives only in its content-sized anchored companion.
  * The main popover therefore never grows beyond its 700px resting height.

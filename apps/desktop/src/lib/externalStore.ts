@@ -2,7 +2,7 @@
  * The recurring shape behind the app's `onXxx` IPC helpers (see
  * `lib/ipc.ts`): fetch a value once, then subscribe to a push channel that
  * resolves asynchronously — a Tauri `listen()` call is itself a promise — and
- * publishes updates from then on. `OnboardingSession` hand-rolls this shape
+ * publishes updates from then on. `PopoverSession` hand-rolls this shape
  * for one view; this factory is the same lifecycle generalized so a
  * `useSyncExternalStore` consumer for it does not have to be written by hand
  * each time.

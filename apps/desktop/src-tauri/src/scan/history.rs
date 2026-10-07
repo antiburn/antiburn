@@ -3,7 +3,7 @@
 //! A routine pass only ever discovers the current window (see the `scan::mod`
 //! module doc and [`super::CURRENT_WINDOW_SECS`]). Retention can promise far
 //! more than that, so one dedicated pass widens discovery to the retention
-//! limit: the reader's own "Historical scan" button
+//! limit: the reader's own "Older sessions" Scan now button
 //! (`crate::commands::scan_history`) asks for it directly through
 //! [`super::ScanTrigger::HistoricalScan`], and [`maybe_start_automatic_pass`]
 //! asks for it once automatically, after the first current pass has
@@ -75,6 +75,7 @@ pub(crate) fn compute(store: &Store, now: i64, pass_running: bool) -> ScanHistor
             state: ScanHistoryState::None,
             completed: 0,
             total: 0,
+            pass_running: false,
         };
     }
     let cutoff = now - i64::from(CURRENT_WINDOW_DAYS) * 86_400;
@@ -95,6 +96,7 @@ pub(crate) fn compute(store: &Store, now: i64, pass_running: bool) -> ScanHistor
         state,
         completed,
         total,
+        pass_running,
     }
 }
 
@@ -105,13 +107,13 @@ pub(crate) fn compute(store: &Store, now: i64, pass_running: bool) -> ScanHistor
 /// runs at most about once a second: the count query holds the store lock.
 /// Use `force` at the edges (a pass starts or ends, the backlog drains), so
 /// the last state always reaches the reader.
-pub(crate) fn push_progress(app: &AppHandle, pass_running: bool, force: bool) {
+pub(crate) fn push_progress(app: &AppHandle, force: bool) {
     let controller = app.state::<ScanController>();
     if !controller.throttle_history_emit() && !force {
         return;
     }
     let store = app.state::<Store>();
-    let progress = compute(&store, unix_now(), pass_running);
+    let progress = compute(&store, unix_now(), controller.history_pass_running());
     let status = controller.update(|status| status.history = Some(progress));
     let _ = app.emit(EVENT_PROGRESS, status);
 }
@@ -124,8 +126,16 @@ pub(crate) fn push_progress(app: &AppHandle, pass_running: bool, force: bool) {
 /// Safe to call repeatedly: once the completion marker matches the live
 /// retention, every later call is a no-op. It asks at most once for each
 /// retention in a launch, so a failed or cancelled pass waits for the next
-/// launch or the reader's own Historical scan.
+/// launch or the reader's own "Older sessions" scan.
 pub(crate) fn maybe_start_automatic_pass(app: &AppHandle) {
+    // The first run's own steps own discovery until it finishes. The
+    // reader's own "Older sessions" Scan now button is not gated — see
+    // `crate::commands::scan_history`, which calls `run_pass` directly.
+    if app.state::<crate::first_run_gate::FirstRunGate>().stage()
+        != crate::first_run_gate::FirstRunStage::Done
+    {
+        return;
+    }
     let controller = app.state::<ScanController>();
     if !controller.first_current_pass_done() {
         return;
@@ -215,10 +225,10 @@ mod tests {
     #[test]
     fn compute_reports_running_while_the_pass_itself_is_in_flight() {
         let store = store();
-        assert_eq!(
-            compute(&store, 10_000, true).state,
-            ScanHistoryState::Running
-        );
+        let progress = compute(&store, 10_000, true);
+        assert_eq!(progress.state, ScanHistoryState::Running);
+        assert!(progress.pass_running);
+        assert!(!compute(&store, 10_000, false).pass_running);
     }
 
     #[test]

@@ -1655,18 +1655,20 @@ impl Explorers {
     /// Calls `on_agent_done` each time an agent explorer completes, enabling
     /// per-agent progress reporting.
     ///
-    /// The callback receives `(agent_name, sessions_found, completed_count, total_agents)`.
+    /// The callback receives `(agent, sessions_found, completed_count, total_agents)`.
+    /// It receives the agent's identity, not a display label: display wording
+    /// belongs to the caller.
     pub async fn discover_recent_sessions_with_progress(
         &self,
         now: i64,
         since_secs: i64,
-        mut on_agent_done: impl FnMut(&str, usize, usize, usize),
+        mut on_agent_done: impl FnMut(AgentKind, usize, usize, usize),
     ) -> Vec<SessionLog> {
         let mut set = tokio::task::JoinSet::new();
         for t in AgentKind::ALL {
             let explorer = self.get(t);
-            let label = t.display_label();
-            set.spawn(async move { (label, explorer.discover_recent(now, since_secs).await) });
+            let agent = *t;
+            set.spawn(async move { (agent, explorer.discover_recent(now, since_secs).await) });
         }
 
         let total = set.len();
@@ -1675,15 +1677,15 @@ impl Explorers {
 
         while let Some(result) = set.join_next().await {
             completed += 1;
-            if let Ok((name, logs)) = result {
+            if let Ok((agent, logs)) = result {
                 ::tracing::debug!(
                     event = "repo_discovery_agent_done",
-                    agent = name,
+                    agent = agent.display_label(),
                     sessions = logs.len(),
                     completed,
                     total,
                 );
-                on_agent_done(name, logs.len(), completed, total);
+                on_agent_done(agent, logs.len(), completed, total);
                 per_agent_logs.push(logs);
             }
         }

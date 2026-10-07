@@ -1,15 +1,17 @@
 //! The popover renderer retention policy.
 //!
-//! This module owns onboarding prewarm deadlines and eviction callback
+//! This module owns the first-run prewarm deadlines and eviction callback
 //! identity. The popover facade owns all window operations and timer
 //! scheduling.
 
 use std::time::{Duration, Instant};
 
-/// How long onboarding keeps a hidden renderer after it becomes ready.
+/// How long the first-run prewarm keeps a hidden renderer after it becomes
+/// ready.
 pub(super) const PREWARM_READY_EVICTION_DELAY: Duration = Duration::from_secs(60);
 
-/// How long onboarding keeps a renderer that does not become ready.
+/// How long the first-run prewarm keeps a renderer that does not become
+/// ready.
 pub(super) const PREWARM_LOADING_EVICTION_DELAY: Duration = Duration::from_secs(65);
 
 /// How long the shell waits before it retries a failed destruction.

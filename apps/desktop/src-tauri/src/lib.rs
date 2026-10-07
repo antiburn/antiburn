@@ -18,7 +18,6 @@
 //! - [`global_click`] — dismissing the popover on clicks outside the app.
 //! - [`notifications`] — the policy on what may interrupt a reader.
 //! - [`nudges`] — presentation glue between that policy and the window.
-//! - [`onboarding`] — the standalone first-run window.
 //! - [`popover`] — the tray-anchored popover window and its show/hide policy.
 //! - [`provider_usage`] — per-provider totals derived from local sessions.
 //! - [`repositories`] — which repositories on this machine antiburn watches.
@@ -60,6 +59,7 @@ mod consent;
 mod diagnostics_export;
 mod disk_monitor;
 mod dto;
+mod first_run_gate;
 mod fork_lineage;
 mod global_click;
 mod hud;
@@ -80,7 +80,6 @@ mod main_window;
 mod memory_probe;
 mod notifications;
 mod nudges;
-mod onboarding;
 mod popover;
 mod popover_peek;
 mod provider_accounts;
@@ -171,8 +170,9 @@ impl Schedulers {
 /// # Panics
 ///
 /// Panics if the webview runtime, tray item, or local database cannot be
-/// created. None has a meaningful degraded mode. The shell opens onboarding
-/// when required. Other windows load when the first interaction requests them.
+/// created. None has a meaningful degraded mode. The shell opens the main
+/// window at launch. Other windows load when the first interaction requests
+/// them.
 pub fn run() {
     macro_rules! command_handlers {
         ($( $handler:path => $name:literal, )*) => {
@@ -329,6 +329,16 @@ pub fn run() {
                 startup_registration::reconcile(app.handle(), settings.launch_at_login);
             }
         }
+        // In memory only: a relaunch during a first run starts the gate,
+        // and the frontend, over from the live-limits step. A failed read
+        // opens the gate, so it cannot stop the scan and the checks on an
+        // existing install.
+        let onboarding_completed = app
+            .state::<store::Store>()
+            .settings()
+            .map(|settings| settings.onboarding_completed)
+            .unwrap_or(true);
+        app.manage(first_run_gate::FirstRunGate::new(onboarding_completed));
         app.manage(scan::ScanController::default());
         app.manage(session_lifecycle::SessionEvents::default());
         app.manage(Schedulers::default());
@@ -341,12 +351,13 @@ pub fn run() {
         app.manage(storage_health::StorageHealth::default());
         app.manage(settings::PendingPane::default());
         app.manage(settings::SettingsWindowState::default());
-        app.manage(onboarding::OnboardingWindowState::default());
         app.manage(WindowRebuildState::default());
         app.manage(nudges::AnchorOverride::default());
         app.manage(antiburn_nudge::NotificationGate::default());
 
         tray::create(app.handle())?;
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        tray::install_debug_app_menu(app.handle())?;
         tray::install_usage_meter(app.handle());
         if let Ok(settings) = app.state::<store::Store>().settings() {
             app_presence::apply_at_launch(app.handle(), &settings);
@@ -432,12 +443,19 @@ pub fn run() {
         let repeated = app.state::<RepeatedLaunch>();
         repeated.setup_ready.store(true, Ordering::Release);
         let repeated_launch = repeated.pending.swap(false, Ordering::AcqRel);
-        if launch_intent == launch_intent::LaunchIntent::Explicit || repeated_launch {
-            let trigger = if launch_intent == launch_intent::LaunchIntent::Explicit {
-                main_window::OpenTrigger::ColdLaunch
-            } else {
-                main_window::OpenTrigger::Interaction
-            };
+        // The menu-bar icon stays hidden during the first run, so a
+        // background launch then also opens the main window. Otherwise the
+        // app has no visible way in.
+        if launch_intent == launch_intent::LaunchIntent::Explicit
+            || repeated_launch
+            || !onboarding_completed
+        {
+            let trigger =
+                if launch_intent == launch_intent::LaunchIntent::Explicit || !repeated_launch {
+                    main_window::OpenTrigger::ColdLaunch
+                } else {
+                    main_window::OpenTrigger::Interaction
+                };
             if let Err(error) = open_launch_surface(app.handle(), trigger) {
                 ::tracing::warn!(
                     event = "launch_surface_open_failed",
@@ -517,16 +535,12 @@ fn should_prevent_exit(code: Option<i32>) -> bool {
     code.is_none()
 }
 
-/// Open onboarding while it is owed, or the ordinary main window afterwards.
+/// Open the ordinary main window. The first-run Overview is part of it.
 pub(crate) fn open_launch_surface(
     app: &tauri::AppHandle,
     trigger: main_window::OpenTrigger,
 ) -> tauri::Result<()> {
-    if onboarding::is_pending(app) {
-        onboarding::open(app)
-    } else {
-        main_window::open(app, trigger)
-    }
+    main_window::open(app, trigger)
 }
 
 /// Stop every background task. Safe to call when none ever started.
@@ -561,11 +575,10 @@ enum ClosePolicy {
     HideMain,
     QuitApp,
     HidePopover,
-    HidePendingOnboarding,
     HideNudge,
 }
 
-fn close_policy(label: &str, onboarding_pending: bool, quit_when_main_closes: bool) -> ClosePolicy {
+fn close_policy(label: &str, quit_when_main_closes: bool) -> ClosePolicy {
     if label == main_window::LABEL {
         if quit_when_main_closes {
             ClosePolicy::QuitApp
@@ -576,8 +589,6 @@ fn close_policy(label: &str, onboarding_pending: bool, quit_when_main_closes: bo
         ClosePolicy::HidePopover
     } else if label == antiburn_nudge::NUDGE_LABEL {
         ClosePolicy::HideNudge
-    } else if label == onboarding::LABEL && onboarding_pending {
-        ClosePolicy::HidePendingOnboarding
     } else {
         ClosePolicy::Allow
     }
@@ -588,7 +599,6 @@ enum ManagedWindow {
     Main,
     Popover,
     Settings,
-    Onboarding,
 }
 
 impl ManagedWindow {
@@ -597,7 +607,6 @@ impl ManagedWindow {
             Self::Main => main_window::rebuild_after_destroy(app),
             Self::Popover => popover::rebuild_after_destroy(app),
             Self::Settings => settings::rebuild_after_destroy(app),
-            Self::Onboarding => onboarding::rebuild_after_destroy(app),
         }
     }
 }
@@ -607,7 +616,6 @@ fn rebuild_after_destroy_for_label(label: &str) -> Option<ManagedWindow> {
         main_window::LABEL => Some(ManagedWindow::Main),
         popover::LABEL => Some(ManagedWindow::Popover),
         settings::LABEL => Some(ManagedWindow::Settings),
-        onboarding::LABEL => Some(ManagedWindow::Onboarding),
         _ => None,
     }
 }
@@ -676,12 +684,8 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
                     .app_handle()
                     .try_state::<store::Store>()
                     .map(|store| store.settings_snapshot())
-                    .is_some_and(|settings| !settings.tray_icon_visible);
-            match close_policy(
-                window.label(),
-                onboarding::is_pending(window.app_handle()),
-                quit_when_main_closes,
-            ) {
+                    .is_some_and(|settings| !settings.tray_shown());
+            match close_policy(window.label(), quit_when_main_closes) {
                 ClosePolicy::Allow => {}
                 ClosePolicy::HideMain => {
                     api.prevent_close();
@@ -699,12 +703,6 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
                     // Through `popover::hide` rather than `window.hide()`, so
                     // this path answers to the pin like every dismissal does.
                     popover::hide(window.app_handle());
-                }
-                ClosePolicy::HidePendingOnboarding => {
-                    api.prevent_close();
-                    // Preserve first-run progress until it is completed. The
-                    // Dock and tray can both reopen this same window.
-                    let _ = window.hide();
                 }
                 ClosePolicy::HideNudge => {
                     api.prevent_close();
@@ -810,6 +808,8 @@ mod tests {
             "\"allow-get-session-analysis\"",
             "\"allow-get-subagent-analysis\"",
             "\"allow-get-live-usage\"",
+            "\"allow-start-live-usage\"",
+            "\"allow-refresh-live-usage\"",
             "\"allow-get-live-sessions\"",
             "\"allow-get-live-sessions-for\"",
             "\"allow-get-session-limit-allocations\"",
@@ -827,12 +827,50 @@ mod tests {
             "\"allow-request-main-window-recovery\"",
             "\"allow-peek-main-window-navigation-target\"",
             "\"allow-acknowledge-main-window-navigation-target\"",
+            // The Overview's step settings (Agents, Sessions, Checks).
+            "\"dialog:allow-open\"",
+            "\"allow-agent-session-locations\"",
+            "\"allow-scan-now\"",
+            "\"allow-open-folder-access-settings\"",
+            "\"allow-add-scan-root\"",
+            "\"allow-get-consent-diagnostics\"",
+            "\"allow-get-folder-permissions\"",
+            "\"allow-list-repositories\"",
+            "\"allow-list-scan-roots\"",
+            "\"allow-recheck-folder-permissions\"",
+            "\"allow-refresh-repositories\"",
+            "\"allow-remove-scan-root\"",
+            "\"allow-set-repository-enabled\"",
+            "\"allow-get-remote-hosts\"",
+            "\"allow-check-remote-host\"",
+            "\"allow-add-remote-host\"",
+            "\"allow-update-remote-host\"",
+            "\"allow-set-remote-host-sync-enabled\"",
+            "\"allow-remove-remote-host\"",
+            "\"allow-scan-remote-host\"",
+            "\"allow-get-remote-sync-status\"",
+            "\"allow-set-remote-sync-interval\"",
+            "\"allow-app-info\"",
+            "\"allow-scan-history\"",
+            "\"allow-cancel-scan\"",
+            "\"allow-get-check-availability\"",
+            "\"allow-open-main-window-section\"",
         ] {
             assert!(capability.contains(expected), "missing {expected}");
         }
         for excluded in ["\"default\"", "dialog:default", "opener:default"] {
             assert!(!capability.contains(excluded), "unexpected {excluded}");
         }
+    }
+
+    #[test]
+    fn checks_settings_capability_also_covers_the_main_window() {
+        let capability = include_str!("../capabilities/checks-settings.json");
+        assert!(capability.contains("\"main\""), "missing main window");
+        assert!(
+            capability.contains("\"settings\""),
+            "missing settings window"
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -868,7 +906,9 @@ mod tests {
         use std::time::Duration;
 
         use crate::analysis::{EvidencePass, PassOutcome, PassSignal, SessionAnalysis};
-        use crate::insights_worker::{PassFuture, WorkerHandle, WorkerLoopSignals, worker_loop};
+        use crate::insights_worker::{
+            PassFuture, WorkerHandle, WorkerLoopSignals, always_open_gate, worker_loop,
+        };
         use crate::store::{EvidenceStatus, SessionKey, SessionRecord, Store};
 
         let store = Arc::new(
@@ -951,6 +991,7 @@ mod tests {
                 &WorkerLoopSignals {
                     report_changed: &|| {},
                     backlog: &|_| {},
+                    gate: &always_open_gate,
                 },
                 &|_, _| {},
             )
@@ -992,33 +1033,25 @@ mod tests {
     }
 
     #[test]
-    fn only_transient_or_incomplete_windows_intercept_close() {
+    fn only_transient_windows_intercept_close() {
         assert_eq!(
-            close_policy(super::main_window::LABEL, false, false),
+            close_policy(super::main_window::LABEL, false),
             ClosePolicy::HideMain
         );
         assert_eq!(
-            close_policy(super::main_window::LABEL, false, true),
+            close_policy(super::main_window::LABEL, true),
             ClosePolicy::QuitApp
         );
         assert_eq!(
-            close_policy(super::popover::LABEL, false, false),
+            close_policy(super::popover::LABEL, false),
             ClosePolicy::HidePopover
         );
         assert_eq!(
-            close_policy(super::onboarding::LABEL, true, false),
-            ClosePolicy::HidePendingOnboarding
-        );
-        assert_eq!(
-            close_policy(super::onboarding::LABEL, false, false),
+            close_policy(super::settings::LABEL, false),
             ClosePolicy::Allow
         );
         assert_eq!(
-            close_policy(super::settings::LABEL, false, false),
-            ClosePolicy::Allow
-        );
-        assert_eq!(
-            close_policy(antiburn_nudge::NUDGE_LABEL, false, false),
+            close_policy(antiburn_nudge::NUDGE_LABEL, false),
             ClosePolicy::HideNudge
         );
     }
@@ -1029,7 +1062,6 @@ mod tests {
             (super::main_window::LABEL, super::ManagedWindow::Main),
             (super::popover::LABEL, super::ManagedWindow::Popover),
             (super::settings::LABEL, super::ManagedWindow::Settings),
-            (super::onboarding::LABEL, super::ManagedWindow::Onboarding),
         ];
 
         for (label, expected) in cases {

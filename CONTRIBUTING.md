@@ -58,7 +58,7 @@ check-owned projection, input window, question set, or reducer. See
 The update check and anonymised application analytics are project-operated
 network channels. Neither is required for the app to work.
 Analytics must keep all properties documented in [docs/analytics.md](docs/analytics.md):
-official configured builds can record launch and onboarding progress before
+official configured builds can record launch and first-run progress before
 setup completes, Settings → Privacy provides the opt-out, payloads contain no
 work or credentials, identifiers
 rotate, and builds without a configured endpoint send nothing.
