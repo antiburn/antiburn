@@ -3184,5 +3184,69 @@ pub struct LiveUsageSummary {
     pub generated_at: String,
 }
 
+/// Every Claude Code auto-memory project, for the Memories view.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMemoriesReport {
+    pub generated_at_ms: i64,
+    pub projects: Vec<MemoryProjectDto>,
+}
+
+/// One project folder with a memory directory.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryProjectDto {
+    pub slug: String,
+    pub display_path: String,
+    pub memory_dir: String,
+    pub index_path: Option<String>,
+    pub session_count: u32,
+    pub last_session_ms: Option<i64>,
+    pub dangling: Vec<DanglingIndexEntryDto>,
+    pub memories: Vec<MemoryEntryDto>,
+}
+
+/// An index line whose target file is missing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DanglingIndexEntryDto {
+    pub title: String,
+    pub target: String,
+    pub line_number: u32,
+}
+
+/// One memory file with its usage facts.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEntryDto {
+    pub path: String,
+    pub file_name: String,
+    pub title: String,
+    pub kind: Option<String>,
+    pub hook: Option<String>,
+    /// `index`, `frontmatter`, or `body`.
+    pub hook_source: String,
+    pub body: String,
+    pub has_frontmatter: bool,
+    pub truncated: bool,
+    pub size_bytes: u64,
+    pub modified_ms: Option<i64>,
+    pub in_index: bool,
+    pub facts: MemoryFactsDto,
+}
+
+/// What the stored tool calls say about one memory file. No history means
+/// unknown, not never.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryFactsDto {
+    pub last_referenced_ms: Option<i64>,
+    pub last_written_ms: Option<i64>,
+    pub reference_count: u32,
+    pub write_count: u32,
+    pub sessions_since_written: Option<u32>,
+    pub has_history: bool,
+}
+
 #[cfg(test)]
 mod tests;

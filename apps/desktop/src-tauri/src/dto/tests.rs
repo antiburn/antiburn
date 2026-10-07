@@ -1041,3 +1041,82 @@ fn burn_check_sample_payload_exposes_no_session_identity() {
     assert!(!encoded.contains("environmentKey"));
     assert!(!encoded.contains("wslDistro"));
 }
+
+#[test]
+fn agent_memories_report_serializes_camel_case_fields() {
+    let report = AgentMemoriesReport {
+        generated_at_ms: 9,
+        projects: vec![MemoryProjectDto {
+            slug: "-work-app".to_string(),
+            display_path: "/work/app".to_string(),
+            memory_dir: "/h/.claude/projects/-work-app/memory".to_string(),
+            index_path: None,
+            session_count: 2,
+            last_session_ms: Some(5),
+            dangling: vec![DanglingIndexEntryDto {
+                title: "Gone".to_string(),
+                target: "gone.md".to_string(),
+                line_number: 4,
+            }],
+            memories: vec![MemoryEntryDto {
+                path: "/h/a.md".to_string(),
+                file_name: "a.md".to_string(),
+                title: "A".to_string(),
+                kind: Some("user".to_string()),
+                hook: None,
+                hook_source: "body".to_string(),
+                body: "text".to_string(),
+                has_frontmatter: false,
+                truncated: false,
+                size_bytes: 4,
+                modified_ms: Some(3),
+                in_index: true,
+                facts: MemoryFactsDto {
+                    last_referenced_ms: None,
+                    last_written_ms: Some(1),
+                    reference_count: 0,
+                    write_count: 1,
+                    sessions_since_written: Some(2),
+                    has_history: true,
+                },
+            }],
+        }],
+    };
+    assert_eq!(
+        serde_json::to_value(&report).unwrap(),
+        serde_json::json!({
+            "generatedAtMs": 9,
+            "projects": [{
+                "slug": "-work-app",
+                "displayPath": "/work/app",
+                "memoryDir": "/h/.claude/projects/-work-app/memory",
+                "indexPath": null,
+                "sessionCount": 2,
+                "lastSessionMs": 5,
+                "dangling": [{"title": "Gone", "target": "gone.md", "lineNumber": 4}],
+                "memories": [{
+                    "path": "/h/a.md",
+                    "fileName": "a.md",
+                    "title": "A",
+                    "kind": "user",
+                    "hook": null,
+                    "hookSource": "body",
+                    "body": "text",
+                    "hasFrontmatter": false,
+                    "truncated": false,
+                    "sizeBytes": 4,
+                    "modifiedMs": 3,
+                    "inIndex": true,
+                    "facts": {
+                        "lastReferencedMs": null,
+                        "lastWrittenMs": 1,
+                        "referenceCount": 0,
+                        "writeCount": 1,
+                        "sessionsSinceWritten": 2,
+                        "hasHistory": true
+                    }
+                }]
+            }]
+        })
+    );
+}

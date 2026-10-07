@@ -557,6 +557,19 @@ analytics, diagnostics, or derived finding facts. Restart recovery uses the
 database rows; it does not rescan retained or deleted transcripts to reconstruct
 attempts or contributions.
 
+## Agent Memory
+
+Claude Code auto-memory under `~/.claude/projects/<slug>/memory/` is
+inventoried from disk. The scan reads `*.md` files and the `MEMORY.md` index
+with lenient frontmatter and index parsing, and it caps bytes per file, files
+per project, and bytes per project. Usage facts come from `Read`, `Write`,
+`Edit`, `MultiEdit`, and `Bash` tool inputs that the turn content store already
+holds. A `Bash` reference matches path text in the command, so a command that
+builds the path from variables or a relative `cd` is not found. The index
+injection attachment is not parsed. Claude Code prunes old transcripts, so a
+memory with no recorded call has unknown history, not no use. Codex and Cursor
+have no file-based memory and are not covered.
+
 ## Known Contract Gaps
 
 - OpenCode WSL discovery launches the OpenCode executable for bounded metadata
