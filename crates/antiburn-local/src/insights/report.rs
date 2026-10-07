@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analysis::{CoverageReason, EvidenceCoverage, SessionEvidence, SourceAcceptance};
 use crate::checks::requirements::{clean_facts_complete, eligible};
-use crate::checks::{self as detectors, DetectorFold, DetectorStatus, ReportCatalogs, complete};
+use crate::checks::{
+    self as detectors, DetectorFold, DetectorSelection, DetectorStatus, ReportCatalogs, complete,
+};
 
 use super::provider_incidents::{ProviderIncidentsAccumulator, ProviderIncidentsSection};
 use super::quota::{QuotaPressureAccumulator, QuotaPressureSection};
@@ -142,6 +144,7 @@ pub struct EfficiencyReportAccumulator {
     quota: QuotaPressureAccumulator,
     provider: ProviderIncidentsAccumulator,
     catalogs: ReportCatalogs,
+    enabled_detectors: DetectorSelection,
     coverage_reasons: BTreeMap<CoverageReason, u64>,
     unrecognized_records: UnrecognizedRecords,
     capability_gaps: BTreeMap<DetectorId, u64>,
@@ -164,6 +167,15 @@ impl EfficiencyReportAccumulator {
     /// Builds an accumulator with report-time catalogs. Catalogs are
     /// applied during reduction only and never touch stored evidence.
     pub fn with_catalogs(catalogs: ReportCatalogs) -> Self {
+        Self::with_catalogs_and_selection(catalogs, DetectorSelection::all())
+    }
+
+    /// Builds an accumulator that evaluates only the selected detectors.
+    /// Shared report evidence still reduces for coverage and non-check sections.
+    pub fn with_catalogs_and_selection(
+        catalogs: ReportCatalogs,
+        enabled_detectors: DetectorSelection,
+    ) -> Self {
         Self {
             assessed_sessions: 0,
             detectors: [DetectorCounts::default(); DetectorId::COUNT],
@@ -173,6 +185,7 @@ impl EfficiencyReportAccumulator {
             quota: QuotaPressureAccumulator::default(),
             provider: ProviderIncidentsAccumulator::default(),
             catalogs,
+            enabled_detectors,
             coverage_reasons: BTreeMap::new(),
             unrecognized_records: UnrecognizedRecords::default(),
             capability_gaps: BTreeMap::new(),
@@ -217,8 +230,9 @@ impl EfficiencyReportAccumulator {
             DetectorId::UnusedSkills,
         ]
         .map(|detector| {
-            eligible(detector, &evidence)
-                || detectors::source_assessable(detector, &evidence, Some(&token_evidence))
+            self.enabled_detectors.contains(detector)
+                && (eligible(detector, &evidence)
+                    || detectors::source_assessable(detector, &evidence, Some(&token_evidence)))
         });
         self.assessed_sessions += 1;
         if let EvidenceCoverage::Partial(reason) = evidence.coverage {
@@ -246,6 +260,9 @@ impl EfficiencyReportAccumulator {
         let mut cache_assessed = false;
 
         for detector in DetectorId::ALL {
+            if !self.enabled_detectors.contains(detector) {
+                continue;
+            }
             let counts = &mut self.detectors[detector.index()];
             if !detectors::in_denominator(detector, &evidence)
                 || (detector == DetectorId::UnusedBuiltInTools && built_in_not_applicable)

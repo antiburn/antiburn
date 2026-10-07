@@ -7,6 +7,7 @@
     "allow-set-typesafe-api-key",
     "allow-remove-typesafe-api-key",
     "allow-set-check-history-days",
+    "allow-set-check-enabled",
     "allow-set-smart-burn-checks-enabled",
     "allow-run-check-backfill"
   ]

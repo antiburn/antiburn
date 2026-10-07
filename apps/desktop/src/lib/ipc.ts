@@ -438,7 +438,7 @@ export type SessionFilterAction =
 /** A fixed step in the first-run Overview's funnel. */
 type FirstRunStep = "started" | "found" | "read" | "checked" | "result"
 /** Which result the first-run Overview showed. Only with `FirstRunStep` `"result"`. */
-export type FirstRunResult = "empty" | "clean" | "fixes_found"
+export type FirstRunResult = "empty" | "clean" | "fixes_found" | "checks_disabled"
 /** A deliberate action the first-run Overview can report. */
 type FirstRunActionKind =
   | "folder_access_requested"

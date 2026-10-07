@@ -27,6 +27,18 @@ path is `Unknown` or `Unsupported`.
 `Assessable` describes an accepted source contract, not every session or past
 release. A clean result still needs complete session facts and eligible activity.
 
+These statuses describe evidence capability. Runtime enablement is a separate
+app-wide product gate for every check. A disabled check does not evaluate new
+check-specific work or contribute active findings, clean results, counts,
+remediation actions, verification watches, or savings. Its completed results,
+compatible cache entries, remediation history, and incurred usage remain
+stored. Re-enabling may use retained compatible results, but it does not turn
+the disabled interval into Smart Check history; history remains an explicit
+request. Existing checks preserve their prior enabled state during migration,
+and each check introduced by a later release defaults off until the reader opts
+in. With no checks enabled, the desktop must report that state rather than
+claiming Clean or Passed.
+
 ## Checks
 
 | Code | Check                 |
@@ -952,7 +964,7 @@ rows. Active attempts remain until they verify or recur.
 The stored estimated-savings value is the target's pre-remediation opportunity;
 it is not recent usage. The aggregate-savings read returns only exact current
 cycles that remain fixed, retain a fixed verification result and verified
-boundary, match their stored finding snapshot, and are not actively snoozed.
+boundary, match their stored finding snapshot, are enabled, and are not actively snoozed.
 The renderer additionally requires a visibly Passed detector and hides Savings
 when no eligible cycle remains. Confirmed savings alone can use eligible
 post-verification sessions.

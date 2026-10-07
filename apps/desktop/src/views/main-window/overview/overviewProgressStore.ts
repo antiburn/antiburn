@@ -445,6 +445,7 @@ function recompute(): void {
 /** Which result the finished check step shows, for `first_run_step_reached`. */
 function firstRunResult(progress: OverviewProgress): FirstRunResult {
   if (progress.checks.windowSessions === 0) return "empty"
+  if (progress.categories.length === 0) return "checks_disabled"
   return progress.failingCount === 0 ? "clean" : "fixes_found"
 }
 

@@ -22,6 +22,7 @@ export interface ChecksPresentation {
   unavailable: ChecksCategoryPayload[]
   refreshUnavailable: boolean
   noActiveChecks?: boolean
+  noEnabledChecks?: boolean
   burnChecks: BurnCheckPresentation
   estimate: ChecksEstimate
 }
@@ -50,6 +51,7 @@ export function checksPresentation(
     (category) => category.lifecycle == null,
   )
   const snoozedCategories = report.categories.filter((category) => snoozed.has(category.id))
+  const noEnabledChecks = report.evidenceSettled && report.categories.length === 0
   const noActiveChecks = report.evidenceSettled && activeReport.categories.length === 0
   const burnChecks = aggregateBurnCheckPresentation(activeReport, refreshUnavailable)
   return {
@@ -66,11 +68,14 @@ export function checksPresentation(
     unavailable: activeUnavailable,
     refreshUnavailable,
     noActiveChecks,
+    noEnabledChecks,
     burnChecks: noActiveChecks
       ? {
           ...burnChecks,
-          headline: "No active checks",
-          accessibleDescription: "No active Burn Checks.",
+          headline: noEnabledChecks ? "No checks enabled" : "No active checks",
+          accessibleDescription: noEnabledChecks
+            ? "No Burn Checks enabled."
+            : "No active Burn Checks.",
         }
       : burnChecks,
     estimate: {
@@ -82,6 +87,9 @@ export function checksPresentation(
 export function checksHeroPresentation(
   presentation: ChecksPresentation,
 ): ChecksHeroPresentation {
+  if (presentation.noEnabledChecks) {
+    return { result: "No checks enabled", summary: null, state: "pending", tone: "text-label" }
+  }
   if (presentation.noActiveChecks) {
     return { result: "No active checks", summary: null, state: "pending", tone: "text-label" }
   }

@@ -207,6 +207,10 @@ describe("Checks presentation", () => {
     expect(presentation.noActiveChecks).toBe(false)
     expect(checksHeroPresentation(presentation).result).toBe("No checks assessed")
     expect(checksPresentation(report([])).noActiveChecks).toBe(true)
+    expect(checksPresentation(report([])).noEnabledChecks).toBe(true)
+    expect(checksHeroPresentation(checksPresentation(report([]))).result).toBe(
+      "No checks enabled",
+    )
   })
 
   it("keeps the running presentation while evidence is unsettled", () => {

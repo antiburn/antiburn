@@ -13,6 +13,7 @@ const remove = vi.hoisted(() => vi.fn())
 const setHistory = vi.hoisted(() => vi.fn())
 const runBackfill = vi.hoisted(() => vi.fn())
 const setChecksEnabled = vi.hoisted(() => vi.fn())
+const setCheckEnabled = vi.hoisted(() => vi.fn())
 const availabilityEvent = vi.hoisted(() => ({
   callback: null as ((event: CheckAvailabilityEvent) => void) | null,
 }))
@@ -23,6 +24,19 @@ const listen = vi.hoisted(() =>
   }),
 )
 const emptyAvailability = vi.hoisted(() => ({
+  revision: 1,
+  checks: [
+    { id: "sessionsOverDepth" as const, enabled: true },
+    { id: "modelOverthinking" as const, enabled: true },
+    { id: "overpoweredSubagents" as const, enabled: true },
+    { id: "unusedMcpServers" as const, enabled: true },
+    { id: "unusedBuiltInTools" as const, enabled: true },
+    { id: "unusedSkills" as const, enabled: true },
+    { id: "oldModelUsage" as const, enabled: true },
+    { id: "overuseOfFastMode" as const, enabled: true },
+    { id: "cacheChurn" as const, enabled: true },
+    { id: "ignoredInstructions" as const, enabled: false },
+  ],
   configured: false,
   savedKey: false,
   error: null,
@@ -55,6 +69,7 @@ vi.mock("../../../../lib/checkAvailability", () => ({
   removeTypeSafeApiKey: remove,
   setCheckHistoryDays: setHistory,
   setSmartBurnChecksEnabled: setChecksEnabled,
+  setCheckEnabled,
   runCheckBackfill: runBackfill,
   onCheckAvailabilityChanged: listen,
   emptyCheckAvailability: emptyAvailability,
@@ -63,6 +78,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }))
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefined) }))
 
 beforeEach(() => {
+  emptyAvailability.revision += 10
   availabilityEvent.callback = null
   listen.mockClear()
   getAvailability.mockResolvedValue(emptyAvailability)
@@ -73,6 +89,41 @@ beforeEach(() => {
     historyDays: days,
   }))
   runBackfill.mockResolvedValue({ queued: 4, availability: emptyAvailability })
+  setCheckEnabled.mockImplementation(async (detector: string, enabled: boolean) => ({
+    ...emptyAvailability,
+    revision: emptyAvailability.revision + 1,
+    checks: emptyAvailability.checks.map((check) =>
+      check.id === detector ? { ...check, enabled } : check,
+    ),
+  }))
+})
+
+it("shows every local and Smart check as an independent preference", () => {
+  render(<ChecksStepSettings />)
+  expect(screen.getByRole("heading", { name: "Local Checks" })).toBeInTheDocument()
+  expect(screen.getByRole("heading", { name: "Smart Burn Checks" })).toBeInTheDocument()
+  expect(screen.getAllByRole("switch")).toHaveLength(10)
+  expect(screen.getByRole("switch", { name: "Session overdepth" })).toBeChecked()
+  expect(screen.getByRole("switch", { name: "Ignored Instructions" })).not.toBeChecked()
+  expect(screen.getByText(/Set up TypeSafe below before this check can run/)).toBeVisible()
+})
+
+it("saves one check without changing its siblings", async () => {
+  render(<ChecksStepSettings />)
+  fireEvent.click(screen.getByRole("switch", { name: "Unused skills" }))
+  await waitFor(() => expect(setCheckEnabled).toHaveBeenCalledWith("unusedSkills", false))
+  expect(screen.getByRole("switch", { name: "Unused skills" })).not.toBeChecked()
+  expect(screen.getByRole("switch", { name: "Unused MCP servers" })).toBeChecked()
+})
+
+it("keeps the saved value and reports a failed check preference change", async () => {
+  setCheckEnabled.mockRejectedValueOnce(new Error("store"))
+  render(<ChecksStepSettings />)
+  const toggle = screen.getByRole("switch", { name: "Unused skills" })
+  await waitFor(() => expect(toggle).toBeChecked())
+  fireEvent.click(toggle)
+  expect(await screen.findByRole("alert")).toHaveTextContent("Could not disable Unused skills.")
+  expect(toggle).toBeChecked()
 })
 
 it("enables with a password input and clears the key after native storage succeeds", async () => {
@@ -200,13 +251,34 @@ it("shows an availability-event failure without clearing the last known usage", 
   expect(screen.queryByRole("switch", { name: "Smart Burn Checks" })).not.toBeInTheDocument()
 })
 
+it("does not let an older availability event undo a saved preference", async () => {
+  const latest = {
+    ...emptyAvailability,
+    revision: emptyAvailability.revision + 2,
+    checks: emptyAvailability.checks.map((check) =>
+      check.id === "unusedSkills" ? { ...check, enabled: false } : check,
+    ),
+  }
+  getAvailability.mockResolvedValue(latest)
+  render(<ChecksStepSettings />)
+  const toggle = screen.getByRole("switch", { name: "Unused skills" })
+  await waitFor(() => expect(toggle).not.toBeChecked())
+
+  act(() =>
+    availabilityEvent.callback?.({
+      status: "updated",
+      snapshot: { ...emptyAvailability, revision: latest.revision - 1 },
+    }),
+  )
+
+  expect(toggle).not.toBeChecked()
+})
+
 it("explains the selected and excluded fields and gives the API key a full-width field", () => {
   render(<ChecksStepSettings />)
   expect(screen.getByRole("heading", { name: "Smart Burn Checks" })).toBeInTheDocument()
   expect(
-    screen.getByText(
-      "Finds project instructions a session did not follow. Checks start after 3 minutes of inactivity.",
-    ),
+    screen.getByText(/Finds project instructions a session did not follow/),
   ).toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Privacy and usage" })).toBeInTheDocument()
   fireEvent.click(screen.getByRole("button", { name: "Privacy and usage" }))
@@ -253,6 +325,9 @@ it("saves a history window and runs checks only after the user asks", async () =
     ...emptyAvailability,
     configured: true,
     historyDays: 30,
+    checks: emptyAvailability.checks.map((check) =>
+      check.id === "ignoredInstructions" ? { ...check, enabled: true } : check,
+    ),
   })
   runBackfill.mockResolvedValue({
     queued: 4,
@@ -260,6 +335,9 @@ it("saves a history window and runs checks only after the user asks", async () =
       ...emptyAvailability,
       configured: true,
       historyDays: 30,
+      checks: emptyAvailability.checks.map((check) =>
+        check.id === "ignoredInstructions" ? { ...check, enabled: true } : check,
+      ),
       backfill: { ...emptyAvailability.backfill, total: 4, queued: 4 },
     },
   })

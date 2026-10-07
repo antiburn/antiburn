@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { checksConfiguredStore } from "../../../lib/checkAvailability"
+import { checkAvailabilityStore, emptyCheckAvailability } from "../../../lib/checkAvailability"
 import { ProgressNav } from "./ProgressNav"
 import type * as ProgressStore from "./overviewProgressStore"
 import type { FlowStep, OverviewProgress } from "./overviewProgressStore"
@@ -17,7 +17,12 @@ const openChecks = vi.fn()
 // own tests; here a stand-in proves the modal renders them for the open
 // step, without pulling Tauri-backed sessions into this file.
 vi.mock("./stepSettings/StepSettings", () => ({
-  StepSettings: ({ step }: { step: string }) => <div data-testid="step-settings">{step}</div>,
+  StepSettings: ({ step }: { step: string }) => (
+    <div data-testid="step-settings">
+      {step}
+      <input aria-label={`${step} setting`} />
+    </div>
+  ),
 }))
 
 vi.mock("./overviewProgressStore", async () => {
@@ -122,13 +127,42 @@ describe("ProgressNav's row visibility", () => {
     expect(screen.getByRole("button", { name: /^Fixes/ })).toBeInTheDocument()
   })
 
-  it("counts the checks that run, with Ignored Instructions only once it is set up", () => {
+  it("counts only selected checks that can currently run", () => {
+    const selected = emptyCheckAvailability.checks.map((check) => ({
+      ...check,
+      enabled: check.id !== "ignoredInstructions",
+    }))
+    act(() =>
+      checkAvailabilityStore.set({
+        ...emptyCheckAvailability,
+        revision: 1,
+        checks: selected,
+      }),
+    )
     snapshot = progress("done", "steady")
     render(<ProgressNav onOpenChecks={openChecks} />)
     expect(navValue(/^Checks/)).toBe("9")
-    act(() => checksConfiguredStore.set(true))
+    act(() =>
+      checkAvailabilityStore.set({
+        ...emptyCheckAvailability,
+        revision: 2,
+        configured: true,
+        checks: selected.map((check) => ({ ...check, enabled: true })),
+      }),
+    )
     expect(navValue(/^Checks/)).toBe("10")
-    act(() => checksConfiguredStore.set(false))
+    act(() =>
+      checkAvailabilityStore.set({
+        ...emptyCheckAvailability,
+        revision: 3,
+        configured: true,
+        checks: selected.map((check) => ({
+          ...check,
+          enabled: check.id === "unusedSkills" ? false : check.enabled,
+        })),
+      }),
+    )
+    expect(navValue(/^Checks/)).toBe("8")
   })
 
   it("shows the failing count on the Fixes row", () => {
@@ -292,6 +326,17 @@ describe("ProgressNav's rewind", () => {
 })
 
 describe("ProgressNav's modal", () => {
+  it("releases a compact navigation owner before opening the modal", () => {
+    const onActivate = vi.fn()
+    snapshot = progress("done", "steady")
+    render(<ProgressNav onActivate={onActivate} onOpenChecks={openChecks} />)
+
+    fireEvent.click(screen.getByRole("button", { name: /^Checks/ }))
+
+    expect(onActivate).toHaveBeenCalledOnce()
+    expect(openProgressStep).toHaveBeenCalledWith("checks")
+  })
+
   it("closes the fixes modal on Enhance and opens the first check that needs a fix", () => {
     snapshot = progress("done", "steady", {
       checks: { done: true, windowSessions: 5, pendingEvidence: 0, deferredEvidence: 0 },
@@ -335,9 +380,23 @@ describe("ProgressNav's modal", () => {
   it("renders the open step's card as a labelled dialog", () => {
     snapshot = progress("done", "steady", { openStep: "agents" })
     render(<ProgressNav onOpenChecks={openChecks} />)
-    expect(screen.getByRole("dialog", { name: "Agents" })).toBeInTheDocument()
+    expect(screen.getByRole("dialog", { name: "Agents" })).toHaveClass("bg-surface-overlay")
     expect(screen.getByRole("heading", { name: "Agents", level: 2 })).toBeInTheDocument()
     expect(screen.queryByRole("heading", { name: "Finding agents" })).toBeNull()
+  })
+
+  it("keeps keyboard focus inside the modal's inputs and buttons", () => {
+    snapshot = progress("done", "steady", { openStep: "checks" })
+    render(<ProgressNav onOpenChecks={openChecks} />)
+    const dialog = screen.getByRole("dialog")
+    const input = screen.getByRole("textbox", { name: "checks setting" })
+    const close = screen.getByRole("button", { name: "Close" })
+
+    input.focus()
+    fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true })
+    expect(close).toHaveFocus()
+    fireEvent.keyDown(dialog, { key: "Tab" })
+    expect(input).toHaveFocus()
   })
 
   it("shows the step's own settings below the summary, open by default", () => {

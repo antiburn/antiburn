@@ -942,7 +942,10 @@ export function BurnChecksReport({
                 wins={state.aggregate?.wins ?? []}
                 passedDetectors={new Set(activeWins.map((check) => check.id))}
               />
-              {presentation.noActiveChecks && (
+              {presentation.noEnabledChecks && (
+                <p className="type-body text-label-secondary">No checks enabled.</p>
+              )}
+              {presentation.noActiveChecks && !presentation.noEnabledChecks && (
                 <p className="type-body text-label-secondary">No active checks.</p>
               )}
             </div>

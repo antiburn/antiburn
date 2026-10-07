@@ -271,7 +271,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
               <>
                 <div className="mb-2 h-px bg-separator" />
 
-                <ProgressNav onOpenChecks={openChecks} />
+                <ProgressNav onActivate={closeNavigation} onOpenChecks={openChecks} />
 
                 {settingsError && (
                   <p role="alert" className="px-2 pb-2 type-caption text-label-secondary">
