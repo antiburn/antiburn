@@ -39,6 +39,8 @@ export interface UnavailableLiveProvider {
   /** `authentication` | `rateLimited` | `schema` | `unavailable`. */
   category: string
   detail?: LiveUsageSourceErrorPayload["detail"]
+  /** The plan, in words, when a local file named one. */
+  planLabel?: string
 }
 import { modelMatchesScope } from "./models"
 import { relativeTime } from "./relativeTime"
@@ -561,11 +563,13 @@ export function liveUnavailableProviders(
   for (const error of summary.errors) {
     if (!error.provider || showing.has(error.provider) || seen.has(error.provider)) continue
     seen.add(error.provider)
+    const plan = planLabel(error.provider, error.plan ?? null)
     unavailable.push({
       provider: error.provider,
       displayName: error.displayName || error.provider,
       category: error.category,
       ...(error.detail ? { detail: error.detail } : {}),
+      ...(plan ? { planLabel: plan } : {}),
     })
   }
   return unavailable

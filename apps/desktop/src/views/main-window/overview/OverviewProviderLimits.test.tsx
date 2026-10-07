@@ -198,12 +198,14 @@ describe("OverviewProviderLimits", () => {
               provider: "anthropic",
               displayName: "Claude",
               detail: "desktopOnly",
+              plan: { name: "max", tier: "default_claude_max_20x" },
             }),
           ],
         })}
       />,
     )
-    const card = screen.getByRole("group", { name: "Claude" })
+    const card = screen.getByRole("group", { name: "Claude, Max 20x plan" })
+    expect(within(card).getByRole("heading")).toHaveTextContent("Claude · Max 20x")
     expect(card).toHaveTextContent("Usage limits not available for Claude Desktop.")
     fireEvent.click(within(card).getByRole("button", { name: "Learn more" }))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_claude_desktop_limits_docs"))

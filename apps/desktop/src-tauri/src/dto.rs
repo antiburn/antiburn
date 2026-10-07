@@ -2978,6 +2978,10 @@ pub struct LiveUsageSourceError {
     pub category: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<SourceErrorDetail>,
+    /// The plan named in a local file, when the failed source has no reading
+    /// to carry it. For example Claude Desktop's `~/.claude.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<LiveProviderPlan>,
 }
 
 /// One provider antiburn can meter, and whether the reader shows it.

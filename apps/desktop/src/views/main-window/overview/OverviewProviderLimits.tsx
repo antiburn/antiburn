@@ -159,9 +159,20 @@ export function OverviewProviderLimits({
                     <Fragment key={entry.provider}>
                       {index > 0 && <div className="h-px w-full bg-separator" />}
 
-                      <div role="group" aria-label={entry.displayName} className="min-w-0">
-                        <h3 className="type-footnote truncate font-medium tracking-wide text-label uppercase">
-                          {entry.displayName}
+                      <div
+                        role="group"
+                        aria-label={
+                          entry.planLabel
+                            ? `${entry.displayName}, ${entry.planLabel} plan`
+                            : entry.displayName
+                        }
+                        className="min-w-0"
+                      >
+                        <h3 className="type-footnote truncate font-medium tracking-wide text-label">
+                          <span className="uppercase">{entry.displayName}</span>
+                          {entry.planLabel && (
+                            <span className="text-label-secondary"> · {entry.planLabel}</span>
+                          )}
                         </h3>
                         <p className="type-footnote pt-(--space-md) text-label-secondary">
                           {liveErrorNote(entry.category, entry.provider, entry.detail)}

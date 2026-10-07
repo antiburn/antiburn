@@ -1132,6 +1132,7 @@ fn only_a_clean_provider_snapshot_upgrades_detection() {
                         provider,
                         error: ProviderUsageError::Unavailable,
                         detail: None,
+                        plan: None,
                     })
                     .into_iter()
                     .collect(),

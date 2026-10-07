@@ -518,12 +518,22 @@ function UnavailableGroup({
   /** The disclosure, when no provider above this one can carry it. */
   action?: ReactNode
 }) {
+  const plan = entry.planLabel
   return (
     <div
       role="group"
-      aria-label={entry.displayName}
-      className="flex items-center justify-between gap-2 rounded-md px-2 py-2"
+      aria-label={plan ? `${entry.displayName}, ${plan} plan` : entry.displayName}
+      className="rounded-md px-2 py-2"
     >
+      {/* The same eyebrow as a provider with meters, so the provider keeps
+          its name and plan when its limits cannot be read. */}
+      <div className="flex items-center justify-between gap-2 pb-1.5">
+        <h3 className="min-w-0 truncate type-footnote font-medium tracking-wide text-label">
+          <span className="uppercase">{entry.displayName}</span>
+          {plan && <span className="text-label-secondary"> · {plan}</span>}
+        </h3>
+        {action}
+      </div>
       <p className="type-footnote text-label-secondary">
         {liveErrorNote(entry.category, entry.provider, entry.detail)}
         {liveErrorHasDocs(entry.detail) && (
@@ -533,7 +543,6 @@ function UnavailableGroup({
           </>
         )}
       </p>
-      {action}
     </div>
   )
 }

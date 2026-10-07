@@ -1193,6 +1193,14 @@ impl LiveUsageSource for ClaudeDirectFetch {
         outcome
     }
 
+    /// Lets a Desktop-only reader see their plan above the note that limits
+    /// are not available.
+    fn local_plan(&self) -> Option<crate::dto::LiveProviderPlan> {
+        self.claude_json_path
+            .as_deref()
+            .and_then(read_claude_json_plan)
+    }
+
     #[cfg(feature = "analytics")]
     fn analytics_diagnostic(&self) -> Option<crate::provider_usage::live::AnalyticsDiagnostic> {
         self.limit_reset_diagnostic
@@ -1590,6 +1598,32 @@ fn read_claude_json_identity(path: &Path) -> Option<ClaudeIdentity> {
     })
 }
 
+/// The plan Claude's own tools last wrote to `~/.claude.json`.
+///
+/// Claude Desktop writes `oauthAccount` there when the reader signs in, even
+/// with no Claude Code login. Only `organizationType` (for example
+/// `claude_max`) and `organizationRateLimitTier` (for example
+/// `default_claude_max_20x`) are read. The file holds no token.
+fn read_claude_json_plan(path: &Path) -> Option<crate::dto::LiveProviderPlan> {
+    let metadata = fs::metadata(path).ok()?;
+    if metadata.len() > MAX_CLAUDE_JSON_BYTES {
+        return None;
+    }
+    let contents = fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&contents).ok()?;
+    plan_from_oauth_account(value.get("oauthAccount")?)
+}
+
+/// `claude_max` names the plan `max`, matching the profile endpoint's names.
+fn plan_from_oauth_account(account: &Value) -> Option<crate::dto::LiveProviderPlan> {
+    let kind = non_empty_str(account.get("organizationType"))?;
+    let name = kind.strip_prefix("claude_").unwrap_or(&kind).to_owned();
+    Some(crate::dto::LiveProviderPlan {
+        name,
+        tier: non_empty_str(account.get("organizationRateLimitTier")),
+    })
+}
+
 fn resolve_identity(
     transport: &dyn AnthropicTransport,
     access_token: &str,
@@ -1931,6 +1965,36 @@ mod tests {
             &app,
         );
         assert_eq!(absent.desktop_app, None);
+    }
+
+    #[test]
+    fn the_local_plan_comes_from_claude_json_without_reading_tokens() {
+        let account = serde_json::json!({
+            "organizationType": "claude_max",
+            "organizationRateLimitTier": "default_claude_max_20x",
+        });
+        assert_eq!(
+            plan_from_oauth_account(&account),
+            Some(crate::dto::LiveProviderPlan {
+                name: "max".into(),
+                tier: Some("default_claude_max_20x".into()),
+            })
+        );
+        let pro = serde_json::json!({ "organizationType": "claude_pro" });
+        assert_eq!(
+            plan_from_oauth_account(&pro).map(|plan| plan.name),
+            Some("pro".into())
+        );
+        assert_eq!(plan_from_oauth_account(&serde_json::json!({})), None);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude.json");
+        fs::write(&path, format!(r#"{{"oauthAccount": {account}}}"#)).expect("write");
+        assert_eq!(
+            read_claude_json_plan(&path).map(|plan| plan.name),
+            Some("max".into())
+        );
+        assert_eq!(read_claude_json_plan(&dir.path().join("absent.json")), None);
     }
 
     #[test]

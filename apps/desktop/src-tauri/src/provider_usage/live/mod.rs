@@ -136,6 +136,13 @@ pub trait LiveUsageSource: Send + Sync {
     /// there for a cooldown to gate.
     fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome;
 
+    /// The plan the provider's own tools wrote to a local file, for a failure
+    /// with no reading to carry it. Asked only after a fetch that failed and
+    /// proved nothing. Never reads a secret.
+    fn local_plan(&self) -> Option<crate::dto::LiveProviderPlan> {
+        None
+    }
+
     /// Collect a provider-specific diagnostic for anonymised analytics.
     ///
     /// The default keeps sources out of analytics unless they explicitly
@@ -491,6 +498,7 @@ pub fn summarize_collected(
                 display_name: super::providers::display_name(failure.provider).to_string(),
                 category: failure.error.category().to_string(),
                 detail: failure.detail,
+                plan: failure.plan,
             })
             .collect(),
         meters,

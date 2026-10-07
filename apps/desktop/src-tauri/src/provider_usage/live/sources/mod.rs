@@ -134,11 +134,17 @@ pub fn collect(
                 category = error.category(),
                 detail = ?outcome.detail
             );
+            let plan = if outcome.snapshots.is_empty() {
+                source.local_plan()
+            } else {
+                None
+            };
             collected.errors.push(SourceFailure {
                 source: source.id(),
                 provider: source.provider(),
                 error,
                 detail: outcome.detail,
+                plan,
             });
         }
         for snapshot in outcome.snapshots {
@@ -170,6 +176,8 @@ pub struct SourceFailure {
     pub provider: &'static str,
     pub error: super::model::ProviderUsageError,
     pub detail: Option<super::model::SourceErrorDetail>,
+    /// The plan named in a local file, when the failure has no reading.
+    pub plan: Option<crate::dto::LiveProviderPlan>,
 }
 
 impl Collected {

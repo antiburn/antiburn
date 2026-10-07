@@ -779,8 +779,26 @@ describe("UsageLimitsBar — degraded state", () => {
     expect(
       within(failure).getByText("Claude rate limited usage checks. Wait, then retry."),
     ).toBeInTheDocument()
-    expect(within(failure).queryByRole("heading")).not.toBeInTheDocument()
-    expect(within(failure).getAllByText(/./)).toHaveLength(1)
+    // The provider keeps its eyebrow, as it does when it has meters.
+    expect(within(failure).getByRole("heading")).toHaveTextContent("Claude")
+  })
+
+  it("names the plan above a failure when a local file states it", () => {
+    bar({
+      live: liveSummary({
+        providers: [],
+        errors: [
+          sourceError({
+            category: "authentication",
+            detail: "desktopOnly",
+            plan: { name: "max", tier: "default_claude_max_20x" },
+          }),
+        ],
+      }),
+    })
+    const group = screen.getByRole("group", { name: "Claude, Max 20x plan" })
+    expect(within(group).getByRole("heading")).toHaveTextContent("Claude · Max 20x")
+    expect(group).toHaveTextContent("Usage limits not available for Claude Desktop.")
   })
 
   it("tells Google users to update after a usage schema change", () => {

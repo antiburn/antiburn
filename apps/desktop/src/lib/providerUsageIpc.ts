@@ -475,6 +475,8 @@ export interface LiveUsageSourceErrorPayload {
   category: string
   /** Which failure inside the category, when the source can say. Mirrors Rust `SourceErrorDetail`. */
   detail?: LiveUsageSourceErrorDetail
+  /** The plan named in a local file, when the failure has no reading to carry it. */
+  plan?: LiveUsagePlanPayload
 }
 
 export type LiveUsageSourceErrorDetail =

@@ -535,6 +535,7 @@ mod tests {
             display_name: provider.to_string(),
             category: "unavailable".to_string(),
             detail: None,
+            plan: None,
         }
     }
 
