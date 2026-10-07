@@ -6,6 +6,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
+use crate::checks::ignored_instructions::digest_hex as format_digest_hex;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -888,7 +889,7 @@ fn build_batch(items: &[&JevWorkItem], maximum_bytes: usize) -> Option<JevReques
     if state_bytes.saturating_add(longest_question_bytes) > MAX_STATE_AND_LONGEST_QUESTION_BYTES {
         return None;
     }
-    let digest = format!("{:x}", serialized.hash.finalize());
+    let digest = format_digest_hex(serialized.hash.finalize().as_slice());
     use std::io::Write as _;
     let mut identity = JsonMeasure::new(usize::MAX);
     identity.write_all(digest.as_bytes()).ok()?;
@@ -898,7 +899,7 @@ fn build_batch(items: &[&JevWorkItem], maximum_bytes: usize) -> Option<JevReques
     }
     identity.write_all(b"\0").ok()?;
     serde_json::to_writer(&mut identity, &evidence_owners).ok()?;
-    let id = format!("{:x}", identity.hash.finalize());
+    let id = format_digest_hex(identity.hash.finalize().as_slice());
     Some(JevRequestBatch {
         id,
         request,
@@ -908,7 +909,10 @@ fn build_batch(items: &[&JevWorkItem], maximum_bytes: usize) -> Option<JevReques
             .map(|item| {
                 let mut writer = JsonMeasure::new(usize::MAX);
                 serde_json::to_writer(&mut writer, item).ok()?;
-                Some((item.id.clone(), format!("{:x}", writer.hash.finalize())))
+                Some((
+                    item.id.clone(),
+                    format_digest_hex(writer.hash.finalize().as_slice()),
+                ))
             })
             .collect::<Option<BTreeMap<_, _>>>()?,
         answer_owners,
@@ -1170,7 +1174,10 @@ where
         ),
     )
     .map_err(|_| JevError::InvalidCheckContext)?;
-    let reuse_scope = format!("reuse-scope:{:x}", scope_writer.hash.finalize());
+    let reuse_scope = format!(
+        "reuse-scope:{}",
+        format_digest_hex(scope_writer.hash.finalize().as_slice())
+    );
     let progress_revision = progress_revision(check.id(), context, plan.revisions, &requirements)?;
     if progress.input_revision != progress_revision {
         if check.supports_incremental_reuse() && progress.completed_batch_ids.contains(&reuse_scope)
@@ -1435,7 +1442,10 @@ fn retain_matching_results(
         let mut writer = JsonMeasure::new(usize::MAX);
         serde_json::to_writer(&mut writer, item).map_err(|_| JevError::InvalidCheckPlan)?;
         let prefix = format!("reuse-item:{}:", item.id);
-        let digest = format!("{prefix}{:x}", writer.hash.finalize());
+        let digest = format!(
+            "{prefix}{}",
+            format_digest_hex(writer.hash.finalize().as_slice())
+        );
         if !progress.completed_batch_ids.contains(&digest)
             || progress.results.get(&item.id).is_some_and(|result| {
                 result.work_item_id != item.id
@@ -1559,7 +1569,7 @@ fn progress_revision(
         .map_err(|_| JevError::InvalidCheckContext)?;
     serde_json::to_writer(&mut writer, &(requirements, &context.reference_snapshots))
         .map_err(|_| JevError::InvalidCheckContext)?;
-    Ok(format!("{:x}", writer.hash.finalize()))
+    Ok(format_digest_hex(writer.hash.finalize().as_slice()))
 }
 
 fn orchestration_slot() -> &'static tokio::sync::Semaphore {
@@ -2156,7 +2166,10 @@ mod tests {
         let mut writer = JsonMeasure::new(bytes.len());
         serde_json::to_writer(&mut writer, &value).unwrap();
         assert_eq!(writer.bytes, bytes.len());
-        assert_eq!(format!("{:x}", writer.hash.finalize()), digest_hex(&bytes));
+        assert_eq!(
+            format_digest_hex(writer.hash.finalize().as_slice()),
+            digest_hex(&bytes)
+        );
         assert!(json_bytes(&value, bytes.len() - 1).is_err());
     }
 

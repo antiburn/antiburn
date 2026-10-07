@@ -1,15 +1,14 @@
 # antiburn vendoring notes
 
-This directory vendors `tray-icon` 0.24.2 from upstream revision
-`77c96c432cf2785679affc117389104a6e850528`. This is the last upstream revision
-before the 0.25 backend and menu dependency changes. It includes the complete
-macOS bindings update from [upstream PR 352](https://github.com/tauri-apps/tray-icon/pull/352),
-including the dependency lockfile and example API updates.
+This directory is a local `tray-icon` fork based on upstream revision
+`77c96c432cf2785679affc117389104a6e850528`. Its package version is `0.25.1` so
+Cargo can patch the version required by Tauri 2.12. It is not an unmodified copy
+of the upstream 0.25.1 source.
 
-Tauri 2.11.5 requires `tray-icon` 0.24, `muda` 0.19, and the legacy tray feature
-names. Upstream 0.25 changes these interfaces and requires `muda` 0.20. Refresh
-past this revision when Tauri supports those interfaces. The Windows GUID API
-and the GTK-free Linux/BSD backend are not included in this baseline.
+The fork uses `muda` 0.20 and the feature names that Tauri 2.12 requests. Keep
+its public tray API compatible with upstream 0.25.1. Upstream's Windows GUID API
+and GTK-free Linux/BSD backend are not included because the app does not use
+them. Recheck upstream changes before each Tauri/tray update.
 
 The local patch retains the macOS 27 menu attachment fix from
 [upstream PR 341](https://github.com/tauri-apps/tray-icon/pull/341), originally
@@ -26,8 +25,8 @@ bindings from the new baseline in both the implementation and test harness.
 The macOS test dependency explicitly enables `NSApplication` and
 `NSGraphicsContext` for synthetic mouse events; it does not rely on example dependencies enabling that feature.
 
-Remove this vendor copy when a compatible upstream release provides equivalent
-highlight control and retains the macOS 27 menu attachment fix.
+Keep this fork until upstream provides equivalent highlight control and retains
+the macOS 27 menu attachment fix.
 
 The upstream source remains licensed under MIT or Apache-2.0. See `LICENSE-MIT`,
 `LICENSE-APACHE`, and `LICENSE.spdx` in this directory.

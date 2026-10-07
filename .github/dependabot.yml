@@ -10,12 +10,9 @@ updates:
       timezone: "Australia/Melbourne"
     open-pull-requests-limit: 5
     groups:
-      pnpm-minor-and-patch:
+      pnpm:
         patterns:
           - "*"
-        update-types:
-          - "minor"
-          - "patch"
 
   - package-ecosystem: "cargo"
     directories:
@@ -32,12 +29,9 @@ updates:
       timezone: "Australia/Melbourne"
     open-pull-requests-limit: 5
     groups:
-      cargo-minor-and-patch:
+      cargo:
         patterns:
           - "*"
-        update-types:
-          - "minor"
-          - "patch"
     ignore:
       # `libsqlite3-sys` sets `links = "sqlite3"`, so a dependency graph may
       # contain exactly one version of it — a resolution rule that binds our
