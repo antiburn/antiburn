@@ -5,31 +5,94 @@ import { MainOverviewSession, type MainOverviewSnapshot } from "./MainOverviewSe
 import { OverviewView } from "./OverviewView"
 import type { OverviewMetric } from "./overview/overviewViewPrefs"
 import { readOverviewViewPrefs, writeOverviewViewPrefs } from "./overview/overviewViewPrefs"
+import type { AppSettings } from "../../lib/ipc"
+import type { OverviewProgress } from "./overview/overviewProgressStore"
+import type * as OverviewProgressStore from "./overview/overviewProgressStore"
 import type {
   AllowanceUsageAccountPayload,
   LiveProviderUsagePayload,
 } from "../../lib/providerUsageIpc"
+
+const appSettings = vi.hoisted(() => ({
+  current: { liveUsageEnabled: true, liveUsageStarted: false } as AppSettings,
+}))
+vi.mock("../settings/useAppSettings", () => ({
+  useAppSettings: () => ({ settings: appSettings.current, loaded: true, update: vi.fn() }),
+}))
+
+// The real store's first settings read resolves to `onboardingCompleted:
+// false` without a shell, which would otherwise flip this suite into the
+// first-run takeover — hiding the usage card this file's tests click
+// through — a tick after mount. Pinning the mode to "steady" keeps this
+// suite about the metric preference; the takeover itself is covered in
+// `FirstRunTakeover.test.tsx`.
+const overviewProgressMock = vi.hoisted(() => ({
+  current: {
+    mode: "steady",
+    flow: "done",
+    openStep: null,
+    openStepControl: null,
+    openStepControlRevision: 0,
+    stepShown: true,
+    actionPending: false,
+    actionError: null,
+    agents: { done: true, rows: [] },
+    sessions: {
+      done: true,
+      completed: 0,
+      total: 0,
+      displayCompleted: 0,
+      displayTotal: 0,
+      deferred: [],
+    },
+    checks: { done: true, windowSessions: 0, pendingEvidence: 0, deferredEvidence: 0 },
+    categories: [],
+    failingCount: 0,
+    history: null,
+  } as OverviewProgress,
+}))
+vi.mock("./overview/overviewProgressStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof OverviewProgressStore>()),
+  subscribeOverviewProgress: () => () => undefined,
+  overviewProgress: () => overviewProgressMock.current,
+}))
+vi.mock("./overview/FirstRunTakeover", () => ({
+  FirstRunTakeover: () => <output aria-label="First-run takeover" />,
+}))
 
 vi.mock("./overview/OverviewUsage", () => ({
   OverviewUsage: ({
     metric,
     onMetricChange,
     loading,
+    allowanceCollecting,
   }: {
     metric: OverviewMetric
     onMetricChange: (metric: OverviewMetric) => void
     loading?: boolean
+    allowanceCollecting?: boolean
   }) => (
     <div>
       <output aria-label="Usage metric">{metric}</output>
       <output aria-label="Usage state">{loading ? "held" : "shown"}</output>
+      <output aria-label="Allowance collection">
+        {allowanceCollecting ? "collecting" : "idle"}
+      </output>
       <button onClick={() => onMetricChange("cost")}>Cost</button>
       <button onClick={() => onMetricChange("allowance")}>Subscription</button>
     </div>
   ),
 }))
-vi.mock("./overview/OverviewRecentSessions", () => ({ OverviewRecentSessions: () => null }))
-vi.mock("./overview/OverviewProviderLimits", () => ({ OverviewProviderLimits: () => null }))
+vi.mock("./overview/OverviewRecentSessions", () => ({
+  OverviewRecentSessions: ({ showChecks }: { showChecks?: boolean }) => (
+    <output aria-label="Recent sessions">
+      {showChecks === false ? "no checks" : "checks"}
+    </output>
+  ),
+}))
+vi.mock("./overview/OverviewProviderLimits", () => ({
+  OverviewProviderLimits: () => <output aria-label="Provider limits pane" />,
+}))
 
 const account: AllowanceUsageAccountPayload = {
   provider: "anthropic",
@@ -91,7 +154,13 @@ function setup(initial: Partial<MainOverviewSnapshot> = {}) {
       listeners.delete(listener)
     }
   })
-  const props = { active: true, session, onOpenSessions: vi.fn(), onSelectSession: vi.fn() }
+  const props = {
+    active: true,
+    session,
+    onOpenSessions: vi.fn(),
+    onSelectSession: vi.fn(),
+    onOpenChecks: vi.fn(),
+  }
   const result = render(<OverviewView {...props} />)
   return {
     ...result,
@@ -105,7 +174,15 @@ function setup(initial: Partial<MainOverviewSnapshot> = {}) {
   }
 }
 
-beforeEach(() => localStorage.clear())
+beforeEach(() => {
+  localStorage.clear()
+  appSettings.current = { liveUsageEnabled: true, liveUsageStarted: false } as AppSettings
+  overviewProgressMock.current = {
+    ...overviewProgressMock.current,
+    mode: "steady",
+    flow: "done",
+  }
+})
 afterEach(() => vi.restoreAllMocks())
 
 function expectMetric(metric: OverviewMetric) {
@@ -116,7 +193,44 @@ function expectUsageState(state: "held" | "shown") {
   expect(screen.getByLabelText("Usage state")).toHaveTextContent(state)
 }
 
+describe("OverviewView first-run decision", () => {
+  it("shows neither the takeover nor the steady Overview until the first-run check answers", () => {
+    overviewProgressMock.current = { ...overviewProgressMock.current, mode: "pending" }
+    const view = setup(usage)
+    expect(screen.queryByLabelText("First-run takeover")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Usage metric")).not.toBeInTheDocument()
+
+    overviewProgressMock.current = {
+      ...overviewProgressMock.current,
+      mode: "firstRun",
+      flow: "welcome",
+    }
+    view.rerender(<OverviewView {...view.props} />)
+    expect(screen.getByLabelText("First-run takeover")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Usage metric")).not.toBeInTheDocument()
+  })
+})
+
 describe("OverviewView metric preference", () => {
+  it("shows allowance collection only during active first-run live usage", () => {
+    overviewProgressMock.current = {
+      ...overviewProgressMock.current,
+      mode: "firstRun",
+      flow: "checks",
+    }
+    appSettings.current = { liveUsageEnabled: true, liveUsageStarted: false } as AppSettings
+    const view = setup(usage)
+    expect(screen.getByLabelText("Allowance collection")).toHaveTextContent("idle")
+
+    appSettings.current = { liveUsageEnabled: true, liveUsageStarted: true } as AppSettings
+    view.rerender(<OverviewView {...view.props} />)
+    expect(screen.getByLabelText("Allowance collection")).toHaveTextContent("collecting")
+
+    overviewProgressMock.current = { ...overviewProgressMock.current, flow: "done" }
+    view.rerender(<OverviewView {...view.props} />)
+    expect(screen.getByLabelText("Allowance collection")).toHaveTextContent("idle")
+  })
+
   it("settles on cost only once both the allowance and live-usage reads land without a plan", () => {
     const view = setup(usage)
     view.update(allowance([]))
@@ -245,5 +359,53 @@ describe("OverviewView metric preference", () => {
     expectUsageState("held")
     view.update(allowance([account]))
     expectMetric("allowance")
+  })
+})
+
+describe("OverviewView's provider limits card", () => {
+  it("hides the pane while live usage has not started, even though it defaults to enabled", () => {
+    appSettings.current = { liveUsageEnabled: true, liveUsageStarted: false } as AppSettings
+    setup()
+    expect(screen.queryByLabelText("Provider limits pane")).toBeNull()
+  })
+
+  it("hides the pane when a reader turns limits off in Settings, even once started", () => {
+    appSettings.current = { liveUsageEnabled: false, liveUsageStarted: true } as AppSettings
+    setup()
+    expect(screen.queryByLabelText("Provider limits pane")).toBeNull()
+  })
+
+  it("shows the pane once live usage is both enabled and started", () => {
+    appSettings.current = { liveUsageEnabled: true, liveUsageStarted: true } as AppSettings
+    setup()
+    expect(screen.getByLabelText("Provider limits pane")).toBeInTheDocument()
+  })
+})
+
+describe("OverviewView's first-run takeover", () => {
+  function firstRunAt(flow: OverviewProgress["flow"]) {
+    overviewProgressMock.current = { ...overviewProgressMock.current, mode: "firstRun", flow }
+  }
+
+  it("shows no usage card or Recent sessions until the Sessions step is done", () => {
+    firstRunAt("sessions")
+    setup()
+    expect(screen.getByLabelText("First-run takeover")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Usage metric")).toBeNull()
+    expect(screen.queryByLabelText("Recent sessions")).toBeNull()
+  })
+
+  it("shows Recent sessions without checks under the Checks step", () => {
+    firstRunAt("checks")
+    setup()
+    expect(screen.getByLabelText("First-run takeover")).toBeInTheDocument()
+    expect(screen.getByLabelText("Usage metric")).toBeInTheDocument()
+    expect(screen.getByLabelText("Recent sessions")).toHaveTextContent("no checks")
+  })
+
+  it("adds the checks once the Checks step is done", () => {
+    firstRunAt("fixes")
+    setup()
+    expect(screen.getByLabelText("Recent sessions")).toHaveTextContent(/^checks$/)
   })
 })

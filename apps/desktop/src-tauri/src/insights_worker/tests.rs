@@ -1034,6 +1034,7 @@ async fn the_worker_loop_runs_one_pass_at_a_time() {
             &WorkerLoopSignals {
                 report_changed: &|| {},
                 backlog: &|_| {},
+                gate: &always_open_gate,
             },
             &|_, _| {},
         )
@@ -1045,6 +1046,69 @@ async fn the_worker_loop_runs_one_pass_at_a_time() {
         .expect("both passes complete");
     task.abort();
     assert_eq!(maximum.load(Ordering::SeqCst), 1);
+}
+
+/// The worker must not claim anything while the first-run gate sits below
+/// `Check`, and must claim it as soon as the gate opens.
+#[tokio::test]
+async fn worker_loop_claims_nothing_before_the_first_run_gate_reaches_check() {
+    let store = Arc::new(store());
+    store
+        .upsert_sessions(&[record("gated")], &crate::agents::evidence_cohort())
+        .unwrap();
+    let handle = Arc::new(WorkerHandle::default());
+    let gate = FirstRunGate::new(false);
+    let claimed = Arc::new(AtomicUsize::new(0));
+
+    let task_store = Arc::clone(&store);
+    let task_handle = Arc::clone(&handle);
+    let task_claimed = Arc::clone(&claimed);
+    let task_gate = gate.clone();
+    let task = tokio::spawn(async move {
+        let runner = move |record: &SessionRecord, _: PassSignal, _: i64| {
+            task_claimed.fetch_add(1, Ordering::SeqCst);
+            let pass = published_pass(record);
+            Box::pin(async move { pass }) as PassFuture
+        };
+        let wait_for_check = move || -> GateFuture {
+            let gate = task_gate.clone();
+            Box::pin(async move {
+                gate.wait_until(FirstRunStage::Checks, || false).await;
+            })
+        };
+        worker_loop(
+            &task_store,
+            &task_handle,
+            &|| 100,
+            &runner,
+            &|_| {},
+            &WorkerLoopSignals {
+                report_changed: &|| {},
+                backlog: &|_| {},
+                gate: &wait_for_check,
+            },
+            &|_, _| {},
+        )
+        .await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        claimed.load(Ordering::SeqCst),
+        0,
+        "the gate is still below Check"
+    );
+
+    gate.advance(FirstRunStage::Checks);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while claimed.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the worker claims the session once the gate opens");
+
+    task.abort();
 }
 
 #[test]
@@ -1077,6 +1141,31 @@ fn backlog_transitions_report_once_per_busy_stretch() {
     assert_eq!(handle.note_backlog_idle(), None);
 }
 
+#[test]
+fn a_busy_pool_asks_for_a_report_refresh_at_most_once_per_interval() {
+    let store = store();
+    store
+        .upsert_sessions(
+            &[record("progress-pending")],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let handle = WorkerHandle::default();
+    handle.note_backlog_busy(&store);
+
+    assert!(
+        !handle.note_backlog_processed(),
+        "the stretch has only just started"
+    );
+    handle.backlog.lock().unwrap().reported_at =
+        Instant::now().checked_sub(REPORT_PROGRESS_INTERVAL);
+    assert!(handle.note_backlog_processed(), "the interval has passed");
+    assert!(
+        !handle.note_backlog_processed(),
+        "the refresh just now starts a new interval"
+    );
+}
+
 /// `backlog_transitions_report_once_per_busy_stretch` proves the transition
 /// logic directly for two simulated workers. This test proves the same
 /// counters reset correctly when `worker_loop` drives that logic for real,
@@ -1106,6 +1195,7 @@ async fn a_worker_loop_pass_reports_one_busy_stretch_and_resets() {
             &WorkerLoopSignals {
                 report_changed: &|| {},
                 backlog: &|_| {},
+                gate: &always_open_gate,
             },
             &|_, _| {},
         )
@@ -1179,6 +1269,7 @@ async fn the_worker_loop_announces_backlog_start_and_drain_once() {
             &WorkerLoopSignals {
                 report_changed: &|| {},
                 backlog: &|active| task_announced.lock().unwrap().push(active),
+                gate: &always_open_gate,
             },
             &|_, _| {},
         )
@@ -1245,6 +1336,7 @@ async fn the_worker_loop_marks_the_backlog_busy_before_the_first_pass_runs() {
                         .unwrap()
                         .push(format!("backlog:{active}"));
                 },
+                gate: &always_open_gate,
             },
             &|_, _| {},
         )

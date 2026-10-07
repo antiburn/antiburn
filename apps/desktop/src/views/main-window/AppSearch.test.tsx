@@ -21,8 +21,10 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 function Harness({
   choose = async () => {},
+  stepSettingsAvailable,
 }: {
   choose?: Parameters<typeof AppSearch>[0]["onChoose"]
+  stepSettingsAvailable?: boolean
 }) {
   const [open, setOpen] = useState(false)
   return (
@@ -30,12 +32,26 @@ function Harness({
       <button data-app-search-trigger="titlebar" onClick={() => setOpen(true)}>
         Search
       </button>
-      {open && <AppSearch onChoose={choose} onClose={() => setOpen(false)} />}
+      {open && (
+        <AppSearch
+          onChoose={choose}
+          onClose={() => setOpen(false)}
+          {...(stepSettingsAvailable === undefined ? {} : { stepSettingsAvailable })}
+        />
+      )}
     </>
   )
 }
-function open(choose?: Parameters<typeof AppSearch>[0]["onChoose"]) {
-  render(<Harness {...(choose ? { choose } : {})} />)
+function open(
+  choose?: Parameters<typeof AppSearch>[0]["onChoose"],
+  stepSettingsAvailable?: boolean,
+) {
+  render(
+    <Harness
+      {...(choose ? { choose } : {})}
+      {...(stepSettingsAvailable === undefined ? {} : { stepSettingsAvailable })}
+    />,
+  )
   fireEvent.click(screen.getByRole("button", { name: "Search" }))
   return screen.getByRole("combobox")
 }
@@ -89,6 +105,23 @@ describe("app search palette", () => {
     expect(input).toHaveFocus()
     await act(async () => fireEvent.keyDown(input, { key: "Enter" }))
     expect(choose).toHaveBeenCalledTimes(2)
+  })
+  it("surfaces step-settings results, but only once a modal exists to open", async () => {
+    const choose = vi.fn().mockResolvedValue(undefined)
+    const input = open(choose, true)
+    fireEvent.change(input, { target: { value: "scan folders" } })
+    expect(screen.getAllByRole("option")).toHaveLength(1)
+    fireEvent.keyDown(input, { key: "ArrowDown" })
+    await act(async () => fireEvent.keyDown(input, { key: "Enter" }))
+    expect(choose.mock.calls[0]![0].target).toEqual({
+      kind: "stepSetting",
+      control: "sourceFolders",
+    })
+  })
+  it("excludes step-settings results while the first run has no modal to open", () => {
+    const input = open(undefined, false)
+    fireEvent.change(input, { target: { value: "scan folders" } })
+    expect(screen.queryAllByRole("option")).toHaveLength(0)
   })
   it("suppresses concurrent activations", async () => {
     let resolve!: () => void

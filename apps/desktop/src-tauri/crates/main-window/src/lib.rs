@@ -14,7 +14,7 @@ pub const LABEL: &str = "main";
 /// The dedicated frontend entry.
 pub const URL: &str = "main.html";
 /// The first inner width in logical pixels.
-pub const DEFAULT_WIDTH: f64 = 1100.0;
+pub const DEFAULT_WIDTH: f64 = 1200.0;
 /// The first inner height in logical pixels.
 ///
 /// This value is taller than a small display can show. `centered_default`
@@ -110,6 +110,14 @@ where
         window,
         placement: applied,
     })
+}
+
+/// Return a window to the default size, centered on the active monitor.
+pub fn reset_placement(window: &WebviewWindow) -> tauri::Result<Placement> {
+    if window.is_maximized()? {
+        window.unmaximize()?;
+    }
+    apply_placement(window, None)
 }
 
 /// Show and focus an existing renderer.
@@ -415,9 +423,9 @@ mod tests {
         assert_eq!(
             validated_placement(None, &[TALL], Some(TALL), 1.0, 0, 0),
             Placement {
-                x: 410,
+                x: 360,
                 y: 212,
-                width: 1100,
+                width: 1200,
                 height: 800,
                 maximized: false,
                 scale_factor: 1.0,
@@ -430,9 +438,9 @@ mod tests {
         assert_eq!(
             validated_placement(None, &[PRIMARY], Some(PRIMARY), 1.0, 0, 0),
             Placement {
-                x: 170,
+                x: 120,
                 y: 90,
-                width: 1100,
+                width: 1200,
                 height: 744,
                 maximized: false,
                 scale_factor: 1.0,
@@ -554,7 +562,7 @@ mod tests {
             height: 1_920,
         };
         let placement = validated_placement(None, &[retina], Some(retina), 2.0, 0, 0);
-        assert_eq!((placement.width, placement.height), (2_200, 1_600));
+        assert_eq!((placement.width, placement.height), (2_400, 1_600));
         assert!(!placement.maximized);
     }
 

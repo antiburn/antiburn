@@ -1,4 +1,3 @@
-import type { HygieneSummary } from "../../../src/lib/insightsIpc"
 import type { AllowanceUsageSummaryPayload } from "../../../src/lib/providerUsageIpc"
 import { emitFixtureEvent } from "./event"
 import { fixtureDetailMap, fixtureIsland, fixtureTokenMap } from "./hud"
@@ -14,7 +13,7 @@ declare global {
 }
 
 type FixtureState = "populated" | "empty" | "loading" | "error" | "long"
-type FixtureFault = "session-analysis" | "scale-save" | "onboarding-bootstrap" | "peek-data"
+type FixtureFault = "session-analysis" | "scale-save" | "peek-data"
 
 const now = "2026-09-15T00:00:00.000Z"
 
@@ -29,10 +28,7 @@ function fixtureFault(): FixtureFault | null {
   const override = window.__ANTIBURN_VISUAL_FAULT__
   const value =
     override === undefined ? new URLSearchParams(window.location.search).get("fault") : override
-  return value === "session-analysis" ||
-    value === "scale-save" ||
-    value === "onboarding-bootstrap" ||
-    value === "peek-data"
+  return value === "session-analysis" || value === "scale-save" || value === "peek-data"
     ? value
     : null
 }
@@ -347,8 +343,6 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
     return Promise.reject(new Error("Fixture session analysis failure"))
   if (fault === "scale-save" && command === "set_interface_scale")
     return Promise.reject(new Error("Fixture interface scale save failure"))
-  if (fault === "onboarding-bootstrap" && command === "get_settings")
-    return Promise.reject(new Error("Fixture onboarding bootstrap failure"))
   if (fault === "peek-data" && command === "get_popover_peek_data")
     return Promise.reject(new Error("Fixture preview data failure"))
   switch (command) {
@@ -455,14 +449,6 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
               enabled: true,
             },
           ]
-    case "get_hygiene_summary":
-      return {
-        totalSessions: 128,
-        settledSessions: 128,
-        analyzedSessions: 82,
-        failingSessions: 19,
-        mostCommonFinding: "sessionOverdepth",
-      } satisfies HygieneSummary
     case "get_checks_report":
       return {
         evidenceSettled: true,

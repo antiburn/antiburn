@@ -68,8 +68,7 @@ import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types
  * React reads immutable snapshots through `useSyncExternalStore`; IPC calls,
  * event subscriptions, and the window's own keyboard handling stay here,
  * where they belong to the external systems that created them rather than to
- * a component lifecycle. See `views/onboarding/OnboardingSession.ts` for the
- * same shape applied to the first-run window.
+ * a component lifecycle.
  */
 
 export interface PopoverSnapshot {

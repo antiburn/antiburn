@@ -1,8 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest"
 
-import { ChecksPane } from "./ChecksPane"
-import type { CheckAvailability, CheckAvailabilityEvent } from "../../lib/checkAvailability"
+import { ChecksStepSettings } from "./ChecksStepSettings"
+import type {
+  CheckAvailability,
+  CheckAvailabilityEvent,
+} from "../../../../lib/checkAvailability"
 
 const getAvailability = vi.hoisted(() => vi.fn())
 const save = vi.hoisted(() => vi.fn())
@@ -46,7 +49,7 @@ const emptyAvailability = vi.hoisted(() => ({
   },
 }))
 
-vi.mock("../../lib/checkAvailability", () => ({
+vi.mock("../../../../lib/checkAvailability", () => ({
   getCheckAvailability: getAvailability,
   setTypeSafeApiKey: save,
   removeTypeSafeApiKey: remove,
@@ -73,7 +76,7 @@ beforeEach(() => {
 })
 
 it("enables with a password input and clears the key after native storage succeeds", async () => {
-  render(<ChecksPane />)
+  render(<ChecksStepSettings />)
   const input = screen.getByLabelText("TypeSafe API key") as HTMLInputElement
   expect(input).toHaveAttribute("type", "password")
   expect(screen.getByRole("button", { name: "Save key and enable" })).toBeDisabled()
@@ -89,7 +92,7 @@ it("enables with a password input and clears the key after native storage succee
 
 it("restores a saved key without a Settings action", async () => {
   getAvailability.mockResolvedValue({ ...emptyAvailability, savedKey: true, configured: true })
-  render(<ChecksPane />)
+  render(<ChecksStepSettings />)
   const toggle = await screen.findByRole("switch", { name: "Smart Burn Checks" })
   expect(toggle).toHaveAttribute("aria-checked", "true")
   expect(screen.queryByText(/Smart Burn Checks on/)).not.toBeInTheDocument()
@@ -108,7 +111,7 @@ it("pauses checks without removing the saved key", async () => {
     savedKey: true,
     configured: false,
   })
-  render(<ChecksPane />)
+  render(<ChecksStepSettings />)
   const toggle = await screen.findByRole("switch", { name: "Smart Burn Checks" })
   fireEvent.click(toggle)
   await waitFor(() => expect(setChecksEnabled).toHaveBeenCalledWith(false))
@@ -123,7 +126,7 @@ it("requires a replacement after TypeSafe rejects the saved key", async () => {
     savedKey: true,
     error: "TypeSafe rejected this API key. Replace it in Settings → Checks.",
   })
-  render(<ChecksPane />)
+  render(<ChecksStepSettings />)
   await screen.findByText("TypeSafe rejected this API key. Replace it in Settings → Checks.")
   expect(screen.getByRole("button", { name: "Replace key" })).toBeDisabled()
   fireEvent.change(screen.getByLabelText("TypeSafe API key"), {
@@ -146,7 +149,7 @@ it("shows bounded local usage and unknown outcomes separately", async () => {
       lastUsedAtEpoch: 1_000,
     },
   })
-  render(<ChecksPane />)
+  render(<ChecksStepSettings />)
   fireEvent.click(screen.getByRole("button", { name: "Privacy and usage" }))
   await screen.findByText(/1,200 input tokens · \$0\.0000504 estimated · 3 requests/)
   expect(screen.getByText(/1 request outcomes are unknown/)).toBeInTheDocument()
@@ -155,12 +158,12 @@ it("shows bounded local usage and unknown outcomes separately", async () => {
 it("retains the previous status on refresh failure and clears the error after recovery", async () => {
   const previous = { ...emptyAvailability, savedKey: true, configured: true }
   getAvailability.mockResolvedValueOnce(previous)
-  const first = render(<ChecksPane />)
+  const first = render(<ChecksStepSettings />)
   await screen.findByRole("switch", { name: "Smart Burn Checks" })
   first.unmount()
 
   getAvailability.mockRejectedValueOnce(new Error("database"))
-  const second = render(<ChecksPane />)
+  const second = render(<ChecksStepSettings />)
   expect(await screen.findByRole("alert")).toHaveTextContent("Could not refresh check status")
   expect(screen.getByRole("switch", { name: "Smart Burn Checks" })).toHaveAttribute(
     "aria-checked",
@@ -169,7 +172,7 @@ it("retains the previous status on refresh failure and clears the error after re
   second.unmount()
 
   getAvailability.mockResolvedValueOnce(previous)
-  render(<ChecksPane />)
+  render(<ChecksStepSettings />)
   await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument())
 })
 
@@ -181,7 +184,7 @@ it("shows an availability-event failure without clearing the last known usage", 
     usage: { ...emptyAvailability.usage, inputTokens: 123, confirmedCalls: 1 },
   }
   getAvailability.mockResolvedValue(availability)
-  render(<ChecksPane />)
+  render(<ChecksStepSettings />)
   const toggle = screen.getByRole("switch", { name: "Smart Burn Checks" })
   await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"))
   await waitFor(() => expect(availabilityEvent.callback).not.toBeNull())
@@ -198,7 +201,7 @@ it("shows an availability-event failure without clearing the last known usage", 
 })
 
 it("explains the selected and excluded fields and gives the API key a full-width field", () => {
-  render(<ChecksPane />)
+  render(<ChecksStepSettings />)
   expect(screen.getByRole("heading", { name: "Smart Burn Checks" })).toBeInTheDocument()
   expect(
     screen.getByText(
@@ -241,7 +244,7 @@ it("shows when selected sessions are waiting for current evidence", async () => 
       failed: 0,
     },
   })
-  render(<ChecksPane />)
+  render(<ChecksStepSettings />)
   await screen.findByText("13 waiting to be checked · 5 waiting for session analysis")
 })
 
@@ -260,7 +263,7 @@ it("saves a history window and runs checks only after the user asks", async () =
       backfill: { ...emptyAvailability.backfill, total: 4, queued: 4 },
     },
   })
-  render(<ChecksPane />)
+  render(<ChecksStepSettings />)
 
   await waitFor(() =>
     expect(screen.getByRole("radio", { name: "Future only" })).toHaveAttribute(
@@ -292,7 +295,7 @@ it("keeps the checking denominator stable while sessions change status", async (
       failed: 2,
     },
   })
-  render(<ChecksPane />)
+  render(<ChecksStepSettings />)
   await screen.findByText("Checking sessions; 0/14 sessions checked so far")
 })
 
@@ -302,7 +305,7 @@ it("confirms when every session in the history run finished", async () => {
     historyDays: 7,
     backfill: { ...emptyAvailability.backfill, total: 10, completed: 10 },
   })
-  render(<ChecksPane />)
+  render(<ChecksStepSettings />)
   expect(await screen.findByText("Finished checking 10 sessions")).toBeVisible()
 
   act(() =>
@@ -320,7 +323,7 @@ it("confirms when every session in the history run finished", async () => {
 })
 
 it("keeps setup, history, and the API key in separate plain-language groups", () => {
-  render(<ChecksPane />)
+  render(<ChecksStepSettings />)
   expect(screen.getByRole("heading", { name: "Smart Burn Checks" })).toBeInTheDocument()
   expect(screen.getByRole("heading", { name: "Past sessions" })).toBeInTheDocument()
   expect(screen.getByRole("heading", { name: "TypeSafe account" })).toBeInTheDocument()

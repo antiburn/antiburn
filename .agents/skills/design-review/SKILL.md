@@ -11,8 +11,9 @@ checks it against the design system, and returns a ranked list of what to fix.
 The method comes from OneRedOak's design-review agent. The rules are antiburn's
 own.
 
-Scope: the Tauri desktop app in `apps/desktop`. The app has four windows, and
-each window is a fixed size. There is no responsive breakpoint pass, because
+Scope: the Tauri desktop app in `apps/desktop`. The app has three fixed-size
+windows covered below, plus the resizable main window (not yet in this skill's
+table). There is no responsive breakpoint pass, because
 there are no fluid widths to break at. The equivalent pass here walks every
 window, every surface inside it, and every theme.
 
@@ -33,8 +34,8 @@ This skill grades a live window, so the app must run.
   disappears the moment another window takes focus.
 
 Secondary path, with a limit: `pnpm dev:web` serves the same bundle in a
-browser, and the URL fragment picks the view (`#/settings`, `#/nudge`,
-`#/onboarding`; no fragment gives the popover). A browser has no shell, so
+browser, and the URL fragment picks the view (`#/settings`, `#/nudge`;
+no fragment gives the popover). A browser has no shell, so
 `hasShell()` is false and every view falls back to `DEFAULT_SETTINGS` and empty
 data. Use this path for the accessibility tree, the console, the type ladder,
 and the themes. Do NOT grade data-dependent states from it, and never report
@@ -58,7 +59,6 @@ its reason in Checked scope and limits.
 |---|---|---|
 | Tray popover | 380 wide; 700 tall, 780 on Usage | `activity`, `session`, `usage` (`lib/popoverHeight.ts`) |
 | Settings | 960 × 680, fixed | 7 panes: General, Privacy, Notifications, Usage, Sources, Appearance, About |
-| Onboarding | 680 × 480 | 5 steps: welcome, sources, repositories, scan, ready |
 | Notification | 344 wide, always on top | resting and expanded (the card expands on hover) |
 
 **The theme pass.** Repeat the surface that carries the most colour in each of
@@ -132,8 +132,7 @@ order:
 2. Popover, session analytics.
 3. Popover, usage. The one surface that exceeds the default height.
 4. Settings, pane by pane.
-5. Onboarding, step by step.
-6. The notification window, resting and expanded.
+5. The notification window, resting and expanded.
 
 ## Severity
 

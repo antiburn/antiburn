@@ -16,7 +16,9 @@ function report(
   evidenceSettled = true,
 ): ChecksReportPayload {
   return {
+    windowSessions: 0,
     pendingEvidence: 0,
+    deferredEvidence: 0,
     evidenceSettled,
     estimatedTokenBurnBasisPoints: null,
     categories,

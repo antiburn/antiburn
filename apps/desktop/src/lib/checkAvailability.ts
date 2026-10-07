@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listen } from "./tauriEvents"
 
+import { createExternalStore } from "./externalStore"
 import { hasShell } from "./ipc"
 
 type CheckUsageSummary = {
@@ -95,6 +96,21 @@ export async function runCheckBackfill(): Promise<{
 }> {
   return invoke<{ queued: number; availability: CheckAvailability }>("run_check_backfill")
 }
+
+/** Whether the checks that need setup are configured, kept current from
+ *  the availability event. False until the first read, and after a failed
+ *  one. */
+export const checksConfiguredStore = createExternalStore<boolean>({
+  initial: false,
+  load: () =>
+    getCheckAvailability()
+      .then((value) => value.configured)
+      .catch(() => false),
+  subscribe: (set) =>
+    onCheckAvailabilityChanged((event) => {
+      if (event.status === "updated") set(event.snapshot.configured)
+    }),
+})
 
 export function onCheckAvailabilityChanged(
   callback: (event: CheckAvailabilityEvent) => void,

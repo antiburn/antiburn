@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-advance-first-run"
+description = "Enables the advance_first_run command without any pre-configured scope."
+commands.allow = ["advance_first_run"]
+
+[[permission]]
+identifier = "deny-advance-first-run"
+description = "Denies the advance_first_run command without any pre-configured scope."
+commands.deny = ["advance_first_run"]

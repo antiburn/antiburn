@@ -29,7 +29,7 @@ export type SettingsWindowSnapshot = {
  * `app_info` fetch, the requested-pane handshake, and the subscription that
  * moves an already-open window stay here, where they belong to the external
  * systems that created them rather than to a component lifecycle. See
- * `OnboardingSession` for the same shape applied to a different window.
+ * `PopoverSession` for the same shape applied to a different window.
  */
 export class SettingsWindowSession {
   private listeners = new Set<() => void>()

@@ -1,13 +1,13 @@
-import { Tooltip } from "../../components/presentation/Tooltip"
-import { StatusText } from "../../components/ui/StatusText"
-import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
+import { Tooltip } from "../../../../components/presentation/Tooltip"
+import { StatusText } from "../../../../components/ui/StatusText"
+import { ToggleSwitch } from "../../../../components/ui/ToggleSwitch"
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import { Ellipsis, ExternalLink, Monitor, Plus } from "lucide-react"
 import { useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
-import { Card } from "../../components/ui/Card"
-import { PushButton } from "../../components/ui/PushButton"
+import { Card } from "../../../../components/ui/Card"
+import { PushButton } from "../../../../components/ui/PushButton"
 import {
   openRemoteHelperDownloads,
   REMOTE_HOST_LIMIT,
@@ -16,12 +16,12 @@ import {
   type RemoteHostPreflight,
   type RemoteHostsSnapshot,
   type RemoteSyncIntervalSecs,
-} from "../../lib/remoteHosts"
-import { agentDisplayName } from "../../lib/presentation/agents"
-import { relativeTime } from "../../lib/presentation/relativeTime"
-import { SettingsRow, SettingsSectionGroup } from "./SettingsSearchRows"
+} from "../../../../lib/remoteHosts"
+import { agentDisplayName } from "../../../../lib/presentation/agents"
+import { relativeTime } from "../../../../lib/presentation/relativeTime"
+import { StepSettingsRow, StepSettingsSectionGroup } from "./StepSettingsSearchRows"
 import type { SourcesSession } from "./SourcesSession"
-import { openMainWindowRemoteHost } from "../../lib/mainWindowIpc"
+import { openMainWindowRemoteHost } from "../../../../lib/mainWindowIpc"
 import "./remote-hosts.css"
 
 const SYNC_OPTIONS: readonly { value: RemoteSyncIntervalSecs; label: string }[] = [
@@ -620,7 +620,7 @@ export function RemoteHostsSection({
   }
   return (
     <>
-      <SettingsSectionGroup searchId="sourceRemoteHosts">
+      <StepSettingsSectionGroup searchId="sourceRemoteHosts">
         <Card className="remote-hosts-card">
           <div>
             <p className="px-4 pt-3 type-footnote text-label-secondary">
@@ -628,7 +628,7 @@ export function RemoteHostsSection({
               local sessions. Synced sessions are saved on this computer so you can view them
               offline.
             </p>
-            <SettingsRow
+            <StepSettingsRow
               searchId="sourceAutomaticSync"
               className="remote-sync-row"
               description={
@@ -721,7 +721,7 @@ export function RemoteHostsSection({
             ) : null}
           </div>
         </Card>
-      </SettingsSectionGroup>
+      </StepSettingsSectionGroup>
       {editor ? (
         <RemoteHostEditor
           key={editor.host === "new" ? "new" : editor.host.id}

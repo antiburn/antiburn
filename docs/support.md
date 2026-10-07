@@ -285,8 +285,8 @@ signed bundle and restarts antiburn. The app never depends on either connection.
 - Linux AppImage releases update in the app. Debian packages remain install-only
   and require the next package to be installed manually.
 - **Anonymised product analytics** are the one thing antiburn reports to us.
-  Official release builds start with it on, including during onboarding. The Ready
-  screen explains it, and the switch is in Settings → Privacy. The event schema has thirty-one fields and
+  Official release builds start with it on, including during the first run. The switch
+  is in Settings → Privacy. The event schema has thirty-one fields and
   no others: the constant `desktop`; a random per-message id used to discard
   duplicate deliveries; a random installation identifier replaced every 30 days;
   a random analytics-session identifier; the event name; the time it happened and the time it was delivered; the

@@ -85,7 +85,7 @@ const INITIAL_SNAPSHOT: NudgeSnapshot = {
  * React reads immutable snapshots through `useSyncExternalStore`; IPC
  * subscriptions, timers, and the window-measurement handshake with the nudge
  * crate stay here, where they belong to the external systems that created them
- * rather than to a component lifecycle. See `OnboardingSession` for the same
+ * rather than to a component lifecycle. See `PopoverSession` for the same
  * shape applied to a different window.
  *
  * Most updates go through `update`, which notifies listeners on the normal

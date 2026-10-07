@@ -51,7 +51,6 @@ for its whole life (`src/lib/route.ts`).
 | -------------- | ------------ | -------------------------------- | ----------------------------------------------------- |
 | default        | Tray popover | 380 wide; 700 tall, 780 on Usage | The reading surfaces: what happened, and what it cost |
 | `#/settings`   | Settings     | 960 × 680                        | Every choice the reader makes, and every explanation  |
-| `#/onboarding` | Onboarding   | 680 × 480                        | First run only                                        |
 | `#/nudge`      | Notification | 344 wide                         | One alert, always on top                              |
 
 **RULE 2.1 — put content in the window that owns it.** The popover reads. The
@@ -246,8 +245,8 @@ The popover's activity skeleton and its lazy session-analytics placeholder both
 show the pattern. **[High]**
 
 **RULE 7.3 — error.** Say what failed, in plain words, and offer the way
-forward. The onboarding window's failure state is the model: a title, the error
-text, and a "Try again" button. The scan status line says "Last scan did not
+forward. A session's analysis failure is the model: "Could not refresh this
+session." beside a "Retry" button. The scan status line says "Last scan did not
 finish" beside a warning glyph, and keeps the rescan control next to it. An
 error with no next step is a finding. **[High]**
 
@@ -259,10 +258,11 @@ notice. The notice is not dismissible, because it explains a visible gap in a
 list rather than interrupting. A blocked folder must never read as a crash, and
 must never silently vanish from the list. **[High]**
 
-**RULE 7.5 — first run.** The onboarding window owns first run: five linear
-steps (welcome, sources, repositories, scan, ready), a "Step N of M" text label
-beside the step dots, and no step that cannot be reached by keyboard. First run
-is not a popover surface, and it must not be rebuilt as one. **[High]**
+**RULE 7.5 — first run.** The main window's Overview owns first run: a welcome
+pitch and privacy line, then linear Find/Read/Check steps that dock as they
+complete, with no step that cannot be reached by keyboard. First run is not a
+separate window or a popover surface, and it must not be rebuilt as either.
+**[High]**
 
 **RULE 7.6 — freshness is a state.** A local-first app has to say when it last
 looked. `ScanStatusBar` answers two questions on sight: is it looking, and how

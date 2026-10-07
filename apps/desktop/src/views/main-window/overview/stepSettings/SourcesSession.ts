@@ -11,12 +11,12 @@ import {
   removeScanRoot,
   setRepositoryEnabled,
   type RepositoryItemPayload,
-} from "../../lib/ipc"
+} from "../../../../lib/ipc"
 import type {
   FolderPermissions,
   LocalRepositoryItem,
   LocalRepositoryStatus,
-} from "../../lib/types/repository"
+} from "../../../../lib/types/repository"
 import {
   addRemoteHost,
   checkRemoteHost,
@@ -29,7 +29,7 @@ import {
   type RemoteHostPreflight,
   type RemoteHostsSnapshot,
   type RemoteSyncIntervalSecs,
-} from "../../lib/remoteHosts"
+} from "../../../../lib/remoteHosts"
 
 const EMPTY_PERMISSIONS: FolderPermissions = {
   deferred: [],

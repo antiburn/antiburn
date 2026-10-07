@@ -102,9 +102,9 @@ impl Kind {
 /// consequence of a button the reader pressed a second earlier, not something
 /// antiburn decided to say. [`Kind::Test`] exists so a reader can see what a
 /// notification looks like *before* deciding to allow them. [`Kind::MenuBarHome`]
-/// fires once in the app's whole life, as the first-run window closes, and it
+/// fires once in the app's whole life, as the first run finishes, and it
 /// is the only thing that says where the application just went — suppressing it
-/// would leave a reader who turned notifications off mid-onboarding with no
+/// would leave a reader who turned notifications off mid-first-run with no
 /// explanation of where the application remains available.
 pub fn allowed(settings: &AppSettings, kind: Kind) -> bool {
     if kind == Kind::Test || kind == Kind::MenuBarHome {
@@ -527,19 +527,20 @@ pub fn note_usage_milestone(
     true
 }
 
-/// Say where antiburn went as the current setup window closes.
+/// Say where antiburn went once the first run's result has shown.
 ///
 /// Ungated (see [`allowed`]) and forced to hang off the menu-bar item whatever
 /// the reader's placement preference says: a notification that answers "where
 /// is it" by appearing in the opposite corner of the screen from the answer
-/// would be worse than none. Called only from [`crate::onboarding::finish`], so
-/// it appears after each setup run, including an explicit restart. Its copy and
-/// action follow the entry point that remains visible.
+/// would be worse than none. Called only from the settings-save transition
+/// that finishes the first run, so it appears after each setup run, including
+/// an explicit restart. Its copy and action follow the entry point that
+/// remains visible.
 pub fn note_menu_bar_home(app: &AppHandle) {
     let tray_visible = app
         .try_state::<Store>()
         .map(|store| store.settings_snapshot())
-        .is_none_or(|settings| settings.tray_icon_visible);
+        .is_none_or(|settings| settings.tray_shown());
     if tray_visible {
         crate::nudges::anchor_next_to_the_tray(app);
     }
@@ -611,7 +612,7 @@ pub fn note_sample(app: &AppHandle, kind: Kind) {
             let tray_visible = app
                 .try_state::<Store>()
                 .map(|store| store.settings_snapshot())
-                .is_none_or(|settings| settings.tray_icon_visible);
+                .is_none_or(|settings| settings.tray_shown());
             if tray_visible {
                 crate::nudges::anchor_next_to_the_tray(app);
             }

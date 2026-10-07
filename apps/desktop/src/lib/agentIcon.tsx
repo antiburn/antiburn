@@ -150,6 +150,7 @@ export function renderAgentIcon(
       className={appearance === "neutral" ? "text-label-tertiary" : "text-agent-mark"}
       role="img"
       aria-label={agentDisplayName(slug)}
+      title={agentDisplayName(slug)}
     >
       {mark ? (
         <Mark name={iconName} mark={mark} size={size} appearance={appearance} />
