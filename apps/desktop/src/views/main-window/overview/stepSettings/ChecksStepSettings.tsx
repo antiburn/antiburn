@@ -20,7 +20,7 @@ import {
   type CheckAvailability,
   type CheckAvailabilityEvent,
 } from "../../../../lib/checkAvailability"
-import { StepSettingsRow } from "./StepSettingsSearchRows"
+import { SettingsRow } from "../../../settings/SettingsSearchRows"
 
 /**
  * The Checks step's settings: Ignored Instructions, the check history
@@ -208,7 +208,7 @@ export function ChecksStepSettings() {
       )}
       <SectionGroup title="Smart Burn Checks">
         <Card>
-          <StepSettingsRow
+          <SettingsRow
             searchId="ignoredInstructions"
             label="Ignored Instructions"
             description="Finds project instructions a session did not follow. Checks start after 3 minutes of inactivity."
@@ -221,7 +221,7 @@ export function ChecksStepSettings() {
 
       <SectionGroup title="Past sessions">
         <Card>
-          <StepSettingsRow
+          <SettingsRow
             searchId="checkHistory"
             label="Check history"
             description="Choose a period. Checks start only when you ask."
@@ -269,13 +269,13 @@ export function ChecksStepSettings() {
                 )}
               </div>
             )}
-          </StepSettingsRow>
+          </SettingsRow>
         </Card>
       </SectionGroup>
 
       <SectionGroup title="TypeSafe account">
         <Card>
-          <StepSettingsRow
+          <SettingsRow
             searchId="typeSafeApiKey"
             label="API key"
             description="Enter your TypeSafe API key to enable Smart Burn Checks. TypeSafe usage charges may apply."
@@ -313,7 +313,7 @@ export function ChecksStepSettings() {
                 {error || state.error}
               </p>
             )}
-          </StepSettingsRow>
+          </SettingsRow>
         </Card>
         <DisclosureGroup className="mt-2 px-1">
           <Disclosure label="Privacy and usage">

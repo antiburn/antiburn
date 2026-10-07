@@ -7,9 +7,8 @@ import { HeroFigures, type HeroFigureCell } from "../../../components/ui/HeroFig
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
 import { Skeleton } from "../../../components/ui/Skeleton"
 import { planLabel } from "../../../lib/presentation/liveUsage"
-import { ChevronDown, LoaderCircle } from "lucide-react"
+import { LoaderCircle } from "lucide-react"
 
-import { cn } from "../../../lib/cn"
 import { useEntranceProps } from "./overviewEntrance"
 
 export function OverviewAllowanceTotals({
@@ -81,22 +80,7 @@ export function OverviewAllowanceTotals({
       ]
     : accounts.map((account) => ({
         key: `${account.provider}:${account.accountKey}`,
-        label: (
-          <>
-            <AccountLabel account={account} />
-            {selectable && (
-              <ChevronDown
-                size={14}
-                strokeWidth={2}
-                aria-hidden="true"
-                className={cn(
-                  "ms-1 inline align-[-2px] text-label-tertiary transition-transform duration-fast",
-                  `${account.provider}:${account.accountKey}` === selectedKey && "rotate-180",
-                )}
-              />
-            )}
-          </>
-        ),
+        label: <AccountLabel account={account} />,
         figure: (
           <SegmentFigure>{`${Math.round(account.utilization.utilizationPercent)}%`}</SegmentFigure>
         ),

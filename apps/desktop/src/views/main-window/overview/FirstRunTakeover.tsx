@@ -155,9 +155,7 @@ function TakeoverStep({
     <>
       <ProgressStepCard
         step={step}
-        surface="firstRun"
         progress={progress}
-        isSteady={false}
         transitionName={progressStepTransitionName(step)}
         bodyAction={
           step !== "fixes" && (

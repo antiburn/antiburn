@@ -11,7 +11,7 @@ import { openFolderAccessSettings, type AppInfo } from "../../../../lib/ipc"
 import { byteLabel } from "../../../../lib/presentation/scanStatusCopy"
 import type { LocalRepositoryItem } from "../../../../lib/types/repository"
 import { useFolderPermissionFlow } from "../../../../lib/useFolderPermissionFlow"
-import { StepSettingsRow } from "./StepSettingsSearchRows"
+import { SettingsRow } from "../../../settings/SettingsSearchRows"
 import { useAppSettings, type AppSettingsController } from "../../../settings/useAppSettings"
 import { RemoteHostsSection } from "./RemoteHostsSection"
 import {
@@ -44,7 +44,7 @@ function RecentDaysSection({
   return (
     <SectionGroup title="Activity">
       <Card>
-        <StepSettingsRow
+        <SettingsRow
           searchId="recentDays"
           description={`Sessions and the popover show activity from the last ${dayLabel(
             settings.activityWindowDays,
@@ -64,7 +64,7 @@ function RecentDaysSection({
             ariaValueText={dayLabel(settings.activityWindowDays)}
             onChange={(days) => void update({ activityWindowDays: days })}
           />
-        </StepSettingsRow>
+        </SettingsRow>
       </Card>
     </SectionGroup>
   )
@@ -75,7 +75,7 @@ function IndexedSessionsSection({ info }: { info: AppInfo | null }) {
   return (
     <SectionGroup title="Local storage">
       <Card>
-        <StepSettingsRow
+        <SettingsRow
           searchId="indexedSessions"
           description="What's currently stored in the sqlite db. Your agents' own files are never touched."
           trailing={
@@ -131,7 +131,7 @@ function RetentionSection({
   }
 
   return (
-    <StepSettingsRow
+    <SettingsRow
       searchId="retention"
       description="antiburn’s session index stays on this machine. Keeping it longer preserves history after providers’ 30-day retention window; a shorter period keeps antiburn’s local index lighter."
       trailing={
@@ -181,24 +181,8 @@ export function SessionsStepSettings() {
 
   const handleRemoveRoot = useCallback((path: string) => session.removeRoot(path), [session])
 
-  return (
+  const sections = (
     <>
-      {permissions.supported && permissions.deferred.length > 0 ? (
-        <FolderPermissionNotice
-          deferred={permissions.deferred}
-          phase={permissionFlow.phase}
-          current={permissionFlow.current}
-          position={permissionFlow.position}
-          total={permissionFlow.total}
-          recordedDenials={permissionFlow.recordedDenials}
-          onRequest={permissionFlow.start}
-          onOpenSettings={() => void openFolderAccessSettings()}
-          onRecheck={() => void handleRecheck()}
-          onCopyDiagnostics={() => void handleCopyDiagnostics()}
-          rechecking={rechecking}
-        />
-      ) : null}
-
       <MonitoringSection settings={settings} update={update} />
       <RecentDaysSection settings={settings} update={update} />
 
@@ -231,6 +215,28 @@ export function SessionsStepSettings() {
       <ScanningSection discoveryPaused={settings.discoveryPaused} />
 
       <IndexedSessionsSection info={info} />
+    </>
+  )
+
+  return (
+    <>
+      {permissions.supported && permissions.deferred.length > 0 ? (
+        <FolderPermissionNotice
+          deferred={permissions.deferred}
+          phase={permissionFlow.phase}
+          current={permissionFlow.current}
+          position={permissionFlow.position}
+          total={permissionFlow.total}
+          recordedDenials={permissionFlow.recordedDenials}
+          onRequest={permissionFlow.start}
+          onOpenSettings={() => void openFolderAccessSettings()}
+          onRecheck={() => void handleRecheck()}
+          onCopyDiagnostics={() => void handleCopyDiagnostics()}
+          rechecking={rechecking}
+        />
+      ) : null}
+
+      {sections}
     </>
   )
 }

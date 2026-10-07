@@ -88,6 +88,11 @@ export interface FixCategory {
   status: FixStatus
   /** Hundredths of one percent; null when the check has no estimate. */
   estimatedBurnBasisPoints: number | null
+  /** Assessed sessions with and without a finding. */
+  finding: number
+  clean: number
+  /** Discovery slugs of the agents whose sessions the check read. */
+  agents: string[]
 }
 
 /** History has no total until discovery finishes. */
@@ -160,8 +165,8 @@ export function stepDocked(flow: FlowStep, step: ProgressStepKey): boolean {
   return flowIndex(flow) >= flowIndex(STEP_DOCKED_AT[step])
 }
 
-// Reuse the name when a card moves within the takeover. The nav rows and the
-// step modal carry no name, so they open and close without motion.
+// Reuse the name when a card moves within the takeover. The nav rows carry
+// no name, so they change without motion.
 export function progressStepTransitionName(step: ProgressStepKey): string {
   return `progress-step-${step}`
 }
@@ -182,15 +187,6 @@ export interface OverviewProgress {
   mode: "pending" | "firstRun" | "steady"
   /** The takeover's current stage. `"done"` in every mode but `firstRun`. */
   flow: FlowStep
-  /** The step whose modal is open, if any. */
-  openStep: ProgressStepKey | null
-  /** A control to reveal and focus inside the open step's settings, from a
-   *  search result. Null when the modal opened without one — a nav-row
-   *  click, say — and the modal shows no particular control. */
-  openStepControl: string | null
-  /** Bumped on every `openProgressStep` call that names a control, so
-   *  choosing the same control twice still re-reveals it. */
-  openStepControlRevision: number
   /**
    * Whether the takeover shows the card for `flow`. False while the previous
    * card moves to its place, so the next card appears only after it lands.
@@ -251,6 +247,9 @@ function toFixCategory(category: ChecksCategoryPayload): FixCategory {
     label: CHECK_LABELS[category.id],
     status,
     estimatedBurnBasisPoints: category.estimatedTokenBurnBasisPoints ?? null,
+    finding: category.finding,
+    clean: category.clean,
+    agents: category.agents ?? [],
   }
 }
 
@@ -278,11 +277,8 @@ export function deriveOverviewProgress(
   latch: FirstRunLatch,
   inputs: ProgressInputs,
   flow: FlowStep,
-  openStep: ProgressStepKey | null,
   stepShown: boolean,
   lastPass: LastPass,
-  openStepControl: string | null = null,
-  openStepControlRevision = 0,
 ): OverviewProgress {
   const mode = deriveMode(latch)
   // Steady behaves as "done": every step reads as docked, so the row always
@@ -359,9 +355,6 @@ export function deriveOverviewProgress(
   return {
     mode,
     flow: exposedFlow,
-    openStep,
-    openStepControl,
-    openStepControlRevision,
     stepShown,
     actionPending: false,
     actionError: null,
@@ -376,9 +369,6 @@ export function deriveOverviewProgress(
 
 let latch: FirstRunLatch = INITIAL_FIRST_RUN_LATCH
 let flow: FlowStep = "welcome"
-let openStep: ProgressStepKey | null = null
-let openStepControl: string | null = null
-let openStepControlRevision = 0
 let stepShown = true
 let actionPending = false
 let actionError: string | null = null
@@ -418,25 +408,13 @@ let snapshot: OverviewProgress = deriveOverviewProgress(
   latch,
   currentInputs(),
   flow,
-  openStep,
   stepShown,
   lastPass,
-  openStepControl,
-  openStepControlRevision,
 )
 const listeners = new Set<() => void>()
 
 function recompute(): void {
-  snapshot = deriveOverviewProgress(
-    latch,
-    currentInputs(),
-    flow,
-    openStep,
-    stepShown,
-    lastPass,
-    openStepControl,
-    openStepControlRevision,
-  )
+  snapshot = deriveOverviewProgress(latch, currentInputs(), flow, stepShown, lastPass)
   snapshot = { ...snapshot, actionPending, actionError }
   for (const listener of listeners) listener()
   maybeReportFirstRunSteps()
@@ -507,8 +485,6 @@ function onReset(): void {
   actionError = null
   latch = resetFirstRunLatch()
   flow = "welcome"
-  openStep = null
-  openStepControl = null
   stepShown = true
   // The wipe clears `onboardingCompleted`, so this device is a first run
   // again until the pass the reset triggers finishes it.
@@ -567,7 +543,6 @@ async function moveTo(to: FlowStep): Promise<boolean> {
     await withViewTransition(() => {
       if (revision !== flowRevision) return
       flow = to
-      openStep = null
       stepShown = false
       recompute()
     })
@@ -631,31 +606,8 @@ export function rewindTo(step: ProgressStepKey): void {
   if (!stepDocked(flow, step)) return
   void withViewTransition(() => {
     flow = step
-    openStep = null
     recompute()
   })
-}
-
-/** A control target reveals and focuses its row without changing its value. */
-export function openProgressStep(key: ProgressStepKey, control?: string): void {
-  openStep = key
-  if (control) {
-    openStepControl = control
-    openStepControlRevision += 1
-  } else {
-    openStepControl = null
-  }
-  recompute()
-  // `fixes` has no settings — `StepSettings` renders nothing for it — so
-  // opening its modal reports no exposure.
-  if (key !== "fixes") {
-    noteInteraction({ kind: "stepSettingsViewed", label: key, detail: "modal" })
-  }
-}
-
-export function closeProgressStep(): void {
-  openStep = null
-  recompute()
 }
 
 /* ---- Ref-counted subscriptions: start on the first listener, stop on the

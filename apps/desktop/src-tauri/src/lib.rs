@@ -794,6 +794,57 @@ mod tests {
         );
     }
 
+    /// Settings → Agents, Sessions, and Checks render the same step settings
+    /// as the main window's first run. The settings window gets the app's
+    /// default set, so every command those panes call must be in it, or in
+    /// a capability that names the settings window.
+    #[test]
+    fn settings_window_can_call_the_step_settings_commands() {
+        let defaults = include_str!("../permissions/default.toml");
+        for expected in [
+            "allow-agent-session-locations",
+            "allow-get-settings",
+            "allow-set-settings",
+            "allow-get-scan-status",
+            "allow-scan-now",
+            "allow-scan-history",
+            "allow-cancel-scan",
+            "allow-app-info",
+            "allow-add-scan-root",
+            "allow-remove-scan-root",
+            "allow-list-scan-roots",
+            "allow-list-repositories",
+            "allow-refresh-repositories",
+            "allow-set-repository-enabled",
+            "allow-get-folder-permissions",
+            "allow-recheck-folder-permissions",
+            "allow-get-consent-diagnostics",
+            "allow-open-folder-access-settings",
+            "allow-request-folder-access",
+            "allow-get-remote-hosts",
+            "allow-get-remote-sync-status",
+            "allow-check-remote-host",
+            "allow-add-remote-host",
+            "allow-update-remote-host",
+            "allow-set-remote-host-sync-enabled",
+            "allow-remove-remote-host",
+            "allow-scan-remote-host",
+            "allow-set-remote-sync-interval",
+            "allow-open-remote-helper-downloads",
+            "allow-get-check-availability",
+            "allow-open-main-window-section",
+        ] {
+            let line = format!("\"{expected}\",");
+            assert!(
+                defaults.lines().any(|candidate| candidate.trim() == line),
+                "missing {expected}"
+            );
+        }
+        let default_capability = include_str!("../capabilities/default.json");
+        assert!(default_capability.contains("\"settings\""));
+        assert!(default_capability.contains("\"default\""));
+    }
+
     #[test]
     fn main_window_capability_includes_window_actions_without_broad_defaults() {
         let capability = include_str!("../capabilities/main.json");

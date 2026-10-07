@@ -1,8 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import { DEFAULT_SETTINGS } from "../../../../lib/ipc"
-import type { OverviewProgress } from "../overviewProgressStore"
+import { DEFAULT_SETTINGS, type AgentFoundCount, type ScanStatus } from "../../../../lib/ipc"
 import type { AgentsStepSettings as AgentsStepSettingsComponent } from "./AgentsStepSettings"
 
 /**
@@ -18,45 +17,27 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
 }))
 
-let snapshot: OverviewProgress
 let AgentsStepSettings: typeof AgentsStepSettingsComponent
+let foundByAgent: AgentFoundCount[]
 
-// The list reads the same `overviewProgress()` rows the icon row and the
-// nav reads, so the two never disagree. A fake store stands in for the
-// real one, the same way `ProgressNav.test.tsx` and
-// `FirstRunTakeover.test.tsx` fake it.
-vi.mock("../overviewProgressStore", () => ({
-  subscribeOverviewProgress: () => () => undefined,
-  overviewProgress: () => snapshot,
-}))
-
-function progress(overrides: Partial<OverviewProgress["agents"]> = {}): OverviewProgress {
+// The list reads the shared scan status, not the Overview progress store,
+// so it also works in the Settings window.
+function scanStatus(): ScanStatus {
   return {
-    mode: "steady",
-    flow: "done",
-    openStep: null,
-    openStepControl: null,
-    openStepControlRevision: 0,
-    stepShown: true,
-    actionPending: false,
-    actionError: null,
-    agents: {
-      done: true,
-      rows: [{ agent: "codex", label: "Codex", sessions: 3, done: true }],
-      ...overrides,
-    },
-    sessions: {
-      done: true,
-      completed: 3,
-      total: 3,
-      displayCompleted: 3,
-      displayTotal: 3,
-      deferred: [],
-    },
-    checks: { done: true, windowSessions: 3, pendingEvidence: 0, deferredEvidence: 0 },
-    categories: [],
-    failingCount: 0,
-    history: null,
+    running: false,
+    completedAgents: 1,
+    totalAgents: 1,
+    sessions: 3,
+    finishedAt: null,
+    cancelled: false,
+    error: null,
+    agents: [],
+    listChanged: false,
+    reDescribed: 0,
+    phase: "idle",
+    foundByAgent,
+    read: { completed: 3, total: 3 },
+    gate: null,
   }
 }
 
@@ -71,6 +52,8 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
         return Promise.resolve(DEFAULT_SETTINGS)
       case "agent_session_locations":
         return Promise.resolve([])
+      case "get_scan_status":
+        return Promise.resolve(scanStatus())
       default:
         return Promise.resolve(null)
     }
@@ -83,8 +66,8 @@ beforeEach(async () => {
   // its own fresh copy of that module.
   vi.resetModules()
   vi.clearAllMocks()
+  foundByAgent = [{ agent: "codex", sessions: 3, done: true }]
   mockCommands()
-  snapshot = progress()
   ;({ AgentsStepSettings } = await import("./AgentsStepSettings"))
 })
 
@@ -97,15 +80,21 @@ describe("AgentsStepSettings coding agents", () => {
     expect(rows[0]).toHaveAccessibleName("Show Codex sessions")
   })
 
-  it("takes its counts from the progress store, not a stale scan-state total", () => {
-    // `AgentsStepSettings` must read the same rows the icon row renders, not
-    // `scan_state.sessionsSeen` — a history pass can leave that column with
+  it("takes its counts from the pass's found counts, not a stale scan-state total", async () => {
+    // `AgentsStepSettings` must read the pass's `foundByAgent` counts, not
+    // `scan_state.sessionsSeen`: a history pass can leave that column with
     // an agent's older, wider-window count.
-    snapshot = progress({
-      rows: [{ agent: "cursor", label: "Cursor", sessions: 0, done: true }],
-    })
+    foundByAgent = [{ agent: "cursor", sessions: 0, done: true }]
     render(<AgentsStepSettings />)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_scan_status"))
     expect(screen.queryByText(/sessions$/)).not.toBeInTheDocument()
+  })
+
+  it("shows its section title only when titled", () => {
+    const { rerender } = render(<AgentsStepSettings />)
+    expect(screen.queryByText("Coding agents")).not.toBeInTheDocument()
+    rerender(<AgentsStepSettings titled />)
+    expect(screen.getByText("Coding agents")).toBeInTheDocument()
   })
 
   it("switches an agent off and saves the preference", async () => {
@@ -119,6 +108,8 @@ describe("AgentsStepSettings coding agents", () => {
           return Promise.resolve(stored)
         case "agent_session_locations":
           return Promise.resolve([])
+        case "get_scan_status":
+          return Promise.resolve(scanStatus())
         default:
           return Promise.resolve(null)
       }

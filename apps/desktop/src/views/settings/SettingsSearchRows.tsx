@@ -38,13 +38,17 @@ export function SettingsToggleRow({
 }
 
 export function SettingsSectionGroup({
+  hideTitle = false,
   searchId,
   ...props
-}: Omit<ComponentProps<typeof SectionGroup>, "title"> & { searchId: SettingsControlId }) {
+}: Omit<ComponentProps<typeof SectionGroup>, "title"> & {
+  hideTitle?: boolean
+  searchId: SettingsControlId
+}) {
   return (
     <SectionGroup
       {...props}
-      title={settingsControlLabel(searchId, detectPlatform())}
+      {...(hideTitle ? {} : { title: settingsControlLabel(searchId, detectPlatform()) })}
       data-settings-control={searchId}
       tabIndex={-1}
     />

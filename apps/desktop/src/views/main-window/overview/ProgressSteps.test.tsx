@@ -19,9 +19,6 @@ function progress(): OverviewProgress {
   return {
     mode: "firstRun",
     flow: "sessions",
-    openStep: null,
-    openStepControl: null,
-    openStepControlRevision: 0,
     stepShown: true,
     actionPending: false,
     actionError: null,
@@ -44,13 +41,7 @@ function progress(): OverviewProgress {
 describe("ProgressStepCard empty progress", () => {
   it("shows a completed empty Sessions pass without a 0/0 progress value", () => {
     render(
-      <ProgressStepCard
-        step="sessions"
-        surface="firstRun"
-        progress={progress()}
-        isSteady={false}
-        transitionName={undefined}
-      />,
+      <ProgressStepCard step="sessions" progress={progress()} transitionName={undefined} />,
     )
 
     expect(screen.getByText("No sessions found")).toBeVisible()
@@ -62,15 +53,7 @@ describe("ProgressStepCard empty progress", () => {
   })
 
   it("shows a completed empty Checks pass with its own copy", () => {
-    render(
-      <ProgressStepCard
-        step="checks"
-        surface="firstRun"
-        progress={progress()}
-        isSteady={false}
-        transitionName={undefined}
-      />,
-    )
+    render(<ProgressStepCard step="checks" progress={progress()} transitionName={undefined} />)
 
     expect(screen.getByText("No sessions to check")).toBeVisible()
     expect(screen.getByRole("progressbar", { name: "Run session checks" })).toHaveAttribute(

@@ -1,80 +1,75 @@
-import { useState } from "react"
-import { Circle, CircleAlert, CircleCheck } from "lucide-react"
+import { type CSSProperties } from "react"
 
+import { BurnCheckFlame } from "../../../components/burn-checks/BurnCheckFlames"
+import { renderAgentIcon } from "../../../lib/agentIcon"
 import { cn } from "../../../lib/cn"
 import type { BurnCheckDetectorId } from "../../../lib/insightsIpc"
-import { CHECK_PROBLEM_PHRASES } from "../../../lib/presentation/checkDefinitions"
+import { agentIconName, GENERIC_AGENT_ICON } from "../../../lib/presentation/agents"
+import { formatTokenBurnPercent } from "../../../lib/presentation/checkReport"
+import {
+  BurnCheckCategoryIcon,
+  burnCheckCategoryColor,
+} from "../burn-checks/BurnCheckCategoryIcon"
 import { type FixCategory, type FixStatus } from "./overviewProgressStore"
-import { OverviewAllClear } from "./OverviewAllClear"
 import { useOverviewProgress } from "./useOverviewProgress"
 
 function statusLabel(status: FixStatus): string {
   switch (status) {
     case "needsFix":
-      return "needs fix"
+      return "Needs fix"
     case "awaitingVerification":
-      return "awaiting verification"
+      return "Awaiting verification"
     case "passing":
-      return "passing"
+      return "Passed"
     case "notChecked":
-      return "not checked"
+      return "Not checked"
     case "snoozed":
-      return "snoozed"
+      return "Snoozed"
   }
 }
 
+/** Failing checks first, highest estimated burn first. Ties keep report order. */
+const STATUS_ORDER: Record<FixStatus, number> = {
+  needsFix: 0,
+  awaitingVerification: 1,
+  notChecked: 2,
+  passing: 3,
+  snoozed: 4,
+}
+
+function byUrgency(a: FixCategory, b: FixCategory): number {
+  return (
+    STATUS_ORDER[a.status] - STATUS_ORDER[b.status] ||
+    (b.estimatedBurnBasisPoints ?? -1) - (a.estimatedBurnBasisPoints ?? -1)
+  )
+}
+
 /**
- * The persistent config checks list. The first-run takeover and its docked
+ * The persistent config checks grid. The first-run takeover and its docked
  * steps and fixes result live in `FirstRunTakeover.tsx` and
  * `ProgressNav.tsx`; this keeps only the steady checklist, in its permanent
  * style, so it shows the same way in `firstRun` and `steady` mode alike.
  */
 export function OverviewFixes({
-  active = true,
   onOpenCheck,
 }: {
-  active?: boolean
   onOpenCheck: (check: BurnCheckDetectorId) => void
 }) {
   const progress = useOverviewProgress()
-  const [showChecks, setShowChecks] = useState(false)
-  // The Overview stays mounted when another view shows. When the user leaves
-  // it, the list closes, so the all-clear mark shows again on return.
-  const [wasActive, setWasActive] = useState(active)
-  if (active !== wasActive) {
-    setWasActive(active)
-    if (!active) setShowChecks(false)
-  }
-  const allClear =
-    progress.categories.length > 0 &&
-    progress.categories.every(
-      (category) => category.status === "passing" || category.status === "snoozed",
-    )
-
-  const showAllClear = allClear && !showChecks
-
   return (
-    // The all-clear card centres in the free space above Recent sessions.
-    <section
-      aria-label="Fixes"
-      className={cn("flex flex-col gap-(--space-sm)", showAllClear && "grow justify-center")}
-    >
-      {/* The all-clear card says it all, so the heading shows only over the list. */}
-      {!showAllClear && <h2 className="type-caption text-label-secondary">Config checks</h2>}
-      {showAllClear ? (
-        <OverviewAllClear onShowChecks={() => setShowChecks(true)} />
-      ) : (
-        <ul className="flex flex-col gap-1 px-px">
-          {progress.categories.map((category) => (
-            <CheckRow key={category.id} category={category} onOpen={onOpenCheck} />
-          ))}
-        </ul>
-      )}
+    <section aria-label="Fixes" className="flex flex-col gap-(--space-sm)">
+      <h2 className="type-caption text-label-secondary">Config checks</h2>
+      <ul className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-(--space-sm)">
+        {[...progress.categories].sort(byUrgency).map((category) => (
+          <CheckCard key={category.id} category={category} onOpen={onOpenCheck} />
+        ))}
+      </ul>
     </section>
   )
 }
 
-function CheckRow({
+/** One check as a card: its icon, name, result, burn estimate, and agents. */
+function CheckCard({
   category,
   onOpen,
 }: {
@@ -82,48 +77,66 @@ function CheckRow({
   onOpen: (check: BurnCheckDetectorId) => void
 }) {
   const needsFix = category.status === "needsFix"
-  const phrase = needsFix ? CHECK_PROBLEM_PHRASES[category.id] : null
+  const agents = [
+    ...new Map(
+      category.agents
+        .map((agent) => (agent === "claude" ? "claude-code" : agent))
+        .filter((agent) => agentIconName(agent) !== GENERIC_AGENT_ICON)
+        .map((agent) => [agentIconName(agent), agent]),
+    ).values(),
+  ]
+  const burn = category.estimatedBurnBasisPoints
   return (
-    <li>
+    <li className="flex">
       <button
         type="button"
         onClick={() => onOpen(category.id)}
+        data-status={category.status}
+        // On hover, a faint tint of the icon's colour lies over the card fill.
+        style={{ "--check-tint": burnCheckCategoryColor(category.id) } as CSSProperties}
         className={cn(
-          // An inset ring, so the scroll pane cannot clip the row's edges.
-          "flex w-full items-center gap-3 rounded-(--radius-popover) px-3 py-1.5 text-start transition-[filter] duration-fast hover:brightness-97 active:brightness-95",
-          needsFix
-            ? "bg-brand-tint/12 ring-1 ring-inset ring-brand-tint/40"
-            : "bg-session-card",
+          "session-card relative flex w-full items-start gap-3 overflow-hidden rounded-(--radius-popover) bg-session-card p-3 text-start transition-[filter] duration-fast hover:bg-linear-to-b hover:from-(--check-tint)/10 hover:to-(--check-tint)/10 active:brightness-95",
         )}
       >
-        {needsFix ? (
-          <CircleAlert size={16} strokeWidth={2} className="shrink-0 text-brand" />
-        ) : category.status === "passing" ? (
-          <CircleCheck size={16} strokeWidth={2} className="shrink-0 text-label-tertiary" />
-        ) : (
-          <Circle size={16} strokeWidth={2} className="shrink-0 text-label-tertiary" />
-        )}
-        <span className="flex min-w-0 items-baseline gap-2">
+        {agents.length > 0 && (
           <span
-            className={cn(
-              "shrink-0 type-body font-medium!",
-              needsFix ? "text-label" : "text-label-secondary",
-            )}
+            aria-hidden="true"
+            className="session-vendor-watermark pointer-events-none absolute -right-1.5 -bottom-1.5 flex gap-1"
           >
-            {category.label}
+            {agents.map((agent) => (
+              <span
+                key={agentIconName(agent)}
+                className="inline-flex size-10 items-center justify-center"
+              >
+                {renderAgentIcon(agent, 40, undefined, "neutral")}
+              </span>
+            ))}
           </span>
-          {phrase && (
-            <span className="truncate type-footnote text-label-tertiary">{phrase}</span>
+        )}
+        <BurnCheckCategoryIcon detector={category.id} bare />
+        <span className="relative z-10 flex min-w-0 flex-col gap-0.5">
+          <span className="type-body font-medium! text-label">{category.label}</span>
+          <span className="font-mono type-footnote tabular-nums">
+            {needsFix ? (
+              <>
+                <span className="font-semibold! text-burn-check-failure-text">
+                  {category.finding} failed
+                </span>
+                <span className="mx-0.5 text-label-tertiary" aria-hidden="true">
+                  ·
+                </span>
+                <span className="text-label-secondary">{category.clean} passed</span>
+              </>
+            ) : (
+              <span className="text-label-secondary">{statusLabel(category.status)}</span>
+            )}
+          </span>
+          {needsFix && burn != null && (
+            <span className="inline-flex items-center gap-1 type-footnote tabular-nums text-label-tertiary">
+              <BurnCheckFlame basisPoints={burn} />
+              {formatTokenBurnPercent(burn)} estimated burn
+            </span>
           )}
-        </span>
-
-        <span
-          className={cn(
-            "ms-auto shrink-0 font-mono type-metadata",
-            needsFix ? "text-brand" : "text-label-tertiary",
-          )}
-        >
-          {statusLabel(category.status)}
         </span>
       </button>
     </li>

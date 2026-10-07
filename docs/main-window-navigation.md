@@ -4,8 +4,6 @@ The retained main renderer owns a bounded history of 100 destinations. A destina
 Overview, Limits, Sessions with its contextual filters and optional session identity, or Checks with an
 optional check ID. Explicit navigation appends; Back and Forward restore; automatic initial
 selection replaces. Selecting the same destination can reveal it again without appending.
-Opening one of the Agents, Sessions, or Checks progress steps' settings modals on top of
-Overview is not a separate history entry.
 New navigation after Back removes the forward branch. Deleted session targets are pruned.
 History lives for the renderer lifetime. The sidebar stays visible above the 720 CSS pixel
 navigation breakpoint and becomes a modal drawer below it;
@@ -57,19 +55,18 @@ Activity destination with a validated remote host ID. The renderer opens that
 host’s list with other facets cleared and no selected session. The link explicitly
 retains the user’s Sessions date range; the count represents all cached sessions.
 
-The same native route also carries an optional Overview step: the popover's
-attention banners open the main window on Overview and straight into the
-Agents, Sessions, or Checks step's settings modal, rather than a Settings pane
-that no longer exists. The Rust `NavigationDestination` gained an
-`overview_step: Option<OverviewStep>` field (`OverviewStep` is `Agents`,
-`Sessions`, or `Checks`), valid only alongside the Overview section; the
-`open_main_window_section` command and its caller-scoping gate it the same
-way. `mainWindowIpc.ts` exposes it as `openMainWindowSection(section,
-overviewStep?)`, and `MainWindowNavigationSession.ts` opens the named step
-(calling the Overview store's `openProgressStep`) once it applies a request
-that carries one. This is the one native route a new local view does not
-need: adding a native route still requires an explicit TypeScript/Rust
-contract change, as above.
+The popover's attention banners do not use this route. A banner action names a
+Settings pane (`openSettingsPane`), and the popover opens the Settings window on
+that pane, for example Settings → Sessions for a blocked repository.
+
+### Progress shortcuts
+
+The Agents, Sessions, Checks, and To fix pills below Settings in the sidebar
+footer are status shortcuts, not views. They are not in the registry or
+search. During the first run, a pill takes the reader back to its step. After
+the first run, Agents, Sessions, and Checks open the Settings window on the
+pane of the same name, and To fix opens Checks at the first check that needs
+a fix, or plain Checks when none does. The pills add no history entry.
 
 ### Feature-owned search metadata
 
@@ -78,19 +75,14 @@ descriptors. Search combines these descriptors without maintaining independent
 label or alias lists. Settings panes share sidebar order and require exhaustive
 icon and renderer bindings. Check descriptors use the existing detector IDs.
 
-The Agents, Sessions, and Checks progress steps own a parallel set of search
-descriptors in `stepSettingsTargets.ts`, for the controls that moved out of
-Settings into their step's modal. These targets carry a
-`step` rather than a `pane`, reuse the same label, alias, and platform shape,
-and resolve through `resolveStepSettingsSearchTarget` to the step and control
-to open. Choosing one navigates to Overview and opens that step's modal with
-the control revealed and focused, never changing its value — the same
-reveal mechanism Settings controls use (`SettingsTargetFocus`), attached to
-the step modal instead of a Settings pane. Limits has no modal of its own, so
-its settings stay searchable through `settingsSearchTargets.ts` under Usage
-instead. During the first run, before the step modals are reachable, search
-excludes every `stepSetting` result; `AppSearch`'s `stepSettingsAvailable`
-prop carries that gate, and it does not apply to any other result kind.
+The Agents, Sessions, and Checks Settings panes render the same components as
+the first run's "Show settings" disclosure. Their controls are ordinary
+Settings targets in `settingsSearchTargets.ts`, with the pane `agents`,
+`sessions`, or `checks`. Search opens them in the Settings window and
+`SettingsTargetFocus` reveals and focuses the row, as for every other pane.
+The first-run disclosure renders the same rows, with the same
+`data-settings-control` IDs, but search does not target it. Search is not
+available while the first run takes over the main window.
 
 The contextual filter menu owns result and spend choices, while live session state
 supplies counts. Fixed filters are excluded from search. The top-level Sessions
@@ -122,15 +114,13 @@ and controller dependencies; generic rows cannot import Settings metadata.
 
 ### Search behavior
 
-`appSearch.ts` ranks a local catalog of views, agent filters, Settings targets, step-settings
-targets, and checks. Names rank before aliases; category groups are bounded. Settings
-controls use stable IDs from `settingsSearchTargets.ts`, shared with their visible labels;
-step-settings controls use the parallel stable IDs in `stepSettingsTargets.ts`. The existing
+`appSearch.ts` ranks a local catalog of views, agent filters, Settings targets, and
+checks. Names rank before aliases; category groups are bounded. Settings controls use
+stable IDs from `settingsSearchTargets.ts`, shared with their visible labels. The existing
 Settings request accepts `pane#control`; old pane-only requests keep working, and a request
-naming a pane that no longer exists — `sources` or `checks` — falls back to General rather
-than failing. The Settings renderer reveals an arriving control once and can wait for a
-delayed row without a React effect; the Overview step modal reveals a step-settings control
-the same way.
+naming a pane that no longer exists, such as `sources`, falls back to General rather than
+failing. The Settings renderer reveals an arriving control once and can wait for a delayed
+row without a React effect.
 
 Search only navigates. It does not toggle controls, scan, fix, export, or delete data.
 Queries are transient and local. Analytics carries only explicit actions and fixed result
