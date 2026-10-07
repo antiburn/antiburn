@@ -37,9 +37,15 @@ function processGroupExists() {
     process.kill(-child.pid, 0)
     return true
   } catch (error) {
-    if (error?.code === "ESRCH") return false
-    return true
+    return !isGoneOrUnsignalable(error)
   }
+}
+
+// macOS answers EPERM for a group whose last members are a crashed process
+// that the crash reporter still holds, or zombies. No signal can reach them,
+// so treat the group as gone.
+function isGoneOrUnsignalable(error) {
+  return error?.code === "ESRCH" || error?.code === "EPERM"
 }
 
 function signalChild(signal) {
@@ -53,7 +59,7 @@ function signalChild(signal) {
   try {
     process.kill(-child.pid, signal)
   } catch (error) {
-    if (error?.code !== "ESRCH") throw error
+    if (!isGoneOrUnsignalable(error)) throw error
   }
 }
 
