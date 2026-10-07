@@ -521,13 +521,15 @@ function SourcesAndRepos({
                 Check the scan folders and folder access, then try again.
               </p>
             </div>
+          ) : !scanning && repositories.length === 0 ? (
+            <p className="py-2 type-footnote text-label-tertiary">
+              No repos found yet. They appear after a coding session runs in one.
+            </p>
           ) : (
             <LocalRepositoryList
               repositories={[...repositories]}
               loading={scanning}
               onToggleRepository={onToggleRepository}
-              emptyTitle="Nothing found yet"
-              emptyDescription="Repositories appear once a coding session has run in one. You can change this later in Settings."
             />
           )}
         </div>
