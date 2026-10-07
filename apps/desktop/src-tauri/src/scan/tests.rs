@@ -2727,6 +2727,19 @@ async fn repo_admission_rejects_a_cwd_that_git_cannot_read() {
     );
 }
 
+#[test]
+fn git_error_admission_holds_the_session_when_git_cannot_run() {
+    let error = anyhow::anyhow!("You have not agreed to the Xcode license agreements.");
+
+    assert_eq!(git_error_admission(&error, true), RepoAdmission::Rejected);
+    assert_eq!(
+        git_error_admission(&error, false),
+        RepoAdmission::GitUnavailable(
+            "You have not agreed to the Xcode license agreements.".into()
+        )
+    );
+}
+
 #[tokio::test]
 async fn repo_admission_reads_only_file_transcripts() {
     let dir = tempfile::tempdir().expect("tempdir");

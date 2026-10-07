@@ -1974,6 +1974,10 @@ async fn describe_with_gate(
     let mut changed = Vec::new();
     let mut list_changed = false;
     let mut gate = GateCounts::default();
+    #[cfg(not(test))]
+    let mut git_unavailable = 0_usize;
+    #[cfg(not(test))]
+    let mut git_error: Option<String> = None;
     let mut read_completed = 0_usize;
     let mut read_total = total_logs;
     let mut read_done = 0_usize;
@@ -2073,6 +2077,14 @@ async fn describe_with_gate(
                                     rejected.push(record.key.clone());
                                     continue;
                                 }
+                                // Keep the stored row, if any, and do not add
+                                // a new one. A later pass admits the session
+                                // when Git runs again.
+                                RepoAdmission::GitUnavailable(error) => {
+                                    git_unavailable += 1;
+                                    git_error.get_or_insert(error);
+                                    continue;
+                                }
                             };
                         if let Some(root) = root {
                             let root = git::canonical_main_repo_root(&root).await;
@@ -2104,6 +2116,14 @@ async fn describe_with_gate(
                 Ok((DescribeOutcome::Skip, _)) | Err(_) => {}
             }
         }
+    }
+    #[cfg(not(test))]
+    if let Some(error) = git_error {
+        ::tracing::warn!(
+            event = "scan_git_unavailable",
+            sessions = git_unavailable,
+            error = %error,
+        );
     }
     if gate != GateCounts::default() {
         ::tracing::debug!(
@@ -2169,6 +2189,8 @@ enum RepoAdmission {
     Folder,
     /// No repository applies.
     Rejected,
+    /// Git cannot run, so the gate cannot decide. The string holds the error.
+    GitUnavailable(String),
 }
 
 /// Apply the repository scan gate to one session with the CWD `cwd`.
@@ -2183,7 +2205,7 @@ async fn repo_admission(
         // Only a CWD that Git reports as outside every repository can move
         // to a repository below it or stay as a folder.
         Ok(None) => {}
-        Err(_) => return RepoAdmission::Rejected,
+        Err(error) => return git_error_admission(&error, git_runs().await),
     }
     if record.source_kind == "file"
         && let Some(root) =
@@ -2197,6 +2219,24 @@ async fn repo_admission(
     } else {
         RepoAdmission::Rejected
     }
+}
+
+/// File a session when Git fails for its CWD. A Git that cannot run at all
+/// (for example, macOS blocks `/usr/bin/git` until the Xcode license is
+/// accepted) says nothing about the CWD, so the gate does not reject it.
+fn git_error_admission(error: &anyhow::Error, git_runs: bool) -> RepoAdmission {
+    if git_runs {
+        RepoAdmission::Rejected
+    } else {
+        RepoAdmission::GitUnavailable(format!("{error:#}"))
+    }
+}
+
+/// True when `git --version` runs and succeeds.
+async fn git_runs() -> bool {
+    git::run_git_output_at(None, &["--version"], &[])
+        .await
+        .is_ok_and(|output| output.status.success())
 }
 
 /// Every session key `previous_records` already held, keyed the way
