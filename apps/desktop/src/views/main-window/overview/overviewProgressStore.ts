@@ -160,7 +160,8 @@ export function stepDocked(flow: FlowStep, step: ProgressStepKey): boolean {
   return flowIndex(flow) >= flowIndex(STEP_DOCKED_AT[step])
 }
 
-// Reuse the name when a card moves between the takeover, nav and modal.
+// Reuse the name when a card moves within the takeover. The nav rows and the
+// step modal carry no name, so they open and close without motion.
 export function progressStepTransitionName(step: ProgressStepKey): string {
   return `progress-step-${step}`
 }
@@ -637,16 +638,14 @@ export function rewindTo(step: ProgressStepKey): void {
 
 /** A control target reveals and focuses its row without changing its value. */
 export function openProgressStep(key: ProgressStepKey, control?: string): void {
-  void withViewTransition(() => {
-    openStep = key
-    if (control) {
-      openStepControl = control
-      openStepControlRevision += 1
-    } else {
-      openStepControl = null
-    }
-    recompute()
-  })
+  openStep = key
+  if (control) {
+    openStepControl = control
+    openStepControlRevision += 1
+  } else {
+    openStepControl = null
+  }
+  recompute()
   // `fixes` has no settings — `StepSettings` renders nothing for it — so
   // opening its modal reports no exposure.
   if (key !== "fixes") {
@@ -655,10 +654,8 @@ export function openProgressStep(key: ProgressStepKey, control?: string): void {
 }
 
 export function closeProgressStep(): void {
-  void withViewTransition(() => {
-    openStep = null
-    recompute()
-  })
+  openStep = null
+  recompute()
 }
 
 /* ---- Ref-counted subscriptions: start on the first listener, stop on the

@@ -15,7 +15,6 @@ import {
   openProgressStep,
   type OverviewProgress,
   type ProgressStepKey,
-  progressStepTransitionName,
   rewindTo,
   stepDocked,
 } from "./overviewProgressStore"
@@ -84,7 +83,6 @@ function ProgressRow({
   // During the first run a row takes the reader back to its step. Once the
   // first run is done, it opens the step's modal.
   const rewinds = progress.mode === "firstRun" && progress.flow !== "done"
-  const transitionName = open ? undefined : progressStepTransitionName(step)
   return (
     <button
       ref={(node) => {
@@ -92,7 +90,6 @@ function ProgressRow({
         else triggerRefs.current.delete(step)
       }}
       type="button"
-      style={transitionName ? { viewTransitionName: transitionName } : undefined}
       aria-haspopup={rewinds ? undefined : "dialog"}
       aria-expanded={rewinds ? undefined : open}
       onClick={() => (rewinds ? rewindTo(step) : openProgressStep(step))}
@@ -177,7 +174,7 @@ function ProgressStepModal({
             surface="modal"
             progress={progress}
             isSteady={progress.mode === "steady"}
-            transitionName={progressStepTransitionName(step)}
+            transitionName={undefined}
           />
           <div
             ref={(node) =>
