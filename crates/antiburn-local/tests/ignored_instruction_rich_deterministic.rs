@@ -550,6 +550,9 @@ impl JevCheck for ContentEnabledCheck {
                 selected_items: selected.actions.len(),
                 ..Default::default()
             },
+            capabilities:
+                antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default(),
+            shared_context: None,
             prepared: selected.actions,
         })
     }
@@ -612,7 +615,7 @@ async fn content_enabled_result(raw: &SessionContentEvidence) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn excluded_approval_output_and_edit_counterfactuals_preserve_reduction_and_resume() {
+async fn selected_context_changes_revision_while_excluded_bodies_preserve_resume() {
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -680,13 +683,13 @@ async fn excluded_approval_output_and_edit_counterfactuals_preserve_reduction_an
     assert!(call_count > 0);
     for (id, index, replacement, sentinel) in [
         (
-            "excluded-approval",
+            "selected-unproven-approval",
             0,
             "APPROVAL_SENTINEL: I authorize delegation.",
             "APPROVAL_SENTINEL",
         ),
         (
-            "excluded-success",
+            "selected-unproven-success",
             2,
             "SUCCESS_SENTINEL: All tests passed.",
             "SUCCESS_SENTINEL",
@@ -719,17 +722,44 @@ async fn excluded_approval_output_and_edit_counterfactuals_preserve_reduction_an
         let mut changed = raw.clone();
         changed.actions[index].text = replacement.to_owned();
         let changed_context = context(changed.clone());
-        assert_eq!(
-            baseline_context.input_revision, changed_context.input_revision,
-            "{id}"
-        );
-        assert_eq!(
-            baseline_context.check_context, changed_context.check_context,
-            "{id}"
-        );
+        let selected_change = matches!(index, 0 | 2);
+        if selected_change {
+            assert_ne!(
+                baseline_context.input_revision, changed_context.input_revision,
+                "{id}"
+            );
+            assert_ne!(
+                baseline_context.check_context, changed_context.check_context,
+                "{id}"
+            );
+        } else {
+            assert_eq!(
+                baseline_context.input_revision, changed_context.input_revision,
+                "{id}"
+            );
+            assert_eq!(
+                baseline_context.check_context, changed_context.check_context,
+                "{id}"
+            );
+        }
         let (plan, result) = assess(&changed_context, answers);
-        assert_eq!(baseline_plan, plan, "{id}");
-        assert_eq!(baseline_result, result, "{id}");
+        if selected_change {
+            assert_eq!(
+                baseline_plan.work_items, plan.work_items,
+                "{id} unproven text does not enter semantic work"
+            );
+        } else {
+            assert_eq!(baseline_plan, plan, "{id}");
+            assert_eq!(baseline_result, result, "{id}");
+        }
+        assert!(
+            result.findings.is_empty(),
+            "{id} cannot grant unproven authorization"
+        );
+        assert!(
+            !result.unassessed_comparisons.is_empty(),
+            "{id} cannot prove clean"
+        );
         assert!(
             !serde_json::to_string(&plan.work_items)
                 .unwrap()
@@ -738,6 +768,7 @@ async fn excluded_approval_output_and_edit_counterfactuals_preserve_reduction_an
         let enabled = content_enabled_result(&changed).await;
         assert_ne!(baseline_enabled, enabled, "{id}");
         assert!(enabled.iter().any(|text| text.contains(sentinel)), "{id}");
+        let before = calls.load(Ordering::SeqCst);
         let counter = Arc::clone(&calls);
         let resumed = run_jev_check(
             &IgnoredInstructionsCheck,
@@ -752,12 +783,30 @@ async fn excluded_approval_output_and_edit_counterfactuals_preserve_reduction_an
         .await
         .unwrap();
         assert!(resumed.complete);
-        assert_eq!(first.result, resumed.result);
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            call_count,
-            "{id} must not redispatch"
-        );
+        if selected_change {
+            assert_ne!(
+                first.result.input_revision, resumed.result.input_revision,
+                "{id} must reduce under the new selected revision"
+            );
+            assert_eq!(
+                resumed.result.input_revision,
+                changed_context.input_revision
+            );
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                before,
+                "{id} can reuse unchanged semantic work but not the old result"
+            );
+            assert!(resumed.result.findings.is_empty());
+            assert!(!resumed.result.unassessed_comparisons.is_empty());
+        } else {
+            assert_eq!(first.result, resumed.result);
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                before,
+                "{id} must not redispatch"
+            );
+        }
     }
 }
 
@@ -1004,12 +1053,22 @@ fn rich_case_records_assert_independent_normalization_selection_binding_and_limi
             "{} selected text",
             record.id
         );
-        assert!(
-            selected
-                .field_availability
-                .iter()
-                .any(|field| field.field == record.unavailable
-                    && field.state == JevFieldAvailabilityState::Excluded)
+        let availability = selected
+            .field_availability
+            .iter()
+            .find(|field| field.field == record.unavailable)
+            .unwrap();
+        assert_eq!(
+            availability.selected,
+            INPUT_SELECTION.includes(record.unavailable)
+        );
+        assert_eq!(
+            availability.state,
+            if availability.selected {
+                JevFieldAvailabilityState::NotObserved
+            } else {
+                JevFieldAvailabilityState::Excluded
+            }
         );
         let context = context(raw.clone());
         assert_eq!(context.evidence_store.publication_fence(), Some(7));

@@ -4,8 +4,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use antiburn_local::analysis::ignored_instructions::{
-    IgnoredInstructionsCheck, prepare_session_content, select_session_content,
+    AssessmentInput, IgnoredInstructionsCheck, InstructionProvenance, InstructionScope,
+    build_jev_context, prepare_session_content, select_session_content, snapshot_from_text,
 };
+use antiburn_local::analysis::jev::{JevInputField, MAX_REQUEST_BYTES, pack_work_items};
 use antiburn_local::analysis::{
     CompositeSink, EvidenceSource, FenceScope, JevCheck, MemoryTurnRowStore, ModelRun, RawSource,
     SessionCoverageRecord, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
@@ -14,6 +16,9 @@ use antiburn_local::analysis::{
 };
 use antiburn_local::pricing::ModelTokens;
 use serde_json::{Value, json};
+
+const MAX_CONTENT_QUERY_PARTS: usize = 256;
+const MAX_CONTENT_QUERY_BYTES: usize = 1024 * 1024;
 
 struct TimedStore {
     inner: Arc<MemoryTurnRowStore>,
@@ -79,14 +84,14 @@ fn fixture(actions: usize, output_bytes: usize) -> SessionInput {
                 "content":[{"type":"text","text":"I requested git status."}]}})
         } else {
             json!({"type":"assistant","uuid":format!("a{index}"),"message":{"role":"assistant","model":"synthetic-model",
-                "content":[{"type":"tool_use","id":format!("call{index}"),"name":"Bash","input":{"command":"git status"}}]}})
+                "content":[{"type":"thinking","thinking":"PRIVATE_NATIVE_THINKING"},{"type":"tool_use","id":format!("call{index}"),"name":"Bash","input":{"command":"git status"}}]}})
         };
         text.push_str(&record.to_string());
         text.push('\n');
         if output_bytes > 0 {
             text.push_str(&json!({"type":"user","uuid":format!("r{index}"),"parentUuid":format!("a{index}"),
                 "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":format!("call{index}"),
-                    "content":"EXCLUDED_OUTPUT ".repeat(output_bytes.div_ceil(16))}]}}).to_string());
+                    "content":"SELECTED_OUTPUT ".repeat(output_bytes.div_ceil(16)),"is_error":false}]}}).to_string());
             text.push('\n');
         }
     }
@@ -136,6 +141,7 @@ fn sample(input: &SessionInput, actions: usize, output_bytes: usize) -> Value {
     let mut projection_us = 0;
     let mut selected_bytes = 0;
     let mut selected_parts = 0;
+    let mut largest_request_bytes = 0;
     for _ in 0..2 {
         let started = Instant::now();
         let content = store.inner.with_connection(|connection| {
@@ -151,19 +157,23 @@ fn sample(input: &SessionInput, actions: usize, output_bytes: usize) -> Value {
             .unwrap()
         });
         query_times.push(started.elapsed().as_micros());
+        assert!(content.parts.len() <= MAX_CONTENT_QUERY_PARTS);
+        assert_eq!(
+            content.coverage.bytes_capped,
+            output_bytes > 0 && actions * output_bytes > MAX_CONTENT_QUERY_BYTES
+        );
         let started = Instant::now();
         let prepared =
             prepare_session_content(&input.session_id, input.source_format, content, Vec::new());
         normalization_us += started.elapsed().as_micros();
         let started = Instant::now();
-        let selected =
+        let mut selected =
             select_session_content(&prepared, IgnoredInstructionsCheck.input_selection());
         projection_us += started.elapsed().as_micros();
         assert!(
-            selected
-                .actions
-                .iter()
-                .all(|event| !event.text.contains("EXCLUDED_OUTPUT"))
+            !serde_json::to_string(&selected)
+                .unwrap()
+                .contains("PRIVATE_NATIVE_THINKING")
         );
         selected_bytes = selected
             .actions
@@ -171,24 +181,84 @@ fn sample(input: &SessionInput, actions: usize, output_bytes: usize) -> Value {
             .map(|event| event.text.len())
             .sum::<usize>();
         selected_parts = selected.actions.len();
-        assert_eq!(selected_parts, actions.min(256));
+        assert!(selected_bytes <= MAX_CONTENT_QUERY_BYTES);
+        assert!(selected_parts <= MAX_CONTENT_QUERY_PARTS);
         let expected_text = if output_bytes == 0 {
             "I requested git status."
         } else {
             "git status"
         };
-        assert!(
-            selected
+        if output_bytes == 0 {
+            assert_eq!(selected_parts, actions.min(MAX_CONTENT_QUERY_PARTS));
+            assert!(
+                selected
+                    .actions
+                    .iter()
+                    .all(|event| event.text == expected_text)
+            );
+            assert_eq!(selected_bytes, selected_parts * expected_text.len());
+        } else {
+            let outputs = selected
                 .actions
                 .iter()
-                .all(|event| event.text == expected_text)
-        );
-        assert_eq!(selected_bytes, selected_parts * expected_text.len());
+                .filter(|event| event.kind == "tool_result")
+                .collect::<Vec<_>>();
+            assert!(!outputs.is_empty());
+            assert!(outputs.iter().all(|event| event.authority == "tool"
+                && event.text == "SELECTED_OUTPUT ".repeat(output_bytes.div_ceil(16))));
+            assert!(
+                selected
+                    .actions
+                    .iter()
+                    .filter(|event| event.kind == "tool_input")
+                    .all(|event| event.text == expected_text)
+            );
+            assert!(selected_parts < actions * 2);
+            selected.instructions = vec![
+                snapshot_from_text(
+                    "AGENTS.md",
+                    "Do not force push.".to_owned(),
+                    InstructionProvenance::RecordedInjection,
+                    InstructionScope::Project,
+                )
+                .unwrap(),
+            ];
+            let context = build_jev_context(&AssessmentInput {
+                prior_history_complete: selected.complete,
+                content: selected.clone(),
+                activity_after_ms: None,
+                boundary_positions: BTreeMap::new(),
+                source_generation: 1,
+                source_fingerprint: None,
+                incarnation: 1,
+                comparison_after: None,
+            })
+            .unwrap();
+            for output in outputs {
+                assert_eq!(
+                    context
+                        .evidence_store
+                        .get(&output.reference.id, JevInputField::BashCommandOutput),
+                    Some(output.text.as_str())
+                );
+            }
+            let plan = IgnoredInstructionsCheck.prepare(&context).unwrap();
+            let packing = pack_work_items(&plan.work_items);
+            assert!(packing.skipped_item_ids.is_empty());
+            assert!(!packing.batches.is_empty());
+            largest_request_bytes = packing
+                .batches
+                .iter()
+                .map(|batch| batch.serialized_bytes)
+                .max()
+                .unwrap();
+            assert!(largest_request_bytes <= MAX_REQUEST_BYTES);
+        }
     }
     let write_us = store.write_us.load(Ordering::Relaxed);
     json!({"reader_and_sink_us":reader_us,"row_and_coverage_write_us":write_us,"writes":store.writes.load(Ordering::Relaxed),
         "reader_without_writes_us":reader_us.saturating_sub(write_us as u128),"query_first_us":query_times[0],"query_repeat_us":query_times[1],
-        "content_normalization_us_mean":normalization_us/2,"projection_us_mean":projection_us/2,"selected_bytes":selected_bytes,"selected_parts":selected_parts})
+        "content_normalization_us_mean":normalization_us/2,"projection_us_mean":projection_us/2,"selected_bytes":selected_bytes,"selected_parts":selected_parts,"largest_request_bytes":largest_request_bytes})
 }
 
 pub fn run() -> Value {
@@ -224,6 +294,12 @@ pub fn verify_selected_query() {
         let input = fixture(16, output_bytes);
         let measured = sample(&input, 16, output_bytes);
         assert!(measured["writes"].as_u64().unwrap() > 0);
-        assert_eq!(measured["selected_parts"], 16);
+        if output_bytes == 0 {
+            assert_eq!(measured["selected_parts"], 16);
+        } else {
+            assert!(measured["selected_bytes"].as_u64().unwrap() >= output_bytes as u64);
+            assert!(measured["selected_parts"].as_u64().unwrap() < 32);
+            assert!(measured["largest_request_bytes"].as_u64().unwrap() > 0);
+        }
     }
 }

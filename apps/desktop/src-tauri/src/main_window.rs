@@ -967,6 +967,7 @@ pub(crate) fn sample_payloads_from_store(
     repositories: &[RepositoryRecord],
     samples: &[BurnCheckSampleSession],
     now_epoch: i64,
+    smart_checks_available: bool,
 ) -> Result<Vec<BurnCheckSamplePayload>, String> {
     let keys = samples.iter().map(sample_key).collect::<Vec<_>>();
     let mut records = store
@@ -1006,12 +1007,49 @@ pub(crate) fn sample_payloads_from_store(
         ]
     };
     let now = Instant::now();
+    let checks_enabled = store
+        .internal_value("internal:burnChecksEnabledAtEpochV1")
+        .is_some();
+    let skill_statuses = if checks_enabled {
+        crate::insights_report::smart_session_statuses(
+            store.state_dir(),
+            &keys,
+            antiburn_local::insights::DetectorId::SkillOpportunities,
+            smart_checks_available,
+        )
+        .map_err(|error| error.to_string())?
+    } else {
+        findings.clone()
+    };
+    let over_statuses = if checks_enabled {
+        crate::insights_report::smart_session_statuses(
+            store.state_dir(),
+            &keys,
+            antiburn_local::insights::DetectorId::OverExploring,
+            smart_checks_available,
+        )
+        .map_err(|error| error.to_string())?
+    } else {
+        findings.clone()
+    };
+    let scope_statuses = if checks_enabled {
+        crate::insights_report::smart_session_statuses(
+            store.state_dir(),
+            &keys,
+            antiburn_local::insights::DetectorId::ScopeCreep,
+            smart_checks_available,
+        )
+        .map_err(|error| error.to_string())?
+    } else {
+        findings.clone()
+    };
     selected
         .into_iter()
         .zip(evidence)
         .zip(generations)
         .zip(findings)
-        .map(|(((sample, evidence), generation), finding)| {
+        .enumerate()
+        .map(|(index, (((sample, evidence), generation), finding))| {
             let record = records
                 .remove(&sample_key(sample))
                 .ok_or("session metadata is unavailable")?;
@@ -1038,6 +1076,21 @@ pub(crate) fn sample_payloads_from_store(
             crate::commands::attach_ignored_instruction_statuses(
                 std::slice::from_mut(&mut hygiene),
                 [finding],
+            );
+            crate::commands::attach_smart_check_statuses(
+                std::slice::from_mut(&mut hygiene),
+                [skill_statuses[index]],
+                "skillOpportunities",
+            );
+            crate::commands::attach_smart_check_statuses(
+                std::slice::from_mut(&mut hygiene),
+                [over_statuses[index]],
+                "overExploring",
+            );
+            crate::commands::attach_smart_check_statuses(
+                std::slice::from_mut(&mut hygiene),
+                [scope_statuses[index]],
+                "scopeCreep",
             );
             Ok(BurnCheckSamplePayload {
                 navigation_handle,
@@ -2750,8 +2803,9 @@ mod tests {
             })
             .collect::<Vec<_>>();
         store.upsert_sessions(&records, &[]).unwrap();
-        let first = sample_payloads_from_store(&state, &store, &[], &samples, 1000).unwrap();
-        let second = sample_payloads_from_store(&state, &store, &[], &samples, 1000).unwrap();
+        let first = sample_payloads_from_store(&state, &store, &[], &samples, 1000, false).unwrap();
+        let second =
+            sample_payloads_from_store(&state, &store, &[], &samples, 1000, false).unwrap();
         assert_eq!(first.len(), 2);
         assert_eq!(second.len(), 2);
         assert_eq!(first[0].agent, "claude-code");

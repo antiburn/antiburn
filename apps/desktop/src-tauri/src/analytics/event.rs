@@ -506,9 +506,12 @@ pub enum Interaction {
     /// A fix prompt request completed.
     BurnCheckPromptPrepared {
         outcome: PromptPreparationOutcome,
+        check: Option<SmartCheck>,
     },
     /// A prepared fix prompt reached the clipboard.
-    BurnCheckPromptCopied,
+    BurnCheckPromptCopied {
+        check: Option<SmartCheck>,
+    },
     /// A later result appeared in the visible Burn Checks workspace.
     BurnCheckOutcomeObserved {
         outcome: BurnCheckOutcome,
@@ -533,11 +536,158 @@ pub enum Interaction {
         stage: IgnoredInstructionStage,
         outcome: IgnoredInstructionOutcome,
     },
+    SmartCheckObserved {
+        check: SmartCheck,
+        observation: SmartCheckObservation,
+    },
     /// The contextual Sessions filters changed.
     SessionFiltersChanged {
         action: SessionFilterAction,
         agent: Option<AgentKind>,
     },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmartCheck {
+    IgnoredInstructions,
+    ScopeCreep,
+    OverExploring,
+    SkillOpportunities,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmartCheckObservation {
+    FindingVisible,
+    EvidenceAvailable,
+    EvidenceUnavailable,
+    EvidenceFailed,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SmartCheckProvider {
+    Jev,
+    Cloudflare,
+    Ollama,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ProviderSetupOutcome {
+    Saved,
+    Switched,
+    CredentialRemoved,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ProviderTestOutcome {
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmartCheckAssessmentOutcome {
+    Finding,
+    Clean,
+    Abstained,
+    Failed,
+}
+
+/// Native operation boundaries own lifecycle events.
+#[derive(Debug, Clone, Copy)]
+pub enum SmartCheckLifecycle {
+    Enablement {
+        enabled: bool,
+    },
+    ProviderSetup {
+        provider: SmartCheckProvider,
+        outcome: ProviderSetupOutcome,
+    },
+    ProviderTest {
+        provider: SmartCheckProvider,
+        outcome: ProviderTestOutcome,
+    },
+    Assessment {
+        check: SmartCheck,
+        outcome: SmartCheckAssessmentOutcome,
+        historical: bool,
+    },
+}
+
+impl From<crate::jev::config::SystemOneProvider> for SmartCheckProvider {
+    fn from(provider: crate::jev::config::SystemOneProvider) -> Self {
+        use crate::jev::config::SystemOneProvider;
+        match provider {
+            SystemOneProvider::Jev => Self::Jev,
+            SystemOneProvider::Cloudflare => Self::Cloudflare,
+            SystemOneProvider::Ollama => Self::Ollama,
+            SystemOneProvider::Custom => Self::Custom,
+        }
+    }
+}
+
+impl SmartCheckAssessmentOutcome {
+    pub(crate) fn from_evidence(has_finding: bool, clean: bool) -> Self {
+        if has_finding {
+            Self::Finding
+        } else if clean {
+            Self::Clean
+        } else {
+            Self::Abstained
+        }
+    }
+}
+
+#[cfg(feature = "analytics")]
+impl SmartCheckLifecycle {
+    pub fn resolve(self) -> (EventName, Facts) {
+        let (label, detail) = match self {
+            Self::Enablement { enabled } => {
+                ("enablement", if enabled { "enabled" } else { "disabled" })
+            }
+            Self::ProviderSetup { provider, outcome } => (
+                provider.as_str(),
+                match outcome {
+                    ProviderSetupOutcome::Saved => "provider_saved",
+                    ProviderSetupOutcome::Switched => "provider_switched",
+                    ProviderSetupOutcome::CredentialRemoved => "credential_removed",
+                },
+            ),
+            Self::ProviderTest { provider, outcome } => (
+                provider.as_str(),
+                match outcome {
+                    ProviderTestOutcome::Succeeded => "test_succeeded",
+                    ProviderTestOutcome::Failed => "test_failed",
+                },
+            ),
+            Self::Assessment {
+                check,
+                outcome,
+                historical,
+            } => (
+                check.as_str(),
+                match (historical, outcome) {
+                    (false, SmartCheckAssessmentOutcome::Finding) => "execution_finding",
+                    (false, SmartCheckAssessmentOutcome::Clean) => "execution_clean",
+                    (false, SmartCheckAssessmentOutcome::Abstained) => "execution_abstained",
+                    (false, SmartCheckAssessmentOutcome::Failed) => "execution_failed",
+                    (true, SmartCheckAssessmentOutcome::Finding) => "backfill_finding",
+                    (true, SmartCheckAssessmentOutcome::Clean) => "backfill_clean",
+                    (true, SmartCheckAssessmentOutcome::Abstained) => "backfill_abstained",
+                    (true, SmartCheckAssessmentOutcome::Failed) => "backfill_failed",
+                },
+            ),
+        };
+        (
+            EventName::IgnoredInstructionLifecycle,
+            Facts {
+                label: Some(label),
+                detail: Some(detail),
+                ..Facts::default()
+            },
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -898,16 +1048,21 @@ impl Interaction {
                     ..Facts::default()
                 },
             ),
-            Interaction::BurnCheckPromptPrepared { outcome } => (
+            Interaction::BurnCheckPromptPrepared { outcome, check } => (
                 EventName::BurnCheckPromptPrepared,
                 Facts {
+                    label: check.map(SmartCheck::as_str),
                     detail: Some(outcome.as_str()),
                     ..Facts::default()
                 },
             ),
-            Interaction::BurnCheckPromptCopied => {
-                (EventName::BurnCheckPromptCopied, Facts::default())
-            }
+            Interaction::BurnCheckPromptCopied { check } => (
+                EventName::BurnCheckPromptCopied,
+                Facts {
+                    label: check.map(SmartCheck::as_str),
+                    ..Facts::default()
+                },
+            ),
             Interaction::BurnCheckOutcomeObserved { outcome, origin } => (
                 EventName::BurnCheckOutcomeObserved,
                 Facts {
@@ -961,6 +1116,14 @@ impl Interaction {
                     ..Facts::default()
                 },
             ),
+            Interaction::SmartCheckObserved { check, observation } => (
+                EventName::IgnoredInstructionObserved,
+                Facts {
+                    label: Some(check.as_str()),
+                    detail: Some(observation.as_str()),
+                    ..Facts::default()
+                },
+            ),
             Interaction::SessionFiltersChanged { action, agent } => (
                 EventName::SessionFiltersChanged,
                 Facts {
@@ -990,6 +1153,28 @@ macro_rules! wire_values {
         }
     };
 }
+
+#[cfg(feature = "analytics")]
+wire_values!(SmartCheck, {
+    SmartCheck::IgnoredInstructions => "ignored_instructions",
+    SmartCheck::ScopeCreep => "scope_creep",
+    SmartCheck::OverExploring => "over_exploring",
+    SmartCheck::SkillOpportunities => "skill_opportunities",
+});
+#[cfg(feature = "analytics")]
+wire_values!(SmartCheckObservation, {
+    SmartCheckObservation::FindingVisible => "finding_visible",
+    SmartCheckObservation::EvidenceAvailable => "evidence_available",
+    SmartCheckObservation::EvidenceUnavailable => "evidence_unavailable",
+    SmartCheckObservation::EvidenceFailed => "evidence_failed",
+});
+#[cfg(feature = "analytics")]
+wire_values!(SmartCheckProvider, {
+    SmartCheckProvider::Jev => "jev",
+    SmartCheckProvider::Cloudflare => "cloudflare",
+    SmartCheckProvider::Ollama => "ollama",
+    SmartCheckProvider::Custom => "custom",
+});
 
 #[cfg(feature = "analytics")]
 wire_values!(Surface, {
@@ -1420,12 +1605,275 @@ mod tests {
     };
     use super::*;
 
+    fn assert_smart_check_payload(
+        resolved: (EventName, Facts),
+        name: &str,
+        label: Option<&str>,
+        detail: Option<&str>,
+    ) {
+        let (event_name, facts) = resolved;
+        let mut event = sample();
+        event.event = event_name.as_str().to_owned();
+        event.properties = Properties {
+            arch: "aarch64",
+            bucket: facts.bucket,
+            label: facts.label,
+            detail: facts.detail,
+            origin: facts.origin,
+            usage_band: facts.usage_band,
+            response_shape: facts.response_shape,
+            eligibility: facts.eligibility,
+            ineligible_reason: facts.ineligible_reason,
+            experiment: facts.experiment,
+            reset_arm: facts.reset_arm,
+            reset_availability: facts.reset_availability,
+            resets_per_week: facts.resets_per_week,
+            next_reset_available: facts.next_reset_available,
+            plan: facts.plan,
+            factor_band: facts.factor_band,
+            residual_band: facts.residual_band,
+            estimate_bias: facts.estimate_bias,
+            unexplained_band: facts.unexplained_band,
+            reading_coverage: facts.reading_coverage,
+            resource_usage: facts.resource_usage,
+            unrecognized_types: facts.unrecognized_types,
+        };
+        let payload = serde_json::to_value(event).expect("Typed Smart Check event serializes");
+        assert_eq!(payload["event"], name);
+        let mut expected = serde_json::json!({"arch": "aarch64"});
+        if let Some(label) = label {
+            expected["label"] = label.into();
+        }
+        if let Some(detail) = detail {
+            expected["detail"] = detail.into();
+        }
+        assert_eq!(payload["properties"], expected);
+    }
+
+    const SMART_CHECKS: &[&str] = &[
+        "ignored_instructions",
+        "scope_creep",
+        "over_exploring",
+        "skill_opportunities",
+    ];
+
+    #[test]
+    fn smart_check_enablement_preserves_the_existing_global_contract() {
+        for enabled in [false, true] {
+            let lifecycle = SmartCheckLifecycle::Enablement { enabled };
+            assert_smart_check_payload(
+                lifecycle.resolve(),
+                "antiburn.ignored_instruction_lifecycle",
+                Some("enablement"),
+                Some(if enabled { "enabled" } else { "disabled" }),
+            );
+        }
+    }
+
+    #[test]
+    fn smart_check_provider_setup_and_test_payloads_are_closed() {
+        use crate::jev::config::SystemOneProvider;
+        for (source, label) in [
+            (SystemOneProvider::Jev, "jev"),
+            (SystemOneProvider::Cloudflare, "cloudflare"),
+            (SystemOneProvider::Ollama, "ollama"),
+            (SystemOneProvider::Custom, "custom"),
+        ] {
+            let provider = source.into();
+            for (outcome, detail) in [
+                (ProviderSetupOutcome::Saved, "provider_saved"),
+                (ProviderSetupOutcome::Switched, "provider_switched"),
+                (
+                    ProviderSetupOutcome::CredentialRemoved,
+                    "credential_removed",
+                ),
+            ] {
+                let lifecycle = SmartCheckLifecycle::ProviderSetup { provider, outcome };
+                assert_smart_check_payload(
+                    lifecycle.resolve(),
+                    "antiburn.ignored_instruction_lifecycle",
+                    Some(label),
+                    Some(detail),
+                );
+            }
+            for (outcome, detail) in [
+                (ProviderTestOutcome::Succeeded, "test_succeeded"),
+                (ProviderTestOutcome::Failed, "test_failed"),
+            ] {
+                assert_smart_check_payload(
+                    SmartCheckLifecycle::ProviderTest { provider, outcome }.resolve(),
+                    "antiburn.ignored_instruction_lifecycle",
+                    Some(label),
+                    Some(detail),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn smart_check_assessment_and_abstention_payloads_are_closed() {
+        for (check, label) in [
+            (SmartCheck::IgnoredInstructions, "ignored_instructions"),
+            (SmartCheck::ScopeCreep, "scope_creep"),
+            (SmartCheck::OverExploring, "over_exploring"),
+            (SmartCheck::SkillOpportunities, "skill_opportunities"),
+        ] {
+            for historical in [false, true] {
+                for (outcome, suffix) in [
+                    (SmartCheckAssessmentOutcome::Finding, "finding"),
+                    (SmartCheckAssessmentOutcome::Clean, "clean"),
+                    (SmartCheckAssessmentOutcome::Abstained, "abstained"),
+                    (SmartCheckAssessmentOutcome::Failed, "failed"),
+                ] {
+                    let lifecycle = SmartCheckLifecycle::Assessment {
+                        check,
+                        outcome,
+                        historical,
+                    };
+                    let detail = format!(
+                        "{}_{suffix}",
+                        if historical { "backfill" } else { "execution" }
+                    );
+                    assert_smart_check_payload(
+                        lifecycle.resolve(),
+                        "antiburn.ignored_instruction_lifecycle",
+                        Some(label),
+                        Some(&detail),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn smart_check_assessment_requires_a_finding_or_proven_clean_evidence() {
+        assert_eq!(
+            SmartCheckAssessmentOutcome::from_evidence(false, false),
+            SmartCheckAssessmentOutcome::Abstained
+        );
+        assert_eq!(
+            SmartCheckAssessmentOutcome::from_evidence(false, true),
+            SmartCheckAssessmentOutcome::Clean
+        );
+        assert_eq!(
+            SmartCheckAssessmentOutcome::from_evidence(true, false),
+            SmartCheckAssessmentOutcome::Finding
+        );
+        assert_eq!(
+            SmartCheckAssessmentOutcome::from_evidence(true, true),
+            SmartCheckAssessmentOutcome::Finding
+        );
+    }
+
+    #[test]
+    fn smart_check_visible_finding_and_evidence_payloads_are_closed() {
+        for check in SMART_CHECKS {
+            for observation in [
+                "finding_visible",
+                "evidence_available",
+                "evidence_unavailable",
+                "evidence_failed",
+            ] {
+                let interaction: Interaction = serde_json::from_value(serde_json::json!({
+                    "kind":"smartCheckObserved", "check":check, "observation":observation,
+                }))
+                .expect("Authored Smart Check observation uses closed interaction values");
+                assert_smart_check_payload(
+                    interaction.resolve(),
+                    "antiburn.ignored_instruction_observed",
+                    Some(check),
+                    Some(observation),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn smart_check_prompt_payloads_preserve_legacy_and_classify_four_checks() {
+        for check in [None]
+            .into_iter()
+            .chain(SMART_CHECKS.iter().copied().map(Some))
+        {
+            for outcome in ["ready", "stale", "expired", "unavailable", "failed"] {
+                let mut input =
+                    serde_json::json!({"kind":"burnCheckPromptPrepared", "outcome":outcome});
+                if let Some(check) = check {
+                    input["check"] = check.into();
+                }
+                let interaction: Interaction = serde_json::from_value(input)
+                    .expect("Authored prompt preparation uses closed interaction values");
+                assert_smart_check_payload(
+                    interaction.resolve(),
+                    "antiburn.burn_check_prompt_prepared",
+                    check,
+                    Some(outcome),
+                );
+            }
+            let mut input = serde_json::json!({"kind":"burnCheckPromptCopied"});
+            if let Some(check) = check {
+                input["check"] = check.into();
+            }
+            let interaction: Interaction = serde_json::from_value(input)
+                .expect("Authored prompt copy uses a supported check value");
+            assert_smart_check_payload(
+                interaction.resolve(),
+                "antiburn.burn_check_prompt_copied",
+                check,
+                None,
+            );
+        }
+    }
+
+    #[test]
+    fn smart_check_contracts_reject_private_fields_and_unknown_values() {
+        let interactions = [
+            serde_json::json!({"kind":"smartCheckObserved", "check":"scope_creep", "observation":"finding_visible"}),
+            serde_json::json!({"kind":"burnCheckPromptPrepared", "check":"over_exploring", "outcome":"ready"}),
+            serde_json::json!({"kind":"burnCheckPromptCopied", "check":"skill_opportunities"}),
+            serde_json::json!({"kind":"ignoredInstructionObserved", "stage":"evidence", "outcome":"available"}),
+        ];
+        for input in &interactions {
+            for field in ["check", "observation", "outcome", "stage"] {
+                if input.get(field).is_some() {
+                    let mut invalid = input.clone();
+                    invalid[field] = "private_unknown_value".into();
+                    assert!(serde_json::from_value::<Interaction>(invalid).is_err());
+                }
+            }
+        }
+        for field in [
+            "content",
+            "prompt",
+            "excerpt",
+            "path",
+            "url",
+            "endpoint",
+            "model",
+            "key",
+            "apiKey",
+            "accountId",
+            "sessionId",
+            "findingId",
+            "approval",
+            "error",
+        ] {
+            for input in &interactions {
+                let mut invalid = input.clone();
+                invalid[field] = "private".into();
+                assert!(
+                    serde_json::from_value::<Interaction>(invalid).is_err(),
+                    "{field}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn ignored_instruction_interactions_accept_only_closed_statuses() {
         let interaction: Interaction = serde_json::from_str(
             r#"{"kind":"ignoredInstructionObserved","stage":"evidence","outcome":"available"}"#,
         )
-        .unwrap();
+        .expect("Authored ignored instruction interaction uses closed status values");
         let (name, facts) = interaction.resolve();
         assert_eq!(name.as_str(), "antiburn.ignored_instruction_observed");
         assert_eq!(facts.label, Some("evidence"));

@@ -219,6 +219,9 @@ async fn shared_runner_persists_each_response_before_the_slow_tail_and_resumes_w
                     .collect(),
                 skipped_item_ids: Vec::new(),
                 coverage: JevCoverage::default(),
+                capabilities:
+                    antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default(),
+                shared_context: None,
                 prepared: (),
             })
         }
@@ -343,6 +346,201 @@ async fn shared_runner_persists_each_response_before_the_slow_tail_and_resumes_w
 }
 
 const CHECK_IDS: &[&str] = &["ignored_instructions", "future_check"];
+
+#[test]
+fn new_check_enrollment_preserves_legacy_progress_and_enable_epoch() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    let record = session("upgrade-boundaries", 10_000);
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    publish_ready(&store, &record, 1);
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], 20_000)
+        .unwrap();
+    store
+        .lock()
+        .execute_batch(
+            "DELETE FROM setting WHERE key LIKE 'internal:burnCheckEnabledAtEpochV1:%';
+         UPDATE burn_check_assessment SET status = 'failed', input_revision = 'saved-input',
+             evaluator_revision = 'saved-evaluator', progress_json = '{\"saved\":true}',
+             result_json = '{\"result\":true}', result_revision = 'saved-result', request_count = 7,
+             next_attempt_at_epoch = 60000, last_error_category = 'invalid_response';",
+        )
+        .unwrap();
+    let before = store
+        .burn_check_assessment(&record.key, "ignored_instructions")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store
+            .capture_burn_check_boundaries(CHECK_IDS, 30_000)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .capture_burn_check_boundaries(CHECK_IDS, 40_000)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store
+            .burn_check_assessment(&record.key, "ignored_instructions")
+            .unwrap()
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        store
+            .internal_value("internal:burnChecksEnabledAtEpochV1")
+            .as_deref(),
+        Some("20000")
+    );
+    assert_eq!(
+        store
+            .internal_value("internal:burnCheckEnabledAtEpochV1:ignored_instructions")
+            .as_deref(),
+        Some("20000")
+    );
+    assert_eq!(
+        store
+            .internal_value("internal:burnCheckEnabledAtEpochV1:future_check")
+            .as_deref(),
+        Some("30000")
+    );
+    let boundary: (i64, String, i64, i64) = store.lock().query_row(
+        "SELECT boundary_at_epoch, boundary_positions_json, next_attempt_at_epoch, created_at_epoch
+         FROM burn_check_assessment WHERE check_id = 'ignored_instructions'",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    ).unwrap();
+    assert_eq!(boundary.0, 20_000);
+    assert_ne!(boundary.1, "{}");
+    assert_eq!(boundary.2, 60_000);
+    assert_eq!(boundary.3, 20_000);
+    drop(store);
+    let reopened = Store::open(directory.path()).unwrap();
+    assert_eq!(
+        reopened
+            .capture_burn_check_boundaries(CHECK_IDS, 50_000)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        reopened
+            .burn_check_assessment(&record.key, "ignored_instructions")
+            .unwrap()
+            .unwrap(),
+        before
+    );
+}
+
+#[test]
+fn empty_store_enrollment_fences_later_discovery_to_each_check_epoch() {
+    let store = store();
+    assert_eq!(
+        store
+            .capture_burn_check_boundaries(&["ignored_instructions"], 20_000)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store
+            .capture_burn_check_boundaries(CHECK_IDS, 30_000)
+            .unwrap(),
+        0
+    );
+    let records = [
+        session("before-new-check", 25_000),
+        session("after-new-check", 35_000),
+    ];
+    store
+        .upsert_sessions(&records, &crate::agents::evidence_cohort())
+        .unwrap();
+    for record in &records {
+        publish_ready(&store, record, 1);
+    }
+    assert_eq!(
+        store
+            .capture_burn_check_boundaries(CHECK_IDS, 40_000)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store
+            .burn_check_candidates("ignored_instructions", 50_000, 0, 10)
+            .unwrap()
+            .len(),
+        2
+    );
+    let candidates = store
+        .burn_check_candidates_for_revision("future_check", "current", 50_000, 0, 10)
+        .unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].session.key, records[1].key);
+    assert_eq!(candidates[0].boundary_at_epoch, 30_000);
+}
+
+#[test]
+fn boundary_enrollment_rolls_back_every_page_and_marker_on_failure() {
+    let store = store();
+    let records = (0..257)
+        .map(|index| session(&format!("enroll-{index:03}"), 10_000))
+        .collect::<Vec<_>>();
+    store
+        .upsert_sessions(&records, &crate::agents::evidence_cohort())
+        .unwrap();
+    store
+        .lock()
+        .execute_batch(
+            "CREATE TEMP TRIGGER fail_boundary BEFORE INSERT ON burn_check_assessment
+         WHEN NEW.session_id = 'enroll-256' AND NEW.check_id = 'future_check'
+         BEGIN SELECT RAISE(ABORT, 'injected boundary failure'); END;",
+        )
+        .unwrap();
+    assert!(
+        store
+            .capture_burn_check_boundaries(CHECK_IDS, 20_000)
+            .is_err()
+    );
+    assert!(
+        store
+            .internal_value("internal:burnChecksEnabledAtEpochV1")
+            .is_none()
+    );
+    assert!(
+        store
+            .internal_value("internal:burnCheckEnabledAtEpochV1:ignored_instructions")
+            .is_none()
+    );
+    let count: usize = store
+        .lock()
+        .query_row("SELECT count(*) FROM burn_check_assessment", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+    store
+        .lock()
+        .execute_batch("DROP TRIGGER fail_boundary")
+        .unwrap();
+    assert_eq!(
+        store
+            .capture_burn_check_boundaries(CHECK_IDS, 20_000)
+            .unwrap(),
+        514
+    );
+    assert_eq!(
+        store
+            .capture_burn_check_boundaries(CHECK_IDS, 30_000)
+            .unwrap(),
+        0
+    );
+}
 
 #[test]
 fn replacing_a_rejected_key_retries_only_auth_failures() {
@@ -499,6 +697,9 @@ async fn appended_work_answers_resume_without_provider_dispatch() {
                 }],
                 skipped_item_ids: Vec::new(),
                 coverage: JevCoverage::default(),
+                capabilities:
+                    antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default(),
+                shared_context: None,
                 prepared: (),
             })
         }
@@ -647,6 +848,111 @@ fn pause_and_reenable_preserve_same_revision_checkpoint() {
             .progress_json,
         "{\"saved\":true}"
     );
+}
+
+#[test]
+fn assessment_lifecycle_rejects_stale_and_null_evidence_revisions() {
+    for stale_revision in [None, Some(antiburn_local::analysis::PARSER_REVISION - 1)] {
+        let store = store();
+        let mut record = session("revision-guard", 10_000);
+        record.activity_cursor = "before".to_owned();
+        store
+            .upsert_sessions(
+                std::slice::from_ref(&record),
+                &crate::agents::evidence_cohort(),
+            )
+            .unwrap();
+        publish_ready(&store, &record, 1);
+        store
+            .capture_burn_check_boundaries(&["ignored_instructions"], 20_000)
+            .unwrap();
+        record.activity_cursor = "after".to_owned();
+        record.updated_at_epoch = Some(29_000);
+        store
+            .upsert_sessions(
+                std::slice::from_ref(&record),
+                &crate::agents::evidence_cohort(),
+            )
+            .unwrap();
+        publish_ready(&store, &record, 2);
+        let candidate = store
+            .burn_check_candidates("ignored_instructions", 40_000, 180, 10)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let input = input(&candidate, "revision-guard-input");
+        assert!(
+            store
+                .queue_burn_check_assessment(&input, 40_000, 180)
+                .unwrap()
+        );
+        set_evidence_parser_revision(&store, &input, stale_revision);
+        assert!(
+            !store
+                .claim_burn_check_assessment(&input, 40_000, 300, 180)
+                .unwrap()
+        );
+        set_evidence_parser_revision(
+            &store,
+            &input,
+            Some(antiburn_local::analysis::PARSER_REVISION),
+        );
+        assert!(
+            store
+                .claim_burn_check_assessment(&input, 40_000, 300, 180)
+                .unwrap()
+        );
+
+        set_evidence_parser_revision(&store, &input, stale_revision);
+
+        assert!(
+            store
+                .burn_check_candidates("ignored_instructions", 40_001, 180, 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !store
+                .renew_burn_check_assessment(&input, 40_001, 300, 180)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .save_burn_check_checkpoint(&input, "{}", None, 40_001, 300, 180)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .fail_burn_check_assessment_with_result(
+                    &input,
+                    &BurnCheckFailure {
+                        error_category: "provider_error",
+                        result_json: "{}",
+                        progress_json: "{}",
+                        retry_at_epoch: Some(40_100),
+                    },
+                    40_001,
+                    180,
+                )
+                .unwrap()
+        );
+        assert!(
+            !store
+                .complete_burn_check_assessment(&input, "{}", 40_001, 180)
+                .unwrap()
+        );
+    }
+}
+
+fn set_evidence_parser_revision(store: &Store, input: &BurnCheckInput, revision: Option<i64>) {
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence SET parser_revision = ?1
+              WHERE environment_key = 'native' AND agent = ?2 AND session_id = ?3",
+            params![revision, input.key.agent, input.key.session_id],
+        )
+        .unwrap();
 }
 
 #[test]
@@ -1367,6 +1673,51 @@ fn usage_tracking_allows_unbounded_requests_and_caches_exact_responses() {
     );
 
     let mut reservation_ids = Vec::new();
+    for (column, revision) in [
+        ("parser_revision", PARSER_REVISION),
+        ("analyzer_revision", ANALYZER_REVISION),
+        ("evidence_schema_revision", EVIDENCE_SCHEMA_REVISION),
+    ] {
+        for stale in [Some(revision - 1), None] {
+            store
+                .lock()
+                .execute(
+                    &format!("UPDATE session_evidence SET {column} = ?1"),
+                    [stale],
+                )
+                .unwrap();
+            assert_eq!(
+                store
+                    .reserve_burn_check_usage(
+                        &input,
+                        "synthetic-provider",
+                        "model-v1",
+                        8_192,
+                        40_001,
+                        180
+                    )
+                    .unwrap(),
+                BurnCheckReservation::Stale,
+                "reservation must reject {column} = {stale:?}"
+            );
+            assert_eq!(
+                store
+                    .burn_check_assessment(&record.key, "ignored_instructions")
+                    .unwrap()
+                    .unwrap()
+                    .request_count,
+                0,
+                "a stale reservation must not consume an attempt"
+            );
+        }
+        store
+            .lock()
+            .execute(
+                &format!("UPDATE session_evidence SET {column} = ?1"),
+                [revision],
+            )
+            .unwrap();
+    }
     for _ in 0..70 {
         match store
             .reserve_burn_check_usage(&input, "synthetic-provider", "model-v1", 8_192, 40_001, 180)
@@ -1912,6 +2263,14 @@ fn clearing_session_data_removes_assessment_progress_cache_and_usage() {
 
     let before_clear = time::OffsetDateTime::now_utc().unix_timestamp();
     store.clear_local_session_data().unwrap();
+    assert!(
+        store
+            .internal_value("internal:burnCheckEnabledAtEpochV1:ignored_instructions")
+            .unwrap()
+            .parse::<i64>()
+            .unwrap()
+            >= before_clear
+    );
     assert!(
         !store
             .burn_check_requests_are_unresolved(&["clear-request".to_owned()])

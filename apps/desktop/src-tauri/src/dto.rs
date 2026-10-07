@@ -912,6 +912,7 @@ pub enum ChecksCategoryLifecyclePayload {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChecksReportPayload {
+    pub smart_checks_available: bool,
     pub evidence_settled: bool,
     /// Sessions with evidence that is queued or processing for this report window.
     pub pending_evidence: u64,
@@ -936,6 +937,9 @@ pub enum BurnCheckDetectorId {
     OveruseOfFastMode,
     CacheChurn,
     IgnoredInstructions,
+    SkillOpportunities,
+    OverExploring,
+    ScopeCreep,
 }
 
 /// A reader-owned suppression for one entire burn check.
@@ -968,6 +972,9 @@ impl From<BurnCheckDetectorId> for DetectorId {
             BurnCheckDetectorId::OveruseOfFastMode => Self::OveruseOfFastMode,
             BurnCheckDetectorId::CacheChurn => Self::CacheChurn,
             BurnCheckDetectorId::IgnoredInstructions => Self::IgnoredInstructions,
+            BurnCheckDetectorId::SkillOpportunities => Self::SkillOpportunities,
+            BurnCheckDetectorId::OverExploring => Self::OverExploring,
+            BurnCheckDetectorId::ScopeCreep => Self::ScopeCreep,
         }
     }
 }
@@ -1053,6 +1060,10 @@ impl From<SourceFormat> for BurnCheckSourceFormat {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BurnCheckFindingPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub over_exploring_reason: Option<antiburn_local::checks::over_exploring::Reason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_proof: Option<crate::remediation::IgnoredInstructionDecisionProof>,
     pub detector: BurnCheckDetectorId,
     pub agent: String,
     pub source_format: BurnCheckSourceFormat,
@@ -2053,6 +2064,9 @@ impl From<DetectorId> for BurnCheckDetectorId {
             DetectorId::OveruseOfFastMode => Self::OveruseOfFastMode,
             DetectorId::CacheChurn => Self::CacheChurn,
             DetectorId::IgnoredInstructions => Self::IgnoredInstructions,
+            DetectorId::SkillOpportunities => Self::SkillOpportunities,
+            DetectorId::OverExploring => Self::OverExploring,
+            DetectorId::ScopeCreep => Self::ScopeCreep,
         }
     }
 }
@@ -2358,6 +2372,8 @@ impl From<crate::remediation::BurnCheckTarget> for BurnCheckTargetPayload {
             finding_id: value.finding_id,
             action_id: value.action_id,
             finding: BurnCheckFindingPayload {
+                over_exploring_reason: value.over_exploring_reason,
+                decision_proof: value.decision_proof,
                 detector: finding.detector.into(),
                 agent: finding.agent.slug().to_owned(),
                 source_format: finding.source_format.into(),
@@ -2679,6 +2695,7 @@ impl ChecksReportPayload {
             .flatten();
         Self {
             evidence_settled,
+            smart_checks_available: true,
             pending_evidence,
             estimated_token_burn_basis_points,
             estimated_token_burn_basis_points_by_detector_mask,
@@ -3345,7 +3362,8 @@ mod tests {
                     "estimatedTokenBurnBasisPoints",
                     "estimatedTokenBurnBasisPointsByDetectorMask",
                     "evidenceSettled",
-                    "pendingEvidence"
+                    "pendingEvidence",
+                    "smartChecksAvailable"
                 ]
             );
             let category_keys: Vec<&str> = value["categories"][0]

@@ -23,6 +23,9 @@ use serde_json::{Value, json};
 #[path = "support/pricing.rs"]
 mod pricing;
 
+#[path = "support/claude_scope.rs"]
+mod claude_scope;
+
 fn fixture(name: &str) -> &'static str {
     pricing::install();
     match name {

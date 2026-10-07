@@ -11,10 +11,13 @@ pub enum DetectorId {
     OveruseOfFastMode,
     CacheChurn,
     IgnoredInstructions,
+    SkillOpportunities,
+    OverExploring,
+    ScopeCreep,
 }
 
 impl DetectorId {
-    pub const COUNT: usize = 10;
+    pub const COUNT: usize = 13;
 
     pub const ALL: [Self; Self::COUNT] = [
         Self::SessionsOverDepth,
@@ -27,6 +30,9 @@ impl DetectorId {
         Self::OveruseOfFastMode,
         Self::CacheChurn,
         Self::IgnoredInstructions,
+        Self::SkillOpportunities,
+        Self::OverExploring,
+        Self::ScopeCreep,
     ];
 
     pub const fn index(self) -> usize {
@@ -46,6 +52,9 @@ impl DetectorId {
             Self::OveruseOfFastMode => "overuse_of_fast_mode",
             Self::CacheChurn => "cache_churn",
             Self::IgnoredInstructions => "ignored_instructions",
+            Self::SkillOpportunities => "skill_opportunities",
+            Self::OverExploring => "over_exploring",
+            Self::ScopeCreep => "scope_creep",
         }
     }
 
@@ -62,6 +71,9 @@ impl DetectorId {
             "overuse_of_fast_mode" => Some(Self::OveruseOfFastMode),
             "cache_churn" => Some(Self::CacheChurn),
             "ignored_instructions" => Some(Self::IgnoredInstructions),
+            "skill_opportunities" => Some(Self::SkillOpportunities),
+            "over_exploring" => Some(Self::OverExploring),
+            "scope_creep" => Some(Self::ScopeCreep),
             _ => None,
         }
     }
@@ -100,12 +112,15 @@ mod tests {
                 DetectorId::OveruseOfFastMode,
                 DetectorId::CacheChurn,
                 DetectorId::IgnoredInstructions,
+                DetectorId::SkillOpportunities,
+                DetectorId::OverExploring,
+                DetectorId::ScopeCreep,
             ]
         );
         let mask = DetectorId::ALL
             .into_iter()
             .fold(0u16, |mask, detector| mask | (1 << detector.index()));
-        assert_eq!(mask, 0b11_1111_1111);
+        assert_eq!(mask, 0b1_1111_1111_1111);
         for detector in DetectorId::ALL {
             assert_eq!(1u16 << detector.index(), mask & (1u16 << detector.index()));
         }

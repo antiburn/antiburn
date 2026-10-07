@@ -373,19 +373,27 @@ impl Store {
         transaction: &rusqlite::Transaction<'_>,
         guard: &RemediationEvidenceGuard,
     ) -> Result<bool> {
+        let captured_revisions = super::revision_sql::captured_evidence_revisions("e");
         transaction.query_row(
-        "SELECT EXISTS (
+        &format!("SELECT EXISTS (
             SELECT 1 FROM session s JOIN session_evidence e USING (environment_key, agent, session_id)
-             WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
-                AND s.source_generation = ?4 AND e.published_fence = ?5
-                AND s.source_fingerprint IS ?6 AND e.processed_fingerprint IS ?7
-                AND e.parser_revision = ?8 AND e.analyzer_revision = ?9
-                AND e.evidence_schema_revision = ?10 AND e.status = 'ready'
-                AND e.analyzed_generation = s.source_generation)",
-        params![guard.environment_key, guard.agent, guard.session_id,
-            guard.source_generation, guard.published_fence, guard.source_fingerprint,
-            guard.processed_fingerprint, guard.parser_revision, guard.analyzer_revision,
-            guard.evidence_schema_revision],
+              WHERE s.environment_key = :environment_key AND s.agent = :agent AND s.session_id = :session_id
+                 AND s.source_generation = :source_generation AND e.published_fence = :published_fence
+                 AND s.source_fingerprint IS :source_fingerprint AND e.processed_fingerprint IS :processed_fingerprint
+                AND {captured_revisions} AND e.status = 'ready'
+                AND e.analyzed_generation = s.source_generation)"),
+        rusqlite::named_params![
+            ":environment_key": guard.environment_key,
+            ":agent": guard.agent,
+            ":session_id": guard.session_id,
+            ":source_generation": guard.source_generation,
+            ":published_fence": guard.published_fence,
+            ":source_fingerprint": guard.source_fingerprint,
+            ":processed_fingerprint": guard.processed_fingerprint,
+            ":captured_parser_revision": guard.parser_revision,
+            ":captured_analyzer_revision": guard.analyzer_revision,
+            ":captured_evidence_schema_revision": guard.evidence_schema_revision,
+        ],
         |row| row.get(0),
     )
     .map_err(Into::into)

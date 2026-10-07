@@ -11,7 +11,8 @@ import { Skeleton } from "../../../components/ui/Skeleton"
 import { renderAgentIcon } from "../../../lib/agentIcon"
 import { agentIconName, GENERIC_AGENT_ICON } from "../../../lib/presentation/agents"
 import { cn } from "../../../lib/cn"
-import { noteInteraction } from "../../../lib/ipc"
+import { isCheckAvailable } from "../../../lib/presentation/checkDefinitions"
+import { noteInteraction, smartCheckForDetector } from "../../../lib/ipc"
 import type {
   BurnCheckTargetPayload,
   ChecksCategoryPayload,
@@ -136,7 +137,9 @@ function CheckDetailContent({
           aria-hidden="true"
         />
         <p className="type-callout text-label-secondary">
-          No finding in {check.clean} complete {check.clean === 1 ? "session" : "sessions"}.
+          {check.sampled
+            ? `No finding in the assessed sample across ${check.clean} ${check.clean === 1 ? "session" : "sessions"}. Unassessed work may remain.`
+            : `No finding in ${check.clean} complete ${check.clean === 1 ? "session" : "sessions"}.`}
         </p>
       </div>
     )
@@ -164,7 +167,13 @@ function CheckDetailContent({
     }
     return <TargetDetails targets={targets.data.targets} refresh={session.refresh} />
   }
-  if (check.id === "ignoredInstructions" && targets.data.targets.length > 0) {
+  if (
+    (check.id === "ignoredInstructions" ||
+      check.id === "skillOpportunities" ||
+      check.id === "overExploring" ||
+      check.id === "scopeCreep") &&
+    targets.data.targets.length > 0
+  ) {
     return (
       <TargetDetails targets={targets.data.targets} refresh={session.refresh} openEvidence />
     )
@@ -238,25 +247,26 @@ function CheckDetail({
   const findingReported = useRef(false)
   const trackVisibility = useCallback(
     (node: HTMLDivElement | null) => {
-      if (node && !visible) findingReported.current = false
       session.setTargetsVisible(check.id, node !== null && visible, deliberate)
+      const smartCheck = smartCheckForDetector(check.id)
       if (
         node &&
         visible &&
-        check.id === "ignoredInstructions" &&
+        smartCheck &&
+        check.lifecycle === "failing" &&
         check.finding > 0 &&
         deliberate &&
         !findingReported.current
       ) {
         findingReported.current = true
         noteInteraction({
-          kind: "ignoredInstructionObserved",
-          stage: "finding",
-          outcome: "visible",
+          kind: "smartCheckObserved",
+          check: smartCheck,
+          observation: "finding_visible",
         })
       }
     },
-    [check.id, check.finding, deliberate, session, visible],
+    [check.id, check.finding, check.lifecycle, deliberate, session, visible],
   )
   return (
     <div
@@ -278,9 +288,13 @@ function CheckDetail({
                 <h2 className="min-w-0 type-title-2 text-label text-balance">
                   {presentation.label}
                 </h2>
-                {check.id === "ignoredInstructions" && check.sampled === true && (
+                {check.sampled === true && (
                   <Tooltip
-                    label="Priority sampling checks likely instruction conflicts first. Later checks can reduce the remaining unassessed gap."
+                    label={
+                      check.id === "ignoredInstructions"
+                        ? "Priority sampling checks likely instruction conflicts first. Later checks can reduce the remaining unassessed gap."
+                        : "This check assesses selected evidence. A pass means no finding in that sample. Unassessed work may remain."
+                    }
                     side="bottom"
                     delayMs={0}
                   >
@@ -534,7 +548,13 @@ export function BurnChecksReport({
   const snoozeState = useSnoozedBurnChecks()
   const snoozed = snoozeState.records
   const snoozedIds = snoozedDetectorIds(snoozed)
-  const presentation = checksPresentation(report, false, snoozedIds)
+  const availableReport = {
+    ...report,
+    categories: report.categories.filter((check) =>
+      isCheckAvailable(check.id, report.smartChecksAvailable ?? true),
+    ),
+  }
+  const presentation = checksPresentation(availableReport, false, snoozedIds)
   const PassIcon = BURN_CHECK_MARKS.clean.Icon
   const activeAwaiting = presentation.awaiting ?? []
   const activeFailures = presentation.failures
@@ -613,7 +633,7 @@ export function BurnChecksReport({
   const unavailableSelected =
     focusedCheck &&
     ui.selectedId === focusedCheck &&
-    !report.categories.some((check) => check.id === focusedCheck)
+    !availableReport.categories.some((check) => check.id === focusedCheck)
   const selectedVisibleId = unavailableSelected
     ? null
     : visibleChecks.some((check) => check.id === selectedId)
@@ -770,7 +790,7 @@ export function BurnChecksReport({
           className="main-window-collection burn-checks-collection"
           aria-label="Burn check collection"
         >
-          <BurnChecksHeader report={report} />
+          <BurnChecksHeader report={availableReport} />
           <ScrollPane
             className="min-h-0"
             topEdgeFade
@@ -953,7 +973,11 @@ export function BurnChecksReport({
           aria-label="Burn check details"
         >
           {unavailableSelected ? (
-            <UnavailableSearchCheck check={focusedCheck} revision={focusRevision} />
+            <UnavailableSearchCheck
+              check={focusedCheck}
+              revision={focusRevision}
+              available={isCheckAvailable(focusedCheck, report.smartChecksAvailable ?? true)}
+            />
           ) : selectedVisibleId == null ? (
             <p className="burn-checks-detail-content type-body text-label-secondary">
               {unassessed.length > 0
@@ -965,7 +989,7 @@ export function BurnChecksReport({
               <CheckDetail
                 key={check.id}
                 check={check}
-                visible={check.id === selectedVisibleId}
+                visible={active && check.id === selectedVisibleId}
                 deliberate={ui.deliberateIds.has(check.id)}
                 awaiting={check.lifecycle === "awaitingVerification"}
                 snooze={snoozed.find((item) => item.detector === check.id)}
@@ -983,9 +1007,11 @@ export function BurnChecksReport({
 function UnavailableSearchCheck({
   check,
   revision,
+  available,
 }: {
   check: keyof typeof CHECK_LABELS
   revision: number | undefined
+  available: boolean
 }) {
   const lastFocus = useRef<string | null>(null)
   const focusTarget = useCallback(
@@ -1008,7 +1034,9 @@ function UnavailableSearchCheck({
     >
       <h2 className="type-title-3 text-label">{CHECK_LABELS[check]}</h2>
       <p className="mt-2 type-callout text-label-secondary">
-        This check has not been assessed for the available sessions.
+        {available
+          ? "This check has not been assessed for the available sessions."
+          : "Smart Burn Checks are unavailable."}
       </p>
     </section>
   )

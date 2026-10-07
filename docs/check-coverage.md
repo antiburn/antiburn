@@ -1,6 +1,6 @@
 # Burn Check Source Coverage
 
-Audit date: 2026-10-02.
+Audit date: 2026-10-07.
 
 This document covers local passive session evidence and the desktop's read-only
 current resource inventory. Session evidence supports historical claims. Current
@@ -14,6 +14,60 @@ companion-source, and provider-route coverage for the same source formats.
 
 ## Status Rules
 
+Skill Opportunities has a registered descriptor, prompt, report, and shared UI
+path for the four pinned native sources in
+[retained-root smart-check inputs](session-coverage.md#retained-root-smart-check-inputs).
+Its immutable current-inventory
+snapshot retains full semantic descriptions/frontmatter and optional filesystem
+birth time. Agent, project, environment, enablement, ambiguous identity, and
+recorded-use filters constrain candidates. Creation after the relevant work
+timestamp excludes a candidate; missing time stays advisory. This current-data
+heuristic does not prove historical availability or contents.
+
+The native skill-use adapter is fixture-characterized for `ClaudeJsonl`,
+`OpenCodeSqliteV2`, `CodexRolloutJsonl`, and `PiV3Jsonl` under the
+[accepted shapes and limits](../crates/antiburn-local/tests/fixtures/skill_use_characterization/README.md).
+Exact references preserve selected event identity, lifecycle, source roles,
+timestamps/order when present, and session/publication fences. Adapters persist
+generic validated skill facts before check preparation; supplemental records
+cannot repair invalid selected proof. Claude 2.1.278 characterizes a failed Skill
+result, not successful delivery. Older conditional launch decoding remains
+separate. OpenCode load
+results retain bounded parsed proof only with explicit output selection. Its typed load
+result evidence is newly verified only for the pinned SQLite v2 producer
+`anomalyco/opencode@772392050500e0ddcd2ad2193411a22a3824372f`, and only for a
+selected, complete, untruncated, uninterrupted, uncompacted native result bound
+to its session, call, message, and part. The descriptor/report path reaches this
+source, but it does not establish session-wide absence or historical visibility.
+OpenCode JSONL is unavailable. Other accepted agents use separate native
+selection/request/result contracts. A semantic evaluation pass does not establish
+product support. Codex full documents are
+selection evidence, not task success. Pi explicit requests do not imply
+successful extension execution. Aliases and current-file identity stay inferred.
+Aggregates cannot prove absence. Even complete selected records cannot prove
+session-wide or equivalent-use absence.
+
+Optional `UserAnswer` and `PlanReference` fields have shared engine types and
+private storage/query contracts. They require explicit selection. Both are
+conditional for `OpenCodeSqliteV2`, `ClaudeJsonl`, `CodexRolloutJsonl`, and
+`PiV3Jsonl` under the pinned contracts in `session-coverage.md`; other sources,
+including Cursor and Antigravity, remain unavailable for these typed forms. OpenCode plan content
+remains unresolved. Claude retains exact recorded plan text/content digests but
+does not infer approved versions. Claude structured string answers retain
+submitted status only for intact unambiguous results, with unknown human origin.
+SDK `updatedInput`, permission changes, auto-approved tools, and `ExitPlanMode`
+completion do not establish scope approval. Rejection can mean interruption;
+later ordinary user free text stays separate from question results. Missing,
+partial, synthetic, conflicting, or mutable evidence cannot supply authority.
+Codex answer origin remains unknown; retained acceptance order is not human
+authorization. Its plan records remain proposals without approved-version joins.
+Pi question origin and producer identity remain unknown. Its exact plan-mode
+execution choice has synthetic origin. Typed headers, context, comments, and
+skipped batch status preserve meaning without widening approval eligibility.
+Ordinary tool names/results cannot supply
+authoritative answers. The three newer checks select these records where
+supported. Missing origin and approved-version linkage remain unavailable.
+
 | Status      | Meaning                                                                                                                                           |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Assessable  | The current reader can produce the evidence needed for a finding and a clean result. A damaged or incomplete session can still be partial.        |
@@ -21,11 +75,47 @@ companion-source, and provider-route coverage for the same source formats.
 | Unsupported | The reviewed passive sources do not prove a required fact or its policy semantics. This is source-scoped, not a claim about future formats.       |
 | Unknown     | The source or its relevant field semantics are not characterized. Do not infer support from a path, field name, mode name, or generic JSON shape. |
 
-`Partial` can support a scoped finding only when its source note says so. It does
-not promise an implemented finding path. An unimplemented or uncharacterized
+For metric checks, `Partial` cannot support clean. For persisted Smart Check
+columns, it marks conditional support under the pinned retained-root contract;
+only a complete eligible assessment can report scoped clean. Neither status
+promises exhaustive historical coverage or an implemented finding without its
+source note. An unimplemented or uncharacterized
 path is `Unknown` or `Unsupported`.
 `Assessable` describes an accepted source contract, not every session or past
 release. A clean result still needs complete session facts and eligible activity.
+
+## Optional file-read evidence
+
+`ReadFileRequest` and `ReadFileResult` require explicit Jev field selection.
+`ReadFileOutput` separately selects recorded result text. These fields are
+shared evidence APIs used by Over-exploring. Eligibility also needs accepted
+retained scope, a completed episode, and supported result evidence. Smart checks
+have no Auto Fix, verification, or savings estimate.
+
+Requested line units are characterized for exact Claude `Read`, Pi `read`, and
+OpenCode SQLite `read` calls under the schema and producer pins in
+[`session-coverage.md`](session-coverage.md#private-file-read-evidence). Other
+accepted read aliases retain native range arguments with unknown units.
+Returned extents cover pinned OpenCode numbered output, Claude 2.1.278 matched
+payload/numbered text, Pi 0.84.4 text/clipping details, and the Codex 0.160.1
+numbered single-file shell slice. Session coverage defines exact joins, status,
+and renderer limits. Cursor synthesized stores cannot supply typed tool-read
+evidence; other native tool sources have no characterized returned extent.
+Excluded source formats do not gain Jev support from these new types.
+
+Missing ranges, unmatched calls, failed operations, clipped lines, directory
+listings, image/PDF notices, previews, outlines, and searches do not prove that
+the requested file interval was read. Shell-mediated reads other than the pinned
+Codex slice are unavailable, including simple `cat`. Output bytes/digests identify recorded text,
+not a file size or version. Current adapters do not supply recorded file versions.
+Read counts or repeated/overlapping slices alone are not evidence of waste.
+
+Parser revision 52 rebuilds private native facts from source; evidence schema
+revision 22 is unchanged. Ignored Instructions keeps its path-only read
+selection. Read ranges and read results cannot enter its
+projection or change its selected content digest when the selected input and
+publication fence are unchanged. Parser-bound input revisions and publication
+fences still invalidate stale work through the normal revision contract.
 
 ## Checks
 
@@ -42,6 +132,13 @@ release. A clean result still needs complete session facts and eligible activity
 | C    | Cache churn           |
 | I    | Ignored Instructions  |
 
+The other three Smart Burn Checks are Scope Creep, Over-exploring, and Skill
+Opportunities. All four use Jev, Ollama, Cloudflare, or Custom connections and
+provide prompt-only guidance. None supports Auto Fix, verification, or savings
+estimates. Their required native agent scope is OpenCode, Codex, Claude Code,
+and Pi under the source limits below. Cursor and Antigravity have separate
+Ignored Instructions support; they are not supported by the three newer checks.
+
 ## Source Inventory
 
 The tables list all 33 `SourceFormat` keys. Known source shape and release
@@ -51,11 +148,11 @@ a bounded contract. No row promises parity across all historical versions.
 
 | `SourceFormat`                 | Passive source format                                                     | Version statement                                                                                                                                                                                                                         | Current reader                        |
 | ------------------------------ | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| `ClaudeJsonl`                  | Claude Code session JSONL and child sidecars                              | Private 2.1.220-2.1.246 observation contract; main JSONL and sidecar shapes are pinned separately; known lifecycle-only records are allowlisted as inert                                                                                  | Dedicated                             |
-| `CodexRolloutJsonl`            | Codex rollout JSONL, with discovered child rollouts                       | Recorder commit `e7637306bc9246a3e42e407cb94f96b7ed345e3e`; synthetic fixtures include protocol echoes and bounded legacy reverted forks                                                                                                  | Dedicated                             |
+| `ClaudeJsonl` | Claude Code session JSONL and child sidecars | Private producer; fixture-bounded core/sidecars and optional decoder pins. Smart retained roots/results use local CLI 2.1.278 accepted-log shape, including its informational prelude and explicit human markers; not SDK/GC or historical release support. See session coverage. | Dedicated |
+| `CodexRolloutJsonl` | Codex rollout JSONL with discovered children | Legacy recorder `e7637306bc9246a3e42e407cb94f96b7ed345e3e`; smart retained roots/completed items use 0.160.1 at `d27764b82f7118f674371e6d6e76271d9d606edb`. Qualified environment context is single-local and non-authorizing. No historical release range. | Dedicated |
 | `OpenCodeJsonl`                | OpenCode legacy exported session data                                     | Accepted export wrappers and native message/part shapes; pinned research below                                                                                                                                                            | Dedicated                             |
-| `OpenCodeSqliteV2`             | OpenCode SQLite `session`, `message`, `part` tables                       | Fixture-backed `id`/foreign-key contract in a read-only transaction snapshot; optional time/title/part-ID columns; not CoreV2 `session_message`                                                                                           | Dedicated                             |
-| `PiV3Jsonl`                    | Pi session JSONL                                                          | Leading header version 1, 2, or 3 with pinned read-time migrations and core/example-extension shapes; headerless and unsupported-version sources are rejected                                                                             | Dedicated                             |
+| `OpenCodeSqliteV2` | OpenCode SQLite `session`, `message`, `part` tables | Fixture-backed read-only snapshot with exact IDs; optional time/title/part-ID columns. Smart message/skill producer `772392050500e0ddcd2ad2193411a22a3824372f`; numbered Read renderer `652c090dc119b5f3dc1e5e0bf1c4b40d9721f0ef`. Not CoreV2 `session_message` or a historical release range. | Dedicated |
+| `PiV3Jsonl` | Pi session JSONL | Header V1/V2/V3 metric migrations; smart retained core V3 roots/results use 0.84.4 at `b79e4cc834970cca69daebffab7df1da7d1e52c4`. Optional extension question/plan pins are separate. Headerless/unsupported sources reject; no historical release range. | Dedicated |
 | `OmpV3Jsonl`                   | Oh My Pi session JSONL behind the title slot                              | Fixed-width 256-byte `type: "title"` slot, then an exact version 3 header; synthetic fixtures pin the accepted shape, an allowlist admits only the OMP core rows, and every other record type or header version fails closed                | Shared Pi-family reader               |
 | `CursorJsonl`                  | Cursor compatibility JSONL without a surface marker                       | Unversioned and uncharacterized                                                                                                                                                                                                           | Dedicated shared Cursor reader        |
 | `CursorCliAgentJsonl`          | Cursor agent transcript JSONL                                             | Separate partial export contract with content blocks and explicit subagent-path parent observations; no model fallback                                                                                                                    | Dedicated shared Cursor reader        |
@@ -87,49 +184,52 @@ a bounded contract. No row promises parity across all historical versions.
 
 ## Coverage Matrix
 
-This manual matrix records implemented eligibility and audited source limits,
-not just binary capability flags. The inventory test checks keys and cell
-vocabulary; behavior tests separately check finding and clean gates.
+This matrix records implemented eligibility and source limits. Skill Opportunities
+and Over-exploring, plus Scope Creep, use persisted assessments, not synchronous metric gates.
+Their conditional native Claude Code, Codex, OpenCode SQLite, and Pi support
+requires accepted retained-root history and pinned native evidence. Other sources
+remain unavailable. `Partial` marks source-scoped support; a complete eligible
+assessment can report clean within reviewed scope, not exhaustive history.
 
 Ignored Instructions has separate evidence coverage below. Its input contract
 uses retained session content and instruction snapshots, not the metric gates
 in this matrix.
 
-| `SourceFormat`                 | D           | T           | S           | M           | B           | K           | O           | F           | C           |
-| ------------------------------ | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- |
-| `ClaudeJsonl`                  | Assessable  | Assessable  | Assessable  | Partial     | Partial     | Partial     | Assessable  | Assessable  | Assessable  |
-| `CodexRolloutJsonl`            | Assessable  | Assessable  | Assessable  | Partial     | Partial     | Partial     | Assessable  | Assessable  | Assessable  |
-| `OpenCodeJsonl`                | Assessable  | Unsupported | Assessable  | Unsupported | Unsupported | Partial     | Assessable  | Unsupported | Assessable  |
-| `OpenCodeSqliteV2`             | Assessable  | Unsupported | Assessable  | Unsupported | Unsupported | Partial     | Assessable  | Unsupported | Assessable  |
-| `PiV3Jsonl`                    | Assessable  | Assessable  | Partial     | Unsupported | Unsupported | Unsupported | Assessable  | Unsupported | Assessable  |
-| `OmpV3Jsonl`                   | Partial     | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Partial     | Unsupported | Unsupported |
-| `CursorJsonl`                  | Unsupported | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Partial     | Unknown     | Unknown     |
-| `CursorCliAgentJsonl`          | Unsupported | Unknown     | Unsupported | Unsupported | Unsupported | Unknown     | Partial     | Unknown     | Unsupported |
-| `CursorCliStoreDb`             | Unsupported | Unknown     | Unsupported | Unsupported | Unsupported | Unknown     | Partial     | Unknown     | Unsupported |
-| `CursorChatStoreDb`            | Unsupported | Unknown     | Unsupported | Unsupported | Unsupported | Unknown     | Partial     | Unknown     | Unsupported |
-| `CursorIdeComposer`            | Unsupported | Unknown     | Unsupported | Unsupported | Unsupported | Unknown     | Partial     | Unknown     | Unsupported |
-| `CursorLegacyChatJson`         | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
-| `AntigravityJson`              | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial     | Unsupported | Unsupported |
-| `AntigravityBrainJsonl`        | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial     | Unsupported | Unsupported |
-| `AntigravityCascadeJson`       | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial     | Unsupported | Unsupported |
-| `AntigravityWorkspaceChatJson` | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
-| `AntigravitySqlite`            | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial     | Unsupported | Unsupported |
-| `CopilotCliJsonl`              | Unsupported | Unsupported | Assessable  | Unsupported | Unsupported | Unsupported | Assessable  | Unsupported | Unsupported |
-| `CopilotIdeChatJson`           | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Partial     | Unknown     | Unknown     |
-| `ClineSessionJson`             | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
-| `ClineMessagesContractV1`      | Unsupported | Unsupported | Partial     | Unsupported | Unsupported | Unsupported | Partial     | Unsupported | Unsupported |
-| `KiroSessionJson`              | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
-| `KiroChat`                     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
-| `KiroCliV2Bundle`              | Unsupported | Unknown     | Unsupported | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unsupported |
-| `KiroCliV3Bundle`              | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
-| `KiroChatSaveExport`           | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
-| `AmpThreadJson`                | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial     | Unsupported | Unsupported |
-| `AmpFileChanges`               | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
-| `WindsurfWorkspaceJson`        | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
-| `WindsurfMirrorJson`           | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
-| `WindsurfCascadeProtobuf`      | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
-| `DevinLocalSqlite`             | Unsupported | Unsupported | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
-| `Uncharacterized`              | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
+| `SourceFormat` | D | T | S | M | B | K | O | F | C | Skill Opportunities | Over-exploring | Scope Creep |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `ClaudeJsonl` | Assessable | Assessable | Assessable | Partial | Partial | Partial | Assessable | Assessable | Assessable | Partial | Partial | Partial |
+| `CodexRolloutJsonl` | Assessable | Assessable | Assessable | Partial | Partial | Partial | Assessable | Assessable | Assessable | Partial | Partial | Partial |
+| `OpenCodeJsonl` | Assessable | Unsupported | Assessable | Unsupported | Unsupported | Partial | Assessable | Unsupported | Assessable | Unsupported | Unsupported | Unsupported |
+| `OpenCodeSqliteV2` | Assessable | Unsupported | Assessable | Unsupported | Unsupported | Partial | Assessable | Unsupported | Assessable | Partial | Partial | Partial |
+| `PiV3Jsonl` | Assessable | Assessable | Partial | Unsupported | Unsupported | Unsupported | Assessable | Unsupported | Assessable | Partial | Partial | Partial |
+| `OmpV3Jsonl` | Partial | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `CursorJsonl` | Unsupported | Unknown | Unknown | Unknown | Unknown | Unknown | Partial | Unknown | Unknown | Unsupported | Unsupported | Unsupported |
+| `CursorCliAgentJsonl` | Unsupported | Unknown | Unsupported | Unsupported | Unsupported | Unknown | Partial | Unknown | Unsupported | Unsupported | Unsupported | Unsupported |
+| `CursorCliStoreDb` | Unsupported | Unknown | Unsupported | Unsupported | Unsupported | Unknown | Partial | Unknown | Unsupported | Unsupported | Unsupported | Unsupported |
+| `CursorChatStoreDb` | Unsupported | Unknown | Unsupported | Unsupported | Unsupported | Unknown | Partial | Unknown | Unsupported | Unsupported | Unsupported | Unsupported |
+| `CursorIdeComposer` | Unsupported | Unknown | Unsupported | Unsupported | Unsupported | Unknown | Partial | Unknown | Unsupported | Unsupported | Unsupported | Unsupported |
+| `CursorLegacyChatJson` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unsupported | Unsupported | Unsupported |
+| `AntigravityJson` | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `AntigravityBrainJsonl` | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `AntigravityCascadeJson` | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `AntigravityWorkspaceChatJson` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unsupported | Unsupported | Unsupported |
+| `AntigravitySqlite` | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `CopilotCliJsonl` | Unsupported | Unsupported | Assessable | Unsupported | Unsupported | Unsupported | Assessable | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `CopilotIdeChatJson` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Partial | Unknown | Unknown | Unsupported | Unsupported | Unsupported |
+| `ClineSessionJson` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unsupported | Unsupported | Unsupported |
+| `ClineMessagesContractV1` | Unsupported | Unsupported | Partial | Unsupported | Unsupported | Unsupported | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `KiroSessionJson` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unsupported | Unsupported | Unsupported |
+| `KiroChat` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unsupported | Unsupported | Unsupported |
+| `KiroCliV2Bundle` | Unsupported | Unknown | Unsupported | Unknown | Unknown | Unknown | Unknown | Unknown | Unsupported | Unsupported | Unsupported | Unsupported |
+| `KiroCliV3Bundle` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unsupported | Unsupported | Unsupported |
+| `KiroChatSaveExport` | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `AmpThreadJson` | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `AmpFileChanges` | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `WindsurfWorkspaceJson` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unsupported | Unsupported | Unsupported |
+| `WindsurfMirrorJson` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unsupported | Unsupported | Unsupported |
+| `WindsurfCascadeProtobuf` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unsupported | Unsupported | Unsupported |
+| `DevinLocalSqlite` | Unsupported | Unsupported | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `Uncharacterized` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unsupported | Unsupported | Unsupported |
 
 ## Ignored Instructions Evidence
 
@@ -157,7 +257,9 @@ The per-field source limits and selection states are listed in
 
 Selected evidence now retains OpenCode's typed native lifecycle labels and
 field-filtered native string bindings. A completed label is not proof of a
-passing result; excluded outputs remain excluded. Other source lifecycle state,
+passing result. Pinned Claude, Codex, and Pi native results also retain bounded
+lifecycle facts. Only explicitly selected output can enter context. Uncharacterized
+lifecycle state,
 encoded-argument ranges, recorded platform, and native glob dialect remain
 unknown. Truncated known requests supply metadata and a malformed-field limit,
 not fabricated request text. Shared lexical path helpers need explicit recorded
@@ -192,15 +294,18 @@ not proof those rules were active then. Clean covers sampled comparisons, not
 historical activation or exhaustive session coverage. Unresolved sampled
 comparisons remain unassessed.
 Auto Fix,
-verification, and estimates are unsupported. The check requires a user-supplied
-TypeSafe API key and sends selected instruction text, assistant text excerpts,
-and selected session fields to TypeSafe: Bash command input, file-edit paths,
+verification, and estimates are unsupported. The check uses the configured Jev,
+Ollama, Cloudflare, or Custom connection and sends selected instructions,
+assistant text, user text, Bash command input/output, file-edit paths,
 read-file paths, search queries with scope filters, and other-tool input. Bash
 input can include inline scripts, heredocs, and patches recorded in the command;
 dedicated edit-tool content stays excluded. A command request does not prove
-execution or success. User
-messages, edit content, read output, search output, Bash output, and other tool
-outputs are excluded. Selected paths can leave the machine. Sampling selects
+execution or success. User text and Bash results supply bounded context only when
+normalized human-history or exact request/result facts validate them. Unknown
+origin, synthetic text, skill documents, unmatched/conflicting joins, and clipping
+cannot establish permission or successful tests. Edit content, read/search output,
+other results, typed question/plan fields, and thinking remain excluded.
+Selected paths can leave the machine. Sampling selects
 up to 256 high-priority rule/action pairs per review by word rarity, tool
 name, literal path, prohibition/tool-input risk, and recency. It spreads choices
 across rules and sources and probes low-overlap pairs. These signals cannot
@@ -227,14 +332,14 @@ reject arbitrary nested objects. Recorded `patchText` in an OpenCode
 rename paths remain selected, while dedicated edit content remains excluded.
 Selected actions retain no excluded normalized-field values. Native cross-agent
 fixtures and the 4,096-mask projection test cover this boundary. Tool lifecycle requests do not prove
-successful execution. OpenCode SQLite retains native lifecycle labels, but
-other source lifecycle states and unresolved path semantics remain unknown. The
+successful execution. Pinned native result contracts retain lifecycle labels;
+other shapes and unresolved path semantics remain unknown. The
 shared evidence module also supports output-enabled checks.
 Claude result names require exact call IDs in the same resolved branch; missing
 or conflicting joins remain unavailable. Native singleton-selection tests cover
 all twelve fields and private thinking. Explicit empty text is observed rather
-than inferred missing. These changes do not add output selection to Ignored
-Instructions or widen its clean-result eligibility.
+than inferred missing. Selected Bash output needs exact normalized context
+bindings; lifecycle status alone does not prove successful tests.
 Tool results do not create candidate work. Pages interleave rules from each instruction
 source so a large global file cannot starve project rules. All six
 first-tier agents include shared global and project AGENTS.md files alongside
@@ -270,8 +375,10 @@ The reducer settles supported request order from exact facts after semantic
 rule and path binding. It does not change the publication thresholds.
 
 Approval-dependent rules cannot publish a finding or clean comparison without
-selected authoritative approval evidence. The current selection excludes that
-evidence. Assistant approval reports and admissions do not restore authority.
+accepted authorizing context. Selected human text needs source-bound history
+proof, native ranges, and the same recorded branch. Unknown-origin answers,
+synthetic text, skill selection, assistant reports, and tool permission do not
+restore authority. Missing history stays unassessed.
 A rule that prohibits claiming approval can still be assessed as observable
 assistant communication. Unclear permission dependence remains unassessed.
 Checkpoint reduction also requires permission classification. A prepared plan
@@ -357,6 +464,24 @@ limits; they do not establish complete history outside the selected window.
 | Antigravity | O     | FO      | Y      | P        | N            | Y        | Direct model evidence reaches a prompt, but no physical model control is attributed.                                                         |
 | Antigravity | F     | N       | N      | N        | N            | N        | No complete effective speed contract exists.                                                                                                 |
 | Antigravity | C     | N       | N      | N        | N            | N        | No compatible request-accounting contract exists.                                                                                            |
+| Claude Code | SkillOpportunities | Y | Y | N | N | N | Native CLI 2.1.278 retained root; exact requests/failures and separate conditional launch contract; no proof of execution or historical visibility. |
+| Codex | SkillOpportunities | Y | Y | N | N | N | Native 0.160.1 pinned retained root; full-document selection is not human approval or successful execution; current inventory is not historical visibility. |
+| OpenCode | SkillOpportunities | Y | Y | N | N | N | `OpenCodeSqliteV2` only; uses pinned native skill-use metadata and current inventory. No historical availability, auto-fix, verification, or estimate. |
+| Pi | SkillOpportunities | Y | Y | N | N | N | Native 0.84.4 core V3 retained root; wrapper selection/requests do not prove extension identity or successful execution; current inventory is not historical visibility. |
+| Cursor | SkillOpportunities | N | N | N | N | N | No accepted source format or product descriptor/report path is available. |
+| Antigravity | SkillOpportunities | N | N | N | N | N | No accepted source format or product descriptor/report path is available. |
+| Claude Code | OverExploring | Y | Y | N | N | N | Native CLI 2.1.278 retained scope and matched text Read results; completed episodes and observed extents required; no whole-file inference. |
+| Codex | OverExploring | Y | Y | N | N | N | Native 0.160.1 retained scope and pinned numbered single-file shell slice; native item/path and stdout joins required; other shell forms unsupported. |
+| OpenCode | OverExploring | Y | Y | N | N | N | Native `OpenCodeSqliteV2` text-only root history and pinned numbered read results only. All three reasons require supported recorded results; no verification or savings. |
+| Pi | OverExploring | Y | Y | N | N | N | Native 0.84.4 core V3 retained scope and exact Read text/clipping contract; continuation is not whole-file access; incomplete episodes unassessed. |
+| Cursor | OverExploring | N | N | N | N | N | Complete task history and observed-result support are unavailable. |
+| Antigravity | OverExploring | N | N | N | N | N | Complete task history and observed-result support are unavailable. |
+| Claude Code | ScopeCreep | Y | Y | N | N | N | Native CLI 2.1.278 retained root with explicit human markers; SDK/meta/synthetic text and tool permission do not authorize scope; original retention not proved. |
+| Codex | ScopeCreep | Y | Y | N | N | N | Native 0.160.1 pinned retained root; qualified single-local environment context is non-authorizing; unknown-origin answers and skill selections cannot approve scope. |
+| OpenCode | ScopeCreep | Y | Y | N | N | N | Native `OpenCodeSqliteV2` current retained text-only root scope only. Every request includes full latest compact scope; later recorded approval withdraws stale findings. Missing influence or scope fit is unassessed. Original historical retention is not proved. |
+| Pi | ScopeCreep | Y | Y | N | N | N | Native 0.84.4 core V3 linear retained root; exact user argument ranges stay separate from skill documents; extension answers do not prove human origin. |
+| Cursor | ScopeCreep | N | N | N | N | N | Current retained root scope proof is unavailable. |
+| Antigravity | ScopeCreep | N | N | N | N | N | Current retained root scope proof is unavailable. |
 
 Cursor and Antigravity M/K are current-inventory targets, not historical
 exposure claims. Pi S remains limited to reviewed example-extension evidence.
@@ -818,18 +943,18 @@ has a durable action attempt.
 ### Source-Format Remediation Matrix
 
 This exact matrix lists every `SourceFormat` once. Check-code lists are typed
-sets: `None` or slash-separated codes from D/T/S/M/B/K/O/F/C/I with no duplicates.
+sets: `None` or slash-separated codes from D/T/S/M/B/K/O/F/C/I/SkillOpportunities/OverExploring/ScopeCreep with no duplicates.
 The rows describe reachable remediation, so a production recommendation without
 a reachable finding is not listed. Auto Fix columns describe production policy;
 each operation still needs an exact target binding at runtime.
 
 | `SourceFormat`                 | Prompt checks     | Model Auto Fix | Reasoning Auto Fix | Other Auto Fix checks | Verification checks |
 | ------------------------------ | ----------------- | -------------- | ------------------ | --------------------- | ------------------- |
-| `ClaudeJsonl`                  | D/T/S/M/B/K/O/F/C/I | O              | T                  | D/S/M/B/K/F           | T/O/F               |
-| `CodexRolloutJsonl`            | D/T/S/M/B/K/O/F/C/I | O              | T                  | D/S/M/K/F             | T/O/F               |
+| `ClaudeJsonl` | D/T/S/M/B/K/O/F/C/I/SkillOpportunities/OverExploring/ScopeCreep | O | T | D/S/M/B/K/F | T/O/F |
+| `CodexRolloutJsonl` | D/T/S/M/B/K/O/F/C/I/SkillOpportunities/OverExploring/ScopeCreep | O | T | D/S/M/K/F | T/O/F |
 | `OpenCodeJsonl`                | D/S/M/B/K/O/C     | O              | None               | D/S/M/K               | O                   |
-| `OpenCodeSqliteV2`             | D/S/M/B/K/O/C/I   | O              | None               | D/S/M/K               | O                   |
-| `PiV3Jsonl`                    | D/T/S/M/K/O/C/I   | O              | T                  | D                     | T/O                 |
+| `OpenCodeSqliteV2`             | D/S/M/B/K/O/C/I/SkillOpportunities/OverExploring/ScopeCreep | O              | None               | D/S/M/K               | O                   |
+| `PiV3Jsonl` | D/T/S/M/K/O/C/I/SkillOpportunities/OverExploring/ScopeCreep | O | T | D | T/O |
 | `OmpV3Jsonl`                   | None              | None           | None               | None                  | None                |
 | `CursorJsonl`                  | O                 | None           | None               | None                  | None                |
 | `CursorCliAgentJsonl`          | O/I               | None           | None               | None                  | None                |

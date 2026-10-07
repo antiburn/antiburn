@@ -126,21 +126,21 @@ pub(crate) fn list_current_findings_on_snapshot(
     let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
     let transaction = connection.unchecked_transaction()?;
     let catalogs = ReportCatalogs::default();
-    let sql = CURRENT_FINDINGS_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
+    let sql = CURRENT_FINDINGS_SQL;
     let mut findings = Vec::with_capacity(CURRENT_FINDING_LIMIT + 1);
     let cancel = AtomicBool::new(false);
     let mut sessions_scanned = 0;
     {
-        let mut statement = transaction.prepare(&sql)?;
-        let mut rows = statement.query(params![
-            request.environment_key,
-            request.window.start_epoch,
-            request.window.end_epoch,
-            PARSER_REVISION,
-            ANALYZER_REVISION,
-            EVIDENCE_SCHEMA_REVISION,
-            METRICS_SCHEMA_REVISION,
-            CURRENT_FINDING_SESSION_SCAN_BUDGET + 1,
+        let mut statement = transaction.prepare(sql)?;
+        let mut rows = statement.query(named_params![
+            ":environment_key": request.environment_key,
+            ":window_start": request.window.start_epoch,
+            ":window_end": request.window.end_epoch,
+            ":parser_revision": PARSER_REVISION,
+            ":analyzer_revision": ANALYZER_REVISION,
+            ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
+            ":metrics_schema_revision": METRICS_SCHEMA_REVISION,
+            ":limit": CURRENT_FINDING_SESSION_SCAN_BUDGET + 1,
         ])?;
         while let Some(row) = rows.next()? {
             let session = current_finding_session(row)?;
@@ -194,18 +194,18 @@ pub(crate) fn publication_findings_in(
     key: &crate::store::SessionKey,
 ) -> Result<Vec<CurrentFinding>> {
     let catalogs = ReportCatalogs::default();
-    let sql = CURRENT_FINDING_BY_KEY_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
+    let sql = CURRENT_FINDING_BY_KEY_SQL;
     let Some(session) = connection
         .query_row(
-            &sql,
-            params![
-                key.environment_key,
-                key.agent,
-                key.session_id,
-                PARSER_REVISION,
-                ANALYZER_REVISION,
-                EVIDENCE_SCHEMA_REVISION,
-                METRICS_SCHEMA_REVISION,
+            sql,
+            named_params![
+                ":environment_key": key.environment_key,
+                ":agent": key.agent,
+                ":session_id": key.session_id,
+                ":parser_revision": PARSER_REVISION,
+                ":analyzer_revision": ANALYZER_REVISION,
+                ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
+                ":metrics_schema_revision": METRICS_SCHEMA_REVISION,
             ],
             current_finding_session,
         )
@@ -235,6 +235,91 @@ pub(crate) fn publication_findings_in(
         findings_by_detector.push(findings);
     }
     Ok(fair_bounded_selection(findings_by_detector, 100))
+}
+
+pub(crate) fn smart_session_statuses(
+    data_dir: &Path,
+    keys: &[crate::store::SessionKey],
+    detector: DetectorId,
+    available: bool,
+) -> Result<Vec<crate::dto::IgnoredInstructionSessionStatus>> {
+    use crate::dto::{IgnoredInstructionSessionStatus, SessionHygieneStatus};
+    let mut connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
+    let transaction = connection.transaction()?;
+    let sql = CURRENT_FINDING_BY_KEY_SQL;
+    let mut outcomes = Vec::with_capacity(keys.len());
+    for key in keys {
+        let session = transaction
+            .query_row(
+                sql,
+                named_params![
+                    ":environment_key": key.environment_key,
+                    ":agent": key.agent,
+                    ":session_id": key.session_id,
+                    ":parser_revision": PARSER_REVISION,
+                    ":analyzer_revision": ANALYZER_REVISION,
+                    ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
+                    ":metrics_schema_revision": METRICS_SCHEMA_REVISION
+                ],
+                current_finding_session,
+            )
+            .optional()?;
+        let Some(session) = session else {
+            outcomes.push(IgnoredInstructionSessionStatus {
+                status: SessionHygieneStatus::NotAssessed,
+                reason: None,
+            });
+            continue;
+        };
+        if key.environment_key != "native"
+            || !antiburn_local::analysis::smart_check_source_supported(
+                &key.agent,
+                session.evidence.capabilities.source_format,
+            )
+        {
+            outcomes.push(IgnoredInstructionSessionStatus {
+                status: SessionHygieneStatus::NotAssessed,
+                reason: None,
+            });
+            continue;
+        }
+        let assessment = assess_current_detector(
+            &transaction,
+            &session,
+            detector,
+            &ReportCatalogs::default(),
+            &AtomicBool::new(false),
+            &mut || {},
+        )?;
+        let (status, reason) = match assessment {
+            FindingAssessment::Clean => (SessionHygieneStatus::Clean, None),
+            FindingAssessment::Findings(findings) => (SessionHygieneStatus::Finding, findings.first().and_then(|finding| match finding.cause() {
+                antiburn_local::remediation::FindingCause::OverExploring(decision) => Some(match decision.reason {
+                    antiburn_local::checks::over_exploring::Reason::UnrelatedFiles => "unrelated_files",
+                    antiburn_local::checks::over_exploring::Reason::ExcessiveFileBreadth => "excessive_file_breadth",
+                    antiburn_local::checks::over_exploring::Reason::ExcessiveWithinFileReading => "excessive_within_file_reading",
+                }),
+                _ => None,
+            })),
+            _ if !available => (SessionHygieneStatus::CouldntCheck, Some("The model provider is unavailable. Check Settings.")),
+            _ => {
+                let stored_status: Option<(String, Option<String>)> = transaction.query_row(
+                    "SELECT status, last_error_category FROM burn_check_assessment WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND check_id = ?4
+                        AND incarnation = ?5 AND source_generation = ?6 AND published_fence = ?7",
+                    params![key.environment_key, key.agent, key.session_id, detector.key(), session.incarnation, session.source_generation, session.published_fence],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                ).optional()?;
+                match stored_status.as_ref().map(|(status, error)| (status.as_str(), error.as_deref())) {
+                    Some((_, Some("scope_context_too_large"))) => (SessionHygieneStatus::CouldntCheck, Some("scope_context_too_large")),
+                    Some(("queued" | "running", _)) => (SessionHygieneStatus::Checking, None),
+                    Some(("failed", _)) => (SessionHygieneStatus::CouldntCheck, Some("The assessment could not finish.")),
+                    _ => (SessionHygieneStatus::NotAssessed, None),
+                }
+            },
+        };
+        outcomes.push(IgnoredInstructionSessionStatus { status, reason });
+    }
+    Ok(outcomes)
 }
 
 pub(crate) fn fair_bounded_selection<T>(buckets: Vec<Vec<T>>, limit: usize) -> Vec<T> {
@@ -269,18 +354,18 @@ pub(crate) fn revalidate_current_finding_on_snapshot(
     if cached.catalog_revision != catalogs.revision {
         return Ok(false);
     }
-    let sql = CURRENT_FINDING_BY_KEY_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
+    let sql = CURRENT_FINDING_BY_KEY_SQL;
     let session = transaction
         .query_row(
-            &sql,
-            params![
-                cached.environment_key,
-                cached.agent,
-                cached.session_id,
-                PARSER_REVISION,
-                ANALYZER_REVISION,
-                EVIDENCE_SCHEMA_REVISION,
-                METRICS_SCHEMA_REVISION,
+            sql,
+            named_params![
+                ":environment_key": cached.environment_key,
+                ":agent": cached.agent,
+                ":session_id": cached.session_id,
+                ":parser_revision": PARSER_REVISION,
+                ":analyzer_revision": ANALYZER_REVISION,
+                ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
+                ":metrics_schema_revision": METRICS_SCHEMA_REVISION,
             ],
             current_finding_session,
         )
@@ -331,6 +416,39 @@ pub(crate) fn assess_current_detector(
         } else {
             Ok(FindingAssessment::Findings(findings))
         };
+    }
+    if detector == DetectorId::ScopeCreep {
+        return Ok(
+            match super::scope_creep::scope_creep_findings(connection, session)? {
+                Some(findings) if findings.is_empty() => FindingAssessment::Clean,
+                Some(findings) => FindingAssessment::Findings(findings),
+                None => FindingAssessment::Unavailable(
+                    antiburn_local::remediation::FindingUnavailableReason::IncompleteEvidence,
+                ),
+            },
+        );
+    }
+    if detector == DetectorId::OverExploring {
+        return Ok(
+            match super::over_exploring::over_exploring_findings(connection, session)? {
+                Some(findings) if findings.is_empty() => FindingAssessment::Clean,
+                Some(findings) => FindingAssessment::Findings(findings),
+                None => FindingAssessment::Unavailable(
+                    antiburn_local::remediation::FindingUnavailableReason::IncompleteEvidence,
+                ),
+            },
+        );
+    }
+    if detector == DetectorId::SkillOpportunities {
+        return Ok(
+            match super::skill_opportunities::skill_opportunity_findings(connection, session)? {
+                Some(findings) if findings.is_empty() => FindingAssessment::Clean,
+                Some(findings) => FindingAssessment::Findings(findings),
+                None => FindingAssessment::Unavailable(
+                    antiburn_local::remediation::FindingUnavailableReason::IncompleteEvidence,
+                ),
+            },
+        );
     }
     if !matches!(
         detector,
@@ -499,6 +617,9 @@ pub(crate) fn finding_observation_ms(evidence: &SessionEvidence, finding: &Findi
             models?.by_model.get(model).map(|tokens| tokens.last_ts_ms)
         }
         FindingCause::IgnoredInstructionConflict(evidence) => evidence.action_timestamp_ms,
+        FindingCause::SkillOpportunity { .. }
+        | FindingCause::OverExploring(_)
+        | FindingCause::ScopeCreep(_) => None,
         FindingCause::OveruseOfFastMode {
             provider,
             api,
@@ -744,10 +865,11 @@ mod tests {
             .unwrap();
         let mut evidence =
             session_with_resource(DetectorId::UnusedMcpServers, "tool", None).evidence;
-        let result = AssessmentResult {
+        let mut result = AssessmentResult {
             input_revision: "revision".to_owned(),
             model_version: ASSESSMENT_MODEL.to_owned(),
             findings: vec![AssessmentFinding {
+                decision: None,
                 id: "finding".to_owned(),
                 reference: RuleActionRef {
                     instruction_id: "instruction".to_owned(),
@@ -798,6 +920,26 @@ mod tests {
             input_tokens: 10,
             output_tokens: 1,
         };
+        let finding = &mut result.findings[0];
+        finding.decision = Some(serde_json::from_value(serde_json::json!({
+            "schema_revision": 1, "source_generation": 1, "source_fingerprint": null,
+            "publication_fence": 1, "rule_action": finding.reference,
+            "rule_start_byte": 0, "rule_end_byte": 17,
+            "action_anchor": {
+                "source": { "id": "action", "source_key_digest": "source", "thread_digest": "thread",
+                    "turn_index": 2, "native_record_id": null, "part_index": 0, "stable": true },
+                "content_digest": "action-digest", "start_byte": 0, "end_byte": 12
+            },
+            "action_authority": "assistant", "action_is_request": false,
+            "prerequisite": "not_required", "selected_evidence": [],
+            "coverage": { "source_complete": true, "selected_history_complete": false,
+                "read_request_inventory_complete": false, "results_excluded": true,
+                "user_authority_excluded": true, "limitations": [] },
+            "citations": [ { "claim": "rule_requirement", "source_ids": ["instruction:rule"] },
+                { "claim": "anchored_action", "source_ids": ["action"] } ],
+            "context_revision": "context", "evaluator_revision": "evaluator", "model": ASSESSMENT_MODEL
+        })).unwrap());
+        assert!(finding.decision_record().is_some());
         connection
             .execute(
                 "INSERT INTO burn_check_assessment VALUES
@@ -822,6 +964,83 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(stored.unassessed_comparisons, vec!["later-action"]);
+        let findings = ignored_instruction_findings_for_evidence(&evidence, &stored).unwrap();
+        let FindingCause::IgnoredInstructionConflict(proof) = findings[0].cause() else {
+            unreachable!()
+        };
+        assert_eq!(
+            proof.decision_record(),
+            stored.findings[0].decision_record()
+        );
+        assert!(proof.decision_record().is_some());
+        for field in [
+            "source_generation",
+            "publication_fence",
+            "source_fingerprint",
+            "rule_action",
+        ] {
+            let mut changed = serde_json::to_value(&result).unwrap();
+            changed["findings"][0]["decision"][field] = match field {
+                "source_fingerprint" => serde_json::json!("different"),
+                "rule_action" => {
+                    let mut reference = changed["findings"][0]["reference"].clone();
+                    reference["action_id"] = serde_json::json!("other");
+                    reference
+                }
+                _ => serde_json::json!(99),
+            };
+            connection
+                .execute(
+                    "UPDATE burn_check_assessment SET result_json = ?1",
+                    [changed.to_string()],
+                )
+                .unwrap();
+            let guarded = ignored_instruction_result_for(
+                &connection,
+                &evidence,
+                IgnoredInstructionSessionIdentity {
+                    environment_key: "native",
+                    agent: "claude-code",
+                    session_id: "later",
+                    incarnation: 1,
+                    source_generation: 1,
+                    source_fingerprint: None,
+                    published_fence: 1,
+                },
+            )
+            .unwrap()
+            .unwrap();
+            assert!(guarded.findings[0].decision.is_none(), "{field}");
+            assert_eq!(guarded.findings.len(), 1);
+        }
+        let mut legacy = serde_json::to_value(&result).unwrap();
+        legacy["findings"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("decision");
+        connection
+            .execute(
+                "UPDATE burn_check_assessment SET result_json = ?1",
+                [legacy.to_string()],
+            )
+            .unwrap();
+        let legacy = ignored_instruction_result_for(
+            &connection,
+            &evidence,
+            IgnoredInstructionSessionIdentity {
+                environment_key: "native",
+                agent: "claude-code",
+                session_id: "later",
+                incarnation: 1,
+                source_generation: 1,
+                source_fingerprint: None,
+                published_fence: 1,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(legacy.findings[0].decision.is_none());
+        assert_eq!(legacy.findings.len(), 1);
         assert_eq!(
             ignored_instruction_findings_for_evidence(&evidence, &stored)
                 .unwrap()
@@ -893,7 +1112,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn all_six_parsers_reach_a_persisted_report_finding() {
+    async fn six_parsers_preserve_findings_or_explicit_source_limits() {
         #[derive(Debug)]
         struct ParserCase {
             agent: &'static str,
@@ -1064,6 +1283,21 @@ mod tests {
             .await
             .unwrap();
             assert!(outcome.complete, "{description} assessment completes");
+            if outcome.result.findings.is_empty() {
+                assert!(
+                    !outcome.result.unassessed_comparisons.is_empty(),
+                    "{description} has explicit unassessed comparisons"
+                );
+                assert!(
+                    outcome
+                        .result
+                        .coverage
+                        .limitations
+                        .iter()
+                        .any(|limitation| limitation == "source_evidence_is_partial")
+                );
+                continue;
+            }
             assert!(
                 !outcome.result.findings.is_empty(),
                 "{description} yields a finding: {:#?}; responses: {:#?}",

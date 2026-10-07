@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { NOTICE_TEXT, THIRD_PARTY_NOTICES_TEXT } from "../lib/legalNotices"
 import { SettingsView } from "./SettingsView"
 import { searchApp, resolveSettingsSearchTarget } from "../lib/appSearch"
+import { defaultConnection } from "../lib/smartCheckProviders"
 
 /**
  * The settings window's persistence, through the mocked command layer.
@@ -144,6 +145,8 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
     switch (command) {
       case "get_settings":
         return Promise.resolve(SETTINGS)
+      case "get_system_one_settings":
+        return Promise.resolve({ activeId: "jev", profiles: { jev: defaultConnection("jev") } })
       case "set_settings":
         // The store answers with what it actually stored, and that is what the
         // panes must then render.
@@ -1243,6 +1246,11 @@ describe("SettingsView", () => {
         expect(screen.getByRole("tabpanel")).toHaveAttribute("id", `${pane}-panel`)
         emit("settings:pane", pane)
         await waitFor(() => expect(tab).toHaveAttribute("aria-selected", "true"))
+        if (pane === "checks") {
+          fireEvent.click(
+            screen.getByRole("button", { name: "Use Ollama or another provider" }),
+          )
+        }
         for (const row of container.querySelectorAll<HTMLElement>("[data-settings-control]")) {
           const control = row.dataset.settingsControl!
           expect(seen.has(control), control).toBe(false)

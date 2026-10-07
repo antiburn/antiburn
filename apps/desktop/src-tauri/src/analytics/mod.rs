@@ -113,10 +113,12 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::BurnCheckAutoFixCompleted { outcome } => {
             let _ = outcome;
         }
-        event::Interaction::BurnCheckPromptPrepared { outcome } => {
-            let _ = outcome;
+        event::Interaction::BurnCheckPromptPrepared { outcome, check } => {
+            let _ = (outcome, check);
         }
-        event::Interaction::BurnCheckPromptCopied => {}
+        event::Interaction::BurnCheckPromptCopied { check } => {
+            let _ = check;
+        }
         event::Interaction::BurnCheckOutcomeObserved { outcome, origin } => {
             let _ = (outcome, origin);
         }
@@ -136,8 +138,41 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::IgnoredInstructionObserved { stage, outcome } => {
             let _ = (stage, outcome);
         }
+        event::Interaction::SmartCheckObserved { check, observation } => {
+            let _ = (check, observation);
+        }
         event::Interaction::SessionFiltersChanged { action, agent } => {
             let _ = (action, agent);
+        }
+    }
+}
+
+pub fn record_smart_check_lifecycle(app: &tauri::AppHandle, lifecycle: event::SmartCheckLifecycle) {
+    #[cfg(feature = "analytics")]
+    {
+        let (name, facts) = lifecycle.resolve();
+        record(app, name, facts);
+    }
+    #[cfg(not(feature = "analytics"))]
+    {
+        let _ = app;
+        match lifecycle {
+            event::SmartCheckLifecycle::Enablement { enabled } => {
+                let _ = enabled;
+            }
+            event::SmartCheckLifecycle::ProviderSetup { provider, outcome } => {
+                let _ = (provider, outcome);
+            }
+            event::SmartCheckLifecycle::ProviderTest { provider, outcome } => {
+                let _ = (provider, outcome);
+            }
+            event::SmartCheckLifecycle::Assessment {
+                check,
+                outcome,
+                historical,
+            } => {
+                let _ = (check, outcome, historical);
+            }
         }
     }
 }
@@ -1062,7 +1097,10 @@ mod enabled {
     /// The renderer names a shape, not an event. See [`Interaction`] for why.
     pub fn record_interaction(app: &tauri::AppHandle, interaction: Interaction) {
         #[cfg(debug_assertions)]
-        if matches!(interaction, Interaction::IgnoredInstructionObserved { .. }) {
+        if matches!(
+            interaction,
+            Interaction::IgnoredInstructionObserved { .. } | Interaction::SmartCheckObserved { .. }
+        ) {
             return;
         }
         if let Some((provider, state)) = deliberate_live_usage_observation(interaction) {

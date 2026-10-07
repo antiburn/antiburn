@@ -2,35 +2,94 @@
 
 Smart Burn Checks are like deterministic Burn Checks: both look for signs of
 known issues in coding sessions. Smart Burn Checks send selected parts
-of a session to Jev for an assessment. Antiburn then combines those assessments
+of a session to the configured provider for an assessment. Antiburn combines those assessments
 with its local rules. The result describes evidence of an issue; it does not
 judge a person's intent.
 
-Smart Burn Checks means all Jev-powered Burn Checks. Each check declares its
-own evidence selection, questions, and result policy. Ignored Instructions is
-the first implementation, not the definition of the shared framework.
+Smart Burn Checks means all provider-powered Burn Checks. Each check declares its
+own evidence selection, questions, and result policy. All four use the shared
+framework; Ignored Instructions does not define the other checks' selection.
 
-Ignored Instructions needs a TypeSafe API key. Jev requests can use paid API
-credits. Antiburn shows local usage estimates in Settings.
+The four checks are Ignored Instructions, Scope Creep, Over-exploring, and Skill
+Opportunities. Jev uses a TypeSafe API key. Ollama, Cloudflare, and Custom
+connections use the same check flow. Hosted requests can incur charges; local
+usage estimates are not a spending cap or provider invoice.
 
 ## Setup, controls, and local data
 
-Open **Settings → Checks**, enable Smart Burn Checks, and add a TypeSafe API key.
+Open **Settings → Checks**, enable Smart Burn Checks, and configure a connection.
+Jev is the default. **Use Ollama or another provider** opens Ollama, Cloudflare,
+and Custom setup. Saved connections retain their settings when switched. Model
+capabilities govern preparation, packing, transport, validation, and reduction.
+A connection test proves protocol acceptance, not check accuracy. Ollama can use
+a local or remote base URL serving `/v1/systemone`; an ordinary chat endpoint
+does not establish this protocol. Cloudflare accepts Clef or Clef Flash with an
+account ID and credential. Custom uses the exact endpoint with direct System One
+or Cloudflare-envelope response decoding.
 The setting controls automatic checks. You can choose future sessions or start a
 7- or 30-day history review there. The history window applies to the requested
 review; it does not prove which instructions were active during older actions.
 
-Pause checks to stop new assessments while keeping the saved key. Remove the key
-to stop new TypeSafe requests. Remove a session to delete that session's local
-check state; already-incurred usage remains in the local totals. **Clear Local
+Pause checks to stop new assessments while keeping saved connections. Credentials
+use native credential storage or memory, not the session database. Removing a
+required credential prevents new requests through that connection. Remove a
+session to delete its local check state; already-incurred usage remains in the
+local totals. **Clear Local
 Data** also removes local sessions, check state, unresolved requests, and usage
 totals. See the [privacy policy](privacy-policy.md) for retention and data
 handling details.
 
+## Registered checks
+
+The shared worker runs all four checks. Scope Creep, Over-exploring, and Skill
+Opportunities accept native Claude Code, Codex, OpenCode SQLite v2, and Pi
+sources under the pinned retained-root contracts in
+[session coverage](session-coverage.md#retained-root-smart-check-inputs).
+They use the same master setting, provider connection, history controls, and
+Checks views. Four descriptors use
+one worker, including Ignored Instructions.
+
+Scope Creep compares substantial optional performed work with the full latest
+recorded scope. It includes recorded user messages, supported answers and plan
+evidence, and required proposal context. Every initial and follow-up request
+includes the complete compact scope. Later recorded approval withdraws stale
+findings and prompt actions. Task context that exceeds the model limit remains
+unassessed; the check does not split, summarize, or silently truncate approvals.
+
+Over-exploring reviews completed investigation episodes against recorded task
+context. Its three reasons are unrelated files, excessive file breadth, and
+excessive within-file reading. Counts and requested ranges do not prove waste.
+The provider receives selected user task context, read requests and recorded
+results, and supporting activity. Missing history, unfinished episodes, and
+unsupported read results remain unassessed.
+A finished read alone does not complete an episode. Current episodes need later
+completed edit activity; a next authorizing user boundary needs resolved,
+unambiguous tool operations. A pending request can resolve through a unique later
+completed native result. An explicitly running request remains deferred even if
+a result says completed. Unresolved, failed, missing, orphaned, and ambiguous
+operations remain deferred. Observed lines do not prove whole-file access or
+file versions.
+
+Skill Opportunities compares recorded work with current installed skill
+descriptions and typed selected skill-use evidence. It sends selected task/work
+context, matching skill names, descriptions, semantic frontmatter, and use/time
+limits to the configured provider. OpenCode result proof needs selected
+`OtherToolOutput`; input-only projections cannot carry result text. Codex and Pi
+document selections and Claude requests/failures remain distinct facts, not
+execution proof.
+It does not prove past visibility or whole-session absence. Reliable birth time
+only excludes skills created after the relevant work; missing time stays explicit.
+
+All four checks preserve exact source citations and exclude private thinking.
+Prompts suggest better instructions for future work. They do not repair the
+reviewed session, offer Auto Fix, create verification watches, or estimate savings.
+Changed source evidence, provider configuration, or skill inputs invalidate stale work.
+History progress counts check-session jobs, not distinct sessions.
+
 ## Ignored Instructions
 
 The following product flow describes Ignored Instructions. Its instruction
-rules, six selected fields, analysis passes, and confidence gates are specific
+rules, selected fields, analysis passes, and confidence gates are specific
 to this check.
 
 ### What the check reads
@@ -53,17 +112,23 @@ The check selects:
 - Inputs for other tools that are not recognized as Bash, edit, read, or search
   tools.
 
-The check excludes user messages, command and search results, read output, edit
-content, other tool output, and private thinking. Dedicated edit-tool content
+- Selected recorded user text and Bash results for bounded context. Human text
+  requires a normalized source-bound history proof and exact native text range.
+  Bash output requires a unique earlier request in the same source, thread, and
+  scope, exact call/name/range/digest bindings, and completed or error status.
+  The earlier request must be present in the selected evidence.
+
+The check excludes search results, read output, edit content, other tool output,
+typed question/plan fields, and private thinking. Dedicated edit-tool content
 stays excluded even though inline Bash content is selected. Selected file paths
-can appear in TypeSafe requests. Event IDs, line numbers, and citation links
-stay on the computer. Jev gets temporary labels; Antiburn uses a private map to
+can appear in provider requests. Event IDs, line numbers, and citation links
+stay on the computer. The provider gets temporary labels; Antiburn uses a private map to
 connect its answers to the original session events. Missing historical evidence
 stays unavailable and cannot prove historical activation, even if a selected
 review shows Clean. A recorded command request
 does not establish that the command ran or succeeded.
 
-The selected query excludes thinking and non-authoritative message text before
+The selected query excludes thinking and unqualified non-authoritative text before
 loading rows. It selects normalized tool fields by the check's field mask and
 applies byte limits to selected values. It can still read metadata for excluded
 tool categories. Source-wide truncation flags can keep a result unassessed when
@@ -102,7 +167,11 @@ file location so a finding points to the instruction it used.
 The check starts at the saved enablement boundary, or at the selected history
 window for a history run. It includes supported content after that boundary.
 Assistant text and tool input can be actions to check. A candidate action means
-one such event that may match an instruction. Tool-result text is not sent.
+one such event that may match an instruction. Accepted user text and bound Bash
+results supply context, not candidate work. Completion/error labels do not prove
+tests passed; result text must support the exact obligation. Unknown-origin,
+synthetic, skill-document, unmatched, conflicting, and truncated context cannot
+restore missing human authority or result proof.
 
 Antiburn reads a large session in pages. Each page holds a fixed amount of
 content. The first page can have newer events than the second page. The reader
@@ -157,8 +226,10 @@ keeps only comparisons whose prior history is incomplete, up to the candidate
 limit. It adds matching earlier events in source order and checks each candidate
 again. Completed comparisons do not carry forward. The carried comparison state
 is separate from the content cursor and page result. Missing history never proves
-that a prerequisite did not happen. User approval text is excluded and cannot
-resolve a permission-dependent conclusion. If the needed interval remains
+that a prerequisite did not happen. Accepted human text can inform a bounded
+permission-dependent comparison. Unknown-origin answers, assistant approval
+reports, skill selections, and tool permission do not establish human approval.
+If the needed interval remains
 missing or cut short, that comparison stays unassessed.
 
 ### What Jev receives and returns
@@ -212,7 +283,7 @@ completion point. A completed sampled review with no findings can show the
 ordinary **Clean** label. Clean means **no finding among sampled comparisons**.
 It does not mean that all session content is safe or that every instruction
 was active at the time. Unsampled pairs remain a coverage gap. Missing
-prerequisites, excluded approvals, incomplete source evidence, pending
+prerequisites, unavailable approval evidence, incomplete source evidence, pending
 obligations, and unresolved sampled comparisons cannot prove those comparisons
 clean. A provider or response error means the review did not finish; an
 evidence error means required source material is unavailable. Neither is a
@@ -264,7 +335,7 @@ reduction live beside its assessment under `checks/ignored_instructions/`.
 Each check declares a `JevInputSelection` and matching
 `JevEvidenceRequirements`. The default selection is empty. The source boundary
 applies selection before a check receives evidence. Its page query excludes
-thinking and non-authoritative message text, selects normalized tool fields by
+thinking and unqualified non-authoritative text, selects normalized tool fields by
 mask, and retains row metadata. The check receives only permitted text fields.
 
 `JevFieldAvailability` reports `excluded`, `unsupported`, `not_observed`, or
@@ -286,6 +357,56 @@ unselected field or another publication.
 references bind request-local context to local source IDs. Packing sends the
 context and questions, not those IDs. Unpacking restores the local bindings and
 the runner verifies them before reduction.
+
+### Private question and plan records
+
+`ContentPart::with_scope_evidence` accepts adapter-normalized `JevUserAnswer`
+and `JevPlanReference` records. The types live in
+`analysis/jev_evidence/scope_metadata.rs`. They retain source format, native
+role and record identity, call/question IDs, record-local order, optional producer
+acceptance order, provenance,
+producer and normalization revisions, source ranges, and truncation. Content
+rows supply the session, branch, turn order, and publication binding.
+
+Answer lifecycle and origin are separate. Submitted, skipped, cancelled, timed-out,
+pending, and unknown statuses retain selections and free text. User, synthetic,
+automatic, and unknown origins remain distinct. Each question retains its full
+prompt, optional header, context and comment, ordered options, descriptions, and
+multi-select metadata. Pi questionnaire display labels use `header`. Native ranges
+carry their own optional record IDs for cross-record call/result bindings. The adapter
+must validate the native producer shape before it attaches these records.
+A tool name or result string alone cannot create a typed user answer.
+
+Plan records retain proposed/approved/rejected/feedback status, recorded text,
+feedback, path, identity, revision, and current and approved content digests.
+Recorded, version-matched, mutable, missing, and unresolved content remain
+distinct. A plan status is source evidence, not a check's approval decision.
+Current mutable bytes do not prove the version that received approval.
+
+These records stay in private `JevOperationMetadata`. Engine row insertion stores
+them under `metadata` in `turn_content.normalized_fields_json`, including parts
+without normalized tool input. The selected query reads only the arrays requested
+by `JevInputField::UserAnswer` and `JevInputField::PlanReference`. Each field is
+retrievable as an exact JSON array through `JevCheck::retrieve_evidence`.
+Selected records and their revisions contribute to the selected-input digest.
+Queries retain the existing session/publication fences, paging, and byte limits.
+Oversized metadata is rejected or reported as omitted; it is not summarized.
+Thinking cannot supply these records.
+
+Both fields require explicit opt-in. `JevInputSelection::ALL` retains its legacy
+text-only mask. Ignored Instructions excludes these typed scope fields; changes
+to excluded fields do not change its selected digest at the same publication.
+The fields are conditional for `OpenCodeSqliteV2`, `ClaudeJsonl`,
+`CodexRolloutJsonl`, and `PiV3Jsonl` under the fixture-backed contracts in
+`session-coverage.md`. Other sources remain
+unavailable. Claude retains structured answer strings with unknown human origin
+and exact recorded plan versions without approved-version bindings. SDK callback
+input, plan-mode exit, permission changes, and approval wording do not establish
+Claude scope approval. Missing and mutable plan content stays unresolved.
+The pinned local OpenCode plan completion retains build-switch approval, but
+not the approved plan path, content, or version. Provider-executed results and
+synthetic attachment text do not establish approval. Companion-plan retrieval
+remains unavailable.
 
 ### Reference sources
 
@@ -359,12 +480,36 @@ owns how requests run and how progress resumes.
 
 ## Evaluation scope
 
-The synthetic Ignored Instructions evaluation inputs and Rust harness are under
-`apps/desktop/src-tauri/eval/ignored_instructions/`. Development and regression
-cases, exact binding sidecars, and the current live-evaluation policy live under
-its `data/` directory. Offline characterization and harness tests check bounded
-behavior; they do not establish live Jev accuracy. Live tests are ignored by
-default and can incur TypeSafe charges when explicitly run.
+The Rust diagnostics are under `apps/desktop/src-tauri/eval/`. Each check target
+has one ignored `live` entry point. Shared support owns environment-only provider
+selection, suites, exact case IDs, a positive case limit, usage/latency, and
+timestamped JSON capture. Use `ANTIBURN_EVAL_PROVIDER`, `ANTIBURN_EVAL_SUITE`,
+`ANTIBURN_EVAL_CASES`, `ANTIBURN_EVAL_LIMIT`, and optionally
+`ANTIBURN_EVAL_OUTPUT_DIR` or `ANTIBURN_EVAL_RAW`.
+
+```sh
+ANTIBURN_EVAL_PROVIDER=ollama-nimble ANTIBURN_EVAL_LIMIT=3 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --offline --test over_exploring live -- --ignored --exact --nocapture --test-threads=1
+```
+
+Ignored Instructions maps `development` to `core`; it also accepts `context`,
+`limits`, and `all`, with `controls` as an alias for `limits`. The other checks
+accept `development` and `controls`. Reports retain weak scores, errors,
+abstentions, missing outcomes, citation diagnostics, usage, and latency.
+Synthetic-case accuracy is diagnostic, not a population estimate or delivery
+gate. No frozen hashes, binding sidecars, previous passing capture, strict
+accuracy threshold, or Python tool is required. Production authority and protocol
+validators still apply. Live calls are explicit and can incur charges. Do not
+run every ignored test. See the [eval guide](../apps/desktop/src-tauri/eval/README.md)
+and [provider presets](../apps/desktop/src-tauri/eval/support/README.md).
+
+Bounded diagnostics on 2026-10-07 completed selected cases for all four checks
+with Jev and representative Ignored Instructions cases through Ollama,
+Cloudflare, and Custom direct/envelope routes. Some expected findings or clean
+results abstained. Nimble retained an incomplete Ignored Instructions execution
+and a Skill Opportunities advisory false positive. These results do not
+establish broad model quality, native parser reachability, or every provider/check
+combination. Retain weak scores and failures; rerun affected cases when request
+preparation, transport, or reduction changes.
 
 An ordinary assessment in about 60 seconds after worker start is a performance
 goal, not a deadline or guarantee. Preparation, provider admission, request
@@ -387,10 +532,13 @@ and a measured shortlist. They do not validate Ignored Instructions accuracy.
 
 ## Ignored Instructions selected-input coverage
 
-Audit date: 2026-10-02.
+Audit date: 2026-10-07.
 
 This matrix records the twelve normalized session fields and their current
-availability to Ignored Instructions. Other Smart Burn Checks can select a
+field capability and selection for Ignored Instructions. User text and Bash
+output are selected, but accepted context needs the exact normalized proofs
+above. Field capability alone does not prove context eligibility.
+Other Smart Burn Checks can select a
 different subset. It complements the exact native-source inventory in
 [`session-coverage.md`](session-coverage.md) and the reachable finding contract
 in [`check-coverage.md`](check-coverage.md).
@@ -411,16 +559,16 @@ so they cannot produce a clean result from incomplete tool evidence.
 
 | `SourceFormat`                 | UserMessage | AssistantMessage | BashCommandInput | BashCommandOutput | FileEditPath | FileEditContent | ReadFilePath | ReadFileOutput | SearchFilesQuery | SearchFilesOutput | OtherToolInput | OtherToolOutput |
 | ------------------------------ | ----------- | ---------------- | ---------------- | ----------------- | ------------ | --------------- | ------------ | -------------- | ---------------- | ----------------- | -------------- | --------------- |
-| `ClaudeJsonl`                  | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
-| `CodexRolloutJsonl`            | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
-| `PiV3Jsonl`                    | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
-| `OpenCodeSqliteV2`             | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
-| `CursorCliAgentJsonl`          | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
-| `CursorCliStoreDb`             | N           | S                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
-| `CursorChatStoreDb`            | N           | S                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
-| `CursorIdeComposer`            | N           | S                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
-| `AntigravityBrainJsonl`        | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
-| `AntigravitySqlite`            | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
+| `ClaudeJsonl` | S | S | C | C | S | N | S | N | C | N | C | N |
+| `CodexRolloutJsonl` | S | S | C | C | S | N | S | N | C | N | C | N |
+| `PiV3Jsonl` | S | S | C | C | S | N | S | N | C | N | C | N |
+| `OpenCodeSqliteV2` | S | S | C | C | S | N | S | N | C | N | C | N |
+| `CursorCliAgentJsonl` | S | S | C | C | S | N | S | N | C | N | C | N |
+| `CursorCliStoreDb` | S | S | U | U | U | U | U | U | U | U | U | U |
+| `CursorChatStoreDb` | S | S | U | U | U | U | U | U | U | U | U | U |
+| `CursorIdeComposer` | S | S | U | U | U | U | U | U | U | U | U | U |
+| `AntigravityBrainJsonl` | S | S | C | C | S | N | S | N | C | N | C | N |
+| `AntigravitySqlite` | S | S | C | C | S | N | S | N | C | N | C | N |
 | `OpenCodeJsonl`                | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `OmpV3Jsonl`                   | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `CursorJsonl`                  | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
@@ -445,7 +593,7 @@ so they cannot produce a clean result from incomplete tool evidence.
 | `DevinLocalSqlite`             | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `Uncharacterized`              | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 
-The query excludes thinking and non-authoritative message text before loading
+The query excludes thinking and unqualified non-authoritative text before loading
 rows. It applies part and byte limits to selected fields. SQLite extracts only
 selected normalized tool fields but can read excluded row metadata. Each tool
 request is normalized once when its source adapter writes the fenced content
@@ -459,6 +607,16 @@ truncated-request isolation and exact result joins. Metadata uses the existing
 private normalized JSON column.
 
 ## Shared normalization contract
+
+Native adapters validate source shapes before shared normalization. Checks
+consume generic source-bound facts instead of parsing producer markup. Normalized
+skill facts retain request, document-selection, failure, and unknown status,
+selected ranges, digests, native identity, and available chronology. A selected
+document is not execution proof. Normalized human text and command results retain
+exact action/request references, scope, digests, ranges, and lifecycle. A copied
+pointer, tool name, result phrase, or current filesystem value cannot supply
+missing provenance. Read facts preserve observed extent and unavailable file
+versions. Selection removes excluded facts and bindings before check preparation.
 
 Normalization is a reusable source-boundary abstraction. Each Smart Burn Check
 selects from its normalized fields; Ignored Instructions does not define which
@@ -507,8 +665,9 @@ invalidates that digest. Unsupported formats supply no projected actions.
 `JevOperationMetadata` retains a typed native lifecycle state and selected
 `JevNativeFieldRange` bindings. OpenCode native `state.status` maps pending,
 running, completed, and error exactly. Missing or unknown labels remain unknown.
-Other adapters do not infer lifecycle state from request presence, result text,
-adjacency, or assistant reports. Completed is a recorded lifecycle label; it
+Pinned Claude, Codex, and Pi adapters also retain characterized native result
+status and exact joins. Uncharacterized shapes do not infer lifecycle from
+request presence, adjacency, or assistant reports. Completed is a recorded label; it
 does not establish a passing command or a resulting file state.
 
 Field bindings identify a typed native container, JSON pointer, and UTF-8 offsets within its
@@ -582,18 +741,19 @@ ownership, not successful execution or an authoritative completion boundary.
 
 OpenCode's native SQLite lifecycle fixture covers pending, running, completed,
 and error requests. Only completed output and error text supply result bodies
-in that fixture. The typed lifecycle label survives selected storage, but the
-current Ignored Instructions selection excludes result text. A completed label
+in that fixture. Ignored Instructions can use exactly bound selected Bash
+results as context. A completed label
 does not prove command success or a resulting file state. Exact recorded call
 IDs remain local. Native patch parts remain separate metric evidence and do not
 supply a second selected edit action.
 
 Historical instruction snapshots, missing call identities, ambiguous output
 joins, relative-path resolution, and producer completion boundaries are not
-fabricated. Cursor store/composer synthesis and Antigravity Cascade/SQLite
-remain outside the Ignored Instructions six-format admission gate. Unsupported
-fields on those surfaces stay unsupported; these tests do not establish a new
-native schema or release range.
+fabricated. The six-format equivalent-event test is narrower than the product
+admission list. Cursor store/composer routes retain normalized messages but lack
+native tool proof; Antigravity SQLite needs its assessable companion transcript.
+Antigravity Cascade is not admitted. These tests do not establish new native
+schemas, human authority, or release ranges.
 
 ## Shared execution and storage limits
 

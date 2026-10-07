@@ -1,4 +1,4 @@
-//! Implements the Ignored Instructions check worker.
+//! Implements the Ignored Instructions adapter for the shared worker.
 
 mod progress;
 
@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use antiburn_local::analysis::jev::{
-    JevCheck, JevError, JevExecutionOutcome, JevRequestBatch, JevRunProgress, JevSessionContext,
-    JevWorkItem, admit_jev_orchestration, run_jev_check_prepared,
+    JevCheck, JevError, JevExecutionOutcome, JevRunProgress, JevSessionContext, JevWorkItem,
+    admit_jev_orchestration,
 };
 use antiburn_local::analysis::{
     SelectedContentCursor, SelectedContentQueryError, SelectedContentRequest, SessionEvidence,
@@ -17,10 +17,10 @@ use antiburn_local::analysis::{
 use antiburn_local::platform::git;
 use tauri::Emitter;
 
-use crate::jev_client::TypeSafeClient;
-use crate::jev_worker::{
-    BatchExecution, CandidateExecution, JevCheckWorker, WorkerHandle, error_category,
-    execute_jev_batch, unix_now, wake,
+use crate::jev::client::TypeSafeClient;
+use crate::jev::worker::{
+    BatchExecution, CandidateExecution, CheckPolicy, JevCheckDescriptor, WorkerHandle,
+    error_category, run_prepared_check, unix_now, wake,
 };
 use crate::session_lifecycle::SessionEvents;
 use crate::store::{
@@ -35,12 +35,18 @@ const IDLE_SECS: i64 = 180;
 const LEASE_SECS: i64 = 300;
 const RETRY_DELAY_SECS: i64 = 30 * 60;
 const SAMPLE_SIZE: usize = 256;
+const POLICY: CheckPolicy = CheckPolicy {
+    idle_secs: IDLE_SECS,
+    lease_secs: LEASE_SECS,
+    retry_delay_secs: RETRY_DELAY_SECS,
+};
 
 struct SamplingPass<'a> {
     pairs: &'a [BurnCheckSampledPair],
     round: u32,
     backlog: bool,
     origin: &'a BurnCheckSampleOrigin,
+    capabilities: &'a antiburn_local::analysis::jev::capabilities::ModelCapabilities,
     #[cfg(test)]
     legacy_fixture: bool,
 }
@@ -234,6 +240,7 @@ fn serialize_selected_cursor_progress(
 fn restore_selected_assessment(
     assessment: Option<&BurnCheckAssessment>,
     input_revision: &str,
+    backlog: bool,
 ) -> anyhow::Result<(
     AssessmentCursor,
     Option<CompactProgress>,
@@ -256,11 +263,35 @@ fn restore_selected_assessment(
         cursor = AssessmentCursor {
             input_revision: Some(input_revision.to_owned()),
             round: round.saturating_add(u32::from(assessment.is_some())),
+            backlog,
             prior_findings: assessment.map(carried_findings).unwrap_or_default(),
             ..Default::default()
         };
     }
     Ok((cursor, compact, selected))
+}
+
+type AssessmentPosition = (bool, Option<SelectedContentCursor>, Option<String>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssessmentPageDecision {
+    Continue,
+    Complete,
+    Incomplete,
+}
+
+fn assessment_page_decision(
+    has_more_work: bool,
+    old: &AssessmentPosition,
+    proposed: &AssessmentPosition,
+) -> AssessmentPageDecision {
+    if !has_more_work {
+        AssessmentPageDecision::Complete
+    } else if old != proposed {
+        AssessmentPageDecision::Continue
+    } else {
+        AssessmentPageDecision::Incomplete
+    }
 }
 
 fn advance_selected_assessment_page(
@@ -280,11 +311,11 @@ fn advance_selected_assessment_page(
 }
 
 /// Check-specific policy adapter registered with the shared Jev worker.
-pub(crate) struct IgnoredInstructionsWorker;
+pub(crate) struct IgnoredInstructionsDescriptor;
 
-pub(crate) const CHECK: IgnoredInstructionsWorker = IgnoredInstructionsWorker;
+pub(crate) const CHECK: IgnoredInstructionsDescriptor = IgnoredInstructionsDescriptor;
 
-impl JevCheckWorker for IgnoredInstructionsWorker {
+impl JevCheckDescriptor for IgnoredInstructionsDescriptor {
     fn id(&self) -> &'static str {
         CHECK_ID
     }
@@ -293,10 +324,14 @@ impl JevCheckWorker for IgnoredInstructionsWorker {
         ignored_instructions::evaluator_revision()
     }
 
+    fn policy(&self) -> CheckPolicy {
+        POLICY
+    }
+
     fn run_candidate<'a>(
         &'a self,
         execution: CandidateExecution<'a>,
-    ) -> crate::jev_worker::WorkerFuture<'a> {
+    ) -> crate::jev::worker::WorkerFuture<'a> {
         Box::pin(run_candidate(
             execution.app,
             execution.store,
@@ -320,6 +355,7 @@ async fn run_candidate(
 ) -> anyhow::Result<()> {
     let candidate_started = Instant::now();
     let input_preparation_started = Instant::now();
+    let capabilities = handle.resolve_capabilities(key_generation).await?;
     let mut discovery_cache = InstructionDiscoveryCache::default();
     let stored_before_queue = store.burn_check_assessment(&candidate.session.key, CHECK_ID)?;
     let existing_pairs = store.burn_check_sampled_pairs(&candidate.session.key, CHECK_ID)?;
@@ -361,6 +397,7 @@ async fn run_candidate(
         round,
         backlog,
         origin: &origin,
+        capabilities: &capabilities,
         #[cfg(test)]
         legacy_fixture: false,
     };
@@ -389,7 +426,7 @@ async fn run_candidate(
             None,
             None,
             &mut discovery_cache,
-            pass(false),
+            pass(resumed_backlog),
         )
         .await
     } else {
@@ -412,7 +449,7 @@ async fn run_candidate(
                 unix_now(),
             )?;
             if candidate.historical {
-                crate::jev_settings::progress_changed(app);
+                crate::jev::settings::progress_changed(app);
             }
             return Ok(());
         }
@@ -431,7 +468,7 @@ async fn run_candidate(
                 unix_now(),
             )?;
             if candidate.historical {
-                crate::jev_settings::progress_changed(app);
+                crate::jev::settings::progress_changed(app);
             }
             return Ok(());
         }
@@ -448,7 +485,7 @@ async fn run_candidate(
             None,
             None,
             &mut discovery_cache,
-            pass(false),
+            pass(resumed_backlog),
         )
         .await?
         {
@@ -456,13 +493,17 @@ async fn run_candidate(
             _ => return Ok(()),
         };
     }
-    let (cursor, compact_progress, selected_progress) =
-        restore_selected_assessment(stored_before_queue.as_ref(), &input.input_revision)?;
+    let (cursor, compact_progress, selected_progress) = restore_selected_assessment(
+        stored_before_queue.as_ref(),
+        &input.input_revision,
+        resumed_backlog,
+    )?;
     let (mut cursor, compact_progress, mut selected_progress) = if stale_cursor {
         (
             AssessmentCursor {
                 input_revision: Some(input.input_revision.clone()),
                 round: cursor.round.saturating_add(1),
+                backlog: resumed_backlog,
                 prior_findings: stored_before_queue
                     .as_ref()
                     .map(carried_findings)
@@ -478,11 +519,12 @@ async fn run_candidate(
     } else {
         (cursor, compact_progress, selected_progress)
     };
-    ignored_instructions::extend_jev_context_with_history(
+    ignored_instructions::extend_jev_context_with_history_and_capabilities(
         &mut input.context,
         &mut cursor.carried_comparisons,
         &input.page_actions,
         input.prior_history_complete,
+        &capabilities,
     )?;
     let remaining = SAMPLE_SIZE.saturating_sub(
         cursor
@@ -492,8 +534,8 @@ async fn run_candidate(
     );
     limit_comparison_page(&mut input.context, remaining)?;
     let orchestration = admit_jev_orchestration().await?;
-    let mut prepared_plan =
-        ignored_instructions::IgnoredInstructionsCheck.prepare(&input.context)?;
+    let mut prepared_plan = ignored_instructions::IgnoredInstructionsCheck
+        .prepare_with_capabilities(&input.context, &capabilities)?;
     let plan = &prepared_plan.prepared;
     let work_items = &prepared_plan.work_items;
     cursor.round = round;
@@ -548,7 +590,7 @@ async fn run_candidate(
         return Ok(());
     }
     if candidate.historical {
-        crate::jev_settings::progress_changed(app);
+        crate::jev::settings::progress_changed(app);
     }
     let mut global_rules = 0usize;
     let mut global_pairs = 0usize;
@@ -592,86 +634,39 @@ async fn run_candidate(
     let checkpoint_work_items = work_items.clone();
     let context = input.context.clone();
     let check = ignored_instructions::IgnoredInstructionsCheck;
-    let execute_input = &input;
-    let execute = |batch: std::sync::Arc<JevRequestBatch>| {
-        let client = client.clone();
-        async move {
-            execute_jev_batch(
-                BatchExecution {
-                    app,
-                    store,
-                    input: execute_input,
-                    client,
-                    handle,
-                    key_generation,
-                    events,
-                    idle_secs: IDLE_SECS,
-                    lease_secs: LEASE_SECS,
-                },
-                batch,
-            )
-            .await
-        }
-    };
+    let capabilities = &capabilities;
     let mut checkpoint_followups = BTreeMap::new();
     let execution_started = Instant::now();
-    let outcome = run_jev_check_prepared(
+    let mut outcome = run_prepared_check(
+        BatchExecution {
+            app,
+            store,
+            input: &input,
+            client,
+            handle,
+            key_generation,
+            events,
+            policy: POLICY,
+            capabilities,
+        },
         &check,
         &context,
         &mut prepared_plan,
         cursor.progress.clone(),
         orchestration,
-        execute,
         |progress| {
-            let checkpoint_started = Instant::now();
-            store.save_burn_check_work_answers(&input, progress, unix_now())
-                .map_err(|error| {
-                    ::tracing::warn!(event = "burn_check_work_answer_save_failed", error = %error);
-                    JevError::ProgressStorageFailure
-                })?;
-            let serialized = serialize_selected_cursor_progress(&cursor, progress, &checkpoint_work_items, &context, &mut checkpoint_followups, Some(&selected_progress))
-                .map_err(|_| JevError::InvalidCheckPlan)?;
-            let serialization_elapsed_ms = checkpoint_started.elapsed().as_millis();
-            let store_started = Instant::now();
-            if !store
-                .save_burn_check_progress(
-                    &input,
-                    &serialized,
-                    unix_now(),
-                    LEASE_SECS,
-                    IDLE_SECS,
-                )
-                .map_err(|error| {
-                    ::tracing::warn!(event = "burn_check_progress_save_failed", progress_bytes = serialized.len(), error = %error);
-                    JevError::ProgressStorageFailure
-                })?
-            {
-                return Err(JevError::Cancelled);
-            }
-            ::tracing::debug!(
-                event = "burn_check_progress_saved",
-                progress_bytes = serialized.len(),
-                completed_batches = progress.completed_batch_ids.len(),
-                completed_work_items = progress.results.len(),
-                serialization_elapsed_ms,
-                store_elapsed_ms = store_started.elapsed().as_millis(),
-                checkpoint_elapsed_ms = checkpoint_started.elapsed().as_millis(),
-            );
-            Ok(())
+            serialize_selected_cursor_progress(
+                &cursor,
+                progress,
+                &checkpoint_work_items,
+                &context,
+                &mut checkpoint_followups,
+                Some(&selected_progress),
+            )
+            .map_err(|_| JevError::InvalidCheckPlan)
         },
     )
-    .await;
-    let outcome = match outcome {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            store.release_failed_burn_check_lease(
-                &input,
-                error_category(&error),
-                unix_now().saturating_add(RETRY_DELAY_SECS),
-            )?;
-            return Err(error.into());
-        }
-    };
+    .await?;
     let plan = &prepared_plan.prepared;
     let work_items = &prepared_plan.work_items;
     ::tracing::debug!(
@@ -687,11 +682,7 @@ async fn run_candidate(
         store.supersede_burn_check_assessment(&input, unix_now())?;
         return Ok(());
     }
-    if matches!(outcome.failure, Some(JevError::AuthenticationRejected)) {
-        handle.reject_authentication();
-        store.set_internal_value("internal:typesafeAuthRejectedV1", "true");
-        crate::jev_settings::changed(app);
-    }
+    let rejected = matches!(outcome.failure, Some(JevError::AuthenticationRejected));
     let page_result = outcome.result;
     let result_before_page = cursor.result.clone();
     let new_content_page = selected_progress.cursor.is_some() && cursor.comparison_after.is_none();
@@ -720,8 +711,13 @@ async fn run_candidate(
         &page_result,
         more_content,
     );
-    let sampled_pairs =
-        sampled_pairs_for_page(plan, &page_result, cursor.round, input.incarnation)?;
+    let sampled_pairs = sampled_pairs_for_page(
+        plan,
+        &page_result,
+        cursor.round,
+        input.incarnation,
+        capabilities,
+    )?;
     let mut result = page_result;
     if input.future_only {
         result
@@ -741,10 +737,42 @@ async fn run_candidate(
         && !cursor.backlog
         && !existing_pairs.is_empty()
         && result.coverage.selected_comparisons < SAMPLE_SIZE;
-    let advancing = outcome.failure.is_none()
-        && (more_comparisons
-            || start_backlog
-            || continue_content_pass(more_content, result.coverage.selected_comparisons));
+    let old_position: AssessmentPosition = (
+        cursor.backlog,
+        selected_progress.cursor.clone(),
+        cursor.comparison_after.clone(),
+    );
+    let proposed_position = if start_backlog {
+        (true, None, None)
+    } else if more_comparisons {
+        (
+            cursor.backlog,
+            selected_progress.cursor.clone(),
+            plan.next_comparison_cursor.clone(),
+        )
+    } else if continue_content_pass(more_content, result.coverage.selected_comparisons) {
+        (cursor.backlog, next_content_cursor.clone(), None)
+    } else {
+        old_position.clone()
+    };
+    let has_more_work = more_comparisons
+        || start_backlog
+        || continue_content_pass(more_content, result.coverage.selected_comparisons);
+    let decision = assessment_page_decision(
+        outcome.failure.is_none() && has_more_work,
+        &old_position,
+        &proposed_position,
+    );
+    let advancing = decision == AssessmentPageDecision::Continue;
+    let stalled = decision == AssessmentPageDecision::Incomplete;
+    if stalled {
+        outcome.complete = false;
+        result.coverage.sampled_pass = true;
+        result
+            .coverage
+            .limitations
+            .push("processing_incomplete".to_owned());
+    }
     if outcome.failure.is_none() && more_content && !advancing {
         result.coverage.sampled_pass = true;
         result
@@ -775,14 +803,17 @@ async fn run_candidate(
         if start_backlog {
             cursor.backlog = true;
             selected_progress.cursor = None;
+            cursor.comparison_after = None;
+            cursor.progress = JevRunProgress::default();
+        } else {
+            advance_selected_assessment_page(
+                &mut cursor,
+                &mut selected_progress,
+                more_comparisons,
+                plan.next_comparison_cursor.clone(),
+                next_content_cursor,
+            );
         }
-        advance_selected_assessment_page(
-            &mut cursor,
-            &mut selected_progress,
-            more_comparisons,
-            plan.next_comparison_cursor.clone(),
-            next_content_cursor,
-        );
     } else {
         cursor.progress = outcome.progress;
     }
@@ -828,41 +859,58 @@ async fn run_candidate(
         advancing,
     );
     let published = if advancing {
-        store.fail_burn_check_assessment_with_result(
-            &input,
-            &BurnCheckFailure {
-                error_category: "continuing",
-                result_json: &serialized,
-                progress_json: &progress_json,
-                retry_at_epoch: None,
-            },
-            unix_now(),
-            IDLE_SECS,
-        )?
+        let Some(published) = handle.with_current_generation(key_generation, || {
+            store.fail_burn_check_assessment_with_result(
+                &input,
+                &BurnCheckFailure {
+                    error_category: "continuing",
+                    result_json: &serialized,
+                    progress_json: &progress_json,
+                    retry_at_epoch: None,
+                },
+                unix_now(),
+                IDLE_SECS,
+            )
+        }) else {
+            return Ok(());
+        };
+        published?
     } else {
-        save_outcome(
+        let saved = handle
+            .with_current_generation(key_generation, || {
+                save_outcome(
+                    app,
+                    store,
+                    SaveOutcome {
+                        evidence: &input.evidence,
+                        input: &input,
+                        outcome: JevExecutionOutcome {
+                            result,
+                            progress: cursor.progress,
+                            complete: outcome.complete,
+                            failure: outcome.failure,
+                        },
+                        serialized: &serialized,
+                        serialization_elapsed_ms,
+                        progress_json: &progress_json,
+                        historical: candidate.historical,
+                        sampled_pairs: &sampled_pairs,
+                    },
+                )
+            })
+            .transpose();
+        let rejection = crate::jev::worker::settle_authentication_rejection(
             app,
             store,
-            SaveOutcome {
-                input: &input,
-                outcome: JevExecutionOutcome {
-                    result,
-                    progress: cursor.progress,
-                    complete: outcome.complete,
-                    failure: outcome.failure,
-                },
-                serialized: &serialized,
-                serialization_elapsed_ms,
-                progress_json: &progress_json,
-                historical: candidate.historical,
-                sampled_pairs: &sampled_pairs,
-            },
-        )
-        .await?;
+            handle,
+            key_generation,
+            rejected,
+        );
+        saved?;
+        rejection?;
         return Ok(());
     };
     if published {
-        store.save_burn_check_sampled_pairs(&input, &sampled_pairs)?;
         ::tracing::debug!(
             event = "checks_report_changed_emitted",
             source = "jev_worker",
@@ -870,6 +918,7 @@ async fn run_candidate(
         );
         let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
         wake(app);
+        store.save_burn_check_sampled_pairs(&input, &sampled_pairs)?;
     }
     Ok(())
 }
@@ -915,6 +964,7 @@ fn sampled_pairs_for_page(
     result: &ignored_instructions::AssessmentResult,
     round: u32,
     incarnation: u64,
+    capabilities: &antiburn_local::analysis::jev::capabilities::ModelCapabilities,
 ) -> anyhow::Result<Vec<BurnCheckSampledPair>> {
     let unassessed = result
         .unassessed_comparisons
@@ -937,7 +987,8 @@ fn sampled_pairs_for_page(
     plan.comparisons
         .iter()
         .map(|comparison| {
-            let dependency_digest = comparison_dependency(plan, comparison, incarnation)?;
+            let dependency_digest =
+                comparison_dependency(plan, comparison, incarnation, capabilities)?;
             Ok(BurnCheckSampledPair {
                 comparison_id: comparison.id.clone(),
                 dependency_digest,
@@ -959,9 +1010,11 @@ fn comparison_dependency(
     plan: &ignored_instructions::AssessmentPlan,
     comparison: &ignored_instructions::CandidateComparison,
     incarnation: u64,
+    capabilities: &antiburn_local::analysis::jev::capabilities::ModelCapabilities,
 ) -> anyhow::Result<String> {
     Ok(ignored_instructions::sha256_hex(&serde_json::to_vec(&(
         incarnation,
+        capabilities,
         plan.model_version.as_str(),
         plan.projection_revision,
         plan.chunking_revision,
@@ -975,6 +1028,7 @@ fn verify_sampling_ledger(
     input: &ignored_instructions::AssessmentInput,
     pairs: &[BurnCheckSampledPair],
     ledger: &mut ignored_instructions::SamplingLedger,
+    capabilities: &antiburn_local::analysis::jev::capabilities::ModelCapabilities,
 ) -> anyhow::Result<()> {
     if ledger.comparison_ids.is_empty() {
         return Ok(());
@@ -993,10 +1047,15 @@ fn verify_sampling_ledger(
     let mut probe = input.clone();
     probe.comparison_after = None;
     for _ in 0..SAMPLE_SIZE.div_ceil(ignored_instructions::MAX_ASSESSMENT_CANDIDATES) {
-        let plan = ignored_instructions::build_assessment_plan(probe.clone());
+        let plan = ignored_instructions::build_assessment_plan_with_capabilities(
+            probe.clone(),
+            &ignored_instructions::SamplingLedger::default(),
+            capabilities,
+        );
         for comparison in &plan.comparisons {
             if let Some(digests) = expected.get(comparison.id.as_str()) {
-                let digest = comparison_dependency(&plan, comparison, input.incarnation)?;
+                let digest =
+                    comparison_dependency(&plan, comparison, input.incarnation, capabilities)?;
                 if digests.contains(digest.as_str()) {
                     verified.insert(comparison.id.clone());
                 }
@@ -1322,6 +1381,7 @@ fn merge_prior_findings(
 
 #[derive(Clone)]
 struct PreparedInput {
+    evidence: SessionEvidence,
     context: antiburn_local::analysis::jev::JevSessionContext,
     input: BurnCheckInput,
     #[cfg(test)]
@@ -1441,15 +1501,11 @@ async fn prepare_selected_input_with_home(
             discovery
         }
     };
-    let revision_instruction_digests = if pass.backlog && !pass.origin.historical {
-        Vec::new()
-    } else {
-        discovery
-            .snapshots
-            .iter()
-            .map(|item| item.digest.clone())
-            .collect::<Vec<_>>()
-    };
+    let revision_instruction_digests = discovery
+        .snapshots
+        .iter()
+        .map(|item| item.digest.clone())
+        .collect::<Vec<_>>();
     let mut boundary_positions = if pass.backlog {
         pass.origin.boundary_positions.clone()
     } else {
@@ -1634,9 +1690,17 @@ async fn prepare_selected_input_with_home(
         candidate.incarnation,
         pass.backlog,
     );
-    verify_sampling_ledger(&assessment_input, pass.pairs, &mut ledger)?;
-    let context =
-        ignored_instructions::build_jev_context_with_sampling(&assessment_input, &ledger)?;
+    verify_sampling_ledger(
+        &assessment_input,
+        pass.pairs,
+        &mut ledger,
+        pass.capabilities,
+    )?;
+    let context = ignored_instructions::build_jev_context_with_capabilities(
+        &assessment_input,
+        &ledger,
+        pass.capabilities,
+    )?;
     #[cfg(test)]
     {
         preparation_timings.context_build_us = stage_started.elapsed().as_micros();
@@ -1669,9 +1733,11 @@ async fn prepare_selected_input_with_home(
         &candidate.boundary_positions,
         ignored_instructions::ASSESSMENT_MODEL,
         ignored_instructions::evaluator_revision(),
+        pass.capabilities,
     ))?);
     let evaluator_revision = ignored_instructions::evaluator_revision();
     Ok(PrepareInputOutcome::Ready(Box::new(PreparedInput {
+        evidence,
         input: BurnCheckInput {
             key: candidate.session.key.clone(),
             check_id: CHECK_ID.to_owned(),
@@ -1744,6 +1810,8 @@ async fn prepare_input_with_home(
                     historical: candidate.historical,
                 },
                 legacy_fixture: true,
+                capabilities:
+                    &antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default(),
             },
         )
         .await?;
@@ -1796,6 +1864,7 @@ async fn discover_instructions_at(
 }
 
 struct SaveOutcome<'a> {
+    evidence: &'a SessionEvidence,
     input: &'a BurnCheckInput,
     outcome: JevExecutionOutcome<ignored_instructions::AssessmentResult>,
     serialized: &'a str,
@@ -1805,12 +1874,13 @@ struct SaveOutcome<'a> {
     sampled_pairs: &'a [BurnCheckSampledPair],
 }
 
-async fn save_outcome(
+fn save_outcome(
     app: &tauri::AppHandle,
     store: &Store,
     save: SaveOutcome<'_>,
 ) -> anyhow::Result<()> {
     let SaveOutcome {
+        evidence,
         input,
         outcome,
         serialized,
@@ -1820,6 +1890,26 @@ async fn save_outcome(
         sampled_pairs,
     } = save;
     let failed = outcome.failure.is_some();
+    let canceled = matches!(outcome.failure, Some(JevError::Cancelled));
+    let assessment_outcome = if failed {
+        crate::analytics::event::SmartCheckAssessmentOutcome::Failed
+    } else {
+        let findings = crate::insights_report::ignored_instruction_findings_for_evidence(
+            evidence,
+            &outcome.result,
+        );
+        crate::analytics::event::SmartCheckAssessmentOutcome::from_evidence(
+            findings
+                .as_ref()
+                .is_some_and(|findings| !findings.is_empty()),
+            findings.as_ref().is_some_and(|findings| {
+                crate::insights_report::ignored_result_has_scoped_no_issues(
+                    &outcome.result,
+                    findings,
+                )
+            }),
+        )
+    };
     ::tracing::debug!(
         event = "ignored_instruction_assessment_finished",
         check_id = CHECK_ID,
@@ -1881,16 +1971,16 @@ async fn save_outcome(
             failed
         );
         let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
-        #[cfg(feature = "analytics")]
-        crate::analytics::record(
-            app,
-            crate::analytics::event::EventName::IgnoredInstructionLifecycle,
-            crate::analytics::event::Facts {
-                label: Some(if historical { "backfill" } else { "execution" }),
-                detail: Some(if failed { "failed" } else { "completed" }),
-                ..Default::default()
-            },
-        );
+        if !canceled {
+            crate::analytics::record_smart_check_lifecycle(
+                app,
+                crate::analytics::event::SmartCheckLifecycle::Assessment {
+                    check: crate::analytics::event::SmartCheck::IgnoredInstructions,
+                    outcome: assessment_outcome,
+                    historical,
+                },
+            );
+        }
     }
     ::tracing::debug!(
         event = "ignored_instruction_assessment_publication_timing",
@@ -1989,7 +2079,7 @@ mod settings_tests {
             request_count: 0,
         };
         let (mut restored, compact, mut selected) =
-            restore_selected_assessment(Some(&assessment), "revision").unwrap();
+            restore_selected_assessment(Some(&assessment), "revision", false).unwrap();
         assert!(compact.is_some());
         assert_eq!(restored.comparison_after.as_deref(), Some("comparison-2"));
         assert_eq!(restored.result, cursor.result);
@@ -2083,7 +2173,7 @@ mod settings_tests {
                 assessment.progress_json = value.to_string();
             }
             let (cursor, compact, selected) =
-                restore_selected_assessment(Some(&assessment), "revision").unwrap();
+                restore_selected_assessment(Some(&assessment), "revision", false).unwrap();
             assert!(compact.is_none());
             assert!(selected.cursor.is_none());
             assert_eq!(selected.revision, SELECTED_CONTENT_PROGRESS_REVISION);
@@ -2136,6 +2226,13 @@ mod settings_tests {
     #[test]
     fn sanitized_failure_categories_keep_transport_and_answer_errors_distinct() {
         assert_eq!(
+            error_category(&JevError::RequestTokenLimitExceeded {
+                tokens: 4097,
+                maximum: 4096,
+            }),
+            "invalid_request"
+        );
+        assert_eq!(
             error_category(&JevError::RateLimited { retry_after: None }),
             "rate_limited"
         );
@@ -2157,6 +2254,7 @@ mod settings_tests {
             findings: ids
                 .iter()
                 .map(|id| AssessmentFinding {
+                    decision: None,
                     id: (*id).into(),
                     reference: RuleActionRef {
                         instruction_id: "instruction".into(),
@@ -2228,6 +2326,8 @@ mod settings_tests {
             reducer_revision: ignored_instructions::ASSESSMENT_REDUCER_REVISION,
             complete_input: true,
             comparisons: vec![CandidateComparison {
+                source_binding: None,
+                prerequisite_episode: None,
                 id: "comparison".into(),
                 reference: reference.clone(),
                 source_thread_digest: "thread".into(),
@@ -2446,6 +2546,8 @@ mod settings_tests {
         plan.current_action_digests
             .insert("action".into(), prior[0].reference.action_digest.clone());
         plan.comparisons.push(CandidateComparison {
+            source_binding: None,
+            prerequisite_episode: None,
             id: "comparison".into(),
             reference: prior[0].reference.clone(),
             source_thread_digest: "thread".into(),
@@ -2607,7 +2709,9 @@ mod settings_tests {
         let reference = result(&["action"]).findings.remove(0).reference;
         let assessment = plan(&reference);
         let original = &assessment.comparisons[0];
-        let digest = comparison_dependency(&assessment, original, 1).unwrap();
+        let capabilities =
+            antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default();
+        let digest = comparison_dependency(&assessment, original, 1, &capabilities).unwrap();
         let mut changed = original.clone();
         changed.context.push(CounterEvidence {
             action_id: "earlier".into(),
@@ -2615,11 +2719,19 @@ mod settings_tests {
             ..changed.action.clone()
         });
         assert_ne!(
-            comparison_dependency(&assessment, &changed, 1).unwrap(),
+            comparison_dependency(&assessment, &changed, 1, &capabilities).unwrap(),
             digest
         );
         assert_ne!(
-            comparison_dependency(&assessment, original, 2).unwrap(),
+            comparison_dependency(&assessment, original, 2, &capabilities).unwrap(),
+            digest
+        );
+        let revised = antiburn_local::analysis::jev::capabilities::ModelCapabilities {
+            model_revision: Some("replacement-digest".into()),
+            ..capabilities
+        };
+        assert_ne!(
+            comparison_dependency(&assessment, original, 1, &revised).unwrap(),
             digest
         );
     }
@@ -2761,15 +2873,27 @@ mod settings_tests {
     #[test]
     fn replacing_or_removing_a_key_invalidates_the_old_worker_generation() {
         let handle = WorkerHandle::default();
-        handle.set_api_key(Some("synthetic-first".into()));
-        let first = handle.client().unwrap().1;
-        handle.set_api_key(Some("synthetic-second".into()));
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(directory.path()).unwrap();
+        handle
+            .set_system_one_connection(
+                crate::jev::config::SystemOneConnection::jev_default(),
+                Some("synthetic-first".into()),
+            )
+            .unwrap();
+        let first = handle.execution_client().unwrap().1;
+        handle
+            .set_system_one_connection(
+                crate::jev::config::SystemOneConnection::jev_default(),
+                Some("synthetic-second".into()),
+            )
+            .unwrap();
         assert!(!handle.key_is_current(first));
-        let second = handle.client().unwrap().1;
-        handle.reject_authentication();
+        let second = handle.execution_client().unwrap().1;
+        handle.reject_authentication(&store, second).unwrap();
         assert!(!handle.key_is_current(second));
-        assert!(handle.client().is_none());
-        handle.set_api_key(None);
+        assert!(handle.execution_client().is_none());
+        handle.suspend_system_one();
         assert!(!handle.is_available());
         assert!(!handle.authentication_rejected());
     }

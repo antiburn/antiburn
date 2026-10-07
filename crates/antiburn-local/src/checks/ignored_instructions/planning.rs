@@ -15,6 +15,7 @@ use super::evidence::{ContentAction, content_action_digest};
 use super::instructions::{
     InstructionContentClass, InstructionRuleSection, InstructionSnapshot, sha256_hex,
 };
+use crate::analysis::jev::capabilities::ModelCapabilities;
 use crate::analysis::jev::exact_facts::ExactActionFacts;
 use crate::analysis::jev::{JevError, JevSessionContext};
 
@@ -23,6 +24,48 @@ pub(super) const MAX_COUNTER_EVIDENCE: usize = 4;
 pub(super) const MAX_RULE_TEXT_BYTES: usize = 2 * 1024;
 pub(super) const MAX_ACTION_TEXT_BYTES: usize = 1024;
 const MAX_CONTEXT_TEXT_BYTES: usize = 192;
+
+#[derive(Debug, Clone, Copy)]
+struct EvidenceTextLimits {
+    rule: usize,
+    action: usize,
+    context: usize,
+}
+
+impl EvidenceTextLimits {
+    const LEGACY: Self = Self {
+        rule: MAX_RULE_TEXT_BYTES,
+        action: MAX_ACTION_TEXT_BYTES,
+        context: MAX_CONTEXT_TEXT_BYTES,
+    };
+
+    fn from_capabilities(capabilities: &ModelCapabilities) -> Self {
+        // Use one UTF-8 byte per token for this allocation bound. The packer
+        // checks the serialized request with the selected token estimator.
+        let budget = [
+            capabilities.request_body_bytes.value,
+            capabilities.state_and_longest_question_bytes.value,
+            capabilities.usable_state_tokens(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(0)
+        .saturating_sub(8 * 1024);
+        // Two targets use 27 units: eight for the action, four per rule,
+        // three nearby events, and four earlier events per target.
+        let unit = usize::try_from(budget / 32).unwrap_or(usize::MAX);
+        // Keep the minimum evidence when limits are too small. The packer
+        // rejects an oversized item instead of removing required context.
+        Self {
+            rule: unit.saturating_mul(4).clamp(MAX_RULE_TEXT_BYTES, 8 * 1024),
+            action: unit
+                .saturating_mul(8)
+                .clamp(MAX_ACTION_TEXT_BYTES, 32 * 1024),
+            context: unit.clamp(MAX_CONTEXT_TEXT_BYTES, 2 * 1024),
+        }
+    }
+}
 type RuleRange<'a> = (
     &'a InstructionSnapshot,
     &'a InstructionRuleSection,
@@ -49,11 +92,66 @@ pub fn build_jev_context_with_sampling(
     input: &AssessmentInput,
     ledger: &SamplingLedger,
 ) -> Result<JevSessionContext, JevError> {
-    let plan = build_assessment_plan_with_sampling(input.clone(), ledger);
+    let selected_input = selected_input(input);
+    build_context(
+        &selected_input,
+        build_assessment_plan_with_sampling(selected_input.clone(), ledger),
+        super::PrerequisiteContextPolicy::CoherentEpisode,
+    )
+}
+
+/// Apply model limits before sampling. Later preparation cannot recover text
+/// that the selected ranges omit.
+pub fn build_jev_context_with_capabilities(
+    input: &AssessmentInput,
+    ledger: &SamplingLedger,
+    capabilities: &ModelCapabilities,
+) -> Result<JevSessionContext, JevError> {
+    build_jev_context_with_context_policy(
+        input,
+        ledger,
+        capabilities,
+        super::PrerequisiteContextPolicy::CoherentEpisode,
+    )
+}
+
+/// Compare context policies with the same projection, rules, questions, and reducer.
+/// Product preparation always uses the coherent episode policy.
+pub fn build_jev_context_with_context_policy(
+    input: &AssessmentInput,
+    ledger: &SamplingLedger,
+    capabilities: &ModelCapabilities,
+    policy: super::PrerequisiteContextPolicy,
+) -> Result<JevSessionContext, JevError> {
+    let selected_input = selected_input(input);
+    build_context(
+        &selected_input,
+        build_assessment_plan_with_capabilities(selected_input.clone(), ledger, capabilities),
+        policy,
+    )
+}
+
+fn selected_input(input: &AssessmentInput) -> AssessmentInput {
+    let mut selected = input.clone();
+    selected.content = super::select_session_content(&selected.content, INPUT_SELECTION);
+    selected
+}
+
+fn build_context(
+    input: &AssessmentInput,
+    mut plan: AssessmentPlan,
+    policy: super::PrerequisiteContextPolicy,
+) -> Result<JevSessionContext, JevError> {
+    plan.input_revision = sha256_hex(
+        &serde_json::to_vec(&(&plan.input_revision, policy))
+            .map_err(|_| JevError::InvalidCheckContext)?,
+    );
     let input_revision = plan.input_revision.clone();
     let session_identity = plan.session_identity_digest.clone();
     let limitations = plan.coverage.limitations.clone();
-    let check_context = serde_json::json!({"assessment_plan": plan, "incremental_identity": {
+    let episode_actions = super::select_session_content(&input.content, INPUT_SELECTION).actions;
+    let check_context = serde_json::json!({"assessment_plan": plan, "episode_actions": episode_actions, "prerequisite_context_policy": policy, "incremental_identity": {
+        "prerequisite_context_policy": policy,
         "incarnation": input.incarnation,
         "source_format": input.content.source_format,
         "activity_after_ms": input.activity_after_ms,
@@ -101,6 +199,39 @@ pub fn extend_jev_context_with_history(
     page_actions: &[ContentAction],
     prior_history_complete: bool,
 ) -> Result<(), JevError> {
+    extend_context_history(
+        context,
+        carried_comparisons,
+        page_actions,
+        prior_history_complete,
+        EvidenceTextLimits::LEGACY,
+    )
+}
+
+/// Apply the selected model limits to context from an older content page.
+pub fn extend_jev_context_with_history_and_capabilities(
+    context: &mut JevSessionContext,
+    carried_comparisons: &mut [CandidateComparison],
+    page_actions: &[ContentAction],
+    prior_history_complete: bool,
+    capabilities: &ModelCapabilities,
+) -> Result<(), JevError> {
+    extend_context_history(
+        context,
+        carried_comparisons,
+        page_actions,
+        prior_history_complete,
+        EvidenceTextLimits::from_capabilities(capabilities),
+    )
+}
+
+fn extend_context_history(
+    context: &mut JevSessionContext,
+    carried_comparisons: &mut [CandidateComparison],
+    page_actions: &[ContentAction],
+    prior_history_complete: bool,
+    text_limits: EvidenceTextLimits,
+) -> Result<(), JevError> {
     if carried_comparisons.is_empty() {
         return Ok(());
     }
@@ -117,14 +248,12 @@ pub fn extend_jev_context_with_history(
         .collect::<BTreeSet<_>>();
     let mut revision_material = assessment.input_revision.clone();
     for carried in carried_comparisons {
-        *carried = extend_comparison_with_history(carried, page_actions, prior_history_complete);
+        *carried = extend_history(carried, page_actions, prior_history_complete, text_limits);
         revision_material.push('\0');
         revision_material.push_str(&carried.id);
         revision_material.push('\0');
-        revision_material.push_str(
-            &serde_json::to_string(&carried.counterevidence)
-                .map_err(|_| JevError::InvalidCheckContext)?,
-        );
+        revision_material
+            .push_str(&serde_json::to_string(&carried).map_err(|_| JevError::InvalidCheckContext)?);
         if comparison_ids.insert(carried.id.clone()) {
             assessment.current_action_digests.insert(
                 carried.reference.action_id.clone(),
@@ -136,8 +265,39 @@ pub fn extend_jev_context_with_history(
                 carried.reference.rule_id.clone(),
             ));
             assessment.comparisons.push(carried.clone());
+        } else if let Some(existing) = assessment
+            .comparisons
+            .iter_mut()
+            .find(|value| value.id == carried.id)
+        {
+            *existing = carried.clone();
         }
     }
+    let mut actions: Vec<ContentAction> =
+        serde_json::from_value(context.check_context["episode_actions"].clone())
+            .map_err(|_| JevError::InvalidCheckContext)?;
+    let page = super::SessionContentEvidence {
+        actions: page_actions.to_vec(),
+        session_identity_digest: context.session_identity.clone(),
+        source_format: serde_json::from_value(
+            context.check_context["incremental_identity"]["source_format"].clone(),
+        )
+        .map_err(|_| JevError::InvalidCheckContext)?,
+        publication_fence: 0,
+        selected_input_digest: String::new(),
+        instructions: Vec::new(),
+        complete: prior_history_complete,
+        limitations: Vec::new(),
+        excluded_thinking_parts: 0,
+        field_availability: Vec::new(),
+    };
+    actions.extend(super::select_session_content(&page, INPUT_SELECTION).actions);
+    actions.sort_by(|left, right| left.reference.id.cmp(&right.reference.id));
+    actions.dedup_by(|left, right| left.reference.id == right.reference.id);
+    revision_material.push_str(
+        &serde_json::to_string(&(&actions, prior_history_complete))
+            .map_err(|_| JevError::InvalidCheckContext)?,
+    );
     assessment.input_revision = sha256_hex(revision_material.as_bytes());
     context
         .input_revision
@@ -145,6 +305,8 @@ pub fn extend_jev_context_with_history(
     context.limitations = assessment.coverage.limitations.clone();
     context.check_context["assessment_plan"] =
         serde_json::to_value(assessment).map_err(|_| JevError::InvalidCheckContext)?;
+    context.check_context["episode_actions"] =
+        serde_json::to_value(actions).map_err(|_| JevError::InvalidCheckContext)?;
     Ok(())
 }
 
@@ -156,6 +318,29 @@ pub fn build_assessment_plan(input: AssessmentInput) -> AssessmentPlan {
 pub fn build_assessment_plan_with_sampling(
     input: AssessmentInput,
     ledger: &SamplingLedger,
+) -> AssessmentPlan {
+    build_plan(input, ledger, EvidenceTextLimits::LEGACY)
+}
+
+/// Build the comparison inventory with model limits and local memory bounds.
+pub fn build_assessment_plan_with_capabilities(
+    input: AssessmentInput,
+    ledger: &SamplingLedger,
+    capabilities: &ModelCapabilities,
+) -> AssessmentPlan {
+    let mut plan = build_plan(
+        input,
+        ledger,
+        EvidenceTextLimits::from_capabilities(capabilities),
+    );
+    plan.model_version.clone_from(&capabilities.model);
+    plan
+}
+
+fn build_plan(
+    input: AssessmentInput,
+    ledger: &SamplingLedger,
+    text_limits: EvidenceTextLimits,
 ) -> AssessmentPlan {
     let content = &input.content;
     let mut limitations = content.limitations.clone();
@@ -185,27 +370,26 @@ pub fn build_assessment_plan_with_sampling(
     if !skipped_actions.is_empty() {
         limitations.push("empty_selected_action_content".to_owned());
     }
-    let rule_groups: Vec<Vec<_>> =
-        content
-            .instructions
-            .iter()
-            .map(|instruction| {
-                instruction
-                    .sections
-                    .iter()
-                    .filter(move |rule| {
-                        rule.content_class == InstructionContentClass::RequirementCandidate
-                    })
-                    .map(move |rule| (instruction, rule))
-                    .filter(|(_, rule)| rule.evaluable)
-                    .flat_map(|(instruction, rule)| {
-                        rule_text_ranges(&rule.text).into_iter().map(
-                            move |(text_start, text_end)| (instruction, rule, text_start, text_end),
-                        )
-                    })
-                    .collect()
-            })
-            .collect();
+    let rule_groups: Vec<Vec<_>> = content
+        .instructions
+        .iter()
+        .map(|instruction| {
+            instruction
+                .sections
+                .iter()
+                .filter(move |rule| {
+                    rule.content_class == InstructionContentClass::RequirementCandidate
+                })
+                .map(move |rule| (instruction, rule))
+                .filter(|(_, rule)| rule.evaluable)
+                .flat_map(|(instruction, rule)| {
+                    text_ranges(&rule.text, text_limits.rule).into_iter().map(
+                        move |(text_start, text_end)| (instruction, rule, text_start, text_end),
+                    )
+                })
+                .collect()
+        })
+        .collect();
     let mut rules = Vec::new();
     for index in 0..rule_groups.iter().map(Vec::len).max().unwrap_or_default() {
         for group in &rule_groups {
@@ -233,7 +417,7 @@ pub fn build_assessment_plan_with_sampling(
         })
         .filter(|action| has_selected_action_content(action))
         .flat_map(|action| {
-            action_text_ranges(&action.text)
+            text_ranges(&action.text, text_limits.action)
                 .into_iter()
                 .map(move |(text_start, text_end)| (action, text_start, text_end))
         })
@@ -286,6 +470,7 @@ pub fn build_assessment_plan_with_sampling(
         ledger,
         input.comparison_after.as_deref(),
         &ComparisonIndex {
+            text_limits,
             prior_history_complete: input.prior_history_complete,
             branch_order: &branch_order.actions_by_branch,
             branch_positions: &branch_order.positions_by_action,
@@ -389,6 +574,11 @@ pub fn build_assessment_plan_with_sampling(
     revision_hasher.update(b"\0");
     revision_hasher.update(ASSESSMENT_REDUCER_REVISION.to_string().as_bytes());
     revision_hasher.update(b"\0selector:");
+    revision_hasher.update(text_limits.rule.to_string().as_bytes());
+    revision_hasher.update(b":");
+    revision_hasher.update(text_limits.action.to_string().as_bytes());
+    revision_hasher.update(b":");
+    revision_hasher.update(text_limits.context.to_string().as_bytes());
     revision_hasher.update(SELECTOR_REVISION.to_string().as_bytes());
     for id in &ledger.comparison_ids {
         revision_hasher.update(id.as_bytes());
@@ -449,6 +639,7 @@ pub fn build_assessment_plan_with_sampling(
 }
 
 struct ComparisonIndex<'a> {
+    text_limits: EvidenceTextLimits,
     prior_history_complete: bool,
     branch_order: &'a BTreeMap<(String, String), Vec<&'a ContentAction>>,
     branch_positions: &'a BTreeMap<(String, String, String), usize>,
@@ -682,6 +873,35 @@ pub fn extend_comparison_with_history(
     page_actions: &[ContentAction],
     prior_history_complete: bool,
 ) -> CandidateComparison {
+    extend_history(
+        comparison,
+        page_actions,
+        prior_history_complete,
+        EvidenceTextLimits::LEGACY,
+    )
+}
+
+/// Apply the selected model limits to new earlier events in one comparison.
+pub fn extend_comparison_with_history_and_capabilities(
+    comparison: &CandidateComparison,
+    page_actions: &[ContentAction],
+    prior_history_complete: bool,
+    capabilities: &ModelCapabilities,
+) -> CandidateComparison {
+    extend_history(
+        comparison,
+        page_actions,
+        prior_history_complete,
+        EvidenceTextLimits::from_capabilities(capabilities),
+    )
+}
+
+fn extend_history(
+    comparison: &CandidateComparison,
+    page_actions: &[ContentAction],
+    prior_history_complete: bool,
+    text_limits: EvidenceTextLimits,
+) -> CandidateComparison {
     let context_ids = comparison
         .context
         .iter()
@@ -691,7 +911,8 @@ pub fn extend_comparison_with_history(
     let mut earlier = page_actions
         .iter()
         .filter(|action| {
-            action.reference.thread_digest == comparison.source_thread_digest
+            action.kind != "thinking"
+                && action.reference.thread_digest == comparison.source_thread_digest
                 && action.turn_scope == comparison.source_turn_scope
                 && action.reference.turn_index < comparison.source_turn_index
                 && action.reference.id != comparison.reference.action_id
@@ -712,7 +933,7 @@ pub fn extend_comparison_with_history(
         earlier
             .into_iter()
             .take(MAX_COUNTER_EVIDENCE)
-            .map(|(_, action)| counter_event(action, MAX_CONTEXT_TEXT_BYTES)),
+            .map(|(_, action)| counter_event(action, text_limits.context)),
     );
     comparison.counterevidence.sort_by(|left, right| {
         left.source_order
@@ -901,6 +1122,12 @@ fn make_comparison(
     );
     let (rule_text_start, rule_text_end) = rule_text_range;
     let (action_text_start, action_text_end) = action_text_range;
+    let selected_action = counter_event_with_range(
+        action,
+        index.text_limits.action,
+        Some((action_text_start, action_text_end)),
+    );
+    let action_text_end = action_text_start + selected_action.text.len();
     let branch_order = index
         .branch_order
         .get(&(
@@ -922,8 +1149,9 @@ fn make_comparison(
     let context: Vec<CounterEvidence> = context_indices
         .into_iter()
         .filter_map(|index| branch_order.get(index).copied())
+        .filter(|event| event.authority == "assistant")
         .take(MAX_CONTEXT_EVENTS)
-        .map(|event| counter_event(event, MAX_CONTEXT_TEXT_BYTES))
+        .map(|event| counter_event(event, index.text_limits.context))
         .collect();
     let context_truncated = branch_order.len() > context.len().saturating_add(1);
     let context_ids: BTreeSet<_> = context
@@ -936,6 +1164,7 @@ fn make_comparison(
         .enumerate()
         .filter(|(_, event)| {
             event.reference.id != action.reference.id
+                && event.authority == "assistant"
                 && !context_ids.contains(event.reference.id.as_str())
         })
         .map(|(index, event)| (index, *event))
@@ -960,7 +1189,7 @@ fn make_comparison(
     let counterevidence = earlier
         .into_iter()
         .take(MAX_COUNTER_EVIDENCE)
-        .map(|(_, event)| counter_event(event, MAX_CONTEXT_TEXT_BYTES))
+        .map(|(_, event)| counter_event(event, index.text_limits.context))
         .collect::<Vec<_>>();
     earlier_history_truncated |= counterevidence.iter().any(|event| event.truncated);
     let reference = RuleActionRef {
@@ -979,6 +1208,21 @@ fn make_comparison(
         action_stable: action.reference.stable,
     };
     CandidateComparison {
+        source_binding: Some(super::ActionSourceBinding {
+            source: action.reference.clone(),
+            authority: action.authority.clone(),
+            content_digest: action_digest.to_owned(),
+            excerpt: Some(super::ActionExcerptBinding {
+                start_byte: action_text_start,
+                end_byte: action_text_end,
+                source_bytes: action.text.len(),
+                source_truncated: action.truncated,
+                text_digest: sha256_hex(
+                    &action.text.as_bytes()[action_text_start..action_text_end],
+                ),
+            }),
+        }),
+        prerequisite_episode: None,
         id: id.clone(),
         reference,
         source_thread_digest: action.reference.thread_digest.clone(),
@@ -987,11 +1231,7 @@ fn make_comparison(
         rule_text: rule.text.clone(),
         rule_text_start,
         rule_text_end,
-        action: counter_event_with_range(
-            action,
-            MAX_ACTION_TEXT_BYTES,
-            Some((action_text_start, action_text_end)),
-        ),
+        action: selected_action,
         action_text_start,
         action_text_end,
         context,
@@ -1045,6 +1285,7 @@ fn counter_event_with_range(
     }
 }
 
+#[cfg(test)]
 pub(super) fn action_text_ranges(text: &str) -> Vec<(usize, usize)> {
     advancing_text_ranges(text, MAX_ACTION_TEXT_BYTES)
 }
@@ -1064,10 +1305,6 @@ pub(super) fn rule_text_fragment(comparison: &CandidateComparison) -> &str {
         .rule_text
         .get(comparison.rule_text_start..comparison.rule_text_end)
         .unwrap_or(&comparison.rule_text)
-}
-
-pub(super) fn rule_text_ranges(text: &str) -> Vec<(usize, usize)> {
-    text_ranges(text, MAX_RULE_TEXT_BYTES)
 }
 
 pub(super) fn text_ranges(text: &str, window_bytes: usize) -> Vec<(usize, usize)> {

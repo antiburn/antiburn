@@ -9,6 +9,9 @@ use super::filesystem::{canonical_root, path_entry_exists, read_checked};
 use super::vendors::{codex, json, opencode, pi};
 use super::{ConfigContext, ConfigUnavailableReason};
 
+mod skill_opportunity_reference;
+pub use skill_opportunity_reference::{SkillSnapshotError, skill_opportunity_snapshot};
+
 const MAX_RESOURCES: usize = 512;
 const MAX_DIRECTORY_ENTRIES: usize = 256;
 const MAX_SKILL_DIRECTORIES: usize = 4096;
@@ -102,6 +105,8 @@ struct InventoryBuilder {
     agent: AgentKind,
     resources: BTreeMap<ResourceKey, AdvisoryResource>,
     issues: Vec<InventoryIssue>,
+    skill_definitions: Vec<skill_opportunity_reference::DiscoveredSkill>,
+    retain_skill_definitions: bool,
 }
 
 impl InventoryBuilder {
@@ -110,6 +115,8 @@ impl InventoryBuilder {
             agent,
             resources: BTreeMap::new(),
             issues: Vec::new(),
+            skill_definitions: Vec::new(),
+            retain_skill_definitions: false,
         }
     }
 
@@ -270,6 +277,14 @@ pub fn advisory_resource_inventory<'a>(
     context: &ConfigContext,
     indexed: impl IntoIterator<Item = IndexedResourceEvidence<'a>>,
 ) -> Result<ResourceInventory, ConfigUnavailableReason> {
+    Ok(discover_inventory(context, indexed, false)?.finish())
+}
+
+fn discover_inventory<'a>(
+    context: &ConfigContext,
+    indexed: impl IntoIterator<Item = IndexedResourceEvidence<'a>>,
+    retain_skill_definitions: bool,
+) -> Result<InventoryBuilder, ConfigUnavailableReason> {
     if !context.native_environment {
         return Err(ConfigUnavailableReason::UnsupportedEnvironment);
     }
@@ -292,6 +307,7 @@ pub fn advisory_resource_inventory<'a>(
     let home = canonical_root(&context.home_root)?;
     let (cwd, trusted_root) = canonical_workspace(context)?;
     let mut builder = InventoryBuilder::new(context.agent);
+    builder.retain_skill_definitions = retain_skill_definitions;
     if context.runtime_override_present {
         builder.issue(
             None,
@@ -341,7 +357,7 @@ pub fn advisory_resource_inventory<'a>(
         AgentKind::Omp => {}
     }
     merge_indexed(&mut builder, indexed);
-    Ok(builder.finish())
+    Ok(builder)
 }
 
 fn canonical_workspace(
@@ -549,15 +565,27 @@ fn enumerate_skill_directory(
         };
         let skill = path.join("SKILL.md");
         match path_entry_exists(&skill) {
-            Ok(true) => match read_checked(&skill, safety_root) {
-                Ok(file) => builder.add_with_tokens(
-                    ResourceKind::Skill,
-                    &name,
-                    EnabledState::Enabled,
-                    scope,
-                    ResourceProvenance::StandardDirectory,
-                    skill_listing_tokens(&file.bytes),
-                ),
+            Ok(true) => match skill_opportunity_reference::read_definition(&skill, safety_root) {
+                Ok((file, created_at_ms)) => {
+                    builder.add_with_tokens(
+                        ResourceKind::Skill,
+                        &name,
+                        EnabledState::Enabled,
+                        scope,
+                        ResourceProvenance::StandardDirectory,
+                        skill_listing_tokens(&file.bytes),
+                    );
+                    if builder.retain_skill_definitions {
+                        skill_opportunity_reference::retain_definition(
+                            builder,
+                            &name,
+                            &skill,
+                            scope,
+                            &file.bytes,
+                            created_at_ms,
+                        );
+                    }
+                }
                 Err(reason) => builder.issue(
                     Some(ResourceKind::Skill),
                     scope,

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+pub mod capabilities;
 pub mod classification;
 pub mod compact_ids;
 pub mod edit_hunks;
@@ -47,6 +48,10 @@ pub enum JevInputField {
     SearchFilesOutput = 9,
     OtherToolInput = 10,
     OtherToolOutput = 11,
+    UserAnswer = 12,
+    PlanReference = 13,
+    ReadFileRequest = 14,
+    ReadFileResult = 15,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -219,6 +224,7 @@ pub struct JevInputSelection(u16);
 
 impl JevInputSelection {
     pub const NONE: Self = Self(0);
+    /// All legacy text fields. Structured scope records require explicit selection.
     pub const ALL: Self = Self((1 << 12) - 1);
 
     pub const fn from_fields(fields: &[JevInputField]) -> Self {
@@ -250,6 +256,7 @@ pub enum JevError {
     QuestionLimitExceeded,
     UnsupportedModel,
     RequestTooLarge { bytes: usize, maximum: usize },
+    RequestTokenLimitExceeded { tokens: u64, maximum: u64 },
     ResponseModelMismatch,
     ResponseAnswerCountMismatch,
     ResponseAnswerMissing,
@@ -289,6 +296,12 @@ impl fmt::Display for JevError {
                 write!(
                     formatter,
                     "Jev request is {bytes} bytes; the limit is {maximum} bytes"
+                )
+            }
+            Self::RequestTokenLimitExceeded { tokens, maximum } => {
+                write!(
+                    formatter,
+                    "Jev request estimate is {tokens} tokens; the limit is {maximum} tokens"
                 )
             }
             Self::ResponseModelMismatch => {
@@ -373,38 +386,46 @@ pub enum JevQuestion {
 }
 
 impl JevQuestion {
-    fn with_context_path(self, path: &str) -> Self {
+    fn with_context_paths(self, path: &str, has_shared_context: bool) -> Self {
         match self {
             Self::Choice {
                 instructions,
                 criteria,
             } => Self::Choice {
-                instructions: contextual_instructions(instructions, path),
+                instructions: contextual_instructions(instructions, path, has_shared_context),
                 criteria,
             },
             Self::Noul {
                 instructions,
                 criteria,
             } => Self::Noul {
-                instructions: contextual_instructions(instructions, path),
+                instructions: contextual_instructions(instructions, path, has_shared_context),
                 criteria,
             },
             Self::Score {
                 instructions,
                 criteria,
             } => Self::Score {
-                instructions: contextual_instructions(instructions, path),
+                instructions: contextual_instructions(instructions, path, has_shared_context),
                 criteria,
             },
         }
     }
 }
 
-fn contextual_instructions(instructions: Value, path: &str) -> Value {
-    json!({
-        "question": instructions,
-        "context_path": format!("Use the evidence at `{path}`."),
-    })
+fn contextual_instructions(instructions: Value, path: &str, has_shared_context: bool) -> Value {
+    if has_shared_context {
+        json!({
+            "question": instructions,
+            "context_path": format!("Use the evidence at `{path}`."),
+            "shared_context_path": "Use the complete shared context at `shared_context`.",
+        })
+    } else {
+        json!({
+            "question": instructions,
+            "context_path": format!("Use the evidence at `{path}`."),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -504,8 +525,22 @@ pub struct JevCheckPlan<Prepared = Value> {
     pub work_items: Vec<JevWorkItem>,
     pub skipped_item_ids: Vec<String>,
     pub coverage: JevCoverage,
+    /// Immutable limits used to prepare and execute every request in this plan.
+    #[serde(default = "capabilities::ModelCapabilities::jev_default")]
+    pub capabilities: capabilities::ModelCapabilities,
+    /// Optional immutable context shared once by every request in this plan.
+    #[serde(default)]
+    pub shared_context: Option<JevSharedRequestContext>,
     /// Check-owned typed preparation and reducer state.
     pub prepared: Prepared,
+}
+
+/// Context shared by all work items in each request batch. Its source bindings
+/// stay local and are attached to every result for citation validation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JevSharedRequestContext {
+    pub fields: Value,
+    pub evidence: Vec<JevEvidenceReference>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -552,6 +587,16 @@ pub struct JevPackingResult {
 /// Charge request, local bindings, serialization, and response space to admission.
 /// This charge is not an allocator measurement of the complete assessment.
 pub fn jev_batch_resident_bytes(batch: &JevRequestBatch) -> Result<usize, JevError> {
+    jev_batch_resident_bytes_with_capabilities(
+        batch,
+        &capabilities::ModelCapabilities::jev_default(),
+    )
+}
+
+pub fn jev_batch_resident_bytes_with_capabilities(
+    batch: &JevRequestBatch,
+    capabilities: &capabilities::ModelCapabilities,
+) -> Result<usize, JevError> {
     let local_bytes = json_bytes(
         &(
             &batch.id,
@@ -564,11 +609,13 @@ pub fn jev_batch_resident_bytes(batch: &JevRequestBatch) -> Result<usize, JevErr
         usize::MAX,
     )
     .map_err(|_| JevError::RequestSerialization)?;
-    let request_bytes = validate_jev_request(&batch.request)?;
+    let request_bytes = validate_jev_request_with_capabilities(&batch.request, capabilities)?;
     let bytes = request_bytes
         .saturating_add(local_bytes)
         .saturating_mul(2)
-        .saturating_add(MAX_RESPONSE_BYTES);
+        .saturating_add(
+            limit_as_usize(capabilities.response_body_bytes.value).unwrap_or(MAX_RESPONSE_BYTES),
+        );
     const MAX_RESIDENT_BATCH_BYTES: usize = 512 * 1024;
     if bytes > MAX_RESIDENT_BATCH_BYTES {
         return Err(JevError::RequestTooLarge {
@@ -632,6 +679,18 @@ pub trait JevCheck {
         context: &JevSessionContext,
     ) -> Result<JevCheckPlan<Self::Prepared>, JevError>;
 
+    /// Prepare with the selected model limits. Existing checks can keep their
+    /// current preparation until they need provider-specific window sizing.
+    fn prepare_with_capabilities(
+        &self,
+        context: &JevSessionContext,
+        capabilities: &capabilities::ModelCapabilities,
+    ) -> Result<JevCheckPlan<Self::Prepared>, JevError> {
+        let mut plan = self.prepare(context)?;
+        plan.capabilities = capabilities.clone();
+        Ok(plan)
+    }
+
     /// Classify bounded reference inputs before the candidate request stage.
     fn classifications(&self, _context: &JevSessionContext) -> Result<Vec<JevWorkItem>, JevError> {
         Ok(Vec::new())
@@ -680,31 +739,43 @@ pub async fn admit_jev_orchestration() -> Result<JevOrchestrationPermit, JevErro
 /// Pack check-owned work items into requests under the full serialized-byte
 /// ceiling. Each question receives an explicit path to its item context.
 pub fn pack_work_items(items: &[JevWorkItem]) -> JevPackingResult {
-    pack_work_items_bounded(items, MAX_REQUEST_BYTES)
+    pack_work_items_with_capabilities(items, &capabilities::ModelCapabilities::jev_default())
 }
 
-fn pack_work_items_bounded(items: &[JevWorkItem], maximum_bytes: usize) -> JevPackingResult {
-    pack_item_refs(items.iter(), maximum_bytes)
+pub fn pack_work_items_with_capabilities(
+    items: &[JevWorkItem],
+    capabilities: &capabilities::ModelCapabilities,
+) -> JevPackingResult {
+    pack_item_refs(items.iter(), capabilities, None)
+}
+
+pub fn pack_work_items_with_shared_context(
+    items: &[JevWorkItem],
+    capabilities: &capabilities::ModelCapabilities,
+    shared_context: &JevSharedRequestContext,
+) -> JevPackingResult {
+    pack_item_refs(items.iter(), capabilities, Some(shared_context))
 }
 
 fn pack_item_refs<'a>(
     items: impl Iterator<Item = &'a JevWorkItem>,
-    maximum_bytes: usize,
+    capabilities: &capabilities::ModelCapabilities,
+    shared_context: Option<&JevSharedRequestContext>,
 ) -> JevPackingResult {
     let mut result = JevPackingResult::default();
     let mut current: Vec<&JevWorkItem> = Vec::new();
     let mut costs = PackingCosts::default();
     let mut retained_bytes = 0;
     for item in items {
-        if build_batch(&[item], maximum_bytes).is_none() {
+        if build_batch(&[item], capabilities, shared_context).is_none() {
             result.skipped_item_ids.push(item.id.clone());
             continue;
         }
-        let next = costs.add(item, current.len(), maximum_bytes);
+        let next = costs.add(item, current.len(), capabilities, shared_context);
         if next.is_none() {
             if !current.is_empty() {
-                if let Some(batch) = build_batch(&current, maximum_bytes) {
-                    retain_packed_batch(&mut result, batch, &mut retained_bytes);
+                if let Some(batch) = build_batch(&current, capabilities, shared_context) {
+                    retain_packed_batch(&mut result, batch, capabilities, &mut retained_bytes);
                 }
                 current.clear();
             }
@@ -712,23 +783,28 @@ fn pack_item_refs<'a>(
         }
         costs = next.unwrap_or_else(|| {
             costs
-                .add(item, 0, maximum_bytes)
+                .add(item, 0, capabilities, shared_context)
                 .expect("the single-item request passes exact limits")
         });
         current.push(item);
     }
     if !current.is_empty()
-        && let Some(batch) = build_batch(&current, maximum_bytes)
+        && let Some(batch) = build_batch(&current, capabilities, shared_context)
     {
-        retain_packed_batch(&mut result, batch, &mut retained_bytes);
+        retain_packed_batch(&mut result, batch, capabilities, &mut retained_bytes);
     }
     result
 }
 
 const MAX_QUEUED_BYTES: usize = 16 * 1024 * 1024;
 
-fn retain_packed_batch(result: &mut JevPackingResult, batch: JevRequestBatch, bytes: &mut usize) {
-    match jev_batch_resident_bytes(&batch) {
+fn retain_packed_batch(
+    result: &mut JevPackingResult,
+    batch: JevRequestBatch,
+    capabilities: &capabilities::ModelCapabilities,
+    bytes: &mut usize,
+) {
+    match jev_batch_resident_bytes_with_capabilities(&batch, capabilities) {
         Ok(size) if size <= MAX_QUEUED_BYTES.saturating_sub(*bytes) => {
             *bytes += size;
             result.batches.push(batch);
@@ -739,49 +815,125 @@ fn retain_packed_batch(result: &mut JevPackingResult, batch: JevRequestBatch, by
 
 #[derive(Clone, Copy, Default)]
 struct PackingCosts {
+    base_state_bytes: usize,
+    base_state_units: u64,
+    base_request_bytes: usize,
+    base_request_units: u64,
     state_items: usize,
+    state_units: u64,
     questions: usize,
+    question_units: u64,
     question_count: usize,
     longest_question: usize,
+    longest_question_tokens: u64,
 }
 
 impl PackingCosts {
-    fn add(mut self, item: &JevWorkItem, index: usize, maximum: usize) -> Option<Self> {
+    fn add(
+        mut self,
+        item: &JevWorkItem,
+        index: usize,
+        capabilities: &capabilities::ModelCapabilities,
+        shared_context: Option<&JevSharedRequestContext>,
+    ) -> Option<Self> {
         #[derive(Serialize)]
         struct StateItem<'a> {
             id: String,
             context: &'a Value,
         }
-        self.state_items += json_bytes(
+        let state_item = json_count(
             &StateItem {
                 id: format!("w_{index}"),
                 context: &item.window.fields,
             },
-            maximum,
+            limit_as_usize(capabilities.request_body_bytes.value)?,
         )
-        .ok()?
-            + usize::from(index > 0);
-        for question in item.questions.values() {
-            let question = question
-                .clone()
-                .with_context_path(&format!("work_items[{index}].context"));
-            let bytes = json_bytes(&question, maximum).ok()?;
-            self.questions += 69 + bytes + usize::from(self.question_count > 0);
+        .ok()?;
+        self.state_items += state_item.bytes + usize::from(index > 0);
+        self.state_units += state_item.estimate.units() + 4 * u64::from(index > 0);
+        for (question_id, question) in &item.questions {
+            let question = question.clone().with_context_paths(
+                &format!("work_items[{index}].context"),
+                shared_context.is_some(),
+            );
+            let measured = json_count(
+                &question,
+                limit_as_usize(capabilities.request_body_bytes.value)?,
+            )
+            .ok()?;
+            let id = format!(
+                "q_{}",
+                digest_hex(format!("{index}\0{question_id}").as_bytes())
+            );
+            let id_measure = json_count(&id, usize::MAX).ok()?;
+            self.questions +=
+                id_measure.bytes + 1 + measured.bytes + usize::from(self.question_count > 0);
+            self.question_units += id_measure.estimate.units()
+                + measured.estimate.units()
+                + 4
+                + 4 * u64::from(self.question_count > 0);
             self.question_count += 1;
-            self.longest_question = self.longest_question.max(bytes);
+            self.longest_question = self.longest_question.max(measured.bytes);
+            self.longest_question_tokens = self
+                .longest_question_tokens
+                .max(capabilities.estimated_tokens(measured.estimate, measured.bytes));
         }
-        let empty = JevRequest {
-            model: PINNED_MODEL.to_owned(),
-            state: json!({"work_items": []}),
-            questions: BTreeMap::new(),
-        };
-        let state = json_bytes(&empty.state, maximum).ok()? + self.state_items;
-        let request = json_bytes(&empty, maximum).ok()? + self.state_items + self.questions;
-        (self.question_count <= MAX_QUESTIONS_PER_REQUEST
-            && request <= maximum
-            && state + self.longest_question <= MAX_STATE_AND_LONGEST_QUESTION_BYTES)
+        let request_limit = limit_as_usize(capabilities.request_body_bytes.value)?;
+        if index == 0 {
+            #[derive(Serialize)]
+            struct EmptyState<'a> {
+                #[serde(skip_serializing_if = "Option::is_none")]
+                shared_context: Option<&'a Value>,
+                work_items: [Value; 0],
+            }
+            #[derive(Serialize)]
+            struct EmptyRequest<'a> {
+                model: &'a str,
+                state: EmptyState<'a>,
+                questions: BTreeMap<String, JevQuestion>,
+            }
+            let empty = EmptyRequest {
+                model: &capabilities.model,
+                state: EmptyState {
+                    shared_context: shared_context.map(|shared| &shared.fields),
+                    work_items: [],
+                },
+                questions: BTreeMap::new(),
+            };
+            let state = json_count(&empty.state, request_limit).ok()?;
+            let request = json_count(&empty, request_limit).ok()?;
+            self.base_state_bytes = state.bytes;
+            self.base_state_units = state.estimate.units();
+            self.base_request_bytes = request.bytes;
+            self.base_request_units = request.estimate.units();
+        }
+        let state = self.base_state_bytes + self.state_items;
+        let request = self.base_request_bytes + self.state_items + self.questions;
+        let state_limit = limit_as_usize(capabilities.state_and_longest_question_bytes.value)
+            .unwrap_or(request_limit);
+        let question_limit = capabilities.questions_per_request.value? as usize;
+        let total_token_limit = capabilities.usable_input_tokens()?;
+        let total_tokens = capabilities.estimated_tokens(
+            capabilities::TokenEstimate::from_units(
+                self.base_request_units + self.state_units + self.question_units,
+            ),
+            request,
+        );
+        let state_tokens = capabilities.estimated_tokens(
+            capabilities::TokenEstimate::from_units(self.base_state_units + self.state_units),
+            state,
+        );
+        (self.question_count <= question_limit
+            && request <= request_limit
+            && state + self.longest_question <= state_limit
+            && state_tokens + self.longest_question_tokens <= capabilities.usable_state_tokens()?
+            && total_tokens <= total_token_limit)
             .then_some(self)
     }
+}
+
+fn limit_as_usize(value: Option<u64>) -> Option<usize> {
+    usize::try_from(value?).ok()
 }
 
 /// Map one validated batch response back to check-owned work items.
@@ -789,7 +941,19 @@ pub fn unpack_jev_response(
     batch: &JevRequestBatch,
     response: &JevResponse,
 ) -> Result<Vec<JevWorkItemResult>, JevError> {
-    validate_jev_response(response, &batch.request)?;
+    unpack_jev_response_with_capabilities(
+        batch,
+        response,
+        &capabilities::ModelCapabilities::jev_default(),
+    )
+}
+
+pub fn unpack_jev_response_with_capabilities(
+    batch: &JevRequestBatch,
+    response: &JevResponse,
+    capabilities: &capabilities::ModelCapabilities,
+) -> Result<Vec<JevWorkItemResult>, JevError> {
+    validate_jev_response_with_capabilities(response, &batch.request, capabilities)?;
     let mut results = Vec::with_capacity(batch.work_item_ids.len());
     for work_item_id in &batch.work_item_ids {
         let answers = batch
@@ -823,7 +987,11 @@ pub fn unpack_jev_response(
     Ok(results)
 }
 
-fn build_batch(items: &[&JevWorkItem], maximum_bytes: usize) -> Option<JevRequestBatch> {
+fn build_batch(
+    items: &[&JevWorkItem],
+    capabilities: &capabilities::ModelCapabilities,
+    shared_context: Option<&JevSharedRequestContext>,
+) -> Option<JevRequestBatch> {
     let mut state_items = Vec::with_capacity(items.len());
     let mut questions = BTreeMap::new();
     let mut answer_owners = BTreeMap::new();
@@ -834,6 +1002,13 @@ fn build_batch(items: &[&JevWorkItem], maximum_bytes: usize) -> Option<JevReques
                 evidence.part_id.is_empty()
                     || evidence.source_id.is_empty()
                     || evidence.content_kind.is_empty()
+            })
+            || shared_context.is_some_and(|shared| {
+                shared.evidence.iter().any(|evidence| {
+                    evidence.part_id.is_empty()
+                        || evidence.source_id.is_empty()
+                        || evidence.content_kind.is_empty()
+                })
             })
         {
             return None;
@@ -848,46 +1023,61 @@ fn build_batch(items: &[&JevWorkItem], maximum_bytes: usize) -> Option<JevReques
             return None;
         }
         state_items.push(json!({"id": format!("w_{index}"), "context": item.window.fields}));
-        evidence_owners.insert(item.id.clone(), item.window.evidence.clone());
+        let mut evidence = shared_context
+            .map(|shared| shared.evidence.clone())
+            .unwrap_or_default();
+        evidence.extend(item.window.evidence.clone());
+        let evidence_parts = evidence
+            .iter()
+            .map(|reference| reference.part_id.as_str())
+            .collect::<BTreeSet<_>>();
+        if evidence_parts.len() != evidence.len() {
+            return None;
+        }
+        evidence_owners.insert(item.id.clone(), evidence);
         for (question_id, question) in &item.questions {
+            let criteria_count = match question {
+                JevQuestion::Choice { criteria, .. } => criteria.len(),
+                JevQuestion::Score { criteria, .. } => criteria.len(),
+                JevQuestion::Noul { .. } => 0,
+            };
+            if u32::try_from(criteria_count).ok()? > capabilities.criteria_per_question.value? {
+                return None;
+            }
             let response_id = format!(
                 "q_{}",
                 digest_hex(format!("{index}\0{question_id}").as_bytes())
             );
             questions.insert(
                 response_id.clone(),
-                question
-                    .clone()
-                    .with_context_path(&format!("work_items[{index}].context")),
+                question.clone().with_context_paths(
+                    &format!("work_items[{index}].context"),
+                    shared_context.is_some(),
+                ),
             );
             answer_owners.insert(response_id, (item.id.clone(), question_id.clone()));
         }
     }
-    if questions.len() > MAX_QUESTIONS_PER_REQUEST {
+    if questions.len() > usize::try_from(capabilities.questions_per_request.value?).ok()? {
         return None;
     }
     let request = JevRequest {
-        model: PINNED_MODEL.to_owned(),
-        state: json!({"work_items": state_items}),
+        model: capabilities.model.clone(),
+        state: match shared_context {
+            Some(shared_context) => json!({
+                "shared_context": shared_context.fields,
+                "work_items": state_items,
+            }),
+            None => json!({"work_items": state_items}),
+        },
         questions,
     };
+    let maximum_bytes = limit_as_usize(capabilities.request_body_bytes.value)?;
     let mut serialized = JsonMeasure::new(maximum_bytes);
     if serde_json::to_writer(&mut serialized, &request).is_err() {
         return None;
     }
-    let state_bytes = json_bytes(&request.state, MAX_STATE_AND_LONGEST_QUESTION_BYTES).ok()?;
-    let longest_question_bytes = request
-        .questions
-        .values()
-        .map(|question| json_bytes(question, MAX_STATE_AND_LONGEST_QUESTION_BYTES))
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?
-        .into_iter()
-        .max()
-        .unwrap_or_default();
-    if state_bytes.saturating_add(longest_question_bytes) > MAX_STATE_AND_LONGEST_QUESTION_BYTES {
-        return None;
-    }
+    validate_jev_request_with_capabilities(&request, capabilities).ok()?;
     let digest = format!("{:x}", serialized.hash.finalize());
     use std::io::Write as _;
     let mut identity = JsonMeasure::new(usize::MAX);
@@ -907,7 +1097,10 @@ fn build_batch(items: &[&JevWorkItem], maximum_bytes: usize) -> Option<JevReques
             .iter()
             .map(|item| {
                 let mut writer = JsonMeasure::new(usize::MAX);
-                serde_json::to_writer(&mut writer, item).ok()?;
+                match shared_context {
+                    Some(shared) => serde_json::to_writer(&mut writer, &(shared, item)).ok()?,
+                    None => serde_json::to_writer(&mut writer, item).ok()?,
+                }
                 Some((item.id.clone(), format!("{:x}", writer.hash.finalize())))
             })
             .collect::<Option<BTreeMap<_, _>>>()?,
@@ -984,6 +1177,29 @@ pub fn validate_jev_response(response: &JevResponse, request: &JevRequest) -> Re
     Ok(())
 }
 
+pub fn validate_jev_response_with_capabilities(
+    response: &JevResponse,
+    request: &JevRequest,
+    capabilities: &capabilities::ModelCapabilities,
+) -> Result<(), JevError> {
+    if request.model != capabilities.model
+        || u32::try_from(request.questions.len()).unwrap_or(u32::MAX)
+            > capabilities.questions_per_request.value.unwrap_or_default()
+        || request.questions.values().any(|question| {
+            let count = match question {
+                JevQuestion::Choice { criteria, .. } => criteria.len(),
+                JevQuestion::Score { criteria, .. } => criteria.len(),
+                JevQuestion::Noul { .. } => 0,
+            };
+            u32::try_from(count).unwrap_or(u32::MAX)
+                > capabilities.criteria_per_question.value.unwrap_or_default()
+        })
+    {
+        return Err(JevError::QuestionLimitExceeded);
+    }
+    validate_jev_response(response, request)
+}
+
 /// Use the distribution to select an option when the returned choice disagrees.
 pub fn highest_probability_choice<'a>(
     choice: &'a str,
@@ -1003,37 +1219,79 @@ pub fn highest_probability_choice<'a>(
 }
 
 pub fn validate_jev_request(request: &JevRequest) -> Result<usize, JevError> {
-    if request.model != PINNED_MODEL {
+    validate_jev_request_with_capabilities(request, &capabilities::ModelCapabilities::jev_default())
+}
+
+pub fn validate_jev_request_with_capabilities(
+    request: &JevRequest,
+    capabilities: &capabilities::ModelCapabilities,
+) -> Result<usize, JevError> {
+    if request.model != capabilities.model {
         return Err(JevError::UnsupportedModel);
     }
     if request.questions.is_empty() {
         return Err(JevError::EmptyQuestions);
     }
-    if request.questions.len() > MAX_QUESTIONS_PER_REQUEST {
+    if u32::try_from(request.questions.len()).unwrap_or(u32::MAX)
+        > capabilities.questions_per_request.value.unwrap_or_default()
+    {
         return Err(JevError::QuestionLimitExceeded);
     }
-    let bytes = json_bytes(request, usize::MAX).map_err(|_| JevError::RequestSerialization)?;
-    if bytes > MAX_REQUEST_BYTES {
+    if request.questions.values().any(|question| {
+        let count = match question {
+            JevQuestion::Choice { criteria, .. } => criteria.len(),
+            JevQuestion::Score { criteria, .. } => criteria.len(),
+            JevQuestion::Noul { .. } => 0,
+        };
+        u32::try_from(count).unwrap_or(u32::MAX)
+            > capabilities.criteria_per_question.value.unwrap_or_default()
+    }) {
+        return Err(JevError::QuestionLimitExceeded);
+    }
+    let measured = json_count(request, usize::MAX).map_err(|_| JevError::RequestSerialization)?;
+    let bytes = measured.bytes;
+    if bytes > limit_as_usize(capabilities.request_body_bytes.value).unwrap_or_default() {
         return Err(JevError::RequestTooLarge {
             bytes,
-            maximum: MAX_REQUEST_BYTES,
+            maximum: limit_as_usize(capabilities.request_body_bytes.value).unwrap_or_default(),
         });
     }
-    let state_bytes =
-        json_bytes(&request.state, usize::MAX).map_err(|_| JevError::RequestSerialization)?;
-    let longest_question_bytes = request
-        .questions
-        .values()
-        .map(|question| json_bytes(question, usize::MAX))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| JevError::RequestSerialization)?
-        .into_iter()
-        .max()
+    let state =
+        json_count(&request.state, usize::MAX).map_err(|_| JevError::RequestSerialization)?;
+    let state_bytes = state.bytes;
+    let mut longest_question_bytes = 0;
+    let mut longest_question_tokens = 0;
+    for question in request.questions.values() {
+        let question =
+            json_count(question, usize::MAX).map_err(|_| JevError::RequestSerialization)?;
+        longest_question_bytes = longest_question_bytes.max(question.bytes);
+        longest_question_tokens = longest_question_tokens
+            .max(capabilities.estimated_tokens(question.estimate, question.bytes));
+    }
+    let state_byte_limit = limit_as_usize(capabilities.state_and_longest_question_bytes.value)
+        .or_else(|| limit_as_usize(capabilities.request_body_bytes.value))
         .unwrap_or_default();
-    if state_bytes.saturating_add(longest_question_bytes) > MAX_STATE_AND_LONGEST_QUESTION_BYTES {
+    if state_bytes.saturating_add(longest_question_bytes) > state_byte_limit {
         return Err(JevError::RequestTooLarge {
             bytes: state_bytes.saturating_add(longest_question_bytes),
-            maximum: MAX_STATE_AND_LONGEST_QUESTION_BYTES,
+            maximum: state_byte_limit,
+        });
+    }
+    let state_token_limit = capabilities.usable_state_tokens().unwrap_or_default();
+    let state_tokens = capabilities
+        .estimated_tokens(state.estimate, state_bytes)
+        .saturating_add(longest_question_tokens);
+    if state_tokens > state_token_limit {
+        return Err(JevError::RequestTokenLimitExceeded {
+            tokens: state_tokens,
+            maximum: state_token_limit,
+        });
+    }
+    let tokens = capabilities.estimated_tokens(measured.estimate, bytes);
+    if tokens > capabilities.usable_input_tokens().unwrap_or_default() {
+        return Err(JevError::RequestTokenLimitExceeded {
+            tokens,
+            maximum: capabilities.usable_input_tokens().unwrap_or_default(),
         });
     }
     Ok(bytes)
@@ -1073,9 +1331,34 @@ where
     Fut: std::future::Future<Output = Result<JevResponse, JevError>> + Send,
     S: FnMut(&JevRunProgress) -> Result<(), JevError>,
 {
+    run_jev_check_with_capabilities(
+        check,
+        context,
+        progress,
+        capabilities::ModelCapabilities::jev_default(),
+        execute,
+        save_progress,
+    )
+    .await
+}
+
+pub async fn run_jev_check_with_capabilities<C, E, Fut, S>(
+    check: &C,
+    context: &JevSessionContext,
+    progress: JevRunProgress,
+    capabilities: capabilities::ModelCapabilities,
+    execute: E,
+    save_progress: S,
+) -> Result<JevExecutionOutcome<C::Result>, JevError>
+where
+    C: JevCheck,
+    E: Fn(std::sync::Arc<JevRequestBatch>) -> Fut + Sync,
+    Fut: std::future::Future<Output = Result<JevResponse, JevError>> + Send,
+    S: FnMut(&JevRunProgress) -> Result<(), JevError>,
+{
     // Admit orchestration before preparation allocates request batches.
     let orchestration = admit_jev_orchestration().await?;
-    let mut plan = check.prepare(context)?;
+    let mut plan = check.prepare_with_capabilities(context, &capabilities)?;
     run_jev_check_admitted(
         check,
         context,
@@ -1136,6 +1419,14 @@ where
         || plan.input_revision != context.input_revision
         || plan.revisions != check.revisions()
         || !valid_work_item_ids(&plan.work_items)
+        || plan.shared_context.as_ref().is_some_and(|shared| {
+            shared.evidence.is_empty()
+                || shared.evidence.iter().any(|reference| {
+                    reference.part_id.is_empty()
+                        || reference.source_id.is_empty()
+                        || reference.content_kind.is_empty()
+                })
+        })
     {
         return Err(JevError::InvalidCheckPlan);
     }
@@ -1164,7 +1455,8 @@ where
             plan.revisions,
             &requirements,
             (!check.supports_incremental_reuse()).then_some(&context.reference_snapshots),
-            PINNED_MODEL,
+            &plan.capabilities,
+            &plan.shared_context,
             check.incremental_identity(context),
             crate::analysis::PARSER_REVISION,
         ),
@@ -1195,39 +1487,59 @@ where
     let mut failure_batch: Option<String> = None;
     let mut complete = true;
 
-    retain_matching_results(&classifications, &mut progress)?;
+    retain_matching_results(
+        &classifications,
+        &mut progress,
+        &plan.capabilities,
+        plan.shared_context.as_ref(),
+    )?;
     let packed = pack_item_refs(
         classifications
             .iter()
             .filter(|item| !progress.results.contains_key(&item.id)),
-        MAX_REQUEST_BYTES,
+        &plan.capabilities,
+        plan.shared_context.as_ref(),
     );
     if !packed.skipped_item_ids.is_empty() {
         complete = false;
         progress.failed_item_ids.extend(packed.skipped_item_ids);
     }
-    execute_batches(&execute, packed.batches, |batch, response| {
-        match response {
-            Ok(response) => {
-                for result in unpack_jev_response(&batch, &response)? {
-                    progress.results.insert(result.work_item_id.clone(), result);
+    execute_batches(
+        &execute,
+        packed.batches,
+        &plan.capabilities,
+        |batch, response| {
+            match response {
+                Ok(response) => {
+                    for result in unpack_jev_response_with_capabilities(
+                        &batch,
+                        &response,
+                        &plan.capabilities,
+                    )? {
+                        progress.results.insert(result.work_item_id.clone(), result);
+                    }
+                    progress.completed_batch_ids.insert(batch.id.clone());
+                    progress.request_count = progress.request_count.saturating_add(1);
                 }
-                progress.completed_batch_ids.insert(batch.id.clone());
-                progress.request_count = progress.request_count.saturating_add(1);
+                Err(error) => {
+                    complete = false;
+                    progress
+                        .failed_item_ids
+                        .extend(batch.work_item_ids.iter().cloned());
+                    record_failure(&mut failure, &mut failure_batch, batch.id.clone(), error);
+                }
             }
-            Err(error) => {
-                complete = false;
-                progress
-                    .failed_item_ids
-                    .extend(batch.work_item_ids.iter().cloned());
-                record_failure(&mut failure, &mut failure_batch, batch.id.clone(), error);
-            }
-        }
-        save_progress(&progress)
-    })
+            save_progress(&progress)
+        },
+    )
     .await?;
     check.apply_classifications(plan, &progress.results, context)?;
-    retain_matching_results(&plan.work_items, &mut progress)?;
+    retain_matching_results(
+        &plan.work_items,
+        &mut progress,
+        &plan.capabilities,
+        plan.shared_context.as_ref(),
+    )?;
 
     if !valid_result_evidence(
         &plan.work_items,
@@ -1236,6 +1548,7 @@ where
                 .iter()
                 .any(|item| item.id == result.work_item_id)
         }),
+        plan.shared_context.as_ref(),
     ) {
         return Err(JevError::InvalidCheckPlan);
     }
@@ -1243,7 +1556,8 @@ where
         plan.work_items
             .iter()
             .filter(|item| !progress.results.contains_key(&item.id)),
-        MAX_REQUEST_BYTES,
+        &plan.capabilities,
+        plan.shared_context.as_ref(),
     );
     if !initial.skipped_item_ids.is_empty() {
         complete = false;
@@ -1263,26 +1577,35 @@ where
     } else {
         Vec::new()
     };
-    execute_batches(&execute, initial_batches, |batch, response| {
-        match response {
-            Ok(response) => {
-                let results = unpack_jev_response(&batch, &response)?;
-                for result in results {
-                    progress.results.insert(result.work_item_id.clone(), result);
+    execute_batches(
+        &execute,
+        initial_batches,
+        &plan.capabilities,
+        |batch, response| {
+            match response {
+                Ok(response) => {
+                    let results = unpack_jev_response_with_capabilities(
+                        &batch,
+                        &response,
+                        &plan.capabilities,
+                    )?;
+                    for result in results {
+                        progress.results.insert(result.work_item_id.clone(), result);
+                    }
+                    progress.completed_batch_ids.insert(batch.id.clone());
+                    progress.request_count = progress.request_count.saturating_add(1);
                 }
-                progress.completed_batch_ids.insert(batch.id.clone());
-                progress.request_count = progress.request_count.saturating_add(1);
+                Err(error) => {
+                    complete = false;
+                    progress
+                        .failed_item_ids
+                        .extend(batch.work_item_ids.iter().cloned());
+                    record_failure(&mut failure, &mut failure_batch, batch.id.clone(), error);
+                }
             }
-            Err(error) => {
-                complete = false;
-                progress
-                    .failed_item_ids
-                    .extend(batch.work_item_ids.iter().cloned());
-                record_failure(&mut failure, &mut failure_batch, batch.id.clone(), error);
-            }
-        }
-        save_progress(&progress)
-    })
+            save_progress(&progress)
+        },
+    )
     .await?;
     if failure
         .as_ref()
@@ -1310,12 +1633,18 @@ where
         complete = false;
     }
 
-    retain_matching_results(&reconciliation_items, &mut progress)?;
+    retain_matching_results(
+        &reconciliation_items,
+        &mut progress,
+        &plan.capabilities,
+        plan.shared_context.as_ref(),
+    )?;
     let reconciliation = pack_item_refs(
         reconciliation_items
             .iter()
             .filter(|item| !progress.results.contains_key(&item.id)),
-        MAX_REQUEST_BYTES,
+        &plan.capabilities,
+        plan.shared_context.as_ref(),
     );
     if !reconciliation.skipped_item_ids.is_empty() {
         complete = false;
@@ -1344,26 +1673,35 @@ where
     } else {
         Vec::new()
     };
-    execute_batches(&execute, reconciliation_batches, |batch, response| {
-        match response {
-            Ok(response) => {
-                let results = unpack_jev_response(&batch, &response)?;
-                for result in results {
-                    progress.results.insert(result.work_item_id.clone(), result);
+    execute_batches(
+        &execute,
+        reconciliation_batches,
+        &plan.capabilities,
+        |batch, response| {
+            match response {
+                Ok(response) => {
+                    let results = unpack_jev_response_with_capabilities(
+                        &batch,
+                        &response,
+                        &plan.capabilities,
+                    )?;
+                    for result in results {
+                        progress.results.insert(result.work_item_id.clone(), result);
+                    }
+                    progress.completed_batch_ids.insert(batch.id.clone());
+                    progress.request_count = progress.request_count.saturating_add(1);
                 }
-                progress.completed_batch_ids.insert(batch.id.clone());
-                progress.request_count = progress.request_count.saturating_add(1);
+                Err(error) => {
+                    complete = false;
+                    progress
+                        .failed_item_ids
+                        .extend(batch.work_item_ids.iter().cloned());
+                    record_failure(&mut failure, &mut failure_batch, batch.id.clone(), error);
+                }
             }
-            Err(error) => {
-                complete = false;
-                progress
-                    .failed_item_ids
-                    .extend(batch.work_item_ids.iter().cloned());
-                record_failure(&mut failure, &mut failure_batch, batch.id.clone(), error);
-            }
-        }
-        save_progress(&progress)
-    })
+            save_progress(&progress)
+        },
+    )
     .await?;
 
     for item in &plan.work_items {
@@ -1406,7 +1744,11 @@ where
     progress
         .completed_batch_ids
         .retain(|id| reusable_item_id(id).is_none_or(|item_id| active_ids.contains(item_id)));
-    if !valid_result_evidence(all_work_items.iter().copied(), progress.results.values()) {
+    if !valid_result_evidence(
+        all_work_items.iter().copied(),
+        progress.results.values(),
+        plan.shared_context.as_ref(),
+    ) {
         return Err(JevError::InvalidCheckPlan);
     }
     let results = progress.results.values().cloned().collect::<Vec<_>>();
@@ -1430,18 +1772,24 @@ fn reusable_item_id(marker: &str) -> Option<&str> {
 fn retain_matching_results(
     items: &[JevWorkItem],
     progress: &mut JevRunProgress,
+    capabilities: &capabilities::ModelCapabilities,
+    shared_context: Option<&JevSharedRequestContext>,
 ) -> Result<(), JevError> {
     for item in items {
         let mut writer = JsonMeasure::new(usize::MAX);
-        serde_json::to_writer(&mut writer, item).map_err(|_| JevError::InvalidCheckPlan)?;
+        match shared_context {
+            Some(shared) => serde_json::to_writer(&mut writer, &(shared, item)),
+            None => serde_json::to_writer(&mut writer, item),
+        }
+        .map_err(|_| JevError::InvalidCheckPlan)?;
         let prefix = format!("reuse-item:{}:", item.id);
         let digest = format!("{prefix}{:x}", writer.hash.finalize());
         if !progress.completed_batch_ids.contains(&digest)
             || progress.results.get(&item.id).is_some_and(|result| {
                 result.work_item_id != item.id
-                    || result.model != PINNED_MODEL
-                    || result.evidence != item.window.evidence
-                    || !answers_match_item(item, &result.answers)
+                    || result.model != capabilities.model
+                    || result.evidence != combined_evidence(item, shared_context)
+                    || !answers_match_item(item, &result.answers, capabilities, shared_context)
             })
         {
             progress.results.remove(&item.id);
@@ -1459,8 +1807,13 @@ fn retain_matching_results(
     Ok(())
 }
 
-fn answers_match_item(item: &JevWorkItem, answers: &BTreeMap<String, JevAnswer>) -> bool {
-    let Some(batch) = build_batch(&[item], MAX_REQUEST_BYTES) else {
+fn answers_match_item(
+    item: &JevWorkItem,
+    answers: &BTreeMap<String, JevAnswer>,
+    capabilities: &capabilities::ModelCapabilities,
+    shared_context: Option<&JevSharedRequestContext>,
+) -> bool {
+    let Some(batch) = build_batch(&[item], capabilities, shared_context) else {
         return false;
     };
     let response_answers = batch
@@ -1474,7 +1827,7 @@ fn answers_match_item(item: &JevWorkItem, answers: &BTreeMap<String, JevAnswer>)
         .collect();
     validate_jev_response(
         &JevResponse {
-            model: PINNED_MODEL.to_owned(),
+            model: capabilities.model.clone(),
             answers: response_answers,
             usage: JevUsage {
                 input_tokens: 0,
@@ -1525,16 +1878,28 @@ fn can_continue_after_batch_failure(error: &JevError) -> bool {
 fn valid_result_evidence<'a>(
     items: impl IntoIterator<Item = &'a JevWorkItem>,
     mut results: impl Iterator<Item = &'a JevWorkItemResult>,
+    shared_context: Option<&JevSharedRequestContext>,
 ) -> bool {
     let expected = items
         .into_iter()
-        .map(|item| (item.id.as_str(), item.window.evidence.as_slice()))
+        .map(|item| (item.id.clone(), combined_evidence(item, shared_context)))
         .collect::<BTreeMap<_, _>>();
     results.all(|result| {
         expected
-            .get(result.work_item_id.as_str())
-            .is_some_and(|evidence| *evidence == result.evidence.as_slice())
+            .get(&result.work_item_id)
+            .is_some_and(|evidence| *evidence == result.evidence)
     })
+}
+
+fn combined_evidence(
+    item: &JevWorkItem,
+    shared_context: Option<&JevSharedRequestContext>,
+) -> Vec<JevEvidenceReference> {
+    let mut evidence = shared_context
+        .map(|shared| shared.evidence.clone())
+        .unwrap_or_default();
+    evidence.extend(item.window.evidence.clone());
+    evidence
 }
 
 fn progress_revision(
@@ -1570,6 +1935,7 @@ fn orchestration_slot() -> &'static tokio::sync::Semaphore {
 async fn execute_batches<E, Fut, S>(
     execute: &E,
     batches: Vec<JevRequestBatch>,
+    capabilities: &capabilities::ModelCapabilities,
     mut settle: S,
 ) -> Result<(), JevError>
 where
@@ -1582,7 +1948,10 @@ where
 {
     let queued_bytes = batches.iter().try_fold(0usize, |total, batch| {
         total
-            .checked_add(jev_batch_resident_bytes(batch)?)
+            .checked_add(jev_batch_resident_bytes_with_capabilities(
+                batch,
+                capabilities,
+            )?)
             .ok_or(JevError::RequestSerialization)
     })?;
     if queued_bytes > MAX_QUEUED_BYTES {
@@ -1620,7 +1989,11 @@ where
                 });
             if let Some((batch, result)) = ready {
                 let result = result.and_then(|response| {
-                    validate_jev_response(&response, &batch.request)?;
+                    validate_jev_response_with_capabilities(
+                        &response,
+                        &batch.request,
+                        capabilities,
+                    )?;
                     Ok(response)
                 });
                 stop_pending |= result
@@ -1690,14 +2063,23 @@ impl std::io::Write for JsonMeasure {
 }
 
 fn json_bytes(value: &impl Serialize, maximum: usize) -> Result<usize, serde_json::Error> {
-    let mut writer = JsonByteCount { bytes: 0, maximum };
+    Ok(json_count(value, maximum)?.bytes)
+}
+
+fn json_count(value: &impl Serialize, maximum: usize) -> Result<JsonByteCount, serde_json::Error> {
+    let mut writer = JsonByteCount {
+        bytes: 0,
+        maximum,
+        estimate: capabilities::TokenEstimate::default(),
+    };
     serde_json::to_writer(&mut writer, value)?;
-    Ok(writer.bytes)
+    Ok(writer)
 }
 
 struct JsonByteCount {
     bytes: usize,
     maximum: usize,
+    estimate: capabilities::TokenEstimate,
 }
 
 impl std::io::Write for JsonByteCount {
@@ -1706,6 +2088,7 @@ impl std::io::Write for JsonByteCount {
             return Err(std::io::Error::other("JSON byte limit exceeded"));
         }
         self.bytes += bytes.len();
+        self.estimate.update(bytes);
         Ok(bytes.len())
     }
 
@@ -1740,7 +2123,333 @@ fn validate_probability_sum(values: impl Iterator<Item = f64>) -> Result<(), Jev
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::jev::capabilities::{CapabilityLimit, CapabilitySource};
     use std::sync::atomic::Ordering;
+
+    fn cloudflare_capabilities() -> capabilities::ModelCapabilities {
+        capabilities::ModelCapabilities {
+            total_input_tokens: CapabilityLimit::known(65_536, CapabilitySource::DocumentedDefault),
+            state_and_longest_question_tokens: CapabilityLimit::known(
+                65_536,
+                CapabilitySource::DocumentedDefault,
+            ),
+            state_and_longest_question_bytes: CapabilityLimit::unknown(),
+            request_body_bytes: CapabilityLimit::known(65_536, CapabilitySource::DocumentedDefault),
+            response_body_bytes: CapabilityLimit::unknown(),
+            runtime_context_tokens: CapabilityLimit::known(
+                65_536,
+                CapabilitySource::DocumentedDefault,
+            ),
+            questions_per_request: CapabilityLimit::known(64, CapabilitySource::DocumentedDefault),
+            criteria_per_question: CapabilityLimit::known(26, CapabilitySource::DocumentedDefault),
+            rendering_reserve_tokens: 0,
+            tokenizer: None,
+            model: "clef-flash".to_owned(),
+            model_revision: None,
+        }
+    }
+
+    fn ollama_capabilities() -> capabilities::ModelCapabilities {
+        let mut capabilities = cloudflare_capabilities();
+        capabilities.request_body_bytes =
+            CapabilityLimit::known(64 * 1024, CapabilitySource::DocumentedDefault);
+        capabilities.model = "local-model".to_owned();
+        capabilities
+    }
+
+    #[test]
+    fn model_capabilities_change_batching_without_changing_work_items() {
+        let large_state = item("large", &"x".repeat(40 * 1024));
+        let jev = pack_work_items(std::slice::from_ref(&large_state));
+        let hosted = pack_work_items_with_capabilities(
+            std::slice::from_ref(&large_state),
+            &cloudflare_capabilities(),
+        );
+
+        assert_eq!(jev.skipped_item_ids, ["large"]);
+        assert!(hosted.skipped_item_ids.is_empty());
+        assert_eq!(hosted.batches[0].request.model, "clef-flash");
+
+        let questions = (0..65)
+            .map(|index| item(&format!("question-{index}"), "small evidence"))
+            .collect::<Vec<_>>();
+        let packed = pack_work_items_with_capabilities(&questions, &cloudflare_capabilities());
+        assert!(packed.skipped_item_ids.is_empty());
+        assert!(
+            packed
+                .batches
+                .iter()
+                .all(|batch| batch.request.questions.len() <= 64)
+        );
+    }
+
+    #[test]
+    fn evaluated_usage_does_not_limit_response_context_capacity() {
+        let capabilities = ollama_capabilities();
+        let packed = pack_work_items_with_capabilities(
+            &[item("candidate", "synthetic evidence")],
+            &capabilities,
+        );
+        let request = &packed.batches[0].request;
+        let mut response = response_for(request);
+        response.usage.input_tokens = capabilities.usable_input_tokens().unwrap() * 4;
+        assert!(validate_jev_response_with_capabilities(&response, request, &capabilities).is_ok());
+    }
+
+    #[test]
+    fn shared_context_is_sent_once_and_its_local_citations_bind_each_result() {
+        let work_items = vec![
+            item("first", "first candidate"),
+            item("second", "second candidate"),
+        ];
+        let shared = JevSharedRequestContext {
+            fields: json!({"approved_scope": ["Keep the full scope once per request."]}),
+            evidence: vec![JevEvidenceReference {
+                part_id: "shared_context.approved_scope[0]".to_owned(),
+                source_id: "local-approval-1".to_owned(),
+                content_kind: "user_message".to_owned(),
+                role: JevEvidenceRole::Instruction,
+            }],
+        };
+        let packed = pack_work_items_with_shared_context(
+            &work_items,
+            &capabilities::ModelCapabilities::jev_default(),
+            &shared,
+        );
+        assert!(packed.skipped_item_ids.is_empty());
+        assert_eq!(packed.batches.len(), 1);
+        let batch = &packed.batches[0];
+        assert_eq!(batch.request.state["shared_context"], shared.fields);
+        assert_eq!(
+            batch.request.state["work_items"].as_array().unwrap().len(),
+            2
+        );
+        assert_eq!(batch.evidence_owners["first"][0], shared.evidence[0]);
+        assert_eq!(batch.evidence_owners["second"][0], shared.evidence[0]);
+        assert!(
+            batch.request.state["work_items"]
+                .to_string()
+                .find("approved_scope")
+                .is_none()
+        );
+        assert!(batch.request.questions.values().all(|question| {
+            match question {
+                JevQuestion::Choice { instructions, .. }
+                | JevQuestion::Noul { instructions, .. }
+                | JevQuestion::Score { instructions, .. } => {
+                    instructions.to_string().contains("shared_context_path")
+                }
+            }
+        }));
+        let results = unpack_jev_response_with_capabilities(
+            batch,
+            &response_for(&batch.request),
+            &capabilities::ModelCapabilities::jev_default(),
+        )
+        .unwrap();
+        assert!(
+            results
+                .iter()
+                .all(|result| result.evidence[0] == shared.evidence[0])
+        );
+    }
+
+    #[test]
+    fn ollama_body_limit_and_unicode_sizes_are_measured_as_serialized_bytes() {
+        let unicode_item = item("unicode", &"🚀é漢".repeat(1_000));
+        let mut hosted = ollama_capabilities();
+        hosted.request_body_bytes =
+            CapabilityLimit::known(64 * 1024, CapabilitySource::DocumentedDefault);
+        let packed =
+            pack_work_items_with_capabilities(std::slice::from_ref(&unicode_item), &hosted);
+        assert!(packed.skipped_item_ids.is_empty());
+        let batch = &packed.batches[0];
+        assert_eq!(
+            batch.serialized_bytes,
+            serde_json::to_vec(&batch.request).unwrap().len()
+        );
+        assert!(batch.serialized_bytes <= 64 * 1024);
+
+        let over_body_limit = item("over-body-limit", &"x".repeat(65 * 1024));
+        let rejected = pack_work_items_with_capabilities(&[over_body_limit], &hosted);
+        assert_eq!(rejected.skipped_item_ids, ["over-body-limit"]);
+
+        hosted.request_body_bytes = CapabilityLimit::known(128, CapabilitySource::Manual);
+        let oversized = pack_work_items_with_capabilities(&[unicode_item], &hosted);
+        assert_eq!(oversized.batches, []);
+        assert_eq!(oversized.skipped_item_ids, ["unicode"]);
+    }
+
+    #[test]
+    fn capabilities_enforce_question_and_criteria_limits_before_dispatch() {
+        let mut capabilities = cloudflare_capabilities();
+        capabilities.questions_per_request =
+            CapabilityLimit::known(1, CapabilitySource::DocumentedDefault);
+        capabilities.criteria_per_question =
+            CapabilityLimit::known(2, CapabilitySource::DocumentedDefault);
+        let mut item = item("criteria", "evidence");
+        item.questions = BTreeMap::from([(
+            "decision".to_owned(),
+            JevQuestion::Choice {
+                instructions: json!("Choose"),
+                criteria: BTreeMap::from([
+                    ("a".to_owned(), json!("A")),
+                    ("b".to_owned(), json!("B")),
+                    ("c".to_owned(), json!("C")),
+                ]),
+            },
+        )]);
+        let packed = pack_work_items_with_capabilities(&[item], &capabilities);
+        assert_eq!(packed.batches, []);
+        assert_eq!(packed.skipped_item_ids, ["criteria"]);
+    }
+
+    #[test]
+    fn total_token_limit_is_independent_of_body_and_state_byte_limits() {
+        let request = JevRequest {
+            model: "limited-model".to_owned(),
+            state: json!({"text": "x".repeat(2_000)}),
+            questions: BTreeMap::from([(
+                "q".to_owned(),
+                JevQuestion::Noul {
+                    instructions: json!("Assess this input"),
+                    criteria: None,
+                },
+            )]),
+        };
+        let mut capabilities = cloudflare_capabilities();
+        capabilities.model = "limited-model".to_owned();
+        capabilities.total_input_tokens = CapabilityLimit::known(1_000, CapabilitySource::Manual);
+        capabilities.runtime_context_tokens = CapabilityLimit::unknown();
+        capabilities.state_and_longest_question_tokens =
+            CapabilityLimit::known(10_000, CapabilitySource::Manual);
+        capabilities.state_and_longest_question_bytes =
+            CapabilityLimit::known(10_000, CapabilitySource::Manual);
+        capabilities.request_body_bytes = CapabilityLimit::known(10_000, CapabilitySource::Manual);
+        assert!(matches!(
+            validate_jev_request_with_capabilities(&request, &capabilities),
+            Err(JevError::RequestTokenLimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn hosted_token_budget_supplies_more_complete_context_with_bounded_requests() {
+        let text = "Keep the approved scope and run tests before publishing changes.\n".repeat(256);
+        let items = (0..24)
+            .map(|index| item(&index.to_string(), &text))
+            .collect::<Vec<_>>();
+        let mut hosted = cloudflare_capabilities();
+        hosted.request_body_bytes = CapabilityLimit::known(256 * 1024, CapabilitySource::Manual);
+        hosted.rendering_reserve_tokens = 4096;
+        let shared = JevSharedRequestContext {
+            fields: json!({"scope": "Keep the full approval. Do not delete its conditions.\n".repeat(80)}),
+            evidence: Vec::new(),
+        };
+        let shared_bytes = json_bytes(&shared.fields, usize::MAX).unwrap();
+        let byte_packed = pack_work_items_with_shared_context(&items, &hosted, &shared);
+        hosted.tokenizer = Some(capabilities::TokenizerIdentity::ConservativeEstimator(
+            capabilities::ASCII_WEIGHTED_ESTIMATOR.into(),
+        ));
+        let started = std::time::Instant::now();
+        let packed = pack_work_items_with_shared_context(&items, &hosted, &shared);
+        assert!(packed.skipped_item_ids.is_empty());
+        assert!(packed.batches.len() < byte_packed.batches.len());
+        for batch in &packed.batches {
+            assert!(validate_jev_request_with_capabilities(&batch.request, &hosted).is_ok());
+            assert_eq!(batch.request.state["shared_context"], shared.fields);
+            for work in batch.request.state["work_items"].as_array().unwrap() {
+                assert_eq!(work["context"], items[0].window.fields);
+            }
+        }
+        let total_bytes = packed
+            .batches
+            .iter()
+            .map(|batch| batch.serialized_bytes)
+            .sum::<usize>();
+        let tokens = packed
+            .batches
+            .iter()
+            .map(|batch| {
+                let measured = json_count(&batch.request, usize::MAX).unwrap();
+                hosted.estimated_tokens(measured.estimate, measured.bytes)
+            })
+            .sum::<u64>();
+        println!(
+            "hosted_pack items={} evidence_bytes={} byte_bound_requests={} estimated_requests={} request_bytes={total_bytes} estimated_tokens={tokens} usable_tokens_per_request={} estimated_occupancy_percent={:.2} repeated_scope_bytes={} byte_bound_repeated_scope_bytes={} elapsed_us={}",
+            items.len(),
+            text.len() * items.len(),
+            byte_packed.batches.len(),
+            packed.batches.len(),
+            hosted.usable_input_tokens().unwrap(),
+            100.0 * tokens as f64
+                / (hosted.usable_input_tokens().unwrap() as f64 * packed.batches.len() as f64),
+            shared_bytes * packed.batches.len(),
+            shared_bytes * byte_packed.batches.len(),
+            started.elapsed().as_micros()
+        );
+    }
+
+    #[test]
+    fn oversized_shared_scope_is_rejected_without_truncation_or_partition() {
+        let capabilities = capabilities::ModelCapabilities::jev_default();
+        let shared = JevSharedRequestContext {
+            fields: json!({"scope": "Full approval. Do not remove this condition.\n".repeat(2048)}),
+            evidence: Vec::new(),
+        };
+        let items = [item("one", "first action"), item("two", "second action")];
+        let packed = pack_work_items_with_shared_context(&items, &capabilities, &shared);
+        assert!(packed.batches.is_empty());
+        assert_eq!(packed.skipped_item_ids, ["one", "two"]);
+    }
+
+    #[test]
+    fn incremental_token_costs_match_exact_counts_at_unicode_and_question_boundaries() {
+        let mut capabilities = cloudflare_capabilities();
+        capabilities.request_body_bytes =
+            CapabilityLimit::known(256 * 1024, CapabilitySource::Manual);
+        capabilities.tokenizer = Some(capabilities::TokenizerIdentity::ConservativeEstimator(
+            capabilities::ASCII_WEIGHTED_ESTIMATOR.into(),
+        ));
+        let items = (0..12)
+            .map(|index| item(&format!("item-{index}"), &"ASCII \\\n漢🚀".repeat(128)))
+            .collect::<Vec<_>>();
+        let mut costs = PackingCosts::default();
+        let mut refs = Vec::new();
+        for (index, item) in items.iter().enumerate() {
+            costs = costs.add(item, index, &capabilities, None).unwrap();
+            refs.push(item);
+            let batch = build_batch(&refs, &capabilities, None).unwrap();
+            let state = json_count(&batch.request.state, usize::MAX).unwrap();
+            let request = json_count(&batch.request, usize::MAX).unwrap();
+            let empty = JevRequest {
+                model: capabilities.model.clone(),
+                state: json!({"work_items": []}),
+                questions: BTreeMap::new(),
+            };
+            let empty_state = json_count(&empty.state, usize::MAX).unwrap();
+            let empty_request = json_count(&empty, usize::MAX).unwrap();
+            assert_eq!(
+                state.estimate.units(),
+                empty_state.estimate.units() + costs.state_units
+            );
+            assert_eq!(
+                request.estimate.units(),
+                empty_request.estimate.units() + costs.state_units + costs.question_units
+            );
+            capabilities.total_input_tokens = CapabilityLimit::known(
+                capabilities.estimated_tokens(request.estimate, request.bytes),
+                CapabilitySource::Manual,
+            );
+            assert!(validate_jev_request_with_capabilities(&batch.request, &capabilities).is_ok());
+            capabilities.total_input_tokens.value =
+                Some(capabilities.total_input_tokens.value.unwrap() - 1);
+            assert!(matches!(
+                validate_jev_request_with_capabilities(&batch.request, &capabilities),
+                Err(JevError::RequestTokenLimitExceeded { .. })
+            ));
+            capabilities.total_input_tokens.value = Some(65536);
+        }
+    }
 
     #[test]
     fn reusable_identity_preserves_results_for_prefix_related_ids() {
@@ -1771,12 +2480,24 @@ mod tests {
             let expected_markers = progress.completed_batch_ids.clone();
 
             for item in &items {
-                retain_matching_results(std::slice::from_ref(item), &mut progress).unwrap();
+                retain_matching_results(
+                    std::slice::from_ref(item),
+                    &mut progress,
+                    &capabilities::ModelCapabilities::jev_default(),
+                    None,
+                )
+                .unwrap();
                 assert_eq!(progress.results, expected_results);
                 assert!(expected_markers.is_subset(&progress.completed_batch_ids));
             }
             let mut changed = item("screen", "changed screen evidence");
-            retain_matching_results(std::slice::from_ref(&changed), &mut progress).unwrap();
+            retain_matching_results(
+                std::slice::from_ref(&changed),
+                &mut progress,
+                &capabilities::ModelCapabilities::jev_default(),
+                None,
+            )
+            .unwrap();
             assert!(!progress.results.contains_key("screen"));
             for id in ["screen::followup", "screen:child", "screening"] {
                 assert_eq!(progress.results.get(id), expected_results.get(id));
@@ -1787,7 +2508,13 @@ mod tests {
                 assert!(progress.completed_batch_ids.contains(marker));
             }
             changed.id = "screen::followup".to_owned();
-            retain_matching_results(std::slice::from_ref(&changed), &mut progress).unwrap();
+            retain_matching_results(
+                std::slice::from_ref(&changed),
+                &mut progress,
+                &capabilities::ModelCapabilities::jev_default(),
+                None,
+            )
+            .unwrap();
             assert!(!progress.results.contains_key("screen::followup"));
             assert_eq!(progress.results.len(), 2);
         }
@@ -1828,6 +2555,8 @@ mod tests {
                 work_items,
                 skipped_item_ids: Vec::new(),
                 coverage: JevCoverage::default(),
+                capabilities: capabilities::ModelCapabilities::jev_default(),
+                shared_context: None,
                 prepared: Value::Null,
             })
         }
@@ -1856,6 +2585,233 @@ mod tests {
                 fields: json!({"other_file": reference}),
             }],
         }
+    }
+
+    struct CapabilityStagesCheck;
+
+    impl JevCheck for CapabilityStagesCheck {
+        type Prepared = Value;
+        type Result = usize;
+
+        fn id(&self) -> &'static str {
+            DurableCheck.id()
+        }
+
+        fn revisions(&self) -> JevCheckRevisions {
+            DurableCheck.revisions()
+        }
+
+        fn prepare(&self, context: &JevSessionContext) -> Result<JevCheckPlan<Value>, JevError> {
+            let mut plan = DurableCheck.prepare(context)?;
+            plan.work_items = vec![
+                item("candidate-a", &"x".repeat(40 * 1024)),
+                item("candidate-b", &"x".repeat(40 * 1024)),
+            ];
+            Ok(plan)
+        }
+
+        fn classifications(
+            &self,
+            _context: &JevSessionContext,
+        ) -> Result<Vec<JevWorkItem>, JevError> {
+            Ok(vec![item("classification", &"x".repeat(40 * 1024))])
+        }
+
+        fn apply_classifications(
+            &self,
+            plan: &mut JevCheckPlan<Value>,
+            results: &BTreeMap<String, JevWorkItemResult>,
+            _context: &JevSessionContext,
+        ) -> Result<(), JevError> {
+            assert_eq!(results["classification"].model, plan.capabilities.model);
+            Ok(())
+        }
+
+        fn reconcile(
+            &self,
+            work_item: &JevWorkItem,
+            _initial_result: &JevWorkItemResult,
+            _context: &JevSessionContext,
+        ) -> Result<Option<JevWorkItem>, JevError> {
+            Ok((work_item.id == "candidate-a")
+                .then(|| item("reconciliation", &"x".repeat(40 * 1024))))
+        }
+
+        fn reduce(
+            &self,
+            plan: &JevCheckPlan<Value>,
+            results: &[JevWorkItemResult],
+            complete: bool,
+        ) -> Result<usize, JevError> {
+            DurableCheck.reduce(plan, results, complete)
+        }
+    }
+
+    #[tokio::test]
+    async fn runner_uses_plan_capabilities_in_every_stage_and_both_entry_points() {
+        let mut native_model_custom_limits = cloudflare_capabilities();
+        native_model_custom_limits.model = PINNED_MODEL.to_owned();
+        for mut capabilities in [
+            cloudflare_capabilities(),
+            ollama_capabilities(),
+            native_model_custom_limits,
+        ] {
+            capabilities.questions_per_request =
+                CapabilityLimit::known(1, CapabilitySource::Manual);
+            for prepared in [false, true] {
+                let check = CapabilityStagesCheck;
+                let context = durable_context("custom-limits", &[], "reference");
+                let dispatched = std::sync::Mutex::new(Vec::new());
+                let execute = |batch: std::sync::Arc<JevRequestBatch>| {
+                    assert_eq!(batch.request.model, capabilities.model);
+                    assert_eq!(batch.request.questions.len(), 1);
+                    validate_jev_request_with_capabilities(&batch.request, &capabilities).unwrap();
+                    assert!(validate_jev_request(&batch.request).is_err());
+                    dispatched
+                        .lock()
+                        .unwrap()
+                        .extend(batch.work_item_ids.clone());
+                    async move { Ok(response_for(&batch.request)) }
+                };
+                let outcome = if prepared {
+                    let permit = admit_jev_orchestration().await.unwrap();
+                    let mut plan = check
+                        .prepare_with_capabilities(&context, &capabilities)
+                        .unwrap();
+                    run_jev_check_prepared(
+                        &check,
+                        &context,
+                        &mut plan,
+                        JevRunProgress::default(),
+                        permit,
+                        execute,
+                        |_| Ok(()),
+                    )
+                    .await
+                } else {
+                    run_jev_check_with_capabilities(
+                        &check,
+                        &context,
+                        JevRunProgress::default(),
+                        capabilities.clone(),
+                        execute,
+                        |_| Ok(()),
+                    )
+                    .await
+                }
+                .unwrap();
+                assert!(outcome.complete);
+                assert_eq!(outcome.failure, None);
+                assert_eq!(outcome.result, 4);
+                assert_eq!(outcome.progress.request_count, 4);
+                assert!(outcome.progress.failed_item_ids.is_empty());
+                assert_eq!(
+                    *dispatched.lock().unwrap(),
+                    [
+                        "classification",
+                        "candidate-a",
+                        "candidate-b",
+                        "reconciliation"
+                    ]
+                );
+                assert!(outcome.progress.results.values().all(|result| {
+                    result.model == capabilities.model && !result.evidence.is_empty()
+                }));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn execution_rejects_custom_request_limits_before_provider_dispatch() {
+        let batch = pack_work_items(&[item("candidate", "evidence")])
+            .batches
+            .remove(0);
+        for limit in [
+            "body",
+            "state_bytes",
+            "input_tokens",
+            "state_tokens",
+            "questions",
+            "criteria",
+        ] {
+            let mut capabilities = capabilities::ModelCapabilities::jev_default();
+            match limit {
+                "body" => capabilities.request_body_bytes.value = Some(1),
+                "state_bytes" => capabilities.state_and_longest_question_bytes.value = Some(1),
+                "input_tokens" => capabilities.total_input_tokens.value = Some(1),
+                "state_tokens" => capabilities.state_and_longest_question_tokens.value = Some(1),
+                "questions" => capabilities.questions_per_request.value = Some(0),
+                "criteria" => capabilities.criteria_per_question.value = Some(1),
+                _ => unreachable!(),
+            }
+            let calls = std::sync::atomic::AtomicUsize::new(0);
+            let result = execute_batches(
+                &|batch: std::sync::Arc<JevRequestBatch>| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    async move { Ok(response_for(&batch.request)) }
+                },
+                vec![batch.clone()],
+                &capabilities,
+                |_, _| panic!("admission failure must not settle a provider result"),
+            )
+            .await;
+            assert_eq!(
+                result,
+                validate_jev_request_with_capabilities(&batch.request, &capabilities).map(|_| ())
+            );
+            assert!(result.is_err(), "{limit}");
+            assert_eq!(calls.load(Ordering::SeqCst), 0, "{limit}");
+        }
+    }
+
+    #[tokio::test]
+    async fn packing_and_execution_charge_the_custom_response_reserve() {
+        let mut capabilities = capabilities::ModelCapabilities::jev_default();
+        capabilities.questions_per_request.value = Some(1);
+        capabilities.response_body_bytes =
+            CapabilityLimit::known(200 * 1024, CapabilitySource::Manual);
+        let items = (0..100)
+            .map(|index| item(&index.to_string(), "small"))
+            .collect::<Vec<_>>();
+        let packed = pack_work_items_with_capabilities(&items, &capabilities);
+        assert!(!packed.skipped_item_ids.is_empty());
+        assert_eq!(
+            packed.batches.len() + packed.skipped_item_ids.len(),
+            items.len()
+        );
+        let batch = &packed.batches[0];
+        assert_eq!(
+            jev_batch_resident_bytes_with_capabilities(batch, &capabilities).unwrap()
+                - jev_batch_resident_bytes(batch).unwrap(),
+            200 * 1024 - MAX_RESPONSE_BYTES
+        );
+        let batches = vec![batch.clone(); 100];
+        let native_bytes = batches
+            .iter()
+            .map(|batch| jev_batch_resident_bytes(batch).unwrap())
+            .sum::<usize>();
+        let custom_bytes = batches
+            .iter()
+            .map(|batch| jev_batch_resident_bytes_with_capabilities(batch, &capabilities).unwrap())
+            .sum::<usize>();
+        assert!(native_bytes < MAX_QUEUED_BYTES);
+        assert!(custom_bytes > MAX_QUEUED_BYTES);
+        let result = execute_batches(
+            &|_: std::sync::Arc<JevRequestBatch>| async {
+                panic!("queue admission must precede dispatch")
+            },
+            batches,
+            &capabilities,
+            |_, _| panic!("queue admission must precede settlement"),
+        )
+        .await;
+        assert_eq!(
+            result,
+            Err(JevError::RequestTooLarge {
+                bytes: custom_bytes,
+                maximum: MAX_QUEUED_BYTES
+            })
+        );
     }
 
     #[tokio::test]
@@ -1911,6 +2867,30 @@ mod tests {
         .unwrap();
         assert!(regrouped.complete);
         assert_eq!(regrouped.result, 3);
+    }
+
+    #[tokio::test]
+    async fn cancelled_provider_result_stays_incomplete_without_finding_evidence() {
+        let check = DurableCheck;
+        let checkpoints = std::sync::atomic::AtomicUsize::new(0);
+        let result = run_jev_check(
+            &check,
+            &durable_context("first", &["a"], "original"),
+            JevRunProgress::default(),
+            |_| async { Err(JevError::Cancelled) },
+            |_| {
+                checkpoints.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+
+        let outcome = result.unwrap();
+        assert!(!outcome.complete);
+        assert_eq!(outcome.result, 0);
+        assert!(outcome.progress.results.is_empty());
+        assert!(outcome.progress.failed_item_ids.contains("a"));
+        assert_eq!(checkpoints.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -1980,25 +2960,47 @@ mod tests {
             let mut current = Vec::new();
             for item in items {
                 current.push(item);
-                if build_batch(&current, MAX_REQUEST_BYTES).is_none() {
+                if build_batch(
+                    &current,
+                    &capabilities::ModelCapabilities::jev_default(),
+                    None,
+                )
+                .is_none()
+                {
                     current.pop();
                     if !current.is_empty() {
-                        packed
-                            .batches
-                            .push(build_batch(&current, MAX_REQUEST_BYTES).unwrap());
+                        packed.batches.push(
+                            build_batch(
+                                &current,
+                                &capabilities::ModelCapabilities::jev_default(),
+                                None,
+                            )
+                            .unwrap(),
+                        );
                     }
                     current.clear();
                     current.push(item);
-                    if build_batch(&current, MAX_REQUEST_BYTES).is_none() {
+                    if build_batch(
+                        &current,
+                        &capabilities::ModelCapabilities::jev_default(),
+                        None,
+                    )
+                    .is_none()
+                    {
                         current.clear();
                         packed.skipped_item_ids.push(item.id.clone());
                     }
                 }
             }
             if !current.is_empty() {
-                packed
-                    .batches
-                    .push(build_batch(&current, MAX_REQUEST_BYTES).unwrap());
+                packed.batches.push(
+                    build_batch(
+                        &current,
+                        &capabilities::ModelCapabilities::jev_default(),
+                        None,
+                    )
+                    .unwrap(),
+                );
             }
             packed
         }
@@ -2136,6 +3138,7 @@ mod tests {
                 async move { Ok(response_for(&batch.request)) }
             },
             batches,
+            &capabilities::ModelCapabilities::jev_default(),
             |_, _| Ok(()),
         )
         .await;
@@ -2188,6 +3191,7 @@ mod tests {
                 }
             },
             batches,
+            &capabilities::ModelCapabilities::jev_default(),
             |batch, result| {
                 if settled.is_empty() {
                     assert_eq!(batch.work_item_ids, ["1"]);
@@ -2230,6 +3234,7 @@ mod tests {
                 async move { Ok(response_for(&batch.request)) }
             },
             batches,
+            &capabilities::ModelCapabilities::jev_default(),
             |_, _| Err(JevError::ProgressStorageFailure),
         )
         .await;
@@ -2333,7 +3338,7 @@ mod tests {
 
     #[test]
     fn state_and_question_budget_is_checked_separately_from_full_request_size() {
-        let large_state = item("large-state", &"x".repeat(32 * 1024));
+        let large_state = item("large-state", &"x".repeat(40 * 1024));
         let packed = pack_work_items(std::slice::from_ref(&large_state));
         assert!(packed.batches.is_empty());
         assert_eq!(packed.skipped_item_ids, vec!["large-state"]);
@@ -2345,7 +3350,7 @@ mod tests {
         };
         assert!(matches!(
             validate_jev_request(&request),
-            Err(JevError::RequestTooLarge { .. })
+            Err(JevError::RequestTokenLimitExceeded { .. })
         ));
     }
 
@@ -2485,6 +3490,8 @@ mod tests {
                     selected_items: 2,
                     ..JevCoverage::default()
                 },
+                capabilities: capabilities::ModelCapabilities::jev_default(),
+                shared_context: None,
                 prepared: Value::Null,
             })
         }
@@ -2551,6 +3558,8 @@ mod tests {
                 work_items,
                 skipped_item_ids: Vec::new(),
                 coverage: JevCoverage::default(),
+                capabilities: capabilities::ModelCapabilities::jev_default(),
+                shared_context: None,
                 prepared: Value::Null,
             })
         }
@@ -2613,6 +3622,8 @@ mod tests {
                     selected_items: 1,
                     ..JevCoverage::default()
                 },
+                capabilities: capabilities::ModelCapabilities::jev_default(),
+                shared_context: None,
                 prepared: Value::Null,
             })
         }
@@ -2656,6 +3667,8 @@ mod tests {
                 work_items: Vec::new(),
                 skipped_item_ids: Vec::new(),
                 coverage: JevCoverage::default(),
+                capabilities: capabilities::ModelCapabilities::jev_default(),
+                shared_context: None,
                 prepared: Value::Null,
             })
         }

@@ -43,15 +43,17 @@ use crate::analysis::jev::{
 };
 
 pub const ASSESSMENT_MODEL: &str = crate::analysis::jev::PINNED_MODEL;
-pub const ASSESSMENT_PROJECTION_REVISION: u32 = 7;
-pub const ASSESSMENT_CHUNKING_REVISION: u32 = 21;
-pub const ASSESSMENT_QUESTION_REVISION: u32 = 38;
-pub const ASSESSMENT_REDUCER_REVISION: u32 = 27;
+pub const ASSESSMENT_PROJECTION_REVISION: u32 = 14;
+pub const ASSESSMENT_CHUNKING_REVISION: u32 = 28;
+pub const ASSESSMENT_QUESTION_REVISION: u32 = 48;
+pub const ASSESSMENT_REDUCER_REVISION: u32 = 39;
 pub const MAX_ASSESSMENT_CANDIDATES: usize = 256;
 pub const MAX_SAMPLED_COMPARISONS_PER_PASS: usize = 1024;
 pub const INPUT_SELECTION: JevInputSelection = JevInputSelection::from_fields(&[
+    JevInputField::UserMessage,
     JevInputField::AssistantMessage,
     JevInputField::BashCommandInput,
+    JevInputField::BashCommandOutput,
     JevInputField::FileEditPath,
     JevInputField::ReadFilePath,
     JevInputField::SearchFilesQuery,
@@ -137,6 +139,10 @@ pub struct CounterEvidence {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CandidateComparison {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_binding: Option<super::decisions::ActionSourceBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prerequisite_episode: Option<super::decisions::PrerequisiteEpisode>,
     pub id: String,
     pub reference: RuleActionRef,
     pub source_thread_digest: String,
@@ -225,6 +231,10 @@ pub struct AssessmentPlan {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObservableObligation {
     #[serde(default)]
+    pub path_change_policy: super::PathChangePolicy,
+    #[serde(default)]
+    pub path_change_conflict: Option<bool>,
+    #[serde(default)]
     pub literal_policies: Vec<crate::analysis::jev::exact_facts::LiteralPolicyBinding>,
     #[serde(default)]
     pub condition_evidence: crate::analysis::jev::obligations::ConditionEvidence,
@@ -253,6 +263,8 @@ pub enum FindingCertainty {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssessmentFinding {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<super::decisions::DecisionRecord>,
     pub id: String,
     pub reference: RuleActionRef,
     #[serde(default)]
@@ -270,6 +282,14 @@ pub struct AssessmentFinding {
     pub applicability_probability: f64,
     pub evidence_basis_probability: f64,
     pub limitations: Vec<String>,
+}
+
+impl AssessmentFinding {
+    pub fn decision_record(&self) -> Option<&super::decisions::DecisionRecord> {
+        self.decision.as_ref().filter(|decision| {
+            decision.rule_action == self.reference && decision.has_citation_proof()
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -380,12 +400,24 @@ impl JevCheck for IgnoredInstructionsCheck {
         &self,
         context: &JevSessionContext,
     ) -> Result<JevCheckPlan<Self::Prepared>, JevError> {
-        let assessment: AssessmentPlan =
+        self.prepare_with_capabilities(
+            context,
+            &crate::analysis::jev::capabilities::ModelCapabilities::jev_default(),
+        )
+    }
+
+    fn prepare_with_capabilities(
+        &self,
+        context: &JevSessionContext,
+        capabilities: &crate::analysis::jev::capabilities::ModelCapabilities,
+    ) -> Result<JevCheckPlan<Self::Prepared>, JevError> {
+        let mut assessment: AssessmentPlan =
             serde_json::from_value(context.check_context["assessment_plan"].clone())
                 .map_err(|_| JevError::InvalidCheckContext)?;
         if assessment.input_revision != context.input_revision {
             return Err(JevError::InvalidCheckContext);
         }
+        assessment.model_version.clone_from(&capabilities.model);
         let work_items: Vec<_> = assessment_windows(&assessment.comparisons)
             .into_iter()
             .map(|window| JevWorkItem {
@@ -421,6 +453,8 @@ impl JevCheck for IgnoredInstructionsCheck {
                 processing_limit_reached: assessment.coverage.processing_limit_reached,
                 limitations: assessment.coverage.limitations.clone(),
             },
+            capabilities: capabilities.clone(),
+            shared_context: None,
             prepared: assessment,
         })
     }
@@ -454,6 +488,9 @@ impl JevCheck for IgnoredInstructionsCheck {
                 })
                 .ok_or(JevError::InvalidCheckPlan)?;
             let applicability = selected(initial, id);
+            let path_change_ban = work_item.window.fields["instruction_targets"][target_index]["observable_obligation"]
+                ["path_change_conflict"]
+                == true;
             let literal_report_needed = work_item.window.fields["candidate_action"]["kind"]
                 == "assistant_text"
                 && work_item.window.fields["instruction_targets"][target_index]["literal_policies"]
@@ -469,6 +506,7 @@ impl JevCheck for IgnoredInstructionsCheck {
             if applicability.is_none()
                 || (applicability.as_deref() == Some("not_applicable")
                     && !literal_report_needed
+                    && !path_change_ban
                     && crate::analysis::jev::classification::confident_choice(
                         initial,
                         id,
@@ -521,84 +559,110 @@ impl JevCheck for IgnoredInstructionsCheck {
         results: &[JevWorkItemResult],
         complete: bool,
     ) -> Result<Self::Result, JevError> {
-        if plan.check_id != self.id() {
-            return Err(JevError::InvalidCheckPlan);
-        }
-        let assessment = &plan.prepared;
-        if assessment.input_revision != plan.input_revision {
-            return Err(JevError::InvalidCheckPlan);
-        }
-        let results_by_window = results
-            .iter()
-            .map(|result| (result.work_item_id.as_str(), result))
-            .collect::<BTreeMap<_, _>>();
-        let guarded_assessment = guard_unclassified_observations(assessment, &results_by_window)?;
-        let assessment = &guarded_assessment;
-        let mut target_results = BTreeMap::new();
-        for comparison in &assessment.comparisons {
-            let question_key = target_question_key(&comparison.id, QUESTION_APPLICABILITY);
-            let Some(work_item) = plan
-                .work_items
-                .iter()
-                .find(|item| item.questions.contains_key(&question_key))
-            else {
-                continue;
-            };
-            let Some(window_result) = results_by_window.get(work_item.id.as_str()) else {
-                continue;
-            };
-            let followup_id = format!("{}::followup", work_item.id);
-            let followup = results_by_window.get(followup_id.as_str());
-            let prefix = format!("target-{}::", comparison.id);
-            let answers = window_result
-                .answers
-                .iter()
-                .chain(
-                    followup
-                        .into_iter()
-                        .flat_map(|result| result.answers.iter()),
-                )
-                .filter_map(|(key, answer)| {
-                    key.strip_prefix(&prefix)
-                        .map(|question| (question.to_owned(), answer.clone()))
-                })
-                .collect();
-            target_results.insert(
-                comparison.id.clone(),
-                JevWorkItemResult {
-                    request_id: window_result.request_id.clone(),
-                    work_item_id: comparison.id.clone(),
-                    answers,
-                    evidence: window_result.evidence.clone(),
-                    model: window_result.model.clone(),
-                    usage: window_result.usage,
-                },
-            );
-        }
-        let completion = classified_completion(assessment, &results_by_window)?;
-        let mut reduced =
-            reduction::reduce_with_completion(assessment, &target_results, complete, &completion);
-        add_obligation_coverage(
-            &mut reduced,
-            assessment,
-            &results_by_window,
-            &target_results,
-        )?;
-        let mut seen_requests = BTreeSet::new();
-        reduced.request_count = 0;
-        reduced.input_tokens = 0;
-        reduced.output_tokens = 0;
-        for result in results {
-            record_usage(
-                result,
-                &mut seen_requests,
-                &mut reduced.request_count,
-                &mut reduced.input_tokens,
-                &mut reduced.output_tokens,
-            );
-        }
-        Ok(reduced)
+        reduce_check_plan(plan, results, complete, &mut None)
     }
+}
+
+pub use reduction::ComparisonDiagnostic;
+
+pub fn diagnose_assessment(
+    plan: &JevCheckPlan<AssessmentPlan>,
+    results: &[JevWorkItemResult],
+    complete: bool,
+) -> Result<(AssessmentResult, Vec<ComparisonDiagnostic>), JevError> {
+    let mut diagnostics = Vec::new();
+    let result = reduce_check_plan(plan, results, complete, &mut Some(&mut diagnostics))?;
+    Ok((result, diagnostics))
+}
+
+fn reduce_check_plan(
+    plan: &JevCheckPlan<AssessmentPlan>,
+    results: &[JevWorkItemResult],
+    complete: bool,
+    diagnostics: &mut Option<&mut Vec<ComparisonDiagnostic>>,
+) -> Result<AssessmentResult, JevError> {
+    if plan.check_id != super::CHECK_ID {
+        return Err(JevError::InvalidCheckPlan);
+    }
+    let assessment = &plan.prepared;
+    if assessment.input_revision != plan.input_revision {
+        return Err(JevError::InvalidCheckPlan);
+    }
+    let results_by_window = results
+        .iter()
+        .map(|result| (result.work_item_id.as_str(), result))
+        .collect::<BTreeMap<_, _>>();
+    let guarded_assessment = guard_unclassified_observations(assessment, &results_by_window)?;
+    let assessment = &guarded_assessment;
+    let mut target_results = BTreeMap::new();
+    for comparison in &assessment.comparisons {
+        let question_key = target_question_key(&comparison.id, QUESTION_APPLICABILITY);
+        let Some(work_item) = plan
+            .work_items
+            .iter()
+            .find(|item| item.questions.contains_key(&question_key))
+        else {
+            continue;
+        };
+        let Some(window_result) = results_by_window.get(work_item.id.as_str()) else {
+            continue;
+        };
+        let followup_id = format!("{}::followup", work_item.id);
+        let followup = results_by_window.get(followup_id.as_str());
+        let prefix = format!("target-{}::", comparison.id);
+        let answers = window_result
+            .answers
+            .iter()
+            .chain(
+                followup
+                    .into_iter()
+                    .flat_map(|result| result.answers.iter()),
+            )
+            .filter_map(|(key, answer)| {
+                key.strip_prefix(&prefix)
+                    .map(|question| (question.to_owned(), answer.clone()))
+            })
+            .collect();
+        target_results.insert(
+            comparison.id.clone(),
+            JevWorkItemResult {
+                request_id: window_result.request_id.clone(),
+                work_item_id: comparison.id.clone(),
+                answers,
+                evidence: window_result.evidence.clone(),
+                model: window_result.model.clone(),
+                usage: window_result.usage,
+            },
+        );
+    }
+    let completion = classified_completion(assessment, &results_by_window)?;
+    let mut reduced = reduction::reduce_traced(
+        assessment,
+        &target_results,
+        complete,
+        &completion,
+        diagnostics,
+    );
+    add_obligation_coverage(
+        &mut reduced,
+        assessment,
+        &results_by_window,
+        &target_results,
+    )?;
+    let mut seen_requests = BTreeSet::new();
+    reduced.request_count = 0;
+    reduced.input_tokens = 0;
+    reduced.output_tokens = 0;
+    for result in results {
+        record_usage(
+            result,
+            &mut seen_requests,
+            &mut reduced.request_count,
+            &mut reduced.input_tokens,
+            &mut reduced.output_tokens,
+        );
+    }
+    Ok(reduced)
 }
 
 #[cfg(test)]
@@ -644,7 +708,15 @@ fn comparison_evidence(comparison: &CandidateComparison) -> Vec<JevEvidenceRefer
 }
 
 #[cfg(test)]
-mod tests {
+#[path = "capability_tests.rs"]
+mod capability_tests;
+
+#[cfg(test)]
+#[path = "development_tests.rs"]
+mod development_tests;
+
+#[cfg(test)]
+pub(super) mod tests {
     use super::*;
     use crate::analysis::jev::JevUsage;
     use crate::checks::ignored_instructions::snapshot_from_text;
@@ -787,7 +859,7 @@ mod tests {
         }
     }
 
-    pub(super) fn event(
+    pub(in crate::checks::ignored_instructions) fn event(
         id: &str,
         timestamp_ms: i64,
         role: &str,
@@ -807,7 +879,12 @@ mod tests {
             timestamp_ms: Some(timestamp_ms),
             turn_role: role.to_owned(),
             turn_scope: "main".to_owned(),
-            authority: if role == "assistant" { "agent" } else { "user" }.to_owned(),
+            authority: if role == "assistant" {
+                "assistant"
+            } else {
+                "user"
+            }
+            .to_owned(),
             kind: "assistant_text".to_owned(),
             text: text.to_owned(),
             tool_name: None,
@@ -819,7 +896,24 @@ mod tests {
         }
     }
 
-    pub(super) fn input(actions: Vec<ContentAction>, rule_text: &str) -> AssessmentInput {
+    pub(in crate::checks::ignored_instructions) fn input(
+        mut actions: Vec<ContentAction>,
+        rule_text: &str,
+    ) -> AssessmentInput {
+        for action in &mut actions {
+            if action.kind == "tool_input"
+                && action.normalized_fields.is_none()
+                && let Some(name) = action.tool_name.as_deref()
+            {
+                action.normalized_fields = Some(
+                    crate::analysis::jev_evidence::normalize_tool_input(name, &action.text),
+                );
+            }
+        }
+        crate::analysis::jev_evidence::normalize_context(
+            &mut actions,
+            crate::analysis::SourceFormat::ClaudeJsonl,
+        );
         let instruction = snapshot_from_text(
             "AGENTS.md",
             rule_text.to_owned(),
@@ -1957,7 +2051,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_results_are_context_not_duplicate_candidate_actions() {
+    fn unbound_tool_results_are_not_candidates_or_assessment_context() {
         let mut tool_result = event(
             "tool-result",
             1,
@@ -1969,6 +2063,8 @@ mod tests {
         tool_result.tool_name = Some("shell".to_owned());
         tool_result.tool_call_id = Some("call-1".to_owned());
         let mut tool_input = event("tool-input", 2, "tool", "main", "rg -n pattern src");
+        tool_input.authority = "assistant".to_owned();
+        tool_result.authority = "tool".to_owned();
         tool_input.kind = "tool_input".to_owned();
         tool_input.tool_name = Some("shell".to_owned());
         tool_input.tool_call_id = Some("call-1".to_owned());
@@ -1984,11 +2080,11 @@ mod tests {
                 .iter()
                 .all(|comparison| { comparison.reference.action_id != "tool-result" })
         );
-        assert!(plan.comparisons.iter().any(|comparison| {
+        assert!(plan.comparisons.iter().all(|comparison| {
             comparison
                 .context
                 .iter()
-                .any(|context| context.action_id == "tool-result")
+                .all(|context| context.action_id != "tool-result")
         }));
     }
 
@@ -2333,7 +2429,7 @@ mod tests {
             plan.comparisons[0]
                 .context
                 .iter()
-                .any(|event| event.action_id == "earlier-approval")
+                .all(|event| event.action_id != "earlier-approval")
         );
     }
 
@@ -2371,6 +2467,8 @@ mod tests {
             truncated: false,
         };
         CandidateComparison {
+            source_binding: None,
+            prerequisite_episode: None,
             id: id.to_owned(),
             reference,
             source_thread_digest: "thread".to_owned(),
@@ -2642,7 +2740,7 @@ mod tests {
     }
 
     #[test]
-    fn earlier_approval_in_context_reconciles_the_candidate() {
+    fn unproven_earlier_approval_does_not_enter_assessment_context() {
         let mut actions = vec![event(
             "approval",
             1,
@@ -2685,14 +2783,14 @@ mod tests {
             comparison
                 .counterevidence
                 .iter()
-                .any(|event| event.action_id == "approval")
+                .all(|event| event.action_id != "approval")
         );
         assert!(
             initial_context(comparison)["earlier_counterevidence"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|event| event["text"] == "The user approved installing the dependency.")
+                .all(|event| event["text"] != "The user approved installing the dependency.")
         );
         assert!(
             initial_context(comparison)["earlier_counterevidence"]
@@ -2702,14 +2800,7 @@ mod tests {
                 .all(|event| event.get("action_id").is_none())
         );
         assert!(comparison.prior_history_complete);
-        assert!(comparison.earlier_history_truncated);
-
-        let result = reduce_one(
-            comparison.clone(),
-            vec![judgment_result(&comparison.id, "follows", "self_contained")],
-        );
-        assert!(result.findings.is_empty());
-        assert!(result.unassessed_comparisons.is_empty());
+        assert!(comparison.counterevidence.is_empty());
     }
 
     #[test]
@@ -2952,8 +3043,8 @@ mod tests {
         if let JevAnswer::Choice { probabilities, .. } =
             basis.answers.get_mut(QUESTION_EVIDENCE_BASIS).unwrap()
         {
-            probabilities.insert("self_contained".to_owned(), 0.84);
-            probabilities.insert("evidence_incomplete".to_owned(), 0.10);
+            probabilities.insert("self_contained".to_owned(), 0.74);
+            probabilities.insert("evidence_incomplete".to_owned(), 0.20);
             probabilities.insert("uncertain".to_owned(), 0.06);
         }
         let result = reduce_one(comparison.clone(), vec![basis]);

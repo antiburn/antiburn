@@ -1399,6 +1399,33 @@ pub async fn get_checks_report(
     crate::analytics::record_quota_incidents(app, &reduced.report.quota_pressure);
     crate::analytics::record_provider_incidents(app, &reduced.report.provider_incidents);
     let mut payload = ChecksReportPayload::from_reduced_report(&reduced);
+    payload.smart_checks_available = app
+        .state::<crate::jev::worker::WorkerHandle>()
+        .is_available();
+    for (id, check_id) in [
+        (
+            BurnCheckDetectorId::SkillOpportunities,
+            "skill_opportunities",
+        ),
+        (BurnCheckDetectorId::OverExploring, "over_exploring"),
+        (BurnCheckDetectorId::ScopeCreep, "scope_creep"),
+    ] {
+        if let Some(category) = payload
+            .categories
+            .iter_mut()
+            .find(|category| category.id == id)
+        {
+            category.sampled = category.finding > 0 || category.clean > 0;
+            if app
+                .state::<Store>()
+                .burn_check_in_progress_count(check_id)
+                .map_err(fail)?
+                > 0
+            {
+                apply_ignored_instruction_progress(category);
+            }
+        }
+    }
     if let Some(category) = payload
         .categories
         .iter_mut()
@@ -1444,13 +1471,16 @@ pub async fn get_checks_report(
             lifecycle = ?category.lifecycle,
         );
     }
-    if !app
-        .state::<crate::jev_worker::WorkerHandle>()
-        .is_available()
-    {
-        payload
-            .categories
-            .retain(|category| category.id != crate::dto::BurnCheckDetectorId::IgnoredInstructions);
+    if !payload.smart_checks_available {
+        payload.categories.retain(|category| {
+            !matches!(
+                category.id,
+                BurnCheckDetectorId::IgnoredInstructions
+                    | BurnCheckDetectorId::SkillOpportunities
+                    | BurnCheckDetectorId::OverExploring
+                    | BurnCheckDetectorId::ScopeCreep
+            )
+        });
     }
     let finding_count = payload
         .categories
@@ -1591,6 +1621,8 @@ pub async fn list_burn_check_targets(
             &app.state::<Store>(),
             list,
             epoch_now(),
+            app.state::<crate::jev::worker::WorkerHandle>()
+                .is_available(),
         )?;
         ::tracing::debug!(
             event = "burn_check_targets_finished",
@@ -1657,10 +1689,18 @@ fn burn_check_target_list_payload(
     store: &Store,
     list: crate::remediation::BurnCheckTargetList,
     now: i64,
+    smart_checks_available: bool,
 ) -> CommandResult<BurnCheckTargetListPayload> {
     let repositories = store.repositories().map_err(fail)?;
     let enrich = |samples: &[crate::remediation::BurnCheckSampleSession]| {
-        crate::main_window::sample_payloads_from_store(state, store, &repositories, samples, now)
+        crate::main_window::sample_payloads_from_store(
+            state,
+            store,
+            &repositories,
+            samples,
+            now,
+            smart_checks_available,
+        )
     };
     let check_samples = enrich(&list.sample_sessions)?;
     let samples = list
@@ -2076,7 +2116,7 @@ pub async fn get_session_hygiene(
             .is_some();
         let findings = if checks_enabled
             && app
-                .state::<crate::jev_worker::WorkerHandle>()
+                .state::<crate::jev::worker::WorkerHandle>()
                 .is_available()
         {
             crate::insights_report::ignored_instruction_session_statuses(store.state_dir(), &keys)
@@ -2100,6 +2140,35 @@ pub async fn get_session_hygiene(
         };
         let mut payloads = session_hygiene_payloads(rows, source_generations);
         attach_ignored_instruction_statuses(&mut payloads, findings);
+        if checks_enabled {
+            for (detector, id) in [
+                (
+                    antiburn_local::insights::DetectorId::SkillOpportunities,
+                    "skillOpportunities",
+                ),
+                (
+                    antiburn_local::insights::DetectorId::OverExploring,
+                    "overExploring",
+                ),
+                (
+                    antiburn_local::insights::DetectorId::ScopeCreep,
+                    "scopeCreep",
+                ),
+            ] {
+                attach_smart_check_statuses(
+                    &mut payloads,
+                    crate::insights_report::smart_session_statuses(
+                        store.state_dir(),
+                        &keys,
+                        detector,
+                        app.state::<crate::jev::worker::WorkerHandle>()
+                            .is_available(),
+                    )
+                    .map_err(fail)?,
+                    id,
+                );
+            }
+        }
         Ok(payloads)
     })
     .await
@@ -2110,13 +2179,19 @@ pub(crate) fn attach_ignored_instruction_statuses(
     payloads: &mut [SessionHygienePayload],
     statuses: impl IntoIterator<Item = crate::dto::IgnoredInstructionSessionStatus>,
 ) {
+    attach_smart_check_statuses(payloads, statuses, "ignoredInstructions");
+}
+
+pub(crate) fn attach_smart_check_statuses(
+    payloads: &mut [SessionHygienePayload],
+    statuses: impl IntoIterator<Item = crate::dto::IgnoredInstructionSessionStatus>,
+    id: &'static str,
+) {
     for (payload, outcome) in payloads.iter_mut().zip(statuses) {
-        payload
-            .badges
-            .retain(|badge| badge.id != "ignoredInstructions");
+        payload.badges.retain(|badge| badge.id != id);
         if outcome.status != crate::dto::SessionHygieneStatus::NotAssessed {
             payload.badges.push(crate::dto::SessionHygieneBadgePayload {
-                id: "ignoredInstructions",
+                id,
                 status: outcome.status,
                 not_assessed_reason: None,
                 check_reason: outcome.reason,
@@ -2287,7 +2362,7 @@ pub async fn set_repository_enabled(
             reason: crate::session_lifecycle::IndexChangeReason::Invalidated,
         },
     );
-    crate::jev_settings::changed(&app);
+    crate::jev::settings::changed(&app);
     if enabled {
         app.state::<ScanController>()
             .request(ScanTrigger::RepositoryToggle);
@@ -3252,6 +3327,8 @@ mod project_folder_tests {
             });
         }
         let target = BurnCheckTarget {
+            over_exploring_reason: None,
+            decision_proof: None,
             finding_id: "finding".into(),
             action_id: "action".into(),
             finding: FindingDisplay {
@@ -3310,6 +3387,7 @@ mod project_folder_tests {
                 truncated: false,
             },
             1000,
+            false,
         )
         .unwrap();
         assert_eq!(payload.samples.len(), 6);

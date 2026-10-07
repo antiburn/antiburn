@@ -42,6 +42,7 @@ export type ChecksCategoryLifecycle = "failing" | "awaitingVerification" | "pass
 
 /** The bounded subset of the local report needed by All checks. */
 export interface ChecksReportPayload {
+  smartChecksAvailable?: boolean
   /** False while this report snapshot still has queued or running evidence work. */
   evidenceSettled: boolean
   /** Sessions with evidence queued or processing for this report window. */
@@ -54,16 +55,20 @@ export interface ChecksReportPayload {
 }
 
 export type BurnCheckDetectorId =
+  | "scopeCreep"
+  | "overExploring"
   | "sessionsOverDepth"
   | "modelOverthinking"
   | "overpoweredSubagents"
   | "unusedMcpServers"
   | "unusedBuiltInTools"
   | "unusedSkills"
+  | "skillOpportunities"
   | "oldModelUsage"
   | "overuseOfFastMode"
   | "cacheChurn"
   | "ignoredInstructions"
+  | "skillOpportunities"
 
 export type BurnCheckEstimateMethod =
   | "repeatedContextAboveDepthCap"
@@ -122,6 +127,9 @@ export type BurnCheckSourceFormat =
   | "uncharacterized"
 
 export interface BurnCheckFindingPayload {
+  overExploringReason?:
+    "unrelated_files" | "excessive_file_breadth" | "excessive_within_file_reading"
+  decisionProof?: IgnoredInstructionDecisionProofPayload
   detector: BurnCheckDetectorId
   agent: string
   sourceFormat: BurnCheckSourceFormat
@@ -265,9 +273,38 @@ export interface BurnCheckEvidenceItemPayload {
   limitation: string | null
 }
 
+export interface IgnoredInstructionDecisionDecisionCoveragePayload {
+  source_complete: boolean
+  selected_history_complete: boolean
+  read_request_inventory_complete: boolean
+  results_excluded: boolean
+  user_authority_excluded: boolean
+  limitations: string[]
+}
+
+export interface IgnoredInstructionDecisionCitationPayload {
+  claim: "rule_requirement" | "anchored_action" | "prerequisite_contrast" | "observed_context"
+  source_ids: string[]
+}
+
+export interface IgnoredInstructionDecisionProofPayload {
+  contrast: string
+  prerequisite: "not_required" | "earlier_request_absent" | "selected_history_conflict"
+  citations: IgnoredInstructionDecisionCitationPayload[]
+  coverage: IgnoredInstructionDecisionDecisionCoveragePayload
+  contextRevision: string
+}
+
 export interface BurnCheckTargetEvidencePayload {
   status: "available" | "unavailable"
   items: BurnCheckEvidenceItemPayload[]
+  decisionProof?: IgnoredInstructionDecisionProofPayload
+  occurrences?: {
+    findingId: string
+    status: "available" | "unavailable"
+    items: BurnCheckEvidenceItemPayload[]
+    decisionProof?: IgnoredInstructionDecisionProofPayload
+  }[]
 }
 
 /** Bounded display metadata plus an opaque, expiring route to one local session. */
@@ -414,6 +451,9 @@ export interface AggregateWinsPayload {
 }
 
 export type SessionHygieneBadgeId =
+  | "scopeCreep"
+  | "skillOpportunities"
+  | "overExploring"
   | "sessionOverdepth"
   | "modelOverthinking"
   | "overpoweredSubagents"

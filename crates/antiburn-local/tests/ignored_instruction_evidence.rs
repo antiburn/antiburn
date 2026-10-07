@@ -22,6 +22,278 @@ struct Case {
     content_marker: &'static str,
 }
 
+#[test]
+fn accepted_native_report_keeps_selected_text_and_shell_output_but_excludes_thinking() {
+    let report = format!(
+        "{}I added disableLeaseGuard to the receiver.",
+        "Recorded UTF-8 context é🦀.\n".repeat(650)
+    );
+    let transcript = [
+        serde_json::json!({"type":"user","uuid":"family-user","message":{"role":"user","content":"Review the receiver change."}}),
+        serde_json::json!({"type":"assistant","uuid":"family-assistant","parentUuid":"family-user","message":{"role":"assistant","stop_reason":"end_turn","content":[
+            {"type":"thinking","thinking":"PRIVATE_SOURCE_THINKING"},
+            {"type":"text","text":report},
+            {"type":"tool_use","id":"family-check","name":"Bash","input":{"command":"receiver-check"}}
+        ]}}),
+        serde_json::json!({"type":"user","uuid":"family-result","parentUuid":"family-assistant","message":{"role":"user","content":[
+             {"type":"tool_result","tool_use_id":"family-check","content":"OBSERVED_NATIVE_CHECK_FAILURE","is_error":true}
+        ]}}),
+    ].into_iter().map(|record|record.to_string()).collect::<Vec<_>>().join("\n");
+    let session_id = "native-family-characterization";
+    let source = SessionInput {
+        agent: "claude".to_owned(),
+        session_id: session_id.to_owned(),
+        source: RawSource::Jsonl(transcript),
+        source_format: SourceFormat::ClaudeJsonl,
+        fork_parent_session_id: None,
+    };
+    let store = MemoryTurnRowStore::new("claude", session_id);
+    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: "claude".to_owned(),
+        session_id: session_id.to_owned(),
+        kind: SourceKind::from(&source.source),
+        capabilities: capabilities(source.source_format),
+    });
+    let mut sink = CompositeSink::with_turn_rows(
+        SessionMetricsAccumulator::new("claude", session_id),
+        evidence,
+        TurnRowSink::new(
+            Arc::clone(&store) as Arc<dyn TurnRowStore>,
+            session_id.to_owned(),
+            None,
+        ),
+    );
+    let outcome = reader_for("claude").visit(&source, &mut sink).unwrap();
+    sink.observe_source_outcome(outcome);
+    let content = store.with_connection(|connection| {
+        query_turn_content(
+            connection,
+            &TurnSessionKey {
+                environment_key: "native",
+                agent: "claude",
+                session_id,
+            },
+            &antiburn_local::analysis::FenceScope::single(1),
+        )
+        .unwrap()
+    });
+    let content =
+        prepare_session_content(session_id, SourceFormat::ClaudeJsonl, content, Vec::new());
+    let selected = select_session_content(&content, IgnoredInstructionsCheck.input_selection());
+    let text = selected
+        .actions
+        .iter()
+        .find(|action| action.kind == "assistant")
+        .unwrap();
+    assert!(text.reference.stable);
+    assert_eq!(text.authority, "assistant");
+    assert_eq!(text.text, report);
+    assert!(!text.truncated);
+    let selected_json = serde_json::to_string(&selected).unwrap();
+    assert!(!selected_json.contains("PRIVATE_SOURCE_THINKING"));
+    assert!(selected_json.contains("OBSERVED_NATIVE_CHECK_FAILURE"));
+    let output = selected
+        .actions
+        .iter()
+        .find(|action| action.kind == "tool_result")
+        .unwrap();
+    assert_eq!(output.authority, "tool");
+    assert!(output.metadata.human_text.is_none());
+    assert!(
+        selected.actions.iter().any(
+            |action| action.authority == "user" && action.text == "Review the receiver change."
+        )
+    );
+    assert!(!selected_json.contains("user approval"));
+    for provenance in [
+        InstructionProvenance::RecordedInjection,
+        InstructionProvenance::CurrentFileComparison,
+    ] {
+        let mut content = selected.clone();
+        content.instructions = vec![
+            snapshot_from_text(
+                "AGENTS.md",
+                "Do not add `disableLeaseGuard`.".to_owned(),
+                provenance,
+                InstructionScope::Global,
+            )
+            .unwrap(),
+        ];
+        let input = AssessmentInput {
+            content,
+            prior_history_complete: true,
+            activity_after_ms: None,
+            boundary_positions: BTreeMap::new(),
+            source_generation: 1,
+            source_fingerprint: None,
+            incarnation: 1,
+            comparison_after: None,
+        };
+        let context = build_jev_context(&input).unwrap();
+        let plan = IgnoredInstructionsCheck.prepare(&context).unwrap().prepared;
+        let fragment = plan
+            .comparisons
+            .iter()
+            .find(|comparison| comparison.action.text.contains("I added disableLeaseGuard"))
+            .unwrap();
+        assert_eq!(fragment.reference.provenance, provenance);
+        assert_eq!(fragment.reference.action_id, text.reference.id);
+        assert!(fragment.action.truncated);
+        assert!(
+            !fragment
+                .source_binding
+                .as_ref()
+                .unwrap()
+                .excerpt
+                .as_ref()
+                .unwrap()
+                .source_truncated
+        );
+        assert_eq!(
+            report.get(fragment.action_text_start..fragment.action_text_end),
+            Some(fragment.action.text.as_str())
+        );
+    }
+}
+
+#[test]
+fn native_same_turn_read_order_retains_exact_long_action_ranges() {
+    use antiburn_local::analysis::jev::capabilities::ModelCapabilities;
+    use antiburn_local::checks::ignored_instructions::{
+        SamplingLedger, build_jev_context_with_capabilities,
+    };
+    let command = format!("{}transfer-request --live", "# recorded note\n".repeat(900));
+    let transcript = [
+        serde_json::json!({"type":"user","uuid":"native-user","message":{"role":"user","content":"Inspect the transfer adapter."}}),
+        serde_json::json!({"type":"assistant","uuid":"native-assistant","parentUuid":"native-user","message":{"role":"assistant","content":[
+            {"type":"thinking","thinking":"EXCLUDED_PRIVATE_NATIVE_CONTEXT"},
+            {"type":"tool_use","id":"native-read","name":"Read","input":{"file_path":"docs/transfer-order.md"}},
+            {"type":"tool_use","id":"native-command","name":"Bash","input":{"command":command}}
+        ]}}),
+    ].into_iter().map(|record| record.to_string()).collect::<Vec<_>>().join("\n");
+    let session_id = "native-prerequisite-characterization";
+    let source = SessionInput {
+        agent: "claude".to_owned(),
+        session_id: session_id.to_owned(),
+        source: RawSource::Jsonl(transcript),
+        source_format: SourceFormat::ClaudeJsonl,
+        fork_parent_session_id: None,
+    };
+    let store = MemoryTurnRowStore::new("claude", session_id);
+    let metrics = SessionMetricsAccumulator::new("claude", session_id);
+    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: "claude".to_owned(),
+        session_id: session_id.to_owned(),
+        kind: SourceKind::from(&source.source),
+        capabilities: capabilities(source.source_format),
+    });
+    let rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        session_id.to_owned(),
+        None,
+    );
+    let mut sink = CompositeSink::with_turn_rows(metrics, evidence, rows);
+    let outcome = reader_for("claude").visit(&source, &mut sink).unwrap();
+    sink.observe_source_outcome(outcome);
+    let content = store.with_connection(|connection| {
+        query_turn_content(
+            connection,
+            &TurnSessionKey {
+                environment_key: "native",
+                agent: "claude",
+                session_id,
+            },
+            &antiburn_local::analysis::FenceScope::single(1),
+        )
+        .unwrap()
+    });
+    let content = prepare_session_content(
+        session_id,
+        SourceFormat::ClaudeJsonl,
+        content,
+        vec![
+            snapshot_from_text(
+                "AGENTS.md",
+                "Request a read of `docs/transfer-order.md` before the transfer request."
+                    .to_owned(),
+                InstructionProvenance::RecordedInjection,
+                InstructionScope::Project,
+            )
+            .unwrap(),
+        ],
+    );
+    let input = AssessmentInput {
+        content,
+        prior_history_complete: true,
+        activity_after_ms: None,
+        boundary_positions: BTreeMap::new(),
+        source_generation: 1,
+        source_fingerprint: None,
+        incarnation: 1,
+        comparison_after: None,
+    };
+    let context = build_jev_context_with_capabilities(
+        &input,
+        &SamplingLedger::default(),
+        &ModelCapabilities::jev_default(),
+    )
+    .unwrap();
+    assert!(
+        !context
+            .check_context
+            .to_string()
+            .contains("EXCLUDED_PRIVATE_NATIVE_CONTEXT")
+    );
+    let plan = IgnoredInstructionsCheck.prepare(&context).unwrap().prepared;
+    let selected =
+        select_session_content(&input.content, IgnoredInstructionsCheck.input_selection());
+    let action = selected
+        .actions
+        .iter()
+        .find(|action| action.tool_call_id.as_deref() == Some("native-command"))
+        .unwrap();
+    let earlier = selected
+        .actions
+        .iter()
+        .find(|action| action.tool_call_id.as_deref() == Some("native-read"))
+        .unwrap();
+    assert_eq!(action.reference.turn_index, earlier.reference.turn_index);
+    assert!(earlier.reference.part_index < action.reference.part_index);
+    let comparisons = plan
+        .comparisons
+        .iter()
+        .filter(|comparison| comparison.reference.action_id == action.reference.id)
+        .collect::<Vec<_>>();
+    assert!(
+        comparisons
+            .iter()
+            .any(|comparison| comparison.action_text_start > 0)
+    );
+    for comparison in comparisons {
+        let excerpt = comparison
+            .source_binding
+            .as_ref()
+            .unwrap()
+            .excerpt
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            action.text.get(excerpt.start_byte..excerpt.end_byte),
+            Some(comparison.action.text.as_str())
+        );
+        assert!(!excerpt.source_truncated);
+        let order = plan.read_request_orders[&comparison.id]
+            .iter()
+            .find(|order| order.required_path == "docs/transfer-order.md")
+            .unwrap();
+        assert!(order.paths_known);
+        assert_eq!(
+            order.earlier_request_id.as_deref(),
+            Some(earlier.reference.id.as_str())
+        );
+    }
+}
+
 fn cases() -> Vec<Case> {
     vec![
         Case {
@@ -275,12 +547,30 @@ async fn supported_native_routes_produce_findings_through_the_production_runner(
         let request_sizes = request_sizes.lock().unwrap();
         assert!(outcome.complete, "{} assessment completes", case.agent);
         let result = &outcome.result;
-        assert!(
-            !result.findings.is_empty(),
-            "{} produces findings: {:?}",
-            case.agent,
-            result
-        );
+        if check_plan
+            .prepared
+            .comparisons
+            .iter()
+            .any(|comparison| comparison.reference.action_stable)
+        {
+            assert!(
+                !result.findings.is_empty(),
+                "{} produces findings from stable anchors: {:?}",
+                case.agent,
+                result
+            );
+        } else {
+            assert!(
+                result.findings.is_empty(),
+                "{} has no stable anchor",
+                case.agent
+            );
+            assert!(
+                !result.unassessed_comparisons.is_empty(),
+                "{} cannot prove a clean result",
+                case.agent
+            );
+        }
         assert!(
             request_sizes
                 .iter()
@@ -289,17 +579,23 @@ async fn supported_native_routes_produce_findings_through_the_production_runner(
         assert_eq!(result.request_count as usize, request_sizes.len());
         assert_eq!(result.input_tokens, (request_sizes.len() * 20) as u64);
         assert!(result.findings.iter().all(|finding| {
-            prepared
-                .actions
-                .iter()
-                .any(|action| action.reference.id == finding.reference.action_id)
+            finding.decision_record().is_some()
+                && prepared
+                    .actions
+                    .iter()
+                    .any(|action| action.reference.id == finding.reference.action_id)
         }));
         let selected = select_session_content(&prepared, check.input_selection());
         assert!(
             selected
                 .actions
                 .iter()
-                .all(|event| event.kind != "tool_result")
+                .filter(|event| event.kind == "tool_result")
+                .all(|event| event.authority == "tool"
+                    && event.metadata.human_text.is_none()
+                    && event.tool_name.as_ref().is_some_and(
+                        |name| ["bash", "shell"].contains(&name.to_ascii_lowercase().as_str())
+                    ))
         );
         if case.agent == "codex" {
             assert!(
@@ -396,7 +692,7 @@ async fn held_out_production_cases_separate_a_conflict_from_compliant_content() 
                 timestamp_ms: Some(1),
                 turn_role: "assistant".to_owned(),
                 turn_scope: "main".to_owned(),
-                authority: "agent".to_owned(),
+                authority: "assistant".to_owned(),
                 kind: "assistant_text".to_owned(),
                 text: action_text.to_owned(),
                 tool_name: None,
@@ -515,7 +811,7 @@ fn synthetic_response(request: &JevRequest, conflict: bool) -> JevResponse {
             } else if criteria.contains_key("any") {
                 "any"
             } else if criteria.contains_key("prerequisite") {
-                "prerequisite"
+                "action"
             } else if criteria.contains_key("reports_addition") {
                 if conflict {
                     "reports_addition"

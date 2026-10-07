@@ -1,6 +1,9 @@
 //! Local Burn Check implementations and shared check contracts.
 
 pub mod ignored_instructions;
+pub mod over_exploring;
+pub mod scope_creep;
+pub mod skill_opportunities;
 
 mod id;
 pub use id::DetectorId;
@@ -15,6 +18,7 @@ mod old_model_usage;
 mod overpowered_subagents;
 mod policy;
 pub mod requirements;
+pub mod sampling;
 mod session_overdepth;
 mod unused_built_in_tools;
 mod unused_mcp_servers;

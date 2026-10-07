@@ -463,6 +463,13 @@ fn database_has_usage_tables(path: &Path) -> bool {
     let Ok(connection) = open_database(path) else {
         return false;
     };
+    if connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .ok()
+        != Some(1)
+    {
+        return false;
+    }
     [
         "SELECT idx, metadata FROM steps LIMIT 0",
         "SELECT idx, data FROM gen_metadata LIMIT 0",
@@ -632,6 +639,12 @@ pub(crate) fn db_fingerprint_connection(connection: &Connection) -> Option<(u64,
 }
 
 pub(crate) fn sibling_brain_transcript(db_path: &Path, session_id: &str) -> Option<PathBuf> {
+    if !is_safe_session_id(session_id)
+        || db_path.file_stem()?.to_str()? != session_id
+        || db_path.parent()?.file_name()?.to_str()? != "conversations"
+    {
+        return None;
+    }
     let subroot = db_path.parent()?.parent()?;
     Some(
         subroot

@@ -44,6 +44,14 @@ fn causes() -> Vec<FindingCause> {
             cost_usd: None,
             pricing_revision: None,
         },
+        FindingCause::SkillOpportunity {
+            evidence: None,
+            skill_name: "review".to_owned(),
+            skill_description: "Review code changes".to_owned(),
+            cited_work_context: "The work included a code review".to_owned(),
+            work_provenance: "Selected session window".to_owned(),
+            selected_window_limit: "Only this selected work window was assessed".to_owned(),
+        },
         FindingCause::OldModelUsage {
             provider: Some("provider-a".to_owned()),
             api: Some("api-a".to_owned()),
@@ -65,6 +73,7 @@ fn causes() -> Vec<FindingCause> {
         },
         FindingCause::IgnoredInstructionConflict(Box::new(
             crate::remediation::IgnoredInstructionConflictEvidence {
+                decision: None,
                 assessment_revision: "revision".to_owned(),
                 assessment_finding_id: "finding".to_owned(),
                 instruction_id: "instruction".to_owned(),
@@ -90,11 +99,48 @@ fn causes() -> Vec<FindingCause> {
                 limitations: Box::new(Vec::new()),
             },
         )),
+        FindingCause::ScopeCreep(Box::new(crate::checks::scope_creep::ScopeCreepFinding {
+            id: "scope-finding".into(),
+            group_id: "work-group".into(),
+            work: Vec::new(),
+            task_scope: Vec::new(),
+            scope_digest: "scope".into(),
+            model: "model".into(),
+            model_revision: None,
+            revisions: crate::checks::scope_creep::REVISIONS,
+            source_generation: 1,
+            publication_fence: 1,
+        })),
+        FindingCause::OverExploring(Box::new(crate::checks::over_exploring::Decision {
+            episode_id: crate::checks::sampling::StableId::new("episode", &[b"synthetic"]),
+            work_item_id: "work".into(),
+            reason: crate::checks::over_exploring::Reason::ExcessiveFileBreadth,
+            reads: vec![crate::checks::over_exploring::ReadBinding {
+                request_id: "read".into(),
+                result_id: "result".into(),
+                output_digest: "digest".into(),
+            }],
+            task_evidence: Vec::new(),
+            semantic_revision: "revision".into(),
+            model: "model".into(),
+            revisions: crate::analysis::jev::JevCheck::revisions(
+                &crate::checks::over_exploring::OverExploringCheck,
+            ),
+            judgments: crate::checks::over_exploring::EvidenceJudgments {
+                relevance: crate::checks::over_exploring::SemanticOutcome::Supported,
+                useful_information: crate::checks::over_exploring::SemanticOutcome::Supported,
+                justified_breadth: crate::checks::over_exploring::SemanticOutcome::Supported,
+                justified_extent: crate::checks::over_exploring::SemanticOutcome::Supported,
+                later_use: crate::checks::over_exploring::SemanticOutcome::Supported,
+                substantial: crate::checks::over_exploring::SemanticOutcome::Supported,
+                sufficiency: crate::checks::over_exploring::SemanticOutcome::Supported,
+            },
+        })),
     ]
 }
 
 #[test]
-fn all_ten_templates_are_bounded_and_deterministic() {
+fn all_templates_are_bounded_and_deterministic() {
     let expected_roles = [
         ["Agent:", "Request model:"].as_slice(),
         [
@@ -111,6 +157,15 @@ fn all_ten_templates_are_bounded_and_deterministic() {
         ["Agent:", "Resource:"].as_slice(),
         [
             "Agent:",
+            "Resource:",
+            "Skill description:",
+            "Cited work:",
+            "Work source:",
+            "Selected-window limit:",
+        ]
+        .as_slice(),
+        [
+            "Agent:",
             "Provider:",
             "API:",
             "Current model:",
@@ -120,6 +175,8 @@ fn all_ten_templates_are_bounded_and_deterministic() {
         ["Agent:", "Provider:", "API:", "Worker model:"].as_slice(),
         ["Agent:", "Current model:"].as_slice(),
         ["Agent:", "Instruction location:"].as_slice(),
+        ["Agent:", "Cited work:", "Selected-window limit:"].as_slice(),
+        ["Agent:", "Cited work:", "Selected-window limit:"].as_slice(),
     ];
     for (cause, roles) in causes().into_iter().zip(expected_roles) {
         let first = build_prompt(AgentKind::Claude, SourceFormat::ClaudeJsonl, &cause).unwrap();
@@ -244,7 +301,13 @@ fn finding_prompts_have_clear_human_readable_sections() {
         ] {
             assert!(prompt.as_str().contains(heading), "missing {heading}");
         }
-        if cause.detector() != DetectorId::IgnoredInstructions {
+        if !matches!(
+            cause,
+            FindingCause::IgnoredInstructionConflict(_)
+                | FindingCause::SkillOpportunity { .. }
+                | FindingCause::OverExploring(_)
+                | FindingCause::ScopeCreep(_)
+        ) {
             assert!(
                 prompt
                     .as_str()
@@ -252,11 +315,21 @@ fn finding_prompts_have_clear_human_readable_sections() {
             );
         }
         assert!(!prompt.as_str().contains("&#x20;"));
-        assert!(
-            prompt
-                .as_str()
-                .ends_with("If the evidence cannot verify the change, say why.")
-        );
+        if matches!(
+            cause,
+            FindingCause::SkillOpportunity { .. }
+                | FindingCause::OverExploring(_)
+                | FindingCause::ScopeCreep(_)
+        ) {
+            assert!(!prompt.as_str().contains("Show the proposed edit"));
+            assert!(!prompt.as_str().contains("If the evidence cannot verify"));
+        } else {
+            assert!(
+                prompt
+                    .as_str()
+                    .ends_with("If the evidence cannot verify the change, say why.")
+            );
+        }
     }
 }
 
@@ -375,6 +448,7 @@ fn prompt_constructor_rejects_size_overflow() {
 fn ignored_instruction_prompt_uses_instruction_specific_guidance() {
     let cause = FindingCause::IgnoredInstructionConflict(Box::new(
         crate::remediation::IgnoredInstructionConflictEvidence {
+            decision: None,
             assessment_revision: "revision".into(),
             assessment_finding_id: "finding".into(),
             instruction_id: "instruction".into(),
@@ -454,13 +528,15 @@ fn prompt_support_matrix_matches_agent_capabilities() {
             "opencode",
             &[SourceFormat::OpenCodeJsonl, SourceFormat::OpenCodeSqliteV2][..],
             [
-                true, false, true, true, true, true, true, false, true, false,
+                true, false, true, true, true, true, true, false, true, false, false, false, false,
             ],
         ),
         (
             "pi",
             &[SourceFormat::PiV3Jsonl][..],
-            [true, true, true, true, true, true, true, false, true, false],
+            [
+                true, true, true, true, true, true, true, false, true, false, false, false, false,
+            ],
         ),
         (
             "antigravity",
@@ -471,7 +547,8 @@ fn prompt_support_matrix_matches_agent_capabilities() {
                 SourceFormat::AntigravitySqlite,
             ][..],
             [
-                true, false, false, false, false, false, true, false, false, false,
+                true, false, false, false, false, false, true, false, false, false, false, false,
+                false,
             ],
         ),
         (
@@ -484,7 +561,8 @@ fn prompt_support_matrix_matches_agent_capabilities() {
                 SourceFormat::CursorIdeComposer,
             ][..],
             [
-                false, false, false, false, false, false, true, false, false, false,
+                false, false, false, false, false, false, true, false, false, false, false, false,
+                false,
             ],
         ),
     ];
@@ -503,12 +581,33 @@ fn prompt_support_matrix_matches_agent_capabilities() {
                             | ("cursor", SourceFormat::CursorCliAgentJsonl)
                             | ("antigravity", SourceFormat::AntigravityBrainJsonl)
                     )
+                } else if matches!(
+                    detector,
+                    DetectorId::SkillOpportunities
+                        | DetectorId::OverExploring
+                        | DetectorId::ScopeCreep
+                ) {
+                    matches!(
+                        (agent, source),
+                        ("claude", SourceFormat::ClaudeJsonl)
+                            | ("codex", SourceFormat::CodexRolloutJsonl)
+                            | ("opencode", SourceFormat::OpenCodeSqliteV2)
+                            | ("pi", SourceFormat::PiV3Jsonl)
+                    )
                 } else {
                     expected[index]
                 };
-                assert_eq!(support.is_ok(), expected_supported);
+                assert_eq!(
+                    support.is_ok(),
+                    expected_supported,
+                    "{agent} {source:?} {detector:?}"
+                );
                 if let Ok(agent) = support {
-                    let prompt = build_prompt(agent, *source, &causes[index]);
+                    let cause = causes
+                        .iter()
+                        .find(|cause| cause.detector() == detector)
+                        .expect("detector prompt fixture");
+                    let prompt = build_prompt(agent, *source, cause);
                     if detector == DetectorId::UnusedBuiltInTools
                         && !built_in_tool_remediation_supported(agent, "WebSearch")
                     {
@@ -551,6 +650,31 @@ fn recognized_second_tier_agents_reach_capability_checks() {
 }
 
 #[test]
+fn smart_check_prompts_reject_mismatched_agents_and_legacy_opencode() {
+    for detector in [
+        DetectorId::SkillOpportunities,
+        DetectorId::OverExploring,
+        DetectorId::ScopeCreep,
+    ] {
+        for (agent, source) in [
+            ("codex", SourceFormat::ClaudeJsonl),
+            ("claude", SourceFormat::PiV3Jsonl),
+            ("pi", SourceFormat::CodexRolloutJsonl),
+            ("opencode", SourceFormat::ClaudeJsonl),
+        ] {
+            assert_eq!(
+                recommendation_support(agent, source, detector),
+                Err(RemediationUnavailableReason::UnsupportedSourceFormat)
+            );
+        }
+        assert_eq!(
+            recommendation_support("opencode", SourceFormat::OpenCodeJsonl, detector),
+            Err(RemediationUnavailableReason::CheckUnsupportedForAgent)
+        );
+    }
+}
+
+#[test]
 fn advisory_resource_prompt_does_not_claim_session_injection() {
     let finding = Finding::advisory_resource(
         AgentKind::Pi,
@@ -571,6 +695,32 @@ fn advisory_resource_prompt_does_not_claim_session_injection() {
             .contains("current or indexed resource inventory")
     );
     assert!(!prompt.as_str().contains("fully injected skill document"));
+}
+
+#[test]
+fn skill_opportunity_prompt_only_advises_future_instructions() {
+    let cause = FindingCause::SkillOpportunity {
+        evidence: None,
+        skill_name: "review".into(),
+        skill_description: "Review code changes".into(),
+        cited_work_context: "The selected task included code review".into(),
+        work_provenance: "Session transcript".into(),
+        selected_window_limit: "Only the selected session window was assessed".into(),
+    };
+
+    let prompt = build_prompt(AgentKind::OpenCode, SourceFormat::OpenCodeSqliteV2, &cause).unwrap();
+    for fact in [
+        "Resource: \"review\"",
+        "Skill description: \"Review code changes\"",
+        "Cited work: \"The selected task included code review\"",
+        "Work source: \"Session transcript\"",
+        "Selected-window limit: \"Only the selected session window was assessed\"",
+        "future instruction",
+    ] {
+        assert!(prompt.as_str().contains(fact), "missing {fact}");
+    }
+    assert!(!prompt.as_str().contains("Show the proposed edit"));
+    assert!(!prompt.as_str().contains("How to verify\nRequire"));
 }
 
 #[test]

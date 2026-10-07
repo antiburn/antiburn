@@ -182,6 +182,32 @@ fn expected_event(kind: &str, text: &str) -> (Option<NativeRequest>, Option<Sele
     }
 }
 
+fn expected_context(source: &str, kind: &str, text: &str) -> Option<SelectedField> {
+    match kind {
+        "user" => Some(("UserMessage", text.to_owned())),
+        "bash_output"
+            if matches!(
+                source,
+                "PiV3Jsonl" | "OpenCodeSqliteV2" | "CursorCliAgentJsonl"
+            ) =>
+        {
+            Some(("BashCommandOutput", text.to_owned()))
+        }
+        _ => None,
+    }
+}
+
+fn expected_request_state(source: &str) -> &'static str {
+    match source {
+        "PiV3Jsonl" => "Pending",
+        "OpenCodeSqliteV2" => "Running",
+        "ClaudeJsonl" | "CodexRolloutJsonl" | "CursorCliAgentJsonl" | "AntigravityBrainJsonl" => {
+            "Unknown"
+        }
+        _ => panic!("unreviewed source {source}"),
+    }
+}
+
 fn unavailable(instruction: &str, fixture: &Value) -> BTreeSet<String> {
     let mut missing = fixture["unavailable"]
         .as_array()
@@ -191,7 +217,7 @@ fn unavailable(instruction: &str, fixture: &Value) -> BTreeSet<String> {
         .collect::<BTreeSet<_>>();
     let lower = instruction.to_lowercase();
     if lower.contains("approval") || lower.contains("approved") {
-        missing.insert("excluded_authorization".into());
+        missing.insert("unvalidated_authorization".into());
     }
     if fixture["provenance"] == "current_file_comparison" {
         missing.insert("historical_instruction_activation".into());
@@ -231,7 +257,7 @@ fn outcome<'a>(id: &str, authored: &'a str, missing: &BTreeSet<String>) -> (&'a 
         );
     }
     if id == "assistant-false-success-report" || id == "assistant-missing-error-report" {
-        return ("conditional", "The required contradictory or failed result is excluded. The assistant report alone cannot establish its truth.".into());
+        return ("conditional", "This per-event fixture has no accepted result/request binding. Raw selected output and the assistant report cannot establish the required execution outcome.".into());
     }
     if authored == "conditional" {
         return (
@@ -322,11 +348,15 @@ fn assert_native_binding(
     assert_eq!(action.reference.part_index, 0);
     assert_eq!(
         action.tool_call_id.as_deref(),
-        if request.is_some() && source != "AntigravityBrainJsonl" {
+        if (request.is_some() || (action.kind == "tool_result" && source != "CursorCliAgentJsonl"))
+            && source != "AntigravityBrainJsonl"
+        {
             Some("native-call")
         } else {
             None
-        }
+        },
+        "{source} {} call identity",
+        action.kind
     );
     if let (Some((name, arguments)), Some((field, text))) = (request, selected) {
         let fields = action.normalized_fields.as_ref().unwrap();
@@ -423,7 +453,10 @@ fn request_citation_assertions(
     let packing = pack_work_items(&items);
     assert!(packing.skipped_item_ids.is_empty());
     for batch in &packing.batches {
-        assert!(batch.serialized_bytes <= MAX_REQUEST_BYTES);
+        assert_eq!(
+            validate_jev_request(&batch.request).unwrap(),
+            batch.serialized_bytes
+        );
         assert!(batch.request.questions.len() <= MAX_QUESTIONS_PER_REQUEST);
         let serialized = serde_json::to_string(&batch.request).unwrap();
         for private in [
@@ -538,6 +571,7 @@ fn full_inventory_has_independent_native_projection_request_and_citation_records
                     expanded_text(fixture, event_index, kind, event[1].as_str().unwrap());
                 let authored = expanded.as_str();
                 let (request, selected) = expected_event(kind, authored);
+                let selected_context = expected_context(source_name, kind, authored);
                 let output_tool = match kind {
                     "bash_output" => Some("bash"),
                     "read_output" => Some("read"),
@@ -568,6 +602,7 @@ fn full_inventory_has_independent_native_projection_request_and_citation_records
                     );
                     let expected_texts = selected
                         .as_ref()
+                        .or(selected_context.as_ref())
                         .map(|(_, text)| text.as_str())
                         .into_iter()
                         .collect::<Vec<_>>();
@@ -591,8 +626,16 @@ fn full_inventory_has_independent_native_projection_request_and_citation_records
                             request.as_ref(),
                             selected.as_ref(),
                         );
-                        assert_eq!(action.authority, "assistant", "{id}");
-                        if let Some((field, _)) = &selected {
+                        assert_eq!(
+                            action.authority,
+                            match kind {
+                                "user" => "user",
+                                "bash_output" => "tool",
+                                _ => "assistant",
+                            },
+                            "{id}"
+                        );
+                        if let Some((field, _)) = selected.as_ref().or(selected_context.as_ref()) {
                             let availability = projected
                                 .field_availability
                                 .iter()
@@ -600,15 +643,18 @@ fn full_inventory_has_independent_native_projection_request_and_citation_records
                                 .unwrap();
                             assert_eq!(availability.observed_parts, 1, "{id} {field}");
                         }
-                        native_binding = json!({"state":"observed","native_record_id":action.reference.native_record_id,"part_index":action.reference.part_index,"tool_call_id":action.tool_call_id,"decoded_field_bindings":action.metadata.bindings,"operation_state":if source_name == "OpenCodeSqliteV2" && request.is_some() { "Running" } else { "Unknown" }});
+                        let operation_state = if request.is_some() {
+                            expected_request_state(source_name)
+                        } else if kind == "bash_output" && source_name == "OpenCodeSqliteV2" {
+                            "Completed"
+                        } else {
+                            "Unknown"
+                        };
+                        native_binding = json!({"state":"observed","native_record_id":action.reference.native_record_id,"part_index":action.reference.part_index,"tool_call_id":action.tool_call_id,"decoded_field_bindings":action.metadata.bindings,"operation_state":operation_state});
                         if request.is_some() {
                             assert_eq!(
                                 format!("{:?}", action.metadata.state),
-                                if source_name == "OpenCodeSqliteV2" {
-                                    "Running"
-                                } else {
-                                    "Unknown"
-                                }
+                                expected_request_state(source_name)
                             );
                         }
                         let mut bound = action.clone();
@@ -626,6 +672,14 @@ fn full_inventory_has_independent_native_projection_request_and_citation_records
                     }
                 }
                 projections.push(json!({"event_id":format!("e{event_index}"),"authored_kind":kind,"source_pointer":format!("{source}#/cases/{case_index}/events/{event_index}"),"normalized_request":request.as_ref().map(|(name, input)| json!({"tool":name,"input":input})),"expected_selected":selected.as_ref().map(|(field, text)| json!({"field":field,"text":text})),"availability":if selected.is_some() { "observed" } else if kind.starts_with("malformed") { "malformed" } else if matches!(kind,"system"|"unknown_authority"|"missing_tool") { "unsupported_authority_or_identity" } else { "excluded" },"native_binding":native_binding}));
+                let projection = projections.last_mut().unwrap();
+                projection["expected_context"] = selected_context
+                    .as_ref()
+                    .map(|(field, text)| json!({"field": field, "text": text}))
+                    .unwrap_or(Value::Null);
+                if selected_context.is_some() {
+                    projection["availability"] = json!("observed_context");
+                }
             }
             for projection in &mut projections {
                 let selected = &projection["expected_selected"];

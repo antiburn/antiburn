@@ -1,6 +1,91 @@
 use super::*;
 
 #[test]
+fn parser_50_requeues_legacy_path_only_reads_and_rejects_their_resume_state() {
+    use antiburn_local::analysis::{ContentKind, ContentPart, StoredResume};
+
+    let store = store();
+    let record = seed_current_session_evidence(&store, "read-range-upgrade");
+    let key = antiburn_local::analysis::TurnSessionKey {
+        environment_key: &record.key.environment_key,
+        agent: &record.key.agent,
+        session_id: &record.key.session_id,
+    };
+    let mut row = turn_row(0);
+    row.content = vec![
+        ContentPart::new(
+            ContentKind::ToolInput,
+            r#"{"file_path":"src/a.rs","offset":7,"limit":3}"#,
+        )
+        .with_tool_identity(Some("Read".into()), Some("read-call".into())),
+    ];
+    insert_turn_rows(&store.lock(), &key, 4, &[row]).unwrap();
+    let current_resume = crate::analysis::resume_revisions();
+    let stale_resume = StoredResume {
+        snapshot: vec![],
+        snapshot_revision: current_resume.snapshot_revision,
+        parser_revision: 49,
+        analyzer_revision: current_resume.analyzer_revision,
+        metrics_schema_revision: current_resume.metrics_schema_revision,
+        evidence_schema_revision: current_resume.evidence_schema_revision,
+        coverage_schema_revision: current_resume.coverage_schema_revision,
+        source_fingerprint: "sv1:current".into(),
+    };
+    {
+        let conn = store.lock();
+        conn.execute("UPDATE turn_content SET normalized_fields_json = json_remove(normalized_fields_json, '$.values.read_file_request')", []).unwrap();
+        conn.execute(
+            "UPDATE session_evidence SET parser_revision = 49, published_fence = 4",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE session_analysis SET parser_revision = 49", [])
+            .unwrap();
+        antiburn_local::analysis::insert_source_resume(&conn, &key, "read-source", &stale_resume)
+            .unwrap();
+        let fields: String = conn
+            .query_row(
+                "SELECT normalized_fields_json FROM turn_content",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let fields: serde_json::Value = serde_json::from_str(&fields).unwrap();
+        assert_eq!(
+            fields["values"]["read_file_path"],
+            r#"{"paths":["src/a.rs"]}"#
+        );
+        assert!(fields["values"].get("read_file_request").is_none());
+    }
+    let before = store.session_source_state(&record.key).unwrap().unwrap();
+    let revisions = projection_revisions();
+    assert_eq!(revisions.parser_revision, 52);
+    assert_eq!(revisions.evidence_schema_revision, 22);
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], revisions)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+    assert_eq!(
+        store.session_source_state(&record.key).unwrap().unwrap(),
+        before
+    );
+    assert!(!current_resume.matches(&stale_resume));
+    assert_eq!(store.purge_stale_source_resume(current_resume).unwrap(), 1);
+    let claim = store
+        .claim_next_evidence(&["claude-code"], 1000, 60)
+        .unwrap()
+        .unwrap();
+    assert!(claim.claim_fence > 4);
+    assert_eq!(claim.source_generation, before.source_generation);
+}
+
+#[test]
 fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
     let store = store();
     let mut pi = session("pi-upgrade-enrollment", 1_000);

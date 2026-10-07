@@ -33,6 +33,10 @@ const sessionDetectorIds: Partial<Record<SessionHygieneCheck["id"], BurnCheckDet
   obsoleteModel: "oldModelUsage",
   fastModeOveruse: "overuseOfFastMode",
   excessCacheRehydration: "cacheChurn",
+  ignoredInstructions: "ignoredInstructions",
+  skillOpportunities: "skillOpportunities",
+  overExploring: "overExploring",
+  scopeCreep: "scopeCreep",
 }
 
 const detectorIds: readonly BurnCheckDetectorId[] = [
@@ -45,6 +49,10 @@ const detectorIds: readonly BurnCheckDetectorId[] = [
   "oldModelUsage",
   "overuseOfFastMode",
   "cacheChurn",
+  "ignoredInstructions",
+  "skillOpportunities",
+  "overExploring",
+  "scopeCreep",
 ]
 
 export function snoozeUntil(duration: SnoozeDuration, from = new Date()): number | null {

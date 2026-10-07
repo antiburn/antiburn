@@ -28,6 +28,63 @@ const PAYLOAD: SessionHygienePayload = {
 }
 
 describe("sessionHygieneChecks", () => {
+  it.each(["skillOpportunities", "overExploring", "scopeCreep"] as const)(
+    "uses only published %s badges",
+    (id) => {
+      expect(INITIAL_SESSION_HYGIENE.badges.some((badge) => badge.id === id)).toBe(false)
+      expect(sessionHygieneChecks(PAYLOAD).some((check) => check.id === id)).toBe(false)
+      for (const status of [
+        "finding",
+        "clean",
+        "checking",
+        "couldntCheck",
+        "notAssessed",
+      ] as const) {
+        const checks = sessionHygieneChecks({
+          ...PAYLOAD,
+          badges: [...PAYLOAD.badges, { id, status, notAssessedReason: null }],
+        })
+        expect(checks.find((check) => check.id === id)?.status).toBe(status)
+        expect(checks.find((check) => check.id === id)?.title).not.toContain("instructions")
+      }
+    },
+  )
+  it("explains oversized task context without reporting a pass or failure", () => {
+    const check = sessionHygieneChecks({
+      ...PAYLOAD,
+      badges: [
+        {
+          id: "scopeCreep",
+          status: "couldntCheck",
+          notAssessedReason: null,
+          checkReason: "scope_context_too_large",
+        },
+      ],
+    }).find((check) => check.id === "scopeCreep")!
+    expect(check.name).toBe("Scope Creep")
+    expect(check.title).toBe("Scope Creep · Task context exceeds the model limit.")
+    expect(check.status).toBe("couldntCheck")
+    expect(sessionHygieneDocumentation(check).guidance).toEqual([
+      "Keep future work within the agreed task. Ask for approval before adding work.",
+    ])
+  })
+
+  it.each([
+    ["unrelated_files", "The assessed reads included files unrelated to the work."],
+    ["excessive_file_breadth", "The assessed work read more files than it needed."],
+    ["excessive_within_file_reading", "The assessed work read more of a file than it needed."],
+    ["unknown_reason", null],
+  ] as const)("bounds Over-exploring detail for %s", (checkReason, detail) => {
+    const checks = sessionHygieneChecks({
+      ...PAYLOAD,
+      badges: [
+        { id: "overExploring", status: "finding", notAssessedReason: null, checkReason },
+      ],
+    })
+    const check = checks.find((check) => check.id === "overExploring")!
+    expect(sessionHygieneDocumentation(check).findingDetails).toEqual(detail ? [detail] : [])
+  })
+
   it("includes a published ignored-instruction failure in session and popover counts only when present", () => {
     const ordinary = sessionHygieneChecks(PAYLOAD)
     expect(ordinary.some((check) => check.id === "ignoredInstructions")).toBe(false)

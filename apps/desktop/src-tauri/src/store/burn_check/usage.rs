@@ -127,43 +127,43 @@ impl Store {
         }
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
+        let current_evidence = super::super::revision_sql::current_evidence("e", "s");
         let row: Option<(i64, String, Option<i64>, bool)> = transaction
             .query_row(
-                "SELECT request_count, status, lease_expires_at_epoch,
+                &format!("SELECT request_count, status, lease_expires_at_epoch,
                         EXISTS (
                             SELECT 1 FROM session AS s
                             JOIN session_evidence AS e
                               ON e.environment_key = s.environment_key AND e.agent = s.agent
                              AND e.session_id = s.session_id
                              AND e.status = 'ready'
-                             AND e.analyzed_generation = s.source_generation
-                             AND e.processed_fingerprint IS s.source_fingerprint
-                             AND e.published_fence = ?6
-                             AND e.parser_revision = ?13
-                             AND e.evidence_schema_revision = ?14
-                            WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
-                              AND s.incarnation = ?8 AND s.source_generation = ?9
-                              AND s.source_fingerprint IS ?10 AND s.activity_cursor = ?11
-                              AND s.updated_at_epoch <= ?7 - ?12
+                              AND e.processed_fingerprint IS s.source_fingerprint
+                              AND e.published_fence = :published_fence
+                              AND {current_evidence}
+                             WHERE s.environment_key = :environment_key AND s.agent = :agent AND s.session_id = :session_id
+                               AND s.incarnation = :incarnation AND s.source_generation = :source_generation
+                               AND s.source_fingerprint IS :source_fingerprint AND s.activity_cursor = :activity_cursor
+                               AND s.updated_at_epoch <= :now_epoch - :idle_secs
                         )
                    FROM burn_check_assessment
-                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
-                    AND check_id = ?4 AND input_revision = ?5",
-                rusqlite::params![
-                    input.key.environment_key,
-                    input.key.agent,
-                    input.key.session_id,
-                    input.check_id,
-                    input.input_revision,
-                    input.published_fence,
-                    now_epoch,
-                    input.incarnation,
-                    input.source_generation,
-                    input.source_fingerprint,
-                    input.activity_cursor,
-                    idle_secs.max(0),
-                    antiburn_local::analysis::PARSER_REVISION,
-                    antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+                  WHERE environment_key = :environment_key AND agent = :agent AND session_id = :session_id
+                    AND check_id = :check_id AND input_revision = :input_revision"),
+                rusqlite::named_params![
+                    ":environment_key": input.key.environment_key,
+                    ":agent": input.key.agent,
+                    ":session_id": input.key.session_id,
+                    ":check_id": input.check_id,
+                    ":input_revision": input.input_revision,
+                    ":published_fence": input.published_fence,
+                    ":now_epoch": now_epoch,
+                    ":incarnation": input.incarnation,
+                    ":source_generation": input.source_generation,
+                    ":source_fingerprint": input.source_fingerprint,
+                    ":activity_cursor": input.activity_cursor,
+                    ":idle_secs": idle_secs.max(0),
+                    ":parser_revision": antiburn_local::analysis::PARSER_REVISION,
+                    ":analyzer_revision": antiburn_local::analysis::ANALYZER_REVISION,
+                    ":evidence_schema_revision": antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
                 ],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
@@ -250,13 +250,34 @@ impl Store {
         actual_input_tokens: Option<u64>,
         now_epoch: i64,
     ) -> anyhow::Result<()> {
+        self.settle_burn_check_usage_with_output(
+            reservation_id,
+            actual_input_tokens,
+            None,
+            now_epoch,
+        )
+    }
+
+    pub fn settle_burn_check_usage_with_output(
+        &self,
+        reservation_id: &str,
+        actual_input_tokens: Option<u64>,
+        actual_output_tokens: Option<u64>,
+        now_epoch: i64,
+    ) -> anyhow::Result<()> {
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
         let mut ledger = load_ledger(&transaction)?;
         let mut reservation = load_reservation(&transaction, reservation_id, now_epoch)?;
         if let Some(actual) = actual_input_tokens {
             if !reservation.settled {
-                record_confirmed_usage(&mut ledger.summary, &reservation, actual, 0, now_epoch);
+                record_confirmed_usage(
+                    &mut ledger.summary,
+                    &reservation,
+                    actual,
+                    actual_output_tokens.unwrap_or_default(),
+                    now_epoch,
+                );
                 reservation.settled = true;
             }
             if reservation.unknown_recorded {
@@ -328,7 +349,9 @@ impl Store {
         {
             ledger.summary.cache_hits = ledger.summary.cache_hits.saturating_add(1);
             let now = time::OffsetDateTime::now_utc().unix_timestamp();
-            let price_version = (model == antiburn_local::analysis::jev::PINNED_MODEL)
+            let local = provider == "ollama-systemone";
+            let price_version = (provider == "typesafe-systemone"
+                && model == antiburn_local::analysis::jev::PINNED_MODEL)
                 .then(|| PINNED_PRICE_VERSION.to_owned());
             let index = ledger
                 .summary
@@ -353,11 +376,18 @@ impl Store {
                         output_tokens: 0,
                         confirmed_calls: 0,
                         cache_hits: 0,
-                        estimated_cost_nanos: price_version.as_ref().map(|_| 0),
+                        estimated_cost_nanos: if local {
+                            Some(0)
+                        } else {
+                            price_version.as_ref().map(|_| 0)
+                        },
                         last_used_at_epoch: now,
                     });
                     ledger.summary.aggregates.len() - 1
                 });
+            if !local && price_version.is_none() {
+                ledger.summary.unpriced_usage = true;
+            }
             if let Some(aggregate) = ledger.summary.aggregates.get_mut(index) {
                 aggregate.cache_hits = aggregate.cache_hits.saturating_add(1);
                 aggregate.last_used_at_epoch = now;
@@ -487,11 +517,17 @@ pub(super) fn record_confirmed_usage(
     output_tokens: u64,
     at_epoch: i64,
 ) {
-    let price_version = (reservation.model == antiburn_local::analysis::jev::PINNED_MODEL)
+    let price_version = (reservation.provider == "typesafe-systemone"
+        && reservation.model == antiburn_local::analysis::jev::PINNED_MODEL)
         .then(|| PINNED_PRICE_VERSION.to_owned());
-    let cost = price_version
-        .as_ref()
-        .map(|_| input_tokens.saturating_mul(PINNED_INPUT_NANODOLLARS_PER_TOKEN));
+    let local = reservation.provider == "ollama-systemone";
+    let cost = if local {
+        Some(0)
+    } else {
+        price_version
+            .as_ref()
+            .map(|_| input_tokens.saturating_mul(PINNED_INPUT_NANODOLLARS_PER_TOKEN))
+    };
     let existing = summary.aggregates.iter().position(|aggregate| {
         aggregate.provider == reservation.provider
             && aggregate.check_id == reservation.check_id
@@ -693,5 +729,17 @@ mod tests {
         record_confirmed_usage(&mut summary, &reservation("jev-new-model"), 100, 0, 50);
         assert!(summary.unpriced_usage);
         assert_eq!(summary.aggregates[0].estimated_cost_nanos, None);
+    }
+
+    #[test]
+    fn local_ollama_usage_is_confirmed_without_an_api_charge() {
+        let mut usage = reservation("same-model");
+        usage.provider = "ollama-systemone".to_owned();
+        let mut summary = UsageLedgerSummary::default();
+        record_confirmed_usage(&mut summary, &usage, 100, 4, 50);
+        assert_eq!(summary.aggregates[0].input_tokens, 100);
+        assert_eq!(summary.aggregates[0].output_tokens, 4);
+        assert_eq!(summary.aggregates[0].estimated_cost_nanos, Some(0));
+        assert!(!summary.unpriced_usage);
     }
 }

@@ -15,19 +15,35 @@ Thank you for contributing.
 
 ## Privacy and safety
 
+Local Skill Opportunities reference inputs retain bounded current skill names,
+full descriptions, semantic frontmatter/metadata, optional filesystem birth
+time, and selected native skill-use identity/lifecycle/timing. Current inventory
+does not prove historical visibility or contents. This local adapter sends no
+requests by itself. The production worker sends selected skill fields and use
+limits to the configured provider; frontmatter and metadata can contain paths or other
+private values. Keep these inputs and native record/call IDs out of first-party
+analytics and ordinary report DTOs. Select individual reference snapshots rather
+than serialize the entire inventory.
+
 antiburn keeps its session index locally and needs no project-operated account.
-When the user enables Jev-powered Burn Checks with a TypeSafe API key, the
+When the user enables Smart Burn Checks with Jev, Ollama, Cloudflare, or Custom, the
 current Ignored Instructions check sends selected instruction text, assistant
 text excerpts, Bash command input, file-edit paths, read-file paths, search
-queries with scope filters, and other-tool inputs to TypeSafe. OpenCode
+queries with scope filters, and other-tool inputs to that provider. OpenCode
 `apply_patch` requests expose paths from valid `patchText` input. Bash input can
 include inline scripts, heredocs, and patches recorded inside the command.
-Dedicated edit-tool content is excluded. The check excludes user messages,
-read output, search output, command output, and all other tool-result text.
-Selected paths can leave the machine in TypeSafe requests. Keep this paid,
+Dedicated edit-tool content is excluded. Selected human text and exactly bound
+Bash results can supply bounded context; unknown-origin text and completion labels
+do not prove approval or passing tests. Read/search output, other results, typed
+question/plan fields, and thinking remain excluded from Ignored Instructions.
+Scope Creep, Over-exploring, and Skill Opportunities can send selected task/work,
+edit and tool-result content, supported question/plan records, and current skill
+reference fields. They reach pinned native Claude Code, Codex, OpenCode SQLite,
+and Pi roots; see [session coverage](docs/session-coverage.md).
+Selected paths can leave the machine in provider requests. Keep this
 optional request separate from first-party product analytics. Do not send its
 inputs, responses, keys, findings, or evidence to analytics. Store only bounded
-local TypeSafe usage aggregates, including the model and price version used for
+local Smart Check usage aggregates, including the model and price version used for
 estimates. Do not retain request histories or session identifiers for billing summaries.
 Session deletion keeps already-incurred totals. Clear Local Data removes them
 and the rolling usage reservations.
@@ -63,7 +79,7 @@ setup completes, Settings → Privacy provides the opt-out, payloads contain no
 work or credentials, identifiers
 rotate, and builds without a configured endpoint send nothing.
 
-For Ignored Instructions, measure saved enablement transitions, completed
+For all four Smart Burn Checks, measure saved enablement and provider transitions, completed
 execution outcomes, visible findings, evidence outcomes, and prompt actions
 using closed values only. Exclude historical assessment outcomes from normal
 adoption and automatic execution rates. Measure user-requested history runs separately.
@@ -105,6 +121,27 @@ pnpm --filter @antiburn/desktop type-check
 pnpm --filter @antiburn/desktop test
 pnpm --filter @antiburn/desktop build
 ```
+
+### Smart Check diagnostics
+
+Use the [Rust eval guide](apps/desktop/src-tauri/eval/README.md). Each check has
+one ignored `live` entry point and shared provider/suite/case/limit/capture support.
+Credentials come only from the authorized shell environment. Select exact cases
+with `ANTIBURN_EVAL_CASES` and bound calls with `ANTIBURN_EVAL_LIMIT`. Reports
+retain errors, abstentions, binding diagnostics, accuracy, usage, and latency.
+Scores are diagnostics, not strict thresholds or delivery gates. No recipe,
+frozen hash, previous passing report, or Python tool is required. Do not run every
+ignored test; imported production transport probes can incur charges.
+
+After coverage edits, run from the repository root:
+
+```sh
+cargo test --manifest-path crates/antiburn-local/Cargo.toml --test check_coverage_contract
+```
+
+When source claims or formats change, also run `source_contracts` and the
+affected native characterization targets with the same engine manifest. Select
+tests for the changed contract; live eval scores remain diagnostics, not gates.
 
 ### Desktop backend checks
 

@@ -151,6 +151,27 @@ export const SETTINGS_SEARCH_TARGETS = {
     label: "API key",
     aliases: ["TypeSafe API key", "Jev", "enable checks", "usage charges"],
   },
+  smartCheckProvider: {
+    pane: "checks",
+    label: "Use Ollama or another provider",
+    aliases: [
+      "smart check provider",
+      "Ollama",
+      "Cloudflare",
+      "custom endpoint",
+      "saved connections",
+    ],
+  },
+  smartCheckLimits: {
+    pane: "checks",
+    label: "Model limits",
+    aliases: ["capabilities", "context tokens", "refresh model", "manual limits"],
+  },
+  smartChecksEnabled: {
+    pane: "checks",
+    label: "Enable Smart Burn Checks",
+    aliases: ["pause smart checks", "Jev checks"],
+  },
   sourceAgents: {
     pane: "sources",
     label: "Coding agents",

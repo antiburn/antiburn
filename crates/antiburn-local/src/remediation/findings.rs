@@ -1,9 +1,11 @@
 use std::collections::BTreeSet;
 
+use crate::analysis::jev_evidence::ContentEventReference;
 use crate::analysis::{SessionEvidence, SourceFormat};
 use crate::checks::ignored_instructions::{
     AssessmentFinding, FindingCertainty, InstructionProvenance, InstructionScope,
 };
+use crate::checks::skill_opportunities::{SkillAbsenceEvidence, SkillOpportunityFinding};
 use crate::insights::{
     DetectorId, ReportCatalogs, SessionTokenBurnEvidence, clean_facts_complete, eligible,
 };
@@ -76,6 +78,14 @@ pub enum FindingCause {
         /// The pricing table generation that priced `cost_usd`.
         pricing_revision: Option<String>,
     },
+    SkillOpportunity {
+        evidence: Option<Box<SkillOpportunityFinding>>,
+        skill_name: String,
+        skill_description: String,
+        cited_work_context: String,
+        work_provenance: String,
+        selected_window_limit: String,
+    },
     OldModelUsage {
         provider: Option<String>,
         api: Option<String>,
@@ -96,11 +106,14 @@ pub enum FindingCause {
         threshold_basis_points: u32,
     },
     IgnoredInstructionConflict(Box<IgnoredInstructionConflictEvidence>),
+    OverExploring(Box<crate::checks::over_exploring::Decision>),
+    ScopeCreep(Box<crate::checks::scope_creep::ScopeCreepFinding>),
 }
 
 /// Evidence for one ignored-instruction conflict.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IgnoredInstructionConflictEvidence {
+    pub decision: Option<crate::checks::ignored_instructions::DecisionRecord>,
     pub assessment_revision: String,
     pub assessment_finding_id: String,
     pub instruction_id: String,
@@ -125,6 +138,27 @@ pub struct IgnoredInstructionConflictEvidence {
     pub limitations: Box<Vec<String>>,
 }
 
+impl IgnoredInstructionConflictEvidence {
+    pub fn decision_record(&self) -> Option<&crate::checks::ignored_instructions::DecisionRecord> {
+        self.decision.as_ref().filter(|decision| {
+            let reference = &decision.rule_action;
+            decision.has_citation_proof()
+                && reference.instruction_id == self.instruction_id
+                && reference.instruction_digest == self.instruction_digest
+                && reference.rule_id == self.rule_id
+                && reference.rule_heading == self.rule_heading
+                && reference.start_line == self.start_line
+                && reference.end_line == self.end_line
+                && reference.source == self.source
+                && reference.provenance == self.provenance
+                && reference.scope == self.instruction_scope
+                && reference.action_id == self.action_id
+                && reference.action_digest == self.action_digest
+                && reference.action_timestamp_ms == self.action_timestamp_ms
+        })
+    }
+}
+
 impl FindingCause {
     pub const fn detector(&self) -> DetectorId {
         match self {
@@ -134,15 +168,19 @@ impl FindingCause {
             Self::UnusedMcpServer { .. } => DetectorId::UnusedMcpServers,
             Self::UnusedBuiltInTool { .. } => DetectorId::UnusedBuiltInTools,
             Self::UnusedSkill { .. } => DetectorId::UnusedSkills,
+            Self::SkillOpportunity { .. } => DetectorId::SkillOpportunities,
             Self::OldModelUsage { .. } => DetectorId::OldModelUsage,
             Self::OveruseOfFastMode { .. } => DetectorId::OveruseOfFastMode,
             Self::CacheChurn { .. } => DetectorId::CacheChurn,
             Self::IgnoredInstructionConflict(_) => DetectorId::IgnoredInstructions,
+            Self::OverExploring(_) => DetectorId::OverExploring,
+            Self::ScopeCreep(_) => DetectorId::ScopeCreep,
         }
     }
 
     fn display_labels(&self) -> Vec<&str> {
         match self {
+            Self::OverExploring(_) | Self::ScopeCreep(_) => Vec::new(),
             Self::SessionsOverDepth { requests, .. } => requests
                 .iter()
                 .filter_map(|request| request.model.as_deref())
@@ -167,6 +205,11 @@ impl FindingCause {
             Self::UnusedMcpServer { server, .. } => vec![server],
             Self::UnusedBuiltInTool { tool, .. } => vec![tool],
             Self::UnusedSkill { skill, .. } => vec![skill],
+            Self::SkillOpportunity {
+                skill_name,
+                skill_description,
+                ..
+            } => vec![skill_name, skill_description],
             Self::OldModelUsage {
                 provider,
                 api,
@@ -306,6 +349,23 @@ impl Finding {
                 "base": base("resource"), "scope": scope, "resource": skill,
             })
             .to_string(),
+            FindingCause::SkillOpportunity { skill_name, cited_work_context, work_provenance, selected_window_limit, .. } => serde_json::json!({
+                "base": base("skillOpportunity"), "scope": scope, "skill": skill_name,
+                "episode": crate::checks::ignored_instructions::sha256_hex(
+                    format!("{cited_work_context}\0{work_provenance}\0{selected_window_limit}").as_bytes()
+                ),
+            })
+            .to_string(),
+            FindingCause::OverExploring(evidence) => serde_json::json!({
+                "base": base("investigation"), "scope": scope,
+                "episode": evidence.episode_id, "reason": evidence.reason,
+                "reads": evidence.reads,
+            }).to_string(),
+            FindingCause::ScopeCreep(evidence) => serde_json::json!({
+                "base": base("scopeWork"), "scope": scope,
+                "group": evidence.group_id, "approved_scope": evidence.scope_digest,
+                "work": evidence.work,
+            }).to_string(),
             FindingCause::OldModelUsage {
                 provider,
                 api,
@@ -372,7 +432,12 @@ impl Finding {
             detector: self.detector,
             agent,
             source_format: self.source_format,
-            observation: super::prompts::prompt_parts(&self.cause).0,
+            observation: match &self.cause {
+                FindingCause::SkillOpportunity { .. } => {
+                    "This work matches a skill you have installed.".to_owned()
+                }
+                _ => super::prompts::prompt_parts(&self.cause).0,
+            },
             facts: display_facts(&self.cause),
             certainty: match &self.cause {
                 FindingCause::IgnoredInstructionConflict(evidence) => Some(evidence.certainty),
@@ -544,6 +609,128 @@ fn finding(evidence: &SessionEvidence, cause: FindingCause) -> Finding {
 }
 
 impl Finding {
+    /// Builds a session-scoped skill opportunity from current typed evidence.
+    pub fn skill_opportunity(
+        evidence: &SessionEvidence,
+        result: &SkillOpportunityFinding,
+    ) -> Option<Self> {
+        let comparison = &result.comparison;
+        if !crate::analysis::smart_check_source_supported(
+            &evidence.identity.agent,
+            evidence.capabilities.source_format,
+        ) || evidence.identity.session_id.is_empty()
+            || comparison.id.is_empty()
+            || comparison.episode_id.is_empty()
+            || comparison.skill.identity.trim().is_empty()
+            || comparison.skill.name.trim().is_empty()
+            || comparison.skill.description.trim().is_empty()
+            || comparison.use_eligibility.absence
+                != SkillAbsenceEvidence::SelectedWindowNoMatchingUse
+            || !comparison.absence_assessable
+            || !comparison.work_context_assessable
+            || comparison.work.is_empty()
+        {
+            return None;
+        }
+        let first = &comparison.work[0].reference;
+        if !reference_is_complete(first)
+            || first.source_key_digest.is_empty()
+            || first.thread_digest.is_empty()
+        {
+            return None;
+        }
+        if comparison.work.iter().any(|work| {
+            !reference_is_complete(&work.reference)
+                || work.reference.source_key_digest != first.source_key_digest
+                || work.reference.thread_digest != first.thread_digest
+                || work.text.trim().is_empty()
+        }) {
+            return None;
+        }
+        let work_context = comparison
+            .work
+            .iter()
+            .map(|work| work.text.trim())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let episode_material = serde_json::to_vec(
+            &comparison
+                .work
+                .iter()
+                .map(|work| (&work.reference, work.text.trim()))
+                .collect::<Vec<_>>(),
+        )
+        .ok()?;
+        let episode_digest = crate::checks::ignored_instructions::sha256_hex(&episode_material);
+        let cause = FindingCause::SkillOpportunity {
+            evidence: Some(Box::new(result.clone())),
+            skill_name: comparison.skill.name.clone(),
+            skill_description: comparison.skill.description.clone(),
+            cited_work_context: work_context,
+            work_provenance: format!("Selected session work {episode_digest}"),
+            selected_window_limit: result.absence_limit.clone(),
+        };
+        Some(finding(evidence, cause))
+    }
+
+    pub fn over_exploring(
+        evidence: &SessionEvidence,
+        decision: &crate::checks::over_exploring::Decision,
+    ) -> Option<Self> {
+        use crate::checks::over_exploring::SemanticOutcome;
+        if !crate::analysis::smart_check_source_supported(
+            &evidence.identity.agent,
+            evidence.capabilities.source_format,
+        ) || decision.reads.is_empty()
+            || decision.task_evidence.is_empty()
+            || decision.semantic_revision.is_empty()
+            || decision.model.is_empty()
+            || decision.judgments.sufficiency != SemanticOutcome::Supported
+            || decision.reads.iter().any(|read| {
+                read.request_id.is_empty()
+                    || read.result_id.is_empty()
+                    || read.output_digest.is_empty()
+            })
+        {
+            return None;
+        }
+        Some(finding(
+            evidence,
+            FindingCause::OverExploring(Box::new(decision.clone())),
+        ))
+    }
+
+    /// Convert a finding from a validated, current scope publication.
+    pub fn scope_creep(
+        evidence: &SessionEvidence,
+        result: &crate::checks::scope_creep::ScopeCreepFinding,
+    ) -> Option<Self> {
+        if !crate::analysis::smart_check_source_supported(
+            &evidence.identity.agent,
+            evidence.capabilities.source_format,
+        ) || result.id.is_empty()
+            || result.group_id.is_empty()
+            || result.scope_digest.is_empty()
+            || result.model.is_empty()
+            || result.revisions != crate::checks::scope_creep::REVISIONS
+            || result.work.is_empty()
+            || result.task_scope.is_empty()
+            || result.work.iter().any(|work| {
+                !work.reference.stable || work.reference.id.is_empty() || work.digest.is_empty()
+            })
+            || result
+                .task_scope
+                .iter()
+                .any(|source| source.source_id.is_empty() || source.part_id.is_empty())
+        {
+            return None;
+        }
+        Some(finding(
+            evidence,
+            FindingCause::ScopeCreep(Box::new(result.clone())),
+        ))
+    }
+
     /// Builds one session-scoped instruction conflict from a validated result.
     pub fn ignored_instruction(
         evidence: &SessionEvidence,
@@ -566,6 +753,7 @@ impl Finding {
         }
         let cause = FindingCause::IgnoredInstructionConflict(Box::new(
             IgnoredInstructionConflictEvidence {
+                decision: assessment_finding.decision_record().cloned(),
                 assessment_revision: assessment_revision.to_owned(),
                 assessment_finding_id: assessment_finding.id.clone(),
                 instruction_id: reference.instruction_id.clone(),
@@ -592,6 +780,17 @@ impl Finding {
         ));
         Some(finding(evidence, cause))
     }
+}
+
+fn reference_is_complete(reference: &ContentEventReference) -> bool {
+    reference.stable
+        && !reference.id.is_empty()
+        && !reference.source_key_digest.is_empty()
+        && !reference.thread_digest.is_empty()
+        && reference
+            .native_record_id
+            .as_deref()
+            .is_none_or(|id| !id.trim().is_empty())
 }
 
 #[cfg(test)]

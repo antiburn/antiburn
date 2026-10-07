@@ -13,6 +13,39 @@ fn detector_keys_are_stable_and_unique() {
 }
 
 #[test]
+fn skill_opportunity_uses_its_exact_detector() {
+    let cause = FindingCause::SkillOpportunity {
+        evidence: None,
+        skill_name: "review".to_owned(),
+        skill_description: "Review changes.".to_owned(),
+        cited_work_context: "Reviewed a patch.".to_owned(),
+        work_provenance: "Selected session work".to_owned(),
+        selected_window_limit: "Selected window only".to_owned(),
+    };
+    assert_eq!(cause.detector(), DetectorId::SkillOpportunities);
+}
+
+#[test]
+fn skill_opportunity_identity_distinguishes_work_episodes() {
+    let evidence = crate::checks::test_support::claude_evidence("session-private");
+    let make = |work: &str| {
+        finding(
+            &evidence,
+            FindingCause::SkillOpportunity {
+                evidence: None,
+                skill_name: "review".to_owned(),
+                skill_description: "Review changes.".to_owned(),
+                cited_work_context: work.to_owned(),
+                work_provenance: "Selected session work".to_owned(),
+                selected_window_limit: "Selected window only".to_owned(),
+            },
+        )
+        .canonical_identity("scope")
+    };
+    assert_ne!(make("Reviewed patch A"), make("Reviewed patch B"));
+}
+
+#[test]
 fn ignored_instruction_findings_require_supported_scoped_citations() {
     use crate::checks::ignored_instructions::{
         AssessmentFinding, FindingCertainty, InstructionProvenance, InstructionScope, RuleActionRef,
@@ -21,6 +54,7 @@ fn ignored_instruction_findings_require_supported_scoped_citations() {
     let mut evidence = crate::checks::test_support::claude_evidence("session-private");
     evidence.capabilities.source_format = SourceFormat::ClaudeJsonl;
     let assessment_finding = AssessmentFinding {
+        decision: None,
         id: "finding-id".to_owned(),
         reference: RuleActionRef {
             instruction_id: "instruction-id".to_owned(),
@@ -75,6 +109,7 @@ fn ignored_instruction_target_identity_groups_rules_in_same_section() {
         let mut evidence = crate::checks::test_support::claude_evidence(session);
         evidence.capabilities.source_format = SourceFormat::ClaudeJsonl;
         let assessment = AssessmentFinding {
+            decision: None,
             id: format!("finding-{action}"),
             reference: RuleActionRef {
                 instruction_id: "instruction".to_owned(),

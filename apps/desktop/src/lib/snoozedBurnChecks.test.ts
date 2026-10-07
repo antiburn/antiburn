@@ -22,6 +22,49 @@ import {
 } from "./snoozedBurnChecks"
 import { sessionHygieneChecks } from "./presentation/sessionHygiene"
 
+it("filters Scope Creep badges and preserves its canonical aggregate bit", () => {
+  const checks = sessionHygieneChecks({
+    evidenceState: "ready",
+    unusedResources: null,
+    badges: [{ id: "scopeCreep", status: "finding", notAssessedReason: null }],
+  })
+  expect(
+    visibleSessionHygieneChecks(checks, new Set(["scopeCreep"])).some(
+      (check) => check.id === "scopeCreep",
+    ),
+  ).toBe(false)
+  const categories = [
+    {
+      id: "scopeCreep" as const,
+      finding: 1,
+      clean: 0,
+      unavailable: 0,
+      estimatedTokenBurnBasisPoints: 200,
+    },
+    {
+      id: "overExploring" as const,
+      finding: 1,
+      clean: 0,
+      unavailable: 0,
+      estimatedTokenBurnBasisPoints: 100,
+    },
+  ]
+  const report = activeChecksReport(
+    {
+      evidenceSettled: true,
+      pendingEvidence: 0,
+      estimatedTokenBurnBasisPoints: 300,
+      categories,
+      estimatedTokenBurnBasisPointsByDetectorMask: Array.from({ length: 8192 }, (_, mask) =>
+        mask === 1 << 12 ? 200 : null,
+      ),
+    },
+    new Set(["overExploring"]),
+  )
+  expect(report.categories.map((category) => category.id)).toEqual(["scopeCreep"])
+  expect(report.estimatedTokenBurnBasisPoints).toBe(200)
+})
+
 const payload = {
   evidenceState: "ready" as const,
   unusedResources: null,

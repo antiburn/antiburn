@@ -12,6 +12,16 @@ use serde_json::{Map, Value};
 
 mod metadata;
 pub use metadata::*;
+mod context;
+pub use context::*;
+mod non_authorizing_context;
+pub use non_authorizing_context::*;
+mod reads;
+pub use reads::*;
+mod scope_metadata;
+pub use scope_metadata::*;
+mod skill_metadata;
+pub use skill_metadata::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentEventReference {
@@ -120,8 +130,25 @@ pub fn select_session_content(
                 | "some_events_have_only_snapshot_local_ordinals"
                 | "some_content_authority_is_unknown"
                 | "some_tool_parts_lack_native_call_identity"
+                | "truncated_selected_scope_evidence"
         )
     });
+    if selected.actions.iter().any(|action| {
+        action
+            .metadata
+            .user_answers
+            .iter()
+            .any(|answer| answer.source.truncated)
+            || action
+                .metadata
+                .plan_references
+                .iter()
+                .any(|plan| plan.source.truncated)
+    }) {
+        selected
+            .limitations
+            .push("truncated_selected_scope_evidence".to_owned());
+    }
     if selected
         .actions
         .iter()
@@ -134,7 +161,7 @@ pub fn select_session_content(
     if selected
         .actions
         .iter()
-        .any(|action| action.authority == "unknown")
+        .any(|action| action.authority == "unknown" && !is_recorded_skill_selection(action))
     {
         selected
             .limitations
@@ -221,11 +248,36 @@ pub fn select_session_content(
 }
 
 fn selected_action(action: &ContentAction, selection: JevInputSelection) -> Option<ContentAction> {
+    if action.kind == "thinking" {
+        return None;
+    }
+    let metadata = action.metadata.selected(selection);
+    let scope_selected = !metadata.user_answers.is_empty()
+        || !metadata.plan_references.is_empty()
+        || metadata.read_request.is_some()
+        || metadata.read_result.is_some();
+    let mut selected = selected_action_text(action, selection);
+    if scope_selected && selected.is_none() {
+        let mut scope_action = action.clone();
+        scope_action.text.clear();
+        scope_action.normalized_fields = None;
+        scope_action.metadata = metadata;
+        selected = Some(scope_action);
+    }
+    selected
+}
+
+fn selected_action_text(
+    action: &ContentAction,
+    selection: JevInputSelection,
+) -> Option<ContentAction> {
     let field = if matches!(action.kind.as_str(), "assistant" | "assistant_text")
         && action.authority == "assistant"
     {
         JevInputField::AssistantMessage
-    } else if matches!(action.kind.as_str(), "user" | "user_text") && action.authority == "user" {
+    } else if matches!(action.kind.as_str(), "user" | "user_text")
+        && (action.authority == "user" || is_recorded_skill_selection(action))
+    {
         JevInputField::UserMessage
     } else if action.kind == "tool_input" {
         let tool_name = action.tool_name.as_deref()?;
@@ -329,9 +381,16 @@ pub(crate) fn normalize_tool_input(
         .into_iter()
         .filter_map(|(field, value)| value.map(|value| (field, value)))
         .collect(),
-        JevInputField::ReadFilePath => selected_path_input(text)
-            .map(|value| [(field, value)].into_iter().collect())
-            .unwrap_or_default(),
+        JevInputField::ReadFilePath => [
+            (field, selected_path_input(text)),
+            (
+                JevInputField::ReadFileRequest,
+                reads::selected_read_input(text),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(field, value)| value.map(|value| (field, value)))
+        .collect(),
         JevInputField::SearchFilesQuery => selected_search_input(text)
             .map(|value| [(field, value)].into_iter().collect())
             .unwrap_or_default(),
@@ -339,8 +398,11 @@ pub(crate) fn normalize_tool_input(
         _ => Default::default(),
     };
     let normalized_bytes = values
-        .values()
-        .fold(0usize, |total, value| total.saturating_add(value.len()));
+        .iter()
+        .filter(|(field, _)| **field != JevInputField::ReadFileRequest)
+        .fold(0usize, |total, (_, value)| {
+            total.saturating_add(value.len())
+        });
     let malformed = (field != JevInputField::OtherToolInput && values.is_empty())
         || normalized_bytes > crate::analysis::interface::MAX_CONTENT_PART_BYTES;
     let category = match field {
@@ -394,7 +456,7 @@ fn tool_input_field(name: &str) -> JevInputField {
     }
 }
 
-fn tool_output_field(name: &str) -> JevInputField {
+pub(crate) fn tool_output_field(name: &str) -> JevInputField {
     match tool_input_field(name) {
         JevInputField::BashCommandInput => JevInputField::BashCommandOutput,
         JevInputField::FileEditPath => JevInputField::OtherToolOutput,
@@ -752,7 +814,7 @@ pub const fn source_supported(source_format: SourceFormat) -> bool {
     )
 }
 
-const INPUT_FIELDS: [JevInputField; 12] = [
+const INPUT_FIELDS: [JevInputField; 16] = [
     JevInputField::UserMessage,
     JevInputField::AssistantMessage,
     JevInputField::BashCommandInput,
@@ -765,6 +827,10 @@ const INPUT_FIELDS: [JevInputField; 12] = [
     JevInputField::SearchFilesOutput,
     JevInputField::OtherToolInput,
     JevInputField::OtherToolOutput,
+    JevInputField::UserAnswer,
+    JevInputField::PlanReference,
+    JevInputField::ReadFileRequest,
+    JevInputField::ReadFileResult,
 ];
 
 /// Reports source-level support separately from fields observed on this page.
@@ -787,6 +853,19 @@ pub const fn field_capability(
         return JevFieldCapability::Unavailable;
     }
     match field {
+        JevInputField::UserAnswer | JevInputField::PlanReference => {
+            if matches!(
+                source_format,
+                SourceFormat::OpenCodeSqliteV2
+                    | SourceFormat::ClaudeJsonl
+                    | SourceFormat::CodexRolloutJsonl
+                    | SourceFormat::PiV3Jsonl
+            ) {
+                JevFieldCapability::Conditional
+            } else {
+                JevFieldCapability::Unavailable
+            }
+        }
         JevInputField::AssistantMessage
         | JevInputField::FileEditPath
         | JevInputField::ReadFilePath => JevFieldCapability::Supported,
@@ -799,6 +878,9 @@ pub const fn field_capability(
         | JevInputField::SearchFilesOutput
         | JevInputField::OtherToolInput
         | JevInputField::OtherToolOutput => JevFieldCapability::Conditional,
+        JevInputField::ReadFileRequest | JevInputField::ReadFileResult => {
+            JevFieldCapability::Conditional
+        }
     }
 }
 
@@ -810,6 +892,15 @@ fn field_availability(
     INPUT_FIELDS
         .iter()
         .copied()
+        .filter(|field| {
+            !matches!(
+                field,
+                JevInputField::UserAnswer
+                    | JevInputField::PlanReference
+                    | JevInputField::ReadFileRequest
+                    | JevInputField::ReadFileResult
+            ) || selection.includes(*field)
+        })
         .map(|field| {
             let selected = selection.includes(field);
             let field_selection = JevInputSelection::from_fields(&[field]);
@@ -839,7 +930,16 @@ fn field_availability(
                     if capability != JevFieldCapability::Unavailable {
                         availability.state = JevFieldAvailabilityState::Observed;
                     }
-                    if selected.text.is_empty()
+                    let empty = match field {
+                        JevInputField::ReadFileRequest => selected.metadata.read_request.is_none(),
+                        JevInputField::ReadFileResult => selected.metadata.read_result.is_none(),
+                        JevInputField::UserAnswer => selected.metadata.user_answers.is_empty(),
+                        JevInputField::PlanReference => {
+                            selected.metadata.plan_references.is_empty()
+                        }
+                        _ => selected.text.is_empty(),
+                    };
+                    if empty
                         || (field == JevInputField::FileEditContent
                             && serde_json::from_str::<Value>(&selected.text)
                                 .is_ok_and(|value| edit_content_is_empty(&value)))
@@ -881,7 +981,23 @@ pub(crate) fn selected_evidence_store(
                 && let Some(selected) =
                     selected_action(action, JevInputSelection::from_fields(&[field]))
             {
-                store.insert(action.reference.id.clone(), field, selected.text)?;
+                let text = match field {
+                    JevInputField::UserAnswer => {
+                        serde_json::to_string(&selected.metadata.user_answers)
+                    }
+                    JevInputField::PlanReference => {
+                        serde_json::to_string(&selected.metadata.plan_references)
+                    }
+                    JevInputField::ReadFileRequest => {
+                        serde_json::to_string(&selected.metadata.read_request)
+                    }
+                    JevInputField::ReadFileResult => {
+                        serde_json::to_string(&selected.metadata.read_result)
+                    }
+                    _ => Ok(selected.text),
+                }
+                .map_err(|_| crate::analysis::jev::JevError::InvalidCheckContext)?;
+                store.insert(action.reference.id.clone(), field, text)?;
             }
         }
     }
@@ -889,6 +1005,9 @@ pub(crate) fn selected_evidence_store(
 }
 
 fn action_matches_input_field(action: &ContentAction, field: JevInputField) -> bool {
+    if field == JevInputField::UserMessage && is_recorded_skill_selection(action) {
+        return true;
+    }
     if action.kind == "tool_input" {
         let Some(name) = action.tool_name.as_deref() else {
             return false;
@@ -998,6 +1117,14 @@ pub fn prepare_session_content(
         });
     }
 
+    for action in &mut actions {
+        normalize_recorded_skill(action, source_format);
+        action.metadata.non_authorizing_context =
+            normalize_non_authorizing_context(action, source_format);
+    }
+    normalize_read_evidence(source_format, &mut actions);
+    normalize_context(&mut actions, source_format);
+
     if published.coverage.parts_capped {
         limitations.push("content_part_limit".to_owned());
     }
@@ -1019,7 +1146,10 @@ pub fn prepare_session_content(
     if actions.iter().any(|item| !item.reference.stable) {
         limitations.push("some_events_have_only_snapshot_local_ordinals".to_owned());
     }
-    if actions.iter().any(|item| item.authority == "unknown") {
+    if actions
+        .iter()
+        .any(|item| item.authority == "unknown" && !is_recorded_skill_selection(item))
+    {
         limitations.push("some_content_authority_is_unknown".to_owned());
     }
     if actions.iter().any(|item| {
@@ -1257,6 +1387,71 @@ mod tests {
     }
 
     #[test]
+    fn scope_metadata_cannot_be_inferred_from_arbitrary_tools_or_enter_ignored_instructions() {
+        let mut fixture = projection_fixture();
+        for name in [
+            "question",
+            "AskUserQuestion",
+            "request_user_input",
+            "ordinary",
+        ] {
+            let action = projection_action(
+                name,
+                "tool_result",
+                "tool",
+                Some(name),
+                r#"{"answers":[["approved"]],"status":"submitted","origin":"user"}"#,
+            );
+            assert!(
+                selected_action(
+                    &action,
+                    JevInputSelection::from_fields(&[JevInputField::UserAnswer])
+                )
+                .is_none()
+            );
+        }
+        let answer = scope_answer_fixture();
+        fixture.actions[1].metadata.user_answers = vec![answer.clone()];
+        fixture.actions[1].metadata.user_answers[0].source.truncated = true;
+        fixture.actions[1].metadata.plan_references = vec![scope_plan_fixture()];
+        let selection = crate::checks::ignored_instructions::INPUT_SELECTION;
+        assert!(!selection.includes(JevInputField::UserAnswer));
+        assert!(!selection.includes(JevInputField::PlanReference));
+        let with_metadata = select_session_content(&fixture, selection);
+        fixture.actions[1].metadata = Default::default();
+        let without_metadata = select_session_content(&fixture, selection);
+        assert_eq!(with_metadata, without_metadata);
+        let scope_selection = JevInputSelection::from_fields(&[JevInputField::UserAnswer]);
+        fixture.actions[1].metadata.user_answers = vec![answer];
+        let selected = select_session_content(&fixture, scope_selection);
+        assert_eq!(selected.actions.len(), 1);
+        assert!(selected.actions[0].text.is_empty());
+        fixture.actions[1].metadata.user_answers[0].source.truncated = true;
+        let truncated = select_session_content(&fixture, scope_selection);
+        assert!(
+            truncated
+                .limitations
+                .iter()
+                .any(|value| value == "truncated_selected_scope_evidence")
+        );
+        fixture.actions[1].metadata.user_answers[0].source.truncated = false;
+        fixture.actions[1].metadata.user_answers[0]
+            .source
+            .normalization_revision += 1;
+        let changed = select_session_content(&fixture, scope_selection);
+        assert_ne!(
+            selected.selected_input_digest,
+            changed.selected_input_digest
+        );
+        fixture.actions[1].kind = "thinking".into();
+        assert!(
+            select_session_content(&fixture, scope_selection)
+                .actions
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn selection_projects_only_the_declared_fields_for_all_4096_masks() {
         let mut content = projection_fixture();
         for action in &mut content.actions {
@@ -1358,11 +1553,13 @@ mod tests {
     }
 
     #[test]
-    fn ignored_instructions_selection_excludes_user_messages_and_outputs() {
+    fn ignored_instructions_selection_includes_context_but_excludes_read_and_edit_bodies() {
         let content = projection_fixture();
         let selection = JevInputSelection::from_fields(&[
+            JevInputField::UserMessage,
             JevInputField::AssistantMessage,
             JevInputField::BashCommandInput,
+            JevInputField::BashCommandOutput,
             JevInputField::FileEditPath,
             JevInputField::ReadFilePath,
             JevInputField::SearchFilesQuery,
@@ -1375,8 +1572,6 @@ mod tests {
         let projected = select_session_content(&content, selection);
         let serialized = serde_json::to_string(&projected.actions).unwrap();
         for excluded in [
-            "USER_SENTINEL",
-            "BASH_OUTPUT_SENTINEL",
             "EDIT_OLD_SENTINEL",
             "EDIT_NEW_SENTINEL",
             "READ_OUTPUT_SENTINEL",
@@ -1391,6 +1586,8 @@ mod tests {
             );
         }
         assert!(serialized.contains("ASSISTANT_SENTINEL"));
+        assert!(serialized.contains("USER_SENTINEL"));
+        assert!(serialized.contains("BASH_OUTPUT_SENTINEL"));
         assert!(serialized.contains("BASH_SENTINEL"));
         assert!(serialized.contains("src/edit.rs"));
         assert!(serialized.contains("src/read.rs"));
@@ -1405,7 +1602,7 @@ mod tests {
                 .iter()
                 .filter(|field| field.selected)
                 .count(),
-            6
+            8
         );
         assert!(projected.field_availability.iter().all(|field| {
             !field.selected
@@ -1413,7 +1610,7 @@ mod tests {
         }));
         assert!(projected.field_availability.iter().any(|field| {
             field.field == JevInputField::BashCommandOutput
-                && field.state == JevFieldAvailabilityState::Excluded
+                && field.state == JevFieldAvailabilityState::Observed
         }));
         assert_eq!(
             projected
@@ -1429,13 +1626,13 @@ mod tests {
         changed_excluded
             .actions
             .iter_mut()
-            .find(|action| action.reference.id == "user")
+            .find(|action| action.reference.id == "read-output")
             .unwrap()
-            .text = "CHANGED_EXCLUDED_USER".to_owned();
+            .text = "CHANGED_EXCLUDED_READ".to_owned();
         changed_excluded
             .actions
             .iter_mut()
-            .find(|action| action.reference.id == "bash-output")
+            .find(|action| action.reference.id == "search-output")
             .unwrap()
             .text = "CHANGED_EXCLUDED_OUTPUT".to_owned();
         changed_excluded

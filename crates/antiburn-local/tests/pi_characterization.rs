@@ -295,7 +295,33 @@ fn check_golden(name: &str) {
     // same value re-parsed from disk. Re-parsing `rendered` keeps the two
     // sides on equal footing.
     let actual: Value = serde_json::from_str(&rendered).unwrap();
-    assert_eq!(actual, expected, "golden differs for {name}");
+    assert_golden_value(&actual, &expected, name);
+}
+
+fn assert_golden_value(actual: &Value, expected: &Value, path: &str) {
+    match (actual, expected) {
+        (Value::Object(actual), Value::Object(expected)) => {
+            assert_eq!(
+                actual.keys().collect::<Vec<_>>(),
+                expected.keys().collect::<Vec<_>>(),
+                "golden keys differ at {path}"
+            );
+            for (key, value) in actual {
+                assert_golden_value(value, &expected[key], &format!("{path}/{key}"));
+            }
+        }
+        (Value::Array(actual), Value::Array(expected)) => {
+            assert_eq!(
+                actual.len(),
+                expected.len(),
+                "golden array length differs at {path}"
+            );
+            for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+                assert_golden_value(actual, expected, &format!("{path}/{index}"));
+            }
+        }
+        _ => assert_eq!(actual, expected, "golden differs at {path}"),
+    }
 }
 
 fn source_claim(path: &std::path::Path) -> SourceClaim {

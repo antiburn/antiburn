@@ -1,8 +1,16 @@
-import { describe, expect, it } from "vitest"
+import { createElement } from "react"
+import { screen, waitFor } from "@testing-library/react"
+import { describe, expect, it, vi } from "vitest"
 import { APP_SEARCH_CATALOG, groupAppResults, searchApp } from "./appSearch"
 import { SETTINGS_PANES } from "./settingsPanes"
 import { CHECK_LABELS } from "./presentation/checkReport"
 import { AGENT_SLUGS } from "./presentation/agents"
+import { BurnChecksView } from "../views/main-window/BurnChecksView"
+import {
+  aggregate,
+  report,
+  setup,
+} from "../views/main-window/burn-checks/tests/burnChecksTestSupport"
 import {
   SETTINGS_SEARCH_TARGETS,
   parseSettingsSearchRequest,
@@ -10,6 +18,82 @@ import {
 } from "./settingsSearchTargets"
 
 describe("static app search", () => {
+  it.each([
+    "ignoredInstructions",
+    "skillOpportunities",
+    "overExploring",
+    "scopeCreep",
+  ] as const)("hides unavailable smart check %s from search", (check) => {
+    expect(
+      searchApp("", "macos", false).some(
+        (result) => result.target.kind === "check" && result.target.check === check,
+      ),
+    ).toBe(false)
+    expect(
+      searchApp("", "macos", true).some(
+        (result) => result.target.kind === "check" && result.target.check === check,
+      ),
+    ).toBe(true)
+  })
+  it("resolves the backend Over-exploring key", () => {
+    expect(searchApp("over_exploring")[0]?.target).toEqual({
+      kind: "check",
+      check: "overExploring",
+    })
+  })
+  it.each(["Scope Creep", "scopeCreep", "scope_creep"])("resolves %s", (query) => {
+    expect(searchApp(query)[0]?.target).toEqual({ kind: "check", check: "scopeCreep" })
+  })
+  it.each(["macos", "windows", "linux"] as const)(
+    "opens and focuses unassessed Skill Opportunities on %s without changing values",
+    async (platform) => {
+      HTMLElement.prototype.scrollIntoView = vi.fn()
+      const result = searchApp("Skill Opportunities", platform)[0]!
+      expect(result).toMatchObject({
+        label: "Skill Opportunities",
+        target: { kind: "check", check: "skillOpportunities" },
+      })
+      if (result.target.kind !== "check") throw new Error("Expected a check destination")
+      const categories = [
+        {
+          ...report.categories[0]!,
+          id: result.target.check,
+          finding: 0,
+          clean: 0,
+          unavailable: 1,
+          lifecycle: null,
+          estimatedTokenBurnBasisPoints: null,
+        },
+      ]
+      const before = structuredClone(categories)
+      const { session, view, adapter } = setup(null, false, aggregate, {
+        ...report,
+        categories,
+      })
+      await screen.findByRole("button", { name: /Not assessed \(1\)/ })
+      expect(
+        screen.queryByRole("button", { name: /Skill Opportunities/ }),
+      ).not.toBeInTheDocument()
+      view.rerender(
+        createElement(BurnChecksView, {
+          active: true,
+          session,
+          focusedCheck: result.target.check,
+          focusRevision: 1,
+        }),
+      )
+      const row = await screen.findByRole("button", {
+        name: /Skill Opportunities.*Not assessed/,
+      })
+      await waitFor(() => expect(row).toHaveFocus())
+      expect(row).toHaveAttribute("aria-pressed", "true")
+      expect(categories).toEqual(before)
+      expect(adapter.getReport).toHaveBeenCalledOnce()
+      expect(screen.queryByRole("button", { name: "Fix" })).not.toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: "Copy fix prompt" })).not.toBeInTheDocument()
+    },
+  )
+
   it("keeps the top-level Sessions destination searchable", () => {
     expect(searchApp("Sessions")[0]).toMatchObject({
       id: "activity",
@@ -57,6 +141,10 @@ describe("static app search", () => {
     })
     expect(searchApp("MCP").filter(({ id }) => id === "check:unusedMcpServers")).toHaveLength(1)
     expect(searchApp("cache misses")[0]?.target).toEqual({ kind: "check", check: "cacheChurn" })
+    expect(searchApp("skill improvements")[0]?.target).toEqual({
+      kind: "check",
+      check: "skillOpportunities",
+    })
     expect(searchApp("  SOuNd  ")[0]?.label).toBe("Sound")
   })
   it("groups and bounds matches, with no session-data group in PR1", () => {

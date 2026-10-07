@@ -6,6 +6,163 @@ use crate::analysis::jev::{
 use std::sync::{Arc, Mutex};
 
 #[test]
+fn episode_context_is_selected_only_after_prerequisite_classification() {
+    let mut actions = vec![event(
+        "validation",
+        1,
+        "assistant",
+        "main",
+        "Requested validation for the package.",
+    )];
+    actions.extend((2..14).map(|index| {
+        event(
+            &format!("note-{index}"),
+            index,
+            "assistant",
+            "main",
+            "Reviewed a note.",
+        )
+    }));
+    actions.push(event(
+        "publish",
+        14,
+        "assistant",
+        "main",
+        "Requested package publication.",
+    ));
+    let context =
+        build_jev_context(&input(actions, "Request validation before publication.")).unwrap();
+    for obligation in ["action", "prerequisite"] {
+        let mut plan = IgnoredInstructionsCheck.prepare(&context).unwrap();
+        assert!(
+            plan.prepared
+                .comparisons
+                .iter()
+                .all(|comparison| comparison.prerequisite_episode.is_none())
+        );
+        let items = rule_classifications(&plan.prepared).unwrap();
+        let results = items
+            .into_iter()
+            .map(|item| {
+                let result = JevWorkItemResult {
+                    request_id: "classification".to_owned(),
+                    work_item_id: item.id.clone(),
+                    answers: item
+                        .questions
+                        .iter()
+                        .map(|(id, question)| {
+                            let option = match id.as_str() {
+                                "permission" => "independent",
+                                "condition_evidence" => "selected",
+                                "action_family" => "any",
+                                "obligation" => obligation,
+                                "read_prerequisite" => "not_read_order",
+                                "read_trigger" => "not_read_rule",
+                                _ => panic!("unexpected question {id}"),
+                            };
+                            (id.clone(), answer(question, option))
+                        })
+                        .collect(),
+                    evidence: item.window.evidence,
+                    model: ASSESSMENT_MODEL.to_owned(),
+                    usage: JevUsage {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    },
+                };
+                (item.id, result)
+            })
+            .collect();
+        apply_rule_matching(&mut plan, &results, &context).unwrap();
+        let comparison = plan
+            .prepared
+            .comparisons
+            .iter()
+            .find(|comparison| comparison.reference.action_id == "publish")
+            .unwrap();
+        assert_eq!(
+            comparison.prerequisite_episode.is_some(),
+            obligation == "prerequisite"
+        );
+        let item = plan
+            .work_items
+            .iter()
+            .find(|item| {
+                item.window.evidence.iter().any(|evidence| {
+                    evidence.role == JevEvidenceRole::Candidate && evidence.source_id == "publish"
+                })
+            })
+            .unwrap();
+        assert_eq!(
+            item.window
+                .evidence
+                .iter()
+                .filter(|evidence| evidence.role == JevEvidenceRole::Candidate)
+                .count(),
+            1
+        );
+        if obligation == "prerequisite" {
+            let events = item.window.fields["instruction_targets"][0]["earlier_counterevidence"]
+                .as_array()
+                .unwrap();
+            assert_eq!(events.len(), 13);
+            assert_eq!(events[0]["text"], "Requested validation for the package.");
+            assert!(item.window.fields["instruction_targets"][0]["assessment_limits"]["prerequisite_episode_complete"].as_bool().unwrap());
+            assert!(!item.window.fields.to_string().contains("source_key_digest"));
+            assert!(!item.window.fields.to_string().contains("validation\""));
+        }
+    }
+}
+
+#[test]
+fn ambiguous_read_path_cannot_prove_a_missing_prerequisite() {
+    for path in [
+        "/workspace/docs/guide.md",
+        "docs\\guide.md",
+        "$ROOT/docs/guide.md",
+        "./docs/guide.md",
+    ] {
+        let mut read = event(
+            "read",
+            1,
+            "assistant",
+            "main",
+            &json!({"file_path": path}).to_string(),
+        );
+        read.kind = "tool_input".to_owned();
+        read.tool_name = Some("Read".to_owned());
+        read.tool_call_id = Some("read-call".to_owned());
+        let mut edit = event(
+            "edit",
+            2,
+            "assistant",
+            "main",
+            r#"{"file_path":"src/main.rs"}"#,
+        );
+        edit.kind = "tool_input".to_owned();
+        edit.tool_name = Some("Edit".to_owned());
+        edit.tool_call_id = Some("edit-call".to_owned());
+        let source = input(
+            vec![read, edit],
+            "Request a read of `docs/guide.md` before editing.",
+        );
+        let plan = build_assessment_plan(source.clone());
+        let orders = exact_read_orders(&plan.comparisons, &source.content, true);
+        let candidate = plan
+            .comparisons
+            .iter()
+            .find(|comparison| comparison.reference.action_id == "edit")
+            .unwrap();
+        assert!(orders[&candidate.id].iter().all(|order| !order.paths_known));
+        assert!(
+            orders[&candidate.id]
+                .iter()
+                .all(|order| order.state() == ObligationState::Pending)
+        );
+    }
+}
+
+#[test]
 fn edit_classification_keeps_shell_edit_requests_in_executed_candidates() {
     let mut shell = event(
         "shell-edit",
@@ -553,6 +710,106 @@ async fn append_reuses_unchanged_judgments_and_classification() {
     .await;
     assert!(sent.iter().any(|id| id.starts_with("classification-")));
     assert!(sent.contains(&first_id));
+}
+
+#[tokio::test]
+async fn distant_episode_content_invalidates_the_anchored_semantic_answer() {
+    let mut actions = vec![event(
+        "earlier",
+        1,
+        "assistant",
+        "main",
+        &format!(
+            "{}\nRequested validation for this package.",
+            "Recorded context. ".repeat(80)
+        ),
+    )];
+    actions.extend((2..12).map(|index| {
+        event(
+            &format!("note-{index}"),
+            index,
+            "assistant",
+            "main",
+            "Reviewed a note.",
+        )
+    }));
+    actions.push(event(
+        "publish",
+        12,
+        "assistant",
+        "main",
+        "Requested package publication.",
+    ));
+    let mut source = input(actions, "Request validation before publication.");
+    let first_context = build_jev_context(&source).unwrap();
+    let (first, _) = run(
+        &first_context,
+        JevRunProgress::default(),
+        "any",
+        "prerequisite",
+    )
+    .await;
+    let plan = IgnoredInstructionsCheck.prepare(&first_context).unwrap();
+    let publish_id = plan
+        .work_items
+        .iter()
+        .find(|item| {
+            item.window.evidence.iter().any(|binding| {
+                binding.role == JevEvidenceRole::Candidate && binding.source_id == "publish"
+            })
+        })
+        .unwrap()
+        .id
+        .clone();
+    let comparison_id = plan
+        .prepared
+        .comparisons
+        .iter()
+        .find(|comparison| comparison.reference.action_id == "publish")
+        .unwrap()
+        .id
+        .clone();
+    source.content.actions[0].text = source.content.actions[0]
+        .text
+        .replace("Requested validation", "Planned validation");
+    let changed = build_jev_context(&source).unwrap();
+    let changed_plan = IgnoredInstructionsCheck.prepare(&changed).unwrap();
+    assert!(
+        changed_plan
+            .prepared
+            .comparisons
+            .iter()
+            .any(|comparison| comparison.id == comparison_id
+                && comparison.reference.action_id == "publish")
+    );
+    let (_, sent) = run(&changed, first.progress, "any", "prerequisite").await;
+    assert!(sent.contains(&publish_id));
+}
+
+#[tokio::test]
+async fn legacy_candidate_without_source_binding_cannot_publish_a_new_clean_result() {
+    let mut context = build_jev_context(&input(
+        vec![event(
+            "candidate",
+            1,
+            "assistant",
+            "main",
+            "Recorded communication.",
+        )],
+        "Use the required response format.",
+    ))
+    .unwrap();
+    context.check_context["assessment_plan"]["comparisons"][0]["source_binding"] = Value::Null;
+    let (outcome, _) = run(&context, JevRunProgress::default(), "any", "action").await;
+    assert!(outcome.result.findings.is_empty());
+    assert_eq!(outcome.result.unassessed_comparisons.len(), 1);
+    assert!(
+        outcome
+            .result
+            .coverage
+            .limitations
+            .contains(&"action_source_binding_unavailable".to_owned())
+    );
 }
 
 #[tokio::test]

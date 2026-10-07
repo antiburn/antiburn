@@ -7,7 +7,10 @@ import {
   Gauge,
   History,
   Layers3,
+  Search,
   Server,
+  Sparkles,
+  Target,
   Wrench,
   type LucideIcon,
 } from "lucide-react"
@@ -58,6 +61,19 @@ export const CHECK_UI: Record<BurnCheckDetectorId, CheckUiMetadata> = {
     icon: BookOpen,
     recommendation: "Load this skill only when the request needs it to avoid unused context.",
   },
+  skillOpportunities: {
+    icon: Sparkles,
+    recommendation: "Use this current skill for similar future work.",
+  },
+  overExploring: {
+    icon: Search,
+    recommendation: "Read only the files and sections needed for future work.",
+  },
+  scopeCreep: {
+    icon: Target,
+    recommendation:
+      "Keep future work within the agreed task. Ask for approval before adding work.",
+  },
   oldModelUsage: {
     icon: History,
     recommendation:
@@ -85,6 +101,9 @@ const CHECK_ICONS: Record<BurnCheckDetectorId, LucideIcon> = {
   unusedMcpServers: CHECK_UI.unusedMcpServers.icon,
   unusedBuiltInTools: CHECK_UI.unusedBuiltInTools.icon,
   unusedSkills: CHECK_UI.unusedSkills.icon,
+  skillOpportunities: CHECK_UI.skillOpportunities.icon,
+  overExploring: CHECK_UI.overExploring.icon,
+  scopeCreep: CHECK_UI.scopeCreep.icon,
   oldModelUsage: CHECK_UI.oldModelUsage.icon,
   overuseOfFastMode: CHECK_UI.overuseOfFastMode.icon,
   cacheChurn: CHECK_UI.cacheChurn.icon,

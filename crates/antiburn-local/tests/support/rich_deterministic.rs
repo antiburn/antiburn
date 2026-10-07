@@ -196,13 +196,20 @@ pub fn response(batch: &JevRequestBatch, answers: Answers) -> JevResponse {
             .iter()
             .map(|(id, question)| {
                 let local = &batch.answer_owners[id].1;
-                let JevQuestion::Choice { criteria, .. } = question else {
+                let JevQuestion::Choice { .. } = question else {
                     panic!("expected Choice")
                 };
-                let selected = match local.as_str() {
+                let selected = match local.rsplit("::").next().unwrap() {
                     "permission" => answers.permission,
                     "condition_evidence" => "selected",
-                    "read_trigger" => "edit_request",
+                    "read_trigger" => {
+                        if matches!(answers.read, "request_order" | "read_success") {
+                            "edit_request"
+                        } else {
+                            "not_read_rule"
+                        }
+                    }
+                    "path_change_policy" => "other_path",
                     _ if local.starts_with("literal_qualification_") => "qualified",
                     _ if local.starts_with("literal_policy_") => "literal_other",
                     "read_prerequisite" => answers.read,
@@ -213,10 +220,10 @@ pub fn response(batch: &JevRequestBatch, answers: Answers) -> JevResponse {
                             local.strip_prefix("read_path_").unwrap().parse().unwrap();
                         answers.paths.get(index).copied().unwrap_or("other_path")
                     }
-                    _ if criteria.contains_key("applies") => "applies",
-                    _ if criteria.contains_key("conflict") => answers.relationship,
-                    _ if criteria.contains_key("self_contained") => "self_contained",
-                    _ if criteria.contains_key("not_completion_obligation") => answers.completion,
+                    "applicability" => "applies",
+                    "relationship" => answers.relationship,
+                    "evidence_basis" => "self_contained",
+                    "completion" => answers.completion,
                     _ => panic!("unhandled question {local}"),
                 };
                 (id.clone(), choice(question, selected))

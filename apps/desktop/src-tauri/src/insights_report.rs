@@ -18,7 +18,7 @@ use antiburn_local::model_catalog::ModelCatalog;
 use antiburn_local::pricing::ModelTokens;
 use antiburn_local::remediation::{Finding, FindingAssessment, ModelVerificationObservation};
 use anyhow::{Context, Result, ensure};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, named_params, params};
 
 use crate::remediation::WatchDefinition;
 use crate::store::{RemediationRecord, open_read_only};
@@ -27,8 +27,11 @@ use antiburn_local::remediation::SAVINGS_METHOD_REVISION;
 
 mod findings;
 mod ignored_instructions;
+mod over_exploring;
 mod queries;
 mod resources;
+mod scope_creep;
+mod skill_opportunities;
 mod token_burn;
 mod verification;
 
@@ -38,8 +41,10 @@ use antiburn_local::analysis::SourceOrigin;
 use antiburn_local::insights::TokenBurnSourceEvidence;
 use ignored_instructions::{
     IgnoredInstructionReportCounts, IgnoredInstructionSessionIdentity,
-    apply_ignored_instruction_counts, ignored_instruction_findings_for_evidence,
-    ignored_instruction_result_for, ignored_result_has_scoped_no_issues,
+    apply_ignored_instruction_counts, ignored_instruction_result_for,
+};
+pub(crate) use ignored_instructions::{
+    ignored_instruction_findings_for_evidence, ignored_result_has_scoped_no_issues,
 };
 use queries::*;
 #[cfg(test)]
@@ -58,7 +63,7 @@ pub(crate) use resources::{ResourceAssessment, ResourceAssessmentScope, UnusedRe
 pub(crate) use findings::reduce_report_blocking_with_home;
 #[allow(unused_imports)]
 pub use findings::{ReportCancelled, is_cancelled, reduce_report, reduce_report_blocking};
-pub(crate) use findings::{ensure_not_cancelled, publication_findings_in};
+pub(crate) use findings::{ensure_not_cancelled, publication_findings_in, smart_session_statuses};
 #[cfg(test)]
 use findings::{
     fair_bounded_selection, list_current_findings_on_snapshot,
@@ -177,16 +182,16 @@ fn reduce_with_state_on_snapshot(
     let transaction = connection.unchecked_transaction()?;
     let mut coverage = CoverageCounts::default();
     let mut pending_evidence = 0_u64;
-    let denominator_sql = DENOMINATOR_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
+    let denominator_sql = DENOMINATOR_SQL;
     {
-        let mut statement = transaction.prepare(&denominator_sql)?;
-        let mut rows = statement.query(params![
-            request.environment_key,
-            request.window.start_epoch,
-            request.window.end_epoch,
-            PARSER_REVISION,
-            ANALYZER_REVISION,
-            EVIDENCE_SCHEMA_REVISION,
+        let mut statement = transaction.prepare(denominator_sql)?;
+        let mut rows = statement.query(named_params![
+            ":environment_key": request.environment_key,
+            ":window_start": request.window.start_epoch,
+            ":window_end": request.window.end_epoch,
+            ":parser_revision": PARSER_REVISION,
+            ":analyzer_revision": ANALYZER_REVISION,
+            ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
         ])?;
         while let Some(row) = rows.next()? {
             let bucket = coverage_bucket(row.get::<_, String>(0)?.as_str())?;
@@ -221,18 +226,21 @@ fn reduce_with_state_on_snapshot(
     let mut ignored_unavailable = 0_u64;
     let mut ignored_not_applicable = 0_u64;
     let mut ignored_examples = Vec::new();
+    let mut skill_counts = IgnoredInstructionReportCounts::default();
+    let mut over_counts = IgnoredInstructionReportCounts::default();
+    let mut scope_counts = IgnoredInstructionReportCounts::default();
     let depth_cap = u128::from(accumulator.catalogs().depth_cap_tokens);
-    let cohort_sql = COHORT_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
+    let cohort_sql = COHORT_SQL;
     {
-        let mut statement = transaction.prepare(&cohort_sql)?;
-        let mut rows = statement.query(params![
-            request.environment_key,
-            request.window.start_epoch,
-            request.window.end_epoch,
-            PARSER_REVISION,
-            ANALYZER_REVISION,
-            EVIDENCE_SCHEMA_REVISION,
-            METRICS_SCHEMA_REVISION,
+        let mut statement = transaction.prepare(cohort_sql)?;
+        let mut rows = statement.query(named_params![
+            ":environment_key": request.environment_key,
+            ":window_start": request.window.start_epoch,
+            ":window_end": request.window.end_epoch,
+            ":parser_revision": PARSER_REVISION,
+            ":analyzer_revision": ANALYZER_REVISION,
+            ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
+            ":metrics_schema_revision": METRICS_SCHEMA_REVISION,
         ])?;
         let mut resource_session_index = 0_usize;
         while let Some(row) = rows.next()? {
@@ -248,6 +256,76 @@ fn reduce_with_state_on_snapshot(
             let incarnation: u64 = row.get(6)?;
             let source_generation: i64 = row.get(7)?;
             let source_fingerprint: Option<String> = row.get(8)?;
+            if request.environment_key == "native"
+                && antiburn_local::analysis::smart_check_source_supported(
+                    &agent,
+                    evidence.capabilities.source_format,
+                )
+            {
+                let identity = || IgnoredInstructionSessionIdentity {
+                    environment_key: &request.environment_key,
+                    agent: &agent,
+                    session_id: &session_id,
+                    incarnation,
+                    source_generation,
+                    source_fingerprint: source_fingerprint.as_deref(),
+                    published_fence,
+                };
+                for (counts, findings) in [
+                    (
+                        &mut over_counts,
+                        over_exploring::over_exploring_findings_for_session(
+                            &transaction,
+                            &evidence,
+                            identity(),
+                        )?,
+                    ),
+                    (
+                        &mut skill_counts,
+                        skill_opportunities::skill_opportunity_findings_for_session(
+                            &transaction,
+                            &evidence,
+                            identity(),
+                            cwd.as_ref().map(PathBuf::from),
+                        )?,
+                    ),
+                    (
+                        &mut scope_counts,
+                        scope_creep::scope_creep_findings_for_session(
+                            &transaction,
+                            &evidence,
+                            identity(),
+                        )?,
+                    ),
+                ] {
+                    counts.eligible += 1;
+                    match findings {
+                        Some(findings) => {
+                            counts.assessed += 1;
+                            if findings.is_empty() {
+                                counts.clean += 1;
+                                counts.clean_agents.insert(agent.clone());
+                            } else {
+                                counts.finding_sessions += 1;
+                                counts.finding_agents.insert(agent.clone());
+                                if counts.examples.len()
+                                    < antiburn_local::insights::MAX_EXAMPLES_PER_DETECTOR
+                                {
+                                    counts.examples.push(SessionExample {
+                                        agent: agent.clone(),
+                                        session_id: session_id.clone(),
+                                    });
+                                }
+                            }
+                        }
+                        None => counts.unavailable += 1,
+                    }
+                }
+            } else {
+                over_counts.not_applicable += 1;
+                skill_counts.not_applicable += 1;
+                scope_counts.not_applicable += 1;
+            }
             if antiburn_local::analysis::ignored_instructions::source_supported(
                 evidence.capabilities.source_format,
             ) {
@@ -379,14 +457,14 @@ fn reduce_with_state_on_snapshot(
     // Their direct positive uses can prevent a false current-inventory target.
     {
         let mut statement = transaction.prepare(RESOURCE_USE_SQL)?;
-        let mut rows = statement.query(params![
-            request.environment_key,
-            request.window.start_epoch,
-            request.window.end_epoch,
-            PARSER_REVISION,
-            ANALYZER_REVISION,
-            EVIDENCE_SCHEMA_REVISION,
-            METRICS_SCHEMA_REVISION,
+        let mut rows = statement.query(named_params![
+            ":environment_key": request.environment_key,
+            ":window_start": request.window.start_epoch,
+            ":window_end": request.window.end_epoch,
+            ":parser_revision": PARSER_REVISION,
+            ":analyzer_revision": ANALYZER_REVISION,
+            ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
+            ":metrics_schema_revision": METRICS_SCHEMA_REVISION,
         ])?;
         while let Some(row) = rows.next()? {
             ensure_not_cancelled(cancel)?;
@@ -433,6 +511,21 @@ fn reduce_with_state_on_snapshot(
         evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
         coverage,
     });
+    ignored_instructions::apply_persisted_check_counts(
+        &mut report,
+        DetectorId::ScopeCreep,
+        scope_counts,
+    );
+    ignored_instructions::apply_persisted_check_counts(
+        &mut report,
+        DetectorId::OverExploring,
+        over_counts,
+    );
+    ignored_instructions::apply_persisted_check_counts(
+        &mut report,
+        DetectorId::SkillOpportunities,
+        skill_counts,
+    );
     apply_ignored_instruction_counts(
         &mut report,
         IgnoredInstructionReportCounts {
@@ -624,7 +717,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn publication_cap_gives_all_ten_detectors_an_opportunity() {
+    fn publication_cap_gives_all_detectors_an_opportunity() {
         let buckets = DetectorId::ALL
             .into_iter()
             .map(|detector| (0..150).map(move |index| (detector, index)).collect())
@@ -634,12 +727,13 @@ pub(crate) mod tests {
 
         assert_eq!(selected.len(), 100);
         for detector in DetectorId::ALL {
-            assert_eq!(
-                selected
-                    .iter()
-                    .filter(|(found, _)| *found == detector)
-                    .count(),
-                10,
+            let count = selected
+                .iter()
+                .filter(|(found, _)| *found == detector)
+                .count();
+            assert!(
+                count >= 100 / DetectorId::COUNT,
+                "{detector:?} received only {count} slots"
             );
         }
         assert_eq!(selected[0], (DetectorId::SessionsOverDepth, 0));
@@ -3202,21 +3296,18 @@ pub(crate) mod tests {
         let data_dir = TempDir::new().unwrap();
         let _store = Store::open(data_dir.path()).unwrap();
         let connection = open_read_only(data_dir.path(), REPORT_BUSY_TIMEOUT).unwrap();
-        let sql = format!(
-            "EXPLAIN QUERY PLAN {}",
-            COHORT_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE)
-        );
+        let sql = format!("EXPLAIN QUERY PLAN {COHORT_SQL}");
         let mut statement = connection.prepare(&sql).unwrap();
         let details = statement
             .query_map(
-                params![
-                    "native",
-                    100,
-                    200,
-                    PARSER_REVISION,
-                    ANALYZER_REVISION,
-                    EVIDENCE_SCHEMA_REVISION,
-                    METRICS_SCHEMA_REVISION,
+                named_params![
+                    ":environment_key": "native",
+                    ":window_start": 100,
+                    ":window_end": 200,
+                    ":parser_revision": PARSER_REVISION,
+                    ":analyzer_revision": ANALYZER_REVISION,
+                    ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
+                    ":metrics_schema_revision": METRICS_SCHEMA_REVISION,
                 ],
                 |row| row.get::<_, String>(3),
             )

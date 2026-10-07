@@ -17,6 +17,11 @@ pub(super) struct CompactCarriedComparisons {
 
 #[derive(Serialize, Deserialize)]
 struct CompactComparison {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_binding: Option<antiburn_local::analysis::ignored_instructions::ActionSourceBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prerequisite_episode:
+        Option<antiburn_local::analysis::ignored_instructions::PrerequisiteEpisode>,
     id: String,
     reference: antiburn_local::analysis::ignored_instructions::RuleActionRef,
     source_thread_digest: String,
@@ -59,6 +64,8 @@ impl CompactCarriedComparisons {
                         index
                     });
                 CompactComparison {
+                    source_binding: comparison.source_binding.clone(),
+                    prerequisite_episode: comparison.prerequisite_episode.clone(),
                     id: comparison.id.clone(),
                     reference: comparison.reference.clone(),
                     source_thread_digest: comparison.source_thread_digest.clone(),
@@ -100,6 +107,8 @@ impl CompactCarriedComparisons {
                         .ok_or(JevError::InvalidCheckPlan)
                 };
                 Ok(CandidateComparison {
+                    source_binding: entry.source_binding,
+                    prerequisite_episode: entry.prerequisite_episode,
                     id: entry.id,
                     reference: entry.reference,
                     source_thread_digest: entry.source_thread_digest,
@@ -362,6 +371,131 @@ mod tests {
         JevSessionContext,
     };
     use serde_json::json;
+
+    #[test]
+    fn source_bound_comparisons_survive_durable_reload_and_legacy_has_no_binding() {
+        use antiburn_local::analysis::ignored_instructions::*;
+        let actions = (1..=12)
+            .map(|index| ContentAction {
+                reference: ContentEventReference {
+                    id: format!("action-{index}"),
+                    source_key_digest: "source".into(),
+                    thread_digest: "thread".into(),
+                    turn_index: index,
+                    native_record_id: None,
+                    part_index: 0,
+                    stable: true,
+                },
+                timestamp_ms: Some(index as i64),
+                turn_role: "assistant".into(),
+                turn_scope: "main".into(),
+                authority: "assistant".into(),
+                kind: "assistant_text".into(),
+                text: "Published without validation.".into(),
+                tool_name: None,
+                tool_call_id: None,
+                normalized_fields: None,
+                metadata: Default::default(),
+                truncated: false,
+                context_only: false,
+            })
+            .collect();
+        let input = AssessmentInput {
+            content: SessionContentEvidence {
+                session_identity_digest: "session".into(),
+                source_format: antiburn_local::analysis::SourceFormat::ClaudeJsonl,
+                publication_fence: 3,
+                selected_input_digest: "selected".into(),
+                actions,
+                instructions: vec![
+                    snapshot_from_text(
+                        "AGENTS.md",
+                        "Request validation before publishing.".into(),
+                        InstructionProvenance::RecordedInjection,
+                        InstructionScope::Project,
+                    )
+                    .unwrap(),
+                ],
+                complete: true,
+                limitations: vec![],
+                excluded_thinking_parts: 0,
+                field_availability: vec![],
+            },
+            prior_history_complete: true,
+            activity_after_ms: None,
+            boundary_positions: BTreeMap::new(),
+            source_generation: 2,
+            source_fingerprint: Some("fingerprint".into()),
+            incarnation: 1,
+            comparison_after: None,
+        };
+        let context = build_jev_context(&input).unwrap();
+        let mut plan = IgnoredInstructionsCheck.prepare(&context).unwrap();
+        let expanded = plan
+            .prepared
+            .comparisons
+            .iter_mut()
+            .find(|comparison| comparison.reference.action_id == "action-12")
+            .unwrap();
+        let earlier = &input.content.actions[..11];
+        expanded.prerequisite_episode = Some(PrerequisiteEpisode {
+            selected_actions: earlier.to_vec(),
+            events: earlier
+                .iter()
+                .map(|action| CounterEvidence {
+                    action_id: action.reference.id.clone(),
+                    source_order: action.reference.turn_index,
+                    role: action.turn_role.clone(),
+                    kind: action.kind.clone(),
+                    timestamp_ms: action.timestamp_ms,
+                    tool_name: None,
+                    text: action.text.clone(),
+                    truncated: false,
+                })
+                .collect(),
+            identities: earlier
+                .iter()
+                .map(|action| EvidenceIdentity {
+                    source: action.reference.clone(),
+                    content_digest: content_action_digest(action),
+                    start_byte: 0,
+                    end_byte: action.text.len(),
+                })
+                .collect(),
+            complete_selected_history: true,
+            revision: "episode-revision".into(),
+        });
+        let comparisons = &plan.prepared.comparisons;
+        assert!(!comparisons.is_empty());
+        assert!(
+            comparisons
+                .iter()
+                .all(|comparison| comparison.source_binding.is_some())
+        );
+        let expanded = comparisons
+            .iter()
+            .find(|comparison| comparison.reference.action_id == "action-12")
+            .unwrap();
+        assert!(expanded.prerequisite_episode.as_ref().unwrap().events.len() > 3);
+        let compact = CompactCarriedComparisons::from_comparisons(comparisons);
+        let saved = serde_json::to_string(&compact).unwrap();
+        let restored: CompactCarriedComparisons = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.restore().unwrap(), *comparisons);
+        let mut legacy: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        for comparison in legacy["comparisons"].as_array_mut().unwrap() {
+            comparison.as_object_mut().unwrap().remove("source_binding");
+            comparison
+                .as_object_mut()
+                .unwrap()
+                .remove("prerequisite_episode");
+        }
+        let legacy: CompactCarriedComparisons = serde_json::from_value(legacy).unwrap();
+        for comparison in legacy.restore().unwrap() {
+            assert!(comparison.source_binding.is_none());
+            let rebuilt = extend_comparison_with_history(&comparison, &input.content.actions, true);
+            assert!(rebuilt.source_binding.is_none());
+        }
+    }
 
     #[test]
     fn page_boundary_checkpoint_restores_with_a_different_next_page_layout() {

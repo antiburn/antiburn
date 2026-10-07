@@ -19,12 +19,14 @@ process-level opt-out.
 - No work content is sent through analytics — no transcript, prompt, title, file path,
   repository or branch name, token count, cost, or credential. Resource ranges
   can reveal coarse app work intensity and local data volume.
-- Optional Ignored Instructions assessments use a separate TypeSafe request.
-  They send selected instruction text and assistant excerpts, plus Bash command
-  input, edit and read paths, search queries with scope filters, and other-tool
-  input. Bash input can include inline scripts, heredocs, and patches recorded in
-  the command. Dedicated edit bodies and all tool outputs are excluded. Selected
-  paths can leave the device. This is not analytics.
+- Optional Smart Burn Checks use a separate Jev, Ollama, Cloudflare, or Custom
+  connection. Ignored Instructions sends selected instructions, assistant text,
+  commands, edit/read paths, search queries, other-tool inputs, and bounded user
+  text/Bash results for accepted context. The three newer checks can also send
+  selected task/work, edit and tool-result content, supported question/plan
+  records, and current skill reference fields. Thinking is excluded. Selected
+  text and paths can leave the device; requests do not upload all transcripts.
+  These provider requests are not analytics. See [Smart Burn Checks](smart-burn-checks.md).
 - Official builds can record launch and onboarding progress before setup ends.
 - The installation identifier is random, is not derived from anything about
   your machine, and is replaced every 30 days.
@@ -125,8 +127,10 @@ The Claude reset event reveals that Claude is enabled; `usage_observed`,
 `limit_factor_observed`, and `quota_window_closed` reveal more broadly which
 of the three providers are enabled and visible, since each fires for
 whichever ones an ordinary pass produces a reading for. These, plus the
-agent-carrying events above, are the only analytics fields that identify an
-agent or provider category. If that is more than you want to share, the switch
+agent-carrying events above, identify agent or live-usage provider categories.
+Smart Check setup/test events separately identify the fixed route category
+`jev`, `cloudflare`, `ollama`, or `custom`, without endpoints or model names.
+If that is more than you want to share, the switch
 turns all analytics off.
 
 ### Why counts are bucketed
@@ -217,6 +221,61 @@ design.
 
 Event names are namespaced `antiburn.*`.
 
+### Four-check runtime coverage
+
+The current source emits the following extensions to existing events. Native
+Settings commands own provider setup/tests. Each check worker owns its fenced
+terminal publication. Visible Checks detail/evidence handlers and prompt actions
+own reader events through the closed `Interaction` union in `src/lib/ipc.ts`.
+Schema acceptance and emitted behavior remain separate claims.
+No event name or wire property is added.
+
+The fixed check vocabulary is `ignored_instructions`, `scope_creep`,
+`over_exploring`, and `skill_opportunities`. The fixed Smart Check provider
+vocabulary is `jev`, `cloudflare`, `ollama`, and `custom`. `custom` describes
+a provider route; it carries no endpoint or response protocol.
+
+| Existing event | Extended closed properties | Required runtime boundary |
+| --- | --- | --- |
+| `antiburn.ignored_instruction_lifecycle` | `label`: a Smart Check provider; `detail`: `provider_saved`, `provider_switched`, `credential_removed`, `test_succeeded`, or `test_failed`. | A saved provider transition or credential removal succeeds, or an explicit connection test settles. Setup failure cannot emit a saved result. |
+| `antiburn.ignored_instruction_lifecycle` | `label`: a fixed check; `detail`: `execution_finding`, `execution_clean`, `execution_abstained`, `execution_failed`, `backfill_finding`, `backfill_clean`, `backfill_abstained`, or `backfill_failed`. | A current fenced assessment publishes a terminal result. Finding and clean refer to product-eligible evidence; an unsupported, incomplete, or inconclusive result is not clean. |
+| `antiburn.ignored_instruction_observed` | `label`: a fixed check; `detail`: `finding_visible`, `evidence_available`, `evidence_unavailable`, or `evidence_failed`. | A deliberately selected finding is visible, or its current evidence request settles while selected. Debug builds suppress these reader events. |
+| `antiburn.burn_check_prompt_prepared` | Optional `label`: a fixed check; existing `detail`: `ready`, `stale`, `expired`, `unavailable`, or `failed`. | The existing deliberate prompt-preparation result. Add classification to that event rather than emit a second preparation. |
+| `antiburn.burn_check_prompt_copied` | Optional `label`: a fixed check; no `detail`. | The existing successful clipboard write. A failure emits no copy event. |
+
+Provider producers are in `src-tauri/src/jev/settings.rs`; terminal producers
+are in `ignored_instructions_worker.rs`, `scope_creep_worker.rs`,
+`over_exploring_worker.rs`, and `skill_opportunities_worker.rs` in that directory.
+Reader producers are `src/views/main-window/burn-checks/BurnChecksReport.tsx`
+and `BurnCheckTargetDetail.tsx`; prompt producers are `BurnCheckDetail.tsx` and
+`BurnCheckTargetActions.tsx` there. Paths are relative to `apps/desktop`.
+Saved no-ops, restoration, failed saves, stale publication, checkpoint-only work,
+and canceled work emit no success or terminal assessment. Pre-assessment
+rejection is outside the terminal-outcome denominator.
+
+Legacy `ignoredInstructionObserved` and coarse native lifecycle values remain
+accepted for compatibility. Current reader/prompt and worker sites use classified
+four-check tuples. Accepted legacy values are not current runtime coverage.
+No Smart Check Auto Fix, verification, or savings event is implied.
+Terminal outcome counts measure accepted publications, not distinct sessions,
+provider requests, model accuracy, or savings. Clean remains check-scoped;
+Ignored Instructions covers sampled comparisons.
+
+The historical Ignored Instructions event names are retained. Their new
+check-specific tuples must be analyzed separately from legacy stage labels and
+generic completion results. A prompt event without `label` remains a generic
+action and cannot be assigned retrospectively to one of the four checks.
+Global enablement, history-window changes, and history-run requests retain their
+existing lifecycle labels; there is no per-check enablement control to measure.
+Provider setup, tests, and assessment outcomes are not engagement events.
+
+These extensions send only the fixed labels above. They exclude selected text,
+instructions, findings, evidence, prompts, approval content, paths, URLs,
+endpoints, model names, account identifiers, credential references, keys,
+private errors, and work identifiers. Counts, costs, provider responses, and
+input/output tokens are also excluded. The first shipping app version with each
+runtime extension defines its reporting boundary.
+
 Remote-host operations add the following closed events. They use the existing
 envelope and count buckets; they add no wire properties.
 
@@ -262,8 +321,8 @@ envelope and count buckets; they add no wire properties.
 | `antiburn.app_search_opened`             | The reader opens the main-window command palette. Duplicate opens and rerenders emit nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | No properties.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `antiburn.app_search_result_opened`      | A selected catalog result completes navigation or a Settings open request succeeds. This does not imply that data loaded or a setting changed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `label` — `view`, `setting`, or `check`. No query, result identity, title, or path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `antiburn.interface_scale_changed`       | A different application interface size preset is saved. Initial load, automatic restoration, a repeated edge shortcut, and a generic Settings save emit nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `label` — `90`, `100`, `110`, `125`, `150`, `175`, or `200`. `detail` — `settings`, `shortcut`, or `menu`, the closed route that requested the saved change. No window dimensions, display details, DPI, content, or identifier.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `antiburn.ignored_instruction_observed` | In release builds, a deliberately selected Ignored Instructions finding becomes visible, a current target evidence request completes, or its fix prompt is copied or fails. Debug builds suppress this event so historical test runs do not count as normal engagement. | `label` — `finding`, `evidence`, or `prompt`. `detail` — `visible` for a finding, `available`, `unavailable`, or `failed` for evidence, and `copied`, `unavailable`, or `failed` for prompt action. No instruction, excerpt, prompt, finding ID, session, path, API key, or private error. |
-| `antiburn.ignored_instruction_lifecycle` | Smart Burn Checks are enabled or paused, a TypeSafe key is saved or removed, a history window changes, a historical run is requested, or an Ignored Instructions assessment publishes a terminal result. Intermediate ranges do not emit this event. `completed` and `failed` describe an individual assessment, not completion of the full history run. | `label` — `enablement`, `history_window`, `backfill`, or `execution`. `detail` — `enabled`/`disabled`, `future`/`7_days`/`30_days`, `requested`, or `completed`/`failed`, as selected by label. No key, session, instruction, provider response, path, or error. |
+| `antiburn.ignored_instruction_observed` | In release builds, a deliberately selected Smart Check finding becomes visible or its current evidence request settles. Hidden/stale detail and debug builds emit nothing. | `label`: a fixed check; `detail`: `finding_visible`, `evidence_available`, `evidence_unavailable`, or `evidence_failed`. Legacy stage tuples stay accepted without current reader producers. Prompt actions use classified generic events. No work content or identifiers. |
+| `antiburn.ignored_instruction_lifecycle` | Saved global enablement/history transitions, explicit history requests, saved provider transitions/credential removal, explicit settled connection tests, and current fenced terminal assessments from all four workers. | Global labels: `enablement`, `history_window`, `backfill`, with `enabled`/`disabled`, `future`/`7_days`/`30_days`, or `requested`. Provider/check tuples are in the runtime table above. Legacy coarse terminal values stay accepted; current workers emit classified outcomes. No key, endpoint, model, session, text, or private error. |
 
 Several events are deliberately not sent once per occurrence. A full scan result
 that repeats the last bucket is dropped, so a machine left running does not
@@ -306,6 +365,11 @@ at most once for one visible target action while clipboard retries can continue;
 only the first successful clipboard write emits `burn_check_prompt_copied`.
 Named M/B/K target rows use these same bounded action events. The events do not
 add the resource kind, resource name, estimate, scope, path, or session sample.
+
+Smart Check prompt preparation/copy adds only the optional fixed check `label`
+listed above. Generic prompt rows describe unclassified actions. Smart Check
+prompts do not enroll verification watches; clipboard success does not prove
+that a user ran the prompt or reduced burn.
 
 Provider states are reported only on Activity and for deliberate provider
 previews and user-opened HUD exposures. The renderer suppresses duplicate

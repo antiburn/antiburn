@@ -86,7 +86,7 @@ export function SettingsView() {
         appVersion={info?.appVersion ?? "VERSION"}
       />
     ),
-    checks: () => <ChecksPane />,
+    checks: () => <ChecksPane control={control} targetRevision={targetRevision} />,
     privacy: () => <PrivacyPane {...controller} info={info} />,
     notifications: () => <NotificationsPane {...controller} />,
     usage: () => <UsagePane {...controller} />,

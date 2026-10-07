@@ -12,6 +12,25 @@ use antiburn_local::insights::{
 };
 use rusqlite::{Connection, params};
 
+#[derive(Default)]
+struct ContentSink(Vec<antiburn_local::analysis::ContentPart>);
+
+impl antiburn_local::analysis::RecordSink for ContentSink {
+    fn record(&mut self, record: antiburn_local::analysis::NormalizedRecord) {
+        if let antiburn_local::analysis::NormalizedRecord::TurnContent(content) = record {
+            self.0.extend(content.parts);
+        }
+    }
+
+    fn finish(&mut self, _: antiburn_local::analysis::SessionSummary) {}
+}
+
+fn content_parts(input: &SessionInput) -> Vec<antiburn_local::analysis::ContentPart> {
+    let mut sink = ContentSink::default();
+    reader_for("antigravity").visit(input, &mut sink).unwrap();
+    sink.0
+}
+
 fn input(source: RawSource) -> SessionInput {
     let source_format = match &source {
         RawSource::Sqlite(_) => SourceFormat::AntigravitySqlite,
@@ -455,4 +474,298 @@ fn antigravity_brain_content_reaches_the_shared_private_turn_content_path() {
             .iter()
             .any(|part| part.part.kind.as_str() == "thinking")
     );
+}
+
+#[test]
+fn recorded_proposals_tasks_and_user_corrections_keep_order_and_authority() {
+    use antiburn_local::analysis::{ContentAuthority, ContentKind};
+
+    let input = input(RawSource::Jsonl(
+        include_str!("fixtures/antigravity_characterization/scope_records.jsonl").into(),
+    ));
+    let parts = content_parts(&input);
+    assert_eq!(parts.len(), 6);
+    assert_eq!(parts[0].authority, ContentAuthority::User);
+    assert!(
+        parts[0]
+            .text
+            .contains("Keep the database schema unchanged.")
+    );
+    assert_eq!(parts[1].authority, ContentAuthority::Assistant);
+    assert!(parts[1].text.starts_with("Proposed work:"));
+    assert_eq!(parts[2].kind, ContentKind::ToolInput);
+    assert_eq!(parts[2].authority, ContentAuthority::Assistant);
+    let args: serde_json::Value = serde_json::from_str(&parts[2].text).unwrap();
+    assert_eq!(
+        args["CodeContent"],
+        "# Tasks\n\n- [ ] Update the parser\n- [ ] Run focused tests\n"
+    );
+    assert_eq!(parts[2].tool_call_id, None);
+    assert_eq!(parts[3].authority, ContentAuthority::Tool);
+    assert_eq!(parts[3].tool_call_id, None);
+    assert_eq!(parts[4].authority, ContentAuthority::User);
+    assert_eq!(
+        parts[4].text,
+        "Proceed with the parser change only. Do not change discovery."
+    );
+    assert_eq!(parts[5].authority, ContentAuthority::User);
+    assert_eq!(
+        parts[5].text,
+        "Actually, reject that proposal. Investigate first."
+    );
+    assert!(
+        parts
+            .iter()
+            .all(|part| part.metadata.user_answers.is_empty()
+                && part.metadata.plan_references.is_empty())
+    );
+}
+
+#[test]
+fn accepted_user_fields_retain_conditions_and_repeated_text() {
+    let step = r#"{"type":"USER_INPUT","content":"Do not change the schema.","userInput":{"userResponse":"Proceed only after tests pass.","items":[{"text":"Do not change the schema."},{"text":"Actually, investigate first."}]}}"#;
+    for source in [step.to_owned(), format!("{{\"steps\":[{step}]}}")] {
+        let parts = content_parts(&input(RawSource::Jsonl(source)));
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| part.text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Proceed only after tests pass.",
+                "Do not change the schema.",
+                "Do not change the schema.",
+                "Actually, investigate first.",
+            ]
+        );
+        assert!(
+            parts
+                .iter()
+                .all(|part| part.authority == antiburn_local::analysis::ContentAuthority::Unknown)
+        );
+    }
+}
+
+#[test]
+fn brain_human_authority_requires_pinned_explicit_source_and_scalar_content() {
+    use antiburn_local::analysis::{ContentAuthority, ContentKind, Role};
+
+    for (source, expected) in [
+        (
+            Some(serde_json::json!("USER_EXPLICIT")),
+            ContentAuthority::User,
+        ),
+        (Some(serde_json::json!("SYSTEM")), ContentAuthority::Unknown),
+        (Some(serde_json::json!("MODEL")), ContentAuthority::Unknown),
+        (Some(serde_json::json!("FUTURE")), ContentAuthority::Unknown),
+        (
+            Some(serde_json::json!("user_explicit")),
+            ContentAuthority::Unknown,
+        ),
+        (Some(serde_json::json!(null)), ContentAuthority::Unknown),
+        (
+            Some(serde_json::json!(["USER_EXPLICIT", "SYSTEM"])),
+            ContentAuthority::Unknown,
+        ),
+        (None, ContentAuthority::Unknown),
+    ] {
+        let mut record = serde_json::json!({
+            "type": "USER_INPUT", "created_at": 1000,
+            "content": "Proceed only after tests pass. Do not change the schema.",
+        });
+        if let Some(source) = source {
+            record["source"] = source;
+        }
+        let input = input(RawSource::Jsonl(record.to_string()));
+        let parts = content_parts(&input);
+        assert_eq!(parts.len(), 1, "{record}");
+        assert_eq!(parts[0].text, record["content"].as_str().unwrap());
+        assert_eq!(parts[0].kind, ContentKind::UserText);
+        assert_eq!(parts[0].authority, expected, "{record}");
+        assert!(parts[0].metadata.user_answers.is_empty());
+        assert!(parts[0].metadata.plan_references.is_empty());
+        let session = reader_for("antigravity").normalize(&input).unwrap();
+        assert_eq!(session.events.len(), 1);
+        assert_eq!(session.events[0].role, Role::User);
+        assert_eq!(session.events[0].ts_ms, Some(1_000_000));
+        assert_eq!(
+            matches!(evidence(&input).coverage, EvidenceCoverage::Partial(_)),
+            expected != ContentAuthority::User,
+            "{record}"
+        );
+    }
+}
+
+#[test]
+fn unpinned_nested_user_fields_never_inherit_explicit_scalar_authority() {
+    use antiburn_local::analysis::ContentAuthority;
+
+    let record = serde_json::json!({
+        "type": "USER_INPUT", "source": "USER_EXPLICIT", "created_at": 1000,
+        "content": "Investigate first.",
+        "userInput": {
+            "userResponse": "Proceed",
+            "items": [{"text": "Approve the plan"}],
+        },
+    });
+    let session_input = input(RawSource::Jsonl(record.to_string()));
+    let parts = content_parts(&session_input);
+    assert_eq!(
+        parts
+            .iter()
+            .map(|part| part.text.as_str())
+            .collect::<Vec<_>>(),
+        ["Proceed", "Investigate first.", "Approve the plan"]
+    );
+    assert_eq!(
+        parts.iter().map(|part| part.authority).collect::<Vec<_>>(),
+        [
+            ContentAuthority::Unknown,
+            ContentAuthority::User,
+            ContentAuthority::Unknown
+        ]
+    );
+    assert!(
+        parts
+            .iter()
+            .all(|part| part.metadata.user_answers.is_empty()
+                && part.metadata.plan_references.is_empty())
+    );
+    assert!(matches!(
+        evidence(&session_input).coverage,
+        EvidenceCoverage::Partial(_)
+    ));
+
+    for kind in ["USER_INPUT", "CORTEX_STEP_TYPE_USER_INPUT"] {
+        let mut nested_only = record.clone();
+        nested_only["type"] = serde_json::json!(kind);
+        nested_only.as_object_mut().unwrap().remove("content");
+        for source in [
+            nested_only.to_string(),
+            format!("{{\"steps\":[{nested_only}]}}"),
+        ] {
+            let input = input(RawSource::Jsonl(source));
+            let parts = content_parts(&input);
+            assert_eq!(parts.len(), 2);
+            assert!(
+                parts
+                    .iter()
+                    .all(|part| part.authority == ContentAuthority::Unknown)
+            );
+            assert!(
+                parts
+                    .iter()
+                    .all(|part| part.metadata.user_answers.is_empty()
+                        && part.metadata.plan_references.is_empty())
+            );
+            assert!(matches!(
+                evidence(&input).coverage,
+                EvidenceCoverage::Partial(_)
+            ));
+        }
+    }
+}
+
+#[test]
+fn brain_source_provenance_does_not_establish_cascade_human_authority() {
+    let input = input(RawSource::Jsonl(r#"{"steps":[{"type":"USER_INPUT","source":"USER_EXPLICIT","created_at":1000,"content":"Proceed"}]}"#.into()));
+    let parts = content_parts(&input);
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0].text, "Proceed");
+    assert_eq!(
+        parts[0].authority,
+        antiburn_local::analysis::ContentAuthority::Unknown
+    );
+    assert!(matches!(
+        evidence(&input).coverage,
+        EvidenceCoverage::Partial(_)
+    ));
+}
+
+#[test]
+fn optional_native_call_ids_are_preserved_without_invented_joins() {
+    let parts = content_parts(&input(RawSource::Jsonl(concat!(
+        "{\"type\":\"PLANNER_RESPONSE\",\"tool_calls\":[{\"id\":\"recorded-call\",\"name\":\"view_file\",\"args\":{\"AbsolutePath\":\"/synthetic/plan.md\"}},{\"name\":\"view_file\",\"args\":{\"AbsolutePath\":\"/synthetic/task.md\"}}]}\n",
+        "{\"type\":\"VIEW_FILE\",\"tool_call_id\":\"recorded-call\",\"content\":\"# Proposed work\"}\n"
+    ).into())));
+    assert_eq!(parts[0].tool_call_id.as_deref(), Some("recorded-call"));
+    assert_eq!(parts[1].tool_call_id, None);
+    assert_eq!(parts[2].tool_call_id.as_deref(), Some("recorded-call"));
+    assert_eq!(
+        parts[2].authority,
+        antiburn_local::analysis::ContentAuthority::Tool
+    );
+    assert!(parts[2].metadata.plan_references.is_empty());
+}
+
+#[test]
+fn notification_policy_and_unproven_review_fields_do_not_grant_approval() {
+    let parts = content_parts(&input(RawSource::Jsonl(concat!(
+        "{\"type\":\"PLANNER_RESPONSE\",\"tool_calls\":[{\"name\":\"notify_user\",\"args\":{\"Message\":\"Review requested\",\"PathsToReview\":[\"/synthetic/implementation_plan.md\"]}}]}\n",
+        "{\"type\":\"TOOL\",\"content\":\"Notification delivered. approved\"}\n",
+        "{\"type\":\"SETTINGS\",\"content\":\"Always Proceed\"}\n",
+        "{\"type\":\"USER_INPUT\",\"review\":{\"proceed\":true,\"comments\":[\"approved\"],\"version\":1}}\n"
+    ).into())));
+    assert_eq!(parts.len(), 3);
+    assert!(
+        parts
+            .iter()
+            .all(|part| part.authority != antiburn_local::analysis::ContentAuthority::User)
+    );
+    assert!(
+        parts
+            .iter()
+            .all(|part| part.metadata.user_answers.is_empty()
+                && part.metadata.plan_references.is_empty())
+    );
+}
+
+#[test]
+fn missing_wrong_owner_and_stale_plan_companions_supply_no_historical_approval() {
+    for status in ["missing", "wrong-owner", "stale-plan"] {
+        let (directory, mut input) = database(false, false, false, false);
+        let brain = directory.path().join("brain/synthetic");
+        std::fs::create_dir_all(&brain).unwrap();
+        if status == "wrong-owner" {
+            let logs = directory.path().join("brain/other/.system_generated/logs");
+            std::fs::create_dir_all(&logs).unwrap();
+            std::fs::write(
+                logs.join("transcript.jsonl"),
+                "{\"type\":\"USER_INPUT\",\"content\":\"Proceed\"}\n",
+            )
+            .unwrap();
+            input.session_id = "other".into();
+        } else if status == "stale-plan" {
+            std::fs::write(
+                brain.join("implementation_plan.md"),
+                "# Current unreviewed revision\nChange the schema.\n",
+            )
+            .unwrap();
+            std::fs::write(
+                brain.join("implementation_plan.md.metadata.json"),
+                "{\"unproven_review\":\"approved\",\"unproven_version\":1}",
+            )
+            .unwrap();
+        }
+        assert!(content_parts(&input).is_empty(), "{status}");
+        let session = reader_for("antigravity").normalize(&input).unwrap();
+        assert_eq!(session.events.len(), 1);
+        assert_eq!(session.events[0].usage.input_tokens, 10);
+    }
+}
+
+#[test]
+fn unsupported_sqlite_versions_do_not_admit_companion_review_text() {
+    for version in [0, 2] {
+        let (_directory, input) = database(true, false, false, false);
+        let RawSource::Sqlite(path) = &input.source else {
+            unreachable!()
+        };
+        Connection::open(path)
+            .unwrap()
+            .pragma_update(None, "user_version", version)
+            .unwrap();
+        let error = reader_for("antigravity").normalize(&input).unwrap_err();
+        assert!(format!("{error:#}").contains(&format!("unsupported user_version {version}")));
+    }
 }

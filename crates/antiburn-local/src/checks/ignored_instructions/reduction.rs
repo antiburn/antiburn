@@ -2,6 +2,8 @@
 
 use super::*;
 
+const EVIDENCE_BASIS_THRESHOLD: f64 = 0.75;
+
 #[cfg(test)]
 #[path = "reduction/tests.rs"]
 mod tests;
@@ -20,6 +22,45 @@ pub(super) fn reduce_with_completion(
     processing_complete: bool,
     completion: &BTreeMap<String, CompletionCoverage>,
 ) -> AssessmentResult {
+    reduce_traced(plan, responses, processing_complete, completion, &mut None)
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ComparisonDiagnostic {
+    pub comparison_id: String,
+    pub action_id: String,
+    pub stage: String,
+    pub reason: String,
+    pub probabilities: BTreeMap<String, BTreeMap<String, f64>>,
+}
+
+fn trace(
+    diagnostics: &mut Option<&mut Vec<ComparisonDiagnostic>>,
+    comparison: &CandidateComparison,
+    stage: &str,
+    reason: &str,
+    judgment: Option<&ComparisonJudgment>,
+) {
+    if let Some(diagnostics) = diagnostics {
+        diagnostics.push(ComparisonDiagnostic {
+            comparison_id: comparison.id.clone(),
+            action_id: comparison.reference.action_id.clone(),
+            stage: stage.to_owned(),
+            reason: reason.to_owned(),
+            probabilities: judgment
+                .map(|judgment| judgment.probabilities.clone())
+                .unwrap_or_default(),
+        });
+    }
+}
+
+pub(super) fn reduce_traced(
+    plan: &AssessmentPlan,
+    responses: &BTreeMap<String, JevWorkItemResult>,
+    processing_complete: bool,
+    completion: &BTreeMap<String, CompletionCoverage>,
+    diagnostics: &mut Option<&mut Vec<ComparisonDiagnostic>>,
+) -> AssessmentResult {
     let mut findings = BTreeMap::<String, AssessmentFinding>::new();
     let mut reassessed_finding_ids = Vec::new();
     let mut pending_rules = Vec::new();
@@ -30,7 +71,39 @@ pub(super) fn reduce_with_completion(
     let mut seen = BTreeSet::new();
     let mut seen_requests = BTreeSet::new();
     for comparison in &plan.comparisons {
+        if comparison
+            .source_binding
+            .as_ref()
+            .is_some_and(|binding| !binding.matches(comparison))
+            || comparison.reference.scope == InstructionScope::Unknown
+            || comparison
+                .prerequisite_episode
+                .as_ref()
+                .is_some_and(|episode| {
+                    !comparison
+                        .source_binding
+                        .as_ref()
+                        .is_some_and(|binding| episode.has_source_bindings(binding))
+                })
+        {
+            trace(
+                diagnostics,
+                comparison,
+                "source_proof",
+                "binding_scope_or_episode_invalid",
+                None,
+            );
+            unassessed_comparisons.push(comparison.id.clone());
+            continue;
+        }
         let Some(initial) = responses.get(&comparison.id) else {
+            trace(
+                diagnostics,
+                comparison,
+                "response",
+                "candidate_response_missing",
+                None,
+            );
             unassessed_comparisons.push(comparison.id.clone());
             continue;
         };
@@ -43,9 +116,102 @@ pub(super) fn reduce_with_completion(
         );
         let Some(mut final_judgment) = judgment(initial, completion.get(&comparison.id).copied())
         else {
+            trace(
+                diagnostics,
+                comparison,
+                "response",
+                "required_candidate_answers_missing",
+                None,
+            );
             unassessed_comparisons.push(comparison.id.clone());
             continue;
         };
+        if plan
+            .observable_obligations
+            .get(&comparison.id)
+            .is_some_and(|obligation| {
+                obligation.condition_evidence
+                    == crate::analysis::jev::obligations::ConditionEvidence::Result
+                    && !comparison
+                        .prerequisite_episode
+                        .as_ref()
+                        .is_some_and(|episode| {
+                            episode.complete_selected_history && episode.results_available()
+                        })
+            })
+        {
+            trace(
+                diagnostics,
+                comparison,
+                "condition",
+                "required_result_not_selected",
+                Some(&final_judgment),
+            );
+            unassessed_comparisons.push(comparison.id.clone());
+            continue;
+        }
+        if plan
+            .observable_obligations
+            .get(&comparison.id)
+            .is_some_and(|obligation| {
+                !obligation.permission.observable_without_authority()
+                    && !comparison
+                        .prerequisite_episode
+                        .as_ref()
+                        .is_some_and(|episode| episode.authorization_available())
+            })
+        {
+            trace(
+                diagnostics,
+                comparison,
+                "authority",
+                "required_authority_not_selected",
+                Some(&final_judgment),
+            );
+            unassessed_comparisons.push(comparison.id.clone());
+            continue;
+        }
+        if plan
+            .observable_obligations
+            .get(&comparison.id)
+            .is_some_and(|obligation| {
+                obligation.candidate_family == "edit" && obligation.edit_scope_unknown
+            })
+        {
+            trace(
+                diagnostics,
+                comparison,
+                "source_proof",
+                "edit_scope_identity_unknown",
+                Some(&final_judgment),
+            );
+            unassessed_comparisons.push(comparison.id.clone());
+            continue;
+        }
+        if plan
+            .observable_obligations
+            .get(&comparison.id)
+            .is_some_and(|obligation| {
+                obligation.prerequisite_required
+                    && !obligation.read_order_required
+                    && !obligation.read_prerequisite_absent
+                    && !comparison
+                        .prerequisite_episode
+                        .as_ref()
+                        .is_some_and(|episode| episode.complete_selected_history)
+            })
+            && final_judgment.applicability != "not_applicable"
+        {
+            trace(
+                diagnostics,
+                comparison,
+                "prerequisite",
+                "necessary_episode_incomplete",
+                Some(&final_judgment),
+            );
+            unassessed_comparisons.push(comparison.id.clone());
+            continue;
+        }
         if final_judgment.applicability == "not_applicable"
             && (comparison.action.truncated
                 || comparison.action_text_start != 0
@@ -53,6 +219,13 @@ pub(super) fn reduce_with_completion(
                 || comparison.rule_text_end != comparison.rule_text.len())
             && !initial.answers.contains_key(QUESTION_RELATIONSHIP)
         {
+            trace(
+                diagnostics,
+                comparison,
+                "response",
+                "partial_candidate_followup_missing",
+                Some(&final_judgment),
+            );
             unassessed_comparisons.push(comparison.id.clone());
             continue;
         }
@@ -70,6 +243,9 @@ pub(super) fn reduce_with_completion(
                 .get(&comparison.id)
                 .is_some_and(|obligation| {
                     obligation.read_order_required && obligation.edit_scope_matches == Some(true)
+                        || (obligation.path_change_conflict == Some(true)
+                            && obligation.candidate_family == "edit"
+                            && obligation.edit_scope_matches == Some(true))
                         || obligation
                             .literal_policies
                             .iter()
@@ -77,13 +253,14 @@ pub(super) fn reduce_with_completion(
                                 binding.exact_match == Some(true)
                                     || binding.policy
                                         == crate::analysis::jev::exact_facts::LiteralPolicy::ResponseLiteral
-                                    || (comparison.action.kind == "assistant_text"
+                                    || (super::super::action_context::is_assistant_text(&comparison.action.kind)
                                         && matches!(binding.policy,
                                             crate::analysis::jev::exact_facts::LiteralPolicy::ConstructBan
                                             | crate::analysis::jev::exact_facts::LiteralPolicy::CommandBan))
                             })
                 })
         {
+            trace(diagnostics, comparison, "semantic", "confident_not_applicable", Some(&final_judgment));
             reassessed_finding_ids.push(finding_id_for_reference(&comparison.reference));
             continue;
         }
@@ -99,39 +276,78 @@ pub(super) fn reduce_with_completion(
                     BTreeMap::from([("applies".to_owned(), 1.0)]),
                 );
             }
-            let inactive_result_condition = obligation.condition_evidence
-                == crate::analysis::jev::obligations::ConditionEvidence::Result
-                && final_judgment.applicability == "not_applicable"
-                && probability(&final_judgment, QUESTION_APPLICABILITY, "not_applicable")
-                    >= POSSIBLE_THRESHOLD;
             if (obligation.condition_evidence
                 != crate::analysis::jev::obligations::ConditionEvidence::Selected
-                && !inactive_result_condition)
+                && obligation.condition_evidence
+                    != crate::analysis::jev::obligations::ConditionEvidence::Result)
                 || (obligation.prerequisite_required
                     && !comparison.prior_history_complete
                     && comparison.action.kind == "tool_input")
             {
+                trace(
+                    diagnostics,
+                    comparison,
+                    "condition",
+                    "condition_unavailable_or_required_history_missing",
+                    Some(&final_judgment),
+                );
                 unassessed_comparisons.push(comparison.id.clone());
                 continue;
             }
-            if !obligation.permission.observable_without_authority() {
-                unassessed_comparisons.push(comparison.id.clone());
-                continue;
+            if obligation.path_change_conflict == Some(true)
+                && obligation.candidate_family == "edit"
+                && obligation.edit_scope_matches == Some(true)
+                && !comparison.action.truncated
+            {
+                final_judgment.applicability = "applies".to_owned();
+                final_judgment.relationship = "conflict".to_owned();
+                final_judgment.evidence_basis = "self_contained".to_owned();
+                for (question, option) in [
+                    (QUESTION_APPLICABILITY, "applies"),
+                    (QUESTION_RELATIONSHIP, "conflict"),
+                    (QUESTION_EVIDENCE_BASIS, "self_contained"),
+                ] {
+                    final_judgment.probabilities.insert(
+                        question.to_owned(),
+                        BTreeMap::from([(option.to_owned(), 1.0)]),
+                    );
+                }
             }
             if obligation.read_order_required
                 && obligation.recorded_edit_only
                 && obligation.candidate_family == "assistant"
             {
+                trace(
+                    diagnostics,
+                    comparison,
+                    "candidate",
+                    "recorded_edit_rule_does_not_cover_text",
+                    Some(&final_judgment),
+                );
                 continue;
             }
             if obligation.read_order_required
                 && obligation.candidate_family == "edit"
                 && obligation.edit_scope_unknown
             {
+                trace(
+                    diagnostics,
+                    comparison,
+                    "source_proof",
+                    "read_trigger_identity_unknown",
+                    Some(&final_judgment),
+                );
                 unassessed_comparisons.push(comparison.id.clone());
                 continue;
             }
             if obligation.read_order_unknown && final_judgment.applicability != "not_applicable" {
+                trace(
+                    diagnostics,
+                    comparison,
+                    "prerequisite",
+                    "read_requirement_classification_unknown",
+                    Some(&final_judgment),
+                );
                 unassessed_comparisons.push(comparison.id.clone());
                 continue;
             }
@@ -159,6 +375,13 @@ pub(super) fn reduce_with_completion(
                     && obligation.read_prerequisite_absent
                     && final_judgment.relationship == "conflict")
             {
+                trace(
+                    diagnostics,
+                    comparison,
+                    "prerequisite",
+                    "read_success_not_proven",
+                    Some(&final_judgment),
+                );
                 unassessed_comparisons.push(comparison.id.clone());
                 continue;
             }
@@ -166,6 +389,13 @@ pub(super) fn reduce_with_completion(
                 && obligation.candidate_family == "edit"
                 && obligation.edit_scope_matches == Some(false)
             {
+                trace(
+                    diagnostics,
+                    comparison,
+                    "candidate",
+                    "edit_outside_read_trigger_scope",
+                    Some(&final_judgment),
+                );
                 continue;
             }
             if obligation.read_order_required
@@ -185,6 +415,13 @@ pub(super) fn reduce_with_completion(
                             "conflict"
                         }
                         _ => {
+                            trace(
+                                diagnostics,
+                                comparison,
+                                "prerequisite",
+                                "read_request_order_not_proven",
+                                Some(&final_judgment),
+                            );
                             unassessed_comparisons.push(comparison.id.clone());
                             continue;
                         }
@@ -198,6 +435,13 @@ pub(super) fn reduce_with_completion(
                         "follows"
                     }
                     _ => {
+                        trace(
+                            diagnostics,
+                            comparison,
+                            "prerequisite",
+                            "read_order_trigger_not_bound",
+                            Some(&final_judgment),
+                        );
                         unassessed_comparisons.push(comparison.id.clone());
                         continue;
                     }
@@ -236,6 +480,26 @@ pub(super) fn reduce_with_completion(
         }
         let status = classify_comparison(comparison, &final_judgment);
         if matches!(status, RuleStatus::Likely | RuleStatus::Possible)
+            && comparison.source_binding.is_some()
+            && super::super::decisions::record(
+                plan,
+                comparison,
+                plan.observable_obligations.get(&comparison.id),
+                comparison_limitations(plan, comparison),
+            )
+            .is_none()
+        {
+            trace(
+                diagnostics,
+                comparison,
+                "publication",
+                "decision_citation_proof_missing",
+                Some(&final_judgment),
+            );
+            unassessed_comparisons.push(comparison.id.clone());
+            continue;
+        }
+        if matches!(status, RuleStatus::Likely | RuleStatus::Possible)
             || (status == RuleStatus::NoIssue
                 && comparison.rule_text_start == 0
                 && comparison.rule_text_end == comparison.rule_text.len()
@@ -246,6 +510,13 @@ pub(super) fn reduce_with_completion(
         }
         match status {
             RuleStatus::Likely | RuleStatus::Possible => {
+                trace(
+                    diagnostics,
+                    comparison,
+                    "publication",
+                    "finding_published",
+                    Some(&final_judgment),
+                );
                 let certainty = if status == RuleStatus::Likely {
                     FindingCertainty::Likely
                 } else {
@@ -267,14 +538,16 @@ pub(super) fn reduce_with_completion(
                         super::super::planning::rule_text_fragment(comparison),
                         2048,
                     );
-                let action_text = comparison
-                    .action
-                    .text
-                    .get(comparison.action_text_start..comparison.action_text_end)
-                    .unwrap_or(&comparison.action.text);
+                let action_text = &comparison.action.text;
                 let (action_excerpt, action_excerpt_truncated) =
                     super::super::planning::bounded_text(action_text, 2048);
                 let finding = AssessmentFinding {
+                    decision: super::super::decisions::record(
+                        plan,
+                        comparison,
+                        plan.observable_obligations.get(&comparison.id),
+                        finding_limits.clone(),
+                    ),
                     id: finding_id_for_reference(&comparison.reference),
                     reference: comparison.reference.clone(),
                     instruction_excerpt,
@@ -287,7 +560,10 @@ pub(super) fn reduce_with_completion(
                         .map(|event| event.action_id.clone())
                         .collect(),
                     counterevidence_ids: comparison
-                        .counterevidence
+                        .prerequisite_episode
+                        .as_ref()
+                        .map(|episode| episode.events.as_slice())
+                        .unwrap_or(&comparison.counterevidence)
                         .iter()
                         .map(|event| event.action_id.clone())
                         .collect(),
@@ -318,8 +594,23 @@ pub(super) fn reduce_with_completion(
                     })
                     .or_insert(finding);
             }
-            RuleStatus::NoIssue => {}
-            RuleStatus::Unassessed => unassessed_comparisons.push(comparison.id.clone()),
+            RuleStatus::NoIssue => trace(
+                diagnostics,
+                comparison,
+                "semantic",
+                "clean_comparison",
+                Some(&final_judgment),
+            ),
+            RuleStatus::Unassessed => {
+                trace(
+                    diagnostics,
+                    comparison,
+                    "semantic",
+                    semantic_blocker(&final_judgment),
+                    Some(&final_judgment),
+                );
+                unassessed_comparisons.push(comparison.id.clone());
+            }
         }
     }
     pending_rules.sort_by(|left, right| {
@@ -382,6 +673,45 @@ pub(super) fn reduce_with_completion(
             .limitations
             .push("some_comparisons_unassessed".to_owned());
     }
+    if plan.comparisons.iter().any(|comparison| {
+        unassessed_comparisons.contains(&comparison.id)
+            && plan
+                .observable_obligations
+                .get(&comparison.id)
+                .is_some_and(|obligation| {
+                    obligation.candidate_family == "edit" && obligation.edit_scope_unknown
+                })
+    }) {
+        coverage
+            .limitations
+            .push("edit_path_identity_unavailable".to_owned());
+    }
+    if plan.comparisons.iter().any(|comparison| {
+        unassessed_comparisons.contains(&comparison.id)
+            && comparison
+                .prerequisite_episode
+                .as_ref()
+                .is_some_and(|episode| !episode.complete_selected_history)
+    }) {
+        coverage
+            .limitations
+            .push("prerequisite_episode_incomplete".to_owned());
+    }
+    if plan.comparisons.iter().any(|comparison| {
+        comparison
+            .prerequisite_episode
+            .as_ref()
+            .is_some_and(|episode| {
+                !comparison
+                    .source_binding
+                    .as_ref()
+                    .is_some_and(|binding| episode.has_source_bindings(binding))
+            })
+    }) {
+        coverage
+            .limitations
+            .push("prerequisite_episode_binding_unavailable".to_owned());
+    }
     coverage.limitations.sort();
     coverage.limitations.dedup();
     AssessmentResult {
@@ -394,6 +724,22 @@ pub(super) fn reduce_with_completion(
         request_count,
         input_tokens,
         output_tokens,
+    }
+}
+
+fn semantic_blocker(judgment: &ComparisonJudgment) -> &'static str {
+    if judgment.evidence_basis != "self_contained"
+        || probability(judgment, QUESTION_EVIDENCE_BASIS, "self_contained")
+            < EVIDENCE_BASIS_THRESHOLD
+    {
+        "selected_evidence_basis_insufficient"
+    } else if matches!(
+        judgment.completion,
+        CompletionCoverage::BoundaryNotObserved | CompletionCoverage::Uncertain
+    ) {
+        "completion_boundary_not_proven"
+    } else {
+        "verdict_or_completion_probability_below_gate"
     }
 }
 
@@ -419,7 +765,16 @@ fn apply_literal_facts(
     judgment: &mut ComparisonJudgment,
 ) {
     use crate::analysis::jev::exact_facts::LiteralPolicy;
-    if !comparison.reference.action_stable || comparison.action.truncated {
+    if !comparison.reference.action_stable
+        || (comparison.action.truncated
+            && !comparison.source_binding.as_ref().is_some_and(|binding| {
+                binding.matches(comparison)
+                    && binding
+                        .excerpt
+                        .as_ref()
+                        .is_some_and(|excerpt| !excerpt.source_truncated)
+            }))
+    {
         return;
     }
     let strongest = obligation
@@ -433,7 +788,7 @@ fn apply_literal_facts(
                 (LiteralPolicy::ResponseLiteral, Some(true)) => Some(("follows", 1.0)),
                 (LiteralPolicy::ResponseLiteral, Some(false)) => Some(("conflict", 1.0)),
                 (LiteralPolicy::ConstructBan | LiteralPolicy::CommandBan, _)
-                    if comparison.action.kind == "assistant_text" =>
+                    if super::super::action_context::is_assistant_text(&comparison.action.kind) =>
                 {
                     let question = format!("literal_report_{index}");
                     if crate::analysis::jev::classification::confident_choice(
@@ -629,7 +984,7 @@ pub(super) fn classify_comparison(
     let conflict = probability(judgment, QUESTION_RELATIONSHIP, "conflict");
     let applies = probability(judgment, QUESTION_APPLICABILITY, "applies");
     let history_basis = probability(judgment, QUESTION_EVIDENCE_BASIS, "self_contained");
-    if judgment.evidence_basis != "self_contained" || history_basis < POSSIBLE_THRESHOLD {
+    if judgment.evidence_basis != "self_contained" || history_basis < EVIDENCE_BASIS_THRESHOLD {
         return RuleStatus::Unassessed;
     }
     let completion_option = match judgment.completion {
@@ -692,7 +1047,12 @@ fn comparison_limitations(plan: &AssessmentPlan, comparison: &CandidateCompariso
     if comparison.context_truncated || comparison.context.iter().any(|event| event.truncated) {
         limitations.push("nearby_context_truncated".to_owned());
     }
-    if comparison.earlier_history_truncated {
+    if comparison
+        .prerequisite_episode
+        .as_ref()
+        .map(|episode| !episode.complete_selected_history)
+        .unwrap_or(comparison.earlier_history_truncated)
+    {
         limitations.push("earlier_history_truncated".to_owned());
     }
     if !comparison.prior_history_complete {

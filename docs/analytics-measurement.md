@@ -1,6 +1,7 @@
-# Product analytics audit and measurement plan
+# Product analytics measurement contract
 
-Audited on 2026-09-08 at `3ce2b1da`. This is a source audit, not an analysis of
+Current Smart Check runtime audit: 2026-10-07. The historical foundation audit
+below was made on 2026-09-08 at `3ce2b1da`. This is a source audit, not an analysis of
 production event volumes. The collector, warehouse, release secrets, and live
 dashboards were not inspected. The findings below preserve the state at that
 revision. [analytics.md](analytics.md) is the catalog of implemented events.
@@ -544,7 +545,85 @@ failure/cancellation branches as well as the closed wire schema.
 
 ## Event review contract
 
-### Ignored Instructions
+### Four Smart Checks: closed extensions and runtime acceptance
+
+The schema supports four checks: `ignored_instructions`, `scope_creep`,
+`over_exploring`, and `skill_opportunities`. It reuses existing event names and
+wire properties. Provider setup/test commands, all four check workers, and visible
+Checks finding/evidence/prompt handlers now emit the classified tuples below.
+Payload tests alone do not establish runtime behavior; producer paths and limits
+are listed in [the public runtime catalog](analytics.md#four-check-runtime-coverage).
+
+| Product question and decision | Metric and denominator | Extended event contract and owner |
+| --- | --- | --- |
+| Can readers configure and test each provider route? Improve setup guidance. | Distinct reporting installations with saved/switched/removed configuration outcomes and explicit test outcomes by route. Test success fraction uses settled explicit tests, not saves or provider requests. | Native Settings commands use `ignored_instruction_lifecycle`; `label`: `jev`, `cloudflare`, `ollama`, or `custom`; `detail`: `provider_saved`, `provider_switched`, `credential_removed`, `test_succeeded`, or `test_failed`. |
+| Do assessments reach eligible findings, scoped clean results, or abstention? Improve evidence and provider reliability. | Outcome distributions by fixed check among published terminal assessments. Show reporting installation counts. Keep historical results separate from automatic execution. | Check-owned fenced publication uses `ignored_instruction_lifecycle`; `label`: the fixed check; `detail`: `execution_finding`, `execution_clean`, `execution_abstained`, `execution_failed`, or the corresponding four `backfill_` values. |
+| Do readers inspect each check's findings and evidence? Improve explanation and discoverability. | Distinct reporting installations with each check's finding/evidence tuple divided by installations with a deliberate Burn Checks exposure on supporting versions. This is reader reach, not a unique-finding count. | Visible detail and current evidence handlers use `ignored_instruction_observed`; `label`: the fixed check; `detail`: `finding_visible`, `evidence_available`, `evidence_unavailable`, or `evidence_failed`. Debug builds suppress these events. |
+| Do each check's prompt actions reach preparation and clipboard success? Improve prompt reliability. | Successful `burn_check_prompt_copied` relative to `burn_check_prompt_prepared` with `detail=ready`, by fixed check. Report preparation failures separately; allow late delivery. | Existing prompt handlers add optional `label` with the fixed check to their existing preparation/copy events. Preparation keeps its five existing outcomes; copy has no `detail`. |
+
+The fixed check vocabulary is exactly `ignored_instructions`, `scope_creep`,
+`over_exploring`, and `skill_opportunities`. Map detector IDs to these values
+locally; never serialize an arbitrary detector ID or report DTO. Native
+`SmartCheckLifecycle` is not an accepted renderer `Interaction`.
+
+Emit setup only after durable success and an actual transition. Failed saves,
+no-op switches, startup restoration, migration, and Settings refresh emit no
+setup success. Emit one test outcome per explicit settled test, including
+validation or credential failures after the authorized command begins. Internal
+transport retries do not create more tests. Cancellation or process exit can
+leave an attempt unobserved. No analytics-only provider request is allowed.
+
+Emit one assessment outcome only after a current terminal publication commits.
+Use the same eligible findings and clean gate as the visible report. A finding
+wins over a remaining sample gap; without a finding, report clean only when the
+check proves its sampled-clean eligibility. A published incomplete, unsupported,
+or inconclusive assessment is abstention. Published provider failures are failed;
+failed storage writes, stale, canceled, superseded, and checkpoint-only work
+emit no terminal result. Pre-assessment candidate rejection is outside this
+denominator; it must not become an event on every scheduling pass.
+Replace the old coarse II terminal event at that boundary rather than emit both.
+Cached/reused answers can complete an assessment without a new provider request.
+These counts cannot measure provider calls, distinct evaluated sessions, model
+accuracy, or population finding prevalence. Clean is check-scoped; Ignored
+Instructions covers sampled comparisons. Smart Check prompt actions do not prove
+session repair, verification, or savings.
+
+Finding visibility requires deliberate selection and visible failing detail.
+Repeated selection and report refresh must not create a new finding exposure.
+Evidence outcomes require the current request to settle while selected; stale
+responses and hidden details emit nothing. Use one evidence outcome per explicit
+request. Prompt classification extends each existing preparation/copy emission;
+clipboard retry reuses preparation and reports only its first success. Do not
+add a second check-specific prompt event. Migrate the legacy II prompt tuple to
+the classified generic action when the owning handler changes.
+
+Global enablement remains `label=enablement` and `detail=enabled`/`disabled`
+after a saved transition. History-window and explicit backfill-request events
+keep their existing contract. No per-check enablement event is needed because
+the current control enables or pauses all registered checks together.
+
+Only `label` and `detail` are populated by these extensions. No content, prompt,
+instruction, approval, path, URL, model, account, key, credential reference,
+response, exact count/cost/token value, private error, or work identifier is
+accepted. Existing consent, endpoint, environment, queue, and retry gates apply.
+Exclude provider operations and background/historical outcomes from engagement,
+activation, visits, and retention. Segment every new tuple at its first shipping
+runtime app version; legacy unlabeled prompts and coarse completion events cannot
+be reclassified. Missing delivery and opted-out installations remain unobserved.
+
+Enabled-feature tests enumerate provider setup/test outcomes, four-check
+assessment/abstention tuples, visible finding/evidence tuples, and prompt outcomes.
+They compare exact serialized properties and reject unknown values and private
+extra fields. Runtime acceptance must separately prove saved transitions,
+test failures, fenced publication, clean versus abstention, hidden/stale reader
+responses, prompt retries, and no-op suppression at the owning sites.
+
+### Legacy Ignored Instructions tuples
+
+Earlier releases used the stage and coarse lifecycle tuples below. The current
+sites use the four-check classifications above. Legacy values stay accepted by
+the closed schema and IPC, but acceptance does not mean a current producer emits
+them. Keep legacy reports separate at the first classified-runtime app version.
 
 The product question is whether enabled checks reach useful findings and whether
 readers inspect evidence and copy a fix prompt. Report distinct reporting
@@ -568,8 +647,10 @@ automatic preparation. Repeated reader attempts may report again; they are not
 unique findings. No text, prompt, path, finding, session, key, or request ID
 is sent through analytics. TypeSafe receives selected instruction text,
 assistant text excerpts, Bash command input, edit/read paths, search queries with
-scope, and other-tool input through a separate channel. User messages, edit
-contents, read/search/command output, and other tool results are excluded.
+scope, and other-tool input through a separate channel. Current Ignored
+Instructions also selects user text and Bash output for exactly validated bounded
+context. Edit content, read/search output, other results, typed question/plan
+fields, and thinking remain excluded. See [Smart Burn Checks](smart-burn-checks.md).
 Segment reports at the
 first app version shipping these events.
 

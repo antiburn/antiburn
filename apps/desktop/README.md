@@ -12,14 +12,31 @@ server, or backend.
 
 ## Data and network requests
 
-- **TypeSafe assessments:** Smart Burn Checks currently includes Ignored
-  Instructions. When enabled with a TypeSafe API key in Settings → Checks, it
+- **Smart assessments:** Settings → Checks runs Ignored Instructions, Scope
+  Creep, Over-exploring, and Skill Opportunities through Jev, Ollama, Cloudflare,
+  or Custom. Jev is the default; saved connections retain their settings when
+  switched. Credentials use native storage or memory. Ignored Instructions
   sends selected instruction text, assistant excerpts, Bash command input,
   file-edit and read paths, search queries with scope filters, and other-tool
   input. A valid OpenCode `apply_patch` request can expose its paths. Dedicated
-  edit-tool content, messages from the user, and tool output stay excluded.
+  edit-tool content, read/search output, other tool output, typed question/plan
+  fields, and thinking stay excluded. Selected human text and exactly bound Bash
+  results can supply bounded context. Unknown-origin text, skill documents, and
+  completion labels do not establish approval or passing tests.
   Inline scripts, heredocs, and patches recorded in Bash input can be sent.
-  Selected paths can leave the device. TypeSafe usage charges can apply.
+  Selected paths can leave the device. Provider usage charges can apply.
+- **Other smart assessments:** Pinned native Claude Code, Codex, OpenCode SQLite,
+  and Pi retained roots can use
+  Scope Creep, Over-exploring, and Skill Opportunities through the same master setting and
+  provider connection. These checks can send recorded user task context,
+  selected work, edit content and tool results, supported question/plan records,
+  current skill names, descriptions and semantic frontmatter, and use/time
+  limits. Private thinking stays excluded. Results are source-limited;
+  Skill Opportunities does not prove past skill visibility or execution. Each
+  request sends bounded selected fields, not all transcripts. All four checks
+  offer prompt-only guidance, with no Auto Fix, verification watch, or savings
+  estimate. A remote Ollama or Custom endpoint is a remote destination. Hosted
+  charges can apply.
 - **Model prices:** The app downloads public prices from models.dev at startup
   and once an hour while it runs. The request contains no session data or
   credentials.
@@ -138,6 +155,21 @@ a system SQLite.
 
 ## Debugging
 
+### Smart Check diagnostics
+
+The [Rust eval guide](src-tauri/eval/README.md) documents one ignored `live`
+entry point per check and shared environment-only provider selection. Use
+`ANTIBURN_EVAL_SUITE`, exact `ANTIBURN_EVAL_CASES`, and a positive
+`ANTIBURN_EVAL_LIMIT` to select bounded work. Timestamped captures include
+per-case outcomes, citation diagnostics, errors, abstentions, accuracy, usage,
+and latency. Scores do not gate delivery; no strict thresholds, frozen hashes,
+previous passing captures, recipes, or Python tool are required. Production
+protocol and authority validation still apply. Do not select every ignored test.
+
+```sh
+ANTIBURN_EVAL_PROVIDER=ollama-nimble ANTIBURN_EVAL_LIMIT=3 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --offline --test over_exploring live -- --ignored --exact --nocapture --test-threads=1
+```
+
 See [`docs/debugging.md`](../../docs/debugging.md) for development modes,
 debug-profile isolation, developer tools, logs, onboarding tests, sample
 notifications, and the updater simulator.
@@ -149,8 +181,9 @@ and IPC. The Rust analytics module tests consent, endpoint injection, and the
 payload schema. `cargo-deny` rejects known telemetry dependencies in the local
 engine. Release and dependency checks run through the required CI gate.
 
-Ignored Instructions uses separate paid TypeSafe requests, not the analytics
-channel. Its default sample is 256 high-priority rule/action pairs per review;
+Ignored Instructions uses the configured Jev, Ollama, Cloudflare, or Custom
+connection, separate from analytics. Hosted requests can incur charges. Its
+default sample is 256 high-priority rule/action pairs per review;
 it is not exhaustive or a spending cap.
 Meaningful word overlap, tool names, literal paths, risk, and recency help rank
 pairs; rule and source diversity and low-overlap probes keep the sample from

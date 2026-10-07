@@ -2,6 +2,106 @@ use super::super::tests::{event, input};
 use super::*;
 use crate::analysis::jev::JevUsage;
 
+#[test]
+fn prerequisite_verdict_needs_complete_episode_and_retains_the_anchor() {
+    let source = input(
+        vec![
+            event(
+                "earlier",
+                1,
+                "assistant",
+                "main",
+                "Requested the first check.",
+            ),
+            event(
+                "publish",
+                2,
+                "assistant",
+                "main",
+                "Requested publication without the second check.",
+            ),
+        ],
+        "Request both checks before publication.",
+    );
+    for complete in [true, false] {
+        for relationship in ["conflict", "follows"] {
+            let mut plan = build_assessment_plan(source.clone());
+            plan.comparisons
+                .retain(|comparison| comparison.reference.action_id == "publish");
+            let comparison = &mut plan.comparisons[0];
+            let anchor = comparison.reference.clone();
+            comparison.prerequisite_episode =
+                Some(crate::checks::ignored_instructions::decisions::episode(
+                    comparison,
+                    &source.content.actions,
+                    &crate::analysis::jev::capabilities::ModelCapabilities::jev_default(),
+                    complete,
+                ));
+            let id = comparison.id.clone();
+            plan.observable_obligations.insert(
+                id.clone(),
+                ObservableObligation {
+                    path_change_policy:
+                        crate::checks::ignored_instructions::PathChangePolicy::Other,
+                    path_change_conflict: None,
+                    literal_policies: Vec::new(),
+                    condition_evidence:
+                        crate::analysis::jev::obligations::ConditionEvidence::Selected,
+                    prerequisite_required: true,
+                    permission:
+                        crate::analysis::jev::obligations::PermissionRequirement::Independent,
+                    read_request_order: None,
+                    read_order_required: false,
+                    read_order_unknown: false,
+                    read_success_required: false,
+                    read_prerequisite_absent: false,
+                    candidate_family: "assistant".to_owned(),
+                    edit_scope_matches: None,
+                    recorded_edit_only: false,
+                    edit_scope_unknown: false,
+                },
+            );
+            let result = reduce_assessment(
+                &plan,
+                &BTreeMap::from([(
+                    id,
+                    response(
+                        &plan.comparisons[0],
+                        relationship,
+                        "self_contained",
+                        "not_completion_obligation",
+                    ),
+                )]),
+                true,
+            );
+            assert_eq!(result.unassessed_comparisons.len(), usize::from(!complete));
+            assert_eq!(
+                result.findings.len(),
+                usize::from(complete && relationship == "conflict")
+            );
+            if let Some(finding) = result.findings.first() {
+                assert_eq!(finding.reference, anchor);
+                let decision = finding.decision.as_ref().unwrap();
+                assert!(decision.has_citation_proof());
+                assert_eq!(decision.selected_evidence[0].source.id, "earlier");
+                let saved = serde_json::to_value(finding).unwrap();
+                let restored: AssessmentFinding = serde_json::from_value(saved.clone()).unwrap();
+                assert_eq!(&restored, finding);
+                assert!(restored.decision_record().is_some());
+                let mut mismatched = restored;
+                mismatched.reference.action_id = "different-anchor".to_owned();
+                assert!(mismatched.decision_record().is_none());
+                let mut legacy = saved;
+                legacy.as_object_mut().unwrap().remove("decision");
+                let legacy: AssessmentFinding = serde_json::from_value(legacy).unwrap();
+                assert!(legacy.decision.is_none());
+                let legacy_value = serde_json::to_value(legacy).unwrap();
+                assert!(legacy_value.get("decision").is_none());
+            }
+        }
+    }
+}
+
 fn response(
     comparison: &CandidateComparison,
     relationship: &str,
@@ -232,6 +332,9 @@ fn authority_gate_rejects_confident_conflicts_and_confident_clean_answers() {
             plan.observable_obligations.insert(
                 id.clone(),
                 ObservableObligation {
+                    path_change_policy:
+                        crate::checks::ignored_instructions::PathChangePolicy::Other,
+                    path_change_conflict: None,
                     literal_policies: Vec::new(),
                     condition_evidence:
                         crate::analysis::jev::obligations::ConditionEvidence::Selected,
@@ -283,6 +386,9 @@ fn unavailable_condition_blocks_conflict_and_clean_independently_of_model_answer
             plan.observable_obligations.insert(
                 id.clone(),
                 ObservableObligation {
+                    path_change_policy:
+                        crate::checks::ignored_instructions::PathChangePolicy::Other,
+                    path_change_conflict: None,
                     literal_policies: Vec::new(),
                     condition_evidence: condition,
                     prerequisite_required: false,
@@ -327,6 +433,9 @@ fn exact_request_order_overrides_model_order_but_never_missing_history() {
             plan.observable_obligations.insert(
                 id.clone(),
                 ObservableObligation {
+                    path_change_policy:
+                        crate::checks::ignored_instructions::PathChangePolicy::Other,
+                    path_change_conflict: None,
                     literal_policies: Vec::new(),
                     condition_evidence:
                         crate::analysis::jev::obligations::ConditionEvidence::Selected,
@@ -359,11 +468,8 @@ fn exact_request_order_overrides_model_order_but_never_missing_history() {
             assert_eq!(result.findings.len(), expected_finding);
             assert_eq!(result.unassessed_comparisons.len(), expected_unassessed);
             if expected_finding == 1 {
-                assert!(
-                    result.findings[0]
-                        .limitations
-                        .contains(&"recorded_read_request_order_only".to_owned())
-                );
+                let limits = &result.findings[0].limitations;
+                assert!(limits.contains(&"recorded_read_request_order_only".to_owned()));
             }
         }
     }

@@ -79,7 +79,10 @@ pub(crate) fn finding_causes(
             super::fast_mode_overuse::finding_causes(evidence, catalogs)
         }
         DetectorId::CacheChurn => super::cache_churn::finding_causes(evidence, catalogs),
-        DetectorId::IgnoredInstructions => Vec::new(),
+        DetectorId::IgnoredInstructions
+        | DetectorId::SkillOpportunities
+        | DetectorId::OverExploring
+        | DetectorId::ScopeCreep => Vec::new(),
     };
     debug_assert!(causes.iter().all(|cause| cause.detector() == detector));
     causes
@@ -100,7 +103,7 @@ pub(crate) fn finding_causes_with_source_evidence(
         DetectorId::UnusedSkills => {
             super::unused_skills::finding_causes_with_source_evidence(evidence, source)
         }
-        DetectorId::IgnoredInstructions => Vec::new(),
+        DetectorId::IgnoredInstructions | DetectorId::SkillOpportunities => Vec::new(),
         _ => finding_causes(detector, evidence, catalogs),
     };
     debug_assert!(causes.iter().all(|cause| cause.detector() == detector));
