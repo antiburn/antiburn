@@ -663,6 +663,63 @@ fn a_period_whose_cursor_has_caught_up_and_gone_stale_is_not_a_candidate() {
 }
 
 #[test]
+fn reopening_unpriced_samples_makes_only_their_periods_candidates_again() {
+    let store = memory_store();
+    let last_observed = 2 * 86_400;
+    let unpriced = insert_period(&store, &account('a'), 0, 18_000, last_observed);
+    let empty = insert_period(&store, &account('a'), 18_000, 36_000, last_observed);
+    let priced = insert_period(&store, &account('a'), 36_000, 54_000, last_observed);
+    let sample = |kind: &str, period_id: i64, from_epoch: i64, turn_count: i64| FactorSample {
+        period_id: Some(period_id),
+        input_usd: 0.0,
+        turn_count,
+        ..kind_sample(kind, from_epoch, from_epoch + 100)
+    };
+    for (sample, period_id) in [
+        (sample("unattributed", unpriced, 0, 4), unpriced),
+        (sample("unattributed", empty, 18_000, 0), empty),
+        (
+            FactorSample {
+                input_usd: 1.0,
+                ..sample("delta", priced, 36_000, 4)
+            },
+            priced,
+        ),
+    ] {
+        store.upsert_factor_sample(&sample).unwrap();
+        store
+            .advance_learn_cursor(period_id, last_observed)
+            .unwrap();
+    }
+
+    assert_eq!(store.reopen_unpriced_factor_samples().unwrap(), 1);
+
+    let kinds: Vec<(i64, String)> = store
+        .lock()
+        .prepare("SELECT from_epoch, kind FROM provider_limit_factor_sample ORDER BY from_epoch")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        kinds,
+        vec![
+            (18_000, "unattributed".to_string()),
+            (36_000, "delta".to_string())
+        ],
+        "a sample with no turns has nothing a price could change"
+    );
+    let candidates: Vec<i64> = store
+        .provider_limit_candidate_periods(3 * 86_400 - 900)
+        .unwrap()
+        .into_iter()
+        .map(|period| period.id)
+        .collect();
+    assert_eq!(candidates, vec![unpriced]);
+}
+
+#[test]
 fn a_period_with_a_cursor_behind_its_last_reading_is_a_candidate() {
     let store = memory_store();
     let last_observed = 2 * 86_400;

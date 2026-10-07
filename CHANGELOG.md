@@ -26,6 +26,13 @@ CI changes, and documentation that no user acts on stay out — see
   package, including when PowerShell runs under emulation, and the app receives
   native ARM64 updates.
 
+### Fixed
+
+- Codex sessions on retired models, such as `gpt-5-codex` and
+  `gpt-5.1-codex-max`, now show a cost. The price catalog no longer lists them
+  under OpenAI, so antiburn uses the price that most resellers agree on. Those
+  sessions also count toward learning your plan limits.
+
 ## [0.9.0] - 2026-09-29
 
 This release also contains the changes from 0.8.0 and 0.8.1, which were tagged

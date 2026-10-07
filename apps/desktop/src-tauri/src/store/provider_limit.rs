@@ -968,6 +968,39 @@ impl Store {
         Ok(())
     }
 
+    /// Remove each unattributed sample that has turns, and the learn cursors
+    /// of their periods, so the next learning pass prices those pairs again.
+    ///
+    /// Such a sample has turns but no dollars, because no turn in it had a
+    /// price. Call this when the pricing table changes. Returns the number of
+    /// samples removed.
+    pub(crate) fn reopen_unpriced_factor_samples(&self) -> Result<usize> {
+        let _learning = self
+            .limit_factor_learn
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "DELETE FROM provider_limit_learn_cursor
+              WHERE period_id IN (
+                  SELECT period_id FROM provider_limit_factor_sample
+                   WHERE kind = 'unattributed' AND turn_count > 0
+              )",
+            [],
+        )?;
+        let removed = transaction.execute(
+            "DELETE FROM provider_limit_factor_sample
+              WHERE kind = 'unattributed' AND turn_count > 0",
+            [],
+        )?;
+        transaction.commit()?;
+        if removed > 0 {
+            ::tracing::info!(event = "limit_factor_unpriced_reopened", removed);
+        }
+        Ok(removed)
+    }
+
     /// Insert or replace one factor sample, keyed by its interval.
     pub(crate) fn upsert_factor_sample(&self, sample: &FactorSample) -> Result<()> {
         let connection = self.lock();
