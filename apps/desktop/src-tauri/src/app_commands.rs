@@ -119,6 +119,7 @@ macro_rules! with_app_commands {
             commands::set_repository_enabled => "set_repository_enabled",
             commands::set_settings => "set_settings",
             jev_settings::set_typesafe_api_key => "set_typesafe_api_key",
+            jev_settings::set_check_enabled => "set_check_enabled",
             jev_settings::set_smart_burn_checks_enabled => "set_smart_burn_checks_enabled",
             jev_settings::set_check_history_days => "set_check_history_days",
             remote_sync::set_remote_sync_interval => "set_remote_sync_interval",

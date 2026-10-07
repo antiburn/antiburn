@@ -2,6 +2,7 @@ import { useMemo, useSyncExternalStore } from "react"
 
 import type { SessionListEntry } from "../components/session/SessionList"
 import { createExternalStore, type ExternalStore } from "./externalStore"
+import { onCheckAvailabilityChanged } from "./checkAvailability"
 import {
   getSessionHygiene,
   onChecksReportChanged,
@@ -137,40 +138,45 @@ function createSessionHygieneStore(requestKey: string): ExternalStore<SessionHyg
         }
         refreshing = false
       }
-      const [stopIndexChange, stopUpdate, stopChecksChange] = await Promise.all([
-        // Membership changed, or events were lost: re-read every requested
-        // session rather than guessing which ones moved.
-        onSessionIndexChanged(() => void refresh(sessions)),
-        onSessionUpdated((update) => {
-          // Hygiene reads published evidence, so only an analysis or
-          // checks change can move it; a title or usage facet cannot.
-          if (!update.facets.analysis && !update.facets.checks) return
-          const identity = {
-            agent: update.entry.agent,
-            sessionId: update.entry.sessionId,
-            wslDistro: update.entry.wslDistro,
-            remoteHostId: update.entry.remoteHostId ?? null,
-          }
-          if (
-            requestedKeys.has(
-              localSessionKey(
-                identity.agent,
-                identity.sessionId,
-                identity.wslDistro,
-                identity.remoteHostId,
-              ),
-            )
-          ) {
-            void refresh([identity])
-          }
-        }),
-        onChecksReportChanged(() => void refresh(sessions)),
-      ])
+      const [stopIndexChange, stopUpdate, stopChecksChange, stopAvailabilityChange] =
+        await Promise.all([
+          // Membership changed, or events were lost: re-read every requested
+          // session rather than guessing which ones moved.
+          onSessionIndexChanged(() => void refresh(sessions)),
+          onSessionUpdated((update) => {
+            // Hygiene reads published evidence, so only an analysis or
+            // checks change can move it; a title or usage facet cannot.
+            if (!update.facets.analysis && !update.facets.checks) return
+            const identity = {
+              agent: update.entry.agent,
+              sessionId: update.entry.sessionId,
+              wslDistro: update.entry.wslDistro,
+              remoteHostId: update.entry.remoteHostId ?? null,
+            }
+            if (
+              requestedKeys.has(
+                localSessionKey(
+                  identity.agent,
+                  identity.sessionId,
+                  identity.wslDistro,
+                  identity.remoteHostId,
+                ),
+              )
+            ) {
+              void refresh([identity])
+            }
+          }),
+          onChecksReportChanged(() => void refresh(sessions)),
+          onCheckAvailabilityChanged((event) => {
+            if (event.status === "updated") void refresh(sessions)
+          }),
+        ])
       return () => {
         active = false
         stopIndexChange()
         stopUpdate()
         stopChecksChange()
+        stopAvailabilityChange()
       }
     },
   })

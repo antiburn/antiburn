@@ -15,6 +15,13 @@ pub struct CachedAssessmentResponse {
     pub created_at_epoch: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BurnCheckRequestAdmission {
+    Admitted,
+    Stale,
+    Unresolved,
+}
+
 impl Store {
     pub fn burn_check_requests_are_unresolved(
         &self,
@@ -43,40 +50,102 @@ impl Store {
         reservation_id: &str,
         now: i64,
     ) -> anyhow::Result<bool> {
-        if identities.is_empty()
-            || identities.len() > 128
-            || identities
-                .iter()
-                .any(|identity| identity.is_empty() || identity.len() > 128)
-            || reservation_id.is_empty()
-            || reservation_id.len() > 128
-        {
-            anyhow::bail!("Burn Check request identity is invalid");
-        }
+        validate_request_tracking(identities, reservation_id)?;
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
-        let count: usize = transaction.query_row(
-            "SELECT count(*) FROM burn_check_request_outcome",
-            [],
-            |row| row.get(0),
-        )?;
-        let conflict: bool = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM burn_check_request_outcome
-            WHERE request_identity IN (SELECT value FROM json_each(?1)))",
-            [serde_json::to_string(identities)?],
-            |row| row.get(0),
-        )?;
-        if conflict || count.saturating_add(identities.len()) > 1024 {
-            return Ok(false);
-        }
-        for identity in identities {
-            transaction.execute("INSERT INTO burn_check_request_outcome (request_identity, reservation_id, created_at_epoch)
-                VALUES (?1, ?2, ?3)", rusqlite::params![identity, reservation_id, now])?;
-        }
+        let tracked = track_burn_check_requests_in(&transaction, identities, reservation_id, now)?;
         transaction.commit()?;
-        Ok(true)
+        Ok(tracked)
     }
 
+    /// Admit a provider request only while its durable assessment policy is current.
+    pub fn admit_burn_check_requests(
+        &self,
+        input: &BurnCheckInput,
+        identities: &[String],
+        reservation_id: &str,
+        now: i64,
+    ) -> anyhow::Result<BurnCheckRequestAdmission> {
+        validate_request_tracking(identities, reservation_id)?;
+        let mut connection = self.lock();
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let assessment_is_current: bool = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM burn_check_assessment
+                 WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                   AND check_id = ?4 AND input_revision = ?5 AND status = 'running'
+                   AND lease_expires_at_epoch > ?6
+            )",
+            rusqlite::params![
+                input.key.environment_key,
+                input.key.agent,
+                input.key.session_id,
+                input.check_id,
+                input.input_revision,
+                now,
+            ],
+            |row| row.get(0),
+        )?;
+        if internal_value_in(&transaction, ENABLED_AT_KEY)?.is_none()
+            || !check_id_enabled_in(&transaction, &input.check_id)?
+            || !assessment_is_current
+        {
+            transaction.commit()?;
+            return Ok(BurnCheckRequestAdmission::Stale);
+        }
+        let tracked = track_burn_check_requests_in(&transaction, identities, reservation_id, now)?;
+        transaction.commit()?;
+        Ok(if tracked {
+            BurnCheckRequestAdmission::Admitted
+        } else {
+            BurnCheckRequestAdmission::Unresolved
+        })
+    }
+}
+
+fn validate_request_tracking(identities: &[String], reservation_id: &str) -> anyhow::Result<()> {
+    if identities.is_empty()
+        || identities.len() > 128
+        || identities
+            .iter()
+            .any(|identity| identity.is_empty() || identity.len() > 128)
+        || reservation_id.is_empty()
+        || reservation_id.len() > 128
+    {
+        anyhow::bail!("Burn Check request identity is invalid");
+    }
+    Ok(())
+}
+
+fn track_burn_check_requests_in(
+    connection: &rusqlite::Connection,
+    identities: &[String],
+    reservation_id: &str,
+    now: i64,
+) -> anyhow::Result<bool> {
+    let count: usize = connection.query_row(
+        "SELECT count(*) FROM burn_check_request_outcome",
+        [],
+        |row| row.get(0),
+    )?;
+    let conflict: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM burn_check_request_outcome
+            WHERE request_identity IN (SELECT value FROM json_each(?1)))",
+        [serde_json::to_string(identities)?],
+        |row| row.get(0),
+    )?;
+    if conflict || count.saturating_add(identities.len()) > 1024 {
+        return Ok(false);
+    }
+    for identity in identities {
+        connection.execute("INSERT INTO burn_check_request_outcome (request_identity, reservation_id, created_at_epoch)
+                VALUES (?1, ?2, ?3)", rusqlite::params![identity, reservation_id, now])?;
+    }
+    Ok(true)
+}
+
+impl Store {
     pub fn clear_burn_check_request_outcomes(&self, identities: &[String]) -> anyhow::Result<()> {
         self.lock().execute(
             "DELETE FROM burn_check_request_outcome

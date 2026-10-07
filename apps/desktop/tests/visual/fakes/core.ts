@@ -2,6 +2,7 @@ import type { AllowanceUsageSummaryPayload } from "../../../src/lib/providerUsag
 import { emitFixtureEvent } from "./event"
 import { fixtureDetailMap, fixtureIsland, fixtureTokenMap } from "./hud"
 import { hasRemoteFixture, remoteFixtureCommand, remoteFixtureIds } from "./remote"
+import { fixtureCheckAvailability, fixtureChecksReport, setFixtureCheckEnabled } from "./checks"
 
 declare global {
   interface Window {
@@ -349,6 +350,8 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
     case "get_settings":
       return {
         ...settings,
+        onboardingCompleted:
+          new URLSearchParams(window.location.search).get("onboarding") === "complete",
         interfaceScalePercent:
           Number(new URLSearchParams(window.location.search).get("scale")) || 100,
       }
@@ -450,12 +453,11 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
             },
           ]
     case "get_checks_report":
-      return {
-        evidenceSettled: true,
-        pendingEvidence: 0,
-        estimatedTokenBurnBasisPoints: 1200,
-        categories: [],
-      }
+      return fixtureChecksReport()
+    case "get_check_availability":
+      return fixtureCheckAvailability()
+    case "set_check_enabled":
+      return setFixtureCheckEnabled(args)
     case "get_latest_session_activity":
       return Math.floor(Date.parse(now) / 1000)
     case "is_overlay_work_active":

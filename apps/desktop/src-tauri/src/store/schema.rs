@@ -82,6 +82,7 @@ pub const MIGRATIONS: &[&str] = &[
     V69,
     V70,
     V71,
+    V72,
 ];
 
 const V69: &str = r#"
@@ -1571,4 +1572,35 @@ SELECT 1, MAX(
     COALESCE((SELECT MAX(claim_fence) FROM session_coverage), 0),
     COALESCE((SELECT MAX(published_fence) FROM burn_check_assessment), 0)
 );
+"#;
+
+/// v72 removes the `disabledAgents` entries that the retired first-run
+/// onboarding seeded.
+///
+/// That onboarding switched off every agent with no sessions when it
+/// finished. A disabled agent with no stored session hides nothing, so such
+/// an entry has no visible effect and no user can have chosen it on purpose.
+/// The Agents list now shows "Not found" in place of a switch for an agent
+/// with no sessions, so a stale entry would also leave that agent off when
+/// it appears later. An entry for an agent that has sessions can be a user's
+/// choice, so it stays. The stored value is a comma-separated slug list.
+const V72: &str = r#"
+WITH RECURSIVE split(slug, rest) AS (
+    SELECT '', value || ',' FROM setting WHERE key = 'disabledAgents'
+    UNION ALL
+    SELECT lower(trim(substr(rest, 1, instr(rest, ',') - 1))),
+           substr(rest, instr(rest, ',') + 1)
+      FROM split
+     WHERE rest <> ''
+)
+UPDATE setting
+   SET value = COALESCE((
+        SELECT group_concat(slug, ',')
+          FROM (SELECT DISTINCT slug
+                  FROM split
+                 WHERE slug <> ''
+                   AND EXISTS (SELECT 1 FROM session WHERE session.agent = split.slug)
+                 ORDER BY slug)
+       ), '')
+ WHERE key = 'disabledAgents';
 "#;

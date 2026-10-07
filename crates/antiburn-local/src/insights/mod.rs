@@ -7,7 +7,6 @@ mod report;
 mod status;
 mod token_burn;
 
-pub use crate::checks::DetectorId;
 pub use crate::checks::requirements::{
     DetectorRequirements, Fact, FactState, clean_fact_unsupported, clean_facts_complete, eligible,
     requirements,
@@ -17,7 +16,10 @@ pub use crate::checks::{
     ModelReplacementEntry, ModelReplacementRule, NotAssessedReason, PremiumPolicy,
     REGISTRY_REVISION, ReportCatalogs, SpeedPolicy, model_family,
 };
-pub use badges::{BadgeId, BadgeStatus, SessionBadge, session_badges};
+pub use crate::checks::{DetectorId, DetectorSelection};
+pub use badges::{
+    BadgeId, BadgeStatus, SessionBadge, session_badges, session_badges_with_selection,
+};
 pub use provider_incidents::{
     MAX_PROVIDER_AFFECTED_MODELS, MAX_PROVIDER_OBSERVED_TIMES, MAX_PROVIDER_SESSION_EXAMPLES,
     ProviderIncidentFindings, ProviderIncidentsSection,

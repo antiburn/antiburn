@@ -1,9 +1,11 @@
 use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, params};
 
+use antiburn_local::insights::DetectorId;
+
 use super::{
     Remediation, RemediationEvidenceGuard, RemediationRecord, RemediationResult, RemediationState,
-    Store,
+    Store, check_preferences_snapshot_in, enabled_checks_in,
 };
 
 mod history_progress;
@@ -303,6 +305,32 @@ impl Store {
         &self,
         remediations: &[(Remediation, Vec<RemediationEvidenceGuard>)],
     ) -> Result<Option<Vec<RemediationRecord>>> {
+        self.create_or_reuse_remediations_at_check_revision(remediations, None)
+    }
+
+    /// Creates or reuses exact watches only while one check policy snapshot remains current.
+    pub fn create_or_reuse_remediations_for_enabled_check(
+        &self,
+        remediations: &[(Remediation, Vec<RemediationEvidenceGuard>)],
+        detector: DetectorId,
+        expected_revision: u64,
+        expected_smart_master_generation: Option<&str>,
+    ) -> Result<Option<Vec<RemediationRecord>>> {
+        self.create_or_reuse_remediations_at_check_revision(
+            remediations,
+            Some((
+                detector,
+                expected_revision,
+                expected_smart_master_generation,
+            )),
+        )
+    }
+
+    fn create_or_reuse_remediations_at_check_revision(
+        &self,
+        remediations: &[(Remediation, Vec<RemediationEvidenceGuard>)],
+        check_policy: Option<(DetectorId, u64, Option<&str>)>,
+    ) -> Result<Option<Vec<RemediationRecord>>> {
         ensure!(
             !remediations.is_empty(),
             "a remediation batch requires watches"
@@ -326,6 +354,26 @@ impl Store {
         }
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
+        if let Some((detector, expected_revision, expected_smart_master_generation)) = check_policy
+        {
+            let (enabled, current_revision) = check_preferences_snapshot_in(&transaction)?;
+            if current_revision != expected_revision || !enabled.contains(&detector) {
+                return Ok(None);
+            }
+            if let Some(expected_generation) = expected_smart_master_generation {
+                let current_generation = transaction
+                    .query_row(
+                        "SELECT value FROM setting
+                          WHERE key = 'internal:burnChecksEnabledAtEpochV1'",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                if current_generation.as_deref() != Some(expected_generation) {
+                    return Ok(None);
+                }
+            }
+        }
         for (_, guards) in remediations {
             for guard in guards {
                 if !Self::remediation_guard_is_current(&transaction, guard)? {
@@ -713,15 +761,35 @@ impl Store {
     }
 
     pub fn next_dirty_remediation(&self) -> Result<Option<RemediationRecord>> {
-        self.lock()
+        let connection = self.lock();
+        let mut enabled = enabled_checks_in(&connection)?;
+        let smart_checks_enabled = connection.query_row(
+            "SELECT EXISTS (
+                    SELECT 1 FROM setting
+                     WHERE key = 'internal:burnChecksEnabledAtEpochV1')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !smart_checks_enabled {
+            enabled.remove(&DetectorId::IgnoredInstructions);
+        }
+        let enabled = enabled
+            .into_iter()
+            .map(|detector| detector.key())
+            .collect::<Vec<_>>();
+        let enabled_json = serde_json::to_string(&enabled)?;
+        connection
             .query_row(
                 &format!(
                     "SELECT {REMEDIATION_COLUMNS} FROM remediation
                 WHERE evaluated_revision < dirty_revision
                   AND state IN ('watching', 'fixed', 'recurred')
+                  AND (json_type(definition_json, '$.detector') IS NULL
+                       OR json_extract(definition_json, '$.detector')
+                          IN (SELECT value FROM json_each(?1)))
                 ORDER BY updated_at_epoch, remediation_id LIMIT 1"
                 ),
-                [],
+                [enabled_json],
                 remediation_from_row,
             )
             .optional()

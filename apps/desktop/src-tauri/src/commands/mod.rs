@@ -18,7 +18,9 @@ use antiburn_local::analysis::{
     ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, ProviderHint, SessionEvidence,
     SourceAcceptance, price_breakdown,
 };
-use antiburn_local::insights::{NotAssessedReason, ReportCatalogs, session_badges};
+use antiburn_local::insights::{
+    DetectorSelection, NotAssessedReason, ReportCatalogs, session_badges_with_selection,
+};
 use antiburn_local::paths::scan_roots as engine_scan_roots;
 use antiburn_local::paths::{home_dir, protected};
 use antiburn_local::pricing::ModelTokens;
@@ -1356,6 +1358,27 @@ fn insights_report_request(now_epoch: i64) -> ReportRequest {
     }
 }
 
+fn checks_report_selection(
+    mut enabled_checks: BTreeSet<antiburn_local::insights::DetectorId>,
+    smart_checks_enabled: bool,
+) -> DetectorSelection {
+    if !smart_checks_enabled {
+        for detector in crate::jev_worker::registered_check_ids() {
+            enabled_checks.remove(&detector);
+        }
+    }
+    DetectorSelection::from_enabled(enabled_checks)
+}
+
+fn checks_report_policy_revision(
+    check_preferences_revision: u64,
+    smart_checks_enabled: bool,
+) -> u64 {
+    check_preferences_revision
+        .saturating_mul(2)
+        .saturating_add(u64::from(smart_checks_enabled))
+}
+
 /// The bounded report data used by the popover All checks summary.
 #[tauri::command]
 pub async fn get_checks_report(
@@ -1373,12 +1396,45 @@ pub async fn get_checks_report(
     let report_window = window.label().to_owned();
     let app = window.app_handle();
     crate::insights_worker::wake(app);
-    let data_dir = app.state::<Store>().state_dir().to_path_buf();
+    let store = app.state::<Store>();
+    let data_dir = store.state_dir().to_path_buf();
     let request = insights_report_request(epoch_now());
-    let reduced = app
-        .state::<InsightsController>()
-        .checks_report(data_dir, request.clone(), consumer_id)
-        .await?;
+    let mut reduced = None;
+    let mut report_policy_snapshot = None;
+    for _ in 0..3 {
+        let (enabled_checks, check_preferences_revision) =
+            store.check_preferences_snapshot().map_err(fail)?;
+        let smart_checks_enabled = store
+            .internal_value("internal:burnChecksEnabledAtEpochV1")
+            .is_some();
+        let enabled_selection = checks_report_selection(enabled_checks, smart_checks_enabled);
+        let report_policy_revision =
+            checks_report_policy_revision(check_preferences_revision, smart_checks_enabled);
+        let candidate = app
+            .state::<InsightsController>()
+            .checks_report(
+                data_dir.clone(),
+                request.clone(),
+                consumer_id.clone(),
+                enabled_selection,
+                report_policy_revision,
+            )
+            .await?;
+        if store.check_preferences_revision().map_err(fail)? == check_preferences_revision
+            && store
+                .internal_value("internal:burnChecksEnabledAtEpochV1")
+                .is_some()
+                == smart_checks_enabled
+        {
+            reduced = Some(candidate);
+            report_policy_snapshot = Some((check_preferences_revision, smart_checks_enabled));
+            break;
+        }
+    }
+    let reduced =
+        reduced.ok_or_else(|| fail("check preferences changed during report reduction"))?;
+    let (report_preferences_revision, report_smart_checks_enabled) =
+        report_policy_snapshot.ok_or_else(|| fail("check report policy is unavailable"))?;
     let reduction_ms = started_at.elapsed().as_millis() as u64;
     // The report carries three measurements that no other command reduces:
     // unknown record vocabulary, quota incidents, and provider incidents.
@@ -1469,6 +1525,16 @@ pub async fn get_checks_report(
         crate::tray::simulate_burn_checks(app, &mut payload);
         payload
     };
+    if store.check_preferences_revision().map_err(fail)? != report_preferences_revision
+        || store
+            .internal_value("internal:burnChecksEnabledAtEpochV1")
+            .is_some()
+            != report_smart_checks_enabled
+    {
+        return Err(fail(
+            "check preferences changed while publishing the report",
+        ));
+    }
     Ok(payload)
 }
 
@@ -1996,17 +2062,23 @@ pub async fn get_session_hygiene(
         let store = app.state::<Store>();
         let rows = store.evidence_batch(&keys).map_err(fail)?;
         let source_generations = store.source_generation_batch(&keys).map_err(fail)?;
-        let checks_enabled = store
+        let (enabled_checks, check_preferences_revision) =
+            store.check_preferences_snapshot().map_err(fail)?;
+        let enabled_selection = DetectorSelection::from_enabled(enabled_checks.iter().copied());
+        let smart_checks_enabled = store
             .internal_value("internal:burnChecksEnabledAtEpochV1")
             .is_some();
-        let findings = if checks_enabled
+        let ignored_instructions_enabled = enabled_checks
+            .contains(&antiburn_local::insights::DetectorId::IgnoredInstructions)
+            && smart_checks_enabled;
+        let findings = if ignored_instructions_enabled
             && app
                 .state::<crate::jev_worker::WorkerHandle>()
                 .is_available()
         {
             crate::insights_report::ignored_instruction_session_statuses(store.state_dir(), &keys)
                 .map_err(fail)?
-        } else if checks_enabled {
+        } else if ignored_instructions_enabled {
             vec![
                 crate::dto::IgnoredInstructionSessionStatus {
                     status: crate::dto::SessionHygieneStatus::CouldntCheck,
@@ -2023,8 +2095,19 @@ pub async fn get_session_hygiene(
                 keys.len()
             ]
         };
-        let mut payloads = session_hygiene_payloads(rows, source_generations);
+        let mut payloads =
+            session_hygiene_payloads_with_selection(rows, source_generations, &enabled_selection);
         attach_ignored_instruction_statuses(&mut payloads, findings);
+        if store.check_preferences_revision().map_err(fail)? != check_preferences_revision
+            || store
+                .internal_value("internal:burnChecksEnabledAtEpochV1")
+                .is_some()
+                != smart_checks_enabled
+        {
+            return Err(fail(
+                "check preferences changed while publishing session hygiene",
+            ));
+        }
         Ok(payloads)
     })
     .await
@@ -2052,13 +2135,24 @@ pub(crate) fn attach_ignored_instruction_statuses(
     }
 }
 
+#[cfg(test)]
 fn session_hygiene_payloads(
     rows: Vec<Option<crate::store::EvidenceRow>>,
     source_generations: Vec<Option<i64>>,
 ) -> Vec<SessionHygienePayload> {
+    session_hygiene_payloads_with_selection(rows, source_generations, &DetectorSelection::all())
+}
+
+fn session_hygiene_payloads_with_selection(
+    rows: Vec<Option<crate::store::EvidenceRow>>,
+    source_generations: Vec<Option<i64>>,
+    selection: &DetectorSelection,
+) -> Vec<SessionHygienePayload> {
     rows.into_iter()
         .zip(source_generations)
-        .map(|(row, source_generation)| session_hygiene_payload(row, source_generation))
+        .map(|(row, source_generation)| {
+            session_hygiene_payload_with_selection(row, source_generation, selection)
+        })
         .collect()
 }
 
@@ -2068,26 +2162,38 @@ fn session_hygiene_payloads(
 fn hygiene_payload_from_prior_evidence(
     evidence_json: Option<String>,
     evidence_state: &'static str,
+    selection: &DetectorSelection,
 ) -> Option<SessionHygienePayload> {
     let evidence_json = evidence_json?;
     let evidence = serde_json::from_str::<SessionEvidence>(&evidence_json).ok()?;
     let catalogs = ReportCatalogs::default();
-    Some(SessionHygienePayload::for_evidence(
-        session_badges(&evidence, &catalogs),
+    Some(SessionHygienePayload::for_evidence_with_selection(
+        session_badges_with_selection(&evidence, &catalogs, selection),
         &evidence,
         &catalogs,
         evidence_state,
+        selection,
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn session_hygiene_payload(
     row: Option<crate::store::EvidenceRow>,
     source_generation: Option<i64>,
 ) -> SessionHygienePayload {
+    session_hygiene_payload_with_selection(row, source_generation, &DetectorSelection::all())
+}
+
+pub(crate) fn session_hygiene_payload_with_selection(
+    row: Option<crate::store::EvidenceRow>,
+    source_generation: Option<i64>,
+    selection: &DetectorSelection,
+) -> SessionHygienePayload {
     let Some(row) = row else {
-        return SessionHygienePayload::not_assessed(
+        return SessionHygienePayload::not_assessed_with_selection(
             "pending",
             NotAssessedReason::IncompleteEvidence,
+            selection,
         );
     };
 
@@ -2109,24 +2215,27 @@ pub(crate) fn session_hygiene_payload(
                 // `CURRENT_EVIDENCE_PREDICATE` in `insights_report.rs` is
                 // unchanged: the report cohort still excludes stale
                 // evidence.
-                return hygiene_payload_from_prior_evidence(row.evidence_json, "stale")
+                return hygiene_payload_from_prior_evidence(row.evidence_json, "stale", selection)
                     .unwrap_or_else(|| {
-                        SessionHygienePayload::not_assessed(
+                        SessionHygienePayload::not_assessed_with_selection(
                             "stale",
                             NotAssessedReason::IncompleteEvidence,
+                            selection,
                         )
                     });
             }
             let Some(evidence_json) = row.evidence_json else {
-                return SessionHygienePayload::not_assessed(
+                return SessionHygienePayload::not_assessed_with_selection(
                     "failed",
                     NotAssessedReason::IncompleteEvidence,
+                    selection,
                 );
             };
             let Ok(evidence) = serde_json::from_str::<SessionEvidence>(&evidence_json) else {
-                return SessionHygienePayload::not_assessed(
+                return SessionHygienePayload::not_assessed_with_selection(
                     "failed",
                     NotAssessedReason::IncompleteEvidence,
+                    selection,
                 );
             };
             let evidence_state = if matches!(
@@ -2138,15 +2247,20 @@ pub(crate) fn session_hygiene_payload(
                 "ready"
             };
             let catalogs = ReportCatalogs::default();
-            SessionHygienePayload::for_evidence(
-                session_badges(&evidence, &catalogs),
+            SessionHygienePayload::for_evidence_with_selection(
+                session_badges_with_selection(&evidence, &catalogs, selection),
                 &evidence,
                 &catalogs,
                 evidence_state,
+                selection,
             )
         }
         crate::store::EvidenceStatus::Unsupported => {
-            SessionHygienePayload::not_assessed("unsupported", NotAssessedReason::CapabilityMissing)
+            SessionHygienePayload::not_assessed_with_selection(
+                "unsupported",
+                NotAssessedReason::CapabilityMissing,
+                selection,
+            )
         }
         crate::store::EvidenceStatus::Pending | crate::store::EvidenceStatus::Processing => {
             // A row that is pending or processing again (fingerprint
@@ -2156,16 +2270,20 @@ pub(crate) fn session_hygiene_payload(
             // state; only a row with no prior evidence falls back to the
             // status label.
             let status_label = row.status.as_str();
-            hygiene_payload_from_prior_evidence(row.evidence_json, "stale").unwrap_or_else(|| {
-                SessionHygienePayload::not_assessed(
-                    status_label,
-                    NotAssessedReason::IncompleteEvidence,
-                )
-            })
+            hygiene_payload_from_prior_evidence(row.evidence_json, "stale", selection)
+                .unwrap_or_else(|| {
+                    SessionHygienePayload::not_assessed_with_selection(
+                        status_label,
+                        NotAssessedReason::IncompleteEvidence,
+                        selection,
+                    )
+                })
         }
-        crate::store::EvidenceStatus::Failed => {
-            SessionHygienePayload::not_assessed("failed", NotAssessedReason::IncompleteEvidence)
-        }
+        crate::store::EvidenceStatus::Failed => SessionHygienePayload::not_assessed_with_selection(
+            "failed",
+            NotAssessedReason::IncompleteEvidence,
+            selection,
+        ),
     }
 }
 

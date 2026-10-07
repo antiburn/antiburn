@@ -113,10 +113,22 @@ describe("agentStatus", () => {
     expect([status.facts, status.note].filter(Boolean).join(" · ")).toBe(line)
   })
 
+  it("counts a desktop app or a login as found, but not a Pi login", () => {
+    expect(agentStatus(0, undefined).found).toBe(false)
+    expect(
+      agentStatus(0, claude({ detection: "notInstalled", desktopAppLabel: "Claude Desktop" }))
+        .found,
+    ).toBe(true)
+    expect(agentStatus(0, claude({ detection: "signedIn", carrierLabel: "Pi" })).found).toBe(
+      false,
+    )
+  })
+
   it("puts the session count in the facts column and the rest under the name", () => {
     expect(
       agentStatus(41, claude({ detection: "notInstalled", desktopAppLabel: "Claude Desktop" })),
     ).toEqual({
+      found: true,
       facts: "41 sessions",
       note: "Claude Desktop · Limits need Claude Code signed in",
     })

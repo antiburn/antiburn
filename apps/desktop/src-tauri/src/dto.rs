@@ -18,8 +18,8 @@ use antiburn_local::analysis::{
     ToolDefinition, lookup_pricing,
 };
 use antiburn_local::insights::{
-    BadgeId, BadgeStatus, DetectorId, DetectorStatus, EfficiencyReport, NotAssessedReason,
-    ReportCatalogs, SessionBadge, model_family,
+    BadgeId, BadgeStatus, DetectorId, DetectorSelection, DetectorStatus, EfficiencyReport,
+    NotAssessedReason, ReportCatalogs, SessionBadge, model_family,
 };
 use antiburn_local::pricing::canonical_model_key;
 use serde::{Deserialize, Serialize};
@@ -2043,19 +2043,43 @@ fn unused_built_in_tool_payloads(
 
 /// Builds the session's priced idle-context section from evidence: every
 /// injected-but-unused MCP server, built-in tool, and skill.
-fn session_unused_resources(evidence: &SessionEvidence) -> Option<SessionUnusedResourcesPayload> {
+fn session_unused_resources(
+    evidence: &SessionEvidence,
+    selection: &DetectorSelection,
+) -> Option<SessionUnusedResourcesPayload> {
+    let any_enabled = [
+        DetectorId::UnusedMcpServers,
+        DetectorId::UnusedBuiltInTools,
+        DetectorId::UnusedSkills,
+    ]
+    .into_iter()
+    .any(|detector| selection.contains(detector));
+    if !any_enabled {
+        return None;
+    }
     let sources = observed(&evidence.context_sources)?;
     let models = observed(&evidence.models);
-    let built_in_tools = match observed(&sources.tool_definitions) {
-        Some(definitions) => {
-            unused_built_in_tool_payloads(&evidence.identity.agent, definitions, models)
-        }
-        None => Vec::new(),
+    let built_in_tools = if selection.contains(DetectorId::UnusedBuiltInTools) {
+        observed(&sources.tool_definitions)
+            .map(|definitions| {
+                unused_built_in_tool_payloads(&evidence.identity.agent, definitions, models)
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
     };
     Some(SessionUnusedResourcesPayload {
-        mcp_servers: unused_loaded_source_payloads(&sources.mcp_servers, models),
+        mcp_servers: if selection.contains(DetectorId::UnusedMcpServers) {
+            unused_loaded_source_payloads(&sources.mcp_servers, models)
+        } else {
+            Vec::new()
+        },
         built_in_tools,
-        skills: unused_loaded_source_payloads(&sources.skills, models),
+        skills: if selection.contains(DetectorId::UnusedSkills) {
+            unused_loaded_source_payloads(&sources.skills, models)
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -2082,7 +2106,7 @@ fn repeated_context_accounting_str(evidence: &SessionEvidence) -> Option<&'stati
 
 impl SessionHygienePayload {
     pub fn from_badges(
-        badges: [SessionBadge; 6],
+        badges: impl IntoIterator<Item = SessionBadge>,
         accounting: Option<&'static str>,
         evidence_state: &'static str,
     ) -> Self {
@@ -2096,11 +2120,28 @@ impl SessionHygienePayload {
         }
     }
 
+    #[cfg(test)]
     pub fn for_evidence(
-        badges: [SessionBadge; 6],
+        badges: impl IntoIterator<Item = SessionBadge>,
         evidence: &SessionEvidence,
         catalogs: &ReportCatalogs,
         evidence_state: &'static str,
+    ) -> Self {
+        Self::for_evidence_with_selection(
+            badges,
+            evidence,
+            catalogs,
+            evidence_state,
+            &DetectorSelection::all(),
+        )
+    }
+
+    pub fn for_evidence_with_selection(
+        badges: impl IntoIterator<Item = SessionBadge>,
+        evidence: &SessionEvidence,
+        catalogs: &ReportCatalogs,
+        evidence_state: &'static str,
+        selection: &DetectorSelection,
     ) -> Self {
         let accounting = repeated_context_accounting_str(evidence);
         Self {
@@ -2116,16 +2157,23 @@ impl SessionHygienePayload {
                 })
                 .collect(),
             evidence_state,
-            unused_resources: session_unused_resources(evidence),
+            unused_resources: session_unused_resources(evidence, selection),
         }
     }
 
-    pub fn not_assessed(evidence_state: &'static str, reason: NotAssessedReason) -> Self {
+    pub fn not_assessed_with_selection(
+        evidence_state: &'static str,
+        reason: NotAssessedReason,
+        selection: &DetectorSelection,
+    ) -> Self {
         Self::from_badges(
-            BadgeId::ALL.map(|id| SessionBadge {
-                id,
-                status: BadgeStatus::NotAssessed(reason),
-            }),
+            BadgeId::ALL
+                .into_iter()
+                .filter(|id| selection.contains(id.detector()))
+                .map(|id| SessionBadge {
+                    id,
+                    status: BadgeStatus::NotAssessed(reason),
+                }),
             None,
             evidence_state,
         )
@@ -2723,6 +2771,9 @@ impl ChecksReportPayload {
                 .estimated_token_burn_basis_points
                 .or(category.estimated_token_burn_basis_points);
         }
+        payload
+            .categories
+            .retain(|category| report.enabled_detectors.contains(category.id.into()));
         payload
     }
 

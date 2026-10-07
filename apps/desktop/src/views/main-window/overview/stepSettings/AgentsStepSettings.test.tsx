@@ -108,6 +108,67 @@ describe("AgentsStepSettings coding agents", () => {
     expect(screen.queryByText(/sessions$/)).not.toBeInTheDocument()
   })
 
+  it('shows no switch and "Not found" for an agent with no sessions', () => {
+    snapshot = progress({
+      rows: [
+        { agent: "codex", label: "Codex", sessions: 3, done: true },
+        { agent: "cursor", label: "Cursor", sessions: 0, done: true },
+      ],
+    })
+    render(<AgentsStepSettings />)
+
+    expect(
+      screen.queryByRole("switch", { name: "Show Cursor sessions" }),
+    ).not.toBeInTheDocument()
+    expect(screen.getAllByText("Not found")).toHaveLength(1)
+    expect(screen.getByRole("switch", { name: "Show Codex sessions" })).toBeChecked()
+  })
+
+  it('shows neither a switch nor "Not found" while an agent is still searching', () => {
+    snapshot = progress({
+      rows: [{ agent: "cursor", label: "Cursor", sessions: 0, done: false }],
+    })
+    render(<AgentsStepSettings />)
+    expect(
+      screen.queryByRole("switch", { name: "Show Cursor sessions" }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText("Not found")).not.toBeInTheDocument()
+  })
+
+  it("shows neither before any scan data exists", () => {
+    snapshot = progress({ rows: [] })
+    render(<AgentsStepSettings />)
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument()
+    expect(screen.queryByText("Not found")).not.toBeInTheDocument()
+  })
+
+  it("keeps the switch for a detected agent that is switched off, and turns it on", async () => {
+    let stored = { ...DEFAULT_SETTINGS, disabledAgents: ["codex"] }
+    invoke.mockImplementation((command: string, args?: { settings?: typeof stored }) => {
+      switch (command) {
+        case "get_settings":
+          return Promise.resolve(stored)
+        case "set_settings":
+          stored = args?.settings ?? stored
+          return Promise.resolve(stored)
+        case "agent_session_locations":
+          return Promise.resolve([])
+        default:
+          return Promise.resolve(null)
+      }
+    })
+    render(<AgentsStepSettings />)
+
+    const toggle = await screen.findByRole("switch", { name: "Show Codex sessions" })
+    await waitFor(() => expect(toggle).not.toBeChecked())
+    fireEvent.click(toggle)
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_settings", {
+        settings: expect.objectContaining({ disabledAgents: [] }),
+      }),
+    )
+  })
+
   it("switches an agent off and saves the preference", async () => {
     let stored = { ...DEFAULT_SETTINGS }
     invoke.mockImplementation((command: string, args?: { settings?: typeof stored }) => {
@@ -180,7 +241,9 @@ describe("AgentsStepSettings coding agents", () => {
   })
 
   it("ignores a login that only Pi holds", async () => {
-    snapshot = progress({ rows: [] })
+    snapshot = progress({
+      rows: [{ agent: "codex", label: "Codex", sessions: 0, done: true }],
+    })
     mockCommands({
       get_live_usage: {
         providers: [],
@@ -198,12 +261,41 @@ describe("AgentsStepSettings coding agents", () => {
       },
     })
     render(<AgentsStepSettings />)
-    await screen.findByRole("switch", { name: "Show Codex sessions" })
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("get_live_usage", expect.anything()),
     )
+    // Pi's login is Pi's, so Codex is still not found.
+    expect(await screen.findByText("Not found")).toBeInTheDocument()
     expect(screen.queryByText("Signed in")).not.toBeInTheDocument()
-    expect(screen.queryByText("No sessions yet")).not.toBeInTheDocument()
+  })
+
+  it("names Claude Desktop instead of Not found when Claude has no sessions yet", async () => {
+    snapshot = progress({
+      rows: [{ agent: "claude-code", label: "Claude Code", sessions: 0, done: true }],
+    })
+    mockCommands({
+      get_live_usage: {
+        providers: [],
+        errors: [],
+        generatedAt: "",
+        meters: [
+          {
+            provider: "anthropic",
+            displayName: "Claude",
+            shown: true,
+            detection: "notInstalled",
+            desktopAppLabel: "Claude Desktop",
+          },
+        ],
+      },
+    })
+    render(<AgentsStepSettings />)
+
+    expect(await screen.findByText("No sessions yet")).toBeInTheDocument()
+    expect(
+      screen.getByText("Claude Desktop · Limits need Claude Code signed in"),
+    ).toBeInTheDocument()
+    expect(screen.queryByText("Not found")).not.toBeInTheDocument()
   })
 })
 

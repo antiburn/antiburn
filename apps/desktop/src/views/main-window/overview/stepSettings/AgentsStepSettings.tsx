@@ -70,6 +70,11 @@ export function AgentsStepSettings() {
   )
 
   const sessionsByAgent = new Map(progress.agents.rows.map((row) => [row.agent, row.sessions]))
+  // The scan lists every agent from its start, so a row with no sessions that
+  // is not done means the agent's search is still running.
+  const searchedAgents = new Set(
+    progress.agents.rows.filter((row) => row.done).map((row) => row.agent),
+  )
   const agentRows = [...AGENT_SLUGS].sort(
     (a, b) => (sessionsByAgent.get(b) ?? 0) - (sessionsByAgent.get(a) ?? 0),
   )
@@ -86,10 +91,12 @@ export function AgentsStepSettings() {
             <AgentRow
               key={slug}
               slug={slug}
+              sessions={sessionsByAgent.get(slug) ?? 0}
               status={agentStatus(
                 sessionsByAgent.get(slug) ?? 0,
                 meterForAgent(slug, liveMeters),
               )}
+              searched={searchedAgents.has(slug)}
               locations={locationsByAgent.get(slug) ?? []}
               enabled={!disabledAgents.includes(slug)}
               onEnabledChange={(next) => setAgentEnabled(slug, next)}
@@ -103,14 +110,19 @@ export function AgentsStepSettings() {
 
 function AgentRow({
   slug,
+  sessions,
   status,
+  searched,
   locations,
   enabled,
   onEnabledChange,
 }: {
   slug: string
+  sessions: number
   /** What this computer has for the agent: sessions, its desktop app, a login. */
   status: AgentStatus
+  /** Whether the agent's search has finished. */
+  searched: boolean
   locations: AgentSessionLocations["locations"]
   enabled: boolean
   onEnabledChange: (enabled: boolean) => void
@@ -146,12 +158,15 @@ function AgentRow({
       }
       facts={status.facts}
       controls={
-        <ToggleSwitch
-          checked={enabled}
-          onCheckedChange={onEnabledChange}
-          aria-label={`Show ${agentListName(slug)} sessions`}
-        />
+        sessions > 0 && (
+          <ToggleSwitch
+            checked={enabled}
+            onCheckedChange={onEnabledChange}
+            aria-label={`Show ${agentListName(slug)} sessions`}
+          />
+        )
       }
+      status={!status.found && searched && <span className="opacity-60">Not found</span>}
     >
       {status.note && <p className="type-footnote text-label-secondary">{status.note}</p>}
       {open && (

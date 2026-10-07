@@ -21,7 +21,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use tokio::sync::watch;
 
-use crate::insights_report::{self, ReducedReport, ReportRequest, reduce_report};
+use antiburn_local::insights::DetectorSelection;
+
+use crate::insights_report::{self, ReducedReport, ReportRequest, reduce_report_with_selection};
 
 /// The stable error string a cancelled report crosses the IPC edge with.
 pub const REPORT_CANCELLED_ERROR: &str = "insights report cancelled";
@@ -36,6 +38,7 @@ struct Run {
     started: Arc<AtomicBool>,
     done: watch::Receiver<bool>,
     outcome: OnceLock<Result<ReducedReport, String>>,
+    check_preferences_revision: u64,
 }
 
 impl Run {
@@ -126,10 +129,17 @@ impl InsightsController {
         data_dir: PathBuf,
         request: ReportRequest,
         consumer_id: String,
+        enabled_detectors: DetectorSelection,
+        check_preferences_revision: u64,
     ) -> Result<ReducedReport, String> {
-        self.report_for_consumer(consumer_id, request, move |request, cancel| {
-            reduce_report(data_dir, request, cancel)
-        })
+        self.report_for_consumer(
+            consumer_id,
+            request,
+            check_preferences_revision,
+            move |request, cancel| {
+                reduce_report_with_selection(data_dir, request, cancel, enabled_detectors)
+            },
+        )
         .await
     }
 
@@ -137,6 +147,7 @@ impl InsightsController {
         &self,
         consumer_id: String,
         request: ReportRequest,
+        check_preferences_revision: u64,
         reduce: F,
     ) -> Result<ReducedReport, String>
     where
@@ -144,12 +155,14 @@ impl InsightsController {
         Fut: Future<Output = anyhow::Result<ReducedReport>> + Send + 'static,
     {
         let _consumer_request = self.register_checks(consumer_id);
-        self.report_with(request, reduce).await
+        self.report_with(request, check_preferences_revision, reduce)
+            .await
     }
 
     async fn report_with<F, Fut>(
         &self,
         request: ReportRequest,
+        check_preferences_revision: u64,
         reduce: F,
     ) -> Result<ReducedReport, String>
     where
@@ -169,6 +182,7 @@ impl InsightsController {
                     !run.finished()
                         && !run.cancel.load(Ordering::SeqCst)
                         && !run.started.load(Ordering::SeqCst)
+                        && run.check_preferences_revision == check_preferences_revision
                 })
                 .cloned();
             match joinable {
@@ -190,6 +204,7 @@ impl InsightsController {
                         started: Arc::clone(&started),
                         done: done_rx,
                         outcome: OnceLock::new(),
+                        check_preferences_revision,
                     });
                     let task_run = Arc::clone(&run);
                     let future = reduce(request, cancel);
@@ -287,6 +302,7 @@ mod tests {
             pending_evidence: 0,
             deferred_evidence: 0,
             resources: crate::insights_report::ResourceAssessment::default(),
+            enabled_detectors: antiburn_local::insights::DetectorSelection::all(),
         }
     }
 
@@ -301,7 +317,7 @@ mod tests {
             let reductions = Arc::clone(&reductions);
             tokio::spawn(async move {
                 controller
-                    .report_with(request(), move |request, cancel| async move {
+                    .report_with(request(), 0, move |request, cancel| async move {
                         reductions.fetch_add(1, Ordering::SeqCst);
                         release_rx.await.unwrap();
                         // A second request while this runs must not set
@@ -325,7 +341,7 @@ mod tests {
                 let reductions = Arc::clone(&reductions);
                 tokio::spawn(async move {
                     controller
-                        .report_with(request(), move |request, cancel| async move {
+                        .report_with(request(), 0, move |request, cancel| async move {
                             reductions.fetch_add(1, Ordering::SeqCst);
                             assert!(!cancel.load(Ordering::SeqCst));
                             Ok(empty_report(&request))
@@ -366,7 +382,7 @@ mod tests {
             let started = Arc::clone(&started);
             tokio::spawn(async move {
                 controller
-                    .report_with(request(), move |_request, cancel| async move {
+                    .report_with(request(), 0, move |_request, cancel| async move {
                         started.store(true, Ordering::SeqCst);
                         while !cancel.load(Ordering::SeqCst) {
                             tokio::task::yield_now().await;
@@ -399,7 +415,7 @@ mod tests {
             let started = Arc::clone(&started);
             tokio::spawn(async move {
                 controller
-                    .report_with(request(), move |_request, _cancel| async move {
+                    .report_with(request(), 0, move |_request, _cancel| async move {
                         started.store(true, Ordering::SeqCst);
                         // Hold the cancelled reduction open so the second
                         // request arrives before it observes the flag.
@@ -418,7 +434,7 @@ mod tests {
         // The fresh request must not join the cancelled run: it starts
         // its own reduction and succeeds while the doomed run still runs.
         let fresh = controller
-            .report_with(request(), move |request, cancel| async move {
+            .report_with(request(), 0, move |request, cancel| async move {
                 assert!(!cancel.load(Ordering::SeqCst));
                 Ok(empty_report(&request))
             })
@@ -438,7 +454,7 @@ mod tests {
         for _ in 0..2 {
             let reductions = Arc::clone(&reductions);
             let result = controller
-                .report_with(request(), move |request, _cancel| async move {
+                .report_with(request(), 0, move |request, _cancel| async move {
                     reductions.fetch_add(1, Ordering::SeqCst);
                     Ok(empty_report(&request))
                 })
@@ -451,12 +467,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_new_check_preference_revision_does_not_join_an_older_queued_report() {
+        let controller = Arc::new(InsightsController::default());
+        let reductions = Arc::new(AtomicUsize::new(0));
+        let (release_base_tx, release_base_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_old_tx, release_old_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let base = {
+            let controller = Arc::clone(&controller);
+            let reductions = Arc::clone(&reductions);
+            tokio::spawn(async move {
+                controller
+                    .report_with(request(), 0, move |request, _cancel| async move {
+                        reductions.fetch_add(1, Ordering::SeqCst);
+                        release_base_rx.await.unwrap();
+                        Ok(empty_report(&request))
+                    })
+                    .await
+            })
+        };
+        while reductions.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        let old_revision = {
+            let controller = Arc::clone(&controller);
+            let reductions = Arc::clone(&reductions);
+            tokio::spawn(async move {
+                controller
+                    .report_with(request(), 1, move |request, _cancel| async move {
+                        reductions.fetch_add(1, Ordering::SeqCst);
+                        release_old_rx.await.unwrap();
+                        Ok(empty_report(&request))
+                    })
+                    .await
+            })
+        };
+        while controller
+            .lock_slot()
+            .as_ref()
+            .is_none_or(|run| run.check_preferences_revision != 1)
+        {
+            tokio::task::yield_now().await;
+        }
+
+        let new_revision = {
+            let controller = Arc::clone(&controller);
+            let reductions = Arc::clone(&reductions);
+            tokio::spawn(async move {
+                controller
+                    .report_with(request(), 2, move |request, _cancel| async move {
+                        reductions.fetch_add(1, Ordering::SeqCst);
+                        Ok(empty_report(&request))
+                    })
+                    .await
+            })
+        };
+        while controller
+            .lock_slot()
+            .as_ref()
+            .is_none_or(|run| run.check_preferences_revision != 2)
+        {
+            tokio::task::yield_now().await;
+        }
+
+        release_base_tx.send(()).unwrap();
+        base.await.unwrap().unwrap();
+        while reductions.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+        release_old_tx.send(()).unwrap();
+        old_revision.await.unwrap().unwrap();
+        new_revision.await.unwrap().unwrap();
+        assert_eq!(reductions.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
     async fn a_finished_checks_request_unregisters_its_consumer() {
         let controller = InsightsController::default();
         let report = controller
             .report_for_consumer(
                 "checks-1".to_string(),
                 request(),
+                0,
                 |request, _cancel| async move { Ok(empty_report(&request)) },
             )
             .await;
@@ -479,7 +572,7 @@ mod tests {
             let base_started = Arc::clone(&base_started);
             tokio::spawn(async move {
                 controller
-                    .report_with(request(), move |request, cancel| async move {
+                    .report_with(request(), 0, move |request, cancel| async move {
                         reductions.fetch_add(1, Ordering::SeqCst);
                         base_started.store(true, Ordering::SeqCst);
                         release_base_rx.await.unwrap();
@@ -501,6 +594,7 @@ mod tests {
                     .report_for_consumer(
                         "overview".to_string(),
                         request(),
+                        0,
                         move |request, cancel| async move {
                             reductions.fetch_add(1, Ordering::SeqCst);
                             assert!(!cancel.load(Ordering::SeqCst));
@@ -534,6 +628,7 @@ mod tests {
                     .report_for_consumer(
                         "popover".to_string(),
                         request(),
+                        0,
                         move |request, cancel| async move {
                             reductions.fetch_add(1, Ordering::SeqCst);
                             assert!(!cancel.load(Ordering::SeqCst));
@@ -583,6 +678,7 @@ mod tests {
                     .report_for_consumer(
                         "same-surface".to_string(),
                         request(),
+                        0,
                         move |request, cancel| async move {
                             first_started.store(true, Ordering::SeqCst);
                             release_first_rx.await.unwrap();
@@ -605,6 +701,7 @@ mod tests {
                     .report_for_consumer(
                         "same-surface".to_string(),
                         request(),
+                        0,
                         move |request, cancel| async move {
                             second_started.store(true, Ordering::SeqCst);
                             release_second_rx.await.unwrap();

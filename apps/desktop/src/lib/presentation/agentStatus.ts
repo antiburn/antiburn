@@ -18,6 +18,8 @@ import { sessionCountLabel } from "./providerUsage"
  * provider's desktop app still belongs to the agent, so the line names it.
  */
 export interface AgentStatus {
+  /** Sessions, a login, or the provider's desktop app turned up. */
+  found: boolean
   /** The session count for the facts column, or "" when there is nothing to say. */
   facts: string
   /** The desktop app and login, for the line under the name, or "". */
@@ -59,7 +61,7 @@ export function agentStatus(
   const found = sessionsSeen > 0 || signedInOrInstalled || Boolean(desktopApp)
   const facts =
     sessionsSeen > 0 ? sessionCountLabel(sessionsSeen) : found ? "No sessions yet" : ""
-  return { facts, note: notes.join(" · ") }
+  return { found, facts, note: notes.join(" · ") }
 }
 
 /** The login half of the line, or null when detection has nothing definite. */

@@ -12,6 +12,7 @@ const ipcMocks = vi.hoisted(() => ({
   onSessionIndexChanged: vi.fn(),
   onSessionUpdated: vi.fn(),
   onChecksReportChanged: vi.fn(),
+  onCheckAvailabilityChanged: vi.fn(),
 }))
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -28,6 +29,10 @@ vi.mock("./ipc", async (importOriginal) => ({
 vi.mock("./insightsIpc", async (importOriginal) => ({
   ...(await importOriginal<typeof InsightsIpc>()),
   onChecksReportChanged: ipcMocks.onChecksReportChanged,
+}))
+
+vi.mock("./checkAvailability", () => ({
+  onCheckAvailabilityChanged: ipcMocks.onCheckAvailabilityChanged,
 }))
 
 const FIRST: LocalSessionIdentity = {
@@ -122,10 +127,12 @@ beforeEach(() => {
   ipcMocks.onSessionIndexChanged.mockReset()
   ipcMocks.onSessionUpdated.mockReset()
   ipcMocks.onChecksReportChanged.mockReset()
+  ipcMocks.onCheckAvailabilityChanged.mockReset()
   ipcMocks.invoke.mockResolvedValue(null)
   ipcMocks.onSessionIndexChanged.mockResolvedValue(vi.fn())
   ipcMocks.onSessionUpdated.mockResolvedValue(vi.fn())
   ipcMocks.onChecksReportChanged.mockResolvedValue(vi.fn())
+  ipcMocks.onCheckAvailabilityChanged.mockResolvedValue(vi.fn())
 })
 
 afterEach(() => {
@@ -185,6 +192,21 @@ describe("useSessionHygiene", () => {
     await waitFor(() => expect(ipcMocks.onChecksReportChanged).toHaveBeenCalledTimes(1))
     await act(async () => ipcMocks.onChecksReportChanged.mock.calls[0]?.[0]())
     await waitFor(() => expect(sessionHygieneFor(result.current, FIRST).badges).toHaveLength(7))
+  })
+
+  it("removes disabled check badges when availability changes", async () => {
+    ipcMocks.invoke
+      .mockResolvedValueOnce([payload("clean")])
+      .mockResolvedValueOnce([{ ...payload("clean"), badges: [] }])
+    const { result } = renderHook(() => useSessionHygiene([FIRST]))
+    await waitFor(() => expect(ipcMocks.onCheckAvailabilityChanged).toHaveBeenCalledOnce())
+    expect(sessionHygieneFor(result.current, FIRST).badges).not.toHaveLength(0)
+
+    await act(async () =>
+      ipcMocks.onCheckAvailabilityChanged.mock.calls[0]?.[0]({ status: "updated" }),
+    )
+
+    await waitFor(() => expect(sessionHygieneFor(result.current, FIRST).badges).toHaveLength(0))
   })
 
   it("ignores an update whose facets cannot move hygiene", async () => {
@@ -254,8 +276,10 @@ describe("useSessionHygiene", () => {
   it("tears down every listener", async () => {
     const stopIndexChange = vi.fn()
     const stopUpdate = vi.fn()
+    const stopAvailabilityChange = vi.fn()
     ipcMocks.onSessionIndexChanged.mockResolvedValueOnce(stopIndexChange)
     ipcMocks.onSessionUpdated.mockResolvedValueOnce(stopUpdate)
+    ipcMocks.onCheckAvailabilityChanged.mockResolvedValueOnce(stopAvailabilityChange)
     const { unmount } = renderHook(() => useSessionHygiene([FIRST]))
     await waitFor(() => expect(ipcMocks.onSessionUpdated).toHaveBeenCalledTimes(1))
 
@@ -263,5 +287,6 @@ describe("useSessionHygiene", () => {
 
     expect(stopIndexChange).toHaveBeenCalledTimes(1)
     expect(stopUpdate).toHaveBeenCalledTimes(1)
+    expect(stopAvailabilityChange).toHaveBeenCalledTimes(1)
   })
 })

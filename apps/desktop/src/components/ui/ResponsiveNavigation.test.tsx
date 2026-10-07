@@ -1,4 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react"
+import { createPortal } from "react-dom"
+import { useState } from "react"
 import { beforeEach, describe, expect, it } from "vitest"
 
 import { ResponsiveNavigation } from "./ResponsiveNavigation"
@@ -7,6 +9,36 @@ function Navigation({ compact = true }: { compact?: boolean }) {
   return (
     <ResponsiveNavigation compact={compact} label="Test navigation">
       {(close) => <button onClick={close}>Choose section</button>}
+    </ResponsiveNavigation>
+  )
+}
+
+function NavigationHandoff() {
+  const [modalOpen, setModalOpen] = useState(false)
+  const [enabled, setEnabled] = useState(false)
+  return (
+    <ResponsiveNavigation compact label="Test navigation">
+      {(close) => (
+        <>
+          <button
+            onClick={() => {
+              close()
+              setModalOpen(true)
+            }}
+          >
+            Open checks
+          </button>
+          {modalOpen &&
+            createPortal(
+              <div role="dialog" aria-label="Checks">
+                <button onClick={() => setEnabled((current) => !current)}>
+                  Session overdepth {enabled ? "on" : "off"}
+                </button>
+              </div>,
+              document.body,
+            )}
+        </>
+      )}
     </ResponsiveNavigation>
   )
 }
@@ -53,5 +85,16 @@ describe("ResponsiveNavigation", () => {
       "aria-expanded",
       "false",
     )
+  })
+
+  it("keeps a child portal interactive after handing off from the drawer", () => {
+    render(<NavigationHandoff />)
+    fireEvent.click(screen.getByRole("button", { name: "Open Test navigation" }))
+    fireEvent.click(screen.getByRole("button", { name: "Open checks" }))
+
+    expect(screen.queryByRole("dialog", { name: "Test navigation" })).toBeNull()
+    const toggle = screen.getByRole("button", { name: "Session overdepth off" })
+    fireEvent.click(toggle)
+    expect(screen.getByRole("button", { name: "Session overdepth on" })).toBeVisible()
   })
 })
