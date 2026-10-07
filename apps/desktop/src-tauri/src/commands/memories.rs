@@ -486,6 +486,8 @@ mod tests {
         .unwrap();
     }
 
+    // The memory path scanner matches POSIX paths only.
+    #[cfg(not(windows))]
     #[test]
     fn session_memories_group_by_path_and_action_with_titles() {
         let home = tempfile::tempdir().unwrap();
