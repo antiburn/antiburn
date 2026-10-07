@@ -370,6 +370,7 @@ mod tests {
     use antiburn_local::memories::inventory::{IndexEntry, MemoryFile};
 
     use super::*;
+    #[cfg(not(windows))]
     use crate::store::SessionRecord;
 
     fn session(id: &str, cwd: Option<&str>, started: i64, last: Option<i64>) -> ProjectSession {
@@ -458,6 +459,7 @@ mod tests {
         assert_eq!(none_facts.sessions_since_written, None);
     }
 
+    #[cfg(not(windows))]
     fn memories_request(session_id: &str, remote: Option<&str>) -> SessionMemoriesRequest {
         SessionMemoriesRequest {
             agent: "claude-code".into(),
@@ -467,6 +469,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
     fn add_tool_input(conn: &rusqlite::Connection, rowid: i64, session: &str, ts: i64, cmd: &str) {
         conn.execute(
             "INSERT INTO turn (rowid, environment_key, agent, session_id, claim_fence,
