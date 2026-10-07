@@ -4,45 +4,86 @@ export const CHECK_DEFINITIONS = {
   sessionsOverDepth: {
     label: "Session overdepth",
     aliases: ["long sessions", "context depth", "conversation length"],
+    kind: "local",
+    description: "Checks recorded context depth against reviewed limits.",
   },
   modelOverthinking: {
     label: "Model overthinking",
     aliases: ["reasoning effort", "thinking budget"],
+    kind: "local",
+    description: "Checks recorded reasoning settings and usage against reviewed limits.",
   },
   overpoweredSubagents: {
     label: "Overpowered subagents",
     aliases: ["expensive subagents", "delegation", "model routing"],
+    kind: "local",
+    description: "Checks recorded parent and worker model combinations.",
   },
-  unusedMcpServers: { label: "Unused MCP servers", aliases: ["MCP tools", "unused servers"] },
+  unusedMcpServers: {
+    label: "Unused MCP servers",
+    aliases: ["MCP tools", "unused servers"],
+    kind: "local",
+    description: "Checks recorded MCP server exposure and calls.",
+  },
   unusedBuiltInTools: {
     label: "Unused built-in tools",
     aliases: ["built in tools", "unused tool definitions"],
+    kind: "local",
+    description: "Checks recorded optional built-in tool definitions and calls.",
   },
-  unusedSkills: { label: "Unused skills", aliases: ["skill instructions", "unused skills"] },
-  oldModelUsage: { label: "Old model usage", aliases: ["outdated models", "model versions"] },
+  unusedSkills: {
+    label: "Unused skills",
+    aliases: ["skill instructions", "unused skills"],
+    kind: "local",
+    description: "Checks recorded skill injection and use.",
+  },
+  oldModelUsage: {
+    label: "Old model usage",
+    aliases: ["outdated models", "model versions"],
+    kind: "local",
+    description: "Checks recorded model versions against reviewed replacements.",
+  },
   overuseOfFastMode: {
     label: "Fast mode overuse",
     aliases: ["fast mode", "priority", "speed"],
+    kind: "local",
+    description: "Checks recorded fast-tier use against reviewed limits.",
   },
   cacheChurn: {
     label: "Excess cache rehydration",
     aliases: ["prompt cache", "rehydration", "cache misses"],
+    kind: "local",
+    description: "Checks compatible request records for excess cache rehydration.",
   },
   ignoredInstructions: {
     label: "Ignored Instructions",
     aliases: ["instruction conflicts", "missed agent rules", "AGENTS.md", "CLAUDE.md"],
+    kind: "smart",
+    description:
+      "Finds project instructions a session did not follow. Checks start after 3 minutes of inactivity.",
   },
-} as const satisfies Record<BurnCheckDetectorId, { label: string; aliases: readonly string[] }>
+} as const satisfies Record<
+  BurnCheckDetectorId,
+  {
+    label: string
+    aliases: readonly string[]
+    kind: "local" | "smart"
+    description: string
+  }
+>
 
-/** The checks that run only after the reader sets them up in Settings →
- *  Checks. Every other check always runs. */
-const SET_UP_CHECKS: readonly BurnCheckDetectorId[] = ["ignoredInstructions"]
-
-/** How many checks run. `setUpChecksConfigured` is the Checks pane's
- *  `configured` state. A snoozed check still runs, so it counts. */
-export function enabledCheckCount(setUpChecksConfigured: boolean): number {
-  const all = Object.keys(CHECK_DEFINITIONS).length
-  return setUpChecksConfigured ? all : all - SET_UP_CHECKS.length
+/** How many selected checks can currently run. Smart checks also need their
+ * provider gate to be active. A snoozed check still runs, so it counts. */
+export function enabledCheckCount(
+  checks: readonly { id: BurnCheckDetectorId; enabled: boolean }[],
+  smartChecksConfigured: boolean,
+): number {
+  return checks.filter(({ id, enabled }) => {
+    const definition = CHECK_DEFINITIONS[id]
+    return (
+      enabled && Boolean(definition) && (definition.kind === "local" || smartChecksConfigured)
+    )
+  }).length
 }
 
 export const CHECK_LABELS = Object.fromEntries(

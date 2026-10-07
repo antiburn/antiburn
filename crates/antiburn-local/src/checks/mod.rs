@@ -3,7 +3,7 @@
 pub mod ignored_instructions;
 
 mod id;
-pub use id::DetectorId;
+pub use id::{DetectorId, DetectorSelection};
 
 mod assessment;
 mod cache_churn;

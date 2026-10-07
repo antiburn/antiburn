@@ -5,7 +5,8 @@ use antiburn_local::analysis::{
     EvidenceValue, InitialContextBreakdown, SessionEvidence, SourceOrigin, ToolClass,
 };
 use antiburn_local::insights::{
-    DetectorId, EfficiencyReport, SessionTokenBurnEvidence, fallback_token_burn_basis_points,
+    DetectorId, DetectorSelection, EfficiencyReport, SessionTokenBurnEvidence,
+    fallback_token_burn_basis_points,
 };
 use antiburn_local::model::AgentKind;
 
@@ -401,7 +402,16 @@ impl ResourceAssessmentBuilder {
         }
     }
 
-    pub(crate) fn finish(mut self, report: &EfficiencyReport) -> ResourceAssessment {
+    #[cfg(test)]
+    pub(crate) fn finish(self, report: &EfficiencyReport) -> ResourceAssessment {
+        self.finish_with_selection(report, &DetectorSelection::all())
+    }
+
+    pub(crate) fn finish_with_selection(
+        mut self,
+        report: &EfficiencyReport,
+        enabled_detectors: &DetectorSelection,
+    ) -> ResourceAssessment {
         let mut used = BTreeSet::new();
         let mut ambiguous = BTreeSet::new();
         for (key, samples) in &self.uses {
@@ -425,6 +435,9 @@ impl ResourceAssessmentBuilder {
         let mut result = ResourceAssessment::default();
         for kind in resource_kinds() {
             let detector = detector_for_kind(kind);
+            if !enabled_detectors.contains(detector) {
+                continue;
+            }
             let candidates = self
                 .candidates
                 .iter()

@@ -2,7 +2,7 @@ import { useId, useRef, useState, useSyncExternalStore, type RefObject } from "r
 import { createPortal } from "react-dom"
 
 import { CountUp } from "../../../components/ui/CountUp"
-import { checksConfiguredStore } from "../../../lib/checkAvailability"
+import { checkAvailabilityStore, emptyCheckAvailability } from "../../../lib/checkAvailability"
 import { cn } from "../../../lib/cn"
 import type { BurnCheckDetectorId } from "../../../lib/insightsIpc"
 import { enabledCheckCount } from "../../../lib/presentation/checkDefinitions"
@@ -36,6 +36,7 @@ function rowContent(
   step: ProgressStepKey,
   progress: OverviewProgress,
   enabledChecks: number,
+  checkAvailabilityLoaded: boolean,
 ): { value: number; pulsing: boolean } {
   switch (step) {
     case "agents": {
@@ -59,7 +60,10 @@ function rowContent(
       }
     }
     case "checks":
-      return { value: enabledChecks, pulsing: !progress.checks.done }
+      return {
+        value: checkAvailabilityLoaded ? enabledChecks : progress.categories.length,
+        pulsing: !progress.checks.done || !checkAvailabilityLoaded,
+      }
     case "fixes": {
       return { value: progress.failingCount, pulsing: false }
     }
@@ -70,17 +74,24 @@ function ProgressRow({
   step,
   progress,
   triggerRefs,
+  onActivate,
 }: {
   step: ProgressStepKey
   progress: OverviewProgress
   triggerRefs: RefObject<Map<ProgressStepKey, HTMLButtonElement>>
+  onActivate?: (() => void) | undefined
 }) {
-  const configured = useSyncExternalStore(
-    checksConfiguredStore.subscribe,
-    checksConfiguredStore.getSnapshot,
+  const availability = useSyncExternalStore(
+    checkAvailabilityStore.subscribe,
+    checkAvailabilityStore.getSnapshot,
   )
   const label = STEP_LABELS[step]
-  const { value, pulsing } = rowContent(step, progress, enabledCheckCount(configured))
+  const { value, pulsing } = rowContent(
+    step,
+    progress,
+    enabledCheckCount(availability.checks, availability.configured),
+    availability !== emptyCheckAvailability,
+  )
   const open = progress.openStep === step
   // During the first run a row takes the reader back to its step. Once the
   // first run is done, it opens the step's modal.
@@ -96,7 +107,11 @@ function ProgressRow({
       style={transitionName ? { viewTransitionName: transitionName } : undefined}
       aria-haspopup={rewinds ? undefined : "dialog"}
       aria-expanded={rewinds ? undefined : open}
-      onClick={() => (rewinds ? rewindTo(step) : openProgressStep(step))}
+      onClick={() => {
+        onActivate?.()
+        if (rewinds) rewindTo(step)
+        else openProgressStep(step)
+      }}
       className={cn(
         "type-body flex h-9 w-full cursor-pointer! items-center justify-between gap-3 rounded-control px-3 transition-colors duration-[var(--duration-fast)] ease-out",
         open ? "bg-surface-selected text-label" : "text-label hover:bg-surface-hover",
@@ -153,7 +168,9 @@ function ProgressStepModal({
           if (event.key === "Escape") return close()
           if (event.key !== "Tab") return
           const controls = Array.from(
-            event.currentTarget.querySelectorAll<HTMLElement>("button:not([disabled])"),
+            event.currentTarget.querySelectorAll<HTMLElement>(
+              'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+            ),
           )
           const first = controls[0]
           const last = controls.at(-1)
@@ -165,7 +182,7 @@ function ProgressStepModal({
             first?.focus()
           }
         }}
-        className="flex max-h-[calc(100vh-3rem)] w-full max-w-2xl flex-col overflow-hidden rounded-control border border-separator bg-surface-card text-label shadow-raised"
+        className="flex max-h-[calc(100vh-3rem)] w-full max-w-2xl flex-col overflow-hidden rounded-control border border-separator bg-surface-overlay text-label shadow-raised"
       >
         <h4 id={titleId} className="sr-only">
           {STEP_LABELS[step]}
@@ -224,8 +241,10 @@ function ProgressStepModal({
  *  navigation registry or search: these rows are status, not views. */
 export function ProgressNav({
   onOpenChecks,
+  onActivate,
 }: {
   onOpenChecks: (check: BurnCheckDetectorId | undefined) => void
+  onActivate?: (() => void) | undefined
 }) {
   const progress = useSyncExternalStore(
     subscribeOverviewProgress,
@@ -251,6 +270,7 @@ export function ProgressNav({
                 step={step}
                 progress={progress}
                 triggerRefs={triggerRefs}
+                onActivate={onActivate}
               />
             ))}
           </div>
@@ -263,7 +283,15 @@ export function ProgressNav({
         <ProgressStepModal
           step={openStep}
           progress={progress}
-          returnFocus={() => triggerRefs.current.get(openStep)?.focus()}
+          returnFocus={() => {
+            const trigger = triggerRefs.current.get(openStep)
+            const closedDrawer = trigger?.closest<HTMLDialogElement>("dialog:not([open])")
+            if (closedDrawer) {
+              document.getElementById(`${closedDrawer.id}-trigger`)?.focus()
+            } else {
+              trigger?.focus()
+            }
+          }}
           onOpenChecks={onOpenChecks}
         />
       )}

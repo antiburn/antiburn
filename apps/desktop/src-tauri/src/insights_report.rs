@@ -9,9 +9,9 @@ use antiburn_local::analysis::{
     PARSER_REVISION, SessionEvidence,
 };
 use antiburn_local::insights::{
-    CoverageBucket, CoverageCounts, DetectorFindings, DetectorId, DetectorStatus, EfficiencyReport,
-    EfficiencyReportAccumulator, NotAssessedReason, ReportCatalogs, ReportContext, ReportWindow,
-    SessionExample,
+    CoverageBucket, CoverageCounts, DetectorFindings, DetectorId, DetectorSelection,
+    DetectorStatus, EfficiencyReport, EfficiencyReportAccumulator, NotAssessedReason,
+    ReportCatalogs, ReportContext, ReportWindow, SessionExample,
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::model_catalog::ModelCatalog;
@@ -56,14 +56,15 @@ pub(crate) use resources::{ResourceAssessment, ResourceAssessmentScope, UnusedRe
 
 #[cfg(test)]
 pub(crate) use findings::reduce_report_blocking_with_home;
-#[allow(unused_imports)]
-pub use findings::{ReportCancelled, is_cancelled, reduce_report, reduce_report_blocking};
+#[cfg(test)]
+pub use findings::{ReportCancelled, reduce_report};
 pub(crate) use findings::{ensure_not_cancelled, publication_findings_in};
 #[cfg(test)]
 use findings::{
     fair_bounded_selection, list_current_findings_on_snapshot,
     revalidate_current_finding_on_snapshot,
 };
+pub use findings::{is_cancelled, reduce_report_blocking, reduce_report_with_selection};
 pub use findings::{list_current_findings, revalidate_current_finding};
 pub(crate) use verification::{
     CurrentDetectorAssessment, RemediationAssessments, has_current_evidence_after,
@@ -97,6 +98,7 @@ pub struct ReducedReport {
     /// The worker cannot claim these rows before their next attempt time.
     pub deferred_evidence: u64,
     pub(crate) resources: ResourceAssessment,
+    pub enabled_detectors: DetectorSelection,
 }
 
 /// Selects one detector's current findings in a bounded report window.
@@ -175,6 +177,26 @@ fn reduce_with_state_on_snapshot(
     turn_probe: &mut dyn FnMut(),
     resource_home: Option<&Path>,
 ) -> Result<ReducedReport> {
+    reduce_with_selection_on_snapshot(
+        data_dir,
+        request,
+        after_denominator,
+        cancel,
+        turn_probe,
+        resource_home,
+        DetectorSelection::all(),
+    )
+}
+
+fn reduce_with_selection_on_snapshot(
+    data_dir: &Path,
+    request: ReportRequest,
+    after_denominator: &mut dyn FnMut(),
+    cancel: &AtomicBool,
+    turn_probe: &mut dyn FnMut(),
+    resource_home: Option<&Path>,
+    enabled_detectors: DetectorSelection,
+) -> Result<ReducedReport> {
     ensure_not_cancelled(cancel)?;
     let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
     let transaction = connection.unchecked_transaction()?;
@@ -211,7 +233,10 @@ fn reduce_with_state_on_snapshot(
     after_denominator();
     ensure_not_cancelled(cancel)?;
 
-    let mut accumulator = EfficiencyReportAccumulator::new();
+    let mut accumulator = EfficiencyReportAccumulator::with_catalogs_and_selection(
+        ReportCatalogs::default(),
+        enabled_detectors.clone(),
+    );
     let mut resource_builder = resources::ResourceAssessmentBuilder::default();
     if coverage.discovered != coverage.ready {
         resource_builder.mark_window_incomplete();
@@ -254,9 +279,11 @@ fn reduce_with_state_on_snapshot(
             let incarnation: u64 = row.get(6)?;
             let source_generation: i64 = row.get(7)?;
             let source_fingerprint: Option<String> = row.get(8)?;
-            if antiburn_local::analysis::ignored_instructions::source_supported(
-                evidence.capabilities.source_format,
-            ) {
+            if enabled_detectors.contains(DetectorId::IgnoredInstructions)
+                && antiburn_local::analysis::ignored_instructions::source_supported(
+                    evidence.capabilities.source_format,
+                )
+            {
                 ignored_eligible += 1;
                 let result = ignored_instruction_result_for(
                     &transaction,
@@ -298,7 +325,7 @@ fn reduce_with_state_on_snapshot(
                     }
                     _ => ignored_unavailable += 1,
                 }
-            } else {
+            } else if enabled_detectors.contains(DetectorId::IgnoredInstructions) {
                 ignored_not_applicable += 1;
             }
             let agent_kind = crate::agents::kind_from_slug(&agent);
@@ -439,20 +466,22 @@ fn reduce_with_state_on_snapshot(
         evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
         coverage,
     });
-    apply_ignored_instruction_counts(
-        &mut report,
-        IgnoredInstructionReportCounts {
-            eligible: ignored_eligible,
-            assessed: ignored_assessed,
-            clean: ignored_clean,
-            clean_agents: ignored_clean_agents,
-            finding_agents: ignored_finding_agents,
-            unavailable: ignored_unavailable,
-            not_applicable: ignored_not_applicable,
-            finding_sessions: ignored_finding_sessions,
-            examples: ignored_examples,
-        },
-    );
+    if enabled_detectors.contains(DetectorId::IgnoredInstructions) {
+        apply_ignored_instruction_counts(
+            &mut report,
+            IgnoredInstructionReportCounts {
+                eligible: ignored_eligible,
+                assessed: ignored_assessed,
+                clean: ignored_clean,
+                clean_agents: ignored_clean_agents,
+                finding_agents: ignored_finding_agents,
+                unavailable: ignored_unavailable,
+                not_applicable: ignored_not_applicable,
+                finding_sessions: ignored_finding_sessions,
+                examples: ignored_examples,
+            },
+        );
+    }
     turn_probe();
     ensure_not_cancelled(cancel)?;
     ensure!(
@@ -468,7 +497,7 @@ fn reduce_with_state_on_snapshot(
             resource_builder.mark_scan_failed(agent);
         }
     }
-    let resources = resource_builder.finish(&report);
+    let resources = resource_builder.finish_with_selection(&report, &enabled_detectors);
     debug_assert!(
         [
             DetectorId::UnusedMcpServers,
@@ -476,7 +505,9 @@ fn reduce_with_state_on_snapshot(
             DetectorId::UnusedSkills,
         ]
         .into_iter()
-        .all(|detector| resources.detector(detector).is_some())
+        .all(|detector| {
+            !enabled_detectors.contains(detector) || resources.detector(detector).is_some()
+        })
     );
     Ok(ReducedReport {
         report,
@@ -484,6 +515,7 @@ fn reduce_with_state_on_snapshot(
         pending_evidence,
         deferred_evidence,
         resources,
+        enabled_detectors,
     })
 }
 
@@ -3462,6 +3494,75 @@ pub(crate) mod tests {
             assert_eq!(category.unavailable, 0);
             assert_eq!(category.agents, vec!["claude-code"]);
             assert_eq!(category.estimated_token_burn_basis_points, Some(500));
+        }
+
+        #[test]
+        fn a_disabled_resource_check_does_not_assess_or_publish_its_candidates() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_ready(&store, "ready", 120);
+            let home = data_dir.path().join("home");
+            std::fs::create_dir(&home).unwrap();
+            std::fs::write(
+                home.join(".claude.json"),
+                r#"{"mcpServers":{"docs":{"command":"docs"}}}"#,
+            )
+            .unwrap();
+            let selection = DetectorSelection::from_enabled([DetectorId::SessionsOverDepth]);
+
+            let reduced = reduce_with_selection_on_snapshot(
+                data_dir.path(),
+                request(),
+                &mut || {},
+                &AtomicBool::new(false),
+                &mut || {},
+                Some(&home),
+                selection,
+            )
+            .unwrap();
+
+            assert!(
+                reduced
+                    .resources
+                    .detector(DetectorId::UnusedMcpServers)
+                    .is_none()
+            );
+            let payload = crate::dto::ChecksReportPayload::from_reduced_report(&reduced);
+            assert_eq!(payload.categories.len(), 1);
+            assert_eq!(
+                payload.categories[0].id,
+                crate::dto::BurnCheckDetectorId::SessionsOverDepth
+            );
+        }
+
+        #[test]
+        fn an_empty_selection_keeps_coverage_without_claiming_any_check_result() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_ready(&store, "ready", 120);
+
+            let reduced = reduce_with_selection_on_snapshot(
+                data_dir.path(),
+                request(),
+                &mut || {},
+                &AtomicBool::new(false),
+                &mut || {},
+                None,
+                DetectorSelection::none(),
+            )
+            .unwrap();
+
+            assert_eq!(reduced.report.context.coverage.discovered, 1);
+            assert!(
+                reduced
+                    .report
+                    .detectors
+                    .iter()
+                    .all(|counts| *counts == Default::default())
+            );
+            let payload = crate::dto::ChecksReportPayload::from_reduced_report(&reduced);
+            assert!(payload.categories.is_empty());
+            assert_eq!(payload.estimated_token_burn_basis_points, None);
         }
     }
 

@@ -60,20 +60,31 @@ pub(crate) fn ensure_not_cancelled(cancel: &AtomicBool) -> Result<()> {
 /// The cancel flag is a cooperative probe: `spawn_blocking` tasks cannot
 /// be aborted, so the reduction checks the flag between phases and per
 /// cohort row, and returns [`ReportCancelled`] when it is set.
+#[cfg(test)]
 pub async fn reduce_report(
     data_dir: PathBuf,
     request: ReportRequest,
     cancel: Arc<AtomicBool>,
 ) -> Result<ReducedReport> {
+    reduce_report_with_selection(data_dir, request, cancel, DetectorSelection::all()).await
+}
+
+pub async fn reduce_report_with_selection(
+    data_dir: PathBuf,
+    request: ReportRequest,
+    cancel: Arc<AtomicBool>,
+    enabled_detectors: DetectorSelection,
+) -> Result<ReducedReport> {
     let resource_home = antiburn_local::paths::home_dir();
     tokio::task::spawn_blocking(move || {
-        reduce_with_state_on_snapshot(
+        reduce_with_selection_on_snapshot(
             &data_dir,
             request,
             &mut || {},
             &cancel,
             &mut || {},
             resource_home.as_deref(),
+            enabled_detectors,
         )
     })
     .await
@@ -192,6 +203,7 @@ pub fn revalidate_current_finding(data_dir: &Path, cached: &CurrentFinding) -> R
 pub(crate) fn publication_findings_in(
     connection: &rusqlite::Connection,
     key: &crate::store::SessionKey,
+    enabled_detectors: &DetectorSelection,
 ) -> Result<Vec<CurrentFinding>> {
     let catalogs = ReportCatalogs::default();
     let sql = CURRENT_FINDING_BY_KEY_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
@@ -216,6 +228,9 @@ pub(crate) fn publication_findings_in(
     let cancel = AtomicBool::new(false);
     let mut findings_by_detector = Vec::with_capacity(DetectorId::COUNT);
     for detector in DetectorId::ALL {
+        if !enabled_detectors.contains(detector) {
+            continue;
+        }
         let assessment = assess_current_detector(
             connection,
             &session,

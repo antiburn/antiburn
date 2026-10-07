@@ -413,6 +413,101 @@ fn indexed_resource_target_enables_auto_fix_for_the_exact_effective_entry() {
     assert_eq!(watch.state, RemediationState::Reserved);
 }
 
+#[cfg(not(windows))]
+#[test]
+fn disabled_check_watch_is_dequeued_without_replacing_its_result() {
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(
+        home.join(".claude.json"),
+        r#"{"mcpServers":{"docs":{"command":"docs"}}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir(home.join(".claude")).unwrap();
+    std::fs::write(
+        home.join(".claude/settings.json"),
+        r#"{"permissions":{"deny":[]}}"#,
+    )
+    .unwrap();
+    let store = Store::open(&temporary.path().join("store")).unwrap();
+    let controller = RemediationController::new(temporary.path().join("data"));
+    let target = insights_report::UnusedResourceTarget {
+        agent: AgentKind::Claude,
+        kind: crate::agent_config::ResourceKind::McpServer,
+        canonical_name: "docs".into(),
+        scope: insights_report::ResourceAssessmentScope::Global,
+        observations: 1,
+        indexed: true,
+        replicated_tokens: Some(40),
+        estimated_token_burn_basis_points: Some(400),
+        supporting_sessions: Vec::new(),
+    };
+    let resolved = controller
+        .resolve_resource_target(
+            &store,
+            &target,
+            BurnCheckTargetContext {
+                environment_key: "native".into(),
+                window: ReportWindow {
+                    start_epoch: 0,
+                    end_epoch: 1,
+                },
+            },
+            Some(&home),
+        )
+        .unwrap();
+    let watch = controller
+        .start_watch(&store, &resolved, RemediationState::Reserved, None, 1, None)
+        .unwrap();
+    assert!(
+        store
+            .begin_remediation_write(&watch.remediation_id, 1)
+            .unwrap()
+    );
+    assert!(
+        store
+            .finalize_remediation_write(&watch.remediation_id, 1_000, 1, true)
+            .unwrap()
+    );
+    let before = store.remediation(&watch.remediation_id).unwrap().unwrap();
+    assert_eq!(
+        store
+            .next_dirty_remediation()
+            .unwrap()
+            .unwrap()
+            .remediation_id,
+        watch.remediation_id
+    );
+    assert!(
+        store
+            .set_check_enabled(DetectorId::UnusedMcpServers, false)
+            .unwrap()
+    );
+    let disabled = store.remediation(&watch.remediation_id).unwrap().unwrap();
+    assert!(store.next_dirty_remediation().unwrap().is_none());
+
+    assert!(evaluate_dirty_remediation(temporary.path(), &store, &disabled, 2).unwrap());
+    assert!(store.next_dirty_remediation().unwrap().is_none());
+    let after = store.remediation(&watch.remediation_id).unwrap().unwrap();
+    assert_eq!(after.result_json, before.result_json);
+    assert_eq!(after.state, before.state);
+    assert_eq!(after.evaluated_revision, disabled.dirty_revision);
+    assert!(
+        store
+            .set_check_enabled(DetectorId::UnusedMcpServers, true)
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .next_dirty_remediation()
+            .unwrap()
+            .unwrap()
+            .remediation_id,
+        watch.remediation_id
+    );
+}
+
 #[test]
 fn advisory_resource_target_stays_prompt_only() {
     let temporary = tempfile::tempdir().unwrap();
@@ -1892,6 +1987,26 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
     assert_eq!(visible.wins[0].remediation_cycle_id, "other-attempt");
     store.save_burn_check_snoozes("[]").unwrap();
 
+    assert!(
+        store
+            .set_check_enabled(DetectorId::CacheChurn, false)
+            .unwrap()
+    );
+    let disabled = controller.aggregate_wins(&store).unwrap();
+    assert_eq!(disabled.wins.len(), 999);
+    assert!(
+        disabled
+            .wins
+            .iter()
+            .all(|win| win.detector != DetectorId::CacheChurn)
+    );
+    assert!(
+        store
+            .set_check_enabled(DetectorId::CacheChurn, true)
+            .unwrap()
+    );
+    assert_eq!(controller.aggregate_wins(&store).unwrap().wins.len(), 1_000);
+
     store
         .lock()
         .execute(
@@ -2085,6 +2200,109 @@ fn listing_another_check_keeps_the_first_checks_target_ids() {
     );
 }
 
+#[cfg(not(windows))]
+#[test]
+fn prepared_auto_fix_expires_across_a_check_off_on_cycle() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let config_path = home.join(".claude.json");
+    std::fs::write(
+        &config_path,
+        r#"{"mcpServers":{"docs":{"command":"docs"}}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir(home.join(".claude")).unwrap();
+    std::fs::write(
+        home.join(".claude/settings.json"),
+        r#"{"permissions":{"deny":[]}}"#,
+    )
+    .unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    let controller = RemediationController::new(directory.path().to_owned());
+    let resource = insights_report::UnusedResourceTarget {
+        agent: AgentKind::Claude,
+        kind: crate::agent_config::ResourceKind::McpServer,
+        canonical_name: "docs".into(),
+        scope: insights_report::ResourceAssessmentScope::Global,
+        observations: 1,
+        indexed: true,
+        replicated_tokens: Some(40),
+        estimated_token_burn_basis_points: Some(400),
+        supporting_sessions: Vec::new(),
+    };
+    let target = controller
+        .resolve_resource_target(
+            &store,
+            &resource,
+            BurnCheckTargetContext {
+                environment_key: "native".into(),
+                window: ReportWindow {
+                    start_epoch: 0,
+                    end_epoch: 1,
+                },
+            },
+            Some(&home),
+        )
+        .unwrap();
+    let config = target.config.as_ref().unwrap();
+    let prepared = controller
+        .editor
+        .prepare_operation(&config.context, &config.operation)
+        .unwrap();
+    let retained_bytes = prepared.retained_bytes();
+    let action_id = "stale-action".to_owned();
+    let prepared_operation_id = "stale-prepared".to_owned();
+    let check_preferences_revision = store.check_preferences_revision().unwrap();
+    let mut state = controller.state.lock().unwrap();
+    state
+        .targets
+        .entry(DetectorId::UnusedMcpServers)
+        .or_default()
+        .push_back(TimedTarget {
+            id: action_id.clone(),
+            value: target.clone(),
+            check_preferences_revision,
+            smart_master_generation: None,
+            created_at_epoch: now_epoch(),
+        });
+    state.prepared.push_back(PreparedAutoFix {
+        id: prepared_operation_id.clone(),
+        target,
+        prepared: Some(prepared),
+        retained_bytes,
+        check_preferences_revision,
+        smart_master_generation: None,
+        created_at_epoch: now_epoch(),
+        completed: None,
+    });
+    drop(state);
+
+    assert!(
+        store
+            .set_check_enabled(DetectorId::UnusedMcpServers, false)
+            .unwrap()
+    );
+    assert!(
+        store
+            .set_check_enabled(DetectorId::UnusedMcpServers, true)
+            .unwrap()
+    );
+    assert!(matches!(
+        controller.apply_prepared_burn_check_operation(&store, &prepared_operation_id),
+        Err(ControllerError::TargetChanged)
+    ));
+    assert!(matches!(
+        controller.copy_prompt_fix_burn_check_target(&store, &action_id),
+        Err(ControllerError::TargetChanged)
+    ));
+    assert!(
+        std::fs::read_to_string(config_path)
+            .unwrap()
+            .contains("docs")
+    );
+}
+
 fn project_folder_action_fixture() -> (
     tempfile::TempDir,
     Store,
@@ -2166,7 +2384,9 @@ fn project_folder_action_rejects_remote_origin_despite_matching_local_session_an
     store
         .upsert_sessions(&[remote], &crate::agents::evidence_cohort())
         .unwrap();
-    let mut remote_target = controller.cached_target(&action_id, now_epoch()).unwrap();
+    let mut remote_target = controller
+        .cached_target(&store, &action_id, now_epoch())
+        .unwrap();
     remote_target.findings[0].environment_key = "ssh:host".into();
     controller
         .state
@@ -2178,6 +2398,8 @@ fn project_folder_action_rejects_remote_origin_despite_matching_local_session_an
         .push_back(TimedTarget {
             id: "remote-action".into(),
             value: remote_target,
+            check_preferences_revision: store.check_preferences_revision().unwrap(),
+            smart_master_generation: None,
             created_at_epoch: now_epoch(),
         });
     assert!(matches!(
@@ -2215,7 +2437,11 @@ fn project_folder_action_rejects_deleted_session_despite_live_action_and_directo
     let (_dir, store, controller, action_id, key, project) = project_folder_action_fixture();
     store.delete_session(&key).unwrap();
     assert!(project.is_dir());
-    assert!(controller.cached_target(&action_id, now_epoch()).is_ok());
+    assert!(
+        controller
+            .cached_target(&store, &action_id, now_epoch())
+            .is_ok()
+    );
     assert!(matches!(
         controller.project_folder(&store, &action_id),
         Err(ControllerError::TargetNotFound)

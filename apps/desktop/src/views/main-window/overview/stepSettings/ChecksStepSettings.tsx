@@ -14,13 +14,17 @@ import {
   onCheckAvailabilityChanged,
   removeTypeSafeApiKey,
   runCheckBackfill,
+  setCheckEnabled,
   setCheckHistoryDays,
   setTypeSafeApiKey,
   setSmartBurnChecksEnabled,
   type CheckAvailability,
   type CheckAvailabilityEvent,
 } from "../../../../lib/checkAvailability"
-import { StepSettingsRow } from "./StepSettingsSearchRows"
+import type { BurnCheckDetectorId } from "../../../../lib/insightsIpc"
+import { CHECK_DEFINITIONS } from "../../../../lib/presentation/checkDefinitions"
+import type { StepSettingsControlId } from "../../../../lib/stepSettingsTargets"
+import { StepSettingsRow, StepSettingsToggleRow } from "./StepSettingsSearchRows"
 
 /**
  * The Checks step's settings: Ignored Instructions, the check history
@@ -40,6 +44,7 @@ function notify() {
 }
 
 function publish(value: CheckAvailability) {
+  if (value.revision < snapshot.revision) return
   revision++
   snapshot = value
   refreshError = null
@@ -126,6 +131,9 @@ export function ChecksStepSettings() {
   )
   const [key, setKey] = useState("")
   const [busy, setBusy] = useState(false)
+  const [pendingChecks, setPendingChecks] = useState<ReadonlySet<BurnCheckDetectorId>>(
+    new Set(),
+  )
   const [error, setError] = useState<string | null>(null)
 
   async function saveHistoryDays(days: 0 | 7 | 30) {
@@ -190,6 +198,24 @@ export function ChecksStepSettings() {
     }
   }
 
+  async function toggleCheck(detector: BurnCheckDetectorId, enabled: boolean) {
+    setPendingChecks((current) => new Set(current).add(detector))
+    setError(null)
+    try {
+      publish(await setCheckEnabled(detector, enabled))
+    } catch {
+      setError(
+        `Could not ${enabled ? "enable" : "disable"} ${CHECK_DEFINITIONS[detector].label}.`,
+      )
+    } finally {
+      setPendingChecks((current) => {
+        const next = new Set(current)
+        next.delete(detector)
+        return next
+      })
+    }
+  }
+
   const usage =
     state.usage.inputTokens > 0 || state.usage.confirmedCalls > 0
       ? `${state.usage.inputTokens.toLocaleString()} input tokens · ${state.usage.estimatedUsd ?? "cost unavailable"} estimated · ${state.usage.confirmedCalls.toLocaleString()} requests`
@@ -198,6 +224,38 @@ export function ChecksStepSettings() {
   const progress = historyStatus(state)
   const historyRunning = state.backfill.queued + state.backfill.running > 0
   const historyTotal = state.backfill.total
+  const enabledById = new Map(state.checks.map((check) => [check.id, check.enabled]))
+  const localChecks = checkRows("local")
+  const smartChecks = checkRows("smart")
+  const enabledSmartChecks = smartChecks.some(({ id }) => enabledById.get(id) === true)
+
+  function renderCheck({
+    id,
+    searchId,
+  }: {
+    id: BurnCheckDetectorId
+    searchId: StepSettingsControlId
+  }) {
+    const definition = CHECK_DEFINITIONS[id]
+    const needsSetup = definition.kind === "smart" && !state.savedKey
+    const isPaused = definition.kind === "smart" && state.savedKey && !state.configured
+    const availability = needsSetup
+      ? " Set up TypeSafe below before this check can run."
+      : isPaused
+        ? " Smart Burn Checks are paused."
+        : ""
+    return (
+      <StepSettingsToggleRow
+        key={id}
+        searchId={searchId}
+        label={definition.label}
+        description={`${definition.description}${availability}`}
+        checked={enabledById.get(id) === true}
+        disabled={pendingChecks.has(id)}
+        onChange={(enabled) => void toggleCheck(id, enabled)}
+      />
+    )
+  }
 
   return (
     <div className="space-y-6">
@@ -206,17 +264,12 @@ export function ChecksStepSettings() {
           {refreshError}
         </p>
       )}
+      <SectionGroup title="Local Checks">
+        <Card>{localChecks.map(renderCheck)}</Card>
+      </SectionGroup>
+
       <SectionGroup title="Smart Burn Checks">
-        <Card>
-          <StepSettingsRow
-            searchId="ignoredInstructions"
-            label="Ignored Instructions"
-            description="Finds project instructions a session did not follow. Checks start after 3 minutes of inactivity."
-          />
-          <p className="mt-2 px-3 pb-3 pt-2 type-footnote text-label-tertiary">
-            More Smart Burn Checks coming soon.
-          </p>
-        </Card>
+        <Card>{smartChecks.map(renderCheck)}</Card>
       </SectionGroup>
 
       <SectionGroup title="Past sessions">
@@ -248,7 +301,11 @@ export function ChecksStepSettings() {
               <PushButton
                 variant="primary"
                 disabled={
-                  busy || historyRunning || !state.configured || state.historyDays === 0
+                  busy ||
+                  historyRunning ||
+                  !state.configured ||
+                  !enabledSmartChecks ||
+                  state.historyDays === 0
                 }
                 onClick={() => void runHistory()}
               >
@@ -339,4 +396,27 @@ export function ChecksStepSettings() {
       </SectionGroup>
     </div>
   )
+}
+
+const CHECK_SEARCH_IDS: Record<BurnCheckDetectorId, StepSettingsControlId> = {
+  sessionsOverDepth: "sessionsOverDepthCheck",
+  modelOverthinking: "modelOverthinkingCheck",
+  overpoweredSubagents: "overpoweredSubagentsCheck",
+  unusedMcpServers: "unusedMcpServersCheck",
+  unusedBuiltInTools: "unusedBuiltInToolsCheck",
+  unusedSkills: "unusedSkillsCheck",
+  oldModelUsage: "oldModelUsageCheck",
+  overuseOfFastMode: "overuseOfFastModeCheck",
+  cacheChurn: "cacheChurnCheck",
+  ignoredInstructions: "ignoredInstructions",
+}
+
+function checkRows(kind: "local" | "smart") {
+  return (
+    Object.entries(CHECK_DEFINITIONS) as Array<
+      [BurnCheckDetectorId, (typeof CHECK_DEFINITIONS)[BurnCheckDetectorId]]
+    >
+  )
+    .filter(([, definition]) => definition.kind === kind)
+    .map(([id]) => ({ id, searchId: CHECK_SEARCH_IDS[id] }))
 }

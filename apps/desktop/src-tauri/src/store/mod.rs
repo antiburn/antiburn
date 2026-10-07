@@ -29,6 +29,8 @@
 //! the persisted creation identity of one session row.
 
 mod burn_check;
+mod check_preferences;
+pub(crate) use check_preferences::{check_preferences_snapshot_in, enabled_checks_in};
 pub(crate) mod codex_rollout_checkpoint;
 mod evidence_queue;
 pub mod model;
@@ -74,9 +76,9 @@ use crate::dto::{BurnCheckSnoozePayload, DeferredPermissionDir};
 use settings::read_settings;
 
 pub use burn_check::{
-    BurnCheckAssessment, BurnCheckCandidate, BurnCheckFailure, BurnCheckHistoryStatus,
-    BurnCheckInput, BurnCheckReservation, BurnCheckSampleOrigin, BurnCheckSampledPair,
-    BurnCheckUsageSummary, CachedAssessmentResponse,
+    BurnCheckAssessment, BurnCheckCandidate, BurnCheckFailure, BurnCheckHistoryCheck,
+    BurnCheckHistoryStatus, BurnCheckInput, BurnCheckRequestAdmission, BurnCheckReservation,
+    BurnCheckSampleOrigin, BurnCheckSampledPair, BurnCheckUsageSummary, CachedAssessmentResponse,
 };
 pub use model::{
     ActiveCursor, AnalysisRecord, AppSettings, DisabledAgents, DiskSpaceDisplay, EvidenceClaim,
@@ -469,6 +471,7 @@ impl Store {
             state_dir,
         };
         store.migrate()?;
+        store.check_preferences_snapshot()?;
         store.update_settings_snapshot(&store.settings()?);
         Ok(store)
     }
@@ -2048,8 +2051,14 @@ impl Store {
                 publication_epoch.unix_timestamp(),
                 correction_replay,
             )?;
-            let findings =
-                crate::insights_report::publication_findings_in(&transaction, &record.key)?;
+            let enabled_detectors = antiburn_local::insights::DetectorSelection::from_enabled(
+                enabled_checks_in(&transaction)?,
+            );
+            let findings = crate::insights_report::publication_findings_in(
+                &transaction,
+                &record.key,
+                &enabled_detectors,
+            )?;
             let candidates = crate::remediation::passive_remediations(
                 &transaction,
                 remediation_secret
