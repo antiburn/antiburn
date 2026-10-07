@@ -611,6 +611,9 @@ Notes for what isn't expressible as a token:
   outgrow it. It uses the popover corner, the opaque `surface-window` fill under the
   `surface-sidebar` tint, and the `shadow-stats-card` outline with no drop shadow. The Overview's
   usage card has no outline, shadow, or fill, so its banner sits on the window background.
+  During first run, the step between the usage card and Recent sessions (the session checks
+  progress, for example) takes the same card and fills the free height. The config checks grid
+  that replaces it has no card.
 
 - **Overview cost chart** — show daily estimated cost as side-by-side columns, one per source
   agent, for the latest 30 days. Each agent takes its `agent-*` colour: blue for Claude Code, grey
@@ -886,8 +889,8 @@ Notes for what isn't expressible as a token:
 - **Overview usage banner** — both Usage tabs draw their chart behind the figures, not under
   them: the Cost tab's daily spend by agent, and the Subscription tab's weekly fill and 5-hour
   peaks in `context-stroke` tints. The chart has no axes. It scales to its own peak so low usage
-  still fills the card, and fades toward the top. A key sits beside the unit tabs, a date row
-  (every 7 days and "Today") closes the card, and the lower half shows a tooltip for each day:
+  still fills the card, and fades toward the top. The figures and the unit tabs share the top
+  row. A date row (every 7 days and "Today") and then the key close the card, and the lower half shows a tooltip for each day:
   a `UsageBannerTip` card with the day's figure and one row and share bar per layer. The
   hovered day takes a faint band, and on the Cost tab the other days' columns dim. With more
   than one subscription account, a figure picks the account the banner draws.

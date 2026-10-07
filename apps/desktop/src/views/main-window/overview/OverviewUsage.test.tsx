@@ -167,7 +167,7 @@ describe("OverviewUsage", () => {
     const cell = screen.getByRole("region", { name: "Allowance" })
     expect(within(cell).getByText("Claude")).toBeInTheDocument()
     expect(within(cell).getByText("41%")).toBeInTheDocument()
-    expect(within(cell).getByText("Average subscription usage")).toBeInTheDocument()
+    expect(within(cell).queryByText("Average subscription usage")).not.toBeInTheDocument()
   })
 
   it("explains the figure's window counts and time span", () => {
@@ -188,7 +188,7 @@ describe("OverviewUsage", () => {
       ]),
     })
     const codexFigure = screen.getByRole("button", {
-      name: "Codex 41% Average subscription usage",
+      name: "Codex 41%",
     })
     fireEvent.click(codexFigure)
     expect(codexFigure).toHaveAttribute("aria-pressed", "true")

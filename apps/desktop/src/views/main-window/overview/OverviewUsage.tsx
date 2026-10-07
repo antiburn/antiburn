@@ -87,18 +87,36 @@ export function OverviewUsage({
           rangeEndEpoch={allowance?.rangeEndEpoch ?? 0}
         />
       )}
-      <SegmentedControl
-        options={METRICS}
-        value={metric}
-        onChange={onMetricChange}
-        ariaLabel="Usage unit"
-        variant="text-tabs"
-        size="large"
-        className="self-end"
-      />
+      {/* One header row: the figures on the left, the unit tabs on the right. */}
+      <div className="flex items-start gap-(--space-lg)">
+        <div className="@container min-w-0 flex-1">
+          {metric === "cost" ? (
+            !costFailed && <OverviewSpendTotals totals={totals} loading={loading} />
+          ) : (
+            <OverviewAllowanceTotals
+              accounts={chartAccounts}
+              utilizationSpanDays={allowance?.utilizationSpanDays ?? 0}
+              loading={allowanceLoading}
+              error={allowanceError}
+              collecting={allowanceCollecting}
+              selectedKey={choosable && selectedAccount ? accountTabKey(selectedAccount) : null}
+              {...(choosable ? { onSelect: selectTab } : {})}
+            />
+          )}
+        </div>
+        <SegmentedControl
+          options={METRICS}
+          value={metric}
+          onChange={onMetricChange}
+          ariaLabel="Usage unit"
+          variant="text-tabs"
+          size="large"
+          className="shrink-0"
+        />
+      </div>
 
-      {metric === "cost" ? (
-        costFailed ? (
+      {metric === "cost" &&
+        (costFailed ? (
           <div className="flex flex-1 items-center justify-center text-center">
             <div>
               <p role="alert" className="type-body text-label-secondary">
@@ -113,24 +131,8 @@ export function OverviewUsage({
             </div>
           </div>
         ) : (
-          <>
-            <OverviewSpendTotals totals={totals} loading={loading} />
-            <OverviewSpendChart days={days} loading={loading} banner />
-          </>
-        )
-      ) : (
-        <>
-          <OverviewAllowanceTotals
-            accounts={chartAccounts}
-            utilizationSpanDays={allowance?.utilizationSpanDays ?? 0}
-            loading={allowanceLoading}
-            error={allowanceError}
-            collecting={allowanceCollecting}
-            selectedKey={choosable && selectedAccount ? accountTabKey(selectedAccount) : null}
-            {...(choosable ? { onSelect: selectTab } : {})}
-          />
-        </>
-      )}
+          <OverviewSpendChart days={days} loading={loading} banner />
+        ))}
     </section>
   )
 }

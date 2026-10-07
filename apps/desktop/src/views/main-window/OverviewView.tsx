@@ -165,7 +165,16 @@ export function OverviewView({
           // their checks wait.
           <div className="flex grow flex-col gap-(--space-2xl)">
             {stepDocked(progress.flow, "sessions") && usageCard}
-            <FirstRunTakeover onOpenChecks={onOpenChecks} />
+            <FirstRunTakeover
+              onOpenChecks={onOpenChecks}
+              // Between the usage card and Recent sessions, the step sits
+              // in a card like the provider limits card, and fills the free
+              // height. The config checks that replace it have no card.
+              className={cn(
+                stepDocked(progress.flow, "sessions") &&
+                  "rounded-(--radius-popover) bg-(--color-surface-window) bg-gradient-to-b from-(--color-surface-sidebar) to-(--color-surface-sidebar) shadow-stats-card",
+              )}
+            />
             {stepDocked(progress.flow, "sessions") && recentSessions}
           </div>
         ) : modeDecided ? (

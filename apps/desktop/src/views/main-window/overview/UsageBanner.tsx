@@ -15,8 +15,9 @@ export interface UsageBannerDate {
 /**
  * The frame of a Usage card banner: a chart behind the figures, not under
  * them. The plot bleeds to the card's left, top, and right edges (the card's
- * padding is --space-lg) and stops on the date row, the last row in flow. The key sits in the empty top-left corner, beside the
- * unit tabs. `hover` is the day targets, which cover the lower half of the
+ * padding is --space-lg) and stops on the date row. The key sits under the
+ * dates, and the two make the last block in flow, so no text floats on its own above the plot.
+ * `hover` is the day targets, which cover the lower half of the
  * plot only, so the figures above keep their own tooltips.
  */
 export function UsageBanner({
@@ -37,36 +38,42 @@ export function UsageBanner({
       <div
         aria-hidden="true"
         data-usage-banner={name}
-        className="overview-usage-banner pointer-events-none absolute -inset-x-(--space-lg) -top-(--space-lg) bottom-(--overview-banner-dates) -z-10 overflow-hidden rounded-t-(--radius-popover)"
+        className="overview-usage-banner pointer-events-none absolute -inset-x-(--space-lg) -top-(--space-lg) bottom-[calc(var(--overview-banner-dates)+var(--overview-banner-key))] -z-10 overflow-hidden rounded-t-(--radius-popover)"
       >
         <div className="overview-banner-in size-full">{plot}</div>
       </div>
-      {hover?.("absolute -inset-x-(--space-lg) top-1/2 bottom-(--overview-banner-dates) z-10")}
-      <ChartLegend
-        ariaLabel="Key"
-        items={keyItems}
-        className="absolute top-0 left-0 flex h-(--overview-tabs-height) items-center"
-      />
-      <div
-        aria-hidden="true"
-        className="relative order-last -mx-(--space-lg) mt-auto h-(--overview-banner-dates) type-caption text-label-tertiary"
-      >
-        {dates.map((date) => (
-          <span
-            key={date.key}
-            className={cn(
-              "absolute top-1/2 -translate-y-1/2 whitespace-nowrap",
-              date.at >= 1
-                ? "right-(--space-lg)"
-                : date.at <= 0
-                  ? "ps-(--space-lg)"
-                  : "ps-(--space-xs)",
-            )}
-            style={date.at >= 1 ? undefined : { left: `${date.at * 100}%` }}
-          >
-            {date.text}
-          </span>
-        ))}
+      {hover?.(
+        "absolute -inset-x-(--space-lg) top-1/2 bottom-[calc(var(--overview-banner-dates)+var(--overview-banner-key))] z-10",
+      )}
+      {/* One block for the dates and the key, so the card's gap does not
+          come between them and the plot stops on the dates. */}
+      <div className="order-last mt-auto flex flex-col">
+        <div
+          aria-hidden="true"
+          className="relative -mx-(--space-lg) h-(--overview-banner-dates) type-caption text-label-tertiary"
+        >
+          {dates.map((date) => (
+            <span
+              key={date.key}
+              className={cn(
+                "absolute top-1/2 -translate-y-1/2 whitespace-nowrap",
+                date.at >= 1
+                  ? "right-(--space-lg)"
+                  : date.at <= 0
+                    ? "ps-(--space-lg)"
+                    : "ps-(--space-xs)",
+              )}
+              style={date.at >= 1 ? undefined : { left: `${date.at * 100}%` }}
+            >
+              {date.text}
+            </span>
+          ))}
+        </div>
+        <ChartLegend
+          ariaLabel="Key"
+          items={keyItems}
+          className="h-(--overview-banner-key) items-center"
+        />
       </div>
     </>
   )

@@ -75,7 +75,6 @@ export function OverviewAllowanceTotals({
               <SegmentFigure>00%</SegmentFigure>
             </Skeleton>
           ),
-          caption: <Skeleton className="w-36 max-w-full">Average subscription usage</Skeleton>,
         },
       ]
     : accounts.map((account) => ({
@@ -84,7 +83,6 @@ export function OverviewAllowanceTotals({
         figure: (
           <SegmentFigure>{`${Math.round(account.utilization.utilizationPercent)}%`}</SegmentFigure>
         ),
-        caption: "Average subscription usage",
         tooltip: utilizationTooltip(account, utilizationSpanDays),
         ...(selectable
           ? {

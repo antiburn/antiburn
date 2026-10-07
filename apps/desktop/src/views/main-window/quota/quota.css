@@ -131,7 +131,7 @@
 /* --- Limits page layout --- */
 
 /* The page measures itself as a container, so the hero figures can stack
-   below 540px the same way the Overview's do. */
+   when narrow, the same way the Overview's do. */
 .quota-page {
   container-type: inline-size;
 }
