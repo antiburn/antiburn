@@ -48,6 +48,11 @@ export function AgentsStepSettings() {
   )
 
   const sessionsByAgent = new Map(progress.agents.rows.map((row) => [row.agent, row.sessions]))
+  // The scan lists every agent from its start, so a row with no sessions that
+  // is not done means the agent's search is still running.
+  const searchedAgents = new Set(
+    progress.agents.rows.filter((row) => row.done).map((row) => row.agent),
+  )
   const agentRows = [...AGENT_SLUGS].sort(
     (a, b) => (sessionsByAgent.get(b) ?? 0) - (sessionsByAgent.get(a) ?? 0),
   )
@@ -65,6 +70,7 @@ export function AgentsStepSettings() {
               key={slug}
               slug={slug}
               sessions={sessionsByAgent.get(slug) ?? 0}
+              searched={searchedAgents.has(slug)}
               locations={locationsByAgent.get(slug) ?? []}
               enabled={!disabledAgents.includes(slug)}
               onEnabledChange={(next) => setAgentEnabled(slug, next)}
@@ -79,12 +85,15 @@ export function AgentsStepSettings() {
 function AgentRow({
   slug,
   sessions,
+  searched,
   locations,
   enabled,
   onEnabledChange,
 }: {
   slug: string
   sessions: number
+  /** Whether the agent's search has finished. */
+  searched: boolean
   locations: AgentSessionLocations["locations"]
   enabled: boolean
   onEnabledChange: (enabled: boolean) => void
@@ -120,11 +129,15 @@ function AgentRow({
       }
       facts={sessions > 0 && `${sessions} ${sessions === 1 ? "session" : "sessions"}`}
       controls={
-        <ToggleSwitch
-          checked={enabled}
-          onCheckedChange={onEnabledChange}
-          aria-label={`Show ${agentDisplayName(slug)} sessions`}
-        />
+        sessions > 0 ? (
+          <ToggleSwitch
+            checked={enabled}
+            onCheckedChange={onEnabledChange}
+            aria-label={`Show ${agentDisplayName(slug)} sessions`}
+          />
+        ) : (
+          searched && <span className="type-footnote text-label-tertiary">Not found</span>
+        )
       }
     >
       {open && (
