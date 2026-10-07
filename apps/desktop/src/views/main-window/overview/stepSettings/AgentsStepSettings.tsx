@@ -137,7 +137,7 @@ function AgentRow({
           />
         )
       }
-      status={sessions === 0 && searched ? "Not found" : undefined}
+      status={sessions === 0 && searched && <span className="opacity-60">Not found</span>}
     >
       {open && (
         <ul id={listId} className="overflow-x-auto pt-1">
