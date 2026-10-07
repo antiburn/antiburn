@@ -24,7 +24,6 @@ const CONFETTI_COLOURS = [
 ]
 
 type Confetto = {
-  colour: string
   style: CSSProperties
 }
 
@@ -37,7 +36,6 @@ function confettiBurst(): Confetto[] {
     const angle = (index / CONFETTI_COUNT) * 2 * Math.PI + Math.random() * 0.3
     const distance = 50 + Math.random() * 45
     return {
-      colour: CONFETTI_COLOURS[index % CONFETTI_COLOURS.length],
       style: {
         "--confetti-x": `${Math.cos(angle) * distance}px`,
         "--confetti-y": `${Math.sin(angle) * distance * 0.8 - 12}px`,
@@ -101,7 +99,7 @@ export function OverviewAllClear({ onShowChecks }: { onShowChecks: () => void })
                 width={CONFETTI_SIZE}
                 height={CONFETTI_SIZE}
                 fill="none"
-                stroke={piece.colour}
+                stroke={CONFETTI_COLOURS[index % CONFETTI_COLOURS.length]}
                 strokeWidth={2}
                 strokeLinecap="round"
                 strokeLinejoin="round"

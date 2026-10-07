@@ -297,9 +297,24 @@ describe("ProgressNav's modal", () => {
       checks: { done: true, windowSessions: 5, pendingEvidence: 0, deferredEvidence: 0 },
       failingCount: 2,
       categories: [
-        { id: "cacheChurn", label: "Excess cache rehydration", status: "passing" },
-        { id: "unusedSkills", label: "Unused skills", status: "needsFix" },
-        { id: "unusedMcpServers", label: "Unused MCP servers", status: "needsFix" },
+        {
+          id: "cacheChurn",
+          label: "Excess cache rehydration",
+          status: "passing",
+          estimatedBurnBasisPoints: null,
+        },
+        {
+          id: "unusedSkills",
+          label: "Unused skills",
+          status: "needsFix",
+          estimatedBurnBasisPoints: null,
+        },
+        {
+          id: "unusedMcpServers",
+          label: "Unused MCP servers",
+          status: "needsFix",
+          estimatedBurnBasisPoints: null,
+        },
       ],
       openStep: "fixes",
     })

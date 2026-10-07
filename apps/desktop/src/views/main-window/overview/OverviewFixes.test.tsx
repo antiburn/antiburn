@@ -44,7 +44,12 @@ describe("OverviewFixes", () => {
   it("opens the check when its row is clicked", () => {
     snapshot = progress({
       categories: [
-        { id: "modelOverthinking", label: "Model overthinking", status: "needsFix" },
+        {
+          id: "modelOverthinking",
+          label: "Model overthinking",
+          status: "needsFix",
+          estimatedBurnBasisPoints: null,
+        },
       ],
     })
     const onOpenCheck = vi.fn()
@@ -62,10 +67,30 @@ describe("OverviewFixes", () => {
   it("lists every category with its label and status", () => {
     snapshot = progress({
       categories: [
-        { id: "modelOverthinking", label: "Model overthinking", status: "needsFix" },
-        { id: "cacheChurn", label: "Cache churn", status: "passing" },
-        { id: "oldModelUsage", label: "Old model usage", status: "awaitingVerification" },
-        { id: "overuseOfFastMode", label: "Overuse of fast mode", status: "notChecked" },
+        {
+          id: "modelOverthinking",
+          label: "Model overthinking",
+          status: "needsFix",
+          estimatedBurnBasisPoints: null,
+        },
+        {
+          id: "cacheChurn",
+          label: "Cache churn",
+          status: "passing",
+          estimatedBurnBasisPoints: null,
+        },
+        {
+          id: "oldModelUsage",
+          label: "Old model usage",
+          status: "awaitingVerification",
+          estimatedBurnBasisPoints: null,
+        },
+        {
+          id: "overuseOfFastMode",
+          label: "Overuse of fast mode",
+          status: "notChecked",
+          estimatedBurnBasisPoints: null,
+        },
       ],
     })
     render(<OverviewFixes onOpenCheck={() => {}} />)
@@ -82,7 +107,12 @@ describe("OverviewFixes", () => {
   it("shows a failing category's problem phrase beside its label", () => {
     snapshot = progress({
       categories: [
-        { id: "modelOverthinking", label: "Model overthinking", status: "needsFix" },
+        {
+          id: "modelOverthinking",
+          label: "Model overthinking",
+          status: "needsFix",
+          estimatedBurnBasisPoints: null,
+        },
       ],
     })
     render(<OverviewFixes onOpenCheck={() => {}} />)
@@ -103,8 +133,18 @@ describe("OverviewFixes", () => {
   it("celebrates when every check passes or is snoozed, and shows the list on request", () => {
     snapshot = progress({
       categories: [
-        { id: "modelOverthinking", label: "Model overthinking", status: "passing" },
-        { id: "unusedSkills", label: "Unused skills", status: "snoozed" },
+        {
+          id: "modelOverthinking",
+          label: "Model overthinking",
+          status: "passing",
+          estimatedBurnBasisPoints: null,
+        },
+        {
+          id: "unusedSkills",
+          label: "Unused skills",
+          status: "snoozed",
+          estimatedBurnBasisPoints: null,
+        },
       ],
     } as Partial<OverviewProgress>)
     render(<OverviewFixes onOpenCheck={() => {}} />)
@@ -120,8 +160,18 @@ describe("OverviewFixes", () => {
   it("shows the list, not the celebration, while a check needs a fix", () => {
     snapshot = progress({
       categories: [
-        { id: "modelOverthinking", label: "Model overthinking", status: "passing" },
-        { id: "unusedSkills", label: "Unused skills", status: "needsFix" },
+        {
+          id: "modelOverthinking",
+          label: "Model overthinking",
+          status: "passing",
+          estimatedBurnBasisPoints: null,
+        },
+        {
+          id: "unusedSkills",
+          label: "Unused skills",
+          status: "needsFix",
+          estimatedBurnBasisPoints: null,
+        },
       ],
     } as Partial<OverviewProgress>)
     render(<OverviewFixes onOpenCheck={() => {}} />)
@@ -130,7 +180,14 @@ describe("OverviewFixes", () => {
 
   it("shows the celebration again after the user leaves the Overview and returns", () => {
     snapshot = progress({
-      categories: [{ id: "modelOverthinking", label: "Model overthinking", status: "passing" }],
+      categories: [
+        {
+          id: "modelOverthinking",
+          label: "Model overthinking",
+          status: "passing",
+          estimatedBurnBasisPoints: null,
+        },
+      ],
     } as Partial<OverviewProgress>)
     const { rerender } = render(<OverviewFixes active onOpenCheck={() => {}} />)
     fireEvent.click(screen.getByRole("button", { name: "All checks" }))
