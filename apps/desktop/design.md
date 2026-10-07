@@ -612,6 +612,22 @@ Notes for what isn't expressible as a token:
   hairline, stacking when their container narrows. A figure's method goes in its tooltip.
   A new headline number joins this row rather than drawing its own.
 
+- **Memories page** — the body is `px-8 pt-6 pb-16` inside a `ScrollPane`, with a
+  `type-footnote text-label-tertiary` status line at the top right. Each project is a
+  disclosure header in the shape of the Cost tab's unused-context header (`rounded-control`,
+  `hover:bg-surface-hover`, a chevron that turns 90 degrees): the path in
+  `font-mono type-body-large text-label`, a `CountPill`, an orange `type-footnote`
+  "need attention" count, and at the right a `font-mono type-footnote tabular-nums` session
+  summary. Its body is one grid, `grid-cols-[auto_minmax(0,1fr)_auto_auto_auto_auto]`, whose
+  header row and memory rows are `grid-cols-subgrid`, so the columns line up. The column
+  labels are `type-metadata uppercase tracking-wide text-label-tertiary`. A row is a 40px
+  button with a `type-body` title over a one-line `type-callout text-label-secondary` hook,
+  a `type-footnote` kind, and three `font-mono type-footnote tabular-nums` facts, with "—" for
+  an unknown one. An open row adds a `surface-card/50` panel with a `font-mono type-footnote`
+  metadata line, a `text-system-orange` line for a memory that is not in the index, the file
+  text in a `pre`, and a secondary push button that reveals the file. An empty page renders
+  a centred `Brain` icon in tertiary ink over a `type-body` title and a `type-callout` caption.
+
 - **Limits page** — the scope picker is a pill that floats over the bottom centre of
   the page, in the shape of the session detail's section picker and in its selected
   chip colours for its whole length: `rounded-full`, `bg-selected-fill`,

@@ -393,6 +393,7 @@ export type Surface =
   | "settings"
   | "burn_checks"
   | "quota"
+  | "memories"
 
 export type SurfaceOrigin = "user" | "automatic"
 export type SurfaceState = "ready" | "empty" | "error" | "loading_timeout"

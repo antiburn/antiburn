@@ -9,6 +9,11 @@ export const MAIN_VIEWS = [
   { id: "quota", label: "Limits", aliases: ["quota", "provider limits", "usage limits"] },
   { id: "burnChecks", label: "Checks", aliases: ["burn checks", "checks", "waste", "savings"] },
   { id: "activity", label: "Sessions", aliases: ["activity", "history"] },
+  {
+    id: "memories",
+    label: "Memories",
+    aliases: ["memory", "auto-memory", "agent memory", "claude memory"],
+  },
 ] as const satisfies readonly MainViewDefinition[]
 
 export type MainViewId = (typeof MAIN_VIEWS)[number]["id"]

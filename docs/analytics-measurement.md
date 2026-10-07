@@ -693,6 +693,22 @@ not start a new exposure; it stays the same visit. No provider, account,
 lane, dollar figure, or session identity is collected. The existing consent
 and build gates apply.
 
+### Memories view — 2026-10-08
+
+Question: do readers open the Memories audit, and does it find memories? The
+main window's Memories section adds a `memories` value to the existing
+`surface_viewed` and `surface_state_observed` label vocabularies, with the
+same rules as every other main-window section: one `surface_viewed` per
+deliberate show, and at most one `ready`/`empty`/`error`/`loading_timeout`
+per distinct state per exposure. `ready` means at least one project is
+listed, `empty` means none is, and `error` means the command failed. The
+tracker owns `loading_timeout`. Expanding a row, collapsing a project, and
+reloading on re-entry stay inside the same visit. No project path, memory
+name, count, or content leaves the device. Actions on a memory, such as
+Reveal, are not measured yet. A later phase adds one `memory_action` event
+for reveal, archive, restore, and index-line removal. The existing consent
+and build gates apply.
+
 ### Quota window accuracy — 2026-09-18
 
 Question: for each closed quota window, did the dollars-only estimate land

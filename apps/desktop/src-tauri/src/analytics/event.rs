@@ -685,6 +685,7 @@ pub enum Surface {
     Settings,
     BurnChecks,
     Quota,
+    Memories,
 }
 
 /// A surface that can present a measured data state.
@@ -700,6 +701,7 @@ pub enum StateSurface {
     Settings,
     BurnChecks,
     Quota,
+    Memories,
 }
 
 /// A closed Auto Fix review preparation result.
@@ -1162,6 +1164,7 @@ wire_values!(Surface, {
     Surface::Settings => "settings",
     Surface::BurnChecks => "burn_checks",
     Surface::Quota => "quota",
+    Surface::Memories => "memories",
 });
 
 #[cfg(feature = "analytics")]
@@ -1175,6 +1178,7 @@ wire_values!(StateSurface, {
     StateSurface::Settings => "settings",
     StateSurface::BurnChecks => "burn_checks",
     StateSurface::Quota => "quota",
+    StateSurface::Memories => "memories",
 });
 
 #[cfg(feature = "analytics")]
@@ -1621,6 +1625,26 @@ mod tests {
             r#"{"kind":"ignoredInstructionObserved","stage":"evidence","outcome":"available","excerpt":"private"}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn memories_surface_resolves_to_its_wire_label() {
+        let viewed: Interaction = serde_json::from_str(
+            r#"{"kind":"surfaceViewed","surface":"memories","origin":"user"}"#,
+        )
+        .unwrap();
+        let (name, facts) = viewed.resolve();
+        assert_eq!(name.as_str(), "antiburn.surface_viewed");
+        assert_eq!(facts.label, Some("memories"));
+        assert_eq!(facts.detail, Some("user"));
+
+        let observed: Interaction = serde_json::from_str(
+            r#"{"kind":"surfaceStateObserved","surface":"memories","state":"empty","origin":"user"}"#,
+        )
+        .unwrap();
+        let (name, facts) = observed.resolve();
+        assert_eq!(name.as_str(), "antiburn.surface_state_observed");
+        assert_eq!(facts.label, Some("memories"));
     }
 
     fn resource_summary() -> ResourceUsageSummary {

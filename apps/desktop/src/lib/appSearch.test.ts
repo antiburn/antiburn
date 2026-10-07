@@ -26,6 +26,12 @@ describe("static app search", () => {
       },
     })
   })
+  it("resolves memory to the Memories view", () => {
+    expect(searchApp("memory")[0]).toMatchObject({
+      id: "memories",
+      target: { kind: "view", section: "memories" },
+    })
+  })
   it.each(["macos", "windows", "linux"] as const)(
     "uses the visible tray label on %s",
     (platform) => {

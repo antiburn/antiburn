@@ -74,6 +74,10 @@ vi.mock("./main-window/OverviewView", () => ({
   ),
 }))
 
+vi.mock("./main-window/memories/MemoriesView", () => ({
+  MemoriesView: () => <h1>Memories</h1>,
+}))
+
 vi.mock("./main-window/quota/QuotaView", () => ({
   QuotaView: ({ onSelectSession }: { onSelectSession: (subject: SessionSubject) => void }) => (
     <div>
@@ -433,7 +437,7 @@ describe("MainWindowView", () => {
   it("opens Overview by default and keeps Checks and Sessions in the sidebar", () => {
     setWindowWidth(1000)
     render(<MainWindowView />)
-    expect(screen.getAllByRole("tab")).toHaveLength(4)
+    expect(screen.getAllByRole("tab")).toHaveLength(5)
     expect(screen.getByRole("tab", { name: "Limits" })).toBeVisible()
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute(
       "aria-selected",
@@ -553,7 +557,7 @@ describe("MainWindowView", () => {
   describe("Sessions navigation", () => {
     it("keeps filters out of the sidebar before and after entries load", () => {
       render(<MainWindowView />)
-      const expected = ["Overview", "Limits", "Checks", "Sessions"]
+      const expected = ["Overview", "Limits", "Checks", "Sessions", "Memories"]
       expect(screen.getAllByRole("tab").map((item) => item.textContent)).toEqual(expected)
       act(() =>
         activitySession().setEntries([
