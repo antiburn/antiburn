@@ -156,12 +156,18 @@ pub(crate) fn restore_at_launch(app: &AppHandle) {
     });
 }
 
-fn settings_only(window: &WebviewWindow) -> Result<(), &'static str> {
-    if window.label() == crate::settings::LABEL {
+/// Settings and the main window's Checks step can change check settings. The
+/// `checks-settings` capability grants the same two windows.
+fn checks_settings_window(window: &WebviewWindow) -> Result<(), &'static str> {
+    if is_checks_settings_window(window.label()) {
         Ok(())
     } else {
-        Err("This action is available only in Settings.")
+        Err("This action is available only in Settings or the Checks step.")
     }
+}
+
+fn is_checks_settings_window(label: &str) -> bool {
+    label == crate::settings::LABEL || label == crate::main_window::LABEL
 }
 
 pub(crate) fn read_check_availability(
@@ -255,7 +261,7 @@ pub(crate) async fn set_smart_burn_checks_enabled(
     window: WebviewWindow,
     enabled: bool,
 ) -> Result<CheckAvailability, String> {
-    settings_only(&window).map_err(str::to_owned)?;
+    checks_settings_window(&window).map_err(str::to_owned)?;
     let _change = CREDENTIAL_CHANGE.lock().await;
     let store = app.state::<Store>().inner().clone();
     if !enabled {
@@ -329,7 +335,7 @@ pub(crate) async fn set_typesafe_api_key(
     window: WebviewWindow,
     key: Option<String>,
 ) -> Result<CheckAvailability, String> {
-    settings_only(&window).map_err(str::to_owned)?;
+    checks_settings_window(&window).map_err(str::to_owned)?;
     let _change = CREDENTIAL_CHANGE.lock().await;
     if key.is_none()
         && app
@@ -438,7 +444,7 @@ pub(crate) async fn remove_typesafe_api_key(
     app: AppHandle,
     window: WebviewWindow,
 ) -> Result<CheckAvailability, String> {
-    settings_only(&window).map_err(str::to_owned)?;
+    checks_settings_window(&window).map_err(str::to_owned)?;
     let _change = CREDENTIAL_CHANGE.lock().await;
     if !saved_key_marker(&app.state::<Store>()) && !app.state::<WorkerHandle>().is_available() {
         return availability(&app).map_err(str::to_owned);
@@ -498,7 +504,7 @@ pub(crate) fn set_check_history_days(
     window: WebviewWindow,
     days: u8,
 ) -> Result<CheckAvailability, String> {
-    settings_only(&window).map_err(str::to_owned)?;
+    checks_settings_window(&window).map_err(str::to_owned)?;
     if !matches!(days, 0 | 7 | 30) {
         return Err("Choose future checks, 7 days, or 30 days.".to_owned());
     }
@@ -535,7 +541,7 @@ pub(crate) fn run_check_backfill(
     app: AppHandle,
     window: WebviewWindow,
 ) -> Result<BackfillRunResult, String> {
-    settings_only(&window).map_err(str::to_owned)?;
+    checks_settings_window(&window).map_err(str::to_owned)?;
     if !app.state::<WorkerHandle>().is_available()
         || app.state::<WorkerHandle>().authentication_rejected()
         || app
@@ -604,10 +610,17 @@ mod tests {
 
     use super::{
         AUTH_REJECTED_KEY, CREDENTIAL_CHANGE_PENDING_KEY, CheckAvailabilityEvent, ENABLED_AT_KEY,
-        preserve_saved_key_marker, restore_saved_key, saved_key_marker,
+        is_checks_settings_window, preserve_saved_key_marker, restore_saved_key, saved_key_marker,
     };
     use crate::jev_worker::WorkerHandle;
     use crate::store::Store;
+
+    #[test]
+    fn settings_and_the_main_window_can_change_check_settings() {
+        assert!(is_checks_settings_window(crate::settings::LABEL));
+        assert!(is_checks_settings_window(crate::main_window::LABEL));
+        assert!(!is_checks_settings_window(crate::popover::LABEL));
+    }
 
     #[test]
     fn availability_failure_event_has_a_typed_failure_status() {
