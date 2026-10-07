@@ -14,8 +14,20 @@ import {
 } from "../../../../lib/agentSessionLocationsStore"
 import { renderAgentIcon } from "../../../../lib/agentIcon"
 import { cn } from "../../../../lib/cn"
-import type { AgentSessionLocations } from "../../../../lib/ipc"
-import { AGENT_SLUGS, agentDisplayName } from "../../../../lib/presentation/agents"
+import { createExternalStore } from "../../../../lib/externalStore"
+import {
+  EMPTY_LIVE_USAGE,
+  getLiveUsage,
+  onLiveUsageChanged,
+  type AgentSessionLocations,
+} from "../../../../lib/ipc"
+import {
+  agentListName,
+  agentStatus,
+  meterForAgent,
+  type AgentStatus,
+} from "../../../../lib/presentation/agentStatus"
+import { AGENT_SLUGS } from "../../../../lib/presentation/agents"
 import { overviewProgress, subscribeOverviewProgress } from "../overviewProgressStore"
 import { StepSettingsSectionGroup } from "./StepSettingsSearchRows"
 import { useAppSettings } from "../../../settings/useAppSettings"
@@ -36,6 +48,16 @@ export function AgentsStepSettings() {
   const locationsByAgent = new Map(
     (locations ?? []).map((entry) => [entry.agent, entry.locations]),
   )
+  // Login and desktop-app detection for each agent's status. Read the cached
+  // snapshot and follow updates; this pane makes no provider request.
+  const [liveStore] = useState(() =>
+    createExternalStore({
+      initial: EMPTY_LIVE_USAGE,
+      load: () => getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
+      subscribe: onLiveUsageChanged,
+    }),
+  )
+  const liveMeters = useSyncExternalStore(liveStore.subscribe, liveStore.getSnapshot).meters
 
   const setAgentEnabled = useCallback(
     (slug: string, enabled: boolean) => {
@@ -64,7 +86,7 @@ export function AgentsStepSettings() {
             <AgentRow
               key={slug}
               slug={slug}
-              sessions={sessionsByAgent.get(slug) ?? 0}
+              status={agentStatus(sessionsByAgent.get(slug) ?? 0, meterForAgent(slug, liveMeters))}
               locations={locationsByAgent.get(slug) ?? []}
               enabled={!disabledAgents.includes(slug)}
               onEnabledChange={(next) => setAgentEnabled(slug, next)}
@@ -78,13 +100,14 @@ export function AgentsStepSettings() {
 
 function AgentRow({
   slug,
-  sessions,
+  status,
   locations,
   enabled,
   onEnabledChange,
 }: {
   slug: string
-  sessions: number
+  /** What this computer has for the agent: sessions, its desktop app, a login. */
+  status: AgentStatus
   locations: AgentSessionLocations["locations"]
   enabled: boolean
   onEnabledChange: (enabled: boolean) => void
@@ -95,7 +118,7 @@ function AgentRow({
   return (
     <ToggleListRow
       icon={renderAgentIcon(slug, 15)}
-      name={agentDisplayName(slug)}
+      name={agentListName(slug)}
       detail={
         locations.length > 0 && (
           <button
@@ -118,15 +141,16 @@ function AgentRow({
           </button>
         )
       }
-      facts={sessions > 0 && `${sessions} ${sessions === 1 ? "session" : "sessions"}`}
+      facts={status.facts}
       controls={
         <ToggleSwitch
           checked={enabled}
           onCheckedChange={onEnabledChange}
-          aria-label={`Show ${agentDisplayName(slug)} sessions`}
+          aria-label={`Show ${agentListName(slug)} sessions`}
         />
       }
     >
+      {status.note && <p className="type-footnote text-label-secondary">{status.note}</p>}
       {open && (
         <ul id={listId} className="overflow-x-auto pt-1">
           {locations.map((location) => (

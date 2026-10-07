@@ -122,7 +122,23 @@ describe("agentStatus", () => {
       line: "",
     },
   ])("says $name", ({ sessions, meter, found, line }) => {
-    expect(agentStatus(sessions, meter)).toEqual({ found, line })
+    // The table reads as one line: the facts column, then the note under the name.
+    const status = agentStatus(sessions, meter)
+    expect(status.found).toBe(found)
+    expect([status.facts, status.note].filter(Boolean).join(" · ")).toBe(line)
+  })
+
+  it("puts the session count in the facts column and the rest under the name", () => {
+    expect(
+      agentStatus(
+        41,
+        claude({ detection: "notInstalled", desktopAppLabel: "Claude Desktop" }),
+      ),
+    ).toEqual({
+      found: true,
+      facts: "41 sessions",
+      note: "Claude Desktop · Limits need Claude Code signed in",
+    })
   })
 })
 

@@ -138,6 +138,73 @@ describe("AgentsStepSettings coding agents", () => {
     // and reports leave it out.
     expect(screen.getByText("Codex")).toBeInTheDocument()
   })
+
+  it("names what each agent has on this computer and leaves the rest blank", async () => {
+    snapshot = progress({
+      rows: [
+        { agent: "claude-code", label: "Claude Code", sessions: 41, done: true },
+        { agent: "codex", label: "Codex", sessions: 87, done: true },
+        { agent: "cursor", label: "Cursor", sessions: 12, done: true },
+      ],
+    })
+    mockCommands({
+      get_live_usage: {
+        providers: [],
+        errors: [],
+        generatedAt: "",
+        meters: [
+          { provider: "openai", displayName: "Codex", shown: true, detection: "signedIn" },
+          {
+            provider: "anthropic",
+            displayName: "Claude",
+            shown: true,
+            detection: "notInstalled",
+            desktopAppLabel: "Claude Desktop",
+          },
+        ],
+      },
+    })
+    render(<AgentsStepSettings />)
+
+    expect(
+      await screen.findByText("Claude Desktop · Limits need Claude Code signed in"),
+    ).toBeInTheDocument()
+    expect(screen.getByText("41 sessions")).toBeInTheDocument()
+    expect(screen.getByText("Signed in")).toBeInTheDocument()
+    expect(screen.getByText("87 sessions")).toBeInTheDocument()
+    expect(screen.getByRole("switch", { name: "Show Claude sessions" })).toBeInTheDocument()
+    // Nothing found for Devin: its row says nothing beyond its name.
+    expect(screen.queryByText("No sessions yet")).not.toBeInTheDocument()
+    // The list reads the cached snapshot; it never asks providers for usage.
+    expect(invoke.mock.calls.some(([command]) => command === "refresh_live_usage")).toBe(false)
+  })
+
+  it("ignores a login that only Pi holds", async () => {
+    snapshot = progress({ rows: [] })
+    mockCommands({
+      get_live_usage: {
+        providers: [],
+        errors: [],
+        generatedAt: "",
+        meters: [
+          {
+            provider: "openai",
+            displayName: "Codex",
+            shown: true,
+            detection: "signedIn",
+            carrierLabel: "Pi",
+          },
+        ],
+      },
+    })
+    render(<AgentsStepSettings />)
+    await screen.findByRole("switch", { name: "Show Codex sessions" })
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("get_live_usage", expect.anything()),
+    )
+    expect(screen.queryByText("Signed in")).not.toBeInTheDocument()
+    expect(screen.queryByText("No sessions yet")).not.toBeInTheDocument()
+  })
 })
 
 describe("AgentsStepSettings session locations", () => {

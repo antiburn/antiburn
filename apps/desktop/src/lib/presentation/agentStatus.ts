@@ -6,7 +6,7 @@ import { liveToolName } from "./liveUsage"
  * What an agent list says about one agent: what this computer has for it,
  * in one plain line.
  *
- * Onboarding and Settings → Sources share it. They combine two answers
+ * The Agents step settings show it. It combines two answers
  * that come from different places: the scan's session count, and the usage
  * meter's login detection. Only an agent billed by one fixed provider has a
  * meter, so the login part applies to Claude, Codex and Antigravity.
@@ -19,8 +19,10 @@ import { liveToolName } from "./liveUsage"
 export interface AgentStatus {
   /** Sessions, a login, or the provider's desktop app turned up. */
   found: boolean
-  /** The status line, or "" when there is nothing to say. */
-  line: string
+  /** The session count for the facts column, or "" when there is nothing to say. */
+  facts: string
+  /** The desktop app and login, for the line under the name, or "". */
+  note: string
 }
 
 /**
@@ -47,19 +49,22 @@ export function agentStatus(
   meter: LiveUsageMeterPayload | undefined,
 ): AgentStatus {
   const ownMeter = meter?.carrierLabel === "Pi" ? undefined : meter
-  const parts: string[] = []
-  if (sessionsSeen > 0)
-    parts.push(`${sessionsSeen} ${sessionsSeen === 1 ? "session" : "sessions"}`)
+  const notes: string[] = []
   const desktopApp = meter?.desktopAppLabel
-  if (desktopApp) parts.push(desktopApp)
+  if (desktopApp) notes.push(desktopApp)
   const login = ownMeter ? loginPart(ownMeter, Boolean(desktopApp)) : null
-  if (login) parts.push(login)
+  if (login) notes.push(login)
 
   const signedInOrInstalled =
     ownMeter?.detection === "signedIn" || ownMeter?.detection === "installedNotSignedIn"
   const found = sessionsSeen > 0 || signedInOrInstalled || Boolean(desktopApp)
-  if (found && sessionsSeen === 0) parts.unshift("No sessions yet")
-  return { found, line: parts.join(" · ") }
+  const facts =
+    sessionsSeen > 0
+      ? `${sessionsSeen} ${sessionsSeen === 1 ? "session" : "sessions"}`
+      : found
+        ? "No sessions yet"
+        : ""
+  return { found, facts, note: notes.join(" · ") }
 }
 
 /** The login half of the line, or null when detection has nothing definite. */
