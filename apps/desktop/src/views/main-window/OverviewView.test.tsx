@@ -193,6 +193,24 @@ function expectUsageState(state: "held" | "shown") {
   expect(screen.getByLabelText("Usage state")).toHaveTextContent(state)
 }
 
+describe("OverviewView first-run decision", () => {
+  it("shows neither the takeover nor the steady Overview until the first-run check answers", () => {
+    overviewProgressMock.current = { ...overviewProgressMock.current, mode: "pending" }
+    const view = setup(usage)
+    expect(screen.queryByLabelText("First-run takeover")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Usage metric")).not.toBeInTheDocument()
+
+    overviewProgressMock.current = {
+      ...overviewProgressMock.current,
+      mode: "firstRun",
+      flow: "welcome",
+    }
+    view.rerender(<OverviewView {...view.props} />)
+    expect(screen.getByLabelText("First-run takeover")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Usage metric")).not.toBeInTheDocument()
+  })
+})
+
 describe("OverviewView metric preference", () => {
   it("shows allowance collection only during active first-run live usage", () => {
     overviewProgressMock.current = {

@@ -762,4 +762,28 @@ describe("overview progress recovery", () => {
     await store.nextStep()
     expect(store.overviewProgress()).toMatchObject({ flow: "agents", actionError: null })
   })
+
+  it("drops the wiped pass's counts at a reset instead of showing them on the step cards", async () => {
+    const store = await import("./overviewProgressStore")
+    stops.push(store.subscribeOverviewProgress(() => undefined))
+    await waitForListener("ftue:reset")
+    await waitForListener("scan:finished")
+    emit("main:visibility-changed", true)
+    runLaunchPass()
+    await vi.waitFor(() => expect(store.overviewProgress().sessions.completed).toBe(49))
+    const permissions = mocks.invoke.mock.calls.filter(
+      ([command]) => command === "get_folder_permissions",
+    ).length
+
+    emit("ftue:reset", null)
+
+    expect(store.overviewProgress()).toMatchObject({
+      agents: { done: false, rows: [] },
+      sessions: { done: false, completed: 0 },
+      checks: { done: false },
+    })
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "get_folder_permissions"),
+    ).toHaveLength(permissions + 1)
+  })
 })

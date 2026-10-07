@@ -46,6 +46,10 @@ export function OverviewView({
     overviewProgress,
     overviewProgress,
   )
+  // Until the first-run check answers, it is not known whether the takeover
+  // or the steady Overview owns the main column, so neither shows. Otherwise a
+  // first run shows the steady Overview for a moment first.
+  const modeDecided = progress.mode !== "pending"
   const isFirstRun = progress.mode === "firstRun"
   // The takeover owns the main column until the fixes step is done, in
   // place of the usage card, the checks list and Recent sessions.
@@ -160,7 +164,7 @@ export function OverviewView({
             <FirstRunTakeover onOpenChecks={onOpenChecks} />
             {stepDocked(progress.flow, "sessions") && recentSessions}
           </div>
-        ) : (
+        ) : modeDecided ? (
           <div
             role="region"
             aria-label={loading ? "Loading Overview" : "Overview"}
@@ -179,7 +183,7 @@ export function OverviewView({
 
             {recentSessions}
           </div>
-        )}
+        ) : null}
       </ScrollPane>
 
       {showProviderLimits && (

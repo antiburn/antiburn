@@ -492,9 +492,15 @@ function onReset(): void {
   // The wipe clears `onboardingCompleted`, so this device is a first run
   // again until the pass the reset triggers finishes it.
   liveOnboardingCompleted = false
+  // The wipe also clears every session the last pass found and read, so the
+  // step cards must not show the old pass, report or folders.
+  liveScanStatus = null
+  liveChecksReport = null
   liveChecksReportCurrent = false
-  // The wipe also clears every session the last pass found and read.
+  liveDeferred = []
   lastPass = INITIAL_LAST_PASS
+  // A checks report requested before the wipe is then not current.
+  scanRunsSeen += 1
   // The reset starts a new first run, so its funnel must report again.
   reportedFirstRunStarted = false
   reportedFirstRunFound = false
@@ -502,6 +508,7 @@ function onReset(): void {
   reportedFirstRunChecked = false
   reportedFirstRunResult = false
   recompute()
+  refreshFolderPermissions?.()
 }
 
 export async function showLiveLimits(): Promise<void> {
