@@ -712,10 +712,19 @@ Notes for what isn't expressible as a token:
   leave an 8px gap without a divider or top inset.
   In the main report, show actual failures first. Keep awaiting, passed, and
   snoozed checks in their own groups. Show all active checks without a lifecycle
+  and without running work
   in a neutral `Not assessed (N)` disclosure only when N is at least one. Keep
   these rows hidden by default; the disclosure makes them reachable when needed.
   Start it collapsed; search opens and focuses its target. Collapsing a focused row
   returns focus to the disclosure. Never describe an unassessed row as failed.
+  Put running checks without failures in Passed checks. Keep their row order,
+  selection, and disclosure state stable during continuation. Show `Checking`
+  in monospace without a spinner or an extra status row. Running failures show
+  `43 failed · 0 passed · 2 checking` on one monospace line. When the report
+  does not supply a checking count, show `checking` without a number. Animate
+  only the checking text with the shared `activity-row-title-shimmer` recipe
+  and its existing shimmer token and reduced-motion rule. The Passed disclosure
+  counts its rows; assessed-result summaries count only confirmed passes.
   When Ignored Instructions reports priority sampling, place a small tertiary
   information icon next to its detail title. Its shared tooltip explains that
   likely conflicts are checked first and later checks can reduce the remaining

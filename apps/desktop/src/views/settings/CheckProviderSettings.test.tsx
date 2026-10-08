@@ -30,7 +30,7 @@ beforeEach(() => {
   })
 })
 
-async function setup(provider: SmartCheckProvider) {
+async function setup(provider: SmartCheckProvider, usableContext = true) {
   render(<CheckProviderSettings />)
   await waitFor(() => expect(screen.getByLabelText("TypeSafe API key")).toBeEnabled())
   fireEvent.change(screen.getByLabelText("Smart check provider"), {
@@ -46,7 +46,57 @@ async function setup(provider: SmartCheckProvider) {
     })
   if (provider === "cloudflare")
     fireEvent.change(screen.getByLabelText("Account ID"), { target: { value: "test-account" } })
+  if (provider === "custom" && usableContext) {
+    fireEvent.click(screen.getByRole("button", { name: "Model limits" }))
+    fireEvent.change(screen.getByLabelText("Manual total input tokens"), {
+      target: { value: "8192" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Model limits" }))
+  }
 }
+
+it("blocks Custom with missing, state-only, and reserve-sized input bounds", async () => {
+  await setup("custom", false)
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Custom requires manual total input tokens",
+  )
+  fireEvent.click(screen.getByRole("button", { name: "Model limits" }))
+  fireEvent.change(screen.getByLabelText("Manual state plus longest question tokens"), {
+    target: { value: "8192" },
+  })
+  expect(screen.getByRole("button", { name: "Save and use connection" })).toBeDisabled()
+  for (const value of ["1", "4096", "4097"]) {
+    fireEvent.change(screen.getByLabelText("Manual loaded context tokens"), {
+      target: { value },
+    })
+    const save = screen.getByRole("button", { name: "Save and use connection" })
+    if (value === "4097") expect(save).toBeEnabled()
+    else expect(save).toBeDisabled()
+  }
+  expect(invoke.mock.calls.every(([command]) => command === "get_system_one_settings")).toBe(
+    true,
+  )
+})
+
+it("blocks activation of a saved Custom profile without an input bound", async () => {
+  saved.profiles.custom = {
+    ...defaultConnection("custom"),
+    model: "saved-model",
+    endpoint: { kind: "exact_url", value: "https://proxy.example/infer" },
+  }
+  await setup("jev")
+  fireEvent.change(screen.getByLabelText("Saved connections"), { target: { value: "custom" } })
+  const useSaved = screen.getByRole("button", { name: "Use saved connection" })
+  expect(useSaved).toBeDisabled()
+  fireEvent.click(useSaved)
+  expect(invoke).not.toHaveBeenCalledWith("switch_system_one_connection", expect.anything())
+  fireEvent.click(screen.getByRole("button", { name: "Model limits" }))
+  fireEvent.change(screen.getByLabelText("Manual total input tokens"), {
+    target: { value: "8192" },
+  })
+  expect(useSaved).toBeDisabled()
+  expect(screen.getByRole("button", { name: "Save and use connection" })).toBeEnabled()
+})
 
 it("shows the decision model flow without opening advanced settings", async () => {
   await setup("jev")
@@ -345,7 +395,7 @@ it("retains all manual limit fields and response mode across provider navigation
   fireEvent.click(screen.getByRole("button", { name: "Model limits" }))
   for (const [label, value] of [
     ["Manual total input tokens", "65536"],
-    ["Manual state plus longest question tokens", "4096"],
+    ["Manual state plus longest question tokens", "8192"],
     ["Manual loaded context tokens", "1"],
   ] as const) {
     fireEvent.change(screen.getByLabelText(label), { target: { value } })
@@ -358,7 +408,7 @@ it("retains all manual limit fields and response mode across provider navigation
     target: { value: "custom" },
   })
   expect(screen.getByLabelText("Manual total input tokens")).toHaveValue(65536)
-  expect(screen.getByLabelText("Manual state plus longest question tokens")).toHaveValue(4096)
+  expect(screen.getByLabelText("Manual state plus longest question tokens")).toHaveValue(8192)
   expect(screen.getByLabelText("Manual loaded context tokens")).toHaveValue(1)
   expect(screen.getByLabelText("Response mode")).toHaveValue("cloudflare_envelope")
   fireEvent.change(screen.getByLabelText("Manual loaded context tokens"), {
@@ -370,7 +420,7 @@ it("retains all manual limit fields and response mode across provider navigation
     responseMode: "cloudflare_envelope",
     contextOverride: {
       totalInputTokens: 65536,
-      stateAndLongestQuestionTokens: 4096,
+      stateAndLongestQuestionTokens: 8192,
       runtimeContextTokens: null,
     },
   })
@@ -427,6 +477,12 @@ it.each(["jev", "ollama", "cloudflare", "custom"] as const)(
   "tests and refreshes %s with a null draft credential and its explicit saved reference",
   async (provider) => {
     const connection = defaultConnection(provider)
+    if (provider === "custom")
+      connection.contextOverride = {
+        totalInputTokens: 8192,
+        stateAndLongestQuestionTokens: null,
+        runtimeContextTokens: null,
+      }
     connection.credential = { kind: "connection", id: `saved-${provider}` }
     if (provider === "ollama" || provider === "custom") connection.model = "saved-model"
     if (connection.endpoint.kind !== "provider_default")
@@ -617,7 +673,7 @@ it("keeps provider fields visible while model limits use a keyboard-focusable di
 it.each(["jev", "ollama", "cloudflare", "custom"] as const)(
   "shows %s model limits without a subtitle or making calls",
   async (provider) => {
-    await setup(provider)
+    await setup(provider, false)
     expect(
       screen.queryByText(
         "Context window, token, and request size bounds. These are not spending limits.",
@@ -639,7 +695,9 @@ it.each(["jev", "ollama", "cloudflare", "custom"] as const)(
     } else {
       expect(
         screen.getByText(
-          /Leave manual limits empty to use discovered values or documented defaults/,
+          provider === "custom"
+            ? /Enter manual total input tokens or loaded context tokens/
+            : /Leave manual limits empty to use discovered values or documented defaults/,
         ),
       ).toBeVisible()
       expect(screen.getByLabelText("Manual total input tokens")).toHaveValue(null)

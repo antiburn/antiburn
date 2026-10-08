@@ -35,17 +35,68 @@ const MAX_SAMPLE_JUDGMENTS: usize = 4;
 const MAX_SAMPLE_CANDIDATES: usize = 4096;
 const MAX_SAMPLE_ANSWERS: usize = 1;
 const MAX_SAMPLE_CHECKS: usize = 1;
-const CURSOR_REVISION: u32 = 7;
+const CURSOR_REVISION: u32 = 8;
 
 static INPUT_OBSERVATIONS: LazyLock<Mutex<InventoryRevisionObserver>> =
     LazyLock::new(|| Mutex::new(InventoryRevisionObserver::default()));
 
-struct CachedSkillCheck {
-    key: String,
-    check: Arc<SkillOpportunitiesCheck>,
+static PREPARED_INPUTS: LazyLock<
+    Mutex<crate::smart_check_inputs::cache::PreparedInputCache<PreparedSkillOpportunityInput>>,
+> = LazyLock::new(|| Mutex::new(Default::default()));
+
+struct CachedInputRevision {
+    _store: Store,
+    store_identity: usize,
+    source_key: String,
+    config: crate::agent_config::ConfigContext,
+    input_revision: String,
+    inventory_revision: String,
 }
 
-static SOURCE_CHECK: LazyLock<Mutex<Option<CachedSkillCheck>>> = LazyLock::new(|| Mutex::new(None));
+static INPUT_REVISIONS: LazyLock<Mutex<std::collections::VecDeque<CachedInputRevision>>> =
+    LazyLock::new(|| Mutex::new(std::collections::VecDeque::new()));
+
+fn cache_input_revision(revision: CachedInputRevision) -> anyhow::Result<()> {
+    let mut cache = INPUT_REVISIONS
+        .lock()
+        .map_err(|_| anyhow::anyhow!("skill revision cache lock failed"))?;
+    cache.retain(|cached| {
+        cached.store_identity != revision.store_identity
+            || cached.source_key != revision.source_key
+            || cached.config != revision.config
+    });
+    if cache.len() == InventoryRevisionObserver::MAX_INPUTS {
+        cache.pop_front();
+    }
+    cache.push_back(revision);
+    Ok(())
+}
+
+fn revision_source_key(candidate: &BurnCheckCandidate) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&(
+        (
+            &candidate.session.key.environment_key,
+            &candidate.session.key.agent,
+            &candidate.session.key.session_id,
+        ),
+        candidate.incarnation,
+        candidate.source_generation,
+        &candidate.source_fingerprint,
+        &candidate.activity_cursor,
+        candidate.published_fence,
+        &candidate.boundary_positions,
+        candidate.boundary_at_epoch,
+        candidate.historical,
+        &candidate.session.cwd,
+        SKILL_OPPORTUNITIES_CHECK_ID,
+        CHECK.evaluator_revision(),
+        (
+            antiburn_local::analysis::PARSER_REVISION,
+            antiburn_local::analysis::ANALYZER_REVISION,
+            antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+        ),
+    ))
+}
 
 pub(crate) struct SkillOpportunitiesDescriptor;
 pub(crate) const CHECK: SkillOpportunitiesDescriptor = SkillOpportunitiesDescriptor;
@@ -157,42 +208,39 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         }
     };
     let config = crate::agent_config::ConfigContext::native(agent, home, Some(cwd));
-    let snapshot = match store.load_smart_check_inputs(
-        &candidate.session.key,
-        candidate.published_fence,
-        candidate.source_generation,
-        crate::smart_check_inputs::DetectorInput::SkillOpportunities,
-    ) {
-        Ok(snapshot) => snapshot,
-        Err(_) => {
-            unavailable(store, candidate, false, handle, key_generation)?;
-            return Ok(());
-        }
-    };
-    if source_limit(
-        &candidate.session.key.agent,
-        snapshot.content().source_format,
-    ) != SourceLimit::Supported
-    {
-        unavailable(store, candidate, true, handle, key_generation)?;
-        return Ok(());
-    }
-    let skills = match store.load_smart_check_skill_inputs(snapshot, &config) {
-        Ok(skills) => skills,
-        Err(_) => {
-            unavailable(store, candidate, false, handle, key_generation)?;
-            return Ok(());
-        }
-    };
-    let input = match prepare(candidate, skills, CHECK.evaluator_revision()) {
+    let preparation = admit_jev_orchestration().await?;
+    let input_store = store.clone();
+    let input_candidate = candidate.clone();
+    let input_config = config.clone();
+    let loaded = tauri::async_runtime::spawn_blocking(move || {
+        let _permit = preparation;
+        let inventory =
+            crate::smart_check_inputs::inventory_cache::discover_inventory(&input_config)
+                .map_err(InputLoadError::Inventory)?;
+        load_input(&input_store, &input_candidate, &input_config, inventory)
+    })
+    .await?;
+    let input = match loaded {
         Ok(input) => input,
-        Err(InputLoadError::Unavailable(_)) => {
+        Err(
+            InputLoadError::Unavailable(_)
+            | InputLoadError::Inventory(_)
+            | InputLoadError::SkillUse(_)
+            | InputLoadError::Query(_)
+            | InputLoadError::Scope(_),
+        ) => {
             unavailable(store, candidate, false, handle, key_generation)?;
             return Ok(());
         }
         Err(error) => return Err(anyhow::anyhow!("skill input preparation failed: {error:?}")),
     };
-    let Some(observation) = reconcile_skill_inputs(store, handle, key_generation, candidate)?
+    let Some(observation) = observe_skill_input(
+        store,
+        handle,
+        key_generation,
+        candidate,
+        Some(input.durable.input_revision.clone()),
+    )?
     else {
         return Ok(());
     };
@@ -310,12 +358,21 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         let orchestration = admit_jev_orchestration().await?;
         let mut plan = match cursor.active_plan.clone() {
             Some(plan) => plan,
-            None => input.check.prepare_inventory_sampled(
-                &cursor.inventory,
-                &input.check.session_context(),
-                &capabilities,
-                &jobs,
-            )?,
+            None => {
+                let check = Arc::clone(&input.check);
+                let inventory = cursor.inventory.clone();
+                let capabilities = capabilities.clone();
+                let jobs = jobs.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    check.prepare_inventory_sampled(
+                        &inventory,
+                        &check.session_context(),
+                        &capabilities,
+                        &jobs,
+                    )
+                })
+                .await??
+            }
         };
         let mut blocked = Vec::new();
         let mut deferred = false;
@@ -379,12 +436,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         jobs.retain(|job| !blocked.contains(&job.candidate));
         cursor.active_job = jobs.first().cloned();
         cursor.batch_jobs = jobs.iter().skip(1).cloned().collect();
-        plan.work_items.retain(|item| {
-            !blocked.contains(&antiburn_local::checks::sampling::StableId::new(
-                "skill-opportunities",
-                &[item.id.as_bytes()],
-            ))
-        });
+        input.check.retain_plan_jobs(&mut plan, &jobs)?;
         cursor.active_plan = Some(plan.clone());
         write_fence.commit(|| {
             save_scheduling(store, &input, &cursor)?;
@@ -539,12 +591,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 jobs.retain(|job| !terminal.contains(&job.candidate));
                 cursor.active_job = jobs.first().cloned();
                 cursor.batch_jobs = jobs.iter().skip(1).cloned().collect();
-                plan.work_items.retain(|item| {
-                    !terminal.contains(&antiburn_local::checks::sampling::StableId::new(
-                        "skill-opportunities",
-                        &[item.id.as_bytes()],
-                    ))
-                });
+                input.check.retain_plan_jobs(&mut plan, &jobs)?;
                 cursor.active_plan = (!jobs.is_empty()).then_some(plan);
                 if jobs.is_empty() {
                     cursor.run_progress = JevRunProgress::default();
@@ -567,7 +614,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 cursor.result.as_ref().expect("result was initialized"),
             )?;
             let progress_json = serde_json::to_string(&cursor)?;
-            let saved = write_fence.commit(|| {
+            let saved = write_fence.publish(|| {
                 let published = store.fail_burn_check_assessment_with_result(
                     &input.durable,
                     &BurnCheckFailure {
@@ -598,6 +645,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 }
                 Ok(published)
             });
+            let saved = saved.await;
             let rejection = crate::jev::worker::settle_authentication_rejection(
                 app,
                 store,
@@ -730,7 +778,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     let progress_json = serde_json::to_string(&cursor)?;
     let pairs = accepted_pairs(&input, &result);
     let published = write_fence
-        .commit(|| {
+        .publish(|| {
             let published = if complete {
                 store.complete_burn_check_assessment(
                     &input.durable,
@@ -782,7 +830,8 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 );
             }
             Ok(published)
-        })?
+        })
+        .await?
         .unwrap_or(false);
     if published {
         let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
@@ -858,6 +907,27 @@ pub(crate) fn reconcile_skill_inputs(
     provider_generation: u64,
     candidate: &BurnCheckCandidate,
 ) -> anyhow::Result<Option<SkillInputObservation>> {
+    let enrolled = store.enrolled_burn_check_candidate(candidate, SKILL_OPPORTUNITIES_CHECK_ID)?;
+    let current = match candidate_config(&enrolled) {
+        Some(config) => current_input_revisions(store, &enrolled, &config)?,
+        None => None,
+    };
+    observe_skill_input(
+        store,
+        handle,
+        provider_generation,
+        &enrolled,
+        current.map(|(input, _)| input),
+    )
+}
+
+fn observe_skill_input(
+    store: &Store,
+    handle: &WorkerHandle,
+    provider_generation: u64,
+    candidate: &BurnCheckCandidate,
+    input_revision: Option<String>,
+) -> anyhow::Result<Option<SkillInputObservation>> {
     handle
         .with_current_generation(provider_generation, || {
             let mut observations = INPUT_OBSERVATIONS
@@ -866,12 +936,9 @@ pub(crate) fn reconcile_skill_inputs(
             let Some(stored_revision) = current_assessment_revision(store, candidate)? else {
                 return Ok(None);
             };
-            let config = candidate_config(candidate);
-            let current = match config.as_ref() {
-                Some(config) => current_input_revisions(store, candidate, config)?,
-                None => None,
-            };
-            let input_revision = current.map(|(input, _)| input);
+            if !source_is_current(store, candidate)? {
+                return Ok(None);
+            }
             let invalidated = if stored_revision.is_some() && stored_revision != input_revision {
                 store.invalidate_burn_check_inputs(
                     &candidate.session.key,
@@ -995,6 +1062,38 @@ struct SkillWriteFence<'a> {
 
 impl SkillWriteFence<'_> {
     fn commit<T>(&self, commit: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<Option<T>> {
+        self.commit_with_inventory(Some(&self.input.inventory_revision), commit)
+    }
+
+    async fn publish<T>(
+        &self,
+        commit: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<Option<T>> {
+        if !self.handle.key_is_current(self.provider_generation) {
+            return Ok(None);
+        }
+        let preparation = admit_jev_orchestration().await?;
+        let config = self.config.clone();
+        let inventory = tauri::async_runtime::spawn_blocking(move || {
+            let _permit = preparation;
+            crate::smart_check_inputs::inventory_cache::discover_inventory(&config)
+        })
+        .await?;
+        let revision = match inventory {
+            Ok(inventory) => Some(inventory.revision()),
+            Err(error) => {
+                ::tracing::debug!(event = "skill_inventory_publication_unavailable", error = ?error);
+                None
+            }
+        };
+        self.commit_with_inventory(revision.as_deref(), commit)
+    }
+
+    fn commit_with_inventory<T>(
+        &self,
+        inventory_revision: Option<&str>,
+        commit: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<Option<T>> {
         with_skill_input_generation(
             self.handle,
             self.provider_generation,
@@ -1005,7 +1104,12 @@ impl SkillWriteFence<'_> {
                 generation: self.input_generation,
             },
             || {
-                let current = current_input_revisions(self.store, self.candidate, self.config)?;
+                let current = match inventory_revision {
+                    Some(revision) => {
+                        cached_input_revisions(self.store, self.candidate, self.config, revision)?
+                    }
+                    None => None,
+                };
                 if !current_revisions_match(
                     current.as_ref(),
                     &self.input.durable.input_revision,
@@ -1254,30 +1358,95 @@ fn current_input_revisions(
     candidate: &BurnCheckCandidate,
     config: &crate::agent_config::ConfigContext,
 ) -> anyhow::Result<Option<(String, String)>> {
-    let enrolled = store.enrolled_burn_check_candidate(candidate, SKILL_OPPORTUNITIES_CHECK_ID)?;
-    let candidate = &enrolled;
-    let load = || -> Result<SkillInputs, InputLoadError> {
-        let snapshot = store.load_smart_check_inputs(
-            &candidate.session.key,
-            candidate.published_fence,
-            candidate.source_generation,
-            crate::smart_check_inputs::DetectorInput::SkillOpportunities,
-        )?;
-        if source_limit(
-            &candidate.session.key.agent,
-            snapshot.content().source_format,
-        ) != SourceLimit::Supported
-        {
-            return Err(InputLoadError::Unavailable(
-                crate::smart_check_inputs::InputUnavailable::IncompleteEvidence,
+    if !source_is_current(store, candidate)? {
+        return Ok(None);
+    }
+    let inventory = match crate::smart_check_inputs::inventory_cache::sweep_inventory(
+        config,
+        &candidate.session.key,
+    ) {
+        Ok(inventory) => inventory,
+        Err(InputLoadError::Inventory(_)) => return Ok(None),
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "skill inventory could not be read: {error:?}"
             ));
         }
-        store
-            .load_smart_check_skill_inputs(snapshot, config)?
-            .for_candidate(candidate)
     };
-    let skills = match load() {
-        Ok(skills) => skills,
+    current_input_revisions_with_inventory(store, candidate, config, inventory)
+}
+
+fn source_is_current(store: &Store, candidate: &BurnCheckCandidate) -> anyhow::Result<bool> {
+    crate::smart_check_inputs::cache::source_is_current(
+        store,
+        candidate,
+        SKILL_OPPORTUNITIES_CHECK_ID,
+        CHECK.evaluator_revision(),
+    )
+}
+
+fn config_matches_candidate(
+    candidate: &BurnCheckCandidate,
+    config: &crate::agent_config::ConfigContext,
+) -> bool {
+    let canonical =
+        |path: Option<&std::path::Path>| path.map(std::path::Path::canonicalize).transpose().ok();
+    config.native_environment
+        && candidate.session.key.environment_key == "native"
+        && candidate.session.wsl_distro.is_none()
+        && config.agent.slug() == candidate.session.key.agent
+        && canonical(candidate.session.cwd.as_deref().map(std::path::Path::new))
+            .is_some_and(|cwd| Some(cwd) == canonical(config.workspace_cwd.as_deref()))
+}
+
+fn cached_input_revisions(
+    store: &Store,
+    candidate: &BurnCheckCandidate,
+    config: &crate::agent_config::ConfigContext,
+    inventory_revision: &str,
+) -> anyhow::Result<Option<(String, String)>> {
+    let enrolled = store.enrolled_burn_check_candidate(candidate, SKILL_OPPORTUNITIES_CHECK_ID)?;
+    let candidate = &enrolled;
+    if !source_is_current(store, candidate)? || !config_matches_candidate(candidate, config) {
+        return Ok(None);
+    }
+    if current_assessment_revision(store, candidate)?.is_none() {
+        return Ok(None);
+    }
+    let source_key = revision_source_key(candidate)?;
+    let store_identity = crate::smart_check_inputs::cache::store_identity(store);
+    if let Some(cached) = INPUT_REVISIONS
+        .lock()
+        .map_err(|_| anyhow::anyhow!("skill revision cache lock failed"))?
+        .iter()
+        .find(|cached| {
+            cached.store_identity == store_identity
+                && cached.source_key == source_key
+                && cached.config == *config
+                && cached.inventory_revision == inventory_revision
+        })
+    {
+        return Ok(Some((
+            cached.input_revision.clone(),
+            cached.inventory_revision.clone(),
+        )));
+    }
+    Ok(None)
+}
+
+fn current_input_revisions_with_inventory(
+    store: &Store,
+    candidate: &BurnCheckCandidate,
+    config: &crate::agent_config::ConfigContext,
+    inventory: Arc<antiburn_local::checks::skill_opportunities::SkillOpportunitySnapshot>,
+) -> anyhow::Result<Option<(String, String)>> {
+    if let Some(revisions) =
+        cached_input_revisions(store, candidate, config, &inventory.revision())?
+    {
+        return Ok(Some(revisions));
+    }
+    let input = match load_input(store, candidate, config, inventory) {
+        Ok(input) => input,
         Err(
             InputLoadError::Unavailable(_)
             | InputLoadError::Inventory(_)
@@ -1292,9 +1461,66 @@ fn current_input_revisions(
         }
     };
     Ok(Some((
-        skills.input_revision().to_owned(),
-        skills.inventory().revision().to_owned(),
+        input.durable.input_revision.clone(),
+        input.inventory_revision.clone(),
     )))
+}
+
+fn load_input(
+    store: &Store,
+    candidate: &BurnCheckCandidate,
+    config: &crate::agent_config::ConfigContext,
+    inventory: Arc<antiburn_local::checks::skill_opportunities::SkillOpportunitySnapshot>,
+) -> Result<Arc<PreparedSkillOpportunityInput>, InputLoadError> {
+    let candidate = store
+        .enrolled_burn_check_candidate(candidate, SKILL_OPPORTUNITIES_CHECK_ID)
+        .map_err(InputLoadError::Storage)?;
+    if !source_is_current(store, &candidate).map_err(InputLoadError::Storage)? {
+        return Err(InputLoadError::Unavailable(
+            crate::smart_check_inputs::InputUnavailable::PublicationChanged,
+        ));
+    }
+    if !config_matches_candidate(&candidate, config) {
+        return Err(InputLoadError::Unavailable(
+            crate::smart_check_inputs::InputUnavailable::InventoryContextMismatch,
+        ));
+    }
+    let source_key = revision_source_key(&candidate).map_err(InputLoadError::Serialization)?;
+    let key = serde_json::to_string(&(&source_key, format!("{config:?}"), inventory.revision()))
+        .map_err(InputLoadError::Serialization)?;
+    if let Some(input) = PREPARED_INPUTS
+        .lock()
+        .map_err(|_| InputLoadError::Preparation(JevError::InvalidCheckContext))?
+        .get(store, &key)
+    {
+        return Ok(input);
+    }
+    let snapshot = store.load_smart_check_inputs(
+        &candidate.session.key,
+        candidate.published_fence,
+        candidate.source_generation,
+        crate::smart_check_inputs::DetectorInput::SkillOpportunities,
+    )?;
+    let bytes = serde_json::to_vec(&(snapshot.scope(), snapshot.content(), inventory.skills()))
+        .map_err(InputLoadError::Serialization)?
+        .len()
+        .saturating_mul(4);
+    let inputs = store.load_smart_check_skill_inputs_with_inventory(snapshot, config, inventory)?;
+    let input = Arc::new(prepare(&candidate, inputs, CHECK.evaluator_revision())?);
+    cache_input_revision(CachedInputRevision {
+        _store: store.clone(),
+        store_identity: crate::smart_check_inputs::cache::store_identity(store),
+        source_key,
+        config: config.clone(),
+        input_revision: input.durable.input_revision.clone(),
+        inventory_revision: input.inventory_revision.clone(),
+    })
+    .map_err(InputLoadError::Storage)?;
+    PREPARED_INPUTS
+        .lock()
+        .map_err(|_| InputLoadError::Preparation(JevError::InvalidCheckContext))?
+        .insert(store, key, bytes, Arc::clone(&input));
+    Ok(input)
 }
 
 /// Prepared production input. The revision binds activity, scope, skill use, and inventory.
@@ -1340,34 +1566,7 @@ pub(crate) fn prepare(
     }
 
     let revision = inputs.input_revision().to_owned();
-    let cache_key = serde_json::to_string(&(
-        inputs.input_revision(),
-        (
-            &candidate.session.key.environment_key,
-            &candidate.session.key.agent,
-            &candidate.session.key.session_id,
-        ),
-        candidate.incarnation,
-        candidate.source_generation,
-        candidate.published_fence,
-        &candidate.source_fingerprint,
-    ))
-    .map_err(InputLoadError::Serialization)?;
-    let check = {
-        let mut cache = SOURCE_CHECK
-            .lock()
-            .map_err(|_| InputLoadError::Preparation(JevError::InvalidCheckContext))?;
-        if let Some(cached) = cache.as_ref().filter(|cached| cached.key == cache_key) {
-            Arc::clone(&cached.check)
-        } else {
-            let check = Arc::new(inputs.check()?);
-            *cache = Some(CachedSkillCheck {
-                key: cache_key,
-                check: Arc::clone(&check),
-            });
-            check
-        }
-    };
+    let check = Arc::new(inputs.check()?);
     let durable = BurnCheckInput {
         key: candidate.session.key.clone(),
         check_id: SKILL_OPPORTUNITIES_CHECK_ID.to_owned(),

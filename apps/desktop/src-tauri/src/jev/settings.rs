@@ -1662,6 +1662,10 @@ mod tests {
             ),
             model: "proxy-model".into(),
             credential: None,
+            context_override: Some(crate::jev::config::ContextLimitOverride {
+                total_input_tokens: Some(8192),
+                ..crate::jev::config::ContextLimitOverride::default()
+            }),
             ..crate::jev::config::SystemOneConnection::default()
         }
     }
@@ -1686,6 +1690,43 @@ mod tests {
         )
         .unwrap();
         (store, worker, vault)
+    }
+
+    #[test]
+    fn custom_without_input_bound_cannot_save_or_activate() {
+        let store = Store::open_in_memory(Path::new("/tmp/antiburn-custom-limits")).unwrap();
+        migrate_provider_state(&store).unwrap();
+        let worker = WorkerHandle::default();
+        let vault = OfflineVault::default();
+        let original = super::profiles(&store).unwrap();
+        for limits in [
+            None,
+            Some(crate::jev::config::ContextLimitOverride::default()),
+            Some(crate::jev::config::ContextLimitOverride {
+                state_and_longest_question_tokens: Some(8192),
+                ..crate::jev::config::ContextLimitOverride::default()
+            }),
+        ] {
+            let mut connection = custom_connection();
+            connection.context_override = limits;
+            assert!(
+                super::save_connection(
+                    &store,
+                    &worker,
+                    super::SystemOneDraft {
+                        connection_id: "proxy".into(),
+                        connection,
+                        credential: Some("synthetic-secret".into()),
+                    },
+                    &vault,
+                )
+                .is_err()
+            );
+            let saved = super::profiles(&store).unwrap();
+            assert_eq!(saved.active_id, original.active_id);
+            assert_eq!(saved.profiles, original.profiles);
+            assert!(vault.value.borrow().is_none());
+        }
     }
 
     #[test]
@@ -2284,7 +2325,10 @@ mod tests {
             response_mode: crate::jev::config::SystemOneResponseMode::Direct,
             credential: None,
             revision: 1,
-            context_override: None,
+            context_override: Some(crate::jev::config::ContextLimitOverride {
+                total_input_tokens: Some(8192),
+                ..crate::jev::config::ContextLimitOverride::default()
+            }),
         };
         let vault = OfflineVault::default();
         vault.fail_write.set(true);

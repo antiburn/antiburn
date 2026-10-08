@@ -6,6 +6,116 @@ import { BurnChecksView } from "../BurnChecksView"
 import { aggregate, deferred, report, setup } from "./tests/burnChecksTestSupport"
 
 describe("smart check report integration", () => {
+  it("shows running failure counts inline and animates only checking text", async () => {
+    setup(null, false, aggregate, {
+      ...report,
+      categories: [
+        {
+          ...report.categories[0]!,
+          id: "ignoredInstructions",
+          finding: 43,
+          clean: 0,
+          checking: true,
+          checkingCount: 2,
+        },
+      ],
+    })
+    const row = await screen.findByRole("button", {
+      name: "Ignored instructions, 43 failed · 0 passed · 2 checking",
+    })
+    const checking = within(row).getByText("2 checking")
+    expect(checking.closest(".font-mono")).toHaveTextContent("43 failed·0 passed·2 checking")
+    expect(row.querySelectorAll(".activity-row-title-shimmer")).toHaveLength(1)
+    expect(checking).toHaveAttribute("data-text", "2 checking")
+    expect(within(row).getByText("43 failed")).not.toHaveClass("activity-row-title-shimmer")
+    expect(row.querySelector(".animate-spin")).toBeNull()
+    expect(screen.getByRole("region", { name: "Failed checks 1" })).toContainElement(row)
+    expect(screen.queryByRole("region", { name: "Checks in progress" })).toBeNull()
+  })
+
+  it("keeps running and passed rows stable across continuation and completion", async () => {
+    const check = {
+      ...report.categories[2]!,
+      id: "ignoredInstructions" as const,
+      checking: true,
+      checkingCount: 2,
+    }
+    const initial = { ...report, categories: [check, report.categories[1]!] }
+    const { adapter, session } = setup(null, false, aggregate, initial)
+    const row = await screen.findByRole("button", { name: "Ignored instructions, Checking" })
+    const group = screen.getByRole("region", { name: "Passed checks 2" })
+    expect(group).toContainElement(row)
+    expect(within(row).getByText("Checking").closest(".font-mono")).toHaveTextContent(
+      /^Checking$/,
+    )
+    expect(row.querySelector(".animate-spin")).toBeNull()
+    row.focus()
+    const detail = document.getElementById("burn-check-ignoredInstructions-detail")
+    for (const updated of [
+      { ...check, checkingCount: 1, clean: 1, lifecycle: "passing" as const },
+      { ...check, checkingCount: 0, checking: false, clean: 2, lifecycle: "passing" as const },
+    ]) {
+      vi.mocked(adapter.getReport).mockResolvedValue({
+        ...initial,
+        categories: [updated, report.categories[1]!],
+      })
+      await act(async () => session.refresh())
+      expect(screen.getByRole("button", { name: /Ignored instructions, / })).toBe(row)
+      expect(row).toHaveFocus()
+      expect(row).toHaveAttribute("aria-pressed", "true")
+      expect(document.getElementById("burn-check-ignoredInstructions-detail")).toBe(detail)
+      expect(within(group).getAllByRole("button").slice(1)[0]).toBe(row)
+    }
+    expect(within(row).getByText("Passed")).toBeVisible()
+  })
+
+  it("keeps detail focus when a previously focused checking row fails", async () => {
+    const check = {
+      ...report.categories[2]!,
+      id: "ignoredInstructions" as const,
+      checking: true,
+      sampled: true,
+    }
+    const { adapter, session } = setup(null, false, aggregate, {
+      ...report,
+      categories: [check],
+    })
+    const row = await screen.findByRole("button", { name: "Ignored instructions, Checking" })
+    act(() => row.focus())
+    const control = screen.getByLabelText("This check has been sampled")
+    act(() => control.focus())
+    expect(control).toHaveFocus()
+
+    vi.mocked(adapter.getReport).mockResolvedValue({
+      ...report,
+      categories: [{ ...check, finding: 1, checking: false, lifecycle: "failing" }],
+    })
+    await act(async () => session.refresh())
+
+    await screen.findByRole("button", { name: /Ignored instructions, 1 failed/ })
+    expect(row).not.toBeInTheDocument()
+    expect(control).toHaveFocus()
+  })
+
+  it("keeps the Passed disclosure collapsed during continuation", async () => {
+    const check = { ...report.categories[2]!, id: "scopeCreep" as const, checking: true }
+    const { adapter, session } = setup(null, false, aggregate, {
+      ...report,
+      categories: [check],
+    })
+    const trigger = await screen.findByRole("button", { name: "Passed checks 1" })
+    fireEvent.click(trigger)
+    vi.mocked(adapter.getReport).mockResolvedValue({
+      ...report,
+      categories: [{ ...check, clean: 1, lifecycle: "passing" }],
+    })
+    await act(async () => session.refresh())
+    expect(trigger).toHaveAttribute("aria-expanded", "false")
+    expect(screen.queryByRole("button", { name: "Scope creep, Checking" })).toBeNull()
+    fireEvent.click(trigger)
+    expect(screen.getByRole("button", { name: "Scope creep, Checking" })).toBeVisible()
+  })
+
   it("keeps passed checks visible when a new finding arrives", async () => {
     const passed = { ...report.categories[1]! }
     const { adapter, session } = setup(null, false, aggregate, {
@@ -79,7 +189,7 @@ describe("smart check report integration", () => {
         },
       ],
     })
-    const row = await screen.findByRole("button", { name: /No issues found yet, Checking/ })
+    const row = await screen.findByRole("button", { name: /, Checking/ })
     expect(within(row).getByText("Checking")).toBeVisible()
     expect(within(row).queryByText(/reviewed/)).not.toBeInTheDocument()
     expect(screen.queryByText(/0 uncertain/)).not.toBeInTheDocument()
@@ -110,7 +220,7 @@ describe("smart check report integration", () => {
         },
       ],
     })
-    const row = await screen.findByRole("button", { name: /No issues found yet, Checking/ })
+    const row = await screen.findByRole("button", { name: /, Checking/ })
     expect(within(row).getByText("Checking")).toBeVisible()
     expect(within(row).queryByText(/reviewed/)).not.toBeInTheDocument()
     for (const label of ["This check has been sampled", "This check used partial context"]) {
@@ -153,8 +263,9 @@ describe("smart check report integration", () => {
       ...report,
       categories: [check],
     })
-    const row = await screen.findByRole("button", { name: /No issues found yet, Checking/ })
-    expect(within(row).getByText("No issues found yet")).toHaveClass("text-system-green")
+    const row = await screen.findByRole("button", { name: /, Checking/ })
+    expect(within(row).getByText("Checking")).toHaveClass("activity-row-title-shimmer")
+    expect(within(row).queryByText("No issues found yet")).not.toBeInTheDocument()
     expect(within(row).getByText("Checking")).toBeVisible()
     expect(screen.queryByRole("button", { name: /Not assessed/ })).not.toBeInTheDocument()
     expect(adapter.getTargets).not.toHaveBeenCalled()
@@ -181,7 +292,7 @@ describe("smart check report integration", () => {
       categories: [{ ...check, finding: 1, lifecycle: "failing" }],
     })
     await act(async () => session.refresh())
-    await screen.findByRole("button", { name: /1 failed · 0 passed, Checking/ })
+    await screen.findByRole("button", { name: /1 failed · 0 passed · checking/ })
     expect(screen.queryByText("No issues found yet")).not.toBeInTheDocument()
   })
   it.each([

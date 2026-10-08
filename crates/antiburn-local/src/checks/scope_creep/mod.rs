@@ -5,9 +5,9 @@ mod questions;
 mod reduction;
 
 pub use planning::{
-    INPUT_SELECTION, ScopeCreepCheck, ScopeCreepInput, ScopeCreepPrepared,
-    ScopeDescriptorInventory, WorkBinding, WorkGroup, WorkObservationKind,
-    input_selection_for_source,
+    INPUT_SELECTION, MAX_SCOPE_DESCRIPTOR_BYTES, ScopeCreepCheck, ScopeCreepInput,
+    ScopeCreepPrepared, ScopeDescriptorInventory, ScopeInventoryLimit, WorkBinding, WorkGroup,
+    WorkObservationKind, input_selection_for_source,
 };
 pub use questions::{DECISION_THRESHOLD, ScopeAnswer, ScopeQuestion};
 pub use reduction::{ScopeCreepDecision, ScopeCreepFinding, ScopeCreepResult, ScopeCreepStatus};

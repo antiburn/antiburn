@@ -39,12 +39,23 @@ describe("Checks presentation", () => {
     const source = report([check])
     const before = structuredClone(source)
     const presented = checksPresentation(source)
-    expect(presented.checking).toEqual([check])
-    expect(presented.wins).toEqual([])
+    expect(presented.wins).toEqual([check])
     expect(presented.activeUnavailable).toEqual([])
     expect(presented.burnChecks.counts).toEqual({ failed: 0, passed: 0, unassessed: 1 })
-    expect(checksPresentation(source, false, new Set([check.id])).checking).toEqual([])
+    expect(checksHeroPresentation(presented).summary).toBeNull()
+    expect(checksPresentation(source, false, new Set([check.id])).wins).toEqual([])
     expect(source).toEqual(before)
+  })
+  it("counts confirmed passes without counting checking rows as passed results", () => {
+    const presentation = checksPresentation(
+      report([
+        category({ id: "ignoredInstructions", finding: 0, clean: 0, checking: true }),
+        category({ id: "oldModelUsage", finding: 0, clean: 2 }),
+      ]),
+    )
+    expect(presentation.wins).toHaveLength(2)
+    expect(checksHeroPresentation(presentation).summary).toBe("1 check passed")
+    expect(presentation.burnChecks.counts).toEqual({ failed: 0, passed: 1, unassessed: 1 })
   })
   it("uses the report-owned cohort token estimate", () => {
     const presentation = checksPresentation(report([category()]))

@@ -44,6 +44,33 @@ export type ModelCapabilities = {
   model_revision: string | null
 }
 
+export function contextLimitError(connection: Connection): string | null {
+  const limits = connection.contextOverride
+  if (
+    limits &&
+    Object.values(limits).some(
+      (value) => value !== null && (!Number.isInteger(value) || value < 1 || value > 65536),
+    )
+  )
+    return "Use whole token limits from 1 to 65,536, or leave them empty."
+
+  const reserve = connection.provider === "ollama" ? 1024 : 4096
+  const inputBounds = [limits?.totalInputTokens, limits?.runtimeContextTokens].filter(
+    (value): value is number => value != null,
+  )
+  if (connection.provider !== "custom")
+    inputBounds.push(connection.provider === "ollama" ? 8192 : 65536)
+  if (!inputBounds.length)
+    return "Custom requires manual total input tokens or loaded context tokens above 4,096. Open Model limits to enter a bound."
+  if (
+    Math.min(...inputBounds) <= reserve ||
+    (limits?.stateAndLongestQuestionTokens != null &&
+      limits.stateAndLongestQuestionTokens <= reserve)
+  )
+    return `Each token limit must exceed the ${reserve.toLocaleString("en-US")}-token rendering reserve.`
+  return null
+}
+
 export function defaultConnection(provider: SmartCheckProvider): Connection {
   return {
     provider,

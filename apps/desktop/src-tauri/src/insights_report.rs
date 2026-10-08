@@ -29,7 +29,6 @@ mod findings;
 mod ignored_instructions;
 mod over_exploring;
 mod progress;
-pub(crate) use progress::check_report_progress;
 mod queries;
 mod resources;
 mod scope_creep;
@@ -86,7 +85,6 @@ const CURRENT_FINDING_LIMIT: usize = 512;
 const MAX_RESOURCE_REPOSITORIES: usize = 256;
 const MAX_RESOURCE_INVENTORY_CONTEXTS: usize = 256;
 
-pub(crate) use ignored_instructions::has_published_sampled_instruction_assessment;
 pub(crate) use ignored_instructions::ignored_instruction_session_statuses;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +104,8 @@ pub struct ReducedReport {
     pub deferred_evidence: u64,
     pub(crate) resources: ResourceAssessment,
     pub enabled_detectors: DetectorSelection,
+    pub(crate) check_progress: std::collections::BTreeMap<String, progress::CheckReportProgress>,
+    pub(crate) sampled_instructions: bool,
 }
 
 /// Selects one detector's current findings in a bounded report window.
@@ -542,7 +542,7 @@ fn reduce_with_selection_on_snapshot(
 
     ensure_not_cancelled(cancel)?;
     let mut report = accumulator.finish(ReportContext {
-        environment_key: request.environment_key,
+        environment_key: request.environment_key.clone(),
         window: request.window,
         computed_at_epoch: request.computed_at_epoch,
         parser_revision: PARSER_REVISION,
@@ -581,6 +581,13 @@ fn reduce_with_selection_on_snapshot(
         report.context.coverage.actively_growing <= report.context.coverage.ready,
         "actively growing coverage exceeds ready coverage"
     );
+    let check_progress = progress::check_report_progress_in(&transaction, &request, resource_home)?;
+    let sampled_instructions =
+        ignored_instructions::has_published_sampled_instruction_assessment_in(
+            &transaction,
+            &request,
+        )?;
+    ensure_not_cancelled(cancel)?;
     drop(transaction);
     drop(connection);
     if let Some(home) = resource_home {
@@ -609,6 +616,8 @@ fn reduce_with_selection_on_snapshot(
         deferred_evidence,
         resources,
         enabled_detectors,
+        check_progress,
+        sampled_instructions,
     })
 }
 

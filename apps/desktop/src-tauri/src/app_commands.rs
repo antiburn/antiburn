@@ -85,6 +85,7 @@ macro_rules! with_app_commands {
             main_window::request_main_window_recovery => "request_main_window_recovery",
             commands::note_interaction => "note_interaction",
             commands::open_analytics_documentation => "open_analytics_documentation",
+            commands::open_claude_desktop_limits_docs => "open_claude_desktop_limits_docs",
             commands::open_folder_access_settings => "open_folder_access_settings",
             commands::open_github_repo => "open_github_repo",
             hud_commands::open_overlay_window => "open_overlay_window",

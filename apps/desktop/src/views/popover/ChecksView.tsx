@@ -167,7 +167,6 @@ export function ChecksPeek({
 }) {
   const { failures, wins, estimate } = presentation
   const awaiting = presentation.awaiting ?? []
-  const checking = presentation.checking ?? []
   const hero = checksHeroPresentation(presentation)
   const hasFindings = hero.state === "failed"
   const completePass = hero.state === "passed"
@@ -239,12 +238,6 @@ export function ChecksPeek({
             Awaiting verification
           </h2>
           <CheckRows checks={awaiting} />
-        </section>
-      )}
-
-      {checking.length > 0 && (
-        <section className="mt-4">
-          <CheckRows checks={checking} />
         </section>
       )}
 

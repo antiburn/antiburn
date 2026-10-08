@@ -48,6 +48,16 @@ fn fixture(
     body: &str,
     later: &str,
 ) -> (SessionContentEvidence, SessionScopeSnapshot, EpisodeSpan) {
+    fixture_with_later_kind(task_text, paths, body, later, ContentKind::AssistantText)
+}
+
+fn fixture_with_later_kind(
+    task_text: &str,
+    paths: &[&str],
+    body: &str,
+    later: &str,
+    later_kind: ContentKind,
+) -> (SessionContentEvidence, SessionScopeSnapshot, EpisodeSpan) {
     let mut parts = vec![
         part(0, ContentKind::UserText, task_text, None),
         part(
@@ -84,7 +94,18 @@ fn fixture(
         ));
     }
     let last = parts.last().unwrap().turn_index;
-    parts.push(part(last + 1, ContentKind::AssistantText, later, None));
+    for (index, (start, end)) in crate::analysis::jev::text_ranges::text_ranges(later, 2048, 0)
+        .into_iter()
+        .enumerate()
+    {
+        parts.push(part(
+            last + 1 + u64::try_from(index).unwrap(),
+            later_kind,
+            &later[start..end],
+            None,
+        ));
+    }
+    let boundary_turn = parts.last().unwrap().turn_index;
     let page = PublishedContent {
         publication_fence: 4,
         source_generation: Some(3),
@@ -96,7 +117,7 @@ fn fixture(
         SessionScopeBoundary {
             source_key: "transcript".into(),
             thread_id: "branch".into(),
-            turn_index: last + 1,
+            turn_index: boundary_turn,
             part_index: 0,
             branch: SessionScopeBranch::ProvenLinear,
         },
@@ -130,6 +151,184 @@ fn input(paths: &[&str]) -> OverExploringInput {
         "The investigation is complete.",
     );
     build_episodes(&content, &task, &[span]).unwrap()
+}
+
+#[test]
+fn short_approval_does_not_establish_complete_task_context() {
+    let parts = vec![
+        part(
+            0,
+            ContentKind::UserText,
+            "Audit the parser before editing. Keep billing unchanged.",
+            None,
+        ),
+        part(
+            1,
+            ContentKind::AssistantText,
+            "I propose to audit the parser and its tests, then report the risks.",
+            None,
+        ),
+        part(2, ContentKind::UserText, "Yes, continue.", None),
+        part(
+            3,
+            ContentKind::ToolInput,
+            r#"{"filePath":"parser.rs","limit":2}"#,
+            Some("audit"),
+        ),
+        part(4, ContentKind::ToolResult, "1: parser code", Some("audit")),
+    ];
+    let page = PublishedContent {
+        publication_fence: 4,
+        source_generation: Some(3),
+        parts,
+        ..Default::default()
+    };
+    let mut builder = SessionScopeBuilder::new(
+        SourceFormat::OpenCodeSqliteV2,
+        SessionScopeBoundary {
+            source_key: "transcript".into(),
+            thread_id: "branch".into(),
+            turn_index: 4,
+            part_index: 0,
+            branch: SessionScopeBranch::ProvenLinear,
+        },
+        4,
+        3,
+        true,
+    )
+    .unwrap();
+    builder.push_page(page.clone(), false).unwrap();
+    let task = builder.finish().unwrap();
+    let mut content =
+        prepare_session_content("session", SourceFormat::OpenCodeSqliteV2, page, Vec::new());
+    content.complete = true;
+    let span = EpisodeSpan {
+        first_event_id: content.actions[2].reference.id.clone(),
+        last_event_id: content.actions[4].reference.id.clone(),
+        state: EpisodeState::Complete,
+    };
+    let input = build_episodes(&content, &task, &[span]).unwrap();
+    assert_eq!(input.task_context.fields["partial"], true);
+    assert_eq!(
+        input.task_context.fields["antecedent_context_omitted"],
+        true
+    );
+    let plan = plan(&input);
+    let assessment = OverExploringCheck
+        .reduce(&plan, &results(&plan, "justified_or_minor", 0.9), true)
+        .unwrap();
+    assert!(assessment.clean_episode_ids.is_empty());
+    assert!(
+        assessment
+            .unassessed
+            .iter()
+            .any(|item| item.limitation == Abstention::SourceLimited)
+    );
+}
+
+#[test]
+fn selected_plans_share_the_large_source_inventory() {
+    let (content, task, span) = fixture(
+        "Fix the parser.",
+        &["parser.rs", "tests.rs", "library.rs"],
+        &"recorded line\n".repeat(5000),
+        "Investigation complete.",
+    );
+    let input = build_episodes(&content, &task, &[span]).unwrap();
+    let plan = plan(&input);
+    assert!(
+        plan.prepared
+            .events
+            .iter()
+            .map(|event| event.text.len())
+            .sum::<usize>()
+            > 128 * 1024
+    );
+    let mut sampling = SamplingProgress::new(SamplingLimits {
+        checks: 1,
+        candidates_per_check: MAX_SAMPLING_CANDIDATES,
+        answers_per_candidate: 1,
+        judgments_per_run: 3,
+    })
+    .unwrap();
+    synchronize_sampling(&plan, &mut sampling).unwrap();
+    sampling.begin_run();
+    while let Some(job) = sampling.choose_job() {
+        let mut selected = plan.clone();
+        PreparedAssessment::select_jobs(&mut selected, std::slice::from_ref(&job)).unwrap();
+        let checkpoint = selected.clone();
+        assert!(std::sync::Arc::ptr_eq(
+            &plan.prepared.events,
+            &selected.prepared.events
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &selected.prepared.events,
+            &checkpoint.prepared.events
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &plan.prepared.episodes,
+            &selected.prepared.episodes
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &plan.prepared.targets,
+            &selected.prepared.targets
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &plan.prepared.task_contexts,
+            &selected.prepared.task_contexts
+        ));
+    }
+}
+
+#[test]
+fn small_reads_fit_default_capabilities_with_large_irrelevant_scope() {
+    let irrelevant = (0..20_000)
+        .map(|index| format!("Unrelated recorded discussion {index}. "))
+        .collect::<String>();
+    let (content, task, span) = fixture_with_later_kind(
+        "Fix the parser.",
+        &["parser.rs"],
+        "small parser",
+        &irrelevant,
+        ContentKind::UserText,
+    );
+    let input = build_episodes(&content, &task, &[span]).unwrap();
+    let started = std::time::Instant::now();
+    let plan = plan(&input);
+    let prepare_us = started.elapsed().as_micros();
+    assert!(!plan.work_items.is_empty());
+    assert!(plan.skipped_item_ids.is_empty());
+    let shared_bytes = serde_json::to_vec(plan.shared_context.as_ref().unwrap())
+        .unwrap()
+        .len();
+    let old_bytes = serde_json::to_vec(&task.user_context()).unwrap().len();
+    assert!(shared_bytes * 100 < old_bytes);
+    let old_packing = pack_work_items_with_shared_context(
+        &plan.work_items,
+        &plan.capabilities,
+        &task.user_context(),
+    );
+    assert!(old_packing.batches.is_empty());
+    assert_eq!(old_packing.skipped_item_ids.len(), plan.work_items.len());
+    assert!(
+        plan.shared_context
+            .as_ref()
+            .unwrap()
+            .fields
+            .to_string()
+            .contains("Fix the parser")
+    );
+    let packed = pack_work_items_with_shared_context(
+        &plan.work_items,
+        &plan.capabilities,
+        plan.shared_context.as_ref().unwrap(),
+    );
+    assert!(!packed.batches.is_empty());
+    assert!(packed.skipped_item_ids.is_empty());
+    eprintln!(
+        "over_exploring large scope: old_shared_bytes={old_bytes} selected_shared_bytes={shared_bytes} prepare_us={prepare_us} requests={}",
+        packed.batches.len()
+    );
 }
 
 fn cache_age_source() -> String {
@@ -242,7 +441,7 @@ fn native_bindings_keep_observed_extent_separate_from_request() {
         plan.revisions,
         JevCheckRevisions {
             projection: 5,
-            chunking: 4,
+            chunking: 6,
             questions: 11,
             reducer: 7
         }
@@ -739,7 +938,7 @@ fn source_text_is_retained_once_across_many_episode_descriptors() {
                 .unwrap();
         }
         assert_eq!(plan.prepared.candidates, inventory);
-        assert_eq!(plan.prepared.events, content.actions);
+        assert_eq!(plan.prepared.events.as_ref(), &content.actions);
     }
     assert_eq!(completed.len(), inventory.len());
     progress.begin_run();
@@ -1172,12 +1371,7 @@ async fn mock_payload_separates_initial_diagnosis_from_later_repeat_targets() {
                 .count(),
             4
         );
-        assert!(
-            batch.state["shared_context"]["values"]
-                .as_array()
-                .unwrap()
-                .contains(&json!(request))
-        );
+        assert!(batch.state["shared_context"].to_string().contains(request));
         for question in batch.questions.values() {
             let JevQuestion::Choice { instructions, .. } = question else {
                 panic!("Expected Choice");

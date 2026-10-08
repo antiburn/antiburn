@@ -421,10 +421,38 @@ describe("BurnChecksView grouping", { timeout: 15_000 }, () => {
       expect(row).not.toBeInTheDocument()
     })
 
+    it("keeps detail focus when a previously focused row enters collapsed Snoozed", async () => {
+      const setSnoozes = mockSnoozes([])
+      setup(target, false, aggregate, {
+        ...report,
+        categories: [
+          report.categories[0]!,
+          { ...report.categories[0]!, id: "modelOverthinking" },
+        ],
+      })
+      const row = await screen.findByRole("button", { name: /Old model usage/ })
+      act(() => row.focus())
+      fireEvent.click(screen.getByRole("button", { name: /Model overthinking/ }))
+      const control = await within(
+        screen.getByRole("region", { name: "Burn check details" }),
+      ).findByRole("button", { name: "Snooze" })
+      act(() => control.focus())
+
+      await act(async () =>
+        setSnoozes([{ detector: "oldModelUsage", scope: "check", until: null }]),
+      )
+
+      expect(screen.getByRole("button", { name: "Snoozed 1" })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      )
+      expect(row).not.toBeInTheDocument()
+      expect(control).toHaveFocus()
+    })
+
     it("keeps ordinary passed checks free of state badges", async () => {
       setup(target, false, aggregate, report)
-      fireEvent.click(await screen.findByRole("button", { name: "Passed checks 1" }))
-      fireEvent.click(screen.getByRole("button", { name: /Unused skills/ }))
+      fireEvent.click(await screen.findByRole("button", { name: /Unused skills, Passed/ }))
       const header = screen
         .getByRole("heading", { name: "Unused skills", level: 2 })
         .closest("header")!
@@ -442,21 +470,26 @@ describe("BurnChecksView grouping", { timeout: 15_000 }, () => {
       estimatedTokenBurnBasisPoints: 400,
       lifecycle: "failing" as const,
     }
-    const twoFailures = { ...report, categories: [report.categories[0]!, secondFailure] }
+    const twoFailures = {
+      ...report,
+      categories: [report.categories[0]!, secondFailure, report.categories[1]!],
+    }
     const { adapter, session } = setup(target, false, aggregate, twoFailures)
     const row = await screen.findByRole("button", { name: /Model overthinking/ })
+    fireEvent.click(screen.getByRole("button", { name: "Passed checks 1" }))
     row.focus()
     vi.mocked(adapter.getReport).mockResolvedValue({
       ...twoFailures,
       categories: [
         report.categories[0]!,
         { ...secondFailure, finding: 0, clean: 3, lifecycle: "passing" },
+        report.categories[1]!,
       ],
     })
 
     act(() => session.refresh())
 
-    const trigger = await screen.findByRole("button", { name: "Passed checks 1" })
+    const trigger = await screen.findByRole("button", { name: "Passed checks 2" })
     await waitFor(() => expect(trigger).toHaveFocus())
     expect(row).not.toBeInTheDocument()
   })

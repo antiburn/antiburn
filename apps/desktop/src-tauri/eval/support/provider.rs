@@ -2,7 +2,10 @@ use super::{client, config, jev_cloudflare, jev_ollama};
 use antiburn_local::analysis::jev::{
     JevError, JevRequest, JevResponse, capabilities::ModelCapabilities,
 };
-use config::{SystemOneConnection, SystemOneEndpoint, SystemOneProvider, SystemOneResponseMode};
+use config::{
+    ContextLimitOverride, SystemOneConnection, SystemOneEndpoint, SystemOneProvider,
+    SystemOneResponseMode,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::OnceLock;
@@ -78,6 +81,10 @@ impl ProviderPreset {
             }
             _ => {
                 connection.provider = SystemOneProvider::Custom;
+                connection.context_override = Some(ContextLimitOverride {
+                    total_input_tokens: Some(if self.local() { 8192 } else { 65_536 }),
+                    ..ContextLimitOverride::default()
+                });
                 let endpoint = if self.local() {
                     format!("{LOCAL_BASE}/v1/systemone")
                 } else if self.cloudflare() {
@@ -156,8 +163,8 @@ fn discover_configuration() -> EvalConfiguration {
     };
     EvalConfiguration {
         preset,
+        capabilities: connection.apply_capability_overrides(capabilities),
         connection,
-        capabilities,
     }
 }
 

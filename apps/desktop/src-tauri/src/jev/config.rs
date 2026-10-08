@@ -167,7 +167,18 @@ impl SystemOneConnection {
                 validate_url(value, true)
             }
             _ => Err(ConnectionValidationError::ProviderEndpointMismatch),
+        }?;
+        let capabilities = self.resolved_capabilities();
+        if !capabilities
+            .usable_input_tokens()
+            .is_some_and(|tokens| tokens > 0)
+            || !capabilities
+                .usable_state_tokens()
+                .is_some_and(|tokens| tokens > 0)
+        {
+            return Err(ConnectionValidationError::InvalidContextOverride);
         }
+        Ok(())
     }
 
     pub fn inference_endpoint(&self) -> Result<String, ConnectionValidationError> {
@@ -192,6 +203,10 @@ impl SystemOneConnection {
 
     pub fn capabilities(&self) -> Result<ModelCapabilities, ConnectionValidationError> {
         self.validate()?;
+        Ok(self.resolved_capabilities())
+    }
+
+    fn resolved_capabilities(&self) -> ModelCapabilities {
         let mut capabilities = match self.provider {
             SystemOneProvider::Jev => ModelCapabilities::jev_default(),
             SystemOneProvider::Cloudflare => {
@@ -219,7 +234,7 @@ impl SystemOneConnection {
             }
         };
         capabilities = self.apply_capability_overrides(capabilities);
-        Ok(capabilities)
+        capabilities
     }
 
     pub(crate) fn apply_capability_overrides(
@@ -403,7 +418,10 @@ mod tests {
             response_mode: SystemOneResponseMode::Direct,
             credential: None,
             revision: 1,
-            context_override: None,
+            context_override: Some(ContextLimitOverride {
+                total_input_tokens: Some(8192),
+                ..ContextLimitOverride::default()
+            }),
         };
 
         assert_eq!(
@@ -420,6 +438,82 @@ mod tests {
         assert_eq!(
             prefixed.inference_endpoint().unwrap(),
             "https://gateway.example/proxy/v2/systemone/?tenant=checks"
+        );
+    }
+
+    #[test]
+    fn custom_requires_usable_input_and_state_budgets_before_activation() {
+        let mut connection = SystemOneConnection {
+            provider: SystemOneProvider::Custom,
+            endpoint: SystemOneEndpoint::ExactUrl("https://proxy.example/infer".into()),
+            model: "custom-model".into(),
+            credential: None,
+            ..SystemOneConnection::default()
+        };
+        for limits in [
+            None,
+            Some(ContextLimitOverride::default()),
+            Some(ContextLimitOverride {
+                state_and_longest_question_tokens: Some(8192),
+                ..ContextLimitOverride::default()
+            }),
+            Some(ContextLimitOverride {
+                total_input_tokens: Some(4096),
+                ..ContextLimitOverride::default()
+            }),
+            Some(ContextLimitOverride {
+                total_input_tokens: Some(8192),
+                runtime_context_tokens: Some(4096),
+                ..ContextLimitOverride::default()
+            }),
+            Some(ContextLimitOverride {
+                total_input_tokens: Some(8192),
+                state_and_longest_question_tokens: Some(4096),
+                ..ContextLimitOverride::default()
+            }),
+        ] {
+            connection.context_override = limits;
+            assert_eq!(
+                connection.validate(),
+                Err(ConnectionValidationError::InvalidContextOverride)
+            );
+            assert_eq!(
+                connection.capabilities(),
+                Err(ConnectionValidationError::InvalidContextOverride)
+            );
+            assert_eq!(
+                connection.inference_endpoint(),
+                Err(ConnectionValidationError::InvalidContextOverride)
+            );
+        }
+        for limits in [
+            ContextLimitOverride {
+                total_input_tokens: Some(4097),
+                ..ContextLimitOverride::default()
+            },
+            ContextLimitOverride {
+                runtime_context_tokens: Some(4097),
+                ..ContextLimitOverride::default()
+            },
+        ] {
+            connection.context_override = Some(limits);
+            let capabilities = connection.capabilities().unwrap();
+            assert_eq!(capabilities.usable_input_tokens(), Some(1));
+            assert_eq!(capabilities.usable_state_tokens(), Some(1));
+        }
+        connection.provider = SystemOneProvider::Ollama;
+        connection.endpoint = SystemOneEndpoint::BaseUrl("http://localhost:11434".into());
+        connection.context_override = None;
+        let capabilities = connection.capabilities().unwrap();
+        assert_eq!(capabilities.usable_input_tokens(), Some(7168));
+        assert_eq!(capabilities.usable_state_tokens(), Some(7168));
+        connection.context_override = Some(ContextLimitOverride {
+            total_input_tokens: Some(1024),
+            ..ContextLimitOverride::default()
+        });
+        assert_eq!(
+            connection.validate(),
+            Err(ConnectionValidationError::InvalidContextOverride)
         );
     }
 
@@ -526,20 +620,20 @@ mod tests {
             credential: None,
             revision: 1,
             context_override: Some(ContextLimitOverride {
-                total_input_tokens: Some(4096),
-                state_and_longest_question_tokens: Some(2048),
+                total_input_tokens: Some(8192),
+                state_and_longest_question_tokens: Some(6144),
                 runtime_context_tokens: Some(8192),
             }),
         };
         let capabilities = connection.capabilities().unwrap();
-        assert_eq!(capabilities.total_input_tokens.value, Some(4096));
+        assert_eq!(capabilities.total_input_tokens.value, Some(8192));
         assert_eq!(
             capabilities.total_input_tokens.source,
             CapabilitySource::Manual
         );
         assert_eq!(
             capabilities.state_and_longest_question_tokens.value,
-            Some(2048)
+            Some(6144)
         );
         assert_eq!(capabilities.runtime_context_tokens.value, Some(8192));
 

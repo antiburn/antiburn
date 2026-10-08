@@ -31,7 +31,7 @@ it("keeps the selected detail and expanded groups mounted during background read
   const row = await screen.findByRole("button", { name: /Unused MCP servers/ })
   fireEvent.click(row)
   const passed = screen.getByRole("button", { name: "Passed checks 1" })
-  fireEvent.click(passed)
+  expect(passed).toHaveAttribute("aria-expanded", "true")
   await waitFor(() =>
     expect(session.getSnapshot().targets.unusedMcpServers?.loading).toBe(false),
   )

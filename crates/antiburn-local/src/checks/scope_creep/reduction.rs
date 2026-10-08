@@ -90,6 +90,18 @@ pub(super) fn reduce(
             .limitations
             .push("descriptor_enumeration_incomplete".into());
     }
+    if plan
+        .coverage
+        .limitations
+        .iter()
+        .any(|limit| limit == "descriptor_storage_budget_reached")
+    {
+        canonical.coverage.processing_limit_reached = true;
+        canonical
+            .coverage
+            .limitations
+            .push("descriptor_storage_budget_reached".into());
+    }
     if plan.prepared != canonical.prepared
         || plan.work_items != canonical.work_items
         || plan.shared_context != canonical.shared_context

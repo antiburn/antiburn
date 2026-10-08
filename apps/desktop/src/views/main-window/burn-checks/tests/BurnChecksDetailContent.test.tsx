@@ -466,7 +466,6 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
       "Could not load the saved excerpts.",
     )
     fireEvent.click(screen.getByRole("button", { name: "Retry" }))
-    fireEvent.click(screen.getByRole("button", { name: "Passed checks 1" }))
     fireEvent.click(screen.getByRole("button", { name: /Unused skills, Passed/ }))
     await act(async () =>
       resolveLate({

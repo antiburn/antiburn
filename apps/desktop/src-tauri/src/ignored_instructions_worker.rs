@@ -413,19 +413,19 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     }
     let mut discovery_cache = InstructionDiscoveryCache::default();
     let stored_before_queue = store.burn_check_assessment(&candidate.session.key, CHECK_ID)?;
-    let existing_pairs = store.burn_check_sampled_pairs(&candidate.session.key, CHECK_ID)?;
+    let sampling_store = store.clone();
+    let sampling_key = candidate.session.key.clone();
+    let sampling_incarnation = candidate.incarnation;
+    let (last_round, existing_pairs) = tauri::async_runtime::spawn_blocking(move || {
+        sampling_store.instruction_sampled_pairs(&sampling_key, sampling_incarnation)
+    })
+    .await??;
     let origin = store.observe_burn_check_sample_origin(candidate, CHECK_ID)?;
-    let round = existing_pairs
-        .iter()
-        .map(|pair| pair.round)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(u32::from(stored_before_queue.as_ref().is_some_and(|old| {
-            old.status == "completed"
-                || parse_cursor(&old.progress_json).is_ok_and(|(cursor, _)| {
-                    cursor.source_fingerprint != candidate.source_fingerprint
-                })
-        })));
+    let round = sampling_round(
+        last_round,
+        stored_before_queue.as_ref(),
+        &candidate.source_fingerprint,
+    );
     let saved_position = stored_before_queue
         .as_ref()
         .and_then(|assessment| {
@@ -575,6 +575,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     } else {
         (cursor, compact_progress, selected_progress)
     };
+    cursor.round = cursor.round.max(round);
     cursor
         .source_fingerprint
         .clone_from(&candidate.source_fingerprint);
@@ -1103,7 +1104,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         &mut checkpoint_followups,
         Some(&selected_progress),
     )?;
-    store.save_burn_check_sampled_pairs(&input, &sampled_pairs)?;
+    store.save_instruction_sampled_pairs(&input, &sampled_pairs)?;
     ::tracing::debug!(
         event = "burn_check_assessment_state_sizes",
         result_bytes = serialized.len(),
@@ -1180,7 +1181,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         );
         let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
         wake(app);
-        store.save_burn_check_sampled_pairs(&input, &sampled_pairs)?;
+        store.save_instruction_sampled_pairs(&input, &sampled_pairs)?;
     }
     Ok(())
 }
@@ -1394,6 +1395,13 @@ fn sampled_pairs_for_page(
         .map(|comparison| {
             let dependency_digest =
                 comparison_dependency(plan, comparison, incarnation, capabilities)?;
+            let coordinate = ignored_instructions::SavedComparison::from(comparison)
+                .coordinate
+                .expect("comparison has source coordinates");
+            let dependency_digest = serde_json::to_string(&SavedComparisonDependency {
+                digest: dependency_digest,
+                coordinate,
+            })?;
             Ok(BurnCheckSampledPair {
                 comparison_id: comparison.id.clone(),
                 dependency_digest,
@@ -1407,6 +1415,20 @@ fn sampled_pairs_for_page(
             })
         })
         .collect()
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedComparisonDependency {
+    digest: String,
+    coordinate: ignored_instructions::ComparisonCoordinate,
+}
+
+struct SamplingDependencyLookup<'a> {
+    store: &'a Store,
+    input: &'a BurnCheckInput,
+    round: u32,
+    backlog: bool,
 }
 
 fn comparison_dependency(
@@ -1428,52 +1450,90 @@ fn comparison_dependency(
 }
 
 fn verify_sampling_ledger(
-    input: &ignored_instructions::AssessmentInput,
+    input: &mut ignored_instructions::PreparedAssessmentInput,
+    incarnation: u64,
     pairs: &[BurnCheckSampledPair],
     ledger: &mut ignored_instructions::SamplingLedger,
     capabilities: &antiburn_local::analysis::jev::capabilities::ModelCapabilities,
-) -> anyhow::Result<()> {
+    lookup: Option<SamplingDependencyLookup<'_>>,
+) -> anyhow::Result<Vec<BurnCheckSampledPair>> {
     if ledger.comparison_ids.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
-    let mut expected = BTreeMap::<&str, std::collections::BTreeSet<&str>>::new();
+    let mut saved = Vec::new();
     for pair in pairs
         .iter()
         .filter(|pair| ledger.comparison_ids.contains(&pair.comparison_id))
     {
-        expected
-            .entry(&pair.comparison_id)
-            .or_default()
-            .insert(&pair.dependency_digest);
+        let dependency =
+            serde_json::from_str::<SavedComparisonDependency>(&pair.dependency_digest).ok();
+        saved.push(ignored_instructions::SavedComparison {
+            id: pair.comparison_id.clone(),
+            action_id: pair.action_id.clone(),
+            instruction_digest: pair.instruction_digest.clone(),
+            coordinate: dependency.map(|dependency| dependency.coordinate),
+        });
     }
-    let mut verified = std::collections::BTreeSet::new();
-    let mut probe = input.clone();
-    probe.comparison_after = None;
-    loop {
-        let context = ignored_instructions::build_jev_context_with_capabilities(
-            &probe,
-            &ignored_instructions::SamplingLedger::default(),
-            capabilities,
-        )?;
-        let plan = ignored_instructions::IgnoredInstructionsCheck
-            .prepare_with_capabilities(&context, capabilities)?
-            .prepared;
-        for comparison in &plan.comparisons {
-            if let Some(digests) = expected.get(comparison.id.as_str()) {
-                let digest =
-                    comparison_dependency(&plan, comparison, input.incarnation, capabilities)?;
-                if digests.contains(digest.as_str()) {
-                    verified.insert(comparison.id.clone());
-                }
-            }
-        }
-        if verified.len() == ledger.comparison_ids.len() || plan.next_comparison_cursor.is_none() {
-            break;
-        }
-        probe.comparison_after = plan.next_comparison_cursor;
+    let plan = input.dependency_comparisons(&saved, capabilities);
+    let mut dependencies = Vec::with_capacity(plan.comparisons.len());
+    for comparison in &plan.comparisons {
+        let digest = comparison_dependency(&plan, comparison, incarnation, capabilities)?;
+        let coordinate = ignored_instructions::SavedComparison::from(comparison)
+            .coordinate
+            .expect("comparison has source coordinates");
+        let encoded = serde_json::to_string(&SavedComparisonDependency {
+            digest: digest.clone(),
+            coordinate,
+        })?;
+        dependencies.push((comparison.id.clone(), digest, encoded));
     }
+    let matched = if let Some(lookup) = lookup {
+        lookup
+            .store
+            .matching_instruction_sampled_pairs(
+                &lookup.input.key,
+                incarnation,
+                lookup.round,
+                lookup.backlog,
+                &dependencies,
+            )
+            .and_then(|matched| {
+                lookup.store.prune_verified_instruction_pairs(
+                    lookup.input,
+                    &matched,
+                    &dependencies,
+                )?;
+                Ok(matched)
+            })?
+    } else {
+        pairs
+            .iter()
+            .filter(|pair| {
+                dependencies.iter().any(|(id, digest, encoded)| {
+                    id == &pair.comparison_id
+                        && (&pair.dependency_digest == digest || &pair.dependency_digest == encoded)
+                })
+            })
+            .cloned()
+            .collect()
+    };
+    let verified = matched
+        .iter()
+        .map(|pair| pair.comparison_id.clone())
+        .collect();
     ledger.comparison_ids = verified;
-    Ok(())
+    ledger.comparisons = plan
+        .comparisons
+        .iter()
+        .filter(|comparison| ledger.comparison_ids.contains(&comparison.id))
+        .map(|comparison| {
+            (
+                comparison.id.clone(),
+                ignored_instructions::SavedComparison::from(comparison),
+            )
+        })
+        .collect();
+    Ok(matched)
 }
 
 fn sampling_ledger(
@@ -1505,18 +1565,35 @@ fn sampling_ledger(
     }) {
         if actions
             .get(pair.action_id.as_str())
-            .is_some_and(|digest| digest != &pair.action_digest)
+            .is_none_or(|digest| digest == &pair.action_digest)
         {
-            continue;
+            ledger.known_action_ids.insert(pair.action_id.clone());
         }
-        ledger.known_action_ids.insert(pair.action_id.clone());
         if instructions.contains(pair.instruction_digest.as_str())
-            && actions.get(pair.action_id.as_str()) == Some(&pair.action_digest)
+            && actions.contains_key(pair.action_id.as_str())
         {
             ledger.comparison_ids.insert(pair.comparison_id.clone());
         }
     }
     ledger
+}
+
+fn sampling_round(
+    last_round: u32,
+    stored: Option<&BurnCheckAssessment>,
+    source_fingerprint: &Option<String>,
+) -> u32 {
+    let cursor = stored.and_then(|assessment| {
+        parse_cursor(&assessment.progress_json)
+            .ok()
+            .map(|(cursor, _)| cursor)
+    });
+    let base = last_round.max(cursor.as_ref().map_or(0, |cursor| cursor.round));
+    let advance = stored.is_some_and(|assessment| assessment.status == "completed")
+        || cursor.as_ref().is_some_and(|cursor| {
+            cursor.source_fingerprint.as_ref() != source_fingerprint.as_ref()
+        });
+    base.saturating_add(u32::from(advance))
 }
 
 #[cfg(test)]
@@ -2094,6 +2171,12 @@ async fn prepare_selected_input_with_home(
     let blocking_capabilities = pass.capabilities.clone();
     let sampling_round = pass.round;
     let sampling_backlog = pass.backlog;
+    let blocking_store = store.clone();
+    let blocking_fence = crate::smart_check_inputs::cache::source_fence(
+        candidate,
+        CHECK_ID,
+        CHECK.evaluator_revision(),
+    );
     let context = tauri::async_runtime::spawn_blocking(move || {
         let mut ledger = sampling_ledger(
             &blocking_input.content,
@@ -2102,18 +2185,24 @@ async fn prepare_selected_input_with_home(
             blocking_input.incarnation,
             sampling_backlog,
         );
-        verify_sampling_ledger(
-            &blocking_input,
+        let incarnation = blocking_input.incarnation;
+        let mut prepared =
+            ignored_instructions::PreparedAssessmentInput::from_selected_input(blocking_input);
+        let matched_pairs = verify_sampling_ledger(
+            &mut prepared,
+            incarnation,
             &blocking_pairs,
             &mut ledger,
             &blocking_capabilities,
+            Some(SamplingDependencyLookup {
+                store: &blocking_store,
+                input: &blocking_fence,
+                round: sampling_round,
+                backlog: sampling_backlog,
+            }),
         )?;
-        let mut context = ignored_instructions::build_jev_context_with_capabilities(
-            &blocking_input,
-            &ledger,
-            &blocking_capabilities,
-        )?;
-        let reviewed = blocking_pairs
+        let mut context = prepared.build_context(&ledger, &blocking_capabilities)?;
+        let reviewed = matched_pairs
             .iter()
             .filter(|pair| pair.assessed && ledger.comparison_ids.contains(&pair.comparison_id))
             .map(|pair| pair.comparison_id.clone())
@@ -2368,7 +2457,7 @@ fn save_outcome(
     let event_started = Instant::now();
     if published {
         if !failed {
-            store.save_burn_check_sampled_pairs(input, sampled_pairs)?;
+            store.save_instruction_sampled_pairs(input, sampled_pairs)?;
         }
         ::tracing::debug!(
             event = "checks_report_changed_emitted",
@@ -3419,11 +3508,122 @@ mod settings_tests {
                 .comparison_ids
                 .is_empty()
         );
+        let input = ignored_instructions::AssessmentInput {
+            content: content.clone(),
+            prior_history_complete: true,
+            activity_after_ms: None,
+            boundary_positions: BTreeMap::new(),
+            source_generation: 1,
+            source_fingerprint: None,
+            incarnation: 1,
+            comparison_after: None,
+        };
+        let capabilities =
+            antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default();
+        let context = ignored_instructions::build_jev_context_with_capabilities(
+            &input,
+            &ignored_instructions::SamplingLedger::default(),
+            &capabilities,
+        )
+        .unwrap();
+        let plan = ignored_instructions::IgnoredInstructionsCheck
+            .prepare_with_capabilities(&context, &capabilities)
+            .unwrap()
+            .prepared;
+        let comparison = &plan.comparisons[0];
+        let saved = BurnCheckSampledPair {
+            comparison_id: comparison.id.clone(),
+            dependency_digest: comparison_dependency(&plan, comparison, 1, &capabilities).unwrap(),
+            ..pair.clone()
+        };
+        let mut prepared = ignored_instructions::PreparedAssessmentInput::new(&input);
+        for (incarnation, digest, should_reuse) in [
+            (1, saved.dependency_digest.clone(), true),
+            (2, saved.dependency_digest.clone(), false),
+            (1, "stale-dependency".to_owned(), false),
+        ] {
+            let saved = BurnCheckSampledPair {
+                dependency_digest: digest,
+                ..saved.clone()
+            };
+            let mut ledger = sampling_ledger(&content, std::slice::from_ref(&saved), 1, 1, false);
+            verify_sampling_ledger(
+                &mut prepared,
+                incarnation,
+                &[saved],
+                &mut ledger,
+                &capabilities,
+                None,
+            )
+            .unwrap();
+            assert_eq!(ledger.comparison_ids.contains(&comparison.id), should_reuse);
+        }
+        let (store, durable) = scheduling_fixture();
+        assert!(
+            store
+                .complete_burn_check_assessment(&durable, "{}", 1_001, IDLE_SECS)
+                .unwrap()
+        );
+        let stale_variant = BurnCheckSampledPair {
+            dependency_digest: "different-context".into(),
+            action_digest: "changed-action".into(),
+            round: 1,
+            ..saved.clone()
+        };
+        assert!(
+            store
+                .save_burn_check_sampled_pairs(&durable, &[saved.clone(), stale_variant.clone()])
+                .unwrap()
+        );
+        let mut compact_ledger =
+            sampling_ledger(&content, std::slice::from_ref(&stale_variant), 2, 1, false);
+        let matched = verify_sampling_ledger(
+            &mut prepared,
+            1,
+            &[stale_variant],
+            &mut compact_ledger,
+            &capabilities,
+            Some(SamplingDependencyLookup {
+                store: &store,
+                input: &durable,
+                round: 2,
+                backlog: false,
+            }),
+        )
+        .unwrap();
+        assert_eq!(matched, vec![saved]);
+        assert!(compact_ledger.comparison_ids.contains(&comparison.id));
+        assert!(compact_ledger.comparisons.contains_key(&comparison.id));
         content.actions[0].text = "changed".into();
         assert!(
             sampling_ledger(&content, &[pair], 1, 1, false)
                 .known_action_ids
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn sampling_round_does_not_move_back_after_variant_cleanup() {
+        let mut stored = BurnCheckAssessment {
+            key: crate::store::SessionKey::new("native", "claude-code", "sampling-round"),
+            check_id: CHECK_ID.into(),
+            input_revision: Some("revision".into()),
+            status: "failed".into(),
+            progress_json: serde_json::json!({"round": 9, "source_fingerprint": "source"})
+                .to_string(),
+            result_json: None,
+            result_revision: None,
+            request_count: 0,
+        };
+        let source = Some("source".to_owned());
+        assert_eq!(sampling_round(0, Some(&stored), &source), 9);
+        assert_eq!(sampling_round(12, Some(&stored), &source), 12);
+        stored.status = "completed".into();
+        assert_eq!(sampling_round(0, Some(&stored), &source), 10);
+        stored.status = "failed".into();
+        assert_eq!(
+            sampling_round(0, Some(&stored), &Some("changed".into())),
+            10
         );
     }
 

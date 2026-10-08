@@ -6,6 +6,7 @@ fn check_progress_serializes_optional_notices_and_unknown_total() {
         id: BurnCheckDetectorId::ScopeCreep,
         sampled: true,
         checking: Some(true),
+        checking_count: Some(2),
         partial_context: Some(true),
         review_coverage: Some(ChecksReviewCoveragePayload {
             reviewed: 5,
@@ -24,6 +25,7 @@ fn check_progress_serializes_optional_notices_and_unknown_total() {
     };
     let value = serde_json::to_value(&category).unwrap();
     assert_eq!(value["checking"], true);
+    assert_eq!(value["checkingCount"], 2);
     assert_eq!(value["partialContext"], true);
     assert_eq!(
         value["reviewCoverage"],

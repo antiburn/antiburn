@@ -1052,8 +1052,9 @@ export class PopoverSession {
     const hasLiveReading = liveDisplayableProviders(this.snapshot.liveUsage).some(
       (provider) => liveWindows(provider).length > 0,
     )
+    // A missing credential (Claude Desktop alone) is an empty state, not an error.
     const hasLiveError = liveUsageObservations(this.snapshot.liveUsage).some(
-      ({ state }) => state !== "fresh" && state !== "stale",
+      ({ state }) => state !== "fresh" && state !== "stale" && state !== "no_credentials",
     )
     const hasData = (this.snapshot.entries?.length ?? 0) > 0 || hasLocalUsage || hasLiveReading
     if (hasData) {

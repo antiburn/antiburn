@@ -184,6 +184,22 @@ Provider windows use bounded representative text ranges with partial flags,
 not complete large outputs. Review counts use completed target IDs. Smart checks
 have no Auto Fix, verification, or savings estimate.
 
+Over-exploring selects task context for each investigation instead of sending
+the full session scope. It retains the latest user task and recorded question
+or plan context through the investigation boundary. Assistant discussion is
+supporting work, not shared task authority. Work windows retain at most 16
+supporting events and 8 KiB of text, with exact target bindings and explicit
+partial flags. Sampled task or work text cannot establish Clean.
+
+Skill Opportunities uses the same task boundary for selected work. Both checks
+mark task context partial when the selection omits an earlier user task. A short
+approval such as "Yes, continue" cannot establish the antecedent task or proposal.
+Missing prior task evidence leaves the comparison unassessed and sends no request.
+Skill-use snapshots bind the same enrollment projection as the selected work;
+pre-enrollment uses remain context and do not enroll old work as a target. Settled
+comparisons leave both the work inventory and its shared context before the
+remaining plan runs; publication validation remains exact.
+
 Requested line units are characterized for exact Claude `Read`, Pi `read`, and
 OpenCode SQLite `read` calls under the schema and producer pins in
 [`session-coverage.md`](session-coverage.md#private-file-read-evidence). Other
@@ -240,7 +256,7 @@ a bounded contract. No row promises parity across all historical versions.
 
 | `SourceFormat`                 | Passive source format                                                     | Version statement                                                                                                                                                                                                                         | Current reader                        |
 | ------------------------------ | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| `ClaudeJsonl` | Claude Code session JSONL and child sidecars | Private producer; fixture-bounded core/sidecars and optional decoder pins. Smart retained roots/results use local CLI 2.1.278 accepted-log shape, including its informational prelude and explicit human markers; not SDK/GC or historical release support. See session coverage. | Dedicated |
+| `ClaudeJsonl` | Claude Code session JSONL and child sidecars, including Claude Desktop Cowork transcripts from nested `.claude/projects` roots | Private producer; fixture-bounded core/sidecars and optional decoder pins. Smart retained roots/results use local CLI 2.1.278 accepted-log shape, including its informational prelude and explicit human markers; not SDK/GC or historical release support. A synthetic fixture characterizes Cowork main JSONL observed with Claude Desktop 2.2553.1 (embedded Claude Code 2.1.275); this does not widen the pinned range. Cowork `audit*.jsonl` is excluded. See session coverage. | Dedicated |
 | `CodexRolloutJsonl` | Codex rollout JSONL with discovered children | Legacy recorder `e7637306bc9246a3e42e407cb94f96b7ed345e3e`; smart retained roots/completed items use 0.160.1 at `d27764b82f7118f674371e6d6e76271d9d606edb`. Qualified environment context is single-local and non-authorizing. No historical release range. | Dedicated |
 | `OpenCodeJsonl`                | OpenCode legacy exported session data                                     | Accepted export wrappers and native message/part shapes; pinned research below                                                                                                                                                            | Dedicated                             |
 | `OpenCodeSqliteV2` | OpenCode SQLite `session`, `message`, `part` tables | Fixture-backed read-only snapshot with exact IDs; optional time/title/part-ID columns. Smart message/skill producer `772392050500e0ddcd2ad2193411a22a3824372f`; numbered Read renderer `652c090dc119b5f3dc1e5e0bf1c4b40d9721f0ef`. Not CoreV2 `session_message` or a historical release range. | Dedicated |
@@ -346,6 +362,15 @@ skill reference invalidates affected answers. Reaching the initial fraction
 does not turn incomplete, unsupported, uncertain, exhausted, or failed work into
 Clean. These scheduling rules do not expand source or remediation support in
 the matrices below. See [incremental review](smart-burn-checks.md#incremental-review-and-scheduling).
+
+Scope Creep stops new descriptor enumeration at 512 KiB of serialized descriptor
+data. Before dispatch, it also reserves space for a positive answer within the
+existing 2 MiB checkpoint and 1 MiB publication limits. A storage-limited
+inventory has typed partial coverage and an unknown total. It cannot produce
+Clean or resume identical omitted work automatically. Accepted findings remain
+available. A source or dependency change can start a new bounded inventory.
+Exact Ignored Instructions work or active configuration changes invalidate Scope
+Creep scheduling, including completed assessments with no runnable targets.
 
 ## Ignored Instructions Evidence
 

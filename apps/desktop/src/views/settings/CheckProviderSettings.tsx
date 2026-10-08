@@ -5,6 +5,7 @@ import { PushButton } from "../../components/ui/PushButton"
 import { SectionGroup } from "../../components/ui/SectionGroup"
 import {
   SMART_CHECK_PROVIDERS,
+  contextLimitError,
   type CapabilitySource,
   type Connection,
   type ModelCapabilities,
@@ -103,16 +104,12 @@ export function CheckProviderSettings({
       },
     })
   }
-  const manualInvalid =
-    connection?.contextOverride &&
-    Object.values(connection.contextOverride).some(
-      (value) => value !== null && (!Number.isInteger(value) || value < 1 || value > 65536),
-    )
+  const limitError = connection ? contextLimitError(connection) : null
   const requiredMissing =
     !connection ||
     !connection.model.trim() ||
     (connection.endpoint.kind !== "provider_default" && !connection.endpoint.value.trim())
-  const disabled = state.busy || Boolean(manualInvalid) || requiredMissing
+  const disabled = state.busy || Boolean(limitError) || requiredMissing
   const needsCredential =
     (provider === "jev" || provider === "cloudflare") &&
     !credential.trim() &&
@@ -305,7 +302,10 @@ export function CheckProviderSettings({
               Save and use connection
             </PushButton>
             {savedConnection && state.saved?.activeId !== state.selectedId && (
-              <PushButton disabled={state.busy} onClick={() => void session.run("switch")}>
+              <PushButton
+                disabled={state.busy || Boolean(contextLimitError(savedConnection))}
+                onClick={() => void session.run("switch")}
+              >
                 Use saved connection
               </PushButton>
             )}
@@ -318,6 +318,15 @@ export function CheckProviderSettings({
           <p className="mt-2 type-footnote text-label-secondary">
             Tests use synthetic input. Provider charges may apply.
           </p>
+          {limitError && (
+            <p
+              role="alert"
+              id="provider-context-error"
+              className="mt-2 type-footnote text-system-red-text"
+            >
+              {limitError}
+            </p>
+          )}
           {current?.tested && (
             <p role="status" className="mt-2 type-footnote text-system-green">
               Connection test passed.
@@ -352,7 +361,9 @@ export function CheckProviderSettings({
             <p className="mt-2 type-footnote text-label-secondary">
               {provider === "jev"
                 ? "Jev uses documented model limits. Manual overrides are not available."
-                : "Leave manual limits empty to use discovered values or documented defaults. Manual values can lower known bounds or supply missing token limits."}
+                : provider === "custom"
+                  ? "Enter manual total input tokens or loaded context tokens. Each supplied limit must exceed the 4,096-token rendering reserve. State plus longest question alone does not bound total input."
+                  : "Leave manual limits empty to use discovered values or documented defaults. Manual values can lower known bounds or supply missing token limits."}
             </p>
             <PushButton
               className="mt-2"
@@ -377,6 +388,8 @@ export function CheckProviderSettings({
                     {label}
                     <input
                       aria-label={label}
+                      aria-invalid={Boolean(limitError)}
+                      aria-describedby={limitError ? "provider-context-error" : undefined}
                       type="number"
                       min={1}
                       max={65536}
@@ -388,11 +401,6 @@ export function CheckProviderSettings({
                     />
                   </label>
                 ))}
-                {manualInvalid && (
-                  <p role="alert" className="type-footnote text-system-red-text">
-                    Use whole token limits from 1 to 65,536, or leave them empty.
-                  </p>
-                )}
               </div>
             )}
             {current?.capabilities && <CapabilityDetails capabilities={current.capabilities} />}

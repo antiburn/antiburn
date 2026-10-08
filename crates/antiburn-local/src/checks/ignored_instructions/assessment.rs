@@ -904,6 +904,7 @@ pub(super) mod tests {
         for pass in 0..3 {
             source.comparison_after = None;
             let mut pass_count = 0;
+            let mut pass_comparisons = BTreeMap::new();
             loop {
                 let plan = super::super::planning::build_assessment_plan_with_sampling(
                     source.clone(),
@@ -914,6 +915,10 @@ pub(super) mod tests {
                 for comparison in &plan.comparisons {
                     assert!(seen.insert(comparison.id.clone()));
                     pass_count += 1;
+                    pass_comparisons.insert(
+                        comparison.id.clone(),
+                        super::super::planning::SavedComparison::from(comparison),
+                    );
                 }
                 source.comparison_after = plan.next_comparison_cursor;
                 if source.comparison_after.is_none() {
@@ -922,6 +927,7 @@ pub(super) mod tests {
             }
             assert_eq!(pass_count, if pass < 2 { 1024 } else { 352 });
             ledger.comparison_ids = seen.clone();
+            ledger.comparisons.extend(pass_comparisons);
         }
         let empty = super::super::planning::build_assessment_plan_with_sampling(source, &ledger);
         assert!(empty.comparisons.is_empty());
@@ -956,6 +962,16 @@ pub(super) mod tests {
                 .actions
                 .iter()
                 .map(|action| action.reference.id.clone())
+                .collect(),
+            comparisons: first
+                .comparisons
+                .iter()
+                .map(|comparison| {
+                    (
+                        comparison.id.clone(),
+                        super::super::planning::SavedComparison::from(comparison),
+                    )
+                })
                 .collect(),
         };
         source.content.actions.push(event(

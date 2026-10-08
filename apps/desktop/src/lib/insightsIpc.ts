@@ -36,6 +36,8 @@ export interface ChecksCategoryPayload {
   sampled?: boolean
   /** True only while this category has queued or running work. */
   checking?: boolean
+  /** Sessions with queued, running, or resumable continuation work. */
+  checkingCount?: number
   /** True when the assessment uses incomplete context. */
   partialContext?: boolean
   reviewCoverage?: {

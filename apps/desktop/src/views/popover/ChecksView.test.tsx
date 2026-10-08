@@ -401,8 +401,7 @@ describe("Checks", () => {
         presentation={{
           ...presentation,
           failures: [],
-          wins: [],
-          checking: [
+          wins: [
             category("scopeCreep", {
               clean: 0,
               estimatedTokenBurnBasisPoints: null,

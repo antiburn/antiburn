@@ -1,4 +1,5 @@
 use super::*;
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -13,6 +14,39 @@ use antiburn_local::analysis::{
 };
 use antiburn_local::checks::over_exploring::Reason;
 use serde_json::json;
+
+#[test]
+fn continuation_reuses_prepared_input_before_loading_source() {
+    let (store, candidate) = fixture(None, "user");
+    let capabilities = ModelCapabilities::jev_default();
+    let input = load_input(&store, &candidate, &capabilities).unwrap();
+    let loads = crate::smart_check_inputs::INPUT_LOAD_COUNT.get();
+    for _ in 0..10 {
+        let continuation = load_input(&store, &candidate, &capabilities).unwrap();
+        assert!(Arc::ptr_eq(&input, &continuation));
+    }
+    assert_eq!(crate::smart_check_inputs::INPUT_LOAD_COUNT.get(), loads);
+    let mut changed = capabilities.clone();
+    changed.model.push_str("-changed");
+    let replacement = load_input(&store, &candidate, &changed).unwrap();
+    assert!(!Arc::ptr_eq(&input, &replacement));
+    assert_eq!(crate::smart_check_inputs::INPUT_LOAD_COUNT.get(), loads + 1);
+    store
+        .lock()
+        .execute(
+            "UPDATE session SET cwd = '/synthetic/changed-workspace'",
+            [],
+        )
+        .unwrap();
+    assert!(load_input(&store, &candidate, &capabilities).is_err());
+    assert_eq!(crate::smart_check_inputs::INPUT_LOAD_COUNT.get(), loads + 1);
+    store
+        .lock()
+        .execute("UPDATE session_evidence SET status = 'pending'", [])
+        .unwrap();
+    assert!(load_input(&store, &candidate, &capabilities).is_err());
+    assert_eq!(crate::smart_check_inputs::INPUT_LOAD_COUNT.get(), loads + 1);
+}
 
 #[test]
 fn native_reads_reach_preparation_history_and_source_bound_publication() {
@@ -637,7 +671,7 @@ fn production_loader_binds_all_reasons_to_observed_reads_and_full_task() {
     assert_eq!(
         CHECK.evaluator_revision(),
         format!(
-            "over-exploring-adapter-v5:{}:{}:{}:{}",
+            "over-exploring-adapter-v6:{}:{}:{}:{}",
             revisions.projection, revisions.chunking, revisions.questions, revisions.reducer
         )
     );
@@ -792,7 +826,8 @@ fn accepted_128_path_inventory_queues_all_257_targets() {
 #[test]
 fn inventory_overflow_preserves_a_positive_and_publishes_an_explicit_gap() {
     let (store, candidate) = fixture(None, "user");
-    let mut input = load_input(&store, &candidate, &ModelCapabilities::jev_default()).unwrap();
+    let input = load_input(&store, &candidate, &ModelCapabilities::jev_default()).unwrap();
+    let mut input = input.as_ref().clone();
     let mut descriptor = input.plan.prepared.candidates[0].clone();
     while input.plan.prepared.candidates.len() <= MAX_SAMPLING_CANDIDATES {
         let index = input.plan.prepared.candidates.len().to_le_bytes();
@@ -1114,8 +1149,8 @@ fn request_only_positive_survives_partial_history_and_missing_extent() {
             read.result = None;
         }
     }
-    input.context = over_exploring::build_jev_context(&projected).unwrap();
-    input.plan = OverExploringCheck.prepare(&input.context).unwrap();
+    Arc::make_mut(&mut input).context = over_exploring::build_jev_context(&projected).unwrap();
+    Arc::make_mut(&mut input).plan = OverExploringCheck.prepare(&input.context).unwrap();
     let result = reduced(&input, Reason::UnrelatedFiles);
     assert!(!result.findings.is_empty());
     let publication = publication(&input, result);

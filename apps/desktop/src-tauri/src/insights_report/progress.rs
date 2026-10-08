@@ -2,72 +2,81 @@ use super::*;
 use crate::dto::ChecksReviewCoveragePayload;
 use crate::jev::worker::JevCheckDescriptor;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CheckReportProgress {
     pub checking: bool,
+    pub checking_count: u64,
     pub partial_context: bool,
     pub coverage: Option<ChecksReviewCoveragePayload>,
 }
 
-pub(crate) fn check_report_progress(
-    data_dir: &Path,
-    request: &ReportRequest,
-    check_id: &str,
-) -> Result<CheckReportProgress> {
-    let home = antiburn_local::paths::home_dir();
-    check_report_progress_with_home(data_dir, request, check_id, home.as_deref())
+struct JoinedReviewCounts {
+    eligible: Option<usize>,
+    reviewed: usize,
+    runnable: usize,
 }
 
-fn check_report_progress_with_home(
+#[cfg(test)]
+fn all_check_report_progress_with_home(
     data_dir: &Path,
     request: &ReportRequest,
-    check_id: &str,
     home: Option<&Path>,
-) -> Result<CheckReportProgress> {
-    let evaluator_revision = match check_id {
-        "scope_creep" => crate::scope_creep_worker::CHECK.evaluator_revision(),
-        "over_exploring" => crate::over_exploring_worker::CHECK.evaluator_revision(),
-        "skill_opportunities" => crate::skill_opportunities_worker::CHECK.evaluator_revision(),
-        "ignored_instructions" => {
-            antiburn_local::analysis::ignored_instructions::evaluator_revision()
-        }
-        _ => anyhow::bail!("unknown persisted check: {check_id}"),
-    };
+) -> Result<BTreeMap<String, CheckReportProgress>> {
     let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
+    let transaction = connection.unchecked_transaction()?;
+    check_report_progress_in(&transaction, request, home)
+}
+
+pub(super) fn check_report_progress_in(
+    connection: &rusqlite::Connection,
+    request: &ReportRequest,
+    home: Option<&Path>,
+) -> Result<BTreeMap<String, CheckReportProgress>> {
     let current_evidence = crate::store::revision_sql::current_evidence("e", "s");
     let sql = format!(
-        "SELECT a.status, a.last_error_category, a.input_revision, a.result_revision,
+        "WITH checks(check_id, evaluator_revision) AS (VALUES
+            ('ignored_instructions', :instructions_revision),
+            ('scope_creep', :scope_revision),
+            ('over_exploring', :exploring_revision),
+            ('skill_opportunities', :skills_revision))
+         SELECT a.status, a.last_error_category, a.input_revision, a.result_revision,
                 a.result_json, c.coverage_json,
-                EXISTS (SELECT 1 FROM turn t LEFT JOIN turn_content p ON p.turn_rowid = t.rowid
+                 CASE WHEN checks.check_id != 'ignored_instructions' THEN EXISTS (SELECT 1 FROM turn t LEFT JOIN turn_content p ON p.turn_rowid = t.rowid
                   WHERE t.environment_key = s.environment_key AND t.agent = s.agent
                     AND t.session_id = s.session_id AND t.claim_fence = e.published_fence
                     AND t.scope = 'main' AND (t.is_compaction_boundary != 0
                       OR (p.kind != 'thinking' AND p.truncated != 0)
-                      OR (t.role = 'user' AND p.turn_rowid IS NULL))),
-                (SELECT COUNT(*) FROM turn t WHERE t.environment_key = s.environment_key
+                       OR (t.role = 'user' AND p.turn_rowid IS NULL))) ELSE 0 END,
+                 CASE WHEN checks.check_id != 'ignored_instructions' THEN (SELECT COUNT(*) FROM turn t WHERE t.environment_key = s.environment_key
                   AND t.agent = s.agent AND t.session_id = s.session_id
-                  AND t.claim_fence = e.published_fence AND t.scope = 'main'),
-                (SELECT role FROM turn t WHERE t.environment_key = s.environment_key
+                   AND t.claim_fence = e.published_fence AND t.scope = 'main') ELSE 0 END,
+                 CASE WHEN checks.check_id != 'ignored_instructions' THEN (SELECT role FROM turn t WHERE t.environment_key = s.environment_key
                   AND t.agent = s.agent AND t.session_id = s.session_id
                   AND t.claim_fence = e.published_fence AND t.scope = 'main'
-                   ORDER BY turn_index LIMIT 1),
+                    ORDER BY turn_index LIMIT 1) END,
                   s.agent, s.cwd, e.evidence_json, s.session_id,
                   e.status = 'ready' AND e.processed_fingerprint IS s.source_fingerprint
                     AND {current_evidence},
-                  CASE WHEN :check_id = 'ignored_instructions' AND json_valid(a.progress_json)
+                   CASE WHEN checks.check_id = 'ignored_instructions' AND json_valid(a.progress_json)
                     THEN json_object('input_revision', json_extract(a.progress_json, '$.progress.input_revision'),
                       'version', json_extract(a.progress_json, '$.progress.version'),
-                      'answers', json_extract(a.progress_json, '$.progress.answers')) END
-          FROM session s
+                       'answers', json_extract(a.progress_json, '$.progress.answers')) END,
+                   checks.check_id,
+                   a.input_revision IS NOT NULL AND a.scheduling_revision = a.input_revision
+                     AND a.status IN ('queued', 'running', 'completed', 'failed'),
+                   a.eligible_targets, a.reviewed_targets, a.runnable_targets
+           FROM session s CROSS JOIN checks
          LEFT JOIN session_evidence e ON e.environment_key = s.environment_key AND e.agent = s.agent
            AND e.session_id = s.session_id
          LEFT JOIN session_coverage c ON c.environment_key = s.environment_key AND c.agent = s.agent
             AND c.session_id = s.session_id AND c.claim_fence = e.published_fence
           LEFT JOIN burn_check_assessment a ON a.environment_key = s.environment_key AND a.agent = s.agent
-            AND a.session_id = s.session_id AND a.check_id = :check_id
+             AND a.session_id = s.session_id AND a.check_id = checks.check_id
             AND a.incarnation = s.incarnation AND a.source_generation = s.source_generation
             AND a.source_fingerprint IS s.source_fingerprint AND a.published_fence = e.published_fence
-            AND a.evaluator_revision = :evaluator_revision
+             AND a.evaluator_revision = checks.evaluator_revision
           WHERE s.environment_key = :environment_key
            AND COALESCE(s.updated_at_epoch, s.started_at_epoch) >= :window_start
             AND COALESCE(s.updated_at_epoch, s.started_at_epoch) < :window_end"
@@ -75,27 +84,39 @@ fn check_report_progress_with_home(
     let mut statement = connection.prepare(&sql)?;
     let mut rows = statement.query(named_params![
         ":environment_key": request.environment_key,
-        ":check_id": check_id,
         ":window_start": request.window.start_epoch,
         ":window_end": request.window.end_epoch,
-        ":evaluator_revision": evaluator_revision,
+        ":instructions_revision": antiburn_local::analysis::ignored_instructions::evaluator_revision(),
+        ":scope_revision": crate::scope_creep_worker::CHECK.evaluator_revision(),
+        ":exploring_revision": crate::over_exploring_worker::CHECK.evaluator_revision(),
+        ":skills_revision": crate::skill_opportunities_worker::CHECK.evaluator_revision(),
         ":parser_revision": PARSER_REVISION,
         ":analyzer_revision": ANALYZER_REVISION,
         ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
     ])?;
-    let mut progress = CheckReportProgress {
-        checking: false,
-        partial_context: false,
-        coverage: None,
-    };
-    let mut missing_denominator = false;
+    let mut progress_by_check = BTreeMap::new();
+    let mut missing_denominators = BTreeSet::new();
+    let mut inventory_revisions = BTreeMap::new();
     while let Some(row) = rows.next()? {
+        let check_id: String = row.get(15)?;
+        let check_id = check_id.as_str();
+        let progress =
+            progress_by_check
+                .entry(check_id.to_owned())
+                .or_insert(CheckReportProgress {
+                    checking: false,
+                    checking_count: 0,
+                    partial_context: false,
+                    coverage: None,
+                });
         let agent: String = row.get(9)?;
         let current: Option<bool> = row.get(13)?;
         if current != Some(true) {
-            missing_denominator |=
-                matches!(agent.as_str(), "claude-code" | "codex" | "opencode" | "pi")
-                    && (check_id == "ignored_instructions" || request.environment_key == "native");
+            let missing = matches!(agent.as_str(), "claude-code" | "codex" | "opencode" | "pi")
+                && (check_id == "ignored_instructions" || request.environment_key == "native");
+            if missing {
+                missing_denominators.insert(check_id.to_owned());
+            }
             continue;
         }
         let cwd: Option<String> = row.get(10)?;
@@ -120,7 +141,13 @@ fn check_report_progress_with_home(
         }
         let status: Option<String> = row.get(0)?;
         let error: Option<String> = row.get(1)?;
-        progress.checking |= matches!(status.as_deref(), Some("queued" | "running"));
+        let checking = matches!(status.as_deref(), Some("queued" | "running"))
+            || (status.as_deref() == Some("failed")
+                && matches!(error.as_deref(), Some("sampling_incomplete" | "continuing"))
+                && row.get::<_, Option<bool>>(16)? == Some(true)
+                && row.get::<_, usize>(19)? > 0);
+        progress.checking |= checking;
+        progress.checking_count += u64::from(checking);
         let source_coverage: Option<String> = row.get(5)?;
         let retained_loss: bool = row.get(6)?;
         let retained_records: u64 = row.get(7)?;
@@ -159,14 +186,19 @@ fn check_report_progress_with_home(
                         let saved: serde_json::Value = serde_json::from_str(json).ok()?;
                         let saved_revision = saved.get("inventory_revision")?.as_str()?;
                         published_coverage(check_id, input, json, Some(saved_revision))?;
-                        home.and_then(|home| {
-                            skill_opportunities::current_skill_snapshot(
-                                &agent,
-                                cwd.map(PathBuf::from),
-                                home,
-                            )
-                        })
-                        .map(|snapshot| snapshot.revision())
+                        inventory_revisions
+                            .entry((agent.clone(), cwd.clone()))
+                            .or_insert_with(|| {
+                                home.and_then(|home| {
+                                    skill_opportunities::current_skill_snapshot(
+                                        &agent,
+                                        cwd.clone().map(PathBuf::from),
+                                        home,
+                                    )
+                                })
+                                .map(|snapshot| snapshot.revision())
+                            })
+                            .clone()
                     } else {
                         None
                     };
@@ -178,16 +210,21 @@ fn check_report_progress_with_home(
         if let Some((_, partial)) = &publication {
             progress.partial_context |= partial;
         }
-        let counts = crate::store::Store::current_burn_check_review_counts(
-            &connection,
-            &crate::store::SessionKey {
-                environment_key: request.environment_key.clone(),
-                agent,
-                session_id,
-            },
-            check_id,
-            &evaluator_revision,
-        )?;
+        let counts = if row.get::<_, Option<bool>>(16)? == Some(true) {
+            let counts = JoinedReviewCounts {
+                eligible: row.get(17)?,
+                reviewed: row.get(18)?,
+                runnable: row.get(19)?,
+            };
+            if counts.eligible.is_some_and(|total| {
+                counts.reviewed > total || counts.runnable > total.saturating_sub(counts.reviewed)
+            }) {
+                anyhow::bail!("Burn Check scheduling counts are invalid");
+            }
+            Some(counts)
+        } else {
+            None
+        };
         let mut coverage = match counts {
             Some(counts) => {
                 let outcomes = publication
@@ -210,14 +247,13 @@ fn check_report_progress_with_home(
                     } else {
                         outcomes.and_then(|coverage| coverage.pending_completion)
                     },
-                    continuing: matches!(status.as_deref(), Some("queued" | "running"))
-                        && counts.runnable > 0,
+                    continuing: checking && counts.runnable > 0,
                 }
             }
             None => match publication {
                 Some((coverage, _)) => coverage.into(),
                 None => {
-                    missing_denominator = true;
+                    missing_denominators.insert(check_id.to_owned());
                     continue;
                 }
             },
@@ -258,11 +294,35 @@ fn check_report_progress_with_home(
             progress.coverage = Some(coverage);
         }
     }
-    if missing_denominator && let Some(coverage) = &mut progress.coverage {
-        coverage.total = None;
-        coverage.pending = None;
+    for check_id in missing_denominators {
+        if let Some(coverage) = progress_by_check
+            .get_mut(&check_id)
+            .and_then(|progress| progress.coverage.as_mut())
+        {
+            coverage.total = None;
+            coverage.pending = None;
+        }
     }
-    Ok(progress)
+    Ok(progress_by_check)
+}
+
+#[cfg(test)]
+fn check_report_progress_with_home(
+    data_dir: &Path,
+    request: &ReportRequest,
+    check_id: &str,
+    home: Option<&Path>,
+) -> Result<CheckReportProgress> {
+    Ok(
+        all_check_report_progress_with_home(data_dir, request, home)?
+            .remove(check_id)
+            .unwrap_or(CheckReportProgress {
+                checking: false,
+                checking_count: 0,
+                partial_context: false,
+                coverage: None,
+            }),
+    )
 }
 
 #[derive(Deserialize)]
@@ -578,6 +638,116 @@ mod tests {
     use antiburn_local::analysis::jev::{JevCheck, capabilities::ModelCapabilities};
     use antiburn_local::checks::over_exploring::OverExploringCheck;
 
+    fn check_report_progress(
+        data_dir: &Path,
+        request: &ReportRequest,
+        check_id: &str,
+    ) -> Result<CheckReportProgress> {
+        let home = antiburn_local::paths::home_dir();
+        check_report_progress_with_home(data_dir, request, check_id, home.as_deref())
+    }
+
+    #[test]
+    fn report_and_all_check_progress_keep_the_snapshot_during_publication() {
+        use crate::over_exploring_worker::tests::reduced;
+        use antiburn_local::checks::over_exploring::Reason;
+
+        let directory = tempfile::tempdir().unwrap();
+        let (store, candidate) = fixture(Some(directory.path()), "user");
+        let input = prepare(
+            &candidate,
+            store
+                .load_smart_check_inputs(
+                    &candidate.session.key,
+                    candidate.published_fence,
+                    candidate.source_generation,
+                    DetectorInput::OverExploring,
+                )
+                .unwrap(),
+            &ModelCapabilities::jev_default(),
+        )
+        .unwrap();
+        let json = serde_json::to_string(&publication(
+            &input,
+            reduced(&input, Reason::UnrelatedFiles),
+        ))
+        .unwrap();
+        for check in crate::jev::worker::registered_checks() {
+            store
+                .set_check_enabled(DetectorId::from_key(check.id()).unwrap(), true)
+                .unwrap();
+            store
+                .capture_burn_check_boundaries(&[check.id()], 0)
+                .unwrap();
+            let mut durable = input.durable.clone();
+            durable.check_id = check.id().into();
+            durable.evaluator_revision = check.evaluator_revision();
+            assert!(
+                store
+                    .queue_burn_check_assessment(&durable, 1000, 180)
+                    .unwrap()
+            );
+            assert!(
+                store
+                    .save_burn_check_scheduling(&durable, Some(4), 0, 4)
+                    .unwrap()
+            );
+        }
+        let request = ReportRequest {
+            environment_key: "native".into(),
+            window: ReportWindow {
+                start_epoch: 0,
+                end_epoch: i64::MAX,
+            },
+            computed_at_epoch: 1001,
+        };
+        let snapshot = crate::insights_report::reduce_with_state_on_snapshot(
+            directory.path(),
+            request.clone(),
+            &mut || {
+                assert!(
+                    store
+                        .claim_burn_check_assessment(&input.durable, 1000, 300, 180)
+                        .unwrap()
+                );
+                assert!(
+                    store
+                        .complete_burn_check_assessment(&input.durable, &json, 1001, 180)
+                        .unwrap()
+                );
+                store.lock().execute(
+                    "UPDATE burn_check_assessment SET status = 'completed', reviewed_targets = 2,
+                     runnable_targets = 0",
+                    [],
+                ).unwrap();
+            },
+            &AtomicBool::new(false),
+            &mut || {},
+            None,
+        )
+        .unwrap();
+        assert_eq!(snapshot.check_progress.len(), 4);
+        for progress in snapshot.check_progress.values() {
+            assert_eq!(progress.checking_count, 1);
+            let coverage = progress.coverage.as_ref().unwrap();
+            assert_eq!(coverage.reviewed, 0);
+            assert_eq!(coverage.total, Some(4));
+            assert!(coverage.continuing);
+        }
+        let current = reduce_report_blocking(directory.path(), request).unwrap();
+        for progress in current.check_progress.values() {
+            assert_eq!(progress.checking_count, 0);
+            let coverage = progress.coverage.as_ref().unwrap();
+            assert_eq!(coverage.reviewed, 2);
+            assert!(!coverage.continuing);
+        }
+        let finding_sessions = |report: &ReducedReport| {
+            report.report.detectors[DetectorId::OverExploring.index()].finding
+        };
+        assert_eq!(finding_sessions(&snapshot), 0);
+        assert_eq!(finding_sessions(&current), 1);
+    }
+
     #[test]
     fn current_scheduling_counts_keep_known_targets_separate_from_partial_context() {
         for check_id in [
@@ -705,6 +875,129 @@ mod tests {
         );
         assert_eq!(ignored_instruction_outcomes(&saved, "input", 2), None);
         assert_eq!(ignored_instruction_outcomes(&saved, "old", 1), None);
+    }
+
+    #[test]
+    fn snapshot_counts_sessions_for_all_checks_and_excludes_blocked_continuations() {
+        use crate::scope_creep_worker::tests::native_sources;
+
+        let directory = tempfile::tempdir().unwrap();
+        let (store, first) = fixture(Some(directory.path()), "user");
+        store
+            .set_check_enabled(DetectorId::ScopeCreep, true)
+            .unwrap();
+        store
+            .capture_burn_check_boundaries(&["scope_creep"], 0)
+            .unwrap();
+        let (agent, session, format, records) = native_sources::read_sources().remove(0);
+        let second =
+            native_sources::publish(&store, &agent, &session, format, &records, directory.path());
+        let checks = [
+            (
+                "ignored_instructions",
+                antiburn_local::analysis::ignored_instructions::evaluator_revision(),
+            ),
+            (
+                "scope_creep",
+                crate::scope_creep_worker::CHECK.evaluator_revision(),
+            ),
+            (
+                "over_exploring",
+                crate::over_exploring_worker::CHECK.evaluator_revision(),
+            ),
+            (
+                "skill_opportunities",
+                crate::skill_opportunities_worker::CHECK.evaluator_revision(),
+            ),
+        ];
+        for (check_id, _) in &checks {
+            store
+                .set_check_enabled(DetectorId::from_key(check_id).unwrap(), true)
+                .unwrap();
+            store.capture_burn_check_boundaries(&[check_id], 0).unwrap();
+        }
+        for candidate in [first, second] {
+            let input = prepare(
+                &candidate,
+                store
+                    .load_smart_check_inputs(
+                        &candidate.session.key,
+                        candidate.published_fence,
+                        candidate.source_generation,
+                        DetectorInput::OverExploring,
+                    )
+                    .unwrap(),
+                &ModelCapabilities::jev_default(),
+            )
+            .unwrap();
+            for (check_id, evaluator_revision) in &checks {
+                let mut durable = input.durable.clone();
+                durable.check_id = (*check_id).into();
+                durable.evaluator_revision = evaluator_revision.clone();
+                assert!(
+                    store
+                        .queue_burn_check_assessment(&durable, 1000, 180)
+                        .unwrap()
+                );
+                assert!(
+                    store
+                        .save_burn_check_scheduling(&durable, Some(4), 1, 3)
+                        .unwrap()
+                );
+            }
+        }
+        let request = ReportRequest {
+            environment_key: "native".into(),
+            window: ReportWindow {
+                start_epoch: 0,
+                end_epoch: i64::MAX,
+            },
+            computed_at_epoch: 1001,
+        };
+        let read =
+            || all_check_report_progress_with_home(directory.path(), &request, None).unwrap();
+        for (status, error, runnable, expected) in [
+            ("queued", None, 3, 2),
+            ("running", None, 3, 2),
+            ("failed", Some("continuing"), 3, 2),
+            ("failed", Some("sampling_incomplete"), 3, 2),
+            ("failed", Some("continuing"), 0, 0),
+            ("failed", Some("provider_unavailable"), 3, 0),
+            ("failed", Some("delivery_unknown"), 3, 0),
+            ("completed", None, 3, 0),
+        ] {
+            store
+                .lock()
+                .execute(
+                    "UPDATE burn_check_assessment SET status = ?1, last_error_category = ?2,
+                 runnable_targets = ?3, result_revision = NULL",
+                    params![status, error, runnable],
+                )
+                .unwrap();
+            let snapshot = read();
+            assert_eq!(snapshot.len(), 4);
+            for (check_id, _) in &checks {
+                let progress = &snapshot[*check_id];
+                assert_eq!(
+                    progress.checking_count, expected,
+                    "{check_id}: {status} {error:?}"
+                );
+                assert_eq!(progress.checking, expected > 0);
+                let coverage = progress.coverage.as_ref().unwrap();
+                assert_eq!(coverage.reviewed, 2);
+                assert_eq!(coverage.total, Some(8));
+                assert_eq!(coverage.continuing, expected > 0);
+            }
+        }
+        store.lock().execute(
+            "UPDATE burn_check_assessment SET status = 'failed', last_error_category = 'continuing',
+             runnable_targets = 3, scheduling_revision = 'old'", [],
+        ).unwrap();
+        assert!(
+            read()
+                .values()
+                .all(|progress| progress.checking_count == 0 && progress.coverage.is_none())
+        );
     }
 
     #[test]
@@ -1220,8 +1513,19 @@ mod tests {
         assert_eq!(coverage.pending, Some(5));
         assert_eq!(coverage.uncertain, Some(0));
         store.lock().execute("UPDATE burn_check_assessment SET status = 'failed', last_error_category = 'continuing'", []).unwrap();
-        assert!(!read().checking);
-        assert!(!read().coverage.unwrap().continuing);
+        store
+            .save_burn_check_scheduling(&input.durable, Some(5), 0, 5)
+            .unwrap();
+        assert!(read().checking);
+        assert_eq!(read().checking_count, 1);
+        assert!(read().coverage.unwrap().continuing);
+        store
+            .lock()
+            .execute(
+                "UPDATE burn_check_assessment SET scheduling_revision = NULL",
+                [],
+            )
+            .unwrap();
         for mutation in [
             "evaluator_revision = 'old'",
             "source_generation = 999",

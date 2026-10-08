@@ -5,21 +5,22 @@ use crate::analysis::jev::text_ranges::text_ranges;
 use crate::analysis::jev::{
     JevAnswer, JevCheck, JevCheckPlan, JevCheckRevisions, JevCoverage, JevError,
     JevEvidenceReference, JevEvidenceRole, JevInputField, JevInputSelection, JevInputWindow,
-    JevRequest, JevResponse, JevSessionContext, JevWorkItem, JevWorkItemResult,
-    pack_work_items_with_shared_context, validate_jev_response,
+    JevRequest, JevResponse, JevSessionContext, JevSharedRequestContext, JevWorkItem,
+    JevWorkItemResult, pack_work_items_with_shared_context, validate_jev_response,
 };
 use crate::analysis::jev_evidence::{ContentAction, JevReadResultKind, JevReadStatus, JevReadUnit};
 use crate::checks::sampling::{Candidate, SamplingError, SamplingJob, SamplingProgress, StableId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 pub const SEMANTIC_PROBABILITY_THRESHOLD: f64 = 0.75;
 pub const MAX_TARGETS_PER_TURN: usize = 3;
-pub const EVENT_RANGE_BYTES: usize = 4096;
+pub const EVENT_RANGE_BYTES: usize = 2048;
 pub const MAX_EVENT_RANGES: usize = 3;
-pub const MAX_WINDOW_TEXT_BYTES: usize = 24 * 1024;
-pub const MAX_SUPPORTING_EVENTS: usize = 64;
+pub const MAX_WINDOW_TEXT_BYTES: usize = 8192;
+pub const MAX_SUPPORTING_EVENTS: usize = 16;
 pub const MAX_SAMPLING_CANDIDATES: usize = 2 * MAX_EVENTS + MAX_EPISODES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -104,14 +105,37 @@ pub struct Target {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PreparedAssessment {
     pub epoch: StableId,
-    pub targets: BTreeMap<String, Target>,
+    #[serde(with = "shared_inventory")]
+    pub targets: Arc<BTreeMap<String, Target>>,
     pub candidates: Vec<SamplingCandidate>,
     pub unassessed: Vec<Unassessed>,
     /// Keep source records once. Materialize only selected target windows.
-    pub episodes: Vec<InvestigationEpisode>,
-    pub events: Vec<ContentAction>,
+    #[serde(with = "shared_inventory")]
+    pub episodes: Arc<Vec<InvestigationEpisode>>,
+    #[serde(with = "shared_inventory")]
+    pub events: Arc<Vec<ContentAction>>,
     pub history_complete: bool,
     pub limitations: Vec<String>,
+    #[serde(with = "shared_inventory")]
+    pub task_contexts: Arc<BTreeMap<StableId, JevSharedRequestContext>>,
+}
+
+mod shared_inventory {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::sync::Arc;
+
+    pub fn serialize<T: Serialize, S: Serializer>(
+        value: &Arc<T>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.as_ref().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Arc<T>, D::Error> {
+        T::deserialize(deserializer).map(Arc::new)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,7 +157,7 @@ impl JevCheck for OverExploringCheck {
     fn revisions(&self) -> JevCheckRevisions {
         JevCheckRevisions {
             projection: 5,
-            chunking: 4,
+            chunking: 6,
             questions: 11,
             reducer: 7,
         }
@@ -195,16 +219,17 @@ impl JevCheck for OverExploringCheck {
         );
         let mut prepared = PreparedAssessment {
             epoch,
-            targets: BTreeMap::new(),
+            targets: Arc::new(BTreeMap::new()),
             candidates: Vec::new(),
             unassessed: Vec::new(),
-            episodes: input.episodes,
-            events: input.events,
+            episodes: Arc::new(input.episodes),
+            events: Arc::new(input.events),
             history_complete: input.complete,
             limitations: input.limitations,
+            task_contexts: Arc::new(input.task_contexts),
         };
         let source_bytes = serde_json::to_vec(&(
-            &prepared.events,
+            prepared.events.as_ref(),
             prepared.history_complete,
             &prepared.limitations,
         ))
@@ -212,7 +237,7 @@ impl JevCheck for OverExploringCheck {
         let source_revision = StableId::new("over-exploring-source-v2", &[&source_bytes]);
         let mut seen = BTreeSet::new();
         let mut covered = BTreeSet::new();
-        for episode in &prepared.episodes {
+        for episode in prepared.episodes.iter() {
             validate_episode(episode, &prepared.events)?;
             if !seen.insert(episode.id) {
                 return Err(JevError::InvalidCheckContext);
@@ -227,7 +252,14 @@ impl JevCheck for OverExploringCheck {
                     Abstention::DeferredEpisode,
                 ),
                 (
-                    !prepared.limitations.is_empty() || task_limited,
+                    !prepared.limitations.is_empty()
+                        || task_limited
+                        || prepared
+                            .task_contexts
+                            .get(&episode.id)
+                            .is_none_or(|context| {
+                                context.evidence.is_empty() || context.fields["partial"] == true
+                            }),
                     Abstention::SourceLimited,
                 ),
                 (
@@ -270,7 +302,7 @@ impl JevCheck for OverExploringCheck {
                     work_item_ids: vec![id.clone()],
                     required_answers: vec![answer_id(&id)],
                 });
-                prepared.targets.insert(id, target);
+                Arc::make_mut(&mut prepared.targets).insert(id, target);
             }
         }
         let selected = prepared
@@ -374,7 +406,7 @@ impl JevCheck for OverExploringCheck {
                 });
             }
         }
-        for episode in &plan.prepared.episodes {
+        for episode in plan.prepared.episodes.iter() {
             let ids: Vec<_> = plan
                 .prepared
                 .targets
@@ -544,14 +576,16 @@ fn selected_events(
         .collect::<BTreeSet<_>>();
     let first = *targets.first().ok_or(JevError::InvalidCheckContext)?;
     let mut supporting = BTreeSet::new();
-    // Keep recent context at both boundaries, including the later outcome.
-    for events in [&episode.before, &episode.subsequent] {
+    let (task_start, task_end) = task_bounds(source, first);
+    for events in [&episode.before, &episode.events, &episode.subsequent] {
         supporting.extend(
             events
                 .iter()
                 .rev()
-                .filter(|index| !targets.contains(index))
-                .take(8)
+                .filter(|index| {
+                    **index >= task_start && **index < task_end && !targets.contains(index)
+                })
+                .take(2)
                 .copied(),
         );
     }
@@ -561,7 +595,7 @@ fn selected_events(
         .chain(&episode.events)
         .chain(&episode.subsequent)
         .copied()
-        .filter(|index| !targets.contains(index))
+        .filter(|index| *index >= task_start && *index < task_end && !targets.contains(index))
         .collect::<Vec<_>>();
     ranked.sort_by_key(|index| {
         let event = &source[*index];
@@ -591,6 +625,16 @@ fn selected_events(
     Ok(supporting)
 }
 
+fn task_bounds(source: &[ContentAction], first: usize) -> (usize, usize) {
+    let is_task =
+        |index: &usize| source[*index].kind == "user" && source[*index].authority == "user";
+    let start = (0..=first).rev().find(is_task).unwrap_or(0);
+    let end = (first + 1..source.len())
+        .find(is_task)
+        .unwrap_or(source.len());
+    (start, end)
+}
+
 fn window(
     episode: &InvestigationEpisode,
     source: &[ContentAction],
@@ -600,13 +644,25 @@ fn window(
     let mut evidence = Vec::new();
     let mut budget = MAX_WINDOW_TEXT_BYTES;
     let selected_sources = selected_events(episode, source, target)?;
+    let first = selected_sources
+        .iter()
+        .copied()
+        .find(|index| {
+            target
+                .bindings
+                .iter()
+                .any(|binding| binding.request_id == source[*index].reference.id)
+        })
+        .ok_or(JevError::InvalidCheckContext)?;
+    let (task_start, task_end) = task_bounds(source, first);
     let mut fields = json!({"reason": target.reason, "target_read_indexes": target.read_indexes,
         "history_complete": history_complete, "episode_state": episode.state,
         "limits": {"event_range_bytes": EVENT_RANGE_BYTES, "max_event_ranges": MAX_EVENT_RANGES,
             "window_text_bytes": MAX_WINDOW_TEXT_BYTES, "max_supporting_events": MAX_SUPPORTING_EVENTS,
             "range_unit": "utf8_bytes", "end_exclusive": true},
         "event_selection": {"source_events": source.len(), "selected_events": selected_sources.len(),
-            "partial": selected_sources.len() < source.len()}});
+            "task_events": task_end - task_start,
+            "partial": (task_start..task_end).any(|index| !selected_sources.contains(&index))}});
     let is_target = |event: &ContentAction| {
         target.bindings.iter().any(|binding| {
             binding.request_id == event.reference.id
@@ -791,10 +847,40 @@ fn materialize(
     plan: &mut JevCheckPlan<PreparedAssessment>,
     selected: &BTreeSet<StableId>,
 ) -> Result<(), JevError> {
+    let mut contexts = BTreeMap::new();
+    let mut evidence = Vec::new();
+    for candidate in plan
+        .prepared
+        .candidates
+        .iter()
+        .filter(|candidate| selected.contains(&candidate.candidate_id))
+    {
+        let context = plan
+            .prepared
+            .task_contexts
+            .get(&candidate.episode_id)
+            .ok_or(JevError::InvalidCheckPlan)?;
+        if contexts
+            .insert(candidate.episode_id, context.fields.clone())
+            .is_none()
+        {
+            evidence.extend(context.evidence.clone());
+        }
+    }
+    evidence.sort_by(|left, right| left.source_id.cmp(&right.source_id));
+    evidence.dedup_by(|left, right| left.source_id == right.source_id);
+    plan.shared_context = Some(JevSharedRequestContext {
+        fields: if contexts.len() == 1 {
+            contexts.into_values().next().expect("one task")
+        } else {
+            json!({"tasks": contexts})
+        },
+        evidence,
+    });
     let shared = plan
         .shared_context
         .as_ref()
-        .ok_or(JevError::InvalidCheckPlan)?;
+        .expect("selected task contexts");
     plan.work_items.clear();
     plan.skipped_item_ids.clear();
     plan.prepared.unassessed.retain(|item| {
@@ -839,7 +925,10 @@ fn materialize(
                 &plan.capabilities,
                 shared,
             );
-            if packed.skipped_item_ids.is_empty() {
+            let task_available = !plan.prepared.task_contexts[&target.episode_id]
+                .evidence
+                .is_empty();
+            if packed.skipped_item_ids.is_empty() && task_available {
                 if sampled {
                     plan.prepared.unassessed.push(Unassessed {
                         episode_id: target.episode_id,
@@ -855,7 +944,11 @@ fn materialize(
                     episode_id: target.episode_id,
                     work_item_id: Some(id.clone()),
                     reason: Some(target.reason),
-                    limitation: Abstention::ContextTooLarge,
+                    limitation: if task_available {
+                        Abstention::ContextTooLarge
+                    } else {
+                        Abstention::SourceLimited
+                    },
                 });
             }
         }

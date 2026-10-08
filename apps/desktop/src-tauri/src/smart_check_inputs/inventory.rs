@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::agent_config::{ConfigContext, skill_opportunity_snapshot};
 use crate::store::{SessionKey, Store};
@@ -14,7 +15,7 @@ use super::{
 
 #[derive(Debug, Clone)]
 pub struct SkillInputs {
-    inventory: SkillOpportunitySnapshot,
+    inventory: Arc<SkillOpportunitySnapshot>,
     usage: SkillUseSnapshot,
     input: SmartCheckInputSnapshot,
     revision: String,
@@ -26,9 +27,22 @@ impl SkillInputs {
         candidate: &crate::store::BurnCheckCandidate,
     ) -> Result<Self, InputLoadError> {
         self.input = self.input.for_candidate(candidate)?;
+        let content = antiburn_local::analysis::jev_evidence::select_session_content(
+            self.input.content(),
+            SKILL_USE_SELECTION,
+        );
+        let boundary = SkillUseBoundary {
+            session_identity: content.session_identity_digest.clone(),
+            native_session_id: self.input.key.session_id.clone(),
+            publication_fence: self.input.scope.publication_fence(),
+            scope: self.inventory.scope().clone(),
+        };
+        self.usage = SkillUseSnapshot::from_published_content(&content, &boundary)
+            .map_err(InputLoadError::SkillUse)?;
         self.revision = digest(&serde_json::json!((
             &self.revision,
-            self.input.input_revision()
+            self.input.input_revision(),
+            self.usage.revision()
         )))?;
         Ok(self)
     }
@@ -62,6 +76,24 @@ impl Store {
         &self,
         input: SmartCheckInputSnapshot,
         context: &ConfigContext,
+    ) -> Result<SkillInputs, InputLoadError> {
+        self.assemble_smart_check_skill_inputs(input, context, None)
+    }
+
+    pub(crate) fn load_smart_check_skill_inputs_with_inventory(
+        &self,
+        input: SmartCheckInputSnapshot,
+        context: &ConfigContext,
+        inventory: Arc<SkillOpportunitySnapshot>,
+    ) -> Result<SkillInputs, InputLoadError> {
+        self.assemble_smart_check_skill_inputs(input, context, Some(inventory))
+    }
+
+    fn assemble_smart_check_skill_inputs(
+        &self,
+        input: SmartCheckInputSnapshot,
+        context: &ConfigContext,
+        inventory: Option<Arc<SkillOpportunitySnapshot>>,
     ) -> Result<SkillInputs, InputLoadError> {
         input.require_detector(DetectorInput::SkillOpportunities)?;
         validate_environment(&input.key.environment_key, context)?;
@@ -112,7 +144,27 @@ impl Store {
         if cwd != context_cwd {
             return Err(unavailable(InputUnavailable::InventoryContextMismatch));
         }
-        let inventory = current_inventory(&input.key.environment_key, context)?;
+        let inventory = match inventory {
+            Some(inventory) => inventory,
+            None => Arc::new(current_inventory(&input.key.environment_key, context)?),
+        };
+        let path_identity = |path: &Path| {
+            antiburn_local::checks::ignored_instructions::sha256_hex(
+                path.as_os_str().as_encoded_bytes(),
+            )
+        };
+        let home = context
+            .home_root
+            .canonicalize()
+            .map_err(|_| unavailable(InputUnavailable::InventoryContextMismatch))?;
+        let expected_scope = antiburn_local::checks::skill_opportunities::SkillScope {
+            agent: context.agent,
+            project_identity: context_cwd.as_deref().map(path_identity),
+            environment_identity: path_identity(&home),
+        };
+        if inventory.scope() != &expected_scope {
+            return Err(unavailable(InputUnavailable::InventoryContextMismatch));
+        }
         let content = antiburn_local::analysis::jev_evidence::select_session_content(
             input.content(),
             SKILL_USE_SELECTION,

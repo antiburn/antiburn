@@ -13,6 +13,641 @@ use serde_json::json;
 
 pub(crate) mod native_sources;
 
+#[test]
+fn ignored_work_change_reopens_zero_runnable_completed_and_running_scope() {
+    for status in ["completed", "running", "superseded"] {
+        let fixture = NativeFixture::new(1);
+        let candidate = fixture.publish();
+        let capabilities = ModelCapabilities::jev_default();
+        let input = load_input(&fixture.store, &candidate, &capabilities).unwrap();
+        let result = input
+            .check
+            .reduce(&input.plan, &results(&input, true), true)
+            .unwrap();
+        persist(&fixture.store, &input, result);
+        fixture
+            .store
+            .save_burn_check_scheduling(&input.durable, Some(1), 1, 0)
+            .unwrap();
+        assert!(
+            current_publication(&fixture.store.lock(), &SourceFence::from(&candidate))
+                .unwrap()
+                .is_some()
+        );
+        if status == "running" {
+            fixture.store.lock().execute("UPDATE burn_check_assessment SET status = 'running', lease_expires_at_epoch = ?1 WHERE check_id = ?2", params![unix_now() + 300, CHECK_ID]).unwrap();
+        }
+        if status == "superseded" {
+            fixture.store.lock().execute("UPDATE burn_check_assessment SET status = 'superseded', last_error_category = 'cancelled' WHERE check_id = ?1", [CHECK_ID]).unwrap();
+        }
+        let work = &input.plan.prepared.groups[0].work[0];
+        publish_ignored_work(&fixture.store, &input.durable, work);
+        assert!(
+            current_publication(&fixture.store.lock(), &SourceFence::from(&candidate))
+                .unwrap()
+                .is_none()
+        );
+        if status == "running" {
+            assert!(!input_is_current(&fixture.store, &capabilities, &input).unwrap());
+        } else {
+            assert!(reconcile_scope_dependencies(&fixture.store, &candidate).unwrap());
+        }
+        assert!(!reconcile_scope_dependencies(&fixture.store, &candidate).unwrap());
+        assert_eq!(
+            fixture
+                .store
+                .burn_check_candidates_for_revision(
+                    CHECK_ID,
+                    &CHECK.evaluator_revision(),
+                    unix_now(),
+                    POLICY.idle_secs,
+                    1
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+        let mut next = load_descriptor_input(&fixture.store, &candidate, &capabilities).unwrap();
+        assert_eq!(
+            next.ignored_work,
+            BTreeSet::from([work.reference.id.clone()])
+        );
+        assert_ne!(next.durable.input_revision, input.durable.input_revision);
+        let saved = fixture
+            .store
+            .burn_check_assessment(&candidate.session.key, CHECK_ID)
+            .unwrap()
+            .unwrap();
+        let mut cursor = restore_cursor(Some(&saved), &next.durable, 1);
+        cursor.sampling = Some(new_sampling().unwrap());
+        enumerate_scope_turn(&mut next, &mut cursor).unwrap();
+        assert!(next.plan.prepared.groups.is_empty());
+        assert!(valid_publication(&publication(
+            &next,
+            cursor.result.unwrap()
+        )));
+    }
+}
+
+fn publish_ignored_work(
+    store: &Store,
+    scope: &BurnCheckInput,
+    work: &antiburn_local::checks::scope_creep::WorkBinding,
+) {
+    use antiburn_local::analysis::ignored_instructions::{AssessmentResult, evaluator_revision};
+    let reference = json!({"instruction_id":"instruction", "instruction_digest":"rule-digest", "rule_id":"rule",
+        "rule_heading":"Scope", "start_line":1, "end_line":1, "source":"synthetic.md",
+        "provenance":"recorded_injection", "scope":"project", "action_id":work.reference.id,
+        "action_digest":work.digest, "action_timestamp_ms":null, "action_stable":true});
+    let decision = json!({"schema_revision":1, "source_generation":scope.source_generation,
+        "source_fingerprint":scope.source_fingerprint, "publication_fence":scope.published_fence,
+        "rule_action":reference, "rule_start_byte":0, "rule_end_byte":1,
+        "action_anchor":{"source":work.reference, "content_digest":work.digest, "start_byte":0, "end_byte":1},
+        "action_authority":"assistant", "action_is_request":false, "prerequisite":"not_required",
+        "selected_evidence":[], "coverage":{"source_complete":true,"selected_history_complete":true,
+            "read_request_inventory_complete":true,"results_excluded":true,"user_authority_excluded":true,"limitations":[]},
+        "citations":[{"claim":"rule_requirement","source_ids":["instruction:rule"]},
+            {"claim":"anchored_action","source_ids":[work.reference.id]}],
+        "context_revision":"context", "evaluator_revision":evaluator_revision(), "model":"synthetic-model"});
+    let result: AssessmentResult = serde_json::from_value(json!({"input_revision":"ignored-v1", "model_version":"synthetic-model",
+        "findings":[{"id":"ignored-finding", "reference":reference, "decision":decision,
+            "nearby_context_ids":[], "counterevidence_ids":[], "certainty":"likely", "composite_probability":1.0, "limitations":[]}],
+        "pending_rules":[], "unassessed_comparisons":[], "coverage":{"eligible_rules":1,"candidate_pairs":1,
+            "selected_comparisons":1,"unselected_pairs":0,"skipped_rules":[],"skipped_actions":[],
+            "processing_limit_reached":false,"limitations":[]}, "request_count":1,"input_tokens":1,"output_tokens":1})).unwrap();
+    assert!(result.findings[0].decision_record().is_some());
+    let input = BurnCheckInput {
+        check_id: "ignored_instructions".into(),
+        input_revision: "ignored-v1".into(),
+        evaluator_revision: evaluator_revision(),
+        ..scope.clone()
+    };
+    store
+        .set_check_enabled(
+            antiburn_local::checks::DetectorId::IgnoredInstructions,
+            true,
+        )
+        .unwrap();
+    assert!(
+        store
+            .queue_burn_check_assessment(&input, unix_now(), POLICY.idle_secs)
+            .unwrap()
+    );
+    assert!(
+        store
+            .claim_burn_check_assessment(&input, unix_now(), 300, POLICY.idle_secs)
+            .unwrap()
+    );
+    assert!(
+        store
+            .complete_burn_check_assessment(
+                &input,
+                &serde_json::to_string(&result).unwrap(),
+                unix_now(),
+                POLICY.idle_secs
+            )
+            .unwrap()
+    );
+}
+
+#[test]
+fn publication_budget_stops_before_dispatch_and_keeps_accepted_findings() {
+    let fixture = NativeFixture::paged();
+    let candidate = fixture.publish();
+    let capabilities = ModelCapabilities::jev_default();
+    let mut input = load_descriptor_input(&fixture.store, &candidate, &capabilities).unwrap();
+    let mut cursor = restore_cursor(None, &input.durable, 1);
+    cursor.sampling = Some(new_sampling().unwrap());
+    enumerate_scope_turn(&mut input, &mut cursor).unwrap();
+    cursor.sampling.as_mut().unwrap().begin_run();
+    let first = cursor.sampling.as_mut().unwrap().choose_job().unwrap();
+    let (mut input, mut cursor, first_plan, fits) =
+        prepare_scope_target(input, cursor, first.candidate).unwrap();
+    assert!(fits);
+    let answers: Vec<_> = first_plan
+        .work_items
+        .iter()
+        .map(|item| JevWorkItemResult {
+            request_id: "accepted".into(),
+            work_item_id: item.id.clone(),
+            model: capabilities.model.clone(),
+            answers: BTreeMap::from([(
+                "scope_decision".into(),
+                answer(ScopeQuestion::Decision, "likely_scope_expansion"),
+            )]),
+            evidence: item.window.evidence.clone(),
+            usage: JevUsage {
+                input_tokens: 1,
+                output_tokens: 1,
+            },
+        })
+        .collect();
+    let accepted = input.check.reduce(&first_plan, &answers, true).unwrap();
+    record_completion(
+        cursor.sampling.as_mut().unwrap(),
+        &first,
+        &accepted,
+        &first_plan,
+    )
+    .unwrap();
+    merge_result(cursor.result.as_mut().unwrap(), accepted, &first_plan);
+    let next = cursor.sampling.as_mut().unwrap().choose_job().unwrap();
+    let group = cursor
+        .inventory
+        .groups
+        .iter()
+        .find(|group| StableId::new("scope_work", &[group.id.as_bytes()]) == next.candidate)
+        .unwrap();
+    input
+        .citations
+        .insert(group.work[0].reference.id.clone(), "x".repeat(1024 * 1024));
+    let (mut input, cursor, _, fits) = prepare_scope_target(input, cursor, next.candidate).unwrap();
+    assert!(!fits);
+    let result = cursor.result.as_ref().unwrap();
+    assert_eq!(result.findings.len(), 1);
+    assert!(
+        result
+            .coverage
+            .limitations
+            .contains(&"descriptor_storage_budget_reached".into())
+    );
+    assert!(!publication_has_clean_coverage(result));
+    assert!(valid_publication(&publication(&input, result.clone())));
+    assert_eq!(scope_scheduling_counts(&input, &cursor).2, 0);
+    assert!(
+        fixture
+            .store
+            .queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)
+            .unwrap()
+    );
+    assert!(
+        fixture
+            .store
+            .claim_burn_check_assessment(&input.durable, unix_now(), 300, POLICY.idle_secs)
+            .unwrap()
+    );
+    save_scheduling(&fixture.store, &input, &cursor).unwrap();
+    assert!(save_failure(&fixture.store, &input, &cursor, "sampling_incomplete", None).unwrap());
+    assert_eq!(
+        current_publication(&fixture.store.lock(), &SourceFence::from(&candidate))
+            .unwrap()
+            .unwrap()
+            .assessment
+            .findings
+            .len(),
+        1
+    );
+    let saved = fixture
+        .store
+        .burn_check_assessment(&candidate.session.key, CHECK_ID)
+        .unwrap()
+        .unwrap();
+    let mut restored = restore_cursor(Some(&saved), &input.durable, 99);
+    enumerate_scope_turn(&mut input, &mut restored).unwrap();
+    assert_eq!(restored.result.unwrap().findings.len(), 1);
+}
+
+#[test]
+fn no_issue_with_incomplete_work_has_valid_uncertain_publication() {
+    let fixture = NativeFixture::new(0);
+    fixture.append(
+        2,
+        "assistant",
+        json!({"type":"tool","tool":"bash","callID":"pending",
+        "state":{"status":"running","input":{"command":"touch /synthetic/billing.rs"}}}),
+    );
+    let candidate = fixture.publish();
+    let input = load_input(
+        &fixture.store,
+        &candidate,
+        &ModelCapabilities::jev_default(),
+    )
+    .unwrap();
+    assert!(
+        input
+            .plan
+            .prepared
+            .groups
+            .iter()
+            .any(|group| group.limitation.is_some())
+    );
+    let result = input
+        .check
+        .reduce(&input.plan, &results(&input, true), true)
+        .unwrap();
+    assert!(
+        result
+            .decisions
+            .iter()
+            .any(|decision| decision.outcome == Some(ScopeAnswer::NoIssue)
+                && decision.status == ScopeCreepStatus::Uncertain)
+    );
+    assert!(valid_publication(&publication(&input, result.clone())));
+    assert!(!publication_has_clean_coverage(&result));
+    let mut forged = publication(&input, result);
+    for decision in &mut forged.assessment.decisions {
+        if decision.status == ScopeCreepStatus::Uncertain {
+            decision.status = ScopeCreepStatus::Clean;
+        }
+    }
+    assert!(!valid_publication(&forged));
+}
+
+#[test]
+fn descriptor_storage_budget_preserves_accepted_answers_and_partial_publication() {
+    let fixture = NativeFixture::paged_groups(1000);
+    let candidate = fixture.publish();
+    let capabilities = ModelCapabilities::jev_default();
+    let mut input = load_descriptor_input(&fixture.store, &candidate, &capabilities).unwrap();
+    let mut cursor = restore_cursor(None, &input.durable, 7);
+    cursor.sampling = Some(new_sampling().unwrap());
+    while scope_enumeration_pending(&cursor) {
+        enumerate_scope_turn(&mut input, &mut cursor).unwrap();
+    }
+    assert!(cursor.inventory.limitation.is_some());
+    assert!(cursor.inventory.groups.len() < 1000);
+    assert!(!cursor.inventory.complete);
+    cursor.sampling.as_mut().unwrap().begin_run();
+    let job = cursor.sampling.as_mut().unwrap().choose_job().unwrap();
+    let selected = input
+        .check
+        .prepare_descriptors(
+            &cursor.inventory,
+            &capabilities,
+            &BTreeSet::from([job.candidate]),
+        )
+        .unwrap();
+    let accepted: Vec<_> = selected
+        .work_items
+        .iter()
+        .map(|item| JevWorkItemResult {
+            request_id: "accepted-before-restart".into(),
+            work_item_id: item.id.clone(),
+            answers: BTreeMap::from([(
+                "scope_decision".into(),
+                answer(ScopeQuestion::Decision, "no_issue"),
+            )]),
+            evidence: item.window.evidence.clone(),
+            model: capabilities.model.clone(),
+            usage: JevUsage {
+                input_tokens: 10,
+                output_tokens: 2,
+            },
+        })
+        .collect();
+    let result = input.check.reduce(&selected, &accepted, true).unwrap();
+    record_completion(cursor.sampling.as_mut().unwrap(), &job, &result, &selected).unwrap();
+    merge_result(cursor.result.as_mut().unwrap(), result, &selected);
+    for group in selected.prepared.groups {
+        let current = input
+            .plan
+            .prepared
+            .groups
+            .iter_mut()
+            .find(|current| current.id == group.id)
+            .unwrap();
+        *current = group;
+    }
+    cursor.prepared = Some(input.plan.prepared.clone());
+    cursor.active_job = Some(job);
+    cursor.run_progress.results = accepted
+        .into_iter()
+        .map(|result| (result.work_item_id.clone(), result))
+        .collect();
+    update_result_counts(&mut cursor, &input);
+    let mut legacy = serde_json::to_value(&cursor).unwrap();
+    legacy["inventory"] = serde_json::to_value(&cursor.inventory).unwrap();
+    let legacy = serde_json::to_string(&legacy).unwrap();
+    let compact = serialize_cursor(&cursor).unwrap();
+    assert!(
+        compact.len() < 2 * 1024 * 1024,
+        "compact bytes: {}",
+        compact.len()
+    );
+    assert!(compact.len() < legacy.len());
+    let now = unix_now();
+    assert!(
+        fixture
+            .store
+            .queue_burn_check_assessment(&input.durable, now, POLICY.idle_secs)
+            .unwrap()
+    );
+    assert!(
+        fixture
+            .store
+            .claim_burn_check_assessment(&input.durable, now, POLICY.lease_secs, POLICY.idle_secs)
+            .unwrap()
+    );
+    assert!(save_cursor(&fixture.store, &input.durable, &cursor).unwrap());
+    let published = serde_json::to_string(&publication(
+        &input,
+        cursor.result.as_ref().unwrap().clone(),
+    ))
+    .unwrap();
+    assert!(
+        published.len() < 1024 * 1024,
+        "publication bytes: {}",
+        published.len()
+    );
+    assert!(valid_publication(
+        &serde_json::from_str(&published).unwrap()
+    ));
+    let mut legacy_publication: serde_json::Value = serde_json::from_str(&published).unwrap();
+    legacy_publication["prepared"] = serde_json::to_value(&input.plan.prepared).unwrap();
+    assert!(valid_publication(
+        &serde_json::from_value(legacy_publication).unwrap()
+    ));
+    let mut invalid: serde_json::Value = serde_json::from_str(&compact).unwrap();
+    invalid["inventory"]["groups"][0][2] = json!([usize::MAX]);
+    assert!(serde_json::from_value::<AssessmentCursor>(invalid).is_err());
+    assert!(save_failure(&fixture.store, &input, &cursor, "continuing", Some(now + 1)).unwrap());
+    let mut saved = fixture
+        .store
+        .burn_check_assessment(&input.durable.key, CHECK_ID)
+        .unwrap()
+        .unwrap();
+    let mut restored = restore_cursor(Some(&saved), &input.durable, 99);
+    assert_eq!(restored.inventory, cursor.inventory);
+    assert_eq!(
+        serde_json::to_value(&restored.run_progress).unwrap(),
+        serde_json::to_value(&cursor.run_progress).unwrap()
+    );
+    enumerate_scope_turn(&mut input, &mut restored).unwrap();
+    assert_eq!(
+        restored.prepared.as_ref().unwrap().groups,
+        cursor.prepared.as_ref().unwrap().groups
+    );
+    assert_eq!(
+        restored.prepared.as_ref().unwrap().semantic_epoch,
+        cursor.prepared.as_ref().unwrap().semantic_epoch
+    );
+    assert_eq!(
+        serde_json::to_value(&restored.sampling).unwrap(),
+        serde_json::to_value(&cursor.sampling).unwrap()
+    );
+    assert!(valid_publication(&publication(
+        &input,
+        restored.result.unwrap()
+    )));
+    saved.progress_json = legacy;
+    assert_eq!(
+        restore_cursor(Some(&saved), &input.durable, 100).inventory,
+        cursor.inventory
+    );
+}
+
+#[test]
+fn expired_zero_runnable_lease_recovers_and_candidate_errors_settle_once() {
+    let fixture = NativeFixture::new(1);
+    let candidate = fixture.publish();
+    let input = load_input(
+        &fixture.store,
+        &candidate,
+        &ModelCapabilities::jev_default(),
+    )
+    .unwrap();
+    let now = unix_now();
+    fixture
+        .store
+        .queue_burn_check_assessment(&input.durable, now, POLICY.idle_secs)
+        .unwrap();
+    fixture
+        .store
+        .claim_burn_check_assessment(&input.durable, now, 1, POLICY.idle_secs)
+        .unwrap();
+    fixture
+        .store
+        .save_burn_check_scheduling(&input.durable, Some(1), 1, 0)
+        .unwrap();
+    let reopened = Store::open(fixture.directory.path()).unwrap();
+    assert_eq!(
+        reopened
+            .burn_check_candidates_for_revision(
+                CHECK_ID,
+                &CHECK.evaluator_revision(),
+                now + 2,
+                POLICY.idle_secs,
+                1
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        reopened
+            .queue_burn_check_assessment(&input.durable, now + 2, POLICY.idle_secs)
+            .unwrap()
+    );
+    assert!(
+        reopened
+            .claim_burn_check_assessment(&input.durable, now + 2, 300, POLICY.idle_secs)
+            .unwrap()
+    );
+    reopened
+        .lock()
+        .execute(
+            "UPDATE burn_check_assessment SET lease_expires_at_epoch = NULL WHERE check_id = ?1",
+            [CHECK_ID],
+        )
+        .unwrap();
+    assert_eq!(
+        reopened
+            .burn_check_candidates_for_revision(
+                CHECK_ID,
+                &CHECK.evaluator_revision(),
+                now + 2,
+                POLICY.idle_secs,
+                1
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        reopened
+            .claim_burn_check_assessment(&input.durable, now + 2, 300, POLICY.idle_secs)
+            .unwrap()
+    );
+    assert!(
+        !reopened
+            .settle_burn_check_candidate_error(
+                &candidate,
+                CHECK_ID,
+                "obsolete",
+                now + 3,
+                "candidate_error",
+                None
+            )
+            .unwrap()
+    );
+    assert!(
+        reopened
+            .settle_burn_check_candidate_error(
+                &candidate,
+                CHECK_ID,
+                &CHECK.evaluator_revision(),
+                now + 3,
+                "candidate_error",
+                None
+            )
+            .unwrap()
+    );
+    let saved = reopened
+        .burn_check_assessment(&input.durable.key, CHECK_ID)
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.status, "failed");
+    let lease: Option<i64> = reopened
+        .lock()
+        .query_row(
+            "SELECT lease_expires_at_epoch FROM burn_check_assessment WHERE check_id = ?1",
+            [CHECK_ID],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(lease, None);
+    assert!(
+        reopened
+            .burn_check_candidates_for_revision(
+                CHECK_ID,
+                &CHECK.evaluator_revision(),
+                now + 600,
+                POLICY.idle_secs,
+                1
+            )
+            .unwrap()
+            .is_empty()
+    );
+    fixture.append(
+        3,
+        "user",
+        json!({"type":"text","text":"Also check the parser tests."}),
+    );
+    let changed = fixture.publish();
+    assert_ne!(changed.source_generation, candidate.source_generation);
+    assert_eq!(
+        reopened
+            .burn_check_candidates_for_revision(
+                CHECK_ID,
+                &CHECK.evaluator_revision(),
+                now + 600,
+                POLICY.idle_secs,
+                1
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn freshness_uses_exact_metadata_and_configuration_without_reading_content() {
+    let fixture = NativeFixture::new(1);
+    let candidate = fixture.publish();
+    let capabilities = ModelCapabilities::jev_default();
+    let mut input = load_input(&fixture.store, &candidate, &capabilities).unwrap();
+    assert!(input_is_current(&fixture.store, &capabilities, &input).unwrap());
+    for changed in [
+        BurnCheckInput {
+            incarnation: input.durable.incarnation + 1,
+            ..input.durable.clone()
+        },
+        BurnCheckInput {
+            source_generation: input.durable.source_generation + 1,
+            ..input.durable.clone()
+        },
+        BurnCheckInput {
+            published_fence: input.durable.published_fence + 1,
+            ..input.durable.clone()
+        },
+        BurnCheckInput {
+            source_fingerprint: Some("changed".into()),
+            ..input.durable.clone()
+        },
+        BurnCheckInput {
+            activity_cursor: "changed".into(),
+            ..input.durable.clone()
+        },
+    ] {
+        assert!(!Store::burn_check_input_is_current(&fixture.store.lock(), &changed).unwrap());
+    }
+    fixture
+        .store
+        .lock()
+        .execute_batch("ALTER TABLE turn_content RENAME TO unavailable_content")
+        .unwrap();
+    assert!(input_is_current(&fixture.store, &capabilities, &input).unwrap());
+    fixture
+        .store
+        .lock()
+        .execute_batch("ALTER TABLE unavailable_content RENAME TO turn_content")
+        .unwrap();
+    input.ignored_work.insert("changed-ignored-work".into());
+    assert!(!input_is_current(&fixture.store, &capabilities, &input).unwrap());
+    input.ignored_work.clear();
+    for column in [
+        "parser_revision",
+        "analyzer_revision",
+        "evidence_schema_revision",
+        "analyzed_generation",
+    ] {
+        let connection = fixture.store.lock();
+        connection.execute_batch("SAVEPOINT stale_test").unwrap();
+        connection
+            .execute(&format!("UPDATE session_evidence SET {column} = NULL"), [])
+            .unwrap();
+        assert!(!Store::burn_check_input_is_current(&connection, &input.durable).unwrap());
+        connection
+            .execute_batch("ROLLBACK TO stale_test; RELEASE stale_test")
+            .unwrap();
+    }
+    fixture
+        .store
+        .set_internal_value_checked("internal:smartChecksConnectionChangePendingV1", "true")
+        .unwrap();
+    assert!(!input_is_current(&fixture.store, &capabilities, &input).unwrap());
+}
+
 fn complete_cursor(input: &PreparedInput, generation: u64) -> AssessmentCursor {
     let mut cursor = restore_cursor(None, &input.durable, generation);
     input

@@ -32,6 +32,8 @@ use crate::store::{
 
 pub(crate) const CHECK_ID: &str = "scope_creep";
 const CURSOR_REVISION: u32 = 4;
+const PROJECTED_CHECKPOINT_LIMIT: usize = 2 * 1024 * 1024 - 256 * 1024;
+const PROJECTED_PUBLICATION_LIMIT: usize = 1024 * 1024 - 64 * 1024;
 const POLICY: CheckPolicy = CheckPolicy {
     idle_secs: 180,
     lease_secs: 300,
@@ -66,7 +68,7 @@ impl JevCheckDescriptor for ScopeCreepDescriptor {
     }
 }
 
-#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 struct AssessmentCursor {
     revision: u32,
     input_revision: String,
@@ -79,10 +81,18 @@ struct AssessmentCursor {
     run_started: bool,
     blocked_fit_key: Option<String>,
     accepted_request_usage: BTreeMap<String, JevUsage>,
+    #[serde(with = "inventory_storage")]
     inventory: ScopeDescriptorInventory,
     prepared: Option<ScopeCreepPrepared>,
     context_epoch: Option<StableId>,
+    #[serde(default)]
+    ignored_work: Option<BTreeSet<String>>,
+    #[serde(default)]
+    configuration_fence: Option<String>,
 }
+
+#[path = "scope_creep_worker/inventory_storage.rs"]
+mod inventory_storage;
 
 pub(crate) struct PreparedInput {
     pub(crate) durable: BurnCheckInput,
@@ -103,6 +113,10 @@ pub(crate) struct Publication {
     fit_key: String,
     ignored_work: BTreeSet<String>,
     capabilities: ModelCapabilities,
+    #[serde(
+        serialize_with = "inventory_storage::serialize_prepared",
+        deserialize_with = "inventory_storage::deserialize_prepared"
+    )]
     prepared: ScopeCreepPrepared,
     citations: BTreeMap<String, String>,
     pub(crate) assessment: ScopeCreepResult,
@@ -472,12 +486,34 @@ fn save_cursor(
 ) -> anyhow::Result<bool> {
     store.save_burn_check_checkpoint(
         input,
-        &serde_json::to_string(cursor)?,
+        &serialize_cursor(cursor)?,
         None,
         unix_now(),
         POLICY.lease_secs,
         POLICY.idle_secs,
     )
+}
+
+fn serialize_cursor(cursor: &AssessmentCursor) -> Result<String, serde_json::Error> {
+    let mut value = serde_json::to_value(cursor)?;
+    // The inventory owns canonical descriptors. Save only prepared differences.
+    if let Some(prepared) = &cursor.prepared {
+        value["prepared"]["scope_bindings"] = serde_json::json!([]);
+        let descriptors: BTreeMap<_, _> = cursor
+            .inventory
+            .groups
+            .iter()
+            .map(|group| (&group.id, group))
+            .collect();
+        value["prepared"]["groups"] = serde_json::to_value(
+            prepared
+                .groups
+                .iter()
+                .filter(|group| descriptors.get(&group.id).copied() != Some(*group))
+                .collect::<Vec<_>>(),
+        )?;
+    }
+    serde_json::to_string(&value)
 }
 
 fn fit_is_blocked(stored: Option<&BurnCheckAssessment>, input: &PreparedInput) -> bool {
@@ -505,7 +541,7 @@ fn save_failure(
         &BurnCheckFailure {
             error_category: category,
             result_json: &serde_json::to_string(&publication(input, result.clone()))?,
-            progress_json: &serde_json::to_string(cursor)?,
+            progress_json: &serialize_cursor(cursor)?,
             retry_at_epoch: retry,
         },
         unix_now(),
@@ -523,46 +559,72 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         key_generation,
         events,
     } = execution;
+    let check_generation = handle.check_generation(CHECK_ID);
     let capabilities = handle.resolve_capabilities(key_generation).await?;
-    let mut input = match load_descriptor_input(store, candidate, &capabilities) {
-        Ok(input) => input,
-        Err(error) => {
-            tracing::debug!(event = "scope_creep_input_unavailable", error = ?error);
-            store.record_burn_check_candidate_issue_for_check(
-                CHECK_ID,
-                candidate,
-                candidate.session.key.environment_key != "native"
-                    || !matches!(
-                        candidate.session.key.agent.as_str(),
-                        "opencode" | "codex" | "claude" | "claude-code" | "pi"
-                    ),
-                unix_now().saturating_add(POLICY.retry_delay_secs),
-                unix_now(),
-            )?;
-            return Ok(());
+    let preparation_store = store.clone();
+    let preparation_candidate = candidate.clone();
+    let preparation_capabilities = capabilities.clone();
+    let prepared = crate::jev::worker::run_blocking_preparation(move || {
+        let store = &preparation_store;
+        let candidate = &preparation_candidate;
+        let mut input = match load_descriptor_input(store, candidate, &preparation_capabilities) {
+            Ok(input) => input,
+            Err(error) => {
+                tracing::debug!(event = "scope_creep_input_unavailable", error = ?error);
+                store.record_burn_check_candidate_issue_for_check(
+                    CHECK_ID,
+                    candidate,
+                    candidate.session.key.environment_key != "native"
+                        || !matches!(
+                            candidate.session.key.agent.as_str(),
+                            "opencode" | "codex" | "claude" | "claude-code" | "pi"
+                        ),
+                    unix_now().saturating_add(POLICY.retry_delay_secs),
+                    unix_now(),
+                )?;
+                return Ok(None);
+            }
+        };
+        let stored = store.burn_check_assessment(&candidate.session.key, CHECK_ID)?;
+        if fit_is_blocked(stored.as_ref(), &input) {
+            return Ok(None);
         }
+        let mut cursor = restore_cursor(stored.as_ref(), &input.durable, key_generation);
+        if cursor.sampling.is_none() {
+            cursor.sampling = Some(new_sampling()?);
+        }
+        enumerate_scope_turn(&mut input, &mut cursor)?;
+        let checkpoint = serialize_cursor(&cursor)?;
+        Ok(Some((input, cursor, checkpoint)))
+    })
+    .await?;
+    let Some((mut input, mut cursor, checkpoint)) = prepared else {
+        return Ok(());
     };
-    let stored = store.burn_check_assessment(&candidate.session.key, CHECK_ID)?;
-    if fit_is_blocked(stored.as_ref(), &input) {
-        return Ok(());
-    }
-    let mut cursor = restore_cursor(stored.as_ref(), &input.durable, key_generation);
-    if cursor.sampling.is_none() {
-        cursor.sampling = Some(new_sampling()?);
-    }
-    enumerate_scope_turn(&mut input, &mut cursor)?;
-    if !store.queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)?
-        || !store.claim_burn_check_assessment(
-            &input.durable,
-            unix_now(),
-            POLICY.lease_secs,
-            POLICY.idle_secs,
-        )?
-    {
-        return Ok(());
-    }
-    save_scheduling(store, &input, &cursor)?;
-    if !save_cursor(store, &input.durable, &cursor)? {
+    let claimed = handle
+        .admit_if_current(key_generation, CHECK_ID, check_generation, || {
+            if !store.queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)?
+                || !store.claim_burn_check_assessment(
+                    &input.durable,
+                    unix_now(),
+                    POLICY.lease_secs,
+                    POLICY.idle_secs,
+                )?
+            {
+                return Ok(false);
+            }
+            save_scheduling(store, &input, &cursor)?;
+            store.save_burn_check_checkpoint(
+                &input.durable,
+                &checkpoint,
+                None,
+                unix_now(),
+                POLICY.lease_secs,
+                POLICY.idle_secs,
+            )
+        })?
+        .unwrap_or(false);
+    if !claimed {
         return Ok(());
     }
     if !cursor.run_started || cursor.run_finished {
@@ -580,38 +642,27 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             break;
         };
         cursor.active_job = Some(job.clone());
-        if !input_is_current(store, candidate, &capabilities, &input)?
+        if !input_is_current(store, &capabilities, &input)?
             || !save_cursor(store, &input.durable, &cursor)?
         {
             return Ok(());
         }
-        let mut plan = input.check.prepare_descriptors(
-            &cursor.inventory,
-            &capabilities,
-            &BTreeSet::from([job.candidate]),
-        )?;
-        for group in &plan.prepared.groups {
-            if let Some(current) = input
-                .plan
-                .prepared
-                .groups
-                .iter_mut()
-                .find(|current| current.id == group.id)
-            {
-                *current = group.clone();
-            }
+        let selected = job.candidate;
+        let (prepared_input, prepared_cursor, mut plan, fits_storage) =
+            crate::jev::worker::run_blocking_preparation(move || {
+                prepare_scope_target(input, cursor, selected)
+            })
+            .await?;
+        input = prepared_input;
+        cursor = prepared_cursor;
+        if !handle.key_is_current(key_generation)
+            || !handle.check_is_current(CHECK_ID, check_generation)
+        {
+            return Ok(());
         }
-        let prepared = cursor
-            .prepared
-            .get_or_insert_with(|| input.plan.prepared.clone());
-        for group in &plan.prepared.groups {
-            if let Some(current) = prepared
-                .groups
-                .iter_mut()
-                .find(|current| current.id == group.id)
-            {
-                *current = group.clone();
-            }
+        if !fits_storage {
+            cursor.run_finished = true;
+            break;
         }
         if plan.work_items.is_empty() {
             let gap = input.check.reduce(&plan, &[], false)?;
@@ -698,7 +749,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             orchestration,
             |progress| {
                 cursor.run_progress = progress.clone();
-                serde_json::to_string(&cursor).map_err(|_| JevError::ProgressStorageFailure)
+                serialize_cursor(&cursor).map_err(|_| JevError::ProgressStorageFailure)
             },
         )
         .await;
@@ -817,7 +868,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     update_result_counts(&mut cursor, &input);
     let published = handle
         .with_current_generation(key_generation, || {
-            let outcome = publish_current(store, candidate, &capabilities, &input, &cursor)?;
+            let outcome = publish_current(store, &capabilities, &input, &cursor)?;
             if let Some(outcome) = outcome {
                 record_assessment(app, candidate.historical, outcome);
             }
@@ -831,7 +882,126 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     Ok(())
 }
 
+fn prepare_scope_target(
+    mut input: PreparedInput,
+    mut cursor: AssessmentCursor,
+    selected: StableId,
+) -> anyhow::Result<(
+    PreparedInput,
+    AssessmentCursor,
+    JevCheckPlan<ScopeCreepPrepared>,
+    bool,
+)> {
+    let plan = input.check.prepare_descriptors(
+        &cursor.inventory,
+        &input.plan.capabilities,
+        &BTreeSet::from([selected]),
+    )?;
+    let groups: BTreeMap<_, _> = plan
+        .prepared
+        .groups
+        .iter()
+        .map(|group| (&group.id, group))
+        .collect();
+    for group in &mut input.plan.prepared.groups {
+        if let Some(prepared) = groups.get(&group.id) {
+            *group = (*prepared).clone();
+        }
+    }
+    cursor.prepared = Some(input.plan.prepared.clone());
+    cursor
+        .prepared
+        .as_mut()
+        .expect("initialized")
+        .scope_bindings
+        .clear();
+    let fits = scope_target_fits_storage(&input, &cursor, &plan)?;
+    if !fits {
+        stop_scope_storage(&mut input, &mut cursor)?;
+    }
+    Ok((input, cursor, plan, fits))
+}
+
+fn scope_target_fits_storage(
+    input: &PreparedInput,
+    cursor: &AssessmentCursor,
+    plan: &JevCheckPlan<ScopeCreepPrepared>,
+) -> anyhow::Result<bool> {
+    // Reserve storage for a positive answer before dispatch.
+    let mut projected = cursor.clone();
+    let result = projected.result.as_mut().expect("initialized");
+    for group in &plan.prepared.groups {
+        if group.window_ids.is_empty()
+            || result
+                .decisions
+                .iter()
+                .any(|decision| decision.group_id == group.id && decision.outcome.is_some())
+        {
+            continue;
+        }
+        result
+            .findings
+            .retain(|finding| finding.group_id != group.id);
+        result.findings.push(ScopeCreepFinding {
+            id: "0".repeat(64),
+            group_id: group.id.clone(),
+            work: group.work.clone(),
+            task_scope: group.task_scope.clone(),
+            observation_kind: group.observation_kind,
+            decision_probability: 1.0,
+            scope_digest: input.plan.prepared.scope_digest.clone(),
+            model: plan.capabilities.model.clone(),
+            model_revision: plan.capabilities.model_revision.clone(),
+            revisions: REVISIONS,
+            source_generation: input.durable.source_generation,
+            publication_fence: input.durable.published_fence,
+        });
+    }
+    let publication_bytes = serde_json::to_vec(&publication(input, result.clone()))?.len();
+    let checkpoint_bytes = serialize_cursor(&projected)?.len();
+    Ok(publication_bytes <= PROJECTED_PUBLICATION_LIMIT
+        && checkpoint_bytes <= PROJECTED_CHECKPOINT_LIMIT)
+}
+
+fn stop_scope_storage(
+    input: &mut PreparedInput,
+    cursor: &mut AssessmentCursor,
+) -> anyhow::Result<()> {
+    let accepted: BTreeSet<_> = cursor
+        .result
+        .as_ref()
+        .expect("initialized")
+        .decisions
+        .iter()
+        .filter(|decision| decision.outcome.is_some())
+        .map(|decision| &decision.group_id)
+        .collect();
+    cursor
+        .inventory
+        .groups
+        .retain(|group| accepted.contains(&group.id));
+    cursor.inventory.limitation =
+        Some(antiburn_local::checks::scope_creep::ScopeInventoryLimit::SerializedBudget);
+    cursor.inventory.complete = false;
+    cursor.inventory.descriptor_bytes = cursor
+        .inventory
+        .groups
+        .iter()
+        .map(|group| serde_json::to_vec(group).map(|value| value.len()))
+        .sum::<Result<usize, _>>()?;
+    cursor.active_job = None;
+    cursor.run_progress = JevRunProgress::default();
+    enumerate_scope_turn(input, cursor)
+}
+
 fn update_result_counts(cursor: &mut AssessmentCursor, input: &PreparedInput) {
+    let groups: BTreeSet<_> = input
+        .plan
+        .prepared
+        .groups
+        .iter()
+        .map(|group| &group.id)
+        .collect();
     let result = cursor.result.as_mut().expect("initialized");
     result.coverage = input.plan.coverage.clone();
     result.coverage.skipped_items = input
@@ -862,15 +1032,7 @@ fn update_result_counts(cursor: &mut AssessmentCursor, input: &PreparedInput) {
     result.assessed_candidates = result
         .decisions
         .iter()
-        .filter(|decision| {
-            decision.outcome.is_some()
-                && input
-                    .plan
-                    .prepared
-                    .groups
-                    .iter()
-                    .any(|group| group.id == decision.group_id)
-        })
+        .filter(|decision| decision.outcome.is_some() && groups.contains(&decision.group_id))
         .count();
     result.remaining_candidates = input
         .plan
@@ -887,6 +1049,14 @@ fn update_result_counts(cursor: &mut AssessmentCursor, input: &PreparedInput) {
             .limitations
             .push("descriptor_enumeration_incomplete".into());
     }
+    if cursor.inventory.limitation.is_some() {
+        result
+            .coverage
+            .limitations
+            .push("descriptor_storage_budget_reached".into());
+    }
+    result.coverage.limitations.sort();
+    result.coverage.limitations.dedup();
     if result.remaining_candidates > 0 {
         result
             .coverage
@@ -919,6 +1089,13 @@ fn scope_scheduling_counts(
     input: &PreparedInput,
     cursor: &AssessmentCursor,
 ) -> (Option<usize>, usize, usize) {
+    let groups: BTreeSet<_> = input
+        .plan
+        .prepared
+        .groups
+        .iter()
+        .map(|group| &group.id)
+        .collect();
     let sampling = cursor.sampling.as_ref().expect("initialized");
     let coverage = sampling
         .coverage(ScopeCreepCheck::check_identity())
@@ -927,15 +1104,7 @@ fn scope_scheduling_counts(
         result
             .decisions
             .iter()
-            .filter(|decision| {
-                decision.outcome.is_some()
-                    && input
-                        .plan
-                        .prepared
-                        .groups
-                        .iter()
-                        .any(|group| group.id == decision.group_id)
-            })
+            .filter(|decision| decision.outcome.is_some() && groups.contains(&decision.group_id))
             .count()
     });
     (
@@ -944,7 +1113,7 @@ fn scope_scheduling_counts(
         sampling
             .runnable_count(ScopeCreepCheck::check_identity())
             .saturating_sub(reviewed.saturating_sub(coverage.completed))
-            .max(usize::from(!cursor.inventory.complete)),
+            .max(usize::from(scope_enumeration_pending(cursor))),
     )
 }
 
@@ -952,7 +1121,48 @@ fn enumerate_scope_turn(
     input: &mut PreparedInput,
     cursor: &mut AssessmentCursor,
 ) -> anyhow::Result<()> {
+    cursor.ignored_work = Some(input.ignored_work.clone());
+    cursor.configuration_fence = Some(input.configuration_fence.clone());
+    let retained = if cursor.inventory.source_revision != input.check.context().input_revision {
+        let accepted: BTreeSet<_> = cursor
+            .result
+            .as_ref()
+            .into_iter()
+            .flat_map(|result| &result.decisions)
+            .filter(|decision| decision.outcome.is_some())
+            .map(|decision| &decision.group_id)
+            .collect();
+        let previous: Vec<_> = cursor
+            .prepared
+            .as_ref()
+            .into_iter()
+            .flat_map(|prepared| &prepared.groups)
+            .filter(|group| accepted.contains(&group.id))
+            .cloned()
+            .collect();
+        input.check.retained_descriptors(&previous)?
+    } else {
+        Vec::new()
+    };
     input.check.enumerate_descriptors(&mut cursor.inventory)?;
+    let mut ids: BTreeSet<_> = cursor
+        .inventory
+        .groups
+        .iter()
+        .map(|group| group.id.clone())
+        .collect();
+    cursor.inventory.groups.extend(
+        retained
+            .into_iter()
+            .filter(|group| ids.insert(group.id.clone())),
+    );
+    cursor.inventory.groups.sort_by_key(|group| {
+        group
+            .work
+            .first()
+            .map(|binding| (binding.reference.turn_index, binding.reference.part_index))
+    });
+    limit_scope_inventory(cursor)?;
     let candidates = input
         .check
         .descriptor_candidates(&cursor.inventory, &input.plan.capabilities)?;
@@ -1002,29 +1212,39 @@ fn enumerate_scope_turn(
     result.session_limitation = initial.session_limitation;
     input.plan = baseline;
     input.plan.prepared.groups = cursor.inventory.groups.clone();
+    let previous: BTreeMap<_, _> = cursor
+        .prepared
+        .as_ref()
+        .into_iter()
+        .flat_map(|prepared| &prepared.groups)
+        .map(|group| (group.id.clone(), group))
+        .collect();
+    let mut decisions: BTreeMap<_, _> = std::mem::take(&mut result.decisions)
+        .into_iter()
+        .map(|decision| (decision.group_id.clone(), decision))
+        .collect();
+    let mut findings: BTreeMap<String, Vec<ScopeCreepFinding>> = BTreeMap::new();
+    for finding in std::mem::take(&mut result.findings) {
+        findings
+            .entry(finding.group_id.clone())
+            .or_default()
+            .push(finding);
+    }
     for (group, candidate) in input.plan.prepared.groups.iter_mut().zip(&candidates) {
-        let previous = cursor.prepared.as_ref().and_then(|prepared| {
-            prepared.groups.iter().find(|previous| {
-                previous.id == group.id
-                    && previous.semantic_digest == group.semantic_digest
-                    && previous.context == group.context
-                    && previous.work == group.work
-            })
+        let previous = previous.get(&group.id).copied().filter(|previous| {
+            previous.semantic_digest == group.semantic_digest
+                && previous.context == group.context
+                && previous.work == group.work
         });
-        let accepted = result.decisions.iter().any(|decision| {
-            decision.group_id == group.id
-                && decision.outcome.is_some()
-                && decision.reduced_answer_ids == candidate.required_answers
+        let decision = decisions.remove(&group.id);
+        let accepted = decision.as_ref().is_some_and(|decision| {
+            decision.outcome.is_some() && decision.reduced_answer_ids == candidate.required_answers
         });
         if accepted {
             if let Some(previous) = previous {
                 *group = previous.clone();
             }
-            for finding in result
-                .findings
-                .iter_mut()
-                .filter(|finding| finding.group_id == group.id)
-            {
+            for mut finding in findings.remove(&group.id).unwrap_or_default() {
                 finding.source_generation = input.durable.source_generation;
                 finding.publication_fence = input.durable.published_fence;
                 finding.scope_digest = input.plan.prepared.scope_digest.clone();
@@ -1037,24 +1257,20 @@ fn enumerate_scope_turn(
                         REVISIONS,
                     ))?,
                 );
+                result.findings.push(finding);
             }
+            result.decisions.extend(decision);
         } else {
             if let Some(previous) = previous {
                 *group = previous.clone();
-                if result
-                    .decisions
-                    .iter()
-                    .any(|decision| decision.group_id == group.id && decision.outcome.is_none())
+                if decision
+                    .as_ref()
+                    .is_some_and(|decision| decision.outcome.is_none())
                 {
+                    result.decisions.extend(decision);
                     continue;
                 }
             }
-            result
-                .decisions
-                .retain(|decision| decision.group_id != group.id);
-            result
-                .findings
-                .retain(|finding| finding.group_id != group.id);
             result
                 .decisions
                 .push(antiburn_local::checks::scope_creep::ScopeCreepDecision {
@@ -1067,45 +1283,87 @@ fn enumerate_scope_turn(
                 });
         }
     }
-    if cursor.inventory.complete {
-        result.decisions.retain(|decision| {
-            input
-                .plan
-                .prepared
-                .groups
-                .iter()
-                .any(|group| group.id == decision.group_id)
-        });
-        result.findings.retain(|finding| {
-            input
-                .plan
-                .prepared
-                .groups
-                .iter()
-                .any(|group| group.id == finding.group_id)
-        });
+    if scope_enumeration_pending_inventory(&cursor.inventory) {
+        result.decisions.extend(decisions.into_values());
+        result.findings.extend(findings.into_values().flatten());
     }
     let mut prepared = input.plan.prepared.clone();
-    if !cursor.inventory.complete
+    prepared.scope_bindings.clear();
+    let groups: BTreeSet<_> = cursor
+        .inventory
+        .groups
+        .iter()
+        .map(|group| &group.id)
+        .collect();
+    if scope_enumeration_pending_inventory(&cursor.inventory)
         && let Some(previous) = &cursor.prepared
     {
         prepared.groups.extend(
             previous
                 .groups
                 .iter()
-                .filter(|previous| {
-                    !cursor
-                        .inventory
-                        .groups
-                        .iter()
-                        .any(|group| group.id == previous.id)
-                })
+                .filter(|previous| !groups.contains(&previous.id))
                 .cloned(),
         );
     }
     cursor.prepared = Some(prepared);
     update_result_counts(cursor, input);
     Ok(())
+}
+
+fn limit_scope_inventory(cursor: &mut AssessmentCursor) -> anyhow::Result<()> {
+    use antiburn_local::checks::scope_creep::{MAX_SCOPE_DESCRIPTOR_BYTES, ScopeInventoryLimit};
+    let accepted: BTreeSet<_> = cursor
+        .result
+        .as_ref()
+        .into_iter()
+        .flat_map(|result| &result.decisions)
+        .filter(|decision| decision.outcome.is_some())
+        .map(|decision| &decision.group_id)
+        .collect();
+    let sizes = cursor
+        .inventory
+        .groups
+        .iter()
+        .map(|group| serde_json::to_vec(group).map(|value| value.len()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut bytes: usize = cursor
+        .inventory
+        .groups
+        .iter()
+        .zip(&sizes)
+        .filter(|(group, _)| accepted.contains(&group.id))
+        .map(|(_, bytes)| *bytes)
+        .sum();
+    let mut omitted = false;
+    let mut position = 0;
+    cursor.inventory.groups.retain(|group| {
+        let size = sizes[position];
+        position += 1;
+        if accepted.contains(&group.id) {
+            return true;
+        }
+        if bytes.saturating_add(size) > MAX_SCOPE_DESCRIPTOR_BYTES {
+            omitted = true;
+            return false;
+        }
+        bytes += size;
+        true
+    });
+    cursor.inventory.descriptor_bytes = bytes;
+    if omitted {
+        cursor.inventory.complete = false;
+        cursor.inventory.limitation = Some(ScopeInventoryLimit::SerializedBudget);
+    }
+    Ok(())
+}
+
+fn scope_enumeration_pending_inventory(inventory: &ScopeDescriptorInventory) -> bool {
+    !inventory.complete && inventory.limitation.is_none()
+}
+
+fn scope_enumeration_pending(cursor: &AssessmentCursor) -> bool {
+    scope_enumeration_pending_inventory(&cursor.inventory)
 }
 
 #[cfg(test)]
@@ -1328,35 +1586,105 @@ fn merge_result(
 
 fn input_is_current(
     store: &Store,
-    candidate: &BurnCheckCandidate,
     capabilities: &ModelCapabilities,
     input: &PreparedInput,
 ) -> anyhow::Result<bool> {
-    if load_descriptor_input(store, candidate, capabilities)
-        .as_ref()
-        .is_ok_and(|current| current.durable.input_revision == input.durable.input_revision)
-    {
+    let current = {
+        let connection = store.lock();
+        Store::burn_check_input_is_current(&connection, &input.durable)?
+            && capabilities == &input.plan.capabilities
+            && configuration_fence(&connection)? == input.configuration_fence
+            && ignored_instruction_work_ids(
+                &connection,
+                &SourceFence {
+                    key: &input.durable.key,
+                    incarnation: input.durable.incarnation,
+                    source_generation: input.durable.source_generation,
+                    source_fingerprint: input.durable.source_fingerprint.as_deref(),
+                    published_fence: input.durable.published_fence,
+                },
+            )? == input.ignored_work
+    };
+    if current {
         return Ok(true);
     }
-    store.supersede_burn_check_assessment(&input.durable, unix_now())?;
+    store.invalidate_burn_check_dependency(&input.durable, unix_now())?;
     Ok(false)
+}
+
+pub(crate) fn reconcile_scope_dependencies(
+    store: &Store,
+    candidate: &BurnCheckCandidate,
+) -> anyhow::Result<bool> {
+    let changed = {
+        let connection = store.lock();
+        let saved: Option<(String, Option<String>, Option<String>)> = connection.query_row(
+            "SELECT input_revision,
+                COALESCE(CASE WHEN json_extract(progress_json, '$.input_revision') = input_revision
+                    THEN json_extract(progress_json, '$.ignored_work') END,
+                    CASE WHEN result_revision = input_revision THEN json_extract(result_json, '$.ignored_work') END),
+                COALESCE(CASE WHEN json_extract(progress_json, '$.input_revision') = input_revision
+                    THEN json_extract(progress_json, '$.configuration_fence') END,
+                    CASE WHEN result_revision = input_revision THEN json_extract(result_json, '$.configuration_fence') END)
+             FROM burn_check_assessment WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                AND check_id = ?4 AND incarnation = ?5 AND source_generation = ?6
+                AND source_fingerprint IS ?7 AND published_fence = ?8 AND evaluator_revision = ?9
+                AND input_revision IS NOT NULL AND (status <> 'superseded' OR scheduling_revision IS NOT NULL)",
+            params![candidate.session.key.environment_key, candidate.session.key.agent,
+                candidate.session.key.session_id, CHECK_ID, candidate.incarnation, candidate.source_generation,
+                candidate.source_fingerprint, candidate.published_fence, CHECK.evaluator_revision()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).optional()?;
+        let Some((revision, ignored, configuration)) = saved else {
+            return Ok(false);
+        };
+        let ignored_changed = match ignored {
+            Some(json) => {
+                serde_json::from_str::<BTreeSet<String>>(&json)?
+                    != ignored_instruction_work_ids(&connection, &SourceFence::from(candidate))?
+            }
+            None => false,
+        };
+        let configuration_changed = configuration
+            .map(|saved| configuration_fence(&connection).map(|current| current != saved))
+            .transpose()?
+            .unwrap_or(false);
+        (ignored_changed || configuration_changed).then_some(revision)
+    };
+    let Some(revision) = changed else {
+        return Ok(false);
+    };
+    store.invalidate_burn_check_dependency(
+        &BurnCheckInput {
+            key: candidate.session.key.clone(),
+            check_id: CHECK_ID.into(),
+            incarnation: candidate.incarnation,
+            source_generation: candidate.source_generation,
+            source_fingerprint: candidate.source_fingerprint.clone(),
+            activity_cursor: candidate.activity_cursor.clone(),
+            published_fence: candidate.published_fence,
+            input_revision: revision,
+            evaluator_revision: CHECK.evaluator_revision(),
+            boundary_at_epoch: candidate.boundary_at_epoch,
+        },
+        unix_now(),
+    )
 }
 
 fn publish_current(
     store: &Store,
-    candidate: &BurnCheckCandidate,
     capabilities: &ModelCapabilities,
     input: &PreparedInput,
     cursor: &AssessmentCursor,
 ) -> anyhow::Result<Option<crate::analytics::event::SmartCheckAssessmentOutcome>> {
-    if !input_is_current(store, candidate, capabilities, input)?
+    if !input_is_current(store, capabilities, input)?
         || !save_cursor(store, &input.durable, cursor)?
     {
         return Ok(None);
     }
     let publication = publication(input, cursor.result.as_ref().expect("initialized").clone());
     if !valid_publication(&publication) {
-        anyhow::bail!("scope publication proof is invalid");
+        return Err(JevError::InvalidCheckPlan.into());
     }
     let clean = publication_has_clean_coverage(&publication.assessment);
     let has_finding = !publication.assessment.findings.is_empty()
@@ -1378,12 +1706,12 @@ fn publish_current(
             store,
             input,
             cursor,
-            if runnable > 0 || !cursor.inventory.complete {
+            if runnable > 0 || scope_enumeration_pending(cursor) {
                 "continuing"
             } else {
                 "sampling_incomplete"
             },
-            (runnable > 0 || !cursor.inventory.complete).then(|| unix_now() + 1),
+            (runnable > 0 || scope_enumeration_pending(cursor)).then(|| unix_now() + 1),
         )?
     };
     Ok(published.then(|| {
@@ -1393,22 +1721,19 @@ fn publish_current(
 
 pub(crate) fn publication(input: &PreparedInput, assessment: ScopeCreepResult) -> Publication {
     let mut assessment = assessment;
-    assessment.decisions.retain(|decision| {
-        input
-            .plan
-            .prepared
-            .groups
-            .iter()
-            .any(|group| group.id == decision.group_id)
-    });
-    assessment.findings.retain(|finding| {
-        input
-            .plan
-            .prepared
-            .groups
-            .iter()
-            .any(|group| group.id == finding.group_id)
-    });
+    let groups: BTreeSet<_> = input
+        .plan
+        .prepared
+        .groups
+        .iter()
+        .map(|group| &group.id)
+        .collect();
+    assessment
+        .decisions
+        .retain(|decision| groups.contains(&decision.group_id));
+    assessment
+        .findings
+        .retain(|finding| groups.contains(&finding.group_id));
     let ids: BTreeSet<_> = assessment
         .findings
         .iter()
@@ -1458,6 +1783,16 @@ pub(crate) fn publication_has_clean_coverage(result: &ScopeCreepResult) -> bool 
 fn valid_publication(publication: &Publication) -> bool {
     let result = &publication.assessment;
     let prepared = &publication.prepared;
+    let by_group: BTreeMap<_, _> = prepared
+        .groups
+        .iter()
+        .map(|group| (&group.id, group))
+        .collect();
+    let by_decision: BTreeMap<_, _> = result
+        .decisions
+        .iter()
+        .map(|decision| (&decision.group_id, decision))
+        .collect();
     let groups: BTreeSet<_> = prepared.groups.iter().map(|group| &group.id).collect();
     let decisions: BTreeSet<_> = result
         .decisions
@@ -1517,17 +1852,17 @@ fn valid_publication(publication: &Publication) -> bool {
                 .len()
                 .saturating_sub(result.assessed_candidates)
         && result.decisions.iter().all(|decision| {
-            let group = prepared
-                .groups
-                .iter()
-                .find(|group| group.id == decision.group_id)
-                .expect("validated groups");
+            let group = by_group[&decision.group_id];
             valid_decision(decision, group, prepared)
         })
-        && result
-            .findings
-            .iter()
-            .all(|finding| publishable_finding(finding, publication))
+        && result.findings.iter().all(|finding| {
+            publishable_finding_bound(
+                finding,
+                publication,
+                by_group[&finding.group_id],
+                by_decision[&finding.group_id],
+            )
+        })
 }
 
 fn valid_decision(
@@ -1553,8 +1888,10 @@ fn valid_decision(
         ScopeAnswer::LikelyScopeExpansion if probability >= DECISION_THRESHOLD => {
             ScopeCreepStatus::Finding
         }
-        ScopeAnswer::LikelyScopeExpansion | ScopeAnswer::Uncertain => ScopeCreepStatus::Uncertain,
-        ScopeAnswer::NoIssue => ScopeCreepStatus::Clean,
+        ScopeAnswer::NoIssue if group.limitation.is_none() => ScopeCreepStatus::Clean,
+        ScopeAnswer::LikelyScopeExpansion | ScopeAnswer::Uncertain | ScopeAnswer::NoIssue => {
+            ScopeCreepStatus::Uncertain
+        }
         _ => return false,
     };
     let answer_plan = JevCheckPlan {
@@ -1598,6 +1935,15 @@ pub(crate) fn publishable_finding(finding: &ScopeCreepFinding, publication: &Pub
     else {
         return false;
     };
+    publishable_finding_bound(finding, publication, group, decision)
+}
+
+fn publishable_finding_bound(
+    finding: &ScopeCreepFinding,
+    publication: &Publication,
+    group: &antiburn_local::checks::scope_creep::WorkGroup,
+    decision: &antiburn_local::checks::scope_creep::ScopeCreepDecision,
+) -> bool {
     let expected_id = serde_json::to_vec(&(
         &group.id,
         &publication.prepared.scope_digest,

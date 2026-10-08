@@ -1402,11 +1402,18 @@ pub async fn get_checks_report(
     let mut reduced = None;
     let mut report_policy_snapshot = None;
     for _ in 0..3 {
-        let (enabled_checks, check_preferences_revision) =
-            store.check_preferences_snapshot().map_err(fail)?;
-        let smart_checks_enabled = store
-            .internal_value("internal:burnChecksEnabledAtEpochV1")
-            .is_some();
+        let policy_app = app.clone();
+        let (enabled_checks, check_preferences_revision, smart_checks_enabled) =
+            run_blocking(move || {
+                let store = policy_app.state::<Store>();
+                let (enabled_checks, revision) =
+                    store.check_preferences_snapshot().map_err(fail)?;
+                let smart_checks_enabled = store
+                    .internal_value("internal:burnChecksEnabledAtEpochV1")
+                    .is_some();
+                Ok((enabled_checks, revision, smart_checks_enabled))
+            })
+            .await?;
         let enabled_selection = checks_report_selection(enabled_checks, smart_checks_enabled);
         let report_policy_revision =
             checks_report_policy_revision(check_preferences_revision, smart_checks_enabled);
@@ -1420,12 +1427,19 @@ pub async fn get_checks_report(
                 report_policy_revision,
             )
             .await?;
-        if store.check_preferences_revision().map_err(fail)? == check_preferences_revision
-            && store
-                .internal_value("internal:burnChecksEnabledAtEpochV1")
-                .is_some()
-                == smart_checks_enabled
-        {
+        let policy_app = app.clone();
+        let policy_current = run_blocking(move || {
+            let store = policy_app.state::<Store>();
+            Ok(
+                store.check_preferences_revision().map_err(fail)? == check_preferences_revision
+                    && store
+                        .internal_value("internal:burnChecksEnabledAtEpochV1")
+                        .is_some()
+                        == smart_checks_enabled,
+            )
+        })
+        .await?;
+        if policy_current {
             reduced = Some(candidate);
             report_policy_snapshot = Some((check_preferences_revision, smart_checks_enabled));
             break;
@@ -1436,136 +1450,133 @@ pub async fn get_checks_report(
     let (report_preferences_revision, report_smart_checks_enabled) =
         report_policy_snapshot.ok_or_else(|| fail("check report policy is unavailable"))?;
     let reduction_ms = started_at.elapsed().as_millis() as u64;
-    // The report carries three measurements that no other command reduces:
-    // unknown record vocabulary, quota incidents, and provider incidents.
-    // Each recorder compares the outcome against the last one it sent, so
-    // repeated reports of the same state record nothing.
-    crate::analytics::record_unrecognized_records(app, &reduced.report.unrecognized_records);
-    crate::analytics::record_quota_incidents(app, &reduced.report.quota_pressure);
-    crate::analytics::record_provider_incidents(app, &reduced.report.provider_incidents);
-    let mut payload = ChecksReportPayload::from_reduced_report(&reduced);
-    payload.smart_checks_available = app
-        .state::<crate::jev::worker::WorkerHandle>()
-        .is_available();
-    for (id, check_id) in [
-        (
-            BurnCheckDetectorId::SkillOpportunities,
-            "skill_opportunities",
-        ),
-        (BurnCheckDetectorId::OverExploring, "over_exploring"),
-        (BurnCheckDetectorId::ScopeCreep, "scope_creep"),
-        (
-            BurnCheckDetectorId::IgnoredInstructions,
-            "ignored_instructions",
-        ),
-    ] {
+    let app = app.clone();
+    run_blocking(move || {
+        let app = &app;
+        let store = app.state::<Store>();
+        // The report carries three measurements that no other command reduces:
+        // unknown record vocabulary, quota incidents, and provider incidents.
+        // Each recorder compares the outcome against the last one it sent, so
+        // repeated reports of the same state record nothing.
+        crate::analytics::record_unrecognized_records(app, &reduced.report.unrecognized_records);
+        crate::analytics::record_quota_incidents(app, &reduced.report.quota_pressure);
+        crate::analytics::record_provider_incidents(app, &reduced.report.provider_incidents);
+        let mut payload = ChecksReportPayload::from_reduced_report(&reduced);
+        payload.smart_checks_available = app
+            .state::<crate::jev::worker::WorkerHandle>()
+            .is_available();
+        for (id, check_id) in [
+            (
+                BurnCheckDetectorId::SkillOpportunities,
+                "skill_opportunities",
+            ),
+            (BurnCheckDetectorId::OverExploring, "over_exploring"),
+            (BurnCheckDetectorId::ScopeCreep, "scope_creep"),
+            (
+                BurnCheckDetectorId::IgnoredInstructions,
+                "ignored_instructions",
+            ),
+        ] {
+            if let Some(category) = payload
+                .categories
+                .iter_mut()
+                .find(|category| category.id == id)
+            {
+                if id != BurnCheckDetectorId::IgnoredInstructions {
+                    category.sampled = category.finding > 0 || category.clean > 0;
+                }
+                category.checking = Some(false);
+                category.checking_count = Some(0);
+                category.partial_context = Some(false);
+                if let Some(progress) = reduced.check_progress.get(check_id) {
+                    category.checking = Some(progress.checking);
+                    category.checking_count = Some(progress.checking_count);
+                    category.partial_context = Some(progress.partial_context);
+                    category.review_coverage = progress.coverage.clone();
+                }
+            }
+        }
         if let Some(category) = payload
             .categories
             .iter_mut()
-            .find(|category| category.id == id)
+            .find(|category| category.id == BurnCheckDetectorId::IgnoredInstructions)
         {
-            if id != BurnCheckDetectorId::IgnoredInstructions {
-                category.sampled = category.finding > 0 || category.clean > 0;
-            }
-            let progress = crate::insights_report::check_report_progress(
-                store.state_dir(),
-                &request,
-                check_id,
+            category.sampled = reduced.sampled_instructions;
+        }
+        app.state::<RemediationController>()
+            .apply_category_lifecycles(
+                &app.state::<Store>(),
+                &mut payload,
+                &request.environment_key,
             )
             .map_err(fail)?;
-            category.checking = Some(progress.checking);
-            category.partial_context = Some(progress.partial_context);
-            category.review_coverage = progress.coverage;
+        #[cfg(debug_assertions)]
+        if let Some(category) = payload
+            .categories
+            .iter()
+            .find(|category| category.id == BurnCheckDetectorId::IgnoredInstructions)
+        {
+            ::tracing::debug!(
+                event = "ignored_instruction_report_quality",
+                in_progress_sessions = category.checking_count.unwrap_or(0),
+                finding_sessions = category.finding,
+                clean_sessions = category.clean,
+                unavailable_sessions = category.unavailable,
+                lifecycle = ?category.lifecycle,
+            );
         }
-    }
-    if let Some(category) = payload
-        .categories
-        .iter_mut()
-        .find(|category| category.id == BurnCheckDetectorId::IgnoredInstructions)
-    {
-        category.sampled = crate::insights_report::has_published_sampled_instruction_assessment(
-            app.state::<Store>().state_dir(),
-            &request,
-        )
-        .map_err(fail)?;
-    }
-    app.state::<RemediationController>()
-        .apply_category_lifecycles(
-            &app.state::<Store>(),
-            &mut payload,
-            &request.environment_key,
-        )
-        .map_err(fail)?;
-    #[cfg(debug_assertions)]
-    let ignored_instruction_work = app
-        .state::<Store>()
-        .burn_check_in_progress_count("ignored_instructions")
-        .map_err(fail)?;
-    #[cfg(debug_assertions)]
-    if let Some(category) = payload
-        .categories
-        .iter()
-        .find(|category| category.id == BurnCheckDetectorId::IgnoredInstructions)
-    {
+        if !payload.smart_checks_available {
+            payload.categories.retain(|category| {
+                !matches!(
+                    category.id,
+                    BurnCheckDetectorId::IgnoredInstructions
+                        | BurnCheckDetectorId::SkillOpportunities
+                        | BurnCheckDetectorId::OverExploring
+                        | BurnCheckDetectorId::ScopeCreep
+                )
+            });
+        }
+        let finding_count = payload
+            .categories
+            .iter()
+            .map(|category| category.finding)
+            .sum::<u64>();
+        let clean_count = payload
+            .categories
+            .iter()
+            .map(|category| category.clean)
+            .sum::<u64>();
         ::tracing::debug!(
-            event = "ignored_instruction_report_quality",
-            in_progress_sessions = ignored_instruction_work,
-            finding_sessions = category.finding,
-            clean_sessions = category.clean,
-            unavailable_sessions = category.unavailable,
-            lifecycle = ?category.lifecycle,
+            event = "checks_report_finished",
+            consumer_id = %report_consumer_id,
+            window = %report_window,
+            categories = payload.categories.len(),
+            findings = finding_count,
+            clean = clean_count,
+            worker_woken = true,
+            duration_ms = started_at.elapsed().as_millis() as u64,
+            reduction_ms,
+            lifecycle_ms = started_at.elapsed().as_millis() as u64 - reduction_ms,
         );
-    }
-    if !payload.smart_checks_available {
-        payload.categories.retain(|category| {
-            !matches!(
-                category.id,
-                BurnCheckDetectorId::IgnoredInstructions
-                    | BurnCheckDetectorId::SkillOpportunities
-                    | BurnCheckDetectorId::OverExploring
-                    | BurnCheckDetectorId::ScopeCreep
-            )
-        });
-    }
-    let finding_count = payload
-        .categories
-        .iter()
-        .map(|category| category.finding)
-        .sum::<u64>();
-    let clean_count = payload
-        .categories
-        .iter()
-        .map(|category| category.clean)
-        .sum::<u64>();
-    ::tracing::debug!(
-        event = "checks_report_finished",
-        consumer_id = %report_consumer_id,
-        window = %report_window,
-        categories = payload.categories.len(),
-        findings = finding_count,
-        clean = clean_count,
-        worker_woken = true,
-        duration_ms = started_at.elapsed().as_millis() as u64,
-        reduction_ms,
-        lifecycle_ms = started_at.elapsed().as_millis() as u64 - reduction_ms,
-    );
-    #[cfg(debug_assertions)]
-    let payload = {
-        let mut payload = payload;
-        crate::tray::simulate_burn_checks(app, &mut payload);
-        payload
-    };
-    if store.check_preferences_revision().map_err(fail)? != report_preferences_revision
-        || store
-            .internal_value("internal:burnChecksEnabledAtEpochV1")
-            .is_some()
-            != report_smart_checks_enabled
-    {
-        return Err(fail(
-            "check preferences changed while publishing the report",
-        ));
-    }
-    Ok(payload)
+        #[cfg(debug_assertions)]
+        let payload = {
+            let mut payload = payload;
+            crate::tray::simulate_burn_checks(app, &mut payload);
+            payload
+        };
+        if store.check_preferences_revision().map_err(fail)? != report_preferences_revision
+            || store
+                .internal_value("internal:burnChecksEnabledAtEpochV1")
+                .is_some()
+                != report_smart_checks_enabled
+        {
+            return Err(fail(
+                "check preferences changed while publishing the report",
+            ));
+        }
+        Ok(payload)
+    })
+    .await
 }
 
 fn current_burn_check_snoozes(store: &Store) -> CommandResult<Vec<BurnCheckSnoozePayload>> {
@@ -2832,6 +2843,14 @@ pub fn open_remote_helper_downloads(app: tauri::AppHandle) -> CommandResult<()> 
 pub fn open_analytics_documentation(app: tauri::AppHandle) -> CommandResult<()> {
     let url = analytics_documentation_url(&app.package_info().version.to_string());
     app.opener().open_url(url, None::<&str>).map_err(fail)
+}
+
+/// Open the page that explains why Claude Desktop alone shows no limits.
+#[tauri::command]
+pub fn open_claude_desktop_limits_docs(app: tauri::AppHandle) -> CommandResult<()> {
+    app.opener()
+        .open_url("https://antiburn.com/docs/claude-desktop", None::<&str>)
+        .map_err(fail)
 }
 
 fn analytics_documentation_url(version: &str) -> String {

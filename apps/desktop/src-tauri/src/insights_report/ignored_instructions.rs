@@ -1,15 +1,7 @@
 use super::findings::CurrentFindingSession;
 use super::*;
 
-pub(crate) fn has_published_sampled_instruction_assessment(
-    data_dir: &Path,
-    request: &ReportRequest,
-) -> Result<bool> {
-    let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
-    has_published_sampled_instruction_assessment_in(&connection, request)
-}
-
-fn has_published_sampled_instruction_assessment_in(
+pub(super) fn has_published_sampled_instruction_assessment_in(
     connection: &rusqlite::Connection,
     request: &ReportRequest,
 ) -> Result<bool> {

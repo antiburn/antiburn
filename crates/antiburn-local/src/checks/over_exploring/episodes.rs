@@ -1,9 +1,12 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::analysis::jev::{JevError, JevSessionContext, JevSharedRequestContext};
+use crate::analysis::jev::{
+    JevError, JevEvidenceReference, JevEvidenceRole, JevInputField, JevSessionContext,
+    JevSharedRequestContext,
+};
 use crate::analysis::jev_evidence::{
     ContentAction, JevReadRequest, JevReadResult, SessionContentEvidence,
 };
@@ -53,6 +56,7 @@ pub struct InvestigationEpisode {
 pub struct OverExploringInput {
     pub session_identity: String,
     pub task_context: JevSharedRequestContext,
+    pub task_contexts: BTreeMap<StableId, JevSharedRequestContext>,
     /// Episode indexes refer to this ordered source inventory.
     pub events: Vec<ContentAction>,
     pub limitations: Vec<String>,
@@ -227,9 +231,29 @@ pub fn build_episodes(
     }) {
         return Err(JevError::InvalidCheckContext);
     }
+    let task_contexts = episodes
+        .iter()
+        .map(|episode| {
+            let anchor = &actions[episode.events[0]];
+            (
+                episode.id,
+                task_context(
+                    task,
+                    anchor,
+                    &actions[*episode.events.last().expect("nonempty episode")],
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let task_context = task_contexts
+        .values()
+        .next()
+        .cloned()
+        .unwrap_or_else(|| task.user_context());
     let input = OverExploringInput {
         session_identity: content.session_identity_digest.clone(),
-        task_context: task.user_context(),
+        task_context,
+        task_contexts,
         events: actions.clone(),
         limitations: content.limitations.clone(),
         episodes,
@@ -243,6 +267,70 @@ pub fn build_episodes(
         return Err(JevError::InvalidCheckContext);
     }
     Ok(input)
+}
+
+fn task_context(
+    task: &SessionScopeSnapshot,
+    anchor: &ContentAction,
+    end: &ContentAction,
+) -> JevSharedRequestContext {
+    let start = task
+        .occurrences()
+        .iter()
+        .filter(|item| {
+            item.authority == ScopeAuthority::User
+                && item.field == JevInputField::UserMessage
+                && (item.reference.turn_index, item.reference.part_index) <= position(anchor)
+        })
+        .map(|item| (item.reference.turn_index, item.reference.part_index))
+        .max();
+    let mut values = Vec::new();
+    let mut evidence = Vec::new();
+    let antecedent_context_omitted = task.occurrences().iter().any(|item| {
+        item.authority == ScopeAuthority::User
+            && item.field == JevInputField::UserMessage
+            && start
+                .is_some_and(|start| (item.reference.turn_index, item.reference.part_index) < start)
+    });
+    let mut partial = antecedent_context_omitted;
+    for (source_index, item) in task.occurrences().iter().enumerate().filter(|(_, item)| {
+        let item_position = (item.reference.turn_index, item.reference.part_index);
+        start.is_some_and(|start| item_position >= start)
+            && item_position <= position(end)
+            && item.field != JevInputField::AssistantMessage
+    }) {
+        let value = &task.values()[item.value_index];
+        let text = value
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| value.to_string());
+        let chunks = crate::analysis::jev::text_ranges::text_ranges(&text, 512, 0);
+        let ranges = if chunks.len() <= 4 {
+            chunks
+        } else {
+            [0, chunks.len() / 3, chunks.len() / 2, chunks.len() - 1]
+                .into_iter()
+                .map(|index| chunks[index])
+                .collect()
+        };
+        partial |= ranges.iter().map(|(start, end)| end - start).sum::<usize>() < text.len();
+        values.push(if ranges.iter().map(|(start,end)| end-start).sum::<usize>() == text.len() { value.clone() } else { json!({"field": item.field, "authority": item.authority, "chunks": ranges.iter().map(|&(start,end)| json!({"start":start,"end":end,"text": &text[start..end]})).collect::<Vec<_>>(), "total_bytes":text.len()}) });
+        evidence.push(JevEvidenceReference {
+            part_id: format!("shared_context.occurrences[{source_index}]"),
+            source_id: item.reference.id.clone(),
+            content_kind: format!("{:?}", item.field),
+            role: if item.authority == ScopeAuthority::User {
+                JevEvidenceRole::Instruction
+            } else {
+                JevEvidenceRole::SupportingContext
+            },
+        });
+    }
+    evidence.sort_by(|left, right| left.source_id.cmp(&right.source_id));
+    JevSharedRequestContext {
+        fields: json!({"values": values, "partial": partial, "antecedent_context_omitted": antecedent_context_omitted, "limitations": task.limitations()}),
+        evidence,
+    }
 }
 
 fn position(action: &ContentAction) -> (u64, u32) {

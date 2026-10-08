@@ -17,12 +17,19 @@ use sha2::{Digest, Sha256};
 use crate::session_scope::ScopeLoadError;
 use crate::store::{SessionKey, Store};
 
+pub(crate) mod cache;
 mod episodes;
 mod inventory;
+pub(crate) mod inventory_cache;
 pub use episodes::{EpisodeCompletion, InvestigationSpan};
 pub use inventory::{InventoryRevisionChange, InventoryRevisionObserver, SkillInputs};
 
 const MAX_ACTIVITY_BYTES: usize = 16 * 1024 * 1024;
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static INPUT_LOAD_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetectorInput {
@@ -196,6 +203,8 @@ impl Store {
         source_generation: i64,
         detector: DetectorInput,
     ) -> Result<SmartCheckInputSnapshot, InputLoadError> {
+        #[cfg(test)]
+        INPUT_LOAD_COUNT.set(INPUT_LOAD_COUNT.get() + 1);
         let request = self
             .session_scope_request(key, publication_fence, source_generation)
             .map_err(InputLoadError::Scope)?;
@@ -245,6 +254,7 @@ impl Store {
             .extend(tool_result_limitations(&prepared.actions));
         prepared.complete &= prepared.limitations.is_empty();
         let mut content = select_session_content(&prepared, detector.selection());
+        let initial_limitations = prepared.limitations.len();
         let investigation_spans = if detector == DetectorInput::OverExploring {
             episodes::investigation_spans(&content, &scope)?
         } else {
@@ -269,7 +279,9 @@ impl Store {
             prepared.limitations.push("open_investigation".to_owned());
             prepared.complete = false;
         }
-        content = select_session_content(&prepared, detector.selection());
+        if prepared.limitations.len() != initial_limitations {
+            content = select_session_content(&prepared, detector.selection());
+        }
         let revision = digest(&serde_json::json!({
             "scope": &scope, "activity": content.selected_input_digest,
             "generation": source_generation, "boundary": boundary.content_scope()

@@ -5,6 +5,302 @@ use antiburn_local::analysis::jev::JevCheck;
 use antiburn_local::checks::sampling::{Candidate, SamplingLimits, SamplingProgress, StableId};
 use antiburn_local::checks::skill_opportunities::SkillUseLifecycle;
 
+#[test]
+fn two_64_session_sweeps_reuse_source_inputs_and_discover_inventory_once_per_sweep() {
+    use crate::scope_creep_worker::tests::native_sources;
+    use crate::smart_check_inputs::inventory_cache::INVENTORY_DISCOVERY_COUNT;
+    use std::sync::atomic::Ordering;
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("home");
+    let workspace = directory.path().join("workspace");
+    std::fs::create_dir_all(home.join(".claude/skills/review")).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        home.join(".claude/skills/review/SKILL.md"),
+        "---\nname: review\ndescription: Review code and tests.\n---\n",
+    )
+    .unwrap();
+    let store = crate::store::Store::open(directory.path()).unwrap();
+    for detector in [
+        antiburn_local::checks::DetectorId::SkillOpportunities,
+        antiburn_local::checks::DetectorId::ScopeCreep,
+    ] {
+        store.set_check_enabled(detector, true).unwrap();
+    }
+    store
+        .capture_burn_check_boundaries(
+            &[
+                super::SKILL_OPPORTUNITIES_CHECK_ID,
+                crate::scope_creep_worker::CHECK_ID,
+            ],
+            0,
+        )
+        .unwrap();
+    let (agent, original_session, format, records) = native_sources::sources()
+        .into_iter()
+        .find(|(agent, _, _, _)| *agent == "claude-code")
+        .unwrap();
+    let records = native_sources::records_with_work(agent, records);
+    let records = records
+        .lines()
+        .enumerate()
+        .map(|(index, line)| {
+            let mut row: serde_json::Value = serde_json::from_str(line).unwrap();
+            row["timestamp"] = serde_json::json!(format!("2099-01-01T00:00:{index:02}Z"));
+            row.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let config = crate::agent_config::ConfigContext::native(
+        antiburn_local::model::AgentKind::Claude,
+        &home,
+        Some(workspace.clone()),
+    );
+    let mut candidates = Vec::new();
+    for index in 0..64 {
+        let session = format!("skill-session-{index:02}");
+        let records = records.replace(original_session, &session);
+        let candidate =
+            native_sources::publish(&store, agent, &session, format, &records, &workspace);
+        let mut fence = crate::smart_check_inputs::cache::source_fence(
+            &candidate,
+            crate::scope_creep_worker::CHECK_ID,
+            crate::scope_creep_worker::CHECK.evaluator_revision(),
+        );
+        fence.input_revision = format!("fixture-scope-{index}");
+        assert!(
+            store
+                .queue_burn_check_assessment(&fence, 1000, 180)
+                .unwrap()
+        );
+        assert!(
+            store
+                .claim_burn_check_assessment(&fence, 1000, 300, 180)
+                .unwrap()
+        );
+        assert!(
+            store
+                .complete_burn_check_assessment(&fence, "{}", 1000, 180)
+                .unwrap()
+        );
+        candidates.push(candidate);
+    }
+    let before = crate::smart_check_inputs::INPUT_LOAD_COUNT.get();
+    let discoveries = INVENTORY_DISCOVERY_COUNT.load(Ordering::Relaxed);
+    let revisions = candidates
+        .iter()
+        .map(|candidate| {
+            super::current_input_revisions(&store, candidate, &config)
+                .unwrap()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        crate::smart_check_inputs::INPUT_LOAD_COUNT.get(),
+        before + 64
+    );
+    assert_eq!(
+        INVENTORY_DISCOVERY_COUNT.load(Ordering::Relaxed),
+        discoveries + 1
+    );
+    let started = std::time::Instant::now();
+    for (candidate, revision) in candidates.iter().zip(&revisions) {
+        assert_eq!(
+            super::current_input_revisions(&store, candidate, &config)
+                .unwrap()
+                .as_ref(),
+            Some(revision)
+        );
+    }
+    assert_eq!(
+        crate::smart_check_inputs::INPUT_LOAD_COUNT.get(),
+        before + 64
+    );
+    assert_eq!(
+        INVENTORY_DISCOVERY_COUNT.load(Ordering::Relaxed),
+        discoveries + 2
+    );
+    let sweep_us = started.elapsed().as_micros();
+    let inventory =
+        crate::smart_check_inputs::inventory_cache::discover_inventory(&config).unwrap();
+    for candidate in &candidates {
+        let first = super::load_input(
+            &store,
+            candidate,
+            &config,
+            std::sync::Arc::clone(&inventory),
+        )
+        .unwrap();
+        for _ in 0..3 {
+            let continuation = super::load_input(
+                &store,
+                candidate,
+                &config,
+                std::sync::Arc::clone(&inventory),
+            )
+            .unwrap();
+            assert!(std::sync::Arc::ptr_eq(&first, &continuation));
+        }
+    }
+    assert_eq!(
+        crate::smart_check_inputs::INPUT_LOAD_COUNT.get(),
+        before + 64
+    );
+    eprintln!(
+        "skill second sweep: sessions=64 source_loads=0 inventory_discoveries=1 elapsed_us={sweep_us}"
+    );
+}
+
+#[test]
+fn checkpoints_reuse_inventory_but_publication_checks_an_external_edit() {
+    use crate::smart_check_inputs::inventory_cache::{
+        INVENTORY_DISCOVERY_COUNT, discover_inventory,
+    };
+    use std::sync::atomic::Ordering;
+    let (fixture, prepared) = native_skill_fixture(2, 2);
+    let candidate = fixture
+        .store
+        .burn_check_candidates_for_revision(
+            super::SKILL_OPPORTUNITIES_CHECK_ID,
+            &super::CHECK.evaluator_revision(),
+            1000,
+            super::POLICY.idle_secs,
+            16,
+        )
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.session.key == prepared.durable.key)
+        .unwrap();
+    let config = crate::agent_config::ConfigContext::native(
+        antiburn_local::model::AgentKind::OpenCode,
+        fixture.directory.path().join("home"),
+        Some(fixture.directory.path().join("workspace")),
+    );
+    let input = super::load_input(
+        &fixture.store,
+        &candidate,
+        &config,
+        discover_inventory(&config).unwrap(),
+    )
+    .unwrap();
+    let handle = crate::jev::worker::WorkerHandle::default();
+    handle
+        .set_system_one_connection(
+            crate::jev::config::SystemOneConnection::jev_default(),
+            Some("synthetic-key".into()),
+        )
+        .unwrap();
+    let observation = super::observe_skill_input(
+        &fixture.store,
+        &handle,
+        1,
+        &candidate,
+        Some(input.durable.input_revision.clone()),
+    )
+    .unwrap()
+    .unwrap();
+    let fence = super::SkillWriteFence {
+        store: &fixture.store,
+        handle: &handle,
+        provider_generation: 1,
+        input_generation: observation.generation,
+        input: &input,
+        candidate: &candidate,
+        config: &config,
+    };
+    let before = INVENTORY_DISCOVERY_COUNT.load(Ordering::Relaxed);
+    for _ in 0..10 {
+        assert_eq!(fence.commit(|| Ok(true)).unwrap(), Some(true));
+    }
+    assert_eq!(INVENTORY_DISCOVERY_COUNT.load(Ordering::Relaxed), before);
+    std::fs::write(
+        config.home_root.join(".opencode/skills/review-0/SKILL.md"),
+        "---\nname: review-0\ndescription: Review changed behavior.\n---\n",
+    )
+    .unwrap();
+    assert!(
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(fence.publish(|| -> anyhow::Result<bool> {
+                panic!("changed inventory must not publish")
+            }))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        INVENTORY_DISCOVERY_COUNT.load(Ordering::Relaxed),
+        before + 1
+    );
+}
+
+#[test]
+fn unchanged_freshness_reads_reuse_source_preparation_and_inventory_edits_invalidate_it() {
+    let (fixture, input) = native_skill_fixture(20, 2);
+    let candidate = fixture
+        .store
+        .burn_check_candidates_for_revision(
+            super::SKILL_OPPORTUNITIES_CHECK_ID,
+            &super::CHECK.evaluator_revision(),
+            1000,
+            super::POLICY.idle_secs,
+            16,
+        )
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.session.key == input.durable.key)
+        .unwrap();
+    let config = crate::agent_config::ConfigContext::native(
+        antiburn_local::model::AgentKind::OpenCode,
+        fixture.directory.path().join("home"),
+        Some(fixture.directory.path().join("workspace")),
+    );
+    let first = super::current_input_revisions(&fixture.store, &candidate, &config)
+        .unwrap()
+        .unwrap();
+    let before = crate::smart_check_inputs::INPUT_LOAD_COUNT.get();
+    let started = std::time::Instant::now();
+    for _ in 0..10 {
+        assert_eq!(
+            super::current_input_revisions(&fixture.store, &candidate, &config)
+                .unwrap()
+                .unwrap(),
+            first
+        );
+    }
+    assert_eq!(crate::smart_check_inputs::INPUT_LOAD_COUNT.get(), before);
+    eprintln!(
+        "skill freshness: validations=10 full_source_reloads=0 elapsed_us={}",
+        started.elapsed().as_micros()
+    );
+    std::fs::write(
+        config.home_root.join(".opencode/skills/review-0/SKILL.md"),
+        "---\nname: review-0\ndescription: Review changed behavior.\n---\n",
+    )
+    .unwrap();
+    let changed = super::current_input_revisions(&fixture.store, &candidate, &config)
+        .unwrap()
+        .unwrap();
+    assert_ne!(changed, first);
+    assert_eq!(
+        crate::smart_check_inputs::INPUT_LOAD_COUNT.get(),
+        before + 1
+    );
+    fixture
+        .store
+        .lock()
+        .execute("UPDATE session_evidence SET status = 'pending'", [])
+        .unwrap();
+    assert!(
+        super::current_input_revisions(&fixture.store, &candidate, &config)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        crate::smart_check_inputs::INPUT_LOAD_COUNT.get(),
+        before + 1
+    );
+}
+
 fn native_skill_fixture(
     groups: usize,
     skills_count: usize,
@@ -520,6 +816,20 @@ fn native_skill_requests_and_document_selections_prepare_without_asserting_succe
                 .unwrap()
         };
         let inputs = load();
+        let mut bound_candidate = candidate.clone();
+        bound_candidate
+            .boundary_positions
+            .insert(inputs.input().boundary().source_key.clone(), u64::MAX);
+        let bound = inputs.clone().for_candidate(&bound_candidate).unwrap();
+        let bound_usage = antiburn_local::analysis::jev_evidence::select_session_content(
+            bound.input().content(),
+            antiburn_local::checks::skill_opportunities::SKILL_USE_SELECTION,
+        );
+        assert_eq!(
+            bound.usage().selected_input_revision(),
+            Some(bound_usage.selected_input_digest.as_str())
+        );
+        assert_eq!(bound.check().unwrap().descriptor_count(), 0);
         assert!(
             inputs
                 .inventory()

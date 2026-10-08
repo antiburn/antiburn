@@ -42,6 +42,9 @@ function setup(overrides: Partial<QuotaAdapter> = {}) {
   const adapter: QuotaAdapter = {
     getAccounts: vi.fn().mockResolvedValue({ accounts: [account()], generatedAt: "g1" }),
     getUsage: vi.fn().mockResolvedValue(usage("u1")),
+    getLiveUsage: vi
+      .fn()
+      .mockResolvedValue({ providers: [], errors: [], meters: [], generatedAt: "g1" }),
     getVisible: vi.fn().mockResolvedValue(true),
     onVisible: vi.fn(async (handler) => {
       visible = handler
@@ -156,6 +159,57 @@ describe("QuotaSession", () => {
     await vi.waitFor(() => expect(session.getSnapshot().accountsError).toBe(true))
     stop()
   })
+
+  it("reports a failed empty-account explanation read and recovers on retry", async () => {
+    const { adapter, session } = setup({
+      getAccounts: vi.fn().mockResolvedValue({ accounts: [], generatedAt: "g1" }),
+      getLiveUsage: vi.fn().mockRejectedValue(new Error("unavailable")),
+    })
+    sessions.push(session)
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().accountsError).toBe(true))
+    expect(session.getSnapshot().accounts).toBeNull()
+    expect(session.getSnapshot().loading).toBe(false)
+    expect(adapter.getUsage).not.toHaveBeenCalled()
+
+    vi.mocked(adapter.getLiveUsage).mockResolvedValue({
+      providers: [],
+      errors: [],
+      meters: [],
+      generatedAt: "g2",
+    })
+    session.refresh()
+    await vi.waitFor(() => expect(session.getSnapshot().accounts).toEqual([]))
+    expect(session.getSnapshot().accountsError).toBe(false)
+    expect(session.getSnapshot().liveUsage?.generatedAt).toBe("g2")
+    stop()
+  })
+
+  it.each([
+    { lanes: [account().lanes[1]!], expectedLane: "fiveHour" },
+    { lanes: [], expectedLane: null },
+  ])(
+    "resolves an account without a weekly lane: $expectedLane",
+    async ({ lanes, expectedLane }) => {
+      const { adapter, session } = setup({
+        getAccounts: vi
+          .fn()
+          .mockResolvedValue({ accounts: [account({ lanes })], generatedAt: "g1" }),
+      })
+      sessions.push(session)
+      const stop = session.subscribe(() => undefined)
+      await vi.waitFor(() => expect(session.getSnapshot().accounts).not.toBeNull())
+      expect(session.getSnapshot().selection?.lane ?? null).toBe(expectedLane)
+      if (expectedLane === null) {
+        expect(adapter.getUsage).not.toHaveBeenCalled()
+        expect(session.getSnapshot().loading).toBe(false)
+      } else {
+        await vi.waitFor(() => expect(adapter.getUsage).toHaveBeenCalled())
+        expect(vi.mocked(adapter.getUsage).mock.calls[0]![0].lane).toBe(expectedLane)
+      }
+      stop()
+    },
+  )
 
   it("open sets a custom range and the selected account and lane", async () => {
     const { adapter, session } = setup()

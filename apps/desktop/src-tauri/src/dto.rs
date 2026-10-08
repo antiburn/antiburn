@@ -996,6 +996,8 @@ pub struct ChecksCategoryPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checking: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub checking_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub partial_context: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub review_coverage: Option<ChecksReviewCoveragePayload>,
@@ -1023,7 +1025,7 @@ pub struct ChecksReviewCoveragePayload {
     pub pending: Option<u64>,
     /// Reviewed targets that wait for task completion, not for a review answer.
     pub pending_completion: Option<u64>,
-    /// True only when work can continue and the check is queued or running.
+    /// True when queued, running, or resumable work has runnable targets.
     pub continuing: bool,
 }
 
@@ -2846,6 +2848,7 @@ impl ChecksReportPayload {
                     id: id.into(),
                     sampled: false,
                     checking: None,
+                    checking_count: None,
                     partial_context: None,
                     review_coverage: None,
                     lifecycle: None,
@@ -3175,6 +3178,10 @@ pub struct LiveUsageSourceError {
     pub category: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<SourceErrorDetail>,
+    /// The plan named in a local file, when the failed source has no reading
+    /// to carry it. For example Claude Desktop's `~/.claude.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<LiveProviderPlan>,
 }
 
 /// One provider antiburn can meter, and whether the reader shows it.
@@ -3200,6 +3207,10 @@ pub struct LiveUsageMeter {
     /// `carrier`'s display name, so the views never restate the enum.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carrier_label: Option<String>,
+    /// The provider's desktop app by name, when it is installed, whatever
+    /// login was found. For example "Claude Desktop".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_app_label: Option<String>,
 }
 
 /// Live provider usage, as one snapshot.

@@ -50,7 +50,7 @@ pub const SKILL_OPPORTUNITIES_INPUT_SELECTION: JevInputSelection =
     ]);
 pub const SKILL_OPPORTUNITIES_REVISIONS: JevCheckRevisions = JevCheckRevisions {
     projection: 5,
-    chunking: 6,
+    chunking: 8,
     questions: 4,
     reducer: 6,
 };
@@ -306,6 +306,46 @@ pub struct SkillOpportunitiesCheck {
 }
 
 impl SkillOpportunitiesCheck {
+    /// Remove settled targets and rebuild the context for the remaining comparisons.
+    pub fn retain_plan_jobs(
+        &self,
+        plan: &mut JevCheckPlan<PreparedSkillOpportunities>,
+        jobs: &[SamplingJob],
+    ) -> Result<(), JevError> {
+        if jobs
+            .iter()
+            .any(|job| job.check != self.sampling_identity() || job.epoch != self.sampling_epoch())
+        {
+            return Err(JevError::InvalidCheckPlan);
+        }
+        let ids = jobs
+            .iter()
+            .map(|job| job.candidate)
+            .collect::<BTreeSet<_>>();
+        plan.prepared
+            .comparisons
+            .retain(|comparison| ids.contains(&stable(&comparison.id)));
+        if plan.prepared.comparisons.len() != ids.len() || ids.len() != jobs.len() {
+            return Err(JevError::InvalidCheckPlan);
+        }
+        plan.work_items
+            .retain(|item| ids.contains(&stable(&item.id)));
+        plan.skipped_item_ids.retain(|id| ids.contains(&stable(id)));
+        let shared = self.shared_context(
+            &plan
+                .prepared
+                .comparisons
+                .iter()
+                .map(|comparison| comparison.id.as_str())
+                .collect(),
+        );
+        plan.shared_context = (!shared.evidence.is_empty()).then_some(shared);
+        plan.coverage.selected_items = plan.work_items.len();
+        plan.coverage.skipped_items = plan.skipped_item_ids.len();
+        plan.coverage.not_selected_items = self.descriptor_count() - ids.len();
+        Ok(())
+    }
+
     /// Bind selected work, current skills, and use observations from the same window.
     pub fn new(
         content: &SessionContentEvidence,
@@ -726,6 +766,9 @@ impl SkillOpportunitiesCheck {
                 .limitations
                 .push(SkillOpportunityLimit::TaskContextPartial);
         }
+        if self.task_contexts[*episode].evidence.is_empty() {
+            comparison.work_context_assessable = false;
+        }
         if comparison
             .work
             .first()
@@ -999,7 +1042,13 @@ impl SkillOpportunitiesCheck {
         let shared = self.shared_context(&selected.iter().map(|item| item.id.as_str()).collect());
         let packing = pack_work_items_with_shared_context(selected, capabilities, &shared);
         let processing_limit_reached = !packing.skipped_item_ids.is_empty();
-        let skipped: BTreeSet<_> = packing.skipped_item_ids.iter().cloned().collect();
+        let mut skipped: BTreeSet<_> = packing.skipped_item_ids.iter().cloned().collect();
+        skipped.extend(
+            descriptors
+                .iter()
+                .filter(|descriptor| self.task_contexts[descriptor.1].evidence.is_empty())
+                .map(|descriptor| descriptor.0.clone()),
+        );
         let items: Vec<_> = selected
             .iter()
             .filter(|item| !skipped.contains(&item.id))
@@ -1007,6 +1056,12 @@ impl SkillOpportunitiesCheck {
             .collect();
         let comparisons: Vec<_> = self.hydrate_comparisons(&descriptors);
         let mut limitations = self.limitations.clone();
+        if descriptors
+            .iter()
+            .any(|descriptor| self.task_contexts[descriptor.1].evidence.is_empty())
+        {
+            limitations.push("task_context_unavailable".into());
+        }
         if comparisons.iter().any(|comparison| {
             comparison
                 .limitations
@@ -1047,13 +1102,13 @@ impl SkillOpportunitiesCheck {
                 selected_items: items.len(),
                 skipped_items: skipped.len(),
                 not_selected_items: self.descriptor_count() - selected.len(),
-                processing_limit_reached,
+                processing_limit_reached: processing_limit_reached || !skipped.is_empty(),
                 limitations,
             },
             work_items: items,
             skipped_item_ids: skipped.into_iter().collect(),
             capabilities: capabilities.clone(),
-            shared_context: Some(shared),
+            shared_context: (!shared.evidence.is_empty()).then_some(shared),
             prepared,
         })
     }
@@ -1120,18 +1175,16 @@ impl JevCheck for SkillOpportunitiesCheck {
             .iter()
             .map(|comparison| self.descriptor_for_comparison(comparison))
             .collect::<Result<Vec<_>, _>>()?;
+        let shared = self.shared_context(
+            &plan
+                .prepared
+                .comparisons
+                .iter()
+                .map(|comparison| comparison.id.as_str())
+                .collect(),
+        );
         if plan.input_revision != self.input_revision
-            || plan.shared_context.as_ref()
-                != Some(
-                    &self.shared_context(
-                        &plan
-                            .prepared
-                            .comparisons
-                            .iter()
-                            .map(|comparison| comparison.id.as_str())
-                            .collect(),
-                    ),
-                )
+            || plan.shared_context.as_ref() != (!shared.evidence.is_empty()).then_some(&shared)
             || plan.prepared.semantic_revision != self.prepared.semantic_revision
             || plan.prepared.comparisons.iter().any(|comparison| {
                 !descriptors.iter().any(|descriptor| {
@@ -1182,6 +1235,7 @@ fn selected_task_context(
         .iter()
         .filter(|occurrence| {
             occurrence.authority == ScopeAuthority::User
+                && occurrence.field == JevInputField::UserMessage
                 && (
                     occurrence.reference.turn_index,
                     occurrence.reference.part_index,
@@ -1199,21 +1253,53 @@ fn selected_task_context(
             evidence: vec![],
         };
     };
-    let value = &scope.values()[occurrence.value_index];
-    let text = value
-        .as_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| value.to_string());
-    let ranges = super::representative_ranges(&text, 512);
-    let selected_bytes = ranges.iter().map(|(start, end)| end - start).sum::<usize>();
-    JevSharedRequestContext {
-        fields: json!({"source_id": occurrence.reference.id, "chunks": ranges.iter().map(|&(start, end)| json!({"start_byte": start, "end_byte": end, "text": &text[start..end]})).collect::<Vec<_>>(), "total_bytes": text.len(), "partial": selected_bytes < text.len() || scope.occurrences().len() > 1 || !scope.limitations().is_empty()}),
-        evidence: vec![JevEvidenceReference {
+    let start = (
+        occurrence.reference.turn_index,
+        occurrence.reference.part_index,
+    );
+    let end = work.last().expect("nonempty work episode");
+    let mut chunks = Vec::new();
+    let mut evidence = Vec::new();
+    let antecedent_context_omitted = scope.occurrences().iter().any(|occurrence| {
+        occurrence.authority == ScopeAuthority::User
+            && occurrence.field == JevInputField::UserMessage
+            && (
+                occurrence.reference.turn_index,
+                occurrence.reference.part_index,
+            ) < start
+    });
+    let mut partial = !scope.limitations().is_empty() || antecedent_context_omitted;
+    for occurrence in scope.occurrences().iter().filter(|occurrence| {
+        let position = (
+            occurrence.reference.turn_index,
+            occurrence.reference.part_index,
+        );
+        position >= start
+            && position <= (end.reference.turn_index, end.reference.part_index)
+            && occurrence.field != JevInputField::AssistantMessage
+    }) {
+        let value = &scope.values()[occurrence.value_index];
+        let text = value
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| value.to_string());
+        let ranges = super::representative_ranges(&text, 512);
+        partial |= ranges.iter().map(|(start, end)| end - start).sum::<usize>() < text.len();
+        chunks.extend(ranges.iter().map(|&(start,end)| json!({"source_id":occurrence.reference.id,"field":occurrence.field,"authority":occurrence.authority,"start_byte": start,"end_byte":end,"text":&text[start..end]})));
+        evidence.push(JevEvidenceReference {
             part_id: format!("shared_context.task.{}", occurrence.reference.id),
             source_id: occurrence.reference.id.clone(),
             content_kind: format!("{:?}", occurrence.field),
-            role: JevEvidenceRole::Instruction,
-        }],
+            role: if occurrence.authority == ScopeAuthority::User {
+                JevEvidenceRole::Instruction
+            } else {
+                JevEvidenceRole::SupportingContext
+            },
+        });
+    }
+    JevSharedRequestContext {
+        fields: json!({"chunks":chunks,"partial":partial,"antecedent_context_omitted":antecedent_context_omitted}),
+        evidence,
     }
 }
 

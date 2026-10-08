@@ -25,6 +25,22 @@ fn presets_bind_exact_models_routes_and_response_modes() {
         connection.validate().unwrap();
         assert_eq!(connection.model, preset.model());
         assert!(connection.credential.is_none());
+        let capabilities = connection.capabilities().unwrap();
+        assert!(capabilities.usable_input_tokens().unwrap() > 0);
+        assert!(capabilities.usable_state_tokens().unwrap() > 0);
+        if connection.provider == SystemOneProvider::Custom {
+            assert_eq!(
+                connection
+                    .context_override
+                    .as_ref()
+                    .unwrap()
+                    .total_input_tokens,
+                Some(if preset.local() { 8192 } else { 65_536 })
+            );
+        } else {
+            assert!(connection.context_override.is_none());
+        }
+        assert_eq!(batch(&capabilities).work_item_ids, ["exact-work"]);
         let endpoint = connection.inference_endpoint().unwrap();
         if preset.local() {
             assert_eq!(endpoint, "http://127.0.0.1:11434/v1/systemone");
@@ -47,6 +63,34 @@ fn presets_bind_exact_models_routes_and_response_modes() {
     assert!(ProviderPreset::parse("custom").is_err());
     assert!(ProviderPreset::parse("ollama-arbitrary").is_err());
     assert!(ProviderPreset::CloudflareClef.connection(None).is_err());
+}
+
+#[test]
+fn custom_preset_limits_preserve_explicit_bounds_and_lower_discovered_limits() {
+    let mut connection = ProviderPreset::CustomOllamaNimbleDirect
+        .connection(None)
+        .unwrap();
+    connection.context_override = Some(ContextLimitOverride {
+        total_input_tokens: Some(6144),
+        state_and_longest_question_tokens: Some(5120),
+        runtime_context_tokens: Some(7168),
+    });
+    connection.validate().unwrap();
+    let mut discovered = ModelCapabilities::jev_default();
+    discovered.runtime_context_tokens =
+        antiburn_local::analysis::jev::capabilities::CapabilityLimit::known(
+            5000,
+            antiburn_local::analysis::jev::capabilities::CapabilitySource::RuntimeMetadata,
+        );
+    let capabilities = connection.apply_capability_overrides(discovered);
+    assert_eq!(capabilities.total_input_tokens.value, Some(6144));
+    assert_eq!(
+        capabilities.state_and_longest_question_tokens.value,
+        Some(5120)
+    );
+    assert_eq!(capabilities.runtime_context_tokens.value, Some(5000));
+    assert_eq!(capabilities.usable_input_tokens(), Some(904));
+    assert_eq!(capabilities.usable_state_tokens(), Some(904));
 }
 
 fn batch(capabilities: &ModelCapabilities) -> antiburn_local::analysis::jev::JevRequestBatch {
@@ -139,8 +183,12 @@ async fn loopback_batch(mode: SystemOneResponseMode, missing_answer: bool, ollam
         response_mode: mode,
         credential: None,
         revision: 1,
-        context_override: None,
+        context_override: Some(ContextLimitOverride {
+            total_input_tokens: capabilities.total_input_tokens.value,
+            ..ContextLimitOverride::default()
+        }),
     };
+    connection.validate().unwrap();
     let configuration = EvalConfiguration {
         preset: ProviderPreset::CustomOllamaNimbleDirect,
         connection,

@@ -21,6 +21,125 @@ fn scope() -> SkillScope {
         environment_identity: "native".into(),
     }
 }
+
+#[test]
+fn short_approval_does_not_establish_complete_task_context() {
+    let source = vec![
+        part(
+            0,
+            ContentKind::UserText,
+            "Audit the parser before editing. Keep billing unchanged.",
+            None,
+            None,
+        ),
+        part(
+            1,
+            ContentKind::AssistantText,
+            "I propose to audit the parser and its tests, then report the risks.",
+            None,
+            None,
+        ),
+        part(2, ContentKind::UserText, "Yes, continue.", None, None),
+        part(
+            3,
+            ContentKind::ToolInput,
+            r#"{"command":"cargo test parser"}"#,
+            Some("Bash"),
+            Some("audit"),
+        ),
+        part(
+            4,
+            ContentKind::ToolResult,
+            "Parser tests pass.",
+            Some("Bash"),
+            Some("audit"),
+        ),
+    ];
+    let check = check(source, 1, false);
+    let plan = check.prepare(&check.session_context()).unwrap();
+    assert!(check.task_contexts[0].fields["partial"] == true);
+    assert!(check.task_contexts[0].fields["antecedent_context_omitted"] == true);
+    assert!(
+        plan.prepared.comparisons[0]
+            .limitations
+            .contains(&SkillOpportunityLimit::TaskContextPartial)
+    );
+    let result = check
+        .reduce(&plan, &results(&plan, "no_opportunity", 0.9), true)
+        .unwrap();
+    assert!(!result.complete);
+}
+
+#[test]
+fn settled_targets_preserve_the_plan_inventory_invariant() {
+    let check = check(parts(), 4, false);
+    let mut sampling = SamplingProgress::new(SamplingLimits {
+        checks: 1,
+        candidates_per_check: 4096,
+        answers_per_candidate: 1,
+        judgments_per_run: 4,
+    })
+    .unwrap();
+    check.synchronize_sampling(&mut sampling).unwrap();
+    sampling.begin_run();
+    let jobs = (0..4)
+        .map(|_| sampling.choose_job().unwrap())
+        .collect::<Vec<_>>();
+    let mut plan = check
+        .prepare_sampled(
+            &check.session_context(),
+            &ModelCapabilities::jev_default(),
+            &jobs,
+        )
+        .unwrap();
+    let mut broken = plan.clone();
+    broken.work_items.remove(0);
+    assert!(matches!(
+        check.reduce(&broken, &[], false),
+        Err(JevError::InvalidCheckPlan)
+    ));
+    check.retain_plan_jobs(&mut plan, &jobs[1..]).unwrap();
+    assert_eq!(plan.prepared.comparisons.len(), 3);
+    assert_eq!(plan.work_items.len() + plan.skipped_item_ids.len(), 3);
+    check
+        .reduce(&plan, &results(&plan, "no_opportunity", 0.9), true)
+        .unwrap();
+    let mut altered = plan.clone();
+    altered.work_items[0].window.fields["work"] = json!([]);
+    assert!(matches!(
+        check.reduce(&altered, &[], false),
+        Err(JevError::InvalidCheckPlan)
+    ));
+}
+
+#[tokio::test]
+async fn missing_task_is_unassessed_without_invalid_plan_or_dispatch() {
+    let mut source = parts();
+    source[0].turn_index = 3;
+    source[0].uuid = Some("later-task".into());
+    source.sort_by_key(|part| part.turn_index);
+    let check = check(source, 1, false);
+    let plan = check.prepare(&check.session_context()).unwrap();
+    assert!(plan.work_items.is_empty());
+    assert_eq!(plan.skipped_item_ids.len(), 1);
+    let outcome = run_jev_check(
+        &check,
+        &check.session_context(),
+        JevRunProgress::default(),
+        |_| async { panic!("missing task must not dispatch") },
+        |_| Ok(()),
+    )
+    .await
+    .unwrap();
+    assert!(!outcome.result.complete);
+    assert!(
+        outcome
+            .result
+            .decisions
+            .iter()
+            .all(|decision| decision.judgments.is_none())
+    );
+}
 fn skill(index: usize) -> SkillDefinition {
     SkillDefinition {
         identity: format!("skill-{index}"),

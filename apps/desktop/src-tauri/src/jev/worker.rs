@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use antiburn_local::analysis::jev::{
     JevCheck, JevCheckPlan, JevError, JevExecutionOutcome, JevOrchestrationPermit, JevRequestBatch,
-    JevResponse, JevRunProgress, JevSessionContext, MAX_REQUEST_TOKENS, run_jev_check_prepared,
+    JevResponse, JevRunProgress, JevSessionContext, MAX_REQUEST_TOKENS,
 };
 use antiburn_local::checks::DetectorId;
 use sha2::{Digest, Sha256};
@@ -32,6 +32,21 @@ const CANDIDATE_WORKERS: usize = 4;
 const DISPATCHES_PER_TURN: u64 = 8;
 const REQUEST_DEADLINE: Duration = Duration::from_secs(60);
 const GLOBAL_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+
+pub(crate) async fn run_blocking_preparation<T: Send + 'static>(
+    prepare: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+) -> anyhow::Result<T> {
+    static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    let permit = SLOTS
+        .get_or_init(|| tokio::sync::Semaphore::new(CANDIDATE_WORKERS))
+        .acquire()
+        .await?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        prepare()
+    })
+    .await?
+}
 
 fn request_bytes() -> &'static tokio::sync::Semaphore {
     static BYTES: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
@@ -458,7 +473,7 @@ impl WorkerHandle {
         Ok(result)
     }
 
-    fn admit_if_current<T>(
+    pub(crate) fn admit_if_current<T>(
         &self,
         key_generation: u64,
         check_id: &str,
@@ -570,6 +585,7 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
         let mut poll = tokio::time::interval(Duration::from_secs(POLL_SECS));
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut skill_observation_after: Option<(String, String)> = None;
+        let mut scope_observation_after: Option<(String, String)> = None;
         loop {
             let handle = app.state::<WorkerHandle>();
             let store = (*app.state::<Store>()).clone();
@@ -600,6 +616,42 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
             let Some((client, key_generation)) = handle.execution_client() else {
                 continue;
             };
+            match store.burn_check_dependency_candidates(
+                "scope_creep",
+                scope_observation_after
+                    .as_ref()
+                    .map(|(agent, session)| (agent.as_str(), session.as_str())),
+                32,
+            ) {
+                Ok(candidates) => {
+                    for candidate in &candidates {
+                        match crate::scope_creep_worker::reconcile_scope_dependencies(
+                            &store, candidate,
+                        ) {
+                            Ok(true) => {
+                                let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
+                            }
+                            Ok(false) => {}
+                            Err(error) => {
+                                ::tracing::warn!(event = "scope_dependency_observation_failed", error = %error)
+                            }
+                        }
+                    }
+                    scope_observation_after = if candidates.len() == 32 {
+                        candidates.last().map(|candidate| {
+                            (
+                                candidate.session.key.agent.clone(),
+                                candidate.session.key.session_id.clone(),
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                }
+                Err(error) => {
+                    ::tracing::warn!(event = "scope_dependency_candidates_failed", error = %error)
+                }
+            }
             match store.skill_observation_candidates(
                 skill_observation_after
                     .as_ref()
@@ -633,13 +685,20 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                 }
             };
             let mut jobs = tokio::task::JoinSet::new();
+            let mut in_flight = std::collections::BTreeSet::new();
             let mut scheduled = 0;
             loop {
                 while scheduled < CANDIDATES_PER_WAKE && jobs.len() < CANDIDATE_WORKERS {
                     if !handle.key_is_current(key_generation) {
                         break;
                     }
-                    let selected = match select_turn(&store, checks, &cursor, unix_now()) {
+                    let selected = match select_turn_excluding(
+                        &store,
+                        checks,
+                        &cursor,
+                        unix_now(),
+                        &in_flight,
+                    ) {
                         Ok(selected) => selected,
                         Err(error) => {
                             ::tracing::warn!(
@@ -672,6 +731,7 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                         break;
                     }
                     handle.start_candidate_turn(check.id(), &candidate.session.key);
+                    in_flight.insert((check.id(), candidate.session.key.clone()));
                     let app = app.clone();
                     let store = store.clone();
                     let client = client.clone();
@@ -713,18 +773,19 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                             }
                         }
                     };
-                    (candidate, check_id, candidate_turn, result)
+                    (candidate, check_id, candidate_turn, check_generation, result)
                 });
                     scheduled += 1;
                 }
                 if jobs.is_empty() {
                     break;
                 }
-                let Some(Ok((candidate, check_id, candidate_turn, result))) =
+                let Some(Ok((candidate, check_id, candidate_turn, check_generation, result))) =
                     jobs.join_next().await
                 else {
                     continue;
                 };
+                in_flight.remove(&(check_id, candidate.session.key.clone()));
                 if candidate.historical {
                     crate::jev::settings::progress_changed(&app);
                 }
@@ -735,6 +796,35 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                         agent = %candidate.session.key.agent,
                         error = %error,
                     );
+                    let check = checks
+                        .iter()
+                        .find(|check| check.id() == check_id)
+                        .expect("scheduled check is registered");
+                    let (category, retry_at) =
+                        candidate_error_policy(&error, check.policy(), unix_now());
+                    match handle.admit_if_current(
+                        key_generation,
+                        check_id,
+                        check_generation,
+                        || {
+                            store.settle_burn_check_candidate_error(
+                                &candidate,
+                                check_id,
+                                &check.evaluator_revision(),
+                                unix_now(),
+                                category,
+                                retry_at,
+                            )
+                        },
+                    ) {
+                        Ok(Some(true)) => {
+                            let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
+                        }
+                        Ok(Some(false) | None) => {}
+                        Err(error) => {
+                            ::tracing::error!(event = "burn_check_candidate_settlement_failed", error = %error)
+                        }
+                    }
                 }
                 if let Err(error) = store.serve_burn_check_candidate(
                     &candidate,
@@ -763,31 +853,71 @@ fn scheduler_cursor(store: &Store) -> anyhow::Result<SchedulerCursor> {
         .unwrap_or_else(|| Ok(SchedulerCursor::default()))
 }
 
+#[cfg(test)]
 fn select_turn(
     store: &Store,
     checks: &[&dyn JevCheckDescriptor],
     cursor: &SchedulerCursor,
     now: i64,
 ) -> anyhow::Result<Option<(usize, BurnCheckCandidate)>> {
+    select_turn_excluding(
+        store,
+        checks,
+        cursor,
+        now,
+        &std::collections::BTreeSet::new(),
+    )
+}
+
+fn select_turn_excluding(
+    store: &Store,
+    checks: &[&dyn JevCheckDescriptor],
+    cursor: &SchedulerCursor,
+    now: i64,
+    in_flight: &std::collections::BTreeSet<(&'static str, SessionKey)>,
+) -> anyhow::Result<Option<(usize, BurnCheckCandidate)>> {
     let continuation = cursor.turn % 5 == 4;
     for lane in [continuation, !continuation] {
         for offset in 0..checks.len() {
             let index = (cursor.next_check + offset) % checks.len();
             let check = checks[index];
-            let mut candidates = store.burn_check_candidates_in_lane(
+            let candidates = store.burn_check_candidates_in_lane(
                 check.id(),
                 &check.evaluator_revision(),
                 now,
                 check.policy().idle_secs,
-                1,
+                in_flight.len() + 1,
                 Some(lane),
             )?;
-            if let Some(candidate) = candidates.pop() {
+            if let Some(candidate) = candidates
+                .into_iter()
+                .find(|candidate| !in_flight.contains(&(check.id(), candidate.session.key.clone())))
+            {
                 return Ok(Some((index, candidate)));
             }
         }
     }
     Ok(None)
+}
+
+fn candidate_error_policy(
+    error: &anyhow::Error,
+    policy: CheckPolicy,
+    now: i64,
+) -> (&'static str, Option<i64>) {
+    match error.downcast_ref::<JevError>() {
+        Some(
+            JevError::InvalidCheckContext | JevError::InvalidCheckPlan | JevError::EmptyQuestions,
+        ) => ("candidate_error", None),
+        Some(error) => (
+            error_category(error),
+            Some(now.saturating_add(policy.retry_delay_secs)),
+        ),
+        None => (
+            "candidate_retry",
+            Some(now.saturating_add(policy.retry_delay_secs)),
+        ),
+    }
 }
 
 fn reconcile_skill_candidate(
@@ -852,7 +982,7 @@ where
     C: JevCheck,
     S: FnMut(&JevRunProgress) -> Result<String, JevError>,
 {
-    let outcome = run_jev_check_prepared(
+    let outcome = antiburn_local::analysis::jev::run_jev_check_prepared_with_readiness(
         check,
         context,
         plan,
@@ -877,6 +1007,28 @@ where
                 execution.handle,
                 execution.key_generation,
             )
+        },
+        &|batch| {
+            let (mut connection, _) = execution.handle.active_system_one();
+            connection
+                .model_revision
+                .clone_from(&execution.capabilities.model_revision);
+            let identities = batch_request_identities(&connection, execution.input, batch);
+            let readiness = execution
+                .store
+                .burn_check_target_readiness(&identities, unix_now())
+                .map_err(|_| JevError::ProgressStorageFailure)?;
+            let [admission] = readiness.as_slice() else {
+                return Err(JevError::InvalidCheckPlan);
+            };
+            match admission {
+                BurnCheckRequestAdmission::Admitted => Ok(()),
+                BurnCheckRequestAdmission::Unresolved => Err(JevError::RequestOutcomeUnknown),
+                BurnCheckRequestAdmission::Exhausted => Err(JevError::ProviderUnavailable),
+                BurnCheckRequestAdmission::Deferred | BurnCheckRequestAdmission::Stale => {
+                    Err(JevError::Cancelled)
+                }
+            }
         },
     )
     .await;
@@ -1715,15 +1867,20 @@ fn hash_identity(parts: [&str; 6]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+mod tests;
+
+#[cfg(test)]
+mod checkpoint_tests {
     use super::*;
 
-    fn checkpoint_fixture() -> (Store, BurnCheckInput, WorkerHandle, u64) {
+    pub(super) fn checkpoint_fixture() -> (Store, BurnCheckInput, WorkerHandle, u64) {
         let store = Store::open_in_memory(std::path::Path::new("synthetic-state")).unwrap();
         checkpoint_fixture_in(store)
     }
 
-    fn checkpoint_fixture_in(store: Store) -> (Store, BurnCheckInput, WorkerHandle, u64) {
+    pub(super) fn checkpoint_fixture_in(
+        store: Store,
+    ) -> (Store, BurnCheckInput, WorkerHandle, u64) {
         let now = unix_now();
         let record = crate::store::SessionRecord {
             key: SessionKey::new("native", "claude-code", "checkpoint"),
@@ -1791,372 +1948,6 @@ mod tests {
             .unwrap();
         let generation = handle.key_generation.load(Ordering::Acquire);
         (store, input, handle, generation)
-    }
-
-    fn scheduler_fixture() -> (Store, Vec<BurnCheckInput>) {
-        let (store, base, _, _) = checkpoint_fixture();
-        let mut inputs = Vec::new();
-        for session in ["checkpoint", "second"] {
-            if session != "checkpoint" {
-                let mut record = store.session(&base.key).unwrap().unwrap();
-                record.key.session_id = session.into();
-                store
-                    .upsert_sessions(&[record], &crate::agents::evidence_cohort())
-                    .unwrap();
-                store
-                    .lock()
-                    .execute(
-                        "UPDATE session_evidence SET status = 'ready', analyzed_generation = 0,
-                        parser_revision = ?1, analyzer_revision = ?2, evidence_schema_revision = ?3,
-                        evidence_json = '{}', claim_fence = 1, published_fence = 1",
-                        rusqlite::params![
-                            antiburn_local::analysis::PARSER_REVISION,
-                            antiburn_local::analysis::ANALYZER_REVISION,
-                            antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION
-                        ],
-                    )
-                    .unwrap();
-            }
-            let key = SessionKey::new("native", "claude-code", session);
-            let connection = store.lock();
-            connection
-                .execute(
-                    "INSERT INTO turn (environment_key, agent, session_id, claim_fence, source_key,
-                    thread_id, turn_index, scope, role, input_tokens, cache_read_tokens,
-                    cache_write_tokens, output_tokens, is_compaction_boundary)
-                 VALUES (?1, ?2, ?3, 1, 'source', 'thread', 0, 'main', 'assistant', 0, 0, 0, 0, 0)",
-                    rusqlite::params![key.environment_key, key.agent, key.session_id],
-                )
-                .unwrap();
-            connection
-                .execute(
-                    "INSERT INTO turn_content (turn_rowid, part_index, kind, content, truncated)
-                     VALUES (?1, 0, 'text', ?2, 0)",
-                    rusqlite::params![
-                        connection.last_insert_rowid(),
-                        b"synthetic activity".as_slice()
-                    ],
-                )
-                .unwrap();
-            drop(connection);
-            let incarnation = store.lock().query_row(
-                "SELECT incarnation FROM session WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-                rusqlite::params![key.environment_key, key.agent, key.session_id], |row| row.get(0),
-            ).unwrap();
-            for check in registered_checks() {
-                store
-                    .set_check_enabled(DetectorId::from_key(check.id()).unwrap(), true)
-                    .unwrap();
-                let input = BurnCheckInput {
-                    key: key.clone(),
-                    incarnation,
-                    check_id: check.id().into(),
-                    evaluator_revision: check.evaluator_revision(),
-                    ..base.clone()
-                };
-                // Replace the checkpoint fixture's active lease with a queued row.
-                store
-                    .lock()
-                    .execute(
-                        "DELETE FROM burn_check_assessment WHERE environment_key = ?1
-                    AND agent = ?2 AND session_id = ?3 AND check_id = ?4",
-                        rusqlite::params![
-                            key.environment_key,
-                            key.agent,
-                            key.session_id,
-                            check.id()
-                        ],
-                    )
-                    .unwrap();
-                assert!(
-                    store
-                        .queue_burn_check_assessment(&input, unix_now(), 180)
-                        .unwrap()
-                );
-                inputs.push(input);
-            }
-        }
-        (store, inputs)
-    }
-
-    #[test]
-    fn scheduler_rotates_checks_and_least_served_sessions_across_restarts() {
-        let (store, _) = scheduler_fixture();
-        let mut cursor = SchedulerCursor::default();
-        let mut selected = Vec::new();
-        for _ in 0..8 {
-            let (index, candidate) = select_turn(&store, registered_checks(), &cursor, unix_now())
-                .unwrap()
-                .unwrap();
-            selected.push((
-                registered_checks()[index].id(),
-                candidate.session.key.session_id.clone(),
-            ));
-            cursor.turn += 1;
-            cursor.next_check = (index + 1) % 4;
-            store
-                .serve_burn_check_candidate(
-                    &candidate,
-                    registered_checks()[index].id(),
-                    cursor.turn,
-                    &serde_json::to_string(&cursor).unwrap(),
-                )
-                .unwrap();
-            cursor = scheduler_cursor(&store).unwrap();
-        }
-        assert_eq!(
-            selected.iter().map(|(check, _)| *check).collect::<Vec<_>>(),
-            [
-                "ignored_instructions",
-                "scope_creep",
-                "over_exploring",
-                "skill_opportunities"
-            ]
-            .repeat(2)
-        );
-        assert!(
-            selected[..4]
-                .iter()
-                .all(|(_, session)| session == "checkpoint")
-        );
-        assert!(selected[4..].iter().all(|(_, session)| session == "second"));
-    }
-
-    #[test]
-    fn current_review_counts_use_only_fresh_persisted_counters() {
-        let (store, input, _, _) = checkpoint_fixture();
-        let read = |connection: &rusqlite::Connection| {
-            Store::current_burn_check_review_counts(
-                connection,
-                &input.key,
-                &input.check_id,
-                &input.evaluator_revision,
-            )
-        };
-        assert!(read(&store.lock()).unwrap().is_none());
-        assert!(
-            store
-                .save_burn_check_scheduling(&input, Some(5), 3, 2)
-                .unwrap()
-        );
-        let connection = store.lock();
-        let counts = read(&connection).unwrap().unwrap();
-        assert_eq!(
-            (counts.eligible, counts.reviewed, counts.runnable),
-            (Some(5), 3, 2)
-        );
-        // These fields have no report schema. Counter reads do not parse them.
-        connection
-            .execute(
-                "UPDATE burn_check_assessment SET result_json = '{\"private\":true}',
-            progress_json = '{\"private\":true}'",
-                [],
-            )
-            .unwrap();
-        assert_eq!(read(&connection).unwrap(), Some(counts.clone()));
-        for change in [
-            "UPDATE burn_check_assessment SET scheduling_revision = 'old'",
-            "UPDATE burn_check_assessment SET input_revision = 'old'",
-            "UPDATE burn_check_assessment SET evaluator_revision = 'old'",
-            "UPDATE burn_check_assessment SET source_fingerprint = 'other-fingerprint'",
-            "UPDATE session SET source_fingerprint = 'other-fingerprint'",
-            "UPDATE session SET source_generation = source_generation + 1",
-            "UPDATE session SET incarnation = incarnation + 1",
-            "UPDATE session_evidence SET published_fence = published_fence + 1",
-            "UPDATE session_evidence SET processed_fingerprint = 'other-fingerprint'",
-            "UPDATE session_evidence SET parser_revision = parser_revision - 1",
-            "UPDATE session_evidence SET analyzer_revision = analyzer_revision - 1",
-            "UPDATE session_evidence SET evidence_schema_revision = evidence_schema_revision - 1",
-            "UPDATE session_evidence SET status = 'failed'",
-            "UPDATE burn_check_assessment SET status = 'superseded'",
-        ] {
-            connection.execute_batch("SAVEPOINT stale_counts").unwrap();
-            connection.execute(change, []).unwrap();
-            assert!(read(&connection).unwrap().is_none(), "{change}");
-            connection
-                .execute_batch("ROLLBACK TO stale_counts; RELEASE stale_counts")
-                .unwrap();
-        }
-        drop(connection);
-        let stale = BurnCheckInput {
-            source_fingerprint: Some("other-fingerprint".into()),
-            ..input.clone()
-        };
-        assert!(
-            !store
-                .save_burn_check_scheduling(&stale, Some(100), 99, 1)
-                .unwrap()
-        );
-        assert_eq!(read(&store.lock()).unwrap(), Some(counts));
-        assert!(
-            store
-                .save_burn_check_scheduling(&input, None, 3, 2)
-                .unwrap()
-        );
-        let unknown = read(&store.lock()).unwrap().unwrap();
-        assert_eq!(
-            (unknown.eligible, unknown.reviewed, unknown.runnable),
-            (None, 3, 2)
-        );
-        assert!(
-            store
-                .save_burn_check_scheduling(&input, Some(0), 0, 0)
-                .unwrap()
-        );
-        assert_eq!(read(&store.lock()).unwrap().unwrap().eligible, Some(0));
-    }
-
-    #[test]
-    fn fifth_turn_reserves_continuation_and_exhausted_work_leaves_both_lanes() {
-        let (store, inputs) = scheduler_fixture();
-        for input in &inputs {
-            assert!(
-                store
-                    .save_burn_check_scheduling(input, Some(5), 0, 5)
-                    .unwrap()
-            );
-        }
-        let continuation = &inputs[3];
-        assert!(
-            store
-                .save_burn_check_scheduling(continuation, Some(5), 3, 2)
-                .unwrap()
-        );
-        let cursor = SchedulerCursor {
-            turn: 4,
-            next_check: 0,
-        };
-        let (index, candidate) = select_turn(&store, registered_checks(), &cursor, unix_now())
-            .unwrap()
-            .unwrap();
-        assert_eq!(index, 3);
-        assert_eq!(candidate.session.key, continuation.key);
-        let priority = select_turn(
-            &store,
-            registered_checks(),
-            &SchedulerCursor::default(),
-            unix_now(),
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(priority.0, 0);
-        assert!(
-            store
-                .save_burn_check_scheduling(continuation, Some(5), 3, 0)
-                .unwrap()
-        );
-        assert_eq!(
-            select_turn(&store, registered_checks(), &cursor, unix_now())
-                .unwrap()
-                .unwrap()
-                .0,
-            0
-        );
-        for input in &inputs {
-            store
-                .save_burn_check_scheduling(input, Some(5), 0, 0)
-                .unwrap();
-        }
-        assert!(
-            select_turn(&store, registered_checks(), &cursor, unix_now())
-                .unwrap()
-                .is_none()
-        );
-        // A changed evaluator invalidates the inventory lane and terminal state.
-        store
-            .lock()
-            .execute(
-                "UPDATE burn_check_assessment SET evaluator_revision = 'old'",
-                [],
-            )
-            .unwrap();
-        assert!(
-            select_turn(&store, registered_checks(), &cursor, unix_now())
-                .unwrap()
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn transport_attempts_and_backoff_survive_reenrollment_and_store_reopen() {
-        let directory = tempfile::tempdir().unwrap();
-        let (mut store, input, _, _) =
-            checkpoint_fixture_in(Store::open(directory.path()).unwrap());
-        let identities = ["semantic-target".to_owned()];
-        let now = unix_now();
-        for (attempt, time, delay) in [(1, now, 5), (2, now + 5, 30), (3, now + 35, 0)] {
-            assert_eq!(
-                store
-                    .admit_burn_check_requests(&input, &identities, "reservation", time)
-                    .unwrap(),
-                BurnCheckRequestAdmission::Admitted
-            );
-            assert_eq!(
-                store.burn_check_dispatch_attempts(&identities).unwrap(),
-                attempt
-            );
-            store
-                .clear_burn_check_request_outcomes(&identities)
-                .unwrap();
-            store
-                .defer_burn_check_dispatch(&input, &identities, (delay > 0).then_some(time + delay))
-                .unwrap();
-            drop(store);
-            store = Store::open(directory.path()).unwrap();
-            if delay > 0 {
-                assert_eq!(
-                    store
-                        .admit_burn_check_requests(&input, &identities, "other", time)
-                        .unwrap(),
-                    BurnCheckRequestAdmission::Deferred
-                );
-            }
-        }
-        assert_eq!(
-            store
-                .admit_burn_check_requests(&input, &identities, "fourth", now + 100)
-                .unwrap(),
-            BurnCheckRequestAdmission::Exhausted
-        );
-        assert!(
-            !store
-                .burn_check_requests_are_unresolved(&identities)
-                .unwrap()
-        );
-        assert_eq!(store.burn_check_dispatch_attempts(&identities).unwrap(), 3);
-        store
-            .release_failed_burn_check_lease(&input, "provider_unavailable", now + 200)
-            .unwrap();
-        assert_eq!(
-            store.next_burn_check_retry_at(now).unwrap(),
-            Some(now + 200)
-        );
-        assert_eq!(store.next_burn_check_retry_at(now + 200).unwrap(), None);
-        assert!(
-            store
-                .queue_burn_check_assessment(&input, now + 200, 180)
-                .unwrap()
-        );
-        assert!(
-            store
-                .claim_burn_check_assessment(&input, now + 200, 300, 180)
-                .unwrap()
-        );
-        assert_eq!(
-            store
-                .admit_burn_check_requests(&input, &identities, "reenrolled", now + 200)
-                .unwrap(),
-            BurnCheckRequestAdmission::Exhausted
-        );
-        store
-            .set_internal_value_checked(
-                "internal:burnCheckSchedulerV1",
-                "{\"turn\":7,\"next_check\":2}",
-            )
-            .unwrap();
-        store.clear_local_session_data().unwrap();
-        assert_eq!(store.burn_check_dispatch_attempts(&identities).unwrap(), 0);
-        assert!(store.burn_check_scheduler_cursor().unwrap().is_none());
     }
 
     #[test]
@@ -3484,7 +3275,10 @@ mod tests {
             response_mode: crate::jev::config::SystemOneResponseMode::Direct,
             credential: None,
             revision: 2,
-            context_override: None,
+            context_override: Some(crate::jev::config::ContextLimitOverride {
+                total_input_tokens: Some(8192),
+                ..crate::jev::config::ContextLimitOverride::default()
+            }),
         };
         handle
             .set_system_one_connection(next_connection, None)
@@ -3741,7 +3535,10 @@ mod tests {
             response_mode: crate::jev::config::SystemOneResponseMode::Direct,
             credential: None,
             revision: 2,
-            context_override: None,
+            context_override: Some(crate::jev::config::ContextLimitOverride {
+                total_input_tokens: Some(8192),
+                ..crate::jev::config::ContextLimitOverride::default()
+            }),
         };
         handle
             .set_system_one_connection(connection.clone(), Some("secret-one".to_owned()))
@@ -3796,6 +3593,10 @@ mod tests {
                 },
                 model: "clef-flash".into(),
                 credential: None,
+                context_override: Some(crate::jev::config::ContextLimitOverride {
+                    total_input_tokens: Some(8192),
+                    ..crate::jev::config::ContextLimitOverride::default()
+                }),
                 ..SystemOneConnection::default()
             };
             handle
@@ -3855,7 +3656,10 @@ mod tests {
             response_mode: crate::jev::config::SystemOneResponseMode::Direct,
             credential: None,
             revision: 1,
-            context_override: None,
+            context_override: Some(crate::jev::config::ContextLimitOverride {
+                total_input_tokens: Some(8192),
+                ..crate::jev::config::ContextLimitOverride::default()
+            }),
         };
         let second = SystemOneConnection {
             endpoint: SystemOneEndpoint::ExactUrl(

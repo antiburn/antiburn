@@ -114,6 +114,84 @@ pub struct ScopeDescriptorInventory {
     pub next_action: usize,
     pub groups: Vec<WorkGroup>,
     pub complete: bool,
+    #[serde(default)]
+    pub limitation: Option<ScopeInventoryLimit>,
+    #[serde(default)]
+    pub descriptor_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeInventoryLimit {
+    SerializedBudget,
+}
+
+pub const MAX_SCOPE_DESCRIPTOR_BYTES: usize = 512 * 1024;
+
+#[derive(Debug, Clone)]
+struct InputIndex {
+    actions: BTreeMap<String, usize>,
+    results: BTreeMap<(String, String), Vec<usize>>,
+    user_turns: Vec<u64>,
+    user_actions: Vec<usize>,
+    work_actions: Vec<usize>,
+    authority: Vec<usize>,
+    scope_users: Vec<usize>,
+    preceding_assistant: Vec<Option<usize>>,
+}
+
+impl InputIndex {
+    fn new(input: &ScopeCreepInput, shared: &JevSharedRequestContext) -> Self {
+        use crate::analysis::session_scope::ScopeAuthority;
+        let mut index = Self {
+            actions: BTreeMap::new(),
+            results: BTreeMap::new(),
+            user_turns: Vec::new(),
+            user_actions: Vec::new(),
+            work_actions: Vec::new(),
+            authority: Vec::new(),
+            scope_users: Vec::new(),
+            preceding_assistant: Vec::new(),
+        };
+        for (position, action) in input.content.actions.iter().enumerate() {
+            index.actions.insert(action.reference.id.clone(), position);
+            if action.authority == "user" {
+                index.user_turns.push(action.reference.turn_index);
+                index.user_actions.push(position);
+            }
+            if is_work_anchor(action) {
+                index.work_actions.push(position);
+            }
+            if action.kind == "tool_result"
+                && let Some((name, call)) =
+                    action.tool_name.as_ref().zip(action.tool_call_id.as_ref())
+            {
+                index
+                    .results
+                    .entry((name.clone(), call.clone()))
+                    .or_default()
+                    .push(position);
+            }
+        }
+        index.user_turns.dedup();
+        let mut assistant = None;
+        for (position, occurrence) in input.scope.occurrences().iter().enumerate() {
+            index.preceding_assistant.push(assistant);
+            if occurrence.authority == ScopeAuthority::User {
+                index.scope_users.push(position);
+                index.authority.push(position);
+                assistant = None;
+            } else {
+                if shared.fields["occurrences"][position]["recorded_user_approved_plan"] == true {
+                    index.authority.push(position);
+                }
+                if occurrence.field == JevInputField::AssistantMessage {
+                    assistant = Some(position);
+                }
+            }
+        }
+        index
+    }
 }
 
 /// One immutable source-bound input. This type does not own a worker or client.
@@ -124,6 +202,7 @@ pub struct ScopeCreepCheck {
     scope_digest: String,
     shared_context: JevSharedRequestContext,
     selection: JevInputSelection,
+    index: InputIndex,
 }
 
 impl ScopeCreepCheck {
@@ -141,20 +220,53 @@ impl ScopeCreepCheck {
         if inventory.next_action > self.input.content.actions.len() {
             return Err(JevError::InvalidCheckContext);
         }
+        if inventory.complete || inventory.limitation.is_some() {
+            return Ok(());
+        }
+        if inventory.descriptor_bytes == 0 && !inventory.groups.is_empty() {
+            inventory.descriptor_bytes = inventory
+                .groups
+                .iter()
+                .map(|group| {
+                    serde_json::to_vec(group)
+                        .map(|value| value.len())
+                        .map_err(|_| JevError::InvalidCheckContext)
+                })
+                .sum::<Result<usize, _>>()?;
+        }
         let started = Instant::now();
         let mut emitted = 0;
+        let mut known: BTreeSet<_> = inventory
+            .groups
+            .iter()
+            .map(|group| group.id.clone())
+            .collect();
         while inventory.next_action < self.input.content.actions.len()
             && emitted < 256
             && started.elapsed() < Duration::from_secs(1)
         {
             let index = inventory.next_action;
             if let Some(group) = self.descriptor_group(index)? {
+                if known.contains(&group.id) {
+                    inventory.next_action += 1;
+                    continue;
+                }
+                let bytes = serde_json::to_vec(&group)
+                    .map_err(|_| JevError::InvalidCheckContext)?
+                    .len();
+                if inventory.descriptor_bytes.saturating_add(bytes) > MAX_SCOPE_DESCRIPTOR_BYTES {
+                    inventory.limitation = Some(ScopeInventoryLimit::SerializedBudget);
+                    break;
+                }
+                known.insert(group.id.clone());
                 inventory.groups.push(group);
+                inventory.descriptor_bytes += bytes;
                 emitted += 1;
             }
             inventory.next_action += 1;
         }
-        inventory.complete = inventory.next_action == self.input.content.actions.len();
+        inventory.complete = inventory.limitation.is_none()
+            && inventory.next_action == self.input.content.actions.len();
         Ok(())
     }
 
@@ -196,8 +308,13 @@ impl ScopeCreepCheck {
     fn validate_inventory(&self, inventory: &ScopeDescriptorInventory) -> Result<(), JevError> {
         if inventory.source_revision != self.context.input_revision
             || inventory.next_action > self.input.content.actions.len()
-            || inventory.groups.len() > inventory.next_action
-            || inventory.complete != (inventory.next_action == self.input.content.actions.len())
+            || inventory.groups.len() > self.input.content.actions.len()
+            || (inventory.complete
+                && (inventory.next_action != self.input.content.actions.len()
+                    || inventory.limitation.is_some()))
+            || (!inventory.complete
+                && inventory.next_action == self.input.content.actions.len()
+                && inventory.limitation.is_none())
         {
             return Err(JevError::InvalidCheckContext);
         }
@@ -234,30 +351,35 @@ impl ScopeCreepCheck {
                 .limitations
                 .push("descriptor_enumeration_incomplete".into());
         }
+        if inventory.limitation.is_some() {
+            plan.coverage
+                .limitations
+                .push("descriptor_storage_budget_reached".into());
+        }
         Ok(plan)
     }
 
     pub(super) fn canonical_group(&self, group: &WorkGroup) -> Result<WorkGroup, JevError> {
         let anchor = group.work.first().ok_or(JevError::InvalidCheckPlan)?;
         let index = self
-            .input
-            .content
+            .index
             .actions
-            .iter()
-            .position(|action| action.reference == anchor.reference)
+            .get(&anchor.reference.id)
+            .copied()
+            .filter(|index| self.input.content.actions[*index].reference == anchor.reference)
             .ok_or(JevError::InvalidCheckPlan)?;
         self.descriptor_group(index)?
             .ok_or(JevError::InvalidCheckPlan)
     }
 
-    fn descriptor_group(&self, index: usize) -> Result<Option<WorkGroup>, JevError> {
-        let Some(mut group) = form_group(&self.input, index)? else {
+    pub(super) fn descriptor_group(&self, index: usize) -> Result<Option<WorkGroup>, JevError> {
+        let Some(mut group) = form_group(&self.input, &self.index, index)? else {
             return Ok(None);
         };
         let selected = select_scope_records(
             self.input.scope.as_ref(),
-            &self.shared_context,
             &group.work[0].reference,
+            &self.index,
         );
         let records = selected
             .into_iter()
@@ -275,6 +397,27 @@ impl ScopeCreepCheck {
             &self.input.content.limitations,
         ))?;
         Ok(Some(group))
+    }
+
+    pub fn retained_descriptors(&self, groups: &[WorkGroup]) -> Result<Vec<WorkGroup>, JevError> {
+        let mut retained = Vec::new();
+        for previous in groups {
+            for binding in &previous.work {
+                let Some(index) = self.index.actions.get(&binding.reference.id).copied() else {
+                    continue;
+                };
+                if let Some(group) = self.descriptor_group(index)?
+                    && group.id == previous.id
+                    && group.semantic_digest == previous.semantic_digest
+                    && group.work == previous.work
+                    && group.context == previous.context
+                {
+                    retained.push(group);
+                    break;
+                }
+            }
+        }
+        Ok(retained)
     }
 
     pub fn new(mut input: ScopeCreepInput) -> Result<Self, JevError> {
@@ -370,12 +513,14 @@ impl ScopeCreepCheck {
             reference_snapshots: Vec::new(),
             evidence_store: JevEvidenceStore::default(),
         };
+        let index = InputIndex::new(&input, &shared_context);
         Ok(Self {
             input,
             context,
             scope_digest,
             shared_context,
             selection,
+            index,
         })
     }
 
@@ -480,6 +625,7 @@ impl ScopeCreepCheck {
                 self.input.scope.as_ref(),
                 &self.shared_context,
                 capabilities,
+                &self.index,
             )?);
         }
         let skipped_item_ids = groups
@@ -591,6 +737,12 @@ pub(super) fn digest(value: &impl Serialize) -> Result<String, JevError> {
 }
 
 fn validate_scope_activity(input: &ScopeCreepInput) -> Result<(), JevError> {
+    if input.scope.occurrences().windows(2).any(|pair| {
+        (pair[0].reference.turn_index, pair[0].reference.part_index)
+            > (pair[1].reference.turn_index, pair[1].reference.part_index)
+    }) {
+        return Err(JevError::InvalidCheckContext);
+    }
     let actions: BTreeMap<_, _> = input
         .content
         .actions
@@ -717,8 +869,9 @@ fn binding(action: &ContentAction) -> WorkBinding {
     }
 }
 
-pub(super) fn form_group(
+fn form_group(
     input: &ScopeCreepInput,
+    lookup: &InputIndex,
     index: usize,
 ) -> Result<Option<WorkGroup>, JevError> {
     let actions = &input.content.actions;
@@ -731,22 +884,28 @@ pub(super) fn form_group(
     if !is_work_anchor(anchor) && !proposal {
         return Ok(None);
     }
-    if proposal
-        && actions
-            .iter()
-            .skip_while(|action| action.reference.id != anchor.reference.id)
-            .skip(1)
-            .take_while(|action| action.authority != "user")
-            .any(|action| {
-                is_work_anchor(action)
-                    && action
-                        .reference
-                        .turn_index
-                        .abs_diff(anchor.reference.turn_index)
-                        <= 2
-            })
-    {
-        return Ok(None);
+    if proposal {
+        let after = lookup
+            .work_actions
+            .partition_point(|position| *position <= index);
+        let user = lookup
+            .user_actions
+            .partition_point(|position| *position <= index);
+        if let Some(position) = lookup.work_actions.get(after)
+            && *position
+                < lookup
+                    .user_actions
+                    .get(user)
+                    .copied()
+                    .unwrap_or(actions.len())
+            && actions[*position]
+                .reference
+                .turn_index
+                .abs_diff(anchor.reference.turn_index)
+                <= 2
+        {
+            return Ok(None);
+        }
     }
     if input
         .ignored_instruction_work_ids
@@ -754,34 +913,35 @@ pub(super) fn form_group(
     {
         return Ok(None);
     }
-    let work: Vec<_> = actions
-        .iter()
-        .filter(|action| {
-            action.reference.id == anchor.reference.id
-                || (!proposal
-                    && action.kind == "tool_result"
-                    && action.tool_call_id == anchor.tool_call_id
-                    && action.tool_name == anchor.tool_name)
-        })
+    let mut positions = vec![index];
+    if !proposal
+        && let Some(key) = anchor.tool_name.as_ref().zip(anchor.tool_call_id.as_ref())
+        && let Some(results) = lookup.results.get(&(key.0.clone(), key.1.clone()))
+    {
+        positions.extend(results.iter().copied());
+    }
+    positions.sort_unstable();
+    positions.dedup();
+    let work: Vec<_> = positions
+        .into_iter()
+        .map(|position| &actions[position])
         .collect();
     let work_ids: BTreeSet<_> = work.iter().map(|action| &action.reference.id).collect();
-    let start = actions
-        .iter()
-        .filter(|action| {
-            action.authority == "user" && action.reference.turn_index <= anchor.reference.turn_index
-        })
-        .map(|action| action.reference.turn_index)
-        .max()
-        .unwrap_or(0);
-    let end = actions
-        .iter()
-        .filter(|action| {
-            action.authority == "user" && action.reference.turn_index > anchor.reference.turn_index
-        })
-        .map(|action| action.reference.turn_index)
-        .min()
-        .unwrap_or(u64::MAX);
-    let context: Vec<_> = actions
+    let user = lookup
+        .user_turns
+        .partition_point(|turn| *turn <= anchor.reference.turn_index);
+    let start = user
+        .checked_sub(1)
+        .map(|position| lookup.user_turns[position])
+        .unwrap_or(0)
+        .max(anchor.reference.turn_index.saturating_sub(2));
+    let end = lookup.user_turns.get(user).copied().unwrap_or(u64::MAX);
+    let first = actions.partition_point(|action| action.reference.turn_index < start);
+    let last = actions.partition_point(|action| {
+        action.reference.turn_index < end
+            && action.reference.turn_index <= anchor.reference.turn_index.saturating_add(2)
+    });
+    let context: Vec<_> = actions[first..last.max(first)]
         .iter()
         .filter(|action| {
             action.reference.turn_index >= start
@@ -877,28 +1037,25 @@ fn build_windows(
     scope: &SessionScopeSnapshot,
     shared: &JevSharedRequestContext,
     capabilities: &ModelCapabilities,
+    lookup: &InputIndex,
 ) -> Result<Vec<JevWorkItem>, JevError> {
     if group.limitation.as_deref() == Some("unstable_work_binding") {
         return Ok(Vec::new());
     }
-    let by_id: BTreeMap<_, _> = actions
-        .iter()
-        .map(|action| (action.reference.id.as_str(), action))
-        .collect();
     let work: Vec<_> = group
         .work
         .iter()
-        .map(|binding| by_id[binding.reference.id.as_str()])
+        .map(|binding| &actions[lookup.actions[&binding.reference.id]])
         .collect();
     if work.iter().any(|action| action.truncated) {
         group.limitation = Some("truncated_activity".into());
     }
     let mut context = Vec::new();
     for binding in &group.context {
-        let action = by_id[binding.reference.id.as_str()];
+        let action = &actions[lookup.actions[&binding.reference.id]];
         context.push(action);
     }
-    let mut item = window(group, &work, &context, 0, scope)?;
+    let mut item = window(group, &work, &context, 0, scope, lookup)?;
     let activity_partial = item.window.fields["recorded_facts"]["activity_content_partial"] == true;
     if activity_partial {
         group.limitation = Some("activity_content_partial".into());
@@ -909,7 +1066,7 @@ fn build_windows(
     let values = shared.fields["values"]
         .as_array()
         .ok_or(JevError::InvalidCheckContext)?;
-    let selected = select_scope_records(scope, shared, &work[0].reference);
+    let selected = select_scope_records(scope, &work[0].reference, lookup);
     group.task_scope = selected
         .iter()
         .filter_map(|index| shared.evidence.get(*index).cloned())
@@ -965,47 +1122,27 @@ fn build_windows(
 
 fn select_scope_records(
     scope: &SessionScopeSnapshot,
-    shared: &JevSharedRequestContext,
     work: &ContentEventReference,
+    lookup: &InputIndex,
 ) -> BTreeSet<usize> {
-    use crate::analysis::session_scope::ScopeAuthority;
     const MAX_AUTHORITY_RECORDS: usize = 48;
     const MAX_REPLY_CONTEXT_RECORDS: usize = 16;
     let position = (work.turn_index, work.part_index);
-    let authoritative: Vec<_> = scope
-        .occurrences()
-        .iter()
-        .enumerate()
-        .filter(|(index, occurrence)| {
-            occurrence.authority == ScopeAuthority::User
-                || shared.fields["occurrences"][*index]["recorded_user_approved_plan"] == true
-        })
-        .map(|(index, _)| index)
-        .collect();
+    let authoritative = &lookup.authority;
     let mut selected: BTreeSet<_> = if authoritative.len() <= MAX_AUTHORITY_RECORDS {
         authoritative.iter().copied().collect()
     } else {
-        let before = authoritative
-            .iter()
-            .copied()
-            .filter(|index| {
-                let reference = &scope.occurrences()[*index].reference;
-                (reference.turn_index, reference.part_index) <= position
-            })
-            .collect::<Vec<_>>();
-        let after = authoritative
-            .iter()
-            .copied()
-            .filter(|index| {
-                let reference = &scope.occurrences()[*index].reference;
-                (reference.turn_index, reference.part_index) > position
-            })
-            .collect::<Vec<_>>();
+        let boundary = authoritative.partition_point(|index| {
+            let reference = &scope.occurrences()[*index].reference;
+            (reference.turn_index, reference.part_index) <= position
+        });
+        let before = &authoritative[..boundary];
+        let after = &authoritative[boundary..];
         authoritative
             .iter()
             .copied()
             .take(16)
-            .chain(before.into_iter().rev().take(16))
+            .chain(before.iter().copied().rev().take(16))
             .chain(after.iter().copied().take(8))
             .chain(after.iter().copied().rev().take(8))
             .collect()
@@ -1020,14 +1157,8 @@ fn select_scope_records(
     });
     let mut supporting = BTreeSet::new();
     for index in replies {
-        if let Some(previous) = scope.occurrences()[..index]
-            .iter()
-            .enumerate()
-            .rev()
-            .take_while(|(_, occurrence)| occurrence.authority != ScopeAuthority::User)
-            .find(|(_, occurrence)| occurrence.field == JevInputField::AssistantMessage)
-        {
-            supporting.insert(previous.0);
+        if let Some(previous) = lookup.preceding_assistant[index] {
+            supporting.insert(previous);
         }
         if supporting.len() == MAX_REPLY_CONTEXT_RECORDS {
             break;
@@ -1043,21 +1174,18 @@ fn window(
     context: &[&ContentAction],
     index: usize,
     scope: &SessionScopeSnapshot,
+    lookup: &InputIndex,
 ) -> Result<JevWorkItem, JevError> {
     let mut evidence = Vec::new();
     let mut operations = BTreeMap::new();
     let anchor = &work[0].reference;
-    let task = scope
-        .occurrences()
-        .iter()
-        .rev()
-        .find(|occurrence| {
-            occurrence.authority == crate::analysis::session_scope::ScopeAuthority::User
-                && (
-                    occurrence.reference.turn_index,
-                    occurrence.reference.part_index,
-                ) <= (anchor.turn_index, anchor.part_index)
-        })
+    let boundary = lookup.scope_users.partition_point(|index| {
+        let reference = &scope.occurrences()[*index].reference;
+        (reference.turn_index, reference.part_index) <= (anchor.turn_index, anchor.part_index)
+    });
+    let task = boundary
+        .checked_sub(1)
+        .map(|index| &scope.occurrences()[lookup.scope_users[index]])
         .and_then(|occurrence| scope.values()[occurrence.value_index].as_str())
         .unwrap_or("");
     let terms = task

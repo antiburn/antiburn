@@ -25,7 +25,7 @@ pub(super) const MAX_RULE_TEXT_BYTES: usize = 2 * 1024;
 pub(super) const MAX_ACTION_TEXT_BYTES: usize = 1024;
 const MAX_CONTEXT_TEXT_BYTES: usize = 192;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct EvidenceTextLimits {
     rule: usize,
     action: usize,
@@ -74,12 +74,164 @@ type RuleRange<'a> = (
 type ActionRange<'a> = (&'a ContentAction, usize, usize);
 const SELECTOR_REVISION: u32 = 2;
 
+#[cfg(test)]
+std::thread_local! {
+    static PREPARATION_COUNTS: std::cell::Cell<(usize, usize, usize)> = const { std::cell::Cell::new((0, 0, 0)) };
+    static REFERENCE_SELECTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(super) fn build_reference_context(
+    input: &AssessmentInput,
+    ledger: &SamplingLedger,
+    capabilities: &ModelCapabilities,
+) -> Result<JevSessionContext, JevError> {
+    REFERENCE_SELECTION.with(|enabled| enabled.set(true));
+    let result = build_jev_context_with_capabilities(input, ledger, capabilities);
+    REFERENCE_SELECTION.with(|enabled| enabled.set(false));
+    result
+}
+
+#[cfg(test)]
+pub(super) fn build_reference_plan(
+    input: AssessmentInput,
+    ledger: &SamplingLedger,
+) -> AssessmentPlan {
+    REFERENCE_SELECTION.with(|enabled| enabled.set(true));
+    let result = build_assessment_plan_with_sampling(input, ledger);
+    REFERENCE_SELECTION.with(|enabled| enabled.set(false));
+    result
+}
+
+#[cfg(test)]
+pub(super) fn take_preparation_counts() -> (usize, usize, usize) {
+    PREPARATION_COUNTS.with(|counts| counts.replace((0, 0, 0)))
+}
+
+#[cfg(test)]
+pub(super) fn take_selection_counts() -> (usize, usize, usize) {
+    selection::take_selection_counts()
+}
+
 /// Completed comparisons and actions from earlier reviews. Keep the ledger
 /// unchanged while advancing pages of the current pass.
 #[derive(Debug, Clone, Default)]
 pub struct SamplingLedger {
     pub comparison_ids: BTreeSet<String>,
     pub known_action_ids: BTreeSet<String>,
+    /// Add coordinates only after exact dependency validation. Identity alone
+    /// does not prove that the saved judgment still applies.
+    pub comparisons: BTreeMap<String, SavedComparison>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ComparisonCoordinate {
+    pub instruction_id: String,
+    pub rule_id: String,
+    pub rule_range: (usize, usize),
+    pub action_range: (usize, usize),
+}
+
+#[derive(Debug, Clone)]
+pub struct SavedComparison {
+    pub id: String,
+    pub action_id: String,
+    pub instruction_digest: String,
+    pub coordinate: Option<ComparisonCoordinate>,
+}
+
+impl From<&CandidateComparison> for SavedComparison {
+    fn from(comparison: &CandidateComparison) -> Self {
+        Self {
+            id: comparison.id.clone(),
+            action_id: comparison.reference.action_id.clone(),
+            instruction_digest: comparison.reference.instruction_digest.clone(),
+            coordinate: Some(ComparisonCoordinate {
+                instruction_id: comparison.reference.instruction_id.clone(),
+                rule_id: comparison.reference.rule_id.clone(),
+                rule_range: (comparison.rule_text_start, comparison.rule_text_end),
+                action_range: (comparison.action_text_start, comparison.action_text_end),
+            }),
+        }
+    }
+}
+
+/// Project source content once and reuse it for validation and request preparation.
+pub struct PreparedAssessmentInput {
+    input: AssessmentInput,
+    ranking: Option<SelectedComparisons>,
+}
+
+struct SelectedComparisons {
+    limits: EvidenceTextLimits,
+    comparison_ids: BTreeSet<String>,
+    known_action_ids: BTreeSet<String>,
+    reviewed: BTreeSet<(usize, usize)>,
+    coordinates: Vec<(usize, usize)>,
+}
+
+impl PreparedAssessmentInput {
+    pub fn new(input: &AssessmentInput) -> Self {
+        Self {
+            input: selected_input(input),
+            ranking: None,
+        }
+    }
+
+    /// Accept content already projected with `INPUT_SELECTION` by the source reader.
+    pub fn from_selected_input(input: AssessmentInput) -> Self {
+        Self {
+            input,
+            ranking: None,
+        }
+    }
+
+    /// Reconstruct saved coordinates independently of sampling order.
+    /// This path does not serialize context or construct provider requests.
+    pub fn dependency_comparisons(
+        &mut self,
+        saved: &[SavedComparison],
+        capabilities: &ModelCapabilities,
+    ) -> AssessmentPlan {
+        let mut plan = build_plan(
+            &self.input,
+            &SamplingLedger::default(),
+            EvidenceTextLimits::from_capabilities(capabilities),
+            Some(saved),
+            &mut self.ranking,
+        );
+        plan.model_version.clone_from(&capabilities.model);
+        for comparison in &mut plan.comparisons {
+            comparison.prerequisite_episode =
+                Some(super::PrerequisiteContextPolicy::CoherentEpisode.select(
+                    comparison,
+                    &self.input.content.actions,
+                    capabilities,
+                    plan.complete_input,
+                ));
+        }
+        plan
+    }
+
+    pub fn build_context(
+        &mut self,
+        ledger: &SamplingLedger,
+        capabilities: &ModelCapabilities,
+    ) -> Result<JevSessionContext, JevError> {
+        let mut plan = build_plan(
+            &self.input,
+            ledger,
+            EvidenceTextLimits::from_capabilities(capabilities),
+            None,
+            &mut self.ranking,
+        );
+        plan.model_version.clone_from(&capabilities.model);
+        build_context(
+            &self.input,
+            plan,
+            super::PrerequisiteContextPolicy::CoherentEpisode,
+        )
+    }
 }
 
 /// Attach the bounded rule/action plan without duplicating its private content.
@@ -94,7 +246,13 @@ pub fn build_jev_context_with_sampling(
     let selected_input = selected_input(input);
     build_context(
         &selected_input,
-        build_assessment_plan_with_sampling(selected_input.clone(), ledger),
+        build_plan(
+            &selected_input,
+            ledger,
+            EvidenceTextLimits::LEGACY,
+            None,
+            &mut None,
+        ),
         super::PrerequisiteContextPolicy::CoherentEpisode,
     )
 }
@@ -123,17 +281,33 @@ pub fn build_jev_context_with_context_policy(
     policy: super::PrerequisiteContextPolicy,
 ) -> Result<JevSessionContext, JevError> {
     let selected_input = selected_input(input);
-    build_context(
+    let mut plan = build_plan(
         &selected_input,
-        build_assessment_plan_with_capabilities(selected_input.clone(), ledger, capabilities),
-        policy,
-    )
+        ledger,
+        EvidenceTextLimits::from_capabilities(capabilities),
+        None,
+        &mut None,
+    );
+    plan.model_version.clone_from(&capabilities.model);
+    build_context(&selected_input, plan, policy)
 }
 
 fn selected_input(input: &AssessmentInput) -> AssessmentInput {
-    let mut selected = input.clone();
-    selected.content = super::select_session_content(&selected.content, INPUT_SELECTION);
-    selected
+    #[cfg(test)]
+    PREPARATION_COUNTS.with(|counts| {
+        let (projections, rankings, comparisons) = counts.get();
+        counts.set((projections + 1, rankings, comparisons));
+    });
+    AssessmentInput {
+        content: super::select_session_content(&input.content, INPUT_SELECTION),
+        prior_history_complete: input.prior_history_complete,
+        activity_after_ms: input.activity_after_ms,
+        boundary_positions: input.boundary_positions.clone(),
+        source_generation: input.source_generation,
+        source_fingerprint: input.source_fingerprint.clone(),
+        incarnation: input.incarnation,
+        comparison_after: input.comparison_after.clone(),
+    }
 }
 
 fn build_context(
@@ -148,7 +322,7 @@ fn build_context(
     let input_revision = plan.input_revision.clone();
     let session_identity = plan.session_identity_digest.clone();
     let limitations = plan.coverage.limitations.clone();
-    let episode_actions = super::select_session_content(&input.content, INPUT_SELECTION).actions;
+    let episode_actions = &input.content.actions;
     let check_context = serde_json::json!({"assessment_plan": plan, "episode_actions": episode_actions, "prerequisite_context_policy": policy, "incremental_identity": {
         "prerequisite_context_policy": policy,
         "incarnation": input.incarnation,
@@ -318,7 +492,7 @@ pub fn build_assessment_plan_with_sampling(
     input: AssessmentInput,
     ledger: &SamplingLedger,
 ) -> AssessmentPlan {
-    build_plan(input, ledger, EvidenceTextLimits::LEGACY)
+    build_plan(&input, ledger, EvidenceTextLimits::LEGACY, None, &mut None)
 }
 
 /// Build the comparison inventory with model limits and local memory bounds.
@@ -328,18 +502,22 @@ pub fn build_assessment_plan_with_capabilities(
     capabilities: &ModelCapabilities,
 ) -> AssessmentPlan {
     let mut plan = build_plan(
-        input,
+        &input,
         ledger,
         EvidenceTextLimits::from_capabilities(capabilities),
+        None,
+        &mut None,
     );
     plan.model_version.clone_from(&capabilities.model);
     plan
 }
 
 fn build_plan(
-    input: AssessmentInput,
+    input: &AssessmentInput,
     ledger: &SamplingLedger,
     text_limits: EvidenceTextLimits,
+    dependencies: Option<&[SavedComparison]>,
+    ranking: &mut Option<SelectedComparisons>,
 ) -> AssessmentPlan {
     let content = &input.content;
     let mut limitations = content.limitations.clone();
@@ -446,32 +624,24 @@ fn build_plan(
         .collect::<Vec<_>>();
     let evaluable_rules = rules.as_slice();
     let candidate_pairs = rules.len().saturating_mul(actions.len());
-    let previously_sampled = if ledger.comparison_ids.is_empty() {
-        0
-    } else {
-        rules
-            .iter()
-            .map(|(instruction, rule, start, end)| {
-                actions
-                    .iter()
-                    .filter(|(action, action_start, action_end)| {
-                        ledger.comparison_ids.contains(&comparison_identity(
-                            instruction,
-                            rule,
-                            action,
-                            (*start, *end),
-                            (*action_start, *action_end),
-                        ))
-                    })
-                    .count()
-            })
-            .sum::<usize>()
-    };
+    let reviewed = resolve_saved_coordinates(
+        &rules,
+        &actions,
+        ledger
+            .comparisons
+            .values()
+            .filter(|saved| ledger.comparison_ids.contains(&saved.id)),
+    );
+    let previously_sampled = reviewed.len();
     let selection = select_comparisons(
         evaluable_rules,
         &actions,
         ledger,
-        input.comparison_after.as_deref(),
+        if dependencies.is_some() {
+            None
+        } else {
+            input.comparison_after.as_deref()
+        },
         &ComparisonIndex {
             text_limits,
             prior_history_complete: input.prior_history_complete,
@@ -480,7 +650,10 @@ fn build_plan(
             action_digests: &action_digests,
             rule_terms: &rule_terms,
             action_terms: &action_terms_by_id,
+            reviewed: &reviewed,
         },
+        dependencies,
+        ranking,
     );
     let comparisons = selection.comparisons;
     let mut rules_by_source = BTreeMap::<String, BTreeSet<(String, String)>>::new();
@@ -609,7 +782,7 @@ fn build_plan(
         ),
         session_identity_digest: content.session_identity_digest.clone(),
         source_generation: input.source_generation,
-        source_fingerprint: input.source_fingerprint,
+        source_fingerprint: input.source_fingerprint.clone(),
         publication_fence: content.publication_fence,
         activity_after_ms: input.activity_after_ms,
         model_version: ASSESSMENT_MODEL.to_owned(),
@@ -649,6 +822,7 @@ struct ComparisonIndex<'a> {
     action_digests: &'a BTreeMap<String, String>,
     rule_terms: &'a [BTreeSet<String>],
     action_terms: &'a BTreeMap<String, BTreeSet<String>>,
+    reviewed: &'a BTreeSet<(usize, usize)>,
 }
 
 fn select_comparisons<'a>(
@@ -657,78 +831,292 @@ fn select_comparisons<'a>(
     ledger: &SamplingLedger,
     cursor: Option<&str>,
     index: &ComparisonIndex<'a>,
+    dependencies: Option<&[SavedComparison]>,
+    ranking: &mut Option<SelectedComparisons>,
+) -> SampleSelection {
+    if let Some(saved) = dependencies {
+        let coordinates = resolve_saved_coordinates(rules, actions, saved.iter());
+        return SampleSelection {
+            comparisons: coordinates
+                .into_iter()
+                .map(|(rule, action)| comparison_at(rules, actions, rule, action, index))
+                .collect(),
+            ..SampleSelection::default()
+        };
+    }
+    if rules.is_empty() || actions.is_empty() {
+        return SampleSelection::default();
+    }
+    #[cfg(test)]
+    if REFERENCE_SELECTION.with(|enabled| enabled.get()) {
+        return select_comparisons_reference(rules, actions, ledger, cursor, index, None);
+    }
+    let needs_selection = ranking.as_ref().is_none_or(|cached| {
+        cached.limits != index.text_limits
+            || cached.comparison_ids != ledger.comparison_ids
+            || cached.known_action_ids != ledger.known_action_ids
+            || cached.reviewed != *index.reviewed
+    });
+    if needs_selection {
+        #[cfg(test)]
+        PREPARATION_COUNTS.with(|counts| {
+            let (projections, rankings, comparisons) = counts.get();
+            counts.set((projections, rankings + 1, comparisons));
+        });
+        *ranking = Some(SelectedComparisons {
+            limits: index.text_limits,
+            comparison_ids: ledger.comparison_ids.clone(),
+            known_action_ids: ledger.known_action_ids.clone(),
+            reviewed: index.reviewed.clone(),
+            coordinates: selection::select_coordinates(
+                rules,
+                actions,
+                ledger,
+                index.reviewed,
+                index,
+            ),
+        });
+    }
+    let chosen = &ranking
+        .as_ref()
+        .expect("initialize comparison selection")
+        .coordinates;
+    let offset = cursor
+        .and_then(|value| value.strip_prefix("sample:"))
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let end = offset
+        .saturating_add(MAX_ASSESSMENT_CANDIDATES)
+        .min(chosen.len());
+    SampleSelection {
+        page_end: end,
+        next_cursor: (end < chosen.len()).then(|| format!("sample:{end}")),
+        comparisons: chosen
+            .get(offset..end)
+            .unwrap_or_default()
+            .iter()
+            .map(|&(rule, action)| comparison_at(rules, actions, rule, action, index))
+            .collect(),
+    }
+}
+
+#[path = "selection.rs"]
+mod selection;
+
+fn resolve_saved_coordinates<'a>(
+    rules: &[RuleRange<'a>],
+    actions: &[ActionRange<'a>],
+    saved: impl Iterator<Item = &'a SavedComparison>,
+) -> BTreeSet<(usize, usize)> {
+    let mut rules_by_digest = BTreeMap::<&str, Vec<usize>>::new();
+    let mut actions_by_id = BTreeMap::<&str, Vec<usize>>::new();
+    let mut rules_by_coordinate = BTreeMap::new();
+    let mut actions_by_coordinate = BTreeMap::new();
+    for (index, (instruction, rule, start, end)) in rules.iter().enumerate() {
+        rules_by_coordinate.insert(
+            (
+                instruction.digest.as_str(),
+                instruction.id.as_str(),
+                rule.id.as_str(),
+                *start,
+                *end,
+            ),
+            index,
+        );
+        rules_by_digest
+            .entry(&instruction.digest)
+            .or_default()
+            .push(index);
+    }
+    for (index, (action, start, end)) in actions.iter().enumerate() {
+        actions_by_coordinate.insert((action.reference.id.as_str(), *start, *end), index);
+        actions_by_id
+            .entry(&action.reference.id)
+            .or_default()
+            .push(index);
+    }
+    let mut coordinates = BTreeSet::new();
+    for saved in saved {
+        if let Some(coordinate) = &saved.coordinate {
+            let rule_key = (
+                saved.instruction_digest.as_str(),
+                coordinate.instruction_id.as_str(),
+                coordinate.rule_id.as_str(),
+                coordinate.rule_range.0,
+                coordinate.rule_range.1,
+            );
+            let action_key = (
+                saved.action_id.as_str(),
+                coordinate.action_range.0,
+                coordinate.action_range.1,
+            );
+            if let (Some(&rule_index), Some(&action_index)) = (
+                rules_by_coordinate.get(&rule_key),
+                actions_by_coordinate.get(&action_key),
+            ) {
+                let (instruction, rule, start, end) = rules[rule_index];
+                let (action, action_start, action_end) = actions[action_index];
+                if comparison_identity(
+                    instruction,
+                    rule,
+                    action,
+                    (start, end),
+                    (action_start, action_end),
+                ) == saved.id
+                {
+                    coordinates.insert((rule_index, action_index));
+                }
+            }
+            continue;
+        }
+        let Some(rule_indices) = rules_by_digest.get(saved.instruction_digest.as_str()) else {
+            continue;
+        };
+        let Some(action_indices) = actions_by_id.get(saved.action_id.as_str()) else {
+            continue;
+        };
+        for &rule_index in rule_indices {
+            let (instruction, rule, start, end) = rules[rule_index];
+            if saved.coordinate.as_ref().is_some_and(|coordinate| {
+                coordinate.instruction_id != instruction.id
+                    || coordinate.rule_id != rule.id
+                    || coordinate.rule_range != (start, end)
+            }) {
+                continue;
+            }
+            for &action_index in action_indices {
+                let (action, action_start, action_end) = actions[action_index];
+                if saved
+                    .coordinate
+                    .as_ref()
+                    .is_some_and(|coordinate| coordinate.action_range != (action_start, action_end))
+                {
+                    continue;
+                }
+                if comparison_identity(
+                    instruction,
+                    rule,
+                    action,
+                    (start, end),
+                    (action_start, action_end),
+                ) == saved.id
+                {
+                    coordinates.insert((rule_index, action_index));
+                }
+            }
+        }
+    }
+    coordinates
+}
+
+#[cfg(test)]
+fn select_comparisons_reference<'a>(
+    rules: &[RuleRange<'a>],
+    actions: &[ActionRange<'a>],
+    ledger: &SamplingLedger,
+    cursor: Option<&str>,
+    index: &ComparisonIndex<'a>,
+    dependency_ids: Option<&BTreeSet<String>>,
 ) -> SampleSelection {
     if rules.is_empty() || actions.is_empty() {
         return SampleSelection::default();
     }
-    let action_terms = actions
-        .iter()
-        .map(|(action, start, end)| {
-            let mut terms = meaningful_terms(&action.text[*start..*end]);
-            terms.extend(index.action_terms[&action.reference.id].iter().cloned());
-            if let Some(fields) = &action.normalized_fields {
-                for value in fields.values.values() {
-                    terms.extend(meaningful_terms(value));
+    {
+        #[cfg(test)]
+        PREPARATION_COUNTS.with(|counts| {
+            let (projections, rankings, comparisons) = counts.get();
+            counts.set((projections, rankings + 1, comparisons));
+        });
+        let action_terms = actions
+            .iter()
+            .map(|(action, start, end)| {
+                let mut terms = meaningful_terms(&action.text[*start..*end]);
+                terms.extend(index.action_terms[&action.reference.id].iter().cloned());
+                if let Some(fields) = &action.normalized_fields {
+                    for value in fields.values.values() {
+                        terms.extend(meaningful_terms(value));
+                    }
                 }
-            }
-            terms
-        })
-        .collect::<Vec<_>>();
-    let mut document_frequency = BTreeMap::<&str, usize>::new();
-    for terms in &action_terms {
-        for term in terms {
-            *document_frequency.entry(term).or_default() += 1;
-        }
-    }
-    let action_paths = actions
-        .iter()
-        .map(|(action, _, _)| {
-            ExactActionFacts::from_selected(
-                action.tool_name.as_deref(),
-                action.normalized_fields.as_ref(),
-            )
-            .paths
-        })
-        .collect::<Vec<_>>();
-    let mut ranked = Vec::with_capacity(rules.len());
-    for (rule_index, (_, rule, start, end)) in rules.iter().enumerate() {
-        let terms = &index.rule_terms[rule_index];
-        let rule_text = &rule.text[*start..*end];
-        let mut scores = (0..actions.len())
-            .map(|action_index| {
-                let (action, _, _) = actions[action_index];
-                let overlap = terms
-                    .iter()
-                    .filter(|term| action_terms[action_index].contains(*term))
-                    .map(|term| 1000 / (1 + document_frequency[term.as_str()]))
-                    .sum::<usize>();
-                let tool_match = action.tool_name.as_deref().is_some_and(|name| {
-                    rule_text
-                        .to_ascii_lowercase()
-                        .contains(&name.to_ascii_lowercase())
-                });
-                let path_match = action_paths[action_index]
-                    .iter()
-                    .any(|path| rule_text.contains(path));
-                let risk = usize::from(
-                    ["never", "Never", "Do not", "must not"]
-                        .iter()
-                        .any(|word| rule_text.contains(word)),
-                ) * usize::from(action.kind == "tool_input");
-                let fresh = action_index * 16 / actions.len();
-                let score = overlap.saturating_mul(8)
-                    + usize::from(tool_match) * 800
-                    + usize::from(path_match) * 1200
-                    + risk * 12
-                    + fresh;
-                (score, action_index)
+                terms
             })
             .collect::<Vec<_>>();
-        scores.sort_unstable_by(|left, right| {
-            right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1))
-        });
-        ranked.push(scores);
+        let mut document_frequency = BTreeMap::<&str, usize>::new();
+        for terms in &action_terms {
+            for term in terms {
+                *document_frequency.entry(term).or_default() += 1;
+            }
+        }
+        let action_paths = actions
+            .iter()
+            .map(|(action, _, _)| {
+                ExactActionFacts::from_selected(
+                    action.tool_name.as_deref(),
+                    action.normalized_fields.as_ref(),
+                )
+                .paths
+            })
+            .collect::<Vec<_>>();
+        let mut ranked = Vec::with_capacity(rules.len());
+        for (rule_index, (_, rule, start, end)) in rules.iter().enumerate() {
+            let terms = &index.rule_terms[rule_index];
+            let rule_text = &rule.text[*start..*end];
+            let mut scores = (0..actions.len())
+                .map(|action_index| {
+                    let (action, _, _) = actions[action_index];
+                    let overlap = terms
+                        .iter()
+                        .filter(|term| action_terms[action_index].contains(*term))
+                        .map(|term| 1000 / (1 + document_frequency[term.as_str()]))
+                        .sum::<usize>();
+                    let tool_match = action.tool_name.as_deref().is_some_and(|name| {
+                        rule_text
+                            .to_ascii_lowercase()
+                            .contains(&name.to_ascii_lowercase())
+                    });
+                    let path_match = action_paths[action_index]
+                        .iter()
+                        .any(|path| rule_text.contains(path));
+                    let risk = usize::from(
+                        ["never", "Never", "Do not", "must not"]
+                            .iter()
+                            .any(|word| rule_text.contains(word)),
+                    ) * usize::from(action.kind == "tool_input");
+                    let fresh = action_index * 16 / actions.len();
+                    let score = overlap.saturating_mul(8)
+                        + usize::from(tool_match) * 800
+                        + usize::from(path_match) * 1200
+                        + risk * 12
+                        + fresh;
+                    (score, action_index)
+                })
+                .collect::<Vec<_>>();
+            scores.sort_unstable_by(|left, right| {
+                right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1))
+            });
+            ranked.push(scores);
+        }
+        select_ranked_reference(
+            rules,
+            actions,
+            ledger,
+            cursor,
+            index,
+            dependency_ids,
+            &ranked,
+        )
     }
+}
+
+#[cfg(test)]
+fn select_ranked_reference<'a>(
+    rules: &[RuleRange<'a>],
+    actions: &[ActionRange<'a>],
+    ledger: &SamplingLedger,
+    cursor: Option<&str>,
+    index: &ComparisonIndex<'a>,
+    dependency_ids: Option<&BTreeSet<String>>,
+    ranked: &[Vec<(usize, usize)>],
+) -> SampleSelection {
     let limit = MAX_SAMPLED_COMPARISONS_PER_PASS.min(rules.len().saturating_mul(actions.len()));
     let mut chosen = Vec::with_capacity(limit);
     let mut used = BTreeSet::new();
@@ -797,7 +1185,11 @@ fn select_comparisons<'a>(
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
     let end = offset
-        .saturating_add(MAX_ASSESSMENT_CANDIDATES)
+        .saturating_add(if dependency_ids.is_some() {
+            MAX_SAMPLED_COMPARISONS_PER_PASS
+        } else {
+            MAX_ASSESSMENT_CANDIDATES
+        })
         .min(chosen.len());
     SampleSelection {
         page_end: end,
@@ -806,6 +1198,19 @@ fn select_comparisons<'a>(
             .get(offset..end)
             .unwrap_or_default()
             .iter()
+            .filter(|&&(rule_index, action_index)| {
+                dependency_ids.is_none_or(|ids| {
+                    let (instruction, rule, start, end) = rules[rule_index];
+                    let (action, action_start, action_end) = actions[action_index];
+                    ids.contains(&comparison_identity(
+                        instruction,
+                        rule,
+                        action,
+                        (start, end),
+                        (action_start, action_end),
+                    ))
+                })
+            })
             .map(|&(rule, action)| comparison_at(rules, actions, rule, action, index))
             .collect(),
     }
@@ -1070,6 +1475,8 @@ fn comparison_identity(
     rule_text_range: (usize, usize),
     action_text_range: (usize, usize),
 ) -> String {
+    #[cfg(test)]
+    selection::record_identity();
     sha256_hex(
         format!(
             "{}\0{}\0{}\0{:?}\0{}\0{}\0{}\0{}\0{}\0{}",
@@ -1110,6 +1517,11 @@ fn make_comparison(
     index: &ComparisonIndex<'_>,
     rule_terms: &BTreeSet<String>,
 ) -> CandidateComparison {
+    #[cfg(test)]
+    PREPARATION_COUNTS.with(|counts| {
+        let (projections, rankings, comparisons) = counts.get();
+        counts.set((projections, rankings, comparisons + 1));
+    });
     let CandidateCoordinate {
         instruction,
         rule,

@@ -1,6 +1,6 @@
 import "../../../styles/burn-checks-report.css"
 
-import { ChevronRight, Clock, Hourglass, LoaderCircle } from "lucide-react"
+import { ChevronRight, Clock, Hourglass } from "lucide-react"
 import { useCallback, useRef, useState, type KeyboardEvent, type MouseEvent } from "react"
 
 import { BurnCheckFlame } from "../../../components/burn-checks/BurnCheckFlames"
@@ -446,7 +446,7 @@ function CheckMetadata({
     >
       <span className="mt-0.5 block font-mono type-footnote tabular-nums">
         {presentation.provisional ? (
-          <span className="text-system-green">{presentation.summary}</span>
+          <CheckingText text="Checking" />
         ) : check.lifecycle === "passing" ? (
           <span className="text-burn-check-pass-fill">Passed</span>
         ) : (
@@ -470,6 +470,14 @@ function CheckMetadata({
             >
               {check.clean} passed
             </span>
+            {presentation.checking && (
+              <>
+                <span className="mx-0.5 inline-block text-label-tertiary" aria-hidden="true">
+                  ·
+                </span>
+                <CheckingText text={checkingLabel(check)} />
+              </>
+            )}
           </>
         )}
         {resourceCount && (
@@ -481,18 +489,11 @@ function CheckMetadata({
           </>
         )}
       </span>
-      {(presentation.checking ||
-        (check.lifecycle === "failing" &&
-          check.finding > 0 &&
-          check.estimatedTokenBurnBasisPoints != null) ||
+      {((check.lifecycle === "failing" &&
+        check.finding > 0 &&
+        check.estimatedTokenBurnBasisPoints != null) ||
         presentation.costLine) && (
         <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-          {presentation.checking && (
-            <span className="inline-flex items-center gap-1 type-footnote text-label-tertiary">
-              <LoaderCircle size={13} className="shrink-0 animate-spin" aria-hidden="true" />
-              <span>Checking</span>
-            </span>
-          )}
           {check.lifecycle === "failing" &&
             check.finding > 0 &&
             check.estimatedTokenBurnBasisPoints != null && (
@@ -508,6 +509,20 @@ function CheckMetadata({
           )}
         </span>
       )}
+    </span>
+  )
+}
+
+function checkingLabel(check: ChecksCategoryPayload) {
+  return check.checkingCount == null ? "checking" : `${check.checkingCount} checking`
+}
+
+function CheckingText({ text }: { text: string }) {
+  return (
+    <span className="activity-row-active inline-block">
+      <span className="activity-row-title-shimmer inline-block" data-text={text}>
+        {text}
+      </span>
     </span>
   )
 }
@@ -536,14 +551,14 @@ function CheckTrigger({
     state.targets[check.id]?.data?.targets,
   )
   const summary = presentation.provisional
-    ? presentation.summary
+    ? "Checking"
     : check.lifecycle == null
       ? "Not assessed"
       : check.lifecycle === "awaitingVerification"
         ? "Awaiting verification"
         : check.lifecycle === "passing"
           ? "Passed"
-          : `${check.finding} failed · ${check.clean} passed`
+          : `${check.finding} failed · ${check.clean} passed${presentation.checking ? ` · ${checkingLabel(check)}` : ""}`
   const metric = presentation.metric?.replace("<", "Under ").replace(" token", "")
   const agents = [
     ...new Map(
@@ -559,7 +574,7 @@ function CheckTrigger({
       type="button"
       aria-pressed={selected}
       aria-controls={`burn-check-${check.id}-detail`}
-      aria-label={`${presentation.label}, ${summary}${presentation.checking ? ", Checking" : ""}${metric ? `, ${metric}` : ""}`}
+      aria-label={`${presentation.label}, ${summary}${metric ? `, ${metric}` : ""}`}
       data-outcome={
         check.lifecycle === "awaitingVerification"
           ? "awaiting"
@@ -638,14 +653,12 @@ export function BurnChecksReport({
   const PassIcon = BURN_CHECK_MARKS.clean.Icon
   const activeAwaiting = presentation.awaiting ?? []
   const activeFailures = presentation.failures
-  const checking = presentation.checking ?? []
   const activeWins = presentation.wins
   const snoozedChecks = presentation.snoozed
   const unassessed = presentation.activeUnavailable
   const checks = [
     ...activeFailures,
     ...activeAwaiting,
-    ...checking,
     ...activeWins,
     ...unassessed,
     ...snoozedChecks,
@@ -657,7 +670,6 @@ export function BurnChecksReport({
   const initialId =
     activeFailures[0]?.id ??
     activeAwaiting[0]?.id ??
-    checking[0]?.id ??
     activeWins[0]?.id ??
     snoozedChecks[0]?.id ??
     null
@@ -712,7 +724,6 @@ export function BurnChecksReport({
   const visibleChecks = [
     ...activeFailures,
     ...activeAwaiting,
-    ...checking,
     ...(passedOpen ? activeWins : []),
     ...(unassessedOpen ? unassessed : []),
     ...(snoozedOpen ? snoozedChecks : []),
@@ -727,13 +738,12 @@ export function BurnChecksReport({
       ? selectedId
       : (activeFailures[0]?.id ??
         activeAwaiting[0]?.id ??
-        checking[0]?.id ??
         (passedOpen ? activeWins[0]?.id : null) ??
         (unassessedOpen ? unassessed[0]?.id : null) ??
         (snoozedOpen ? snoozedChecks[0]?.id : null) ??
         null)
   const rowRefs = useRef(new Map<ChecksCategoryPayload["id"], HTMLButtonElement>())
-  const focusedRow = useRef<ChecksCategoryPayload["id"] | null>(null)
+  const focusedRow = useRef<HTMLButtonElement | null>(null)
   const passedTriggerRef = useRef<HTMLButtonElement>(null)
   const unassessedTriggerRef = useRef<HTMLButtonElement>(null)
   const snoozedTriggerRef = useRef<HTMLButtonElement>(null)
@@ -849,21 +859,36 @@ export function BurnChecksReport({
           }
           const removed = rowRefs.current.get(check.id)
           rowRefs.current.delete(check.id)
-          if (removed !== document.activeElement && focusedRow.current !== check.id) return
-          focusedRow.current = null
+          if (!removed) return
+          const activeElement = document.activeElement
+          if (
+            removed !== activeElement &&
+            !(focusedRow.current === removed && activeElement === document.body)
+          )
+            return
           queueMicrotask(() => {
-            const hiddenGroup = rowRefs.current.get(check.id)?.closest<HTMLElement>("[hidden]")
+            const currentFocus = document.activeElement
+            if (
+              currentFocus !== removed &&
+              currentFocus !== document.body &&
+              currentFocus?.isConnected
+            )
+              return
+            if (removed.isConnected) return
+            const replacement = rowRefs.current.get(check.id)
+            const hiddenGroup = replacement?.closest<HTMLElement>("[hidden]")
             if (hiddenGroup?.id === "burn-checks-snoozed-body")
               snoozedTriggerRef.current?.focus()
             else if (hiddenGroup?.id === "burn-checks-passed-body")
               passedTriggerRef.current?.focus()
             else if (hiddenGroup?.id === "burn-checks-unassessed-body")
               unassessedTriggerRef.current?.focus()
+            else if (replacement && !hiddenGroup) replacement.focus({ preventScroll: true })
           })
         }}
         onClick={() => selectCheck(check.id)}
         onFocus={() => {
-          focusedRow.current = check.id
+          focusedRow.current = rowRefs.current.get(check.id) ?? null
         }}
         onKeyDown={(event) => handleRowKey(event, check)}
         {...(snooze ? { snoozeLabel: formatSnoozeUntil(snooze.until) } : {})}
@@ -877,6 +902,10 @@ export function BurnChecksReport({
         <section
           className="main-window-collection burn-checks-collection"
           aria-label="Burn check collection"
+          onBlurCapture={(event) => {
+            if (event.target.isConnected && !event.currentTarget.contains(event.relatedTarget))
+              focusedRow.current = null
+          }}
         >
           <BurnChecksHeader report={availableReport} />
           <ScrollPane
@@ -905,13 +934,6 @@ export function BurnChecksReport({
                   </h2>
                   <div className="burn-checks-group-body">
                     {activeAwaiting.map((check) => renderCheck(check))}
-                  </div>
-                </section>
-              )}
-              {checking.length > 0 && (
-                <section className="burn-checks-group" aria-label="Checks in progress">
-                  <div className="burn-checks-group-body">
-                    {checking.map((check) => renderCheck(check))}
                   </div>
                 </section>
               )}

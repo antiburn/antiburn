@@ -96,6 +96,156 @@ fn case() -> ScopeCreepCheck {
     ScopeCreepCheck::new(input(parts)).unwrap()
 }
 
+#[test]
+fn descriptor_bytes_stop_large_sources_with_typed_partial_coverage() {
+    let mut parts = vec![part(0, ContentKind::UserText, "Fix login only.")];
+    for turn in 1..65_536 {
+        parts.push(part(
+            turn,
+            ContentKind::AssistantText,
+            "I propose adding a separate billing feature.",
+        ));
+    }
+    let check = ScopeCreepCheck::new(input(parts)).unwrap();
+    assert_eq!(check.input.content.actions.len(), 65_536);
+    let mut inventory = ScopeDescriptorInventory::default();
+    while !inventory.complete && inventory.limitation.is_none() {
+        check.enumerate_descriptors(&mut inventory).unwrap();
+    }
+    assert_eq!(
+        inventory.limitation,
+        Some(ScopeInventoryLimit::SerializedBudget)
+    );
+    assert!(!inventory.complete);
+    assert!(inventory.next_action < check.input.content.actions.len());
+    assert!(inventory.descriptor_bytes <= MAX_SCOPE_DESCRIPTOR_BYTES);
+    let saved = serde_json::to_string(&inventory).unwrap();
+    assert!(saved.len() < MAX_SCOPE_DESCRIPTOR_BYTES + 4096);
+    let mut restored: ScopeDescriptorInventory = serde_json::from_str(&saved).unwrap();
+    check.enumerate_descriptors(&mut restored).unwrap();
+    assert_eq!(restored, inventory);
+    let candidates = check
+        .descriptor_candidates(&inventory, &ModelCapabilities::jev_default())
+        .unwrap();
+    let plan = check
+        .prepare_descriptors(
+            &inventory,
+            &ModelCapabilities::jev_default(),
+            &BTreeSet::from([candidates[0].id]),
+        )
+        .unwrap();
+    let result = check.reduce(&plan, &[], false).unwrap();
+    assert!(result.coverage.processing_limit_reached);
+    assert!(
+        result
+            .coverage
+            .limitations
+            .contains(&"descriptor_storage_budget_reached".into())
+    );
+}
+
+#[test]
+fn indexed_operations_keep_all_exact_results_and_stop_context_at_user_boundaries() {
+    let mut parts = vec![part(0, ContentKind::UserText, "Fix login only.")];
+    let first = work(2);
+    let mut second = work(6);
+    for part in &mut second {
+        part.part = part
+            .part
+            .clone()
+            .with_tool_identity(Some("Write".into()), Some("write-2".into()));
+    }
+    parts.extend(first);
+    parts.push(part(4, ContentKind::UserText, "Do not change billing."));
+    parts.extend(second);
+    parts.push(part(8, ContentKind::UserText, "Explain the login fix."));
+    let check = ScopeCreepCheck::new(input(parts)).unwrap();
+    let mut inventory = ScopeDescriptorInventory::default();
+    check.enumerate_descriptors(&mut inventory).unwrap();
+    assert_eq!(inventory.groups.len(), 2);
+    for group in &inventory.groups {
+        let anchor = group
+            .work
+            .iter()
+            .find(|binding| [2, 6].contains(&binding.reference.turn_index))
+            .unwrap();
+        assert_eq!(group.work.len(), 3);
+        assert!(
+            group
+                .work
+                .iter()
+                .any(|binding| binding.reference.turn_index == 3)
+        );
+        assert!(
+            group
+                .work
+                .iter()
+                .any(|binding| binding.reference.turn_index == 7)
+        );
+        let boundary = if anchor.reference.turn_index == 2 {
+            0
+        } else {
+            4
+        };
+        assert!(
+            group
+                .context
+                .iter()
+                .all(|binding| binding.reference.turn_index >= boundary
+                    && binding.reference.turn_index < boundary + 4)
+        );
+    }
+    let plan = check
+        .prepare_with_capabilities(check.context(), &ModelCapabilities::jev_default())
+        .unwrap();
+    assert_eq!(plan.prepared.groups.len(), 2);
+}
+
+#[test]
+fn retained_late_descriptors_survive_budget_limits_without_duplicate_enumeration() {
+    let mut parts = vec![part(0, ContentKind::UserText, "Fix login only.")];
+    for turn in 1..2000 {
+        parts.push(part(
+            turn,
+            ContentKind::AssistantText,
+            "I propose a separate billing feature.",
+        ));
+    }
+    let check = ScopeCreepCheck::new(input(parts)).unwrap();
+    let late = check.descriptor_group(1500).unwrap().unwrap();
+    let retained = check
+        .retained_descriptors(std::slice::from_ref(&late))
+        .unwrap();
+    assert_eq!(retained, vec![late.clone()]);
+    let mut inventory = ScopeDescriptorInventory::default();
+    check.enumerate_descriptors(&mut inventory).unwrap();
+    inventory.groups.extend(retained);
+    inventory.descriptor_bytes = 0;
+    while !inventory.complete && inventory.limitation.is_none() {
+        check.enumerate_descriptors(&mut inventory).unwrap();
+    }
+    assert_eq!(
+        inventory
+            .groups
+            .iter()
+            .filter(|group| group.id == late.id)
+            .count(),
+        1
+    );
+    assert!(inventory.next_action < 1500);
+    let plan = check
+        .prepare_descriptors(
+            &inventory,
+            &ModelCapabilities::jev_default(),
+            &BTreeSet::from([crate::checks::sampling::StableId::new(
+                "scope_work",
+                &[late.id.as_bytes()],
+            )]),
+        )
+        .unwrap();
+    assert_eq!(plan.prepared.groups[0].id, late.id);
+}
+
 fn answer(chosen: &str, probability: f64) -> JevAnswer {
     let others = (1.0 - probability) / 2.0;
     JevAnswer::Choice {

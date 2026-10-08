@@ -19,7 +19,6 @@ interface ChecksEstimate {
 export interface ChecksPresentation {
   activeAssessed: ChecksCategoryPayload[]
   activeUnavailable: ChecksCategoryPayload[]
-  checking?: ChecksCategoryPayload[]
   snoozed: ChecksCategoryPayload[]
   failures: ChecksCategoryPayload[]
   awaiting?: ChecksCategoryPayload[]
@@ -55,9 +54,6 @@ export function checksPresentation(
   const activeUnavailable = activeReport.categories.filter(
     (category) => category.lifecycle == null && !checkHasProvisionalResult(category),
   )
-  const checking = activeReport.categories.filter(
-    (category) => category.lifecycle == null && checkHasProvisionalResult(category),
-  )
   const snoozedCategories = report.categories.filter((category) => snoozed.has(category.id))
   const noEnabledChecks = report.evidenceSettled && report.categories.length === 0
   const noActiveChecks = report.evidenceSettled && activeReport.categories.length === 0
@@ -65,7 +61,6 @@ export function checksPresentation(
   return {
     activeAssessed,
     activeUnavailable,
-    checking,
     snoozed: snoozedCategories,
     failures: activeAssessed
       .filter((category) => category.lifecycle === "failing")
@@ -73,7 +68,9 @@ export function checksPresentation(
     awaiting: activeAssessed.filter(
       (category) => category.lifecycle === "awaitingVerification",
     ),
-    wins: activeAssessed.filter((category) => category.lifecycle === "passing"),
+    wins: activeReport.categories.filter(
+      (category) => category.lifecycle === "passing" || checkHasProvisionalResult(category),
+    ),
     unavailable: activeUnavailable,
     refreshUnavailable,
     noActiveChecks,
@@ -127,11 +124,14 @@ export function checksHeroPresentation(
     }
   }
 
-  const completePass = presentation.wins.some((category) => category.clean > 0)
+  const passed = presentation.wins.filter(
+    (category) => category.lifecycle === "passing" && category.clean > 0,
+  )
+  const completePass = passed.length > 0
   return {
     result: completePass ? "No issues found" : "No checks assessed",
     summary: completePass
-      ? `${presentation.wins.length} check${presentation.wins.length === 1 ? "" : "s"} passed`
+      ? `${passed.length} check${passed.length === 1 ? "" : "s"} passed`
       : null,
     state: completePass ? "passed" : "pending",
     tone: "text-label",

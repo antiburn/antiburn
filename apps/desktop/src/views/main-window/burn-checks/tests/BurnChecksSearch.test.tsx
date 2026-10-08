@@ -183,7 +183,6 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
     const row = screen.getByRole("button", { name: /Unused MCP servers/ })
     expect(row).toHaveAttribute("aria-pressed", "true")
     expect(row).toHaveFocus()
-    fireEvent.click(screen.getByRole("button", { name: "Passed checks 1" }))
     fireEvent.click(screen.getByRole("button", { name: /Unused skills, / }))
     expect(row).toHaveAttribute("aria-pressed", "false")
     view.rerender(

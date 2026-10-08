@@ -1,6 +1,7 @@
 //! Feature-owned adapter for the shared Smart Burn Check worker.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use antiburn_local::analysis::SourceFormat;
 use antiburn_local::analysis::jev::capabilities::ModelCapabilities;
@@ -27,7 +28,10 @@ use crate::store::{
 };
 
 pub(crate) const CHECK_ID: &str = "over_exploring";
-const CURSOR_REVISION: u32 = 5;
+static PREPARED_INPUTS: LazyLock<
+    Mutex<crate::smart_check_inputs::cache::PreparedInputCache<PreparedInput>>,
+> = LazyLock::new(|| Mutex::new(Default::default()));
+const CURSOR_REVISION: u32 = 6;
 // Accepted input has at most 4096 events and 256 disjoint episodes.
 const MAX_SAMPLING_CANDIDATES: usize = 2 * 4096 + 256;
 const POLICY: CheckPolicy = CheckPolicy {
@@ -76,6 +80,7 @@ struct AssessmentCursor {
     run_finished: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct PreparedInput {
     pub(crate) durable: BurnCheckInput,
     pub(crate) context: JevSessionContext,
@@ -93,6 +98,8 @@ pub(crate) struct Publication {
     pub(crate) work_evidence: BTreeMap<String, Vec<JevEvidenceReference>>,
     pub(crate) work_targets: BTreeMap<String, Target>,
     pub(crate) task_evidence: Vec<JevEvidenceReference>,
+    #[serde(default)]
+    pub(crate) work_task_evidence: BTreeMap<String, Vec<JevEvidenceReference>>,
     #[serde(flatten)]
     pub(crate) assessment: Assessment,
 }
@@ -156,11 +163,36 @@ fn load_input(
     store: &Store,
     candidate: &BurnCheckCandidate,
     capabilities: &ModelCapabilities,
-) -> Result<PreparedInput, InputLoadError> {
+) -> Result<Arc<PreparedInput>, InputLoadError> {
     let candidate = store
         .enrolled_burn_check_candidate(candidate, CHECK_ID)
         .map_err(InputLoadError::Storage)?;
-    prepare(
+    if !crate::smart_check_inputs::cache::source_is_current(
+        store,
+        &candidate,
+        CHECK_ID,
+        CHECK.evaluator_revision(),
+    )
+    .map_err(InputLoadError::Storage)?
+    {
+        return Err(InputLoadError::Unavailable(
+            InputUnavailable::PublicationChanged,
+        ));
+    }
+    let key = crate::smart_check_inputs::cache::source_key(
+        &candidate,
+        CHECK_ID,
+        &CHECK.evaluator_revision(),
+    )?;
+    let key = serde_json::to_string(&(key, capabilities)).map_err(InputLoadError::Serialization)?;
+    if let Some(input) = PREPARED_INPUTS
+        .lock()
+        .map_err(|_| InputLoadError::Preparation(JevError::InvalidCheckContext))?
+        .get(store, &key)
+    {
+        return Ok(input);
+    }
+    let input = Arc::new(prepare(
         &candidate,
         store.load_smart_check_inputs(
             &candidate.session.key,
@@ -169,7 +201,16 @@ fn load_input(
             DetectorInput::OverExploring,
         )?,
         capabilities,
-    )
+    )?);
+    let bytes = serde_json::to_vec(&(&input.context, &input.plan.prepared))
+        .map_err(InputLoadError::Serialization)?
+        .len()
+        .saturating_mul(4);
+    PREPARED_INPUTS
+        .lock()
+        .map_err(|_| InputLoadError::Preparation(JevError::InvalidCheckContext))?
+        .insert(store, key, bytes, Arc::clone(&input));
+    Ok(input)
 }
 
 fn bound_sampling_inventory(plan: &mut JevCheckPlan<PreparedAssessment>) -> usize {
@@ -254,7 +295,16 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         return unavailable(store, candidate, true);
     }
     let capabilities = handle.resolve_capabilities(key_generation).await?;
-    let input = match load_input(store, candidate, &capabilities) {
+    let preparation = admit_jev_orchestration().await?;
+    let input_store = store.clone();
+    let input_candidate = candidate.clone();
+    let input_capabilities = capabilities.clone();
+    let loaded = tauri::async_runtime::spawn_blocking(move || {
+        let _permit = preparation;
+        load_input(&input_store, &input_candidate, &input_capabilities)
+    })
+    .await?;
+    let input = match loaded {
         Ok(input) => input,
         Err(error) => {
             ::tracing::debug!(event = "over_exploring_input_unavailable", error = ?error);
@@ -274,13 +324,12 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         .inventory_count
         .saturating_add(256)
         .min(cursor.inventory_total);
-    let mut inventory = input.plan.clone();
-    inventory
-        .prepared
-        .candidates
-        .truncate(cursor.inventory_count);
-    synchronize_sampling(&inventory, cursor.sampling.as_mut().expect("initialized"))
-        .map_err(|error| anyhow::anyhow!("sampling inventory rejected: {error:?}"))?;
+    synchronize_sampling_prefix(
+        &input.plan,
+        cursor.inventory_count,
+        cursor.sampling.as_mut().expect("initialized"),
+    )
+    .map_err(|error| anyhow::anyhow!("sampling inventory rejected: {error:?}"))?;
     if !store.queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)?
         || !store.claim_burn_check_assessment(
             &input.durable,
@@ -317,8 +366,18 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         if !save_cursor(store, &input.durable, &cursor)? {
             return Ok(());
         }
-        let mut plan = input.plan.clone();
-        PreparedAssessment::select_jobs(&mut plan, std::slice::from_ref(&job))?;
+        let orchestration = admit_jev_orchestration().await?;
+        let selected_input = Arc::clone(&input);
+        let selected_job = job.clone();
+        let (mut plan, checkpoint_plan) = tauri::async_runtime::spawn_blocking(move || {
+            let mut selected_plan = selected_input.plan.clone();
+            PreparedAssessment::select_jobs(
+                &mut selected_plan,
+                std::slice::from_ref(&selected_job),
+            )?;
+            Ok::<_, JevError>((selected_plan.clone(), selected_plan))
+        })
+        .await??;
         let mut connection = handle.system_one_connection();
         connection
             .model_revision
@@ -350,6 +409,12 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             }
         }
         if terminal {
+            let reviewed = OverExploringCheck.reduce(&plan, &[], false)?;
+            merge_result(
+                cursor.result.as_mut().expect("initialized"),
+                reviewed,
+                &plan,
+            );
             cursor
                 .sampling
                 .as_mut()
@@ -374,8 +439,6 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             return Ok(());
         }
         let progress = std::mem::take(&mut cursor.run_progress);
-        let checkpoint_plan = plan.clone();
-        let orchestration = admit_jev_orchestration().await?;
         let outcome = run_prepared_check(
             BatchExecution {
                 app,
@@ -599,9 +662,12 @@ fn publish_current(
     input: &PreparedInput,
     cursor: &AssessmentCursor,
 ) -> anyhow::Result<Option<crate::analytics::event::SmartCheckAssessmentOutcome>> {
-    if !load_input(store, candidate, capabilities)
-        .as_ref()
-        .is_ok_and(|current| current.durable.input_revision == input.durable.input_revision)
+    if !Store::burn_check_input_is_current(&store.lock(), &input.durable)?
+        || store
+            .enrolled_burn_check_candidate(candidate, CHECK_ID)?
+            .boundary_positions
+            != candidate.boundary_positions
+        || capabilities != &input.plan.capabilities
     {
         store.supersede_burn_check_assessment(&input.durable, unix_now())?;
         return Ok(None);
@@ -653,20 +719,35 @@ fn check_identity() -> StableId {
     StableId::new("smart-check", &[b"over_exploring"])
 }
 
+#[cfg(test)]
 fn synchronize_sampling(
     plan: &JevCheckPlan<PreparedAssessment>,
+    sampling: &mut SamplingProgress,
+) -> Result<(), antiburn_local::checks::sampling::SamplingError> {
+    synchronize_sampling_prefix(plan, plan.prepared.candidates.len(), sampling)
+}
+
+fn synchronize_sampling_prefix(
+    plan: &JevCheckPlan<PreparedAssessment>,
+    count: usize,
     sampling: &mut SamplingProgress,
 ) -> Result<(), antiburn_local::checks::sampling::SamplingError> {
     let candidates = plan
         .prepared
         .candidates
         .iter()
+        .take(count)
         .map(|candidate| antiburn_local::checks::sampling::Candidate {
             id: candidate.candidate_id,
             required_answers: candidate.required_answers.clone(),
         })
         .collect::<Vec<_>>();
-    let mut chronological = plan.prepared.candidates.iter().collect::<Vec<_>>();
+    let mut chronological = plan
+        .prepared
+        .candidates
+        .iter()
+        .take(count)
+        .collect::<Vec<_>>();
     chronological.sort_by_key(|candidate| {
         let source_index = candidate
             .work_item_ids
@@ -813,17 +894,33 @@ pub(crate) fn publication(input: &PreparedInput, mut assessment: Assessment) -> 
             .limitations
             .push("sampling_inventory_limit".into());
     }
-    let shared = input
+    let mut task_evidence = input
         .plan
-        .shared_context
-        .as_ref()
-        .expect("prepared task context");
+        .prepared
+        .task_contexts
+        .values()
+        .flat_map(|context| context.evidence.clone())
+        .collect::<Vec<_>>();
+    task_evidence.sort_by(|left, right| left.source_id.cmp(&right.source_id));
+    task_evidence.dedup();
     Publication {
         input_revision: input.durable.input_revision.clone(),
         snapshot_revision: input.snapshot_revision.clone(),
         semantic_revision: input.context.input_revision.clone(),
         model: input.plan.capabilities.model.clone(),
-        task_evidence: shared.evidence.clone(),
+        task_evidence,
+        work_task_evidence: assessment
+            .findings
+            .iter()
+            .map(|finding| {
+                (
+                    finding.work_item_id.clone(),
+                    input.plan.prepared.task_contexts[&finding.episode_id]
+                        .evidence
+                        .clone(),
+                )
+            })
+            .collect(),
         work_targets: input
             .plan
             .prepared
@@ -843,8 +940,8 @@ pub(crate) fn publication(input: &PreparedInput, mut assessment: Assessment) -> 
             .map(|finding| {
                 (
                     finding.work_item_id.clone(),
-                    shared
-                        .evidence
+                    finding
+                        .task_evidence
                         .iter()
                         .chain(&finding.source_evidence)
                         .cloned()
@@ -888,7 +985,11 @@ pub(crate) fn publishable_finding(finding: &Decision, publication: &Publication)
         && finding.probability.is_finite()
         && (SEMANTIC_PROBABILITY_THRESHOLD..=1.0).contains(&finding.probability)
         && !finding.task_evidence.is_empty()
-        && finding.task_evidence == publication.task_evidence
+        && publication.work_task_evidence.get(&finding.work_item_id) == Some(&finding.task_evidence)
+        && finding
+            .task_evidence
+            .iter()
+            .all(|reference| publication.task_evidence.contains(reference))
         && finding.reads == target.bindings
         && finding.reason == target.reason
         && finding.episode_id == target.episode_id

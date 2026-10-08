@@ -27,6 +27,11 @@ builders. Hosted credentials come only from `TYPESAFE_API_KEY` or
 `CLOUDFLARE_AUTH_TOKEN`; Cloudflare also needs `CLOUDFLARE_ACCOUNT_ID`.
 Keys never appear in configuration records, reports, or client Debug output.
 
+Exact Custom presets include an explicit total-input bound: 8,192 tokens for
+local Ollama routes and 65,536 for Jev and Cloudflare routes. These bounds exceed
+the Custom rendering reserve. Discovery can lower these bounds; manual overrides
+never raise a known provider limit.
+
 ## API
 
 ```rust

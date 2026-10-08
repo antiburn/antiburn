@@ -15,7 +15,8 @@ mod questions;
 mod selected_context;
 
 pub use planning::{
-    SamplingLedger, build_assessment_plan, build_assessment_plan_with_capabilities,
+    ComparisonCoordinate, PreparedAssessmentInput, SamplingLedger, SavedComparison,
+    build_assessment_plan, build_assessment_plan_with_capabilities,
     build_assessment_plan_with_sampling, build_jev_context, build_jev_context_with_capabilities,
     build_jev_context_with_sampling, extend_comparison_with_history,
     extend_comparison_with_history_and_capabilities, extend_jev_context_with_history,
