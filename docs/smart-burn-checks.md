@@ -211,7 +211,7 @@ apart.
 ### How sampling works
 
 One rule-text range and one action-text range form a possible comparison. The
-default sample is **256 high-priority rule/action pairs per review**. This is
+default sample is **1,024 high-priority rule/action pairs per review**. This is
 not exhaustive coverage or a cap on possible comparisons, TypeSafe requests,
 tokens, elapsed time, or cost. A large session can have many more possible
 pairs. The check records possible, sampled, and remaining pair counts. Remaining
@@ -240,10 +240,11 @@ make up to three total dispatch attempts. An earlier dispatched attempt may
 already have incurred a charge. If the result is still unknown after those
 attempts, Antiburn blocks further dispatch of that work.
 
-An **event window** contains one action and up to two sampled rules. This sends
+An **event window** contains one action and up to eight sampled rules. This sends
 the action once for those rules instead of copying it into a separate window
-each time. One rule/action comparison is a **target**. Long actions or rules
-can need several windows with overlapping text. Sampling does not promise
+each time. One rule/action comparison is a **target**. Long non-command actions or rules
+can need several windows with overlapping text. Bash commands stay atomic;
+commands that exceed the request limit remain unassessed. Sampling does not promise
 every possible range or window is sent.
 
 For example, the instructions might say “Run tests before publishing” and “Get
@@ -264,21 +265,16 @@ missing or cut short, that comparison stays unassessed.
 
 ### What Jev receives and returns
 
-Each event window contains the selected rule text, the action, and a few
-nearby events. The check uses two analysis passes. The first pass asks one
-applicability question for each target:
+Each event window contains the selected rule text, bounded enclosing-section
+and ancestor context, the action, and selected same-branch events. Instruction
+context carries exact source byte and line ranges and explicit clipping limits.
+Large supporting text selects first, relevant, and last structural ranges within
+the context budget. Command context remains atomic or unavailable.
 
-1. Does this instruction apply to the action?
-
-The check skips follow-up questions for a confident “not applicable” answer
-(at least 0.90 probability). For other valid applicability answers, it asks
-relationship and evidence questions, plus a completion question when relevant:
-
-1. Does the action conflict with or follow the instruction after conditions and
-   exceptions are considered?
-2. Could missing or truncated evidence change that conclusion?
-3. Does the instruction have a completion-bound obligation whose completion
-   boundary is not shown?
+The check asks one joint Choice question per target. It returns `conflict`,
+`no_issue`, `pending_completion`, or `uncertain`, with an actual probability
+distribution. The decision considers applicability, conditions, exceptions,
+prerequisites, missing evidence, and completion boundaries together.
 
 Weak or uncertain answers do not prove a clean comparison. Source completeness
 and unresolved obligations limit conclusions about the reviewed comparisons.
@@ -287,8 +283,8 @@ The shared request code combines windows until the request reaches its size or
 question limit. Jev returns a choice and probability for each answer. The
 temporary labels let the shared worker connect answers to their windows, while
 the private map connects those windows back to the original rule and event.
-The follow-up also checks excluded-field limits and keeps context
-violations separate from the candidate's local citation. The first pass evaluates
+The joint decision also checks excluded-field limits and keeps context
+violations separate from the candidate's local citation. Each review evaluates
 chosen targets, not every possible rule/action pair.
 
 ### How results become findings
@@ -297,12 +293,12 @@ Jev does not decide the session result by itself. Antiburn checks the answers
 available for each selected target, then combines those decisions into one
 review result.
 
-The local decision rules apply confidence limits. A possible finding needs at
-least 0.85 probability that the rule applies and the action conflicts. A likely
-finding needs 0.90 plus stronger evidence about the instruction source and the
-action.
-When evidence is incomplete, Jev must also judge that the supplied evidence is
-enough to prove the result. A direct conflict can still qualify when omitted
+The local decision rules require at least 0.75 actual probability for `conflict`.
+The finding retains this value as `composite_probability`; separate applicability
+and evidence probabilities are not multiplied or reconstructed. Current-file
+comparisons and truncated actions remain possible findings. Stronger evidence
+about the instruction source and action permits a likely finding under the same
+threshold. A direct conflict can still qualify when omitted
 history cannot change it. A conclusion that depends on missing history stays
 unassessed.
 
@@ -543,8 +539,8 @@ preparation, transport, or reduction changes.
 
 An ordinary assessment in about 60 seconds after worker start is a performance
 goal, not a deadline or guarantee. Preparation, provider admission, request
-packing, model latency, follow-up questions, checkpoints, and publication all
-add time. A pass can use several paid requests; the 256-pair budget does not
+packing, model latency, checkpoints, and publication all
+add time. A pass can use several paid requests; the 1,024-pair budget does not
 cap spending. Large inputs, rate limits, retries, and missing history can take
 longer. Measure worker-start-to-result time, sampled coverage, requests and
 tokens, reuse, missed findings, and cost on representative sessions before

@@ -58,7 +58,7 @@ Instruction-file discovery compares supported files in their current state.
 It does not prove historical contents or activation. Recover historical
 instruction text only from an authoritative session record; do not infer it
 from a matching current path or a read request. Keep unavailable evidence
-unavailable. Ignored Instructions samples 256 high-priority rule/action pairs
+unavailable. Ignored Instructions samples 1,024 high-priority rule/action pairs
 per review by default. This sample is not exhaustive or a spending cap. Clean
 means no finding among sampled comparisons, not that all content is safe. Keep
 provider and evidence errors separate from the remaining sampling gap. Reuse a

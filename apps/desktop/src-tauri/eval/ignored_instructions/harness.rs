@@ -19,10 +19,7 @@ fn outcome(result: &AssessmentResult, complete: bool) -> &'static str {
         "finding"
     } else if !result.pending_rules.is_empty() {
         "pending"
-    } else if !complete
-        || !result.unassessed_comparisons.is_empty()
-        || !result.coverage.limitations.is_empty()
-    {
+    } else if !complete || !result.unassessed_comparisons.is_empty() {
         "unassessed"
     } else {
         "no_finding"

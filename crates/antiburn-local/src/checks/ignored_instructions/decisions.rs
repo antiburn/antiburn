@@ -80,11 +80,9 @@ pub struct PrerequisiteEpisode {
 
 impl PrerequisiteEpisode {
     pub(super) fn authorization_available(&self) -> bool {
-        self.complete_selected_history
-            && self
-                .selected_actions
-                .iter()
-                .any(super::selected_context::human_text)
+        self.selected_actions
+            .iter()
+            .any(super::selected_context::human_text)
     }
 
     pub(super) fn results_available(&self) -> bool {
@@ -94,18 +92,40 @@ impl PrerequisiteEpisode {
     }
 
     pub(super) fn has_source_bindings(&self, anchor: &ActionSourceBinding) -> bool {
-        self.events.len() == self.identities.len()
+        self.events
+            .iter()
+            .map(|event| &event.action_id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            == self.events.len()
+            && self.events.iter().all(|event| {
+                self.identities
+                    .iter()
+                    .any(|identity| identity.source.id == event.action_id)
+            })
             && (self.selected_actions.is_empty()
                 || (self.selected_actions.len() == self.events.len()
                     && self
                         .selected_actions
                         .iter()
-                        .zip(self.events.iter().zip(&self.identities))
-                        .all(|(action, (event, identity))| {
-                            action.reference == identity.source
-                                && super::content_action_digest(action) == identity.content_digest
-                                && super::planning::counter_event(action, action.text.len())
-                                    == *event
+                        .zip(&self.events)
+                        .all(|(action, event)| {
+                            let identities = self
+                                .identities
+                                .iter()
+                                .filter(|identity| identity.source.id == event.action_id)
+                                .collect::<Vec<_>>();
+                            let ranges = identities
+                                .iter()
+                                .map(|identity| (identity.start_byte, identity.end_byte))
+                                .collect::<Vec<_>>();
+                            !identities.is_empty()
+                                && identities.iter().all(|identity| {
+                                    action.reference == identity.source
+                                        && super::content_action_digest(action)
+                                            == identity.content_digest
+                                })
+                                && selected_counter_event(action, &ranges).as_ref() == Some(event)
                                 && super::selected_context::supported(
                                     action,
                                     &self.selected_actions,
@@ -121,39 +141,77 @@ impl PrerequisiteEpisode {
                     ))
                     .expect("serialize prerequisite episode"),
                 )
-            && self
-                .events
-                .iter()
-                .zip(&self.identities)
-                .all(|(event, identity)| {
-                    event.action_id == identity.source.id
-                        && event.source_order == identity.source.turn_index
-                        && ((event.role == "assistant"
-                            && (super::action_context::is_assistant_text(&event.kind)
-                                || event.kind == "tool_input"))
-                            || !self.selected_actions.is_empty())
-                        && identity.source.stable
-                        && !identity.source.id.is_empty()
-                        && !identity.content_digest.is_empty()
-                        && identity.source.source_key_digest == anchor.source.source_key_digest
-                        && identity.source.thread_digest == anchor.source.thread_digest
-                        && (identity.source.turn_index, identity.source.part_index)
-                            < (anchor.source.turn_index, anchor.source.part_index)
-                        && identity.start_byte == 0
-                        && identity.end_byte == event.text.len()
-                        && (!self.complete_selected_history || !event.truncated)
-                })
-            && self.identities.windows(2).all(|pair| {
-                (pair[0].source.turn_index, pair[0].source.part_index)
-                    < (pair[1].source.turn_index, pair[1].source.part_index)
+            && self.identities.iter().all(|identity| {
+                let Some(event) = self
+                    .events
+                    .iter()
+                    .find(|event| event.action_id == identity.source.id)
+                else {
+                    return false;
+                };
+                event.action_id == identity.source.id
+                    && event.source_order == identity.source.turn_index
+                    && ((event.role == "assistant"
+                        && (super::action_context::is_assistant_text(&event.kind)
+                            || event.kind == "tool_input"))
+                        || !self.selected_actions.is_empty())
+                    && identity.source.stable
+                    && !identity.source.id.is_empty()
+                    && !identity.content_digest.is_empty()
+                    && identity.source.source_key_digest == anchor.source.source_key_digest
+                    && identity.source.thread_digest == anchor.source.thread_digest
+                    && (identity.source.turn_index, identity.source.part_index)
+                        < (anchor.source.turn_index, anchor.source.part_index)
+                    && identity.start_byte < identity.end_byte
+                    && (!self.selected_actions.is_empty()
+                        || (identity.start_byte == 0 && identity.end_byte == event.text.len()))
+                    && (!self.complete_selected_history || !event.truncated)
             })
             && self
                 .identities
+                .windows(2)
+                .all(|pair| evidence_is_ordered(&pair[0], &pair[1]))
+            && self
+                .identities
                 .iter()
-                .map(|identity| &identity.source.id)
+                .map(|identity| (&identity.source.id, identity.start_byte, identity.end_byte))
                 .collect::<std::collections::BTreeSet<_>>()
                 .len()
                 == self.identities.len()
+    }
+}
+
+fn selected_counter_event(
+    action: &ContentAction,
+    ranges: &[(usize, usize)],
+) -> Option<CounterEvidence> {
+    let parts = ranges
+        .iter()
+        .map(|(start, end)| action.text.get(*start..*end))
+        .collect::<Option<Vec<_>>>()?;
+    let mut event = super::planning::counter_event(action, action.text.len());
+    event.text = parts.join("\n");
+    event.truncated |= ranges != [(0, action.text.len())];
+    Some(event)
+}
+
+fn evidence_source_ids(identities: &[EvidenceIdentity]) -> Vec<String> {
+    let mut ids = identities
+        .iter()
+        .map(|identity| identity.source.id.clone())
+        .collect::<Vec<_>>();
+    ids.dedup();
+    ids
+}
+
+fn evidence_is_ordered(left: &EvidenceIdentity, right: &EvidenceIdentity) -> bool {
+    if left.source.id == right.source.id {
+        left.source == right.source
+            && left.content_digest == right.content_digest
+            && left.end_byte <= right.start_byte
+    } else {
+        (left.source.turn_index, left.source.part_index)
+            < (right.source.turn_index, right.source.part_index)
     }
 }
 
@@ -249,8 +307,12 @@ impl DecisionRecord {
             })
             && self
                 .selected_evidence
+                .windows(2)
+                .all(|pair| evidence_is_ordered(&pair[0], &pair[1]))
+            && self
+                .selected_evidence
                 .iter()
-                .map(|evidence| &evidence.source.id)
+                .map(|evidence| (&evidence.source.id, evidence.start_byte, evidence.end_byte))
                 .collect::<std::collections::BTreeSet<_>>()
                 .len()
                 == self.selected_evidence.len()
@@ -274,12 +336,7 @@ impl DecisionRecord {
                 || self.selected_evidence.is_empty()
                 || self.citations.iter().any(|proof| {
                     proof.claim == CitationClaim::ObservedContext
-                        && proof.source_ids
-                            == self
-                                .selected_evidence
-                                .iter()
-                                .map(|evidence| evidence.source.id.clone())
-                                .collect::<Vec<_>>()
+                        && proof.source_ids == evidence_source_ids(&self.selected_evidence)
                 }))
             && (self.prerequisite == PrerequisiteOutcome::NotRequired
                 || self.citations.iter().any(|proof| {
@@ -290,11 +347,7 @@ impl DecisionRecord {
                                 && self.coverage.read_request_inventory_complete))
                         && proof.source_ids
                             == std::iter::once(self.rule_action.action_id.clone())
-                                .chain(
-                                    self.selected_evidence
-                                        .iter()
-                                        .map(|evidence| evidence.source.id.clone()),
-                                )
+                                .chain(evidence_source_ids(&self.selected_evidence))
                                 .collect::<Vec<_>>()
                 }))
     }
@@ -327,11 +380,18 @@ pub(super) fn episode_with_witnesses(
     source_complete: bool,
     witnesses: &[String],
 ) -> PrerequisiteEpisode {
-    let budget = capabilities
-        .usable_state_tokens()
-        .unwrap_or(16 * 1024)
-        .saturating_sub(4096)
-        .min(16 * 1024) as usize;
+    let budget = [
+        capabilities.usable_state_tokens(),
+        capabilities.request_body_bytes.value,
+        capabilities.state_and_longest_question_bytes.value,
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    .unwrap_or(16 * 1024)
+    .saturating_sub(4096)
+    .saturating_div(4)
+    .min(4096) as usize;
     let mut earlier = actions
         .iter()
         .filter(|action| {
@@ -366,19 +426,38 @@ pub(super) fn episode_with_witnesses(
     let mut complete = source_complete && comparison.prior_history_complete;
     let mut bytes = 0usize;
     let mut selected = Vec::new();
+    let mut selected_ranges = std::collections::BTreeMap::new();
     for action in earlier {
-        let next_bytes = bytes.saturating_add(action.text.len()).saturating_add(256);
-        if selected.len() == 64 || next_bytes > budget {
+        let available = budget.saturating_sub(bytes).saturating_sub(256);
+        let ranges = if super::planning::atomic_command(action) {
+            if action.text.len() <= available {
+                vec![(0, action.text.len())]
+            } else {
+                Vec::new()
+            }
+        } else {
+            super::selected_context::supporting_text_ranges(
+                &action.text,
+                available,
+                super::planning::rule_text_fragment(comparison),
+            )
+        };
+        let selected_bytes = ranges.iter().map(|(start, end)| end - start).sum::<usize>()
+            + ranges.len().saturating_sub(1);
+        let next_bytes = bytes.saturating_add(selected_bytes).saturating_add(256);
+        if selected.len() == 64 || next_bytes > budget || ranges.is_empty() {
             complete = false;
             continue;
         }
         bytes = next_bytes;
-        complete &= !action.truncated
+        complete &= ranges == [(0, action.text.len())]
+            && !action.truncated
             && action.reference.stable
             && super::selected_context::supported(action, actions)
             && comparison.source_binding.as_ref().is_some_and(|binding| {
                 binding.source.source_key_digest == action.reference.source_key_digest
             });
+        selected_ranges.insert(action.reference.id.clone(), ranges);
         selected.push(action);
     }
     complete &= selected.len() == earlier_count;
@@ -399,15 +478,22 @@ pub(super) fn episode_with_witnesses(
         .collect::<Vec<_>>();
     let events = selected
         .iter()
-        .map(|action| super::planning::counter_event(action, action.text.len()))
+        .map(|action| {
+            selected_counter_event(action, &selected_ranges[&action.reference.id])
+                .expect("selected ranges bind to the retained action text")
+        })
         .collect();
     let identities = selected
         .iter()
-        .map(|action| EvidenceIdentity {
-            source: action.reference.clone(),
-            content_digest: super::content_action_digest(action),
-            start_byte: 0,
-            end_byte: action.text.len(),
+        .flat_map(|action| {
+            selected_ranges[&action.reference.id]
+                .iter()
+                .map(|(start, end)| EvidenceIdentity {
+                    source: action.reference.clone(),
+                    content_digest: super::content_action_digest(action),
+                    start_byte: *start,
+                    end_byte: *end,
+                })
         })
         .collect();
     let revision = sha256_hex(
@@ -444,7 +530,8 @@ pub(super) fn record(
     if episode.is_some_and(|value| !value.has_source_bindings(binding)) {
         return None;
     }
-    let prerequisite = if !required {
+    let prerequisite = if !required || !episode.is_some_and(|value| value.complete_selected_history)
+    {
         PrerequisiteOutcome::NotRequired
     } else if obligation.is_some_and(|value| {
         value.read_prerequisite_absent
@@ -476,20 +563,13 @@ pub(super) fn record(
         citations.push(CitationProof {
             claim: CitationClaim::PrerequisiteContrast,
             source_ids: std::iter::once(comparison.reference.action_id.clone())
-                .chain(
-                    selected_evidence
-                        .iter()
-                        .map(|evidence| evidence.source.id.clone()),
-                )
+                .chain(evidence_source_ids(&selected_evidence))
                 .collect(),
         });
     } else if !selected_evidence.is_empty() {
         citations.push(CitationProof {
             claim: CitationClaim::ObservedContext,
-            source_ids: selected_evidence
-                .iter()
-                .map(|evidence| evidence.source.id.clone())
-                .collect(),
+            source_ids: evidence_source_ids(&selected_evidence),
         });
     }
     let record = DecisionRecord {

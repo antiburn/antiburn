@@ -320,9 +320,8 @@ current files, but this does not prove historical activation. Missing recorded
 historical snapshots remain unavailable as proof.
 Provider failures and incomplete source evidence are different from sampling
 gaps and cannot produce Clean. Auto Fix, verification, and estimates are
-unsupported. A confident `not_applicable` answer can stop follow-up for that comparison.
-Other applicability answers need independent relationship and evidence
-judgments. Missing required evidence cannot establish a clean result.
+unsupported. Each comparison uses one joint Choice decision. Missing required
+evidence cannot establish a clean result.
 The per-field source limits and selection states are listed in
 [Smart Burn Checks selected-input coverage](smart-burn-checks.md#ignored-instructions-selected-input-coverage).
 
@@ -377,22 +376,27 @@ origin, synthetic text, skill documents, unmatched/conflicting joins, and clippi
 cannot establish permission or successful tests. Edit content, read/search output,
 other results, typed question/plan fields, and thinking remain excluded.
 Selected paths can leave the machine. Sampling selects
-up to 256 high-priority rule/action pairs per review by word rarity, tool
+up to 1,024 high-priority rule/action pairs per review by word rarity, tool
 name, literal path, prohibition/tool-input risk, and recency. It spreads choices
 across rules and sources and probes low-overlap pairs. These signals cannot
 prove that omitted pairs are irrelevant. New activity leads later reviews;
 then older pairs not yet sampled reduce the remaining gap, unless new work
 adds pairs. Compatible typed answers persist across append, completion, and
-restart with source-bound identities and input/revision checks. Long text is
-split into overlapping byte ranges; not every range must be sent. Request
+restart with source-bound identities and input/revision checks. Long non-command text is
+split into overlapping byte ranges; not every range must be sent. Bash commands
+stay atomic and remain unassessed when they exceed the request limit. Rule
+targets include bounded enclosing-section and ancestor text with source byte
+and line ranges. Large supporting text selects first, relevant, and last
+structural ranges within the context budget. Request
 size remains bounded, but this is not a per-session price or time cap. About
 60 seconds after worker start for an ordinary assessment is a goal, not a
 completion deadline or guarantee.
 Requests retain the rule text, provenance, scope, candidate action, and bounded
-same-branch evidence. One event window groups up to two rule targets around a
+same-branch evidence. One event window groups up to eight rule targets around a
 candidate action, so the request sends shared event text once instead of
-repeating it for each rule. Instruction-file paths, line locations, and stable
-event IDs stay local. Earlier context is sent in source order within its array.
+repeating it for each rule. Instruction-file paths and stable event IDs stay
+local. Source byte and line ranges accompany selected instruction context.
+Earlier context is sent in source order within its array.
 Candidate actions include normalized assistant text (`assistant` content kind)
 and the selected input envelope for each recognized tool category. Edit and read
 inputs are reduced to paths; search inputs retain the query and scope filters.
@@ -417,17 +421,16 @@ first-tier agents include shared global and project AGENTS.md files alongside
 their supported agent-specific sources. The Markdown reader uses headings and
 list structure to bound rule text. Text before the first heading scopes each
 headed rule but does not become a separate rule. It does not infer semantic rule types from
-keyword lists. Jev answers applicability, the action's relationship after the
-instruction's stated conditions and exceptions, whether omitted evidence could
-change that conclusion, and whether a completion-bound obligation lacks a
-completion boundary. A possible finding requires Jev probabilities of at least
-0.85 for applicability and conflict. If source, action, or context evidence is
-incomplete, it also requires at least 0.85 probability that the supplied
-evidence proves the result without omitted material; a likely finding uses 0.90
-and the existing stronger source/action gate. A completion-bound answer can
-mark a rule pending. A triggered prerequisite with unavailable evidence stays
-unassessed; it does not become a pending completion obligation. The reducer
-leaves conclusions that depend on omitted evidence unassessed. Truncated context does not block a direct conflict when
+keyword lists. Jev answers one joint Choice question per target: `conflict`,
+`no_issue`, `pending_completion`, or `uncertain`. The decision considers
+applicability, conditions, exceptions, prerequisites, and evidence sufficiency
+together. Publication requires at least 0.75 actual probability for `conflict`;
+the reducer retains that value as `composite_probability`. Current-file or
+truncated-action findings remain possible; stronger source/action evidence
+permits likely findings under the same probability threshold. A sufficiently
+probable `pending_completion` answer marks a rule pending. Missing prerequisite
+evidence remains uncertain. The reducer leaves weak and uncertain decisions
+unassessed. Truncated context does not block a direct conflict when
 supplied evidence establishes it. Partial assessment cannot support a clean
 result.
 

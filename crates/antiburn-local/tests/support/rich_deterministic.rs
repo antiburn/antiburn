@@ -133,30 +133,18 @@ pub fn context(content: SessionContentEvidence) -> JevSessionContext {
 
 #[derive(Clone, Copy)]
 pub struct Answers {
-    pub relationship: &'static str,
-    pub permission: &'static str,
-    pub read: &'static str,
-    pub obligation: &'static str,
-    pub completion: &'static str,
-    pub paths: &'static [&'static str],
+    pub decision: &'static str,
 }
 
 impl Answers {
     pub const CONFLICT: Self = Self {
-        relationship: "conflict",
-        permission: "independent",
-        read: "not_read_order",
-        obligation: "action",
-        completion: "not_completion_obligation",
-        paths: &[],
+        decision: "conflict",
     };
     pub const FOLLOWS: Self = Self {
-        relationship: "follows",
-        ..Self::CONFLICT
+        decision: "no_issue",
     };
     pub const MISSING: Self = Self {
-        relationship: "insufficient_evidence",
-        ..Self::CONFLICT
+        decision: "uncertain",
     };
 }
 
@@ -180,7 +168,10 @@ pub fn results(items: &[JevWorkItem], answers: Answers) -> Vec<JevWorkItemResult
     assert!(packing.skipped_item_ids.is_empty());
     let mut output = Vec::new();
     for batch in packing.batches {
-        assert!(batch.serialized_bytes <= MAX_REQUEST_BYTES);
+        assert_eq!(
+            validate_jev_request(&batch.request).unwrap(),
+            batch.serialized_bytes
+        );
         let response = response(&batch, answers);
         output.extend(unpack_jev_response(&batch, &response).unwrap());
     }
@@ -199,33 +190,8 @@ pub fn response(batch: &JevRequestBatch, answers: Answers) -> JevResponse {
                 let JevQuestion::Choice { .. } = question else {
                     panic!("expected Choice")
                 };
-                let selected = match local.rsplit("::").next().unwrap() {
-                    "permission" => answers.permission,
-                    "condition_evidence" => "selected",
-                    "read_trigger" => {
-                        if matches!(answers.read, "request_order" | "read_success") {
-                            "edit_request"
-                        } else {
-                            "not_read_rule"
-                        }
-                    }
-                    "path_change_policy" => "other_path",
-                    _ if local.starts_with("literal_qualification_") => "qualified",
-                    _ if local.starts_with("literal_policy_") => "literal_other",
-                    "read_prerequisite" => answers.read,
-                    "action_family" => "any",
-                    "obligation" => answers.obligation,
-                    _ if local.starts_with("read_path_") => {
-                        let index: usize =
-                            local.strip_prefix("read_path_").unwrap().parse().unwrap();
-                        answers.paths.get(index).copied().unwrap_or("other_path")
-                    }
-                    "applicability" => "applies",
-                    "relationship" => answers.relationship,
-                    "evidence_basis" => "self_contained",
-                    "completion" => answers.completion,
-                    _ => panic!("unhandled question {local}"),
-                };
+                assert_eq!(local.rsplit("::").next(), Some("decision"));
+                let selected = answers.decision;
                 (id.clone(), choice(question, selected))
             })
             .collect(),
@@ -241,27 +207,9 @@ pub fn assess(
     answers: Answers,
 ) -> (JevCheckPlan<AssessmentPlan>, AssessmentResult) {
     let check = IgnoredInstructionsCheck;
-    let mut plan = check.prepare(context).unwrap();
-    let classifications = results(&check.classifications(context).unwrap(), answers)
-        .into_iter()
-        .map(|result| (result.work_item_id.clone(), result))
-        .collect::<BTreeMap<_, _>>();
-    check
-        .apply_classifications(&mut plan, &classifications, context)
-        .unwrap();
-    let mut initial = results(&plan.work_items, answers);
-    for result in &mut initial {
-        let item = plan
-            .work_items
-            .iter()
-            .find(|item| item.id == result.work_item_id)
-            .unwrap();
-        if let Some(followup) = check.reconcile(item, result, context).unwrap() {
-            let reconciled = results(&[followup], answers).pop().unwrap();
-            result.answers.extend(reconciled.answers);
-        }
-    }
-    initial.extend(classifications.into_values());
+    let plan = check.prepare(context).unwrap();
+    assert!(check.classifications(context).unwrap().is_empty());
+    let initial = results(&plan.work_items, answers);
     let reduced = check.reduce(&plan, &initial, true).unwrap();
     (plan, reduced)
 }

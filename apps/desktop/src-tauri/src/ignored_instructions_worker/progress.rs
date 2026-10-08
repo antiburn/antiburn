@@ -28,6 +28,9 @@ struct CompactComparison {
     source_turn_index: u64,
     source_turn_scope: String,
     rule_text: usize,
+    #[serde(default)]
+    instruction_context:
+        Vec<antiburn_local::analysis::ignored_instructions::InstructionContextRange>,
     rule_text_start: usize,
     rule_text_end: usize,
     action: usize,
@@ -72,6 +75,7 @@ impl CompactCarriedComparisons {
                     source_turn_index: comparison.source_turn_index,
                     source_turn_scope: comparison.source_turn_scope.clone(),
                     rule_text,
+                    instruction_context: comparison.instruction_context.clone(),
                     rule_text_start: comparison.rule_text_start,
                     rule_text_end: comparison.rule_text_end,
                     action: event_index(&comparison.action),
@@ -119,6 +123,7 @@ impl CompactCarriedComparisons {
                         .get(entry.rule_text)
                         .cloned()
                         .ok_or(JevError::InvalidCheckPlan)?,
+                    instruction_context: entry.instruction_context,
                     rule_text_start: entry.rule_text_start,
                     rule_text_end: entry.rule_text_end,
                     action: event(entry.action)?,
@@ -161,6 +166,10 @@ pub(super) struct CompactProgress {
 }
 
 impl CompactProgress {
+    pub(super) fn revision_matches(&self) -> bool {
+        self.version == 3
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.answers.iter().all(Option::is_none)
             && self.followup_answers.iter().all(Option::is_none)
@@ -228,7 +237,7 @@ impl CompactProgress {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
-            version: 2,
+            version: 3,
             input_revision: progress.input_revision.clone(),
             completed_batch_ids: progress.completed_batch_ids.clone(),
             failed_item_ids: progress.failed_item_ids.clone(),
@@ -256,7 +265,7 @@ impl CompactProgress {
         context: &JevSessionContext,
         work_items: &[JevWorkItem],
     ) -> Result<JevRunProgress, JevError> {
-        if !matches!(self.version, 1 | 2)
+        if !self.revision_matches()
             || self.answers.len() != work_items.len()
             || (!self.followup_answers.is_empty()
                 && self.followup_answers.len() != work_items.len())
@@ -589,12 +598,13 @@ mod tests {
                     questions: (0..8)
                         .map(|question| {
                             (
-                                format!("target-{id}{question:02}::applicability"),
+                                format!("target-{id}{question:02}::decision"),
                                 JevQuestion::Choice {
-                                    instructions: json!("Does the instruction cover the action?"),
+                                    instructions: json!("Assess the rule/action pair."),
                                     criteria: BTreeMap::from([
-                                        ("applies".to_owned(), json!("Applies")),
-                                        ("not_applicable".to_owned(), json!("Does not apply")),
+                                        ("conflict".to_owned(), json!("Conflicts")),
+                                        ("no_issue".to_owned(), json!("No issue")),
+                                        ("pending_completion".to_owned(), json!("Pending completion")),
                                         ("uncertain".to_owned(), json!("Unclear")),
                                     ]),
                                 },
@@ -627,10 +637,11 @@ mod tests {
                                 (
                                     question.clone(),
                                     JevAnswer::Choice {
-                                        choice: "not_applicable".to_owned(),
+                                        choice: "no_issue".to_owned(),
                                         probabilities: BTreeMap::from([
-                                            ("applies".to_owned(), 0.01),
-                                            ("not_applicable".to_owned(), 0.98),
+                                            ("conflict".to_owned(), 0.01),
+                                            ("no_issue".to_owned(), 0.97),
+                                            ("pending_completion".to_owned(), 0.01),
                                             ("uncertain".to_owned(), 0.01),
                                         ]),
                                         confidence: 0.97,
@@ -674,48 +685,14 @@ mod tests {
             else {
                 unreachable!()
             };
-            *choice = "applies".to_owned();
-            probabilities.insert("applies".to_owned(), 0.98);
-            probabilities.insert("not_applicable".to_owned(), 0.01);
+            *choice = "pending_completion".to_owned();
+            probabilities.insert("pending_completion".to_owned(), 0.97);
+            probabilities.insert("no_issue".to_owned(), 0.01);
         }
         let followup = check
             .reconcile(first, &progress.results[&first.id], &context)
-            .unwrap()
             .unwrap();
-        let followup_batch = pack_work_items(std::slice::from_ref(&followup))
-            .batches
-            .remove(0);
-        progress
-            .completed_batch_ids
-            .insert(followup_batch.id.clone());
-        progress.request_count += 1;
-        progress.results.insert(
-            followup.id.clone(),
-            JevWorkItemResult {
-                request_id: followup_batch.id,
-                work_item_id: followup.id.clone(),
-                answers: followup
-                    .questions
-                    .keys()
-                    .map(|id| {
-                        (
-                            id.clone(),
-                            JevAnswer::Choice {
-                                choice: "conflict".to_owned(),
-                                probabilities: BTreeMap::from([("conflict".to_owned(), 0.97)]),
-                                confidence: 0.97,
-                            },
-                        )
-                    })
-                    .collect(),
-                evidence: followup.window.evidence.clone(),
-                model: PINNED_MODEL.to_owned(),
-                usage: JevUsage {
-                    input_tokens: 4000,
-                    output_tokens: 1200,
-                },
-            },
-        );
+        assert!(followup.is_none());
         let last = work_items.last().unwrap();
         let repacked = pack_work_items(std::slice::from_ref(last))
             .batches
@@ -737,34 +714,14 @@ mod tests {
             restored.restore(&check, &context, &work_items).unwrap(),
             progress
         );
-        let mut classified = first.clone();
-        for target in classified.window.fields["instruction_targets"]
-            .as_array_mut()
-            .unwrap()
-        {
-            target["obligation"] = json!("prerequisite");
+        for old_version in [1, 2] {
+            let mut old: CompactProgress = serde_json::from_str(&stored).unwrap();
+            old.version = old_version;
+            assert!(matches!(
+                old.restore(&check, &context, &work_items),
+                Err(JevError::InvalidCheckPlan)
+            ));
         }
-        let classified_followup = check
-            .reconcile(&classified, &progress.results[&first.id], &context)
-            .unwrap()
-            .unwrap();
-        assert_eq!(classified_followup.questions.len(), 16);
-        let mut dynamic = progress.clone();
-        dynamic
-            .results
-            .get_mut(&classified_followup.id)
-            .unwrap()
-            .answers
-            .retain(|id, _| classified_followup.questions.contains_key(id));
-        let compact =
-            CompactProgress::from_progress(&check, &context, &dynamic, &work_items).unwrap();
-        assert!(compact.extra_results.contains_key(&classified_followup.id));
-        let stored = serde_json::to_string(&compact).unwrap();
-        let restored: CompactProgress = serde_json::from_str(&stored).unwrap();
-        assert_eq!(
-            restored.restore(&check, &context, &work_items).unwrap(),
-            dynamic
-        );
         let cursor = AssessmentCursor {
             input_revision: Some("revision".to_owned()),
             progress: progress.clone(),

@@ -78,13 +78,31 @@ fn larger_limits_supply_more_action_and_context_without_changing_event_selection
             .text
             .contains("I ran the required tests")
     );
-    assert!(new_candidate.context.iter().all(|item| !item.truncated));
-    assert!(
-        new_candidate
-            .counterevidence
-            .iter()
-            .all(|item| !item.truncated)
-    );
+    for (old_events, new_events) in [
+        (&old_candidate.context, &new_candidate.context),
+        (
+            &old_candidate.counterevidence,
+            &new_candidate.counterevidence,
+        ),
+    ] {
+        for (old_event, new_event) in old_events.iter().zip(new_events) {
+            let original = source
+                .content
+                .actions
+                .iter()
+                .find(|action| action.reference.id == new_event.action_id)
+                .unwrap();
+            assert!(new_event.text.len() > old_event.text.len());
+            assert!(original.text.starts_with(&new_event.text));
+            assert_eq!(
+                new_event.truncated,
+                new_event.text.len() < original.text.len()
+            );
+        }
+    }
+    let episode = new_candidate.prerequisite_episode.as_ref().unwrap();
+    assert!(episode.has_source_bindings(new_candidate.source_binding.as_ref().unwrap()));
+    assert!(!episode.complete_selected_history);
     assert_eq!(
         old_candidate
             .context
@@ -176,12 +194,14 @@ fn limit_changes_invalidate_range_inventory_and_growth_has_local_bounds() {
     let small = prepare(&source, &hosted_limits(65_536));
     let large = prepare(&source, &hosted_limits(262_144));
     let huge = prepare(&source, &hosted_limits(u64::MAX));
+    let saturated = prepare(&source, &hosted_limits(1_048_576));
     assert_ne!(small.input_revision, large.input_revision);
     assert_ne!(
         small.prepared.comparisons[0].id,
         large.prepared.comparisons[0].id
     );
-    assert_eq!(large.prepared.comparisons, huge.prepared.comparisons);
+    assert_ne!(large.prepared.comparisons, huge.prepared.comparisons);
+    assert_eq!(saturated.prepared.comparisons, huge.prepared.comparisons);
     assert!(
         huge.prepared
             .comparisons
@@ -281,16 +301,22 @@ fn history_continuation_uses_the_same_context_limit_and_preserves_branch_isolati
     )
     .unwrap();
     assert_eq!(carried[0].counterevidence.len(), 1);
-    assert_eq!(carried[0].counterevidence[0].text, history);
-    assert!(!carried[0].earlier_history_truncated);
+    assert!(history.starts_with(&carried[0].counterevidence[0].text));
+    assert!(carried[0].counterevidence[0].truncated);
+    assert!(carried[0].earlier_history_truncated);
     assert!(carried[0].prior_history_complete);
     let plan = IgnoredInstructionsCheck
         .prepare_with_capabilities(&context, &limits)
         .unwrap();
     assert_eq!(
         plan.prepared.comparisons[0].counterevidence[0].text,
-        history
+        carried[0].counterevidence[0].text
     );
+    let comparison = &plan.prepared.comparisons[0];
+    let episode = comparison.prerequisite_episode.as_ref().unwrap();
+    assert_eq!(episode.events[0].action_id, "tests");
+    assert_eq!(episode.events[0].text, history);
+    assert!(episode.has_source_bindings(comparison.source_binding.as_ref().unwrap()));
     assert!(
         !plan.work_items[0]
             .window

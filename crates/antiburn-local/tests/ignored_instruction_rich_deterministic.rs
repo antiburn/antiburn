@@ -230,12 +230,6 @@ fn dco_flags_aliases_test_requests_and_success_reports_have_separate_evidence() 
 fn design_read_order_uses_path_scope_and_recorded_order_not_timestamps() {
     let rule =
         "Request a read of `apps/desktop/design.md` before requesting edits under `apps/desktop/`.";
-    let answers = Answers {
-        read: "request_order",
-        obligation: "prerequisite",
-        paths: &["edit_directory", "required_path"],
-        ..Answers::CONFLICT
-    };
     for (id, path, read_order, edit_order, violation) in [
         ("read-before", "apps/desktop/src/View.tsx", 1, 2, false),
         ("read-after", "apps/desktop/src/View.tsx", 2, 1, true),
@@ -265,7 +259,14 @@ fn design_read_order_uses_path_scope_and_recorded_order_not_timestamps() {
                 ),
             ],
         );
-        let (plan, result) = assess(&context(raw.clone()), answers);
+        let (plan, result) = assess(
+            &context(raw.clone()),
+            if violation {
+                Answers::CONFLICT
+            } else {
+                Answers::FOLLOWS
+            },
+        );
         assert_eq!(
             result
                 .findings
@@ -279,14 +280,17 @@ fn design_read_order_uses_path_scope_and_recorded_order_not_timestamps() {
                 .unwrap()
                 .contains("TOKEN_DETAIL_SENTINEL")
         );
-        if violation {
-            assert!(result.findings.iter().any(|finding| {
-                finding
-                    .limitations
-                    .iter()
-                    .any(|limit| limit == "requests_do_not_prove_reading_or_execution")
-            }));
-        }
+        let comparison = plan
+            .prepared
+            .comparisons
+            .iter()
+            .find(|pair| pair.reference.action_id == id)
+            .unwrap();
+        let order = plan.prepared.read_request_orders[&comparison.id]
+            .iter()
+            .find(|order| order.required_path == "apps/desktop/design.md")
+            .unwrap();
+        assert_eq!(order.earlier_request_id.is_some(), read_order < edit_order);
         assert_citations(&plan, &result, &raw);
     }
 }
@@ -295,9 +299,7 @@ fn design_read_order_uses_path_scope_and_recorded_order_not_timestamps() {
 fn conditional_coverage_completion_reports_do_not_invent_a_supported_boundary() {
     let rule = "When parser support changes, update docs/session-coverage.md and docs/check-coverage.md before completing the task.";
     let answers = Answers {
-        obligation: "completion",
-        completion: "completion_not_observed",
-        ..Answers::CONFLICT
+        decision: "pending_completion",
     };
     let raw = content(
         rule,
@@ -310,7 +312,7 @@ fn conditional_coverage_completion_reports_do_not_invent_a_supported_boundary() 
     let (plan, result) = assess(&context(raw.clone()), answers);
     assert!(result.findings.is_empty());
     assert!(!result.pending_rules.is_empty());
-    assert!(!result.unassessed_comparisons.is_empty());
+    assert!(result.unassessed_comparisons.is_empty());
     assert_citations(&plan, &result, &raw);
     for (id, report, relationship) in [
         (
@@ -333,14 +335,20 @@ fn conditional_coverage_completion_reports_do_not_invent_a_supported_boundary() 
         let (plan, result) = assess(
             &context(raw.clone()),
             Answers {
-                relationship,
-                completion: "completion_observed",
-                ..answers
+                decision: if relationship == "conflict" {
+                    "conflict"
+                } else {
+                    "no_issue"
+                },
             },
         );
-        assert!(result.findings.is_empty(), "{id}");
-        assert!(!result.pending_rules.is_empty(), "{id}");
-        assert!(!result.unassessed_comparisons.is_empty(), "{id}");
+        assert_eq!(
+            result.findings.is_empty(),
+            relationship != "conflict",
+            "{id}"
+        );
+        assert!(result.pending_rules.is_empty(), "{id}");
+        assert!(result.unassessed_comparisons.is_empty(), "{id}");
         assert_citations(&plan, &result, &raw);
     }
 }
@@ -456,10 +464,7 @@ fn other_tool_parameters_skill_selection_and_excluded_authorization_remain_bound
             "Do not delegate unless the user explicitly authorizes it.",
             "delegate",
             json!({"task":"inspect"}),
-            Answers {
-                permission: "authoritative_approval",
-                ..Answers::CONFLICT
-            },
+            Answers::MISSING,
             false,
         ),
     ] {
@@ -656,10 +661,7 @@ async fn selected_context_changes_revision_while_excluded_bodies_preserve_resume
             other_output,
         ],
     );
-    let answers = Answers {
-        permission: "authoritative_approval",
-        ..Answers::CONFLICT
-    };
+    let answers = Answers::MISSING;
     let baseline_context = context(raw.clone());
     let (baseline_plan, baseline_result) = assess(&baseline_context, answers);
     assert!(baseline_result.findings.is_empty());
@@ -819,13 +821,7 @@ fn selected_reference_exception_changes_identity_and_reducer_authority_guard() {
         actions,
     );
     let (first_plan, first) = assess(&context(unconditional.clone()), Answers::CONFLICT);
-    let (second_plan, second) = assess(
-        &context(exception.clone()),
-        Answers {
-            permission: "authoritative_approval",
-            ..Answers::CONFLICT
-        },
-    );
+    let (second_plan, second) = assess(&context(exception.clone()), Answers::MISSING);
     assert_ne!(first_plan.input_revision, second_plan.input_revision);
     assert!(!first.findings.is_empty());
     assert!(second.findings.is_empty());
@@ -1009,10 +1005,7 @@ fn rich_case_records_assert_independent_normalization_selection_binding_and_limi
             selected: r#"{"task":"inspect"}"#,
             unavailable: JevInputField::UserMessage,
             forbidden: "AUTHORITATIVE_APPROVAL_SENTINEL",
-            answers: Answers {
-                permission: "authoritative_approval",
-                ..Answers::CONFLICT
-            },
+            answers: Answers::MISSING,
             finding: false,
             unassessed: true,
             limitation: None,
@@ -1241,24 +1234,29 @@ fn final_element_reducer_requires_boundary_evidence_and_keeps_missing_answers_un
             .prepare(&context(raw.clone()))
             .unwrap();
         let candidate = &plan.prepared.comparisons[0];
-        let answers = [
-            ("applicability", "applies"),
-            ("relationship", relationship),
-            ("evidence_basis", "self_contained"),
-            ("completion", boundary),
-        ]
-        .into_iter()
-        .map(|(key, selected)| {
-            (
-                key.to_owned(),
-                JevAnswer::Choice {
-                    choice: selected.to_owned(),
-                    probabilities: BTreeMap::from([(selected.to_owned(), 1.0)]),
-                    confidence: 1.0,
-                },
-            )
-        })
-        .collect();
+        let decision = if boundary == "completion_not_observed" {
+            "pending_completion"
+        } else if relationship == "conflict" {
+            "conflict"
+        } else {
+            "no_issue"
+        };
+        let answers = [("decision", decision)]
+            .into_iter()
+            .map(|(key, selected)| {
+                (
+                    key.to_owned(),
+                    JevAnswer::Choice {
+                        choice: selected.to_owned(),
+                        probabilities: ["conflict", "no_issue", "pending_completion", "uncertain"]
+                            .into_iter()
+                            .map(|option| (option.to_owned(), f64::from(option == selected)))
+                            .collect(),
+                        confidence: 1.0,
+                    },
+                )
+            })
+            .collect();
         let response = JevWorkItemResult {
             request_id: "reducer-boundary".to_owned(),
             work_item_id: candidate.id.clone(),
@@ -1277,7 +1275,11 @@ fn final_element_reducer_requires_boundary_evidence_and_keeps_missing_answers_un
         );
         assert_eq!(!reduced.findings.is_empty(), finding);
         assert_eq!(!reduced.pending_rules.is_empty(), pending);
-        assert_eq!(!reduced.unassessed_comparisons.is_empty(), pending);
+        assert!(reduced.unassessed_comparisons.is_empty());
+        assert_eq!(
+            reduced.coverage.reassessed_comparison_ids,
+            std::slice::from_ref(&candidate.id)
+        );
         assert_citations(&plan, &reduced, &raw);
     }
     let missing = reduce_assessment(&plan.prepared, &BTreeMap::new(), true);

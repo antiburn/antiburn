@@ -415,15 +415,15 @@ fn request_citation_assertions(
                 let JevQuestion::Choice { criteria, .. } = question else {
                     return None;
                 };
-                criteria.contains_key("applies").then(|| {
+                criteria.contains_key("conflict").then(|| {
                     (
                         key.clone(),
                         JevAnswer::Choice {
-                            choice: "applies".into(),
+                            choice: "conflict".into(),
                             confidence: 1.0,
                             probabilities: criteria
                                 .keys()
-                                .map(|option| (option.clone(), f64::from(option == "applies")))
+                                .map(|option| (option.clone(), f64::from(option == "conflict")))
                                 .collect(),
                         },
                     )

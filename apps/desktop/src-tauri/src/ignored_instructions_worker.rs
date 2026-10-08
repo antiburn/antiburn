@@ -137,7 +137,13 @@ fn parse_checkpoint(
 )> {
     let stored: StoredAssessmentCursor = serde_json::from_str(raw)?;
     let (progress, compact) = match stored.progress {
-        Some(StoredProgress::Compact(compact)) => (JevRunProgress::default(), Some(compact)),
+        Some(StoredProgress::Compact(compact)) => {
+            anyhow::ensure!(
+                compact.revision_matches(),
+                "Ignored Instructions progress revision is stale"
+            );
+            (JevRunProgress::default(), Some(compact))
+        }
         Some(StoredProgress::Expanded(progress)) => (progress, None),
         None => (JevRunProgress::default(), None),
     };
@@ -693,11 +699,14 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     let new_content_page = selected_progress.cursor.is_some() && cursor.comparison_after.is_none();
     if outcome.failure.is_none() && more_content {
         let mut carried = BTreeMap::new();
-        for comparison in plan
-            .comparisons
+        let processed = page_result
+            .coverage
+            .reassessed_comparison_ids
             .iter()
-            .filter(|comparison| !comparison.prior_history_complete)
-        {
+            .collect::<std::collections::BTreeSet<_>>();
+        for comparison in plan.comparisons.iter().filter(|comparison| {
+            !comparison.prior_history_complete && !processed.contains(&comparison.id)
+        }) {
             if carried.len() == ignored_instructions::MAX_ASSESSMENT_CANDIDATES
                 && !carried.contains_key(&comparison.id)
             {
@@ -978,24 +987,11 @@ fn sampled_pairs_for_page(
     incarnation: u64,
     capabilities: &antiburn_local::analysis::jev::capabilities::ModelCapabilities,
 ) -> anyhow::Result<Vec<BurnCheckSampledPair>> {
-    let unassessed = result
-        .unassessed_comparisons
+    let processed = result
+        .coverage
+        .reassessed_comparison_ids
         .iter()
         .collect::<std::collections::BTreeSet<_>>();
-    let pending = result
-        .pending_rules
-        .iter()
-        .map(|rule| rule.rule_id.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    let evidence_complete = !result.coverage.limitations.iter().any(|limit| {
-        matches!(
-            limit.as_str(),
-            "source_evidence_is_partial"
-                | "truncated_source_content"
-                | "instruction_scan_incomplete"
-                | "historical_instruction_snapshot_unavailable"
-        )
-    });
     plan.comparisons
         .iter()
         .map(|comparison| {
@@ -1010,9 +1006,7 @@ fn sampled_pairs_for_page(
                 instruction_digest: comparison.reference.instruction_digest.clone(),
                 selector_revision: plan.coverage.selector_revision,
                 round,
-                assessed: evidence_complete
-                    && !unassessed.contains(&comparison.id)
-                    && !pending.contains(comparison.reference.rule_id.as_str()),
+                assessed: processed.contains(&comparison.id),
             })
         })
         .collect()
@@ -2290,9 +2284,7 @@ mod settings_tests {
                     nearby_context_ids: Vec::new(),
                     counterevidence_ids: Vec::new(),
                     certainty: FindingCertainty::Possible,
-                    conflict_probability: 0.8,
-                    applicability_probability: 0.8,
-                    evidence_basis_probability: 0.8,
+                    composite_probability: 0.8,
                     limitations: Vec::new(),
                 })
                 .collect(),
@@ -2346,6 +2338,7 @@ mod settings_tests {
                 source_turn_index: 1,
                 source_turn_scope: "main".into(),
                 rule_text: "Rule".into(),
+                instruction_context: Vec::new(),
                 rule_text_start: 0,
                 rule_text_end: "Rule".len(),
                 action: CounterEvidence {
@@ -2566,6 +2559,7 @@ mod settings_tests {
             source_turn_index: 1,
             source_turn_scope: "main".into(),
             rule_text: "Rule".into(),
+            instruction_context: Vec::new(),
             rule_text_start: 0,
             rule_text_end: "Rule".len(),
             action: CounterEvidence {
@@ -2848,6 +2842,44 @@ mod settings_tests {
                 .known_action_ids
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn valid_pending_and_uncertain_pairs_are_terminal_even_with_partial_evidence() {
+        let reference = result(&["finding"]).findings.remove(0).reference;
+        let plan = plan(&reference);
+        let capabilities =
+            antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default();
+        for outcome in ["pending", "uncertain", "missing"] {
+            let mut result = result(&[]);
+            result
+                .coverage
+                .limitations
+                .push("source_evidence_is_partial".into());
+            if outcome != "missing" {
+                result
+                    .coverage
+                    .reassessed_comparison_ids
+                    .push("comparison".into());
+            }
+            if outcome == "uncertain" {
+                result.unassessed_comparisons.push("comparison".into());
+            }
+            if outcome == "pending" {
+                result
+                    .pending_rules
+                    .push(ignored_instructions::PendingRule {
+                        instruction_id: reference.instruction_id.clone(),
+                        instruction_digest: reference.instruction_digest.clone(),
+                        rule_id: reference.rule_id.clone(),
+                        heading: reference.rule_heading.clone(),
+                        reason: "completion_not_observed".into(),
+                    });
+            }
+            let pairs = sampled_pairs_for_page(&plan, &result, 0, 1, &capabilities).unwrap();
+            assert_eq!(pairs.len(), 1);
+            assert_eq!(pairs[0].assessed, outcome != "missing", "{outcome}");
+        }
     }
 
     #[test]

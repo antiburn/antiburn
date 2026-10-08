@@ -78,9 +78,7 @@ fn ignored_instruction_findings_require_supported_scoped_citations() {
         nearby_context_ids: Vec::new(),
         counterevidence_ids: Vec::new(),
         certainty: FindingCertainty::Possible,
-        conflict_probability: 0.6,
-        applicability_probability: 0.9,
-        evidence_basis_probability: 0.9,
+        composite_probability: 0.9,
         limitations: Vec::new(),
     };
     let finding = Finding::ignored_instruction(&evidence, "revision", &assessment_finding)
@@ -93,6 +91,14 @@ fn ignored_instruction_findings_require_supported_scoped_citations() {
     );
 
     let mut invalid = assessment_finding;
+    for probability in [0.749, f64::NAN, f64::INFINITY, 1.001] {
+        invalid.composite_probability = probability;
+        assert!(Finding::ignored_instruction(&evidence, "revision", &invalid).is_none());
+    }
+    for probability in [0.75, 1.0] {
+        invalid.composite_probability = probability;
+        assert!(Finding::ignored_instruction(&evidence, "revision", &invalid).is_some());
+    }
     invalid.reference.action_id.clear();
     assert!(Finding::ignored_instruction(&evidence, "revision", &invalid).is_none());
     evidence.capabilities.source_format = SourceFormat::OpenCodeJsonl;
@@ -133,9 +139,7 @@ fn ignored_instruction_target_identity_groups_rules_in_same_section() {
             nearby_context_ids: Vec::new(),
             counterevidence_ids: Vec::new(),
             certainty: FindingCertainty::Possible,
-            conflict_probability: 0.9,
-            applicability_probability: 0.9,
-            evidence_basis_probability: 0.9,
+            composite_probability: 0.9,
             limitations: Vec::new(),
         };
         Finding::ignored_instruction(&evidence, "revision", &assessment).unwrap()

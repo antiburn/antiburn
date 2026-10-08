@@ -19,45 +19,6 @@ pub enum PathChangePolicy {
     Other,
 }
 
-impl PathChangePolicy {
-    pub(super) fn conflicts(
-        self,
-        scope: &crate::analysis::jev::obligations::RequestPathScope,
-        operations: &[EditPathOperation],
-    ) -> Option<bool> {
-        if self == Self::Other || operations.is_empty() {
-            return None;
-        }
-        operations
-            .iter()
-            .map(|operation| match (self, operation) {
-                (
-                    Self::AllChanges,
-                    EditPathOperation::Add { path }
-                    | EditPathOperation::Update { path }
-                    | EditPathOperation::Delete { path },
-                )
-                | (Self::Delete, EditPathOperation::Delete { path }) => scope.matches(path),
-                (
-                    Self::AllChanges | Self::MoveOut | Self::MoveIn,
-                    EditPathOperation::Move { from, to },
-                ) => {
-                    let from = scope.matches(from)?;
-                    let to = scope.matches(to)?;
-                    Some(match self {
-                        Self::AllChanges => from || to,
-                        Self::MoveOut => from && !to,
-                        Self::MoveIn => !from && to,
-                        _ => unreachable!(),
-                    })
-                }
-                _ => Some(false),
-            })
-            .collect::<Option<Vec<_>>>()
-            .map(|conflicts| conflicts.into_iter().any(|value| value))
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum RequestedPathChange {

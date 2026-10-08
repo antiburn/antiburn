@@ -52,9 +52,8 @@ impl EvidenceTextLimits {
         .min()
         .unwrap_or(0)
         .saturating_sub(8 * 1024);
-        // Two targets use 27 units: eight for the action, four per rule,
-        // three nearby events, and four earlier events per target.
-        let unit = usize::try_from(budget / 32).unwrap_or(usize::MAX);
+        // Eight targets share one action and reserve space for earlier context.
+        let unit = usize::try_from(budget / 80).unwrap_or(usize::MAX);
         // Keep the minimum evidence when limits are too small. The packer
         // rejects an oversized item instead of removing required context.
         Self {
@@ -417,9 +416,13 @@ fn build_plan(
         })
         .filter(|action| has_selected_action_content(action))
         .flat_map(|action| {
-            text_ranges(&action.text, text_limits.action)
-                .into_iter()
-                .map(move |(text_start, text_end)| (action, text_start, text_end))
+            (if atomic_command(action) {
+                vec![(0, action.text.len())]
+            } else {
+                text_ranges(&action.text, text_limits.action)
+            })
+            .into_iter()
+            .map(move |(text_start, text_end)| (action, text_start, text_end))
         })
         .collect();
     let mut action_digests = BTreeMap::new();
@@ -999,6 +1002,12 @@ fn has_selected_action_content(action: &ContentAction) -> bool {
             .is_some_and(|fields| !fields.values.is_empty())
 }
 
+pub(super) fn atomic_command(action: &ContentAction) -> bool {
+    action.normalized_fields.as_ref().is_some_and(|fields| {
+        fields.category == Some(crate::analysis::jev::JevNormalizedCategory::BashCommand)
+    })
+}
+
 fn action_meaningful_terms(action: &ContentAction) -> BTreeSet<String> {
     meaningful_terms(&format!(
         "{} {} {}",
@@ -1229,6 +1238,7 @@ fn make_comparison(
         source_turn_index: action.reference.turn_index,
         source_turn_scope: action.turn_scope.clone(),
         rule_text: rule.text.clone(),
+        instruction_context: rule.context.clone(),
         rule_text_start,
         rule_text_end,
         action: selected_action,
@@ -1270,7 +1280,11 @@ fn counter_event_with_range(
     let source_text = range
         .and_then(|(start, end)| action.text.get(start..end))
         .unwrap_or(&action.text);
-    let (text, text_truncated) = bounded_text(source_text, max_text_bytes);
+    let (text, text_truncated) = if range.is_some() && atomic_command(action) {
+        (source_text.to_owned(), false)
+    } else {
+        bounded_text(source_text, max_text_bytes)
+    };
     CounterEvidence {
         action_id: action.reference.id.clone(),
         source_order: action.reference.turn_index,

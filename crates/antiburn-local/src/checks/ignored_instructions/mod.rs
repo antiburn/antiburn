@@ -57,7 +57,8 @@ pub use discovery::{
     discover_current_instructions,
 };
 pub use instructions::{
-    InstructionContentClass, InstructionProvenance, InstructionRuleSection, InstructionScope,
-    InstructionSnapshot, MAX_INSTRUCTION_BYTES, MAX_RULE_SECTION_BYTES, MarkdownLimit,
-    chunk_text_with_ranges, segment_markdown, sha256_hex, snapshot_from_text,
+    InstructionContentClass, InstructionContextRange, InstructionProvenance,
+    InstructionRuleSection, InstructionScope, InstructionSnapshot, MAX_INSTRUCTION_BYTES,
+    MAX_RULE_SECTION_BYTES, MarkdownLimit, chunk_text_with_ranges, segment_markdown, sha256_hex,
+    snapshot_from_text,
 };

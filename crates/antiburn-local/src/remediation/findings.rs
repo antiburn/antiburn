@@ -748,6 +748,8 @@ impl Finding {
         if !crate::checks::ignored_instructions::source_supported(
             evidence.capabilities.source_format,
         ) || assessment_revision.is_empty()
+            || !assessment_finding.composite_probability.is_finite()
+            || !(0.75..=1.0).contains(&assessment_finding.composite_probability)
             || assessment_finding.id.is_empty()
             || reference.action_id.is_empty()
             || reference.rule_id.is_empty()

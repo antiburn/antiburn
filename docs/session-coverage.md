@@ -474,8 +474,8 @@ actions only. The first observation cannot prove when it became active.
 
 The optional Ignored Instructions worker uses these bounded local inputs to
 prepare requests after the user enables Smart Burn Checks and configures a
-provider connection. It splits long rule text and action text into overlapping
-byte ranges, then samples up to 256
+provider connection. It splits long rule text and non-command action text into overlapping
+byte ranges, then samples up to 1,024
 high-priority rule/action pairs per review. Selection can omit lower-priority
 work, including range combinations. Word rarity, tool names, literal paths,
 prohibition/tool-input risk, and recency rank candidates. Choices spread across
@@ -486,7 +486,11 @@ append. Its input projection selects user and assistant text, Bash command
 input/output, file-edit paths, read-file paths, search queries with scope, and
 other tool inputs. Accepted human text and exact bound Bash results supply
 bounded context only. Human text needs normalized history proof and native
-ranges; results need a unique earlier selected call and matching source/thread/
+source ranges. Bash commands stay atomic; commands that exceed the request
+limit remain unassessed. Rule targets retain bounded enclosing-section and
+ancestor text with exact source byte and line ranges. Large supporting text
+selects first, relevant, and last structural ranges within the context budget.
+Results need a unique earlier selected call and matching source/thread/
 scope, name, call ID, ranges, digests, and completed/error status. Unknown-origin,
 synthetic, skill-document, conflicting, unmatched, and truncated evidence cannot
 establish human permission or successful tests. Edit content, read/search output,

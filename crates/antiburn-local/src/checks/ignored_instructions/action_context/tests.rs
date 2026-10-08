@@ -141,45 +141,32 @@ fn explicit_non_posix_shell_does_not_get_posix_input_context() {
     assert!(here_document_context(command, &source, &comparison).is_some());
 }
 #[test]
-fn directional_move_policies_keep_inside_moves_and_unknown_paths_separate() {
-    use super::PathChangePolicy;
-    use crate::analysis::jev::obligations::RequestPathScope;
-    let scope = RequestPathScope::Directory("protected/".to_owned());
-    for (from, to, out, into) in [
-        ("protected/a.rs", "src/a.rs", true, false),
-        ("src/a.rs", "protected/a.rs", false, true),
-        ("protected/a.rs", "protected/b.rs", false, false),
-        ("src/a.rs", "src/b.rs", false, false),
+fn recorded_moves_preserve_inside_and_unknown_path_values() {
+    for (from, to) in [
+        ("protected/a.rs", "src/a.rs"),
+        ("src/a.rs", "protected/a.rs"),
+        ("protected/a.rs", "protected/b.rs"),
+        ("src/a.rs", "src/b.rs"),
+        ("protected/a.rs", "$ROOT/a.rs"),
     ] {
         let operations = [EditPathOperation::Move {
             from: from.to_owned(),
             to: to.to_owned(),
         }];
         assert_eq!(
-            PathChangePolicy::MoveOut.conflicts(&scope, &operations),
-            Some(out)
-        );
-        assert_eq!(
-            PathChangePolicy::MoveIn.conflicts(&scope, &operations),
-            Some(into)
-        );
-        assert_eq!(
-            PathChangePolicy::Delete.conflicts(&scope, &operations),
-            Some(false)
+            path_changes(&operations),
+            [
+                PathChange {
+                    path: from,
+                    change: RequestedPathChange::MoveFrom
+                },
+                PathChange {
+                    path: to,
+                    change: RequestedPathChange::MoveTo
+                },
+            ]
         );
     }
-    let operations = [EditPathOperation::Move {
-        from: "protected/a.rs".to_owned(),
-        to: "$ROOT/a.rs".to_owned(),
-    }];
-    assert_eq!(
-        PathChangePolicy::MoveOut.conflicts(&scope, &operations),
-        None
-    );
-    assert_eq!(
-        PathChangePolicy::MoveIn.conflicts(&scope, &operations),
-        None
-    );
 }
 #[test]
 fn leading_blank_and_comment_lines_do_not_change_the_recorded_input_recipient() {

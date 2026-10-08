@@ -397,9 +397,7 @@ async fn selected_worker_input_uses_active_capabilities_and_fences_saved_progres
         "nearby_context_ids": [],
         "counterevidence_ids": [],
         "certainty": "possible",
-        "conflict_probability": 0.5,
-        "applicability_probability": 0.5,
-        "evidence_basis_probability": 0.5,
+        "composite_probability": 0.5,
         "limitations": []
     }))
     .unwrap();
@@ -1359,14 +1357,7 @@ async fn live_eval_runs_production_path_for_violation_compliance_and_uncertainty
             String::from("violates-multiple"),
             pair.comparison_id.clone(),
         )];
-        assert_selected_choice(answers, &pair.comparison_id, "applicability", "applies");
-        assert_selected_choice(answers, &pair.comparison_id, "relationship", "conflict");
-        assert_selected_choice(
-            answers,
-            &pair.comparison_id,
-            "evidence_basis",
-            "self_contained",
-        );
+        assert_selected_choice(answers, &pair.comparison_id, "decision", "conflict");
     }
     assert!(results["follows"].findings.is_empty());
     for pair in &targets_by_case["follows"] {
@@ -1378,14 +1369,7 @@ async fn live_eval_runs_production_path_for_violation_compliance_and_uncertainty
             pair.action_label
         );
         let answers = &answers_by_target[&(String::from("follows"), pair.comparison_id.clone())];
-        assert_selected_choice(answers, &pair.comparison_id, "applicability", "applies");
-        assert_selected_choice(answers, &pair.comparison_id, "relationship", "follows");
-        assert_selected_choice(
-            answers,
-            &pair.comparison_id,
-            "evidence_basis",
-            "self_contained",
-        );
+        assert_selected_choice(answers, &pair.comparison_id, "decision", "no_issue");
     }
     let uncertain_pair = targets_by_case["questionable"]
         .iter()
@@ -1405,24 +1389,11 @@ async fn live_eval_runs_production_path_for_violation_compliance_and_uncertainty
         String::from("questionable"),
         uncertain_pair.comparison_id.clone(),
     )];
-    assert_selected_choice(
-        uncertain_answers,
-        &uncertain_pair.comparison_id,
-        "applicability",
-        "applies",
-    );
     assert_selected_choice_with_minimum(
         uncertain_answers,
         &uncertain_pair.comparison_id,
-        "relationship",
-        "insufficient_evidence",
-        0.50,
-    );
-    assert_selected_choice_with_minimum(
-        uncertain_answers,
-        &uncertain_pair.comparison_id,
-        "evidence_basis",
-        "evidence_incomplete",
+        "decision",
+        "uncertain",
         0.50,
     );
 }
@@ -2175,7 +2146,7 @@ fn assert_selected_choice(
     question: &str,
     expected: &str,
 ) {
-    assert_selected_choice_with_minimum(result, comparison_id, question, expected, 0.85);
+    assert_selected_choice_with_minimum(result, comparison_id, question, expected, 0.75);
 }
 
 fn assert_selected_choice_with_minimum(

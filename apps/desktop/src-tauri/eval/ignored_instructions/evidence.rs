@@ -334,8 +334,11 @@ pub(crate) fn findings_valid(result: &AssessmentResult, input: &AssessmentInput)
             return false;
         };
         let reference = &finding.reference;
-        decision.evaluator_revision
-            == antiburn_local::checks::ignored_instructions::evaluator_revision()
+        finding.composite_probability.is_finite()
+            && finding.composite_probability >= 0.75
+            && finding.composite_probability <= 1.0
+            && decision.evaluator_revision
+                == antiburn_local::checks::ignored_instructions::evaluator_revision()
             && decision.source_generation == input.source_generation
             && decision.source_fingerprint == input.source_fingerprint
             && decision.publication_fence == input.content.publication_fence

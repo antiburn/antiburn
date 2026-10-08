@@ -773,13 +773,13 @@ async fn held_out_production_cases_separate_a_conflict_from_compliant_content() 
             assert!(outcome.result.findings.is_empty());
         }
     }
-    assert_eq!(evaluation, (120, 6));
+    assert_eq!(evaluation, (40, 2));
     assert_eq!((candidate_pairs, selected_pairs, omitted_pairs), (2, 2, 0));
     assert_eq!((findings, false_findings, missed_findings), (1, 0, 0));
     let estimated_cost_nanos = evaluation.0.saturating_mul(42);
-    assert_eq!(estimated_cost_nanos, 5_040);
+    assert_eq!(estimated_cost_nanos, 1_680);
     eprintln!(
-        "held-out Ignored Instructions: candidates={candidate_pairs}, selected={selected_pairs}, omitted={omitted_pairs}, findings={findings}, false_findings={false_findings}, misses={missed_findings}, provider_calls={}, cache_hits=0, input_tokens={}, estimated_usd=0.00000504, elapsed_ms={}",
+        "held-out Ignored Instructions: candidates={candidate_pairs}, selected={selected_pairs}, omitted={omitted_pairs}, findings={findings}, false_findings={false_findings}, misses={missed_findings}, provider_calls={}, cache_hits=0, input_tokens={}, estimated_usd=0.00000168, elapsed_ms={}",
         evaluation.1,
         evaluation.0,
         started_at.elapsed().as_millis(),
@@ -794,50 +794,9 @@ fn synthetic_response(request: &JevRequest, conflict: bool) -> JevResponse {
             let JevQuestion::Choice { criteria, .. } = question else {
                 panic!("production questions use the typed choice contract")
             };
-            let selected = if criteria.contains_key("not_read_rule") {
-                "not_read_rule"
-            } else if criteria.contains_key("unqualified") {
-                "qualified"
-            } else if criteria.contains_key("literal_other") {
-                "literal_other"
-            } else if criteria.contains_key("selected") {
-                "selected"
-            } else if criteria.contains_key("independent") {
-                "independent"
-            } else if criteria.contains_key("not_read_order") {
-                "not_read_order"
-            } else if criteria.contains_key("other_path") {
-                "other_path"
-            } else if criteria.contains_key("any") {
-                "any"
-            } else if criteria.contains_key("prerequisite") {
-                "action"
-            } else if criteria.contains_key("reports_addition") {
-                if conflict {
-                    "reports_addition"
-                } else {
-                    "no_addition_report"
-                }
-            } else if criteria.contains_key("conflict") {
-                if conflict { "conflict" } else { "follows" }
-            } else if criteria.contains_key("conflicting_action") {
-                if conflict {
-                    "conflicting_action"
-                } else {
-                    "no_conflict"
-                }
-            } else if criteria.contains_key("self_contained") {
-                "self_contained"
-            } else if criteria.contains_key("applies") {
-                "applies"
-            } else {
-                criteria
-                    .keys()
-                    .next()
-                    .map(String::as_str)
-                    .expect("choice questions have criteria")
-            }
-            .to_owned();
+            assert_eq!(criteria.len(), 4);
+            let selected = if conflict { "conflict" } else { "no_issue" }.to_owned();
+            assert!(criteria.contains_key(&selected));
             let other_probability = 0.01 / criteria.len().saturating_sub(1).max(1) as f64;
             let probabilities = criteria
                 .keys()

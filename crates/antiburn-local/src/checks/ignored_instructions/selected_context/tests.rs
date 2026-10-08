@@ -9,6 +9,58 @@ use crate::checks::ignored_instructions::{
     INPUT_SELECTION, build_assessment_plan, select_session_content,
 };
 
+#[test]
+fn supporting_subranges_keep_relevant_middle_and_tail_with_exact_utf8_ranges() {
+    let text = format!(
+        "{}\n\nUser authorizes the release operation.\n\n{}\n\nDo not publish yet.",
+        "unrelated é line\n".repeat(1000),
+        "other line\n".repeat(1000)
+    );
+    let ranges = supporting_text_ranges(&text, 600, "User authorizes the release operation");
+    assert!(ranges.iter().map(|(start, end)| end - start).sum::<usize>() <= 600);
+    assert!(
+        ranges.iter().map(|(start, end)| end - start).sum::<usize>()
+            + ranges.len().saturating_sub(1)
+            <= 600
+    );
+    assert!(
+        ranges
+            .iter()
+            .any(|(start, end)| text[*start..*end].contains("User authorizes"))
+    );
+    assert!(
+        ranges
+            .iter()
+            .any(|(start, end)| text[*start..*end].contains("Do not publish yet"))
+    );
+    assert!(
+        ranges
+            .iter()
+            .all(|(start, end)| text.get(*start..*end).is_some())
+    );
+    assert!(ranges.windows(2).all(|pair| pair[0].1 <= pair[1].0));
+}
+
+#[test]
+fn supporting_subranges_keep_small_content_whole_and_obey_tiny_limits() {
+    let text = "User approved this operation.";
+    assert_eq!(
+        supporting_text_ranges(text, 100, text),
+        vec![(0, text.len())]
+    );
+    assert!(supporting_text_ranges(text, 0, text).is_empty());
+    let unicode = "🦀".repeat(100);
+    for limit in 1..12 {
+        let ranges = supporting_text_ranges(&unicode, limit, "");
+        assert!(ranges.iter().map(|(start, end)| end - start).sum::<usize>() <= limit);
+        assert!(
+            ranges
+                .iter()
+                .all(|(start, end)| unicode.get(*start..*end).is_some())
+        );
+    }
+}
+
 fn bind(action: &mut ContentAction, field: JevInputField) {
     action.metadata.bindings = vec![JevNativeFieldRange {
         native_record_id: action.reference.native_record_id.clone(),
