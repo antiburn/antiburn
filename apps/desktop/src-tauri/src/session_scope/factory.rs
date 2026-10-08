@@ -66,19 +66,9 @@ impl Store {
             )?;
             if forked
                 || coverage.coverage_schema_revision != COVERAGE_SCHEMA_REVISION
-                || coverage.source_acceptance != SourceAcceptance::AcceptedFull
+                || !matches!(coverage.source_acceptance, SourceAcceptance::AcceptedFull | SourceAcceptance::AcceptedPrefix { .. })
                 || coverage.ordering != OrderingObservation::Monotonic
-                || !coverage.summary_observed
-                || coverage.record_loss_reason.is_some()
-                || coverage.child_loss_reason.is_some()
-                || coverage.session_cap_exceeded
-                || coverage.thread_parent_unresolved
-                || coverage.subagent_linkage_incomplete
-                || coverage.diagnostics.records_unusable != 0
                 || coverage.diagnostics.duplicate_turn_identities != 0
-                || !coverage.diagnostics.unusable_reasons.is_empty()
-                || !coverage.diagnostics.truncated_strings.is_empty()
-                || !coverage.diagnostics.capped_collections.is_empty()
             {
                 return Ok(Err(missing(ScopeMissingReason::IncompleteSource)));
             }
@@ -95,7 +85,6 @@ impl Store {
             };
             if thread_id.is_empty()
                 || matches!(format, SourceFormat::OpenCodeSqliteV2 | SourceFormat::CodexRolloutJsonl) && thread_id != key.session_id
-                || matches!(format, SourceFormat::OpenCodeSqliteV2 | SourceFormat::ClaudeJsonl) && first_role != "user"
             {
                 return Ok(Err(missing(ScopeMissingReason::IncompleteSource)));
             }
@@ -106,13 +95,9 @@ impl Store {
             }
             let (rows, invalid): (i64, i64) = connection.query_row(
                 "SELECT COUNT(*), COALESCE(SUM(CASE WHEN
-                     source_key != ?3
+                     (scope = 'main' AND source_key != ?3)
                       OR (scope = 'main' AND ?5 = 'open_code_sqlite_v2' AND (uuid IS NULL OR uuid = ''))
-                     OR (scope = 'main' AND is_compaction_boundary != 0)
-                     OR (scope = 'main' AND thread_id != ?6)
-                     OR (scope = 'main' AND role = 'user' AND NOT EXISTS (
-                          SELECT 1 FROM turn_content c WHERE c.turn_rowid = turn.rowid
-                          AND (c.kind = 'user' OR (?5 = 'claude_jsonl' AND c.kind = 'tool_result'))))
+                      OR (scope = 'main' AND thread_id != ?6)
                      OR (scope = 'main' AND EXISTS (
                          SELECT 1 FROM turn_content c WHERE c.turn_rowid = turn.rowid
                           AND c.kind = 'user' AND c.authority = 'user' AND (
@@ -135,13 +120,44 @@ impl Store {
                               )))))
                      THEN 1 ELSE 0 END), 0)
                  FROM turn WHERE environment_key = ?1 AND agent = ?2
-                     AND session_id = ?3 AND claim_fence = ?4",
+                      AND session_id = ?3 AND claim_fence = ?4 AND scope = 'main'",
                  params![key.environment_key, key.agent, key.session_id, fence, serde_json::to_value(format).expect("source format serializes").as_str().expect("source format string"), thread_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
-            if invalid != 0 || rows <= 0 || rows > 65_536 || rows as u64 != coverage.diagnostics.records_observed {
+            if invalid != 0 || rows <= 0 || rows > 65_536 {
                 return Ok(Err(missing(ScopeMissingReason::IncompleteSource)));
             }
+            let retained_context_loss: bool = connection.query_row(
+                "SELECT EXISTS (SELECT 1 FROM turn t
+                 WHERE t.environment_key = ?1 AND t.agent = ?2 AND t.session_id = ?3
+                  AND t.claim_fence = ?4 AND t.scope = 'main' AND (
+                    t.is_compaction_boundary != 0
+                    OR (t.role = 'user' AND NOT EXISTS (
+                        SELECT 1 FROM turn_content c WHERE c.turn_rowid = t.rowid
+                         AND (c.kind = 'user' OR (?5 = 'claude_jsonl' AND c.kind = 'tool_result'))))
+                    OR EXISTS (SELECT 1 FROM turn_content c WHERE c.turn_rowid = t.rowid
+                        AND c.kind IN ('user', 'assistant') AND
+                         (c.truncated != 0 OR length(c.content) > ?6))))",
+                params![key.environment_key, key.agent, key.session_id, fence,
+                    serde_json::to_value(format).expect("source format serializes").as_str().expect("source format string"),
+                    antiburn_local::analysis::MAX_CONTENT_PART_BYTES],
+                |row| row.get(0),
+            )?;
+            let source_complete = !retained_context_loss
+                && (!matches!(format, SourceFormat::OpenCodeSqliteV2 | SourceFormat::ClaudeJsonl) || first_role == "user")
+                && coverage.source_acceptance == SourceAcceptance::AcceptedFull
+                && coverage.summary_observed
+                && coverage.record_loss_reason.is_none()
+                && coverage.child_loss_reason.is_none()
+                && !coverage.session_cap_exceeded
+                && !coverage.subagent_linkage_incomplete
+                && !coverage.thread_parent_unresolved
+                && !coverage.subagents_cap_exceeded
+                && coverage.diagnostics.records_unusable == 0
+                && coverage.diagnostics.unusable_reasons.is_empty()
+                && coverage.diagnostics.truncated_strings.is_empty()
+                && coverage.diagnostics.capped_collections.is_empty()
+                && rows as u64 == coverage.diagnostics.records_observed;
             let boundary = connection
                 .query_row(
                     "SELECT t.turn_index, (SELECT MAX(c.part_index) FROM turn_content c
@@ -170,7 +186,7 @@ impl Store {
                 },
                 publication_fence: fence,
                 source_generation,
-                source_complete: true,
+                source_complete,
             }))
         })
         .map_err(ScopeLoadError::Query)?

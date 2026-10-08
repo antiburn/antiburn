@@ -1,6 +1,6 @@
 # Burn Check Source Coverage
 
-Audit date: 2026-10-07.
+Audit date: 2026-10-08.
 
 This document covers local passive session evidence and the desktop's read-only
 current resource inventory. Session evidence supports historical claims. Current
@@ -77,12 +77,15 @@ supported. Missing origin and approved-version linkage remain unavailable.
 
 For metric checks, `Partial` cannot support clean. For persisted Smart Check
 columns, it marks conditional support under the pinned retained-root contract;
-only a complete eligible assessment can report scoped clean. Neither status
+partial retained inputs can reach model assessment with explicit limitations.
+Each check's reducer and publication policy determine scoped no-finding eligibility.
+Neither status
 promises exhaustive historical coverage or an implemented finding without its
 source note. An unimplemented or uncharacterized
 path is `Unknown` or `Unsupported`.
 `Assessable` describes an accepted source contract, not every session or past
-release. A clean result still needs complete session facts and eligible activity.
+release. Metric clean results still need complete session facts and eligible activity.
+Completing a Smart Check assessment does not establish complete historical context.
 
 These statuses describe evidence capability. Runtime enablement is a separate
 app-wide product gate for every check. A disabled check does not evaluate new
@@ -95,6 +98,32 @@ request. Existing local checks preserve their enabled behavior during migration,
 and Ignored Instructions retains its saved group consent. Each newly introduced
 check defaults off until the reader opts in. With no checks enabled, the desktop
 must report that state rather than claiming Clean or Passed.
+
+The report keeps assessment work separate from remediation lifecycle. A category
+is checking only when a current, version-matched assessment in the report window
+is queued or running. A failed assessment marked for continuation can carry a
+continuation notice; it does not imply a running request or a clean result.
+Review counts use check-owned comparison, episode, or candidate units. They
+are not comparable across checks. Uncertain outcomes and unselected work remain
+separate. The total is unknown when source or selected-context limits prevent a
+complete denominator, or any included session lacks a valid current publication
+denominator. Available reviewed counts remain visible; a missing publication does
+not add a zero denominator. When no publication supplies counts, coverage stays
+absent. Skill review counts use the same current inventory and bound-use revision
+validation as skill findings. Old evaluator revisions,
+changed source identities, and mismatched publication/result revisions cannot
+publish current review counts.
+
+For the three newer Smart Checks, retained root or selected-content loss can
+supply partial-context notices under the same four pinned native source contracts.
+The model can assess intact retained evidence with explicit limitations instead
+of rejecting the entire session for a context gap. This widens input admission
+under the pinned source contracts. Findings and scoped no-finding outcomes depend
+on the check's reducer and publication policy, including how it handles those
+limitations. A partial-context notice does not itself prove clean or passing.
+Missing context does not become recorded approval, successful execution, or
+historical skill visibility. Source identity and publication revision checks
+still reject stale or misbound evidence.
 
 ## Optional file-read evidence
 
@@ -490,7 +519,7 @@ limits; they do not establish complete history outside the selected window.
 | Antigravity | OverExploring | N | N | N | N | N | Complete task history and observed-result support are unavailable. |
 | Claude Code | ScopeCreep | Y | Y | N | N | N | Native CLI 2.1.278 retained root with explicit human markers; SDK/meta/synthetic text and tool permission do not authorize scope; original retention not proved. |
 | Codex | ScopeCreep | Y | Y | N | N | N | Native 0.160.1 pinned retained root; qualified single-local environment context is non-authorizing; unknown-origin answers and skill selections cannot approve scope. |
-| OpenCode | ScopeCreep | Y | Y | N | N | N | Native `OpenCodeSqliteV2` current retained text-only root scope only. Every request includes full latest compact scope; later recorded approval withdraws stale findings. Missing influence or scope fit is unassessed. Original historical retention is not proved. |
+| OpenCode | ScopeCreep | Y | Y | N | N | N | Native `OpenCodeSqliteV2` current retained root scope only. Requests use intact latest compact scope with explicit partial-history limits when needed; later recorded approval withdraws stale findings. Missing influence or scope fit is unassessed. Original historical retention is not proved. |
 | Pi | ScopeCreep | Y | Y | N | N | N | Native 0.84.4 core V3 linear retained root; exact user argument ranges stay separate from skill documents; extension answers do not prove human origin. |
 | Cursor | ScopeCreep | N | N | N | N | N | Current retained root scope proof is unavailable. |
 | Antigravity | ScopeCreep | N | N | N | N | N | Current retained root scope proof is unavailable. |

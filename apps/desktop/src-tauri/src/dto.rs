@@ -991,8 +991,14 @@ pub struct SessionQuotaPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ChecksCategoryPayload {
     pub id: BurnCheckDetectorId,
-    /// True only for a published, sampled Ignored Instructions assessment.
+    /// True when the check reviews selected evidence.
     pub sampled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checking: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial_context: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_coverage: Option<ChecksReviewCoveragePayload>,
     /// The current remediation state. `None` means the category has no complete assessment.
     pub lifecycle: Option<ChecksCategoryLifecyclePayload>,
     pub finding: u64,
@@ -1002,6 +1008,16 @@ pub struct ChecksCategoryPayload {
     pub unavailable: u64,
     /// Hundredths of one percent, bounded to `0..=10000`.
     pub estimated_token_burn_basis_points: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChecksReviewCoveragePayload {
+    pub reviewed: u64,
+    pub total: Option<u64>,
+    pub uncertain: u64,
+    pub pending: u64,
+    pub continuing: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -2822,6 +2838,9 @@ impl ChecksReportPayload {
                 ChecksCategoryPayload {
                     id: id.into(),
                     sampled: false,
+                    checking: None,
+                    partial_context: None,
+                    review_coverage: None,
                     lifecycle: None,
                     finding: counts.finding,
                     agents: if counts.finding > 0 {

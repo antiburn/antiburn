@@ -32,8 +32,19 @@ export interface ChecksCategoryPayload {
   clean: number
   /** Sessions without enough evidence for a finding or clean result. */
   unavailable: number
-  /** True when Ignored Instructions published a priority-sampled assessment. */
+  /** True when this check assesses selected evidence. */
   sampled?: boolean
+  /** True only while this category has queued or running work. */
+  checking?: boolean
+  /** True when the assessment uses incomplete context. */
+  partialContext?: boolean
+  reviewCoverage?: {
+    reviewed: number
+    total: number | null
+    uncertain: number
+    pending: number
+    continuing: boolean
+  }
   /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 10000. */
   estimatedTokenBurnBasisPoints: number | null
 }

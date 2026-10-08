@@ -205,7 +205,7 @@ impl Store {
             self.load_session_scope(key, request)
                 .map_err(InputLoadError::Scope)?,
         );
-        let published = self.collect_smart_check_activity(
+        let (published, limitations) = self.collect_smart_check_activity(
             key,
             publication_fence,
             source_generation,
@@ -216,18 +216,60 @@ impl Store {
         let identity =
             serde_json::to_string(&(key.environment_key.as_str(), &key.agent, &key.session_id))
                 .map_err(InputLoadError::Serialization)?;
-        let content = select_session_content(
-            &prepare_session_content(&identity, source_format, published, Vec::new()),
-            detector.selection(),
+        let mut prepared = prepare_session_content(&identity, source_format, published, Vec::new());
+        prepared.limitations.extend(limitations);
+        prepared.limitations.extend(
+            scope
+                .limitations()
+                .iter()
+                .map(|limitation| format!("scope_{limitation:?}")),
         );
-        if !content.complete {
-            return Err(unavailable(InputUnavailable::IncompleteEvidence));
-        }
+        let scope_user_ids = scope
+            .occurrences()
+            .iter()
+            .filter(|occurrence| {
+                occurrence.authority
+                    == antiburn_local::analysis::session_scope::ScopeAuthority::User
+            })
+            .map(|occurrence| occurrence.reference.id.as_str())
+            .collect::<BTreeSet<_>>();
+        // Scope omits truncated user text. Do not use that text as authorization.
+        prepared.actions.retain(|action| {
+            !(action.kind == "user"
+                && action.authority == "user"
+                && action.truncated
+                && !scope_user_ids.contains(action.reference.id.as_str()))
+        });
+        prepared
+            .limitations
+            .extend(tool_result_limitations(&prepared.actions));
+        prepared.complete &= prepared.limitations.is_empty();
+        let mut content = select_session_content(&prepared, detector.selection());
         let investigation_spans = if detector == DetectorInput::OverExploring {
             episodes::investigation_spans(&content, &scope)?
         } else {
             Vec::new()
         };
+        if investigation_spans.iter().any(|span| {
+            !scope.occurrences().iter().any(|occurrence| {
+                occurrence.authority
+                    == antiburn_local::analysis::session_scope::ScopeAuthority::User
+                    && occurrence.reference.id == span.span.first_event_id
+            })
+        }) {
+            prepared
+                .limitations
+                .push("investigation_task_context_unavailable".to_owned());
+            prepared.complete = false;
+        }
+        if investigation_spans
+            .iter()
+            .any(|span| span.completion == EpisodeCompletion::Unknown)
+        {
+            prepared.limitations.push("open_investigation".to_owned());
+            prepared.complete = false;
+        }
+        content = select_session_content(&prepared, detector.selection());
         let revision = digest(&serde_json::json!({
             "scope": &scope, "activity": content.selected_input_digest,
             "generation": source_generation, "boundary": boundary.content_scope()
@@ -257,7 +299,7 @@ impl Store {
         source_generation: i64,
         boundary: &SessionScopeBoundary,
         detector: DetectorInput,
-    ) -> Result<PublishedContent, InputLoadError> {
+    ) -> Result<(PublishedContent, Vec<String>), InputLoadError> {
         let content_scope = boundary
             .content_scope()
             .map_err(|error| InputLoadError::Scope(ScopeLoadError::Scope(error)))?;
@@ -270,7 +312,8 @@ impl Store {
         };
         let mut bytes = 0usize;
         let mut previous = None;
-        loop {
+        let mut limitations = Vec::new();
+        'pages: loop {
             let page = self
                 .published_turn_content_keyset_scoped(
                     key,
@@ -288,43 +331,60 @@ impl Store {
             if page.page.content.publication_fence != publication_fence {
                 return Err(unavailable(InputUnavailable::PublicationChanged));
             }
+            if page.page.content.source_generation != Some(source_generation) {
+                return Err(unavailable(InputUnavailable::PublicationChanged));
+            }
             if page.boundary.is_none() {
                 return Err(unavailable(InputUnavailable::BoundaryMissing));
             }
             let coverage = page.page.content.coverage;
-            if coverage.oversized_parts != 0
-                || coverage.stored_truncated_parts != 0
-                || coverage.context_capped
-                || ((coverage.bytes_capped || coverage.parts_capped || coverage.more_parts)
-                    && page.page.next_cursor.is_none())
-            {
-                return Err(unavailable(InputUnavailable::IncompleteEvidence));
-            }
+            merge_page_coverage(
+                &mut collected.coverage,
+                coverage,
+                page.page.next_cursor.is_some(),
+            );
             for part in page.page.content.parts {
-                if part.part.normalized_fields.as_ref().is_some_and(|fields| {
-                    fields.malformed
-                        || (part.part.kind.as_str() == "tool_input" && fields.values.is_empty())
-                }) {
-                    return Err(unavailable(InputUnavailable::IncompleteEvidence));
+                if part.part.kind.as_str() == "thinking" || part.role == "thinking" {
+                    continue;
                 }
                 let position = (part.turn_index, part.part_index);
-                if previous.is_some_and(|last| last >= position)
-                    || part.source_key != boundary.source_key
+                if part.source_key != boundary.source_key
                     || part.thread_id != boundary.thread_id
                     || part.scope != "main"
                     || part.context_only
                     || !part.stable_event_identity
+                    || (part.uuid.is_none() && part.message_id.is_none())
                 {
-                    return Err(unavailable(InputUnavailable::InvalidEventOrder));
+                    limitations.push("invalid_selected_event_identity".to_owned());
+                    continue;
+                }
+                if previous.is_some_and(|last| last >= position) {
+                    limitations.push("invalid_selected_event_order".to_owned());
+                    continue;
                 }
                 previous = Some(position);
-                let part_bytes = retained_part_bytes(&part)?;
-                bytes = bytes
-                    .checked_add(part_bytes)
-                    .ok_or_else(|| unavailable(InputUnavailable::AssemblyLimitReached))?;
-                if bytes > MAX_ACTIVITY_BYTES || collected.parts.len() == detector.max_events() {
-                    return Err(unavailable(InputUnavailable::AssemblyLimitReached));
+                if part.part.kind.as_str() == "tool_input"
+                    && part
+                        .part
+                        .normalized_fields
+                        .as_ref()
+                        .is_some_and(|fields| fields.malformed || fields.values.is_empty())
+                {
+                    limitations.push("malformed_selected_tool_input".to_owned());
                 }
+                let part_bytes = retained_part_bytes(&part)?;
+                if collected.parts.len() == detector.max_events() {
+                    collected.coverage.parts_capped = true;
+                    collected.coverage.more_parts = true;
+                    break 'pages;
+                }
+                if part_bytes > MAX_ACTIVITY_BYTES.saturating_sub(bytes) {
+                    collected.coverage.bytes_capped = true;
+                    collected.coverage.oversized_parts =
+                        collected.coverage.oversized_parts.saturating_add(1);
+                    continue;
+                }
+                bytes += part_bytes;
                 collected.parts.push(part);
             }
             if page.page.next_cursor.is_some() && page.page.next_cursor == cursor {
@@ -335,7 +395,9 @@ impl Store {
                 break;
             }
         }
-        Ok(collected)
+        limitations.sort();
+        limitations.dedup();
+        Ok((collected, limitations))
     }
 
     fn validate_smart_check_publication(
@@ -353,6 +415,65 @@ impl Store {
         }
         Ok(())
     }
+}
+
+fn merge_page_coverage(
+    collected: &mut antiburn_local::analysis::ContentQueryCoverage,
+    page: antiburn_local::analysis::ContentQueryCoverage,
+    has_next: bool,
+) {
+    collected.context_capped |= page.context_capped;
+    collected.oversized_parts = collected
+        .oversized_parts
+        .saturating_add(page.oversized_parts);
+    collected.stored_truncated_parts = collected
+        .stored_truncated_parts
+        .saturating_add(page.stored_truncated_parts);
+    // A drained page boundary does not remove observations.
+    if !has_next {
+        collected.parts_capped |= page.parts_capped || page.more_parts;
+        collected.bytes_capped |= page.bytes_capped;
+        collected.more_parts |= page.more_parts;
+    }
+}
+
+fn tool_result_limitations(
+    actions: &[antiburn_local::analysis::jev_evidence::ContentAction],
+) -> Vec<String> {
+    let mut calls = BTreeMap::new();
+    for action in actions {
+        if !matches!(action.kind.as_str(), "tool_input" | "tool_result") {
+            continue;
+        }
+        let (Some(name), Some(call)) = (&action.tool_name, &action.tool_call_id) else {
+            continue;
+        };
+        let (requests, results) = calls
+            .entry((name, call))
+            .or_insert((Vec::new(), Vec::new()));
+        if action.kind == "tool_input" {
+            requests.push(action);
+        } else {
+            results.push(action);
+        }
+    }
+    let mut limitations = BTreeSet::new();
+    for (requests, results) in calls.values() {
+        if !requests.is_empty() && results.is_empty() {
+            limitations.insert("missing_selected_tool_result".to_owned());
+        } else if requests.len() != 1 || results.len() != 1 {
+            limitations.insert("ambiguous_selected_tool_result_binding".to_owned());
+        } else if (
+            requests[0].reference.turn_index,
+            requests[0].reference.part_index,
+        ) >= (
+            results[0].reference.turn_index,
+            results[0].reference.part_index,
+        ) {
+            limitations.insert("invalid_selected_tool_result_order".to_owned());
+        }
+    }
+    limitations.into_iter().collect()
 }
 
 fn retained_part_bytes(

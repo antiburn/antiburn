@@ -67,6 +67,13 @@ fn publish_tool(
             "state":{"status":if ending == "edit" { "completed" } else { "running" },
                 "input":{"filePath":"/synthetic/parser.rs", "oldString":"parser", "newString":"fixed parser"},
                 "output":"Edit applied."}}))),
+        "command" => records.push(("assistant", json!({"type":"tool", "tool":"bash", "callID":"test-call",
+            "state":{"status":"completed", "input":{"command":"cargo test"}, "output":"Tests passed."}}))),
+        "independent-task" => {
+            records.push(("user", json!({"type":"text", "text":"Inspect the parser independently."})));
+            records.push(("assistant", json!({"type":"tool", "tool":"read", "callID":"independent-read",
+                "state":{"status":"completed", "input":{"filePath":"/synthetic/parser.rs"}, "output":OUTPUT}})));
+        }
         _ => {}
     }
     for (index, (role, part)) in records.into_iter().enumerate() {
@@ -194,6 +201,8 @@ fn parse_publish_load_joins_read_across_pages_and_keeps_full_scope() {
         .load_smart_check_inputs(&key, fence, generation, DetectorInput::OverExploring)
         .unwrap();
     assert_eq!(snapshot.content().actions.len(), 258);
+    assert!(snapshot.content().complete);
+    assert!(snapshot.content().limitations.is_empty());
     let request = &snapshot.content().actions[255];
     let result = &snapshot.content().actions[256];
     assert_eq!(
@@ -245,11 +254,12 @@ fn parse_publish_load_joins_read_across_pages_and_keeps_full_scope() {
 }
 
 #[test]
-fn current_episode_requires_completed_task_continuation_after_reads() {
+fn open_investigations_preserve_reads_without_a_later_edit() {
     for (ending, complete) in [
         ("tool", false),
         ("unknown", false),
         ("edit", true),
+        ("command", true),
         ("pending-edit", false),
     ] {
         let (store, key, fence, generation) = publish(
@@ -267,10 +277,30 @@ fn current_episode_requires_completed_task_continuation_after_reads() {
             complete
         );
         if !complete {
+            assert!(!snapshot.content().complete);
+            assert!(
+                snapshot
+                    .content()
+                    .limitations
+                    .iter()
+                    .any(|limit| limit == "open_investigation")
+            );
             assert_eq!(spans[0].completion, EpisodeCompletion::Unknown);
             assert_eq!(
                 snapshot.over_exploring_input().unwrap().episodes[0].state,
                 over_exploring::EpisodeState::Deferred
+            );
+            let input = snapshot.over_exploring_input().unwrap();
+            let context = over_exploring::build_jev_context(&input).unwrap();
+            let plan = over_exploring::OverExploringCheck
+                .prepare(&context)
+                .unwrap();
+            assert!(plan.work_items.is_empty());
+            assert!(
+                plan.coverage
+                    .limitations
+                    .iter()
+                    .any(|limit| limit == "IncompleteHistory")
             );
         } else {
             assert!(matches!(
@@ -354,18 +384,339 @@ fn next_user_does_not_complete_unfinished_or_ambiguous_operations() {
 }
 
 #[test]
-fn source_and_selected_evidence_limits_are_typed_unavailable() {
+fn selected_evidence_gaps_preserve_retained_activity() {
     let (store, key, fence, generation) = publish("native", 0, "user", json!({}));
-    assert!(matches!(
-        store.load_smart_check_inputs(&key, fence, generation, DetectorInput::OverExploring),
-        Err(InputLoadError::Unavailable(
-            InputUnavailable::IncompleteEvidence
-        ))
-    ));
+    let snapshot = store
+        .load_smart_check_inputs(&key, fence, generation, DetectorInput::OverExploring)
+        .unwrap();
+    assert!(!snapshot.content().complete);
+    assert!(
+        snapshot
+            .content()
+            .limitations
+            .iter()
+            .any(|limit| limit == "malformed_selected_tool_input")
+    );
     for mutation in [
-        "UPDATE turn_content SET authority = 'unknown' WHERE kind = 'user'",
         "UPDATE turn_content SET truncated = 1 WHERE kind = 'tool_result'",
         "UPDATE turn_content SET normalized_fields_json = json_set(normalized_fields_json, '$.malformed', 1) WHERE kind = 'tool_input'",
+    ] {
+        let (store, key, fence, generation) = publish(
+            "native",
+            0,
+            "user",
+            json!({"filePath":"/synthetic/parser.rs"}),
+        );
+        store.lock().execute(mutation, []).unwrap();
+        let snapshot = store
+            .load_smart_check_inputs(&key, fence, generation, DetectorInput::OverExploring)
+            .unwrap();
+        assert!(!snapshot.content().complete, "{mutation}");
+        assert_eq!(
+            snapshot.content().actions[0].text,
+            "native: Fix the parser.\n  Keep billing unchanged."
+        );
+        assert_eq!(
+            snapshot
+                .content()
+                .actions
+                .iter()
+                .find(|action| action.kind == "tool_result")
+                .unwrap()
+                .text,
+            OUTPUT
+        );
+        assert_eq!(
+            snapshot.over_exploring_input().unwrap().episodes[0].reads[0]
+                .output
+                .as_deref(),
+            Some(OUTPUT)
+        );
+    }
+}
+
+#[test]
+fn broken_sibling_outputs_do_not_erase_independent_read_pairs() {
+    for mutation in [
+        "UPDATE turn_content SET kind = 'tool_input', tool_name = 'read', tool_call_id = 'broken-sibling', normalized_fields_json = '{\"category\":\"read_file\",\"values\":{},\"malformed\":true}' WHERE kind = 'assistant'",
+        "UPDATE turn_content SET kind = 'tool_result', tool_name = 'read', tool_call_id = 'broken-sibling', truncated = 1 WHERE kind = 'assistant'",
+    ] {
+        let (store, key, fence, generation) = publish(
+            "native",
+            1,
+            "user",
+            json!({"filePath":"/synthetic/parser.rs"}),
+        );
+        store.lock().execute(mutation, []).unwrap();
+        let snapshot = store
+            .load_smart_check_inputs(&key, fence, generation, DetectorInput::OverExploring)
+            .unwrap();
+        assert!(!snapshot.content().complete);
+        let input = snapshot.over_exploring_input().unwrap();
+        assert_eq!(input.episodes[0].reads.len(), 1);
+        assert_eq!(input.episodes[0].reads[0].output.as_deref(), Some(OUTPUT));
+        let read = &input.episodes[0].reads[0];
+        assert_eq!(
+            read.result
+                .as_ref()
+                .unwrap()
+                .request_reference_id
+                .as_deref(),
+            Some(read.request.reference_id.as_str())
+        );
+    }
+}
+
+#[test]
+fn missing_result_preserves_request_and_marks_partial_context_for_each_detector() {
+    for detector in [
+        DetectorInput::ScopeCreep,
+        DetectorInput::OverExploring,
+        DetectorInput::SkillOpportunities,
+    ] {
+        let (store, key, fence, generation) = publish(
+            "native",
+            0,
+            "user",
+            json!({"filePath":"/synthetic/parser.rs"}),
+        );
+        store
+            .lock()
+            .execute("DELETE FROM turn_content WHERE kind = 'tool_result'", [])
+            .unwrap();
+        let snapshot = store
+            .load_smart_check_inputs(&key, fence, generation, detector)
+            .unwrap();
+        assert!(!snapshot.content().complete);
+        assert!(
+            snapshot
+                .content()
+                .limitations
+                .iter()
+                .any(|limit| limit == "missing_selected_tool_result")
+        );
+        assert!(
+            snapshot
+                .content()
+                .actions
+                .iter()
+                .any(|action| action.kind == "tool_input")
+        );
+        if detector == DetectorInput::OverExploring {
+            let input = snapshot.over_exploring_input().unwrap();
+            assert!(input.episodes[0].reads[0].result.is_none());
+            assert!(input.episodes[0].reads[0].output.is_none());
+        }
+    }
+}
+
+#[test]
+fn oversized_sibling_is_a_page_loss_not_a_session_failure() {
+    let (store, key, fence, generation) = publish(
+        "native",
+        1,
+        "user",
+        json!({"filePath":"/synthetic/parser.rs"}),
+    );
+    store
+        .lock()
+        .execute(
+            "UPDATE turn_content SET content = CAST(?1 AS BLOB) WHERE kind = 'assistant'",
+            ["x".repeat(1024 * 1024)],
+        )
+        .unwrap();
+    let snapshot = store
+        .load_smart_check_inputs(&key, fence, generation, DetectorInput::OverExploring)
+        .unwrap();
+    assert!(!snapshot.content().complete);
+    assert!(
+        snapshot
+            .content()
+            .limitations
+            .iter()
+            .any(|limit| limit == "oversized_content_part")
+    );
+    assert_eq!(
+        snapshot.over_exploring_input().unwrap().episodes[0].reads[0]
+            .output
+            .as_deref(),
+        Some(OUTPUT)
+    );
+}
+
+#[test]
+fn private_thinking_is_excluded_before_selection_and_episode_payloads() {
+    let (store, key, fence, generation) = publish(
+        "native",
+        1,
+        "user",
+        json!({"filePath":"/synthetic/parser.rs"}),
+    );
+    store.lock().execute("UPDATE turn_content SET kind = 'thinking', content = CAST('PRIVATE_THINKING_SENTINEL' AS BLOB) WHERE kind = 'assistant'", []).unwrap();
+    let snapshot = store
+        .load_smart_check_inputs(&key, fence, generation, DetectorInput::OverExploring)
+        .unwrap();
+    assert!(
+        snapshot
+            .content()
+            .actions
+            .iter()
+            .all(|action| action.kind != "thinking")
+    );
+    let payload = serde_json::to_string(&snapshot.over_exploring_input().unwrap()).unwrap();
+    assert!(!payload.contains("PRIVATE_THINKING_SENTINEL"));
+}
+
+#[test]
+fn page_losses_merge_without_counting_drained_boundaries_as_loss() {
+    use antiburn_local::analysis::ContentQueryCoverage;
+    let mut coverage = ContentQueryCoverage::default();
+    merge_page_coverage(
+        &mut coverage,
+        ContentQueryCoverage {
+            parts_capped: true,
+            bytes_capped: true,
+            more_parts: true,
+            oversized_parts: 2,
+            stored_truncated_parts: 3,
+            ..Default::default()
+        },
+        true,
+    );
+    assert!(!coverage.parts_capped);
+    assert!(!coverage.bytes_capped);
+    assert!(!coverage.more_parts);
+    merge_page_coverage(
+        &mut coverage,
+        ContentQueryCoverage {
+            context_capped: true,
+            oversized_parts: 1,
+            stored_truncated_parts: 2,
+            ..Default::default()
+        },
+        false,
+    );
+    assert_eq!(coverage.oversized_parts, 3);
+    assert_eq!(coverage.stored_truncated_parts, 5);
+    assert!(coverage.context_capped);
+    merge_page_coverage(
+        &mut coverage,
+        ContentQueryCoverage {
+            more_parts: true,
+            bytes_capped: true,
+            ..Default::default()
+        },
+        false,
+    );
+    assert!(coverage.parts_capped);
+    assert!(coverage.bytes_capped);
+    assert!(coverage.more_parts);
+}
+
+#[test]
+fn scope_source_losses_make_retained_content_partial_for_each_detector() {
+    for detector in [
+        DetectorInput::ScopeCreep,
+        DetectorInput::OverExploring,
+        DetectorInput::SkillOpportunities,
+    ] {
+        let (store, key, fence, generation) = publish(
+            "native",
+            0,
+            "user",
+            json!({"filePath":"/synthetic/parser.rs"}),
+        );
+        let intact = store
+            .load_smart_check_inputs(&key, fence, generation, detector)
+            .unwrap();
+        assert!(intact.content().complete);
+        store
+            .lock()
+            .execute(
+                "UPDATE turn SET is_compaction_boundary = 1 WHERE turn_index = 0",
+                [],
+            )
+            .unwrap();
+        let partial = store
+            .load_smart_check_inputs(&key, fence, generation, detector)
+            .unwrap();
+        assert!(!partial.scope().limitations().is_empty());
+        assert!(!partial.content().complete);
+        for limitation in partial.scope().limitations() {
+            assert!(
+                partial
+                    .content()
+                    .limitations
+                    .contains(&format!("scope_{limitation:?}"))
+            );
+        }
+        assert_eq!(partial.content().actions, intact.content().actions);
+        assert_ne!(
+            partial.content().selected_input_digest,
+            intact.content().selected_input_digest
+        );
+        if detector == DetectorInput::OverExploring {
+            assert!(!partial.over_exploring_input().unwrap().complete);
+        }
+    }
+}
+
+#[test]
+fn truncated_user_does_not_block_independent_task_and_read_episode() {
+    let (store, key, fence, generation) = publish(
+        "native",
+        0,
+        "independent-task",
+        json!({"filePath":"/synthetic/parser.rs"}),
+    );
+    store.lock().execute("UPDATE turn_content SET truncated = 1 WHERE kind = 'user' AND turn_rowid IN (SELECT rowid FROM turn WHERE turn_index = 0)", []).unwrap();
+    let snapshot = store
+        .load_smart_check_inputs(&key, fence, generation, DetectorInput::OverExploring)
+        .unwrap();
+    assert!(!snapshot.content().complete);
+    assert!(
+        snapshot
+            .content()
+            .limitations
+            .iter()
+            .any(|limit| limit == "scope_TruncatedEvidence")
+    );
+    assert!(
+        !snapshot
+            .content()
+            .actions
+            .iter()
+            .any(|action| action.kind == "user" && action.reference.turn_index == 0)
+    );
+    let input = snapshot.over_exploring_input().unwrap();
+    assert!(!input.complete);
+    let independent = input
+        .episodes
+        .iter()
+        .find(|episode| {
+            episode
+                .events
+                .iter()
+                .any(|action| action.text == "Inspect the parser independently.")
+        })
+        .unwrap();
+    assert_eq!(independent.reads.len(), 1);
+    let read = &independent.reads[0];
+    assert_eq!(read.output.as_deref(), Some(OUTPUT));
+    assert_eq!(
+        read.result
+            .as_ref()
+            .unwrap()
+            .request_reference_id
+            .as_deref(),
+        Some(read.request.reference_id.as_str())
+    );
+    assert_eq!(input.episodes.len(), 2);
+}
+
+#[test]
+fn publication_changes_remain_unavailable() {
+    for mutation in [
         "UPDATE session SET source_generation = source_generation + 1",
         "UPDATE session_evidence SET published_fence = published_fence + 1",
     ] {
@@ -383,18 +734,31 @@ fn source_and_selected_evidence_limits_are_typed_unavailable() {
             "{mutation}"
         );
     }
+}
+
+#[test]
+fn activity_limit_returns_bounded_partial_observations() {
     let (store, key, fence, generation) = publish(
         "native",
         4096,
         "user",
         json!({"filePath":"/synthetic/parser.rs"}),
     );
-    assert!(matches!(
-        store.load_smart_check_inputs(&key, fence, generation, DetectorInput::OverExploring),
-        Err(InputLoadError::Unavailable(
-            InputUnavailable::AssemblyLimitReached
-        ))
-    ));
+    let snapshot = store
+        .load_smart_check_inputs(&key, fence, generation, DetectorInput::OverExploring)
+        .unwrap();
+    assert_eq!(
+        snapshot.content().actions.len(),
+        DetectorInput::OverExploring.max_events()
+    );
+    assert!(!snapshot.content().complete);
+    assert!(
+        snapshot
+            .content()
+            .limitations
+            .iter()
+            .any(|limit| limit == "content_part_limit")
+    );
 }
 
 #[test]

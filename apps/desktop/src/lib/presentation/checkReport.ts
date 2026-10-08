@@ -3,7 +3,11 @@ import type {
   ChecksCategoryPayload,
   ChecksReportPayload,
 } from "../insightsIpc"
-import { aggregateBurnCheckPresentation, type BurnCheckPresentation } from "./checkStatus"
+import {
+  aggregateBurnCheckPresentation,
+  checkHasProvisionalResult,
+  type BurnCheckPresentation,
+} from "./checkStatus"
 import { activeChecksReport } from "../snoozedBurnChecks"
 
 export { CHECK_LABELS } from "./checkDefinitions"
@@ -15,6 +19,7 @@ interface ChecksEstimate {
 export interface ChecksPresentation {
   activeAssessed: ChecksCategoryPayload[]
   activeUnavailable: ChecksCategoryPayload[]
+  checking?: ChecksCategoryPayload[]
   snoozed: ChecksCategoryPayload[]
   failures: ChecksCategoryPayload[]
   awaiting?: ChecksCategoryPayload[]
@@ -48,7 +53,10 @@ export function checksPresentation(
     (category) => category.lifecycle != null,
   )
   const activeUnavailable = activeReport.categories.filter(
-    (category) => category.lifecycle == null,
+    (category) => category.lifecycle == null && !checkHasProvisionalResult(category),
+  )
+  const checking = activeReport.categories.filter(
+    (category) => category.lifecycle == null && checkHasProvisionalResult(category),
   )
   const snoozedCategories = report.categories.filter((category) => snoozed.has(category.id))
   const noEnabledChecks = report.evidenceSettled && report.categories.length === 0
@@ -57,6 +65,7 @@ export function checksPresentation(
   return {
     activeAssessed,
     activeUnavailable,
+    checking,
     snoozed: snoozedCategories,
     failures: activeAssessed
       .filter((category) => category.lifecycle === "failing")

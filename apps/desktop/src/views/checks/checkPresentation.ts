@@ -20,6 +20,7 @@ import type {
   BurnCheckTargetPayload,
   ChecksCategoryPayload,
 } from "../../lib/insightsIpc"
+import { checkHasProvisionalResult } from "../../lib/presentation/checkStatus"
 import {
   CHECK_LABELS,
   formatApiEquivalentUsd,
@@ -145,7 +146,9 @@ export function checkRowPresentation(
   targets?: readonly BurnCheckTargetPayload[],
 ) {
   const failed = category.lifecycle === "failing"
+  const provisional = checkHasProvisionalResult(category)
   const metric =
+    !provisional &&
     category.id !== "ignoredInstructions" &&
     (failed ||
       (category.lifecycle === "passing" && category.estimatedTokenBurnBasisPoints === 0))
@@ -154,19 +157,57 @@ export function checkRowPresentation(
   return {
     Icon: CHECK_ICONS[category.id],
     label: CHECK_LABELS[category.id],
-    summary: failed
-      ? failedSessionSummary(category)
-      : category.lifecycle === "passing"
-        ? "Passed"
-        : category.lifecycle === "awaitingVerification"
-          ? "Awaiting verification"
-          : "Not assessed",
+    provisional,
+    checking: category.checking === true && category.lifecycle !== "awaitingVerification",
+    coverage: category.reviewCoverage
+      ? [
+          category.reviewCoverage.total == null
+            ? `${category.reviewCoverage.reviewed} reviewed`
+            : `${category.reviewCoverage.reviewed} of ${category.reviewCoverage.total} reviewed`,
+          `${category.reviewCoverage.uncertain} uncertain`,
+          `${category.reviewCoverage.pending} pending`,
+        ].join(" · ")
+      : null,
+    evidenceLimits: [
+      ...(category.sampled
+        ? [
+            {
+              label: "This check has been sampled",
+              details: [
+                "This check assesses selected evidence. No finding in a sample does not establish that all work has been assessed.",
+                ...(category.checking && category.reviewCoverage?.continuing
+                  ? ["Review is continuing."]
+                  : []),
+              ],
+            },
+          ]
+        : []),
+      ...(category.partialContext
+        ? [
+            {
+              label: "This check used partial context",
+              details: [
+                "This check used incomplete context. Missing context can limit the assessment.",
+              ],
+            },
+          ]
+        : []),
+    ],
+    summary: provisional
+      ? "No issues found yet"
+      : failed
+        ? failedSessionSummary(category)
+        : category.lifecycle === "passing"
+          ? "Passed"
+          : category.lifecycle === "awaitingVerification"
+            ? "Awaiting verification"
+            : "Not assessed",
     metric,
     costLine: failed ? summedCostLine(targets) : null,
     iconTone:
       category.lifecycle === "failing"
         ? "bg-system-red/10 text-system-red-text"
-        : category.lifecycle === "passing"
+        : category.lifecycle === "passing" || provisional
           ? "bg-system-green/10 text-system-green"
           : "bg-surface-card text-label-secondary",
     metricTone:

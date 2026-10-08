@@ -1,4 +1,3 @@
-use antiburn_local::analysis::jev::JevInputField;
 use antiburn_local::analysis::jev_evidence::{
     ContentAction, JevOperationState, SessionContentEvidence, is_recorded_skill_selection,
 };
@@ -49,13 +48,20 @@ pub(super) fn investigation_spans(
                 item.authority == ScopeAuthority::User && item.reference.id == action.reference.id
             })
         {
-            return Err(unavailable(InputUnavailable::IncompleteEvidence));
+            continue;
         }
         if starts.last().is_none_or(|previous: &usize| {
             actions[*previous].reference.turn_index != action.reference.turn_index
         }) {
             starts.push(index);
         }
+    }
+    let first_user = starts.first().copied().unwrap_or(actions.len());
+    if actions[..first_user]
+        .iter()
+        .any(|action| action.metadata.read_request.is_some())
+    {
+        starts.insert(0, 0);
     }
     let mut spans = Vec::new();
     for (offset, start) in starts.iter().copied().enumerate() {
@@ -153,10 +159,8 @@ fn task_continues_after_reads(events: &[ContentAction]) -> bool {
     };
     events[last_read + 1..].iter().any(|event| {
         event.kind == "tool_input"
-            && event
-                .normalized_fields
-                .as_ref()
-                .is_some_and(|fields| fields.values.contains_key(&JevInputField::FileEditPath))
+            && event.metadata.read_request.is_none()
+            && event.metadata.state == JevOperationState::Completed
     }) && events
         .last()
         .is_some_and(|event| event.kind == "tool_result")

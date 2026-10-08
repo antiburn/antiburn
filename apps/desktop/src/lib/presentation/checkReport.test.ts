@@ -34,6 +34,18 @@ function report(categories: ChecksCategoryPayload[]): ChecksReportPayload {
 }
 
 describe("Checks presentation", () => {
+  it("keeps provisional checks outside durable pass counts and excludes snoozed checks", () => {
+    const check = category({ finding: 0, clean: 0, checking: true })
+    const source = report([check])
+    const before = structuredClone(source)
+    const presented = checksPresentation(source)
+    expect(presented.checking).toEqual([check])
+    expect(presented.wins).toEqual([])
+    expect(presented.activeUnavailable).toEqual([])
+    expect(presented.burnChecks.counts).toEqual({ failed: 0, passed: 0, unassessed: 1 })
+    expect(checksPresentation(source, false, new Set([check.id])).checking).toEqual([])
+    expect(source).toEqual(before)
+  })
   it("uses the report-owned cohort token estimate", () => {
     const presentation = checksPresentation(report([category()]))
     expect(presentation.estimate.tokenBurnBasisPoints).toBe(1_625)

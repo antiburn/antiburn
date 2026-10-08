@@ -28,6 +28,8 @@ use antiburn_local::remediation::SAVINGS_METHOD_REVISION;
 mod findings;
 mod ignored_instructions;
 mod over_exploring;
+mod progress;
+pub(crate) use progress::check_report_progress;
 mod queries;
 mod resources;
 mod scope_creep;

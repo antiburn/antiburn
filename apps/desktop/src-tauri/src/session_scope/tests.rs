@@ -102,7 +102,7 @@ fn full_paging_keeps_pre_enablement_context_and_environment_boundaries() {
 }
 
 #[test]
-fn stale_publication_generation_and_incomplete_source_cannot_supply_scope() {
+fn stale_publication_generation_cannot_supply_scope() {
     let store = fixture();
     assert!(matches!(
         load(&store, "native", 5, 3, true),
@@ -116,12 +116,16 @@ fn stale_publication_generation_and_incomplete_source_cannot_supply_scope() {
             ScopeMissingReason::PublicationChanged
         )))
     ));
-    assert!(matches!(
-        load(&store, "native", 4, 3, false),
-        Err(ScopeLoadError::Scope(SessionScopeError::Missing(
-            ScopeMissingReason::IncompleteSource
-        )))
-    ));
+    let partial = load(&store, "native", 4, 3, false).unwrap();
+    assert_eq!(partial.occurrences().len(), 599);
+    assert_eq!(
+        partial.limitations(),
+        &[ScopeMissingReason::IncompleteSource]
+    );
+    assert_eq!(
+        partial.scope_creep_context().unwrap().fields["limitations"],
+        serde_json::json!(["IncompleteSource"])
+    );
 }
 
 #[test]
@@ -263,4 +267,128 @@ fn scoped_cursor_rejects_a_changed_boundary_before_continuation() {
         ),
         Err(SelectedContentQueryError::StaleCursor)
     ));
+}
+
+#[test]
+fn partial_scope_keeps_intact_context_despite_a_truncated_sibling() {
+    let store = fixture();
+    store
+        .lock()
+        .execute(
+            "UPDATE turn_content SET truncated = 1 WHERE turn_rowid IN
+         (SELECT rowid FROM turn WHERE environment_key = 'native' AND turn_index = 300)",
+            [],
+        )
+        .unwrap();
+    let partial = load(&store, "native", 4, 3, false).unwrap();
+    assert_eq!(partial.occurrences().len(), 598);
+    assert_eq!(
+        partial.values()[0],
+        "native: instruction 0\n  Do not delete."
+    );
+    assert!(
+        partial
+            .limitations()
+            .contains(&ScopeMissingReason::TruncatedEvidence)
+    );
+    assert!(partial.scope_creep_context().is_ok());
+}
+
+#[test]
+fn factory_admits_retained_root_with_child_attribution_and_collection_limits() {
+    let text = include_str!(concat!(env!("CARGO_MANIFEST_DIR"),
+        "/../../../crates/antiburn-local/tests/fixtures/claude_characterization/retained_native_results.jsonl"))
+        .lines().take(7).collect::<Vec<_>>().join("\n");
+    let (store, key, fence, generation) =
+        factory::publish_jsonl("claude", "scope-test", SourceFormat::ClaudeJsonl, &text);
+    let original = store
+        .load_session_scope(
+            &key,
+            store
+                .session_scope_request(&key, fence, generation)
+                .unwrap(),
+        )
+        .unwrap();
+    let mut coverage = store.published_coverage_record(&key).unwrap().unwrap();
+    coverage.subagent_linkage_incomplete = true;
+    coverage.subagents_cap_exceeded = true;
+    coverage
+        .diagnostics
+        .capped_collections
+        .insert("subagent_children".into());
+    antiburn_local::analysis::insert_coverage_record(
+        &store.lock(),
+        &crate::session_scope::factory::turn_session_key(&key),
+        fence,
+        &coverage,
+    )
+    .unwrap();
+    let request = store
+        .session_scope_request(&key, fence, generation)
+        .unwrap();
+    assert!(!request.source_complete);
+    let partial = store.load_session_scope(&key, request).unwrap();
+    assert_eq!(partial.values(), original.values());
+    assert_eq!(partial.occurrences(), original.occurrences());
+    assert_eq!(
+        partial.limitations(),
+        &[ScopeMissingReason::IncompleteSource]
+    );
+    assert!(partial.scope_creep_context().is_ok());
+}
+
+#[test]
+fn factory_keeps_missing_root_history_as_partial_context() {
+    let text = include_str!(concat!(env!("CARGO_MANIFEST_DIR"),
+        "/../../../crates/antiburn-local/tests/fixtures/claude_characterization/retained_native_results.jsonl"))
+        .lines().take(7).collect::<Vec<_>>().join("\n");
+    let (store, key, fence, generation) =
+        factory::publish_jsonl("claude", "scope-test", SourceFormat::ClaudeJsonl, &text);
+    store
+        .lock()
+        .execute(
+            "DELETE FROM turn_content WHERE turn_rowid IN
+                  (SELECT rowid FROM turn WHERE turn_index = 0)",
+            [],
+        )
+        .unwrap();
+    let request = store
+        .session_scope_request(&key, fence, generation)
+        .unwrap();
+    assert!(!request.source_complete);
+    let partial = store.load_session_scope(&key, request).unwrap();
+    assert!(partial.values().is_empty());
+    assert!(
+        partial
+            .limitations()
+            .contains(&ScopeMissingReason::NoUserContext)
+    );
+    assert!(
+        partial
+            .limitations()
+            .contains(&ScopeMissingReason::IncompleteSource)
+    );
+    assert!(partial.scope_creep_context().is_ok());
+}
+
+#[test]
+fn partial_scope_excludes_private_thinking_from_model_context() {
+    let store = fixture();
+    store
+        .lock()
+        .execute(
+            "UPDATE turn_content SET kind = 'thinking', authority = 'assistant', content = ?1
+         WHERE turn_rowid IN (SELECT rowid FROM turn WHERE environment_key = 'native'
+         AND turn_index = 300)",
+            params![b"private synthetic reasoning".as_slice()],
+        )
+        .unwrap();
+    let partial = load(&store, "native", 4, 3, false).unwrap();
+    assert_eq!(partial.occurrences().len(), 598);
+    let context = partial.scope_creep_context().unwrap();
+    assert!(
+        !serde_json::to_string(&context.fields)
+            .unwrap()
+            .contains("private synthetic reasoning")
+    );
 }

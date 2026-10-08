@@ -230,11 +230,32 @@ fn factory_rejects_unknown_user_authority_before_selection_drops_it() {
 }
 
 #[test]
-fn factory_rejects_lost_history_compaction_and_forks() {
+fn factory_keeps_lost_history_and_compaction_as_partial_context() {
     for mutation in [
         "DELETE FROM turn WHERE turn_index = 0",
         "DELETE FROM turn_content WHERE turn_rowid IN (SELECT rowid FROM turn WHERE turn_index = 0)",
         "UPDATE turn SET is_compaction_boundary = 1 WHERE turn_index = 10",
+    ] {
+        let (store, key, fence, generation) = publish("native", false);
+        store.lock().execute(mutation, []).unwrap();
+        let request = store
+            .session_scope_request(&key, fence, generation)
+            .unwrap();
+        assert!(!request.source_complete, "{mutation}");
+        let scope = store.load_session_scope(&key, request).unwrap();
+        assert!(
+            scope
+                .limitations()
+                .contains(&ScopeMissingReason::IncompleteSource),
+            "{mutation}"
+        );
+        assert!(!scope.occurrences().is_empty(), "{mutation}");
+    }
+}
+
+#[test]
+fn factory_rejects_invalid_identity_and_forks() {
+    for mutation in [
         "UPDATE turn SET thread_id = 'sibling' WHERE turn_index = 10",
         "UPDATE turn_content SET normalized_fields_json = NULL WHERE turn_rowid IN
          (SELECT rowid FROM turn WHERE turn_index = 10)",

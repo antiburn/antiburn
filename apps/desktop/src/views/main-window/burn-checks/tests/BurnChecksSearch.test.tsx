@@ -70,20 +70,18 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
       sampled: true,
     }
     const first = setup(null, false, aggregate, { ...report, categories: [check] })
-    const info = await screen.findByLabelText("About priority sampling")
+    const info = await screen.findByLabelText("This check has been sampled")
     expect(info).toBeVisible()
     expect(info.tagName).toBe("SPAN")
     expect(info.previousElementSibling).toHaveTextContent("Ignored instructions")
     fireEvent.click(info)
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
     fireEvent.pointerMove(info, { pointerType: "mouse" })
-    expect(
-      await screen.findByText(/Priority sampling checks likely instruction conflicts first/),
-    ).toBeVisible()
+    expect(await screen.findByText(/This check assesses selected evidence/)).toBeVisible()
     fireEvent.pointerLeave(info)
     fireEvent.focus(info)
     expect(
-      await screen.findByText(/Later checks can reduce the remaining unassessed gap/),
+      await screen.findByText(/does not establish that all work has been assessed/),
     ).toBeVisible()
     first.view.unmount()
 
@@ -92,7 +90,7 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
       categories: [{ ...check, sampled: false }],
     })
     await screen.findByRole("heading", { name: "Ignored instructions" })
-    expect(screen.queryByLabelText("About priority sampling")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("This check has been sampled")).not.toBeInTheDocument()
     second.view.unmount()
 
     setup(null, false, aggregate, {
@@ -100,7 +98,7 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
       categories: [{ ...report.categories[0]!, id: "ignoredInstructions" }],
     })
     await screen.findByRole("heading", { name: "Ignored instructions" })
-    expect(screen.queryByLabelText("About priority sampling")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("This check has been sampled")).not.toBeInTheDocument()
   })
 
   it("opens ignored instruction evidence through the report and keeps the ordinary prompt action", async () => {

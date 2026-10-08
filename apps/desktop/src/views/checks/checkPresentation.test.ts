@@ -26,6 +26,51 @@ function target(
 }
 
 describe("check row presentation", () => {
+  it("uses only category activity and preserves verification", () => {
+    const check = category({ finding: 0, clean: 0, checking: true })
+    expect(checkRowPresentation(check)).toMatchObject({
+      summary: "No issues found yet",
+      provisional: true,
+      checking: true,
+      metric: null,
+      iconTone: "bg-system-green/10 text-system-green",
+    })
+    expect(checkRowPresentation({ ...check, checking: false })).toMatchObject({
+      summary: "Not assessed",
+      provisional: false,
+      checking: false,
+    })
+    expect(checkRowPresentation({ ...check, unavailable: 1 })).toMatchObject({
+      summary: "No issues found yet",
+      provisional: true,
+    })
+    expect(checkRowPresentation({ ...check, lifecycle: "awaitingVerification" })).toMatchObject(
+      {
+        summary: "Awaiting verification",
+        provisional: false,
+        checking: false,
+      },
+    )
+  })
+
+  it("shows supplied coverage counts and limits continuation to active work", () => {
+    const check = category({
+      sampled: true,
+      partialContext: true,
+      reviewCoverage: { reviewed: 4, total: 8, uncertain: 1, pending: 3, continuing: true },
+    })
+    expect(checkRowPresentation(check).coverage).toBe(
+      "4 of 8 reviewed · 1 uncertain · 3 pending",
+    )
+    expect(checkRowPresentation(check).evidenceLimits).toHaveLength(2)
+    expect(checkRowPresentation(check).evidenceLimits[0]!.details).not.toContain(
+      "Review is continuing.",
+    )
+    expect(
+      checkRowPresentation({ ...check, checking: true }).evidenceLimits[0]!.details,
+    ).toContain("Review is continuing.")
+    expect(checkRowPresentation(category()).coverage).toBeNull()
+  })
   it("presents Scope Creep with future guidance and no inferred estimate", () => {
     expect(
       checkRowPresentation(category({ id: "scopeCreep", estimatedTokenBurnBasisPoints: null })),

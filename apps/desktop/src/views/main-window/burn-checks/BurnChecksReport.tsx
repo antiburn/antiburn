@@ -135,10 +135,12 @@ function CheckDetailContent({
   state: BurnChecksControllerSnapshot
 }) {
   const targets = state.targets[check.id]
-  if (check.lifecycle == null) {
+  if (check.lifecycle == null || checkRowPresentation(check).provisional) {
     return (
       <p className="type-callout text-label-secondary">
-        This check has not been assessed for the available sessions.
+        {checkRowPresentation(check).provisional
+          ? "No issues found yet."
+          : "This check has not been assessed for the available sessions."}
       </p>
     )
   }
@@ -245,7 +247,10 @@ function CheckDetail({
   session: BurnChecksController
   state: BurnChecksControllerSnapshot
 }) {
-  const presentation = checkRowPresentation(check, state.targets[check.id]?.data?.targets)
+  const presentation = checkRowPresentation(
+    snooze ? { ...check, checking: false } : check,
+    state.targets[check.id]?.data?.targets,
+  )
   const targetList = state.targets[check.id]?.data
   const named = isUnusedResourceDetector(check.id)
   const resourceNames =
@@ -304,16 +309,13 @@ function CheckDetail({
                 <h2 className="min-w-0 type-title-2 text-label text-balance">
                   {presentation.label}
                 </h2>
-                {check.sampled === true && (
+                {presentation.evidenceLimits.map((limit) => (
                   <EvidenceLimitsIcon
-                    label="About priority sampling"
-                    details={[
-                      check.id === "ignoredInstructions"
-                        ? "Priority sampling checks likely instruction conflicts first. Later checks can reduce the remaining unassessed gap."
-                        : "This check assesses selected evidence. A pass means no finding in that sample. Unassessed work may remain.",
-                    ]}
+                    key={limit.label}
+                    label={limit.label}
+                    details={limit.details}
                   />
-                )}
+                ))}
               </div>
               {showFindingActions && (
                 <div className="max-w-full shrink-0">
@@ -359,7 +361,13 @@ function CheckDetail({
             check.lifecycle === "failing" && "pt-[var(--space-lg)]",
           )}
         >
-          {visible && <CheckDetailContent check={check} session={session} state={state} />}
+          {visible && (
+            <CheckDetailContent
+              check={snooze ? { ...check, checking: false } : check}
+              session={session}
+              state={state}
+            />
+          )}
         </div>
       </BurnCheckDetailBody>
     </div>
@@ -379,8 +387,20 @@ function CheckMetadata({
   inline?: boolean
   className?: string
 }) {
-  if (check.lifecycle == null) {
-    return <span className="mt-1 block type-footnote text-label-secondary">Not assessed</span>
+  if (check.lifecycle == null || presentation.provisional) {
+    return (
+      <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 type-footnote">
+        <span
+          className={presentation.provisional ? "text-system-green" : "text-label-secondary"}
+        >
+          {presentation.summary}
+        </span>
+        {presentation.checking && <span className="text-label-secondary">Checking…</span>}
+        {presentation.coverage && (
+          <span className="text-label-tertiary">{presentation.coverage}</span>
+        )}
+      </span>
+    )
   }
   return (
     <span
@@ -424,6 +444,12 @@ function CheckMetadata({
           </>
         )}
       </span>
+      {presentation.checking && (
+        <span className="type-footnote text-label-secondary">Checking…</span>
+      )}
+      {presentation.coverage && (
+        <span className="type-footnote text-label-tertiary">{presentation.coverage}</span>
+      )}
       {(check.estimatedTokenBurnBasisPoints != null || presentation.costLine) && (
         <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           {check.estimatedTokenBurnBasisPoints != null &&
@@ -464,9 +490,13 @@ function CheckTrigger({
   state: BurnChecksControllerSnapshot
   snoozeLabel?: string
 }) {
-  const presentation = checkRowPresentation(check, state.targets[check.id]?.data?.targets)
-  const summary =
-    check.lifecycle == null
+  const presentation = checkRowPresentation(
+    snoozeLabel ? { ...check, checking: false } : check,
+    state.targets[check.id]?.data?.targets,
+  )
+  const summary = presentation.provisional
+    ? presentation.summary
+    : check.lifecycle == null
       ? "Not assessed"
       : check.lifecycle === "awaitingVerification"
         ? "Awaiting verification"
@@ -488,7 +518,7 @@ function CheckTrigger({
       type="button"
       aria-pressed={selected}
       aria-controls={`burn-check-${check.id}-detail`}
-      aria-label={`${presentation.label}, ${summary}${metric ? `, ${metric}` : ""}`}
+      aria-label={`${presentation.label}, ${summary}${presentation.checking ? ", Checking…" : ""}${metric ? `, ${metric}` : ""}`}
       data-outcome={
         check.lifecycle === "awaitingVerification"
           ? "awaiting"
@@ -496,7 +526,9 @@ function CheckTrigger({
             ? "passed"
             : check.lifecycle === "failing"
               ? "failed"
-              : "unassessed"
+              : presentation.provisional
+                ? "passed"
+                : "unassessed"
       }
       tabIndex={selected ? 0 : -1}
       onFocus={onFocus}
@@ -565,12 +597,14 @@ export function BurnChecksReport({
   const PassIcon = BURN_CHECK_MARKS.clean.Icon
   const activeAwaiting = presentation.awaiting ?? []
   const activeFailures = presentation.failures
+  const checking = presentation.checking ?? []
   const activeWins = presentation.wins
   const snoozedChecks = presentation.snoozed
   const unassessed = presentation.activeUnavailable
   const checks = [
     ...activeFailures,
     ...activeAwaiting,
+    ...checking,
     ...activeWins,
     ...unassessed,
     ...snoozedChecks,
@@ -579,6 +613,7 @@ export function BurnChecksReport({
   const initialId =
     activeFailures[0]?.id ??
     activeAwaiting[0]?.id ??
+    checking[0]?.id ??
     activeWins[0]?.id ??
     snoozedChecks[0]?.id ??
     null
@@ -633,6 +668,7 @@ export function BurnChecksReport({
   const visibleChecks = [
     ...activeFailures,
     ...activeAwaiting,
+    ...checking,
     ...(passedOpen ? activeWins : []),
     ...(unassessedOpen ? unassessed : []),
     ...(snoozedOpen ? snoozedChecks : []),
@@ -647,6 +683,7 @@ export function BurnChecksReport({
       ? selectedId
       : (activeFailures[0]?.id ??
         activeAwaiting[0]?.id ??
+        checking[0]?.id ??
         (passedOpen ? activeWins[0]?.id : null) ??
         (unassessedOpen ? unassessed[0]?.id : null) ??
         (snoozedOpen ? snoozedChecks[0]?.id : null) ??
@@ -826,6 +863,11 @@ export function BurnChecksReport({
                     {activeAwaiting.map((check) => renderCheck(check))}
                   </div>
                 </section>
+              )}
+              {checking.length > 0 && (
+                <div className="burn-checks-group-body">
+                  {checking.map((check) => renderCheck(check))}
+                </div>
               )}
               {activeWins.length > 0 && (
                 <section className="burn-checks-group" aria-labelledby="burn-checks-passed">

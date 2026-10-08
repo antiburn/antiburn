@@ -36,12 +36,12 @@ use crate::dto::{
     ActivityEntry, AgentScanState, AggregateWinsPayload, AppInfo,
     ApplyPreparedBurnCheckOperationOutcome, AutoFixUnavailableReason, BurnCheckDetectorId,
     BurnCheckRemediationProgressPayload, BurnCheckSnoozePayload, BurnCheckTargetListPayload,
-    ChecksCategoryLifecyclePayload, ChecksReportPayload, CopyPromptFixBurnCheckOutcome,
-    CopyPromptFixBurnCheckTargetOutcome, DeferredPermissionDir, InsightsBacklog, LiveUsageSummary,
-    OrchestrationStatus, PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason,
-    ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload,
-    SessionHygieneRequest, SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary,
-    SessionRelation, SessionRelations, SubagentMember,
+    ChecksReportPayload, CopyPromptFixBurnCheckOutcome, CopyPromptFixBurnCheckTargetOutcome,
+    DeferredPermissionDir, InsightsBacklog, LiveUsageSummary, OrchestrationStatus,
+    PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason, ProviderUsageSummary,
+    RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload, SessionHygieneRequest,
+    SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary, SessionRelation,
+    SessionRelations, SubagentMember,
 };
 use crate::first_run_gate::{FirstRunGate, FirstRunStage};
 pub(crate) mod local_usage;
@@ -1454,21 +1454,28 @@ pub async fn get_checks_report(
         ),
         (BurnCheckDetectorId::OverExploring, "over_exploring"),
         (BurnCheckDetectorId::ScopeCreep, "scope_creep"),
+        (
+            BurnCheckDetectorId::IgnoredInstructions,
+            "ignored_instructions",
+        ),
     ] {
         if let Some(category) = payload
             .categories
             .iter_mut()
             .find(|category| category.id == id)
         {
-            category.sampled = category.finding > 0 || category.clean > 0;
-            if app
-                .state::<Store>()
-                .burn_check_in_progress_count(check_id)
-                .map_err(fail)?
-                > 0
-            {
-                apply_ignored_instruction_progress(category);
+            if id != BurnCheckDetectorId::IgnoredInstructions {
+                category.sampled = category.finding > 0 || category.clean > 0;
             }
+            let progress = crate::insights_report::check_report_progress(
+                store.state_dir(),
+                &request,
+                check_id,
+            )
+            .map_err(fail)?;
+            category.checking = Some(progress.checking);
+            category.partial_context = Some(progress.partial_context);
+            category.review_coverage = progress.coverage;
         }
     }
     if let Some(category) = payload
@@ -1489,18 +1496,11 @@ pub async fn get_checks_report(
             &request.environment_key,
         )
         .map_err(fail)?;
+    #[cfg(debug_assertions)]
     let ignored_instruction_work = app
         .state::<Store>()
         .burn_check_in_progress_count("ignored_instructions")
         .map_err(fail)?;
-    if ignored_instruction_work > 0
-        && let Some(category) = payload
-            .categories
-            .iter_mut()
-            .find(|category| category.id == BurnCheckDetectorId::IgnoredInstructions)
-    {
-        apply_ignored_instruction_progress(category);
-    }
     #[cfg(debug_assertions)]
     if let Some(category) = payload
         .categories
@@ -1566,16 +1566,6 @@ pub async fn get_checks_report(
         ));
     }
     Ok(payload)
-}
-
-fn apply_ignored_instruction_progress(category: &mut crate::dto::ChecksCategoryPayload) {
-    category.lifecycle = if category.finding > 0 {
-        Some(ChecksCategoryLifecyclePayload::Failing)
-    } else if category.unavailable > 0 {
-        None
-    } else {
-        Some(ChecksCategoryLifecyclePayload::Passing)
-    };
 }
 
 fn current_burn_check_snoozes(store: &Store) -> CommandResult<Vec<BurnCheckSnoozePayload>> {
@@ -3115,38 +3105,6 @@ mod project_folder_tests {
             payloads[0].badges[0].status,
             crate::dto::SessionHygieneStatus::Finding
         ));
-    }
-
-    #[test]
-    fn an_in_progress_instruction_check_stays_unassessed_until_evidence_is_available() {
-        let mut category = crate::dto::ChecksCategoryPayload {
-            id: BurnCheckDetectorId::IgnoredInstructions,
-            sampled: false,
-            lifecycle: None,
-            finding: 0,
-            agents: Vec::new(),
-            clean: 0,
-            unavailable: 7,
-            estimated_token_burn_basis_points: None,
-        };
-        apply_ignored_instruction_progress(&mut category);
-        assert_eq!(category.lifecycle, None);
-
-        category.unavailable = 0;
-        apply_ignored_instruction_progress(&mut category);
-        assert_eq!(
-            category.lifecycle,
-            Some(ChecksCategoryLifecyclePayload::Passing)
-        );
-
-        category.unavailable = 7;
-        category.finding = 1;
-        category.lifecycle = Some(ChecksCategoryLifecyclePayload::AwaitingVerification);
-        apply_ignored_instruction_progress(&mut category);
-        assert_eq!(
-            category.lifecycle,
-            Some(ChecksCategoryLifecyclePayload::Failing)
-        );
     }
 
     #[test]

@@ -5,7 +5,9 @@ use crate::agent_config::{
     ConfigContext, ResourceKind, advisory_resource_inventory, skill_opportunity_snapshot,
 };
 use crate::jev::worker::JevCheckDescriptor;
-use antiburn_local::checks::skill_opportunities::SkillOpportunitiesResult;
+use antiburn_local::checks::skill_opportunities::{
+    SkillOpportunitiesResult, SkillOpportunitySnapshot,
+};
 use antiburn_local::model::AgentKind;
 use antiburn_local::remediation::Finding;
 
@@ -61,21 +63,7 @@ fn skill_opportunity_findings_with_home(
         return Ok(None);
     }
 
-    let Some(agent) = AgentKind::from_slug(session.agent) else {
-        return Ok(None);
-    };
-    let context = ConfigContext::native(agent, home, workspace_candidate);
-    let Ok(resources) = advisory_resource_inventory(&context, []) else {
-        return Ok(None);
-    };
-    if resources
-        .issues
-        .iter()
-        .any(|issue| issue.kind.is_none() || issue.kind == Some(ResourceKind::Skill))
-    {
-        return Ok(None);
-    }
-    let Ok(snapshot) = skill_opportunity_snapshot(&context) else {
+    let Some(snapshot) = current_skill_snapshot(session.agent, workspace_candidate, home) else {
         return Ok(None);
     };
 
@@ -185,7 +173,25 @@ fn skill_opportunity_findings_with_home(
     Ok(Some(findings))
 }
 
-fn publication_revisions_match(
+pub(super) fn current_skill_snapshot(
+    agent: &str,
+    workspace_candidate: Option<PathBuf>,
+    home: &Path,
+) -> Option<SkillOpportunitySnapshot> {
+    let agent = AgentKind::from_slug(agent)?;
+    let context = ConfigContext::native(agent, home, workspace_candidate);
+    let resources = advisory_resource_inventory(&context, []).ok()?;
+    if resources
+        .issues
+        .iter()
+        .any(|issue| issue.kind.is_none() || issue.kind == Some(ResourceKind::Skill))
+    {
+        return None;
+    }
+    skill_opportunity_snapshot(&context).ok()
+}
+
+pub(super) fn publication_revisions_match(
     json: &str,
     input_revision: &str,
     inventory_revision: &str,
@@ -436,6 +442,22 @@ mod tests {
         };
         let findings = read().unwrap();
         assert!(!findings.is_empty(), "{agent:?}");
+        let review = |json: &str| {
+            super::super::progress::published_coverage(
+                "skill_opportunities",
+                &prepared.durable.input_revision,
+                json,
+                Some(&current_inventory.revision()),
+            )
+        };
+        assert!(review(&saved_json(&result)).is_some(), "{agent:?}");
+        let mut mismatched_use: serde_json::Value =
+            serde_json::from_str(&saved_json(&result)).unwrap();
+        mismatched_use["use_revision"] = serde_json::json!("different-use");
+        assert!(
+            review(&mismatched_use.to_string()).is_none(),
+            "{agent:?}: saved comparisons must bind the publication use revision"
+        );
         assert!(
             antiburn_local::remediation::remediation_prompt(&findings[0])
                 .unwrap()

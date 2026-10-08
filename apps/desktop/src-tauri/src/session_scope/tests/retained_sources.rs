@@ -164,8 +164,6 @@ fn retained_source_proofs_and_native_ranges_fail_closed_after_storage_changes() 
             "UPDATE turn_content SET normalized_fields_json = NULL WHERE kind = 'user' AND authority = 'user'",
             "UPDATE turn_content SET normalized_fields_json = json_set(normalized_fields_json, '$.metadata.user_text_history.source_format', 'open_code_sqlite_v2') WHERE kind = 'user' AND authority = 'user'",
             "UPDATE turn_content SET normalized_fields_json = json_set(normalized_fields_json, '$.metadata.bindings[0].end', 1) WHERE kind = 'user' AND authority = 'user'",
-            "UPDATE turn SET is_compaction_boundary = 1 WHERE turn_index = 0",
-            "DELETE FROM turn WHERE turn_index = 0",
         ] {
             let (store, key, fence, generation) = publish_jsonl(agent, session, format, &text);
             store.lock().execute(mutation, []).unwrap();
@@ -178,6 +176,50 @@ fn retained_source_proofs_and_native_ranges_fail_closed_after_storage_changes() 
                 ),
                 "{agent}: {mutation}"
             );
+        }
+    }
+}
+
+#[test]
+fn retained_source_history_loss_keeps_intact_context_with_limits() {
+    for (agent, session, format, text) in [
+        (
+            "claude",
+            "scope-test",
+            SourceFormat::ClaudeJsonl,
+            CLAUDE.lines().take(7).collect::<Vec<_>>().join("\n"),
+        ),
+        (
+            "codex",
+            "synthetic-root",
+            SourceFormat::CodexRolloutJsonl,
+            without_skill(CODEX),
+        ),
+        (
+            "pi",
+            "synthetic",
+            SourceFormat::PiV3Jsonl,
+            without_skill(PI),
+        ),
+    ] {
+        for mutation in [
+            "UPDATE turn SET is_compaction_boundary = 1 WHERE turn_index = 0",
+            "DELETE FROM turn WHERE turn_index = 0",
+        ] {
+            let (store, key, fence, generation) = publish_jsonl(agent, session, format, &text);
+            store.lock().execute(mutation, []).unwrap();
+            let request = store
+                .session_scope_request(&key, fence, generation)
+                .unwrap();
+            assert!(!request.source_complete, "{agent}: {mutation}");
+            let scope = store.load_session_scope(&key, request).unwrap();
+            assert!(
+                scope
+                    .limitations()
+                    .contains(&ScopeMissingReason::IncompleteSource),
+                "{agent}: {mutation}"
+            );
+            assert!(scope.scope_creep_context().is_ok(), "{agent}: {mutation}");
         }
     }
 }

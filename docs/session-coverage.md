@@ -1,6 +1,6 @@
 # Session Parsing Coverage
 
-Audit date: 2026-10-07.
+Audit date: 2026-10-08.
 
 This document records how Antiburn discovers and parses local session sources.
 It covers source identity, framing, companion data, normalized facts, and
@@ -43,8 +43,9 @@ through these four accepted agent/source pairs:
   See the [Codex fixture contract](../crates/antiburn-local/tests/fixtures/codex_characterization/README.md#paginated-completed-work-contract).
 - OpenCode / `OpenCodeSqliteV2`: native message/part and skill producer
   `772392050500e0ddcd2ad2193411a22a3824372f`, with numbered Read renderer
-  `652c090dc119b5f3dc1e5e0bf1c4b40d9721f0ef`. Complete text-only retained roots,
-  exact native identities, and lifecycle joins are required. JSONL export is not
+  `652c090dc119b5f3dc1e5e0bf1c4b40d9721f0ef`. Exact native identities and lifecycle
+  joins are required. Text-only retained roots can carry partial-context limits.
+  JSONL export is not
   accepted by these smart checks.
 - Pi / `PiV3Jsonl`: native core V3 shape inspected at 0.84.4, producer
   `b79e4cc834970cca69daebffab7df1da7d1e52c4`. Linear retained ancestry, exact
@@ -56,16 +57,30 @@ through these four accepted agent/source pairs:
 
 These are bounded accepted shapes, not historical release ranges. The desktop
 validates the entire publication, source/session identity, order, scope, ranges,
-generation, and fence. Detected compaction, forks, gaps, unsupported attachments,
-conflicting identities, or exceeded bounds leave inputs unavailable. Qualified
+generation, and fence. Forks, conflicting root identities, invalid authority
+bindings, unsupported attachments, and stale publications remain unavailable.
+Accepted prefixes, detected compaction, missing retained history, child-attribution
+loss, and collection limits can retain intact root context with explicit limits.
+Truncated scope parts are omitted; their loss remains visible. Qualified
 Codex environment context and exact skill-document selections stay separate
 from authorizing history. Skill selection does not prove instruction execution,
 success, or historical availability.
 
-This source contract covers the current recorded root snapshot. It preserves
-every retained authoritative user message and rejects detected compaction,
-forks, unsupported attachments, and incomplete reads. Root identity and per-message
-proof do not establish that no earlier record was deleted outside the accepted
+The model can review retained evidence with these limits. Partial loading replaces
+whole-session rejection for supported context gaps; it does not reconstruct lost
+records. Each check's reducer and publication policy determine whether a finding
+or scoped no-finding outcome is available from that partial input.
+
+Activity loading preserves intact selected events under bounded assembly limits.
+It records missing or ambiguous tool results, malformed selected inputs, clipped
+content, omitted events, and unfinished investigation context as limitations.
+Private thinking stays excluded. These limits do not supply missing approval,
+successful execution, or observed file extent.
+
+This source contract covers the current recorded root snapshot. Complete inputs
+preserve every retained authoritative user message. Partial inputs preserve only
+intact, accepted context and carry the missing-history limits. Root identity and
+per-message proof do not establish that no earlier record was deleted outside the accepted
 producer contract. Antiburn does not reconstruct removed messages or claim that
 the snapshot proves original historical retention.
 

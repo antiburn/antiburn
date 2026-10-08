@@ -1,10 +1,10 @@
 use super::*;
 use crate::analysis::jev::{JevInputWindow, JevQuestion};
 use crate::analysis::jev_evidence::{
+    non_authorizing_context_digest, scope_answer_fixture, scope_plan_fixture,
     JevNativeFieldContainer, JevNativeFieldRange, JevNonAuthorizingContextKind,
     JevNonAuthorizingContextProducer, JevNonAuthorizingContextProof, JevSelectedSkillNormalization,
     JevSelectedSkillProducer, JevSelectedSkillProof, JevSelectedSkillStatus,
-    non_authorizing_context_digest, scope_answer_fixture, scope_plan_fixture,
 };
 use crate::analysis::{ContentAuthority, ContentPart, ContentQueryCoverage, PublishedContentPart};
 

@@ -1,6 +1,40 @@
 use super::*;
 
 #[test]
+fn check_progress_serializes_optional_notices_and_unknown_total() {
+    let category = ChecksCategoryPayload {
+        id: BurnCheckDetectorId::ScopeCreep,
+        sampled: true,
+        checking: Some(true),
+        partial_context: Some(true),
+        review_coverage: Some(ChecksReviewCoveragePayload {
+            reviewed: 5,
+            total: None,
+            uncertain: 2,
+            pending: 3,
+            continuing: true,
+        }),
+        lifecycle: None,
+        finding: 0,
+        agents: Vec::new(),
+        clean: 0,
+        unavailable: 1,
+        estimated_token_burn_basis_points: None,
+    };
+    let value = serde_json::to_value(&category).unwrap();
+    assert_eq!(value["checking"], true);
+    assert_eq!(value["partialContext"], true);
+    assert_eq!(
+        value["reviewCoverage"],
+        serde_json::json!({
+            "reviewed": 5, "total": null, "uncertain": 2, "pending": 3, "continuing": true,
+        })
+    );
+    assert_eq!(value["lifecycle"], serde_json::Value::Null);
+    assert_eq!(value["clean"], 0);
+}
+
+#[test]
 fn quota_usage_payload_serializes_camel_case_fields_and_boundary_source_strings() {
     let payload = QuotaUsagePayload {
         provider: "anthropic".to_string(),

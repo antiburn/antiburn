@@ -1,4 +1,4 @@
-//! Complete, exact user context for a single source branch at a published boundary.
+//! Retained user context for a single source branch at a published boundary.
 //! Assistant text supplies context, never user authority. No approval is inferred.
 //! Companion bytes need normalized session and version proof. Mutable or missing
 //! references remain unresolved. This module has no filesystem resolver.
@@ -121,6 +121,8 @@ pub struct SessionScopeSnapshot {
     source_generation: i64,
     values: Vec<Value>,
     occurrences: Vec<ScopeOccurrence>,
+    limitations: Vec<ScopeMissingReason>,
+    source_complete: bool,
 }
 
 impl SessionScopeSnapshot {
@@ -137,13 +139,17 @@ impl SessionScopeSnapshot {
         &self.occurrences
     }
 
-    /// ScopeCreep requires resolved influences. Other checks can inspect unknown
-    /// records explicitly through `user_context` without treating them as approvals.
+    pub fn limitations(&self) -> &[ScopeMissingReason] {
+        &self.limitations
+    }
+
+    /// Partial inputs keep unknown influences visible without treating them as approvals.
     pub fn scope_creep_context(&self) -> Result<JevSharedRequestContext, SessionScopeError> {
-        if self
-            .occurrences
-            .iter()
-            .any(|item| item.authority == ScopeAuthority::UnknownInfluence)
+        if self.source_complete
+            && self
+                .occurrences
+                .iter()
+                .any(|item| item.authority == ScopeAuthority::UnknownInfluence)
         {
             return Err(SessionScopeError::Missing(
                 ScopeMissingReason::UnresolvedInfluence,
@@ -179,7 +185,7 @@ impl SessionScopeSnapshot {
             })
             .collect();
         JevSharedRequestContext {
-            fields: json!({"values": self.values, "occurrences": occurrences}),
+            fields: json!({"values": self.values, "occurrences": occurrences, "limitations": self.limitations}),
             evidence,
         }
     }
@@ -259,8 +265,8 @@ fn pack_context(
     ))
 }
 
-/// Consume every selected page from the source start. Paging caps are resumable;
-/// skipped or truncated parts are not. The caller attests source parse completeness.
+/// Consume selected pages from the source start. The caller attests source
+/// completeness. Partial sources keep loss limitations beside retained context.
 pub struct SessionScopeBuilder {
     source_format: SourceFormat,
     boundary: SessionScopeBoundary,
@@ -271,6 +277,8 @@ pub struct SessionScopeBuilder {
     ended: bool,
     boundary_seen: bool,
     failure: Option<SessionScopeError>,
+    source_complete: bool,
+    limitations: Vec<ScopeMissingReason>,
 }
 
 impl SessionScopeBuilder {
@@ -284,11 +292,6 @@ impl SessionScopeBuilder {
         if !source_supported(source_format) {
             return Err(SessionScopeError::Missing(
                 ScopeMissingReason::UnsupportedSource,
-            ));
-        }
-        if !source_complete {
-            return Err(SessionScopeError::Missing(
-                ScopeMissingReason::IncompleteSource,
             ));
         }
         if boundary.source_key.is_empty() || boundary.thread_id.is_empty() {
@@ -313,6 +316,12 @@ impl SessionScopeBuilder {
             ended: false,
             boundary_seen: false,
             failure: None,
+            source_complete,
+            limitations: if source_complete {
+                Vec::new()
+            } else {
+                vec![ScopeMissingReason::IncompleteSource]
+            },
         })
     }
 
@@ -375,17 +384,33 @@ impl SessionScopeBuilder {
             ));
         }
         if !has_next && (content.coverage.parts_capped || content.coverage.bytes_capped) {
-            return Err(SessionScopeError::Missing(
-                ScopeMissingReason::IncompletePaging,
-            ));
+            if self.source_complete {
+                return Err(SessionScopeError::Missing(
+                    ScopeMissingReason::IncompletePaging,
+                ));
+            }
+            if !self
+                .limitations
+                .contains(&ScopeMissingReason::IncompletePaging)
+            {
+                self.limitations.push(ScopeMissingReason::IncompletePaging);
+            }
         }
         if content.coverage.oversized_parts > 0
             || content.coverage.stored_truncated_parts > 0
             || content.coverage.context_capped
         {
-            return Err(SessionScopeError::Missing(
-                ScopeMissingReason::TruncatedEvidence,
-            ));
+            if self.source_complete {
+                return Err(SessionScopeError::Missing(
+                    ScopeMissingReason::TruncatedEvidence,
+                ));
+            }
+            if !self
+                .limitations
+                .contains(&ScopeMissingReason::TruncatedEvidence)
+            {
+                self.limitations.push(ScopeMissingReason::TruncatedEvidence);
+            }
         }
         content.parts.retain(|item| {
             item.source_key == self.boundary.source_key
@@ -402,6 +427,18 @@ impl SessionScopeBuilder {
                 }
                 && (item.turn_index, item.part_index)
                     <= (self.boundary.turn_index, self.boundary.part_index)
+        });
+        content.parts.retain(|item| {
+            if !self.source_complete && (item.context_only || item.part.truncated) {
+                if !self
+                    .limitations
+                    .contains(&ScopeMissingReason::TruncatedEvidence)
+                {
+                    self.limitations.push(ScopeMissingReason::TruncatedEvidence);
+                }
+                return false;
+            }
+            true
         });
         for item in &content.parts {
             self.boundary_seen |= (item.turn_index, item.part_index)
@@ -471,6 +508,8 @@ impl SessionScopeBuilder {
             source_generation: self.source_generation,
             values: Vec::new(),
             occurrences: Vec::new(),
+            limitations: self.limitations,
+            source_complete: self.source_complete,
         };
         let mut dictionary = BTreeMap::new();
         let mut seen = BTreeSet::new();
@@ -609,6 +648,18 @@ impl SessionScopeBuilder {
                 )?;
             }
         }
+        if snapshot
+            .occurrences
+            .iter()
+            .any(|item| item.authority == ScopeAuthority::UnknownInfluence)
+            && !snapshot
+                .limitations
+                .contains(&ScopeMissingReason::UnresolvedInfluence)
+        {
+            snapshot
+                .limitations
+                .push(ScopeMissingReason::UnresolvedInfluence);
+        }
         snapshot.occurrences.sort_by_key(|item| {
             (
                 item.reference.turn_index,
@@ -621,9 +672,12 @@ impl SessionScopeBuilder {
             .iter()
             .any(|item| item.authority == ScopeAuthority::User)
         {
-            return Err(SessionScopeError::Missing(
-                ScopeMissingReason::NoUserContext,
-            ));
+            if snapshot.source_complete {
+                return Err(SessionScopeError::Missing(
+                    ScopeMissingReason::NoUserContext,
+                ));
+            }
+            snapshot.limitations.push(ScopeMissingReason::NoUserContext);
         }
         Ok(snapshot)
     }
@@ -667,9 +721,19 @@ fn add_occurrence(
         .as_ref()
         .is_some_and(|source| source.truncated)
     {
-        return Err(SessionScopeError::Missing(
-            ScopeMissingReason::TruncatedEvidence,
-        ));
+        if snapshot.source_complete {
+            return Err(SessionScopeError::Missing(
+                ScopeMissingReason::TruncatedEvidence,
+            ));
+        }
+        if !snapshot
+            .limitations
+            .contains(&ScopeMissingReason::TruncatedEvidence)
+        {
+            snapshot
+                .limitations
+                .push(ScopeMissingReason::TruncatedEvidence);
+        }
     }
     let key = serde_json::to_string(&value)
         .map_err(|_| SessionScopeError::Missing(ScopeMissingReason::InvalidEvidence))?;
