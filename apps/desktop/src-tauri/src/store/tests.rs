@@ -1479,11 +1479,15 @@ fn recent_sessions_are_windowed_and_ordered_newest_first() {
 fn recent_sessions_uses_the_keyset_index() {
     let store = store();
     let connection = store.lock();
+    let sql = recent_sessions_sql("", "");
     let mut statement = connection
-        .prepare(&format!("EXPLAIN QUERY PLAN {RECENT_SESSIONS_SQL}"))
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
         .unwrap();
     let plan_lines: Vec<String> = statement
-        .query_map(params![0_i64, 100_i64], |row| row.get::<_, String>(3))
+        .query_map(
+            named_params![":limit": 100_i64, ":since_epoch": 0_i64],
+            |row| row.get::<_, String>(3),
+        )
         .unwrap()
         .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap();
@@ -1491,6 +1495,84 @@ fn recent_sessions_uses_the_keyset_index() {
     assert!(
         plan.contains("USING INDEX session_recency_keyset") && !plan.contains("TEMP B-TREE"),
         "query plan did not use the keyset index: {plan}"
+    );
+}
+
+#[test]
+fn hygiene_summary_binds_revisions_window_and_each_excluded_agent() {
+    let store = store();
+    let records = ["claude-code", "codex", "pi"].map(|agent| {
+        let mut record = session(agent, 2_000);
+        record.key.agent = agent.to_owned();
+        record
+    });
+    store
+        .upsert_sessions(&records, &crate::agents::evidence_cohort())
+        .unwrap();
+    store
+        .lock()
+        .execute(
+        "UPDATE session_evidence SET status = 'ready', analyzed_generation = (
+             SELECT source_generation FROM session s
+              WHERE s.environment_key = session_evidence.environment_key
+                AND s.agent = session_evidence.agent AND s.session_id = session_evidence.session_id),
+             parser_revision = :parser_revision, analyzer_revision = :analyzer_revision,
+             evidence_schema_revision = :evidence_schema_revision, evidence_json = 'current'",
+            named_params![
+                ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
+                ":analyzer_revision": ANALYZER_REVISION,
+                ":parser_revision": PARSER_REVISION,
+            ],
+        )
+        .unwrap();
+    for (excluded, count) in [
+        ("", 3),
+        ("codex", 2),
+        ("codex,pi", 1),
+        ("claude-code,codex,pi", 0),
+    ] {
+        let rows = store
+            .hygiene_summary_rows("native", 2_000, &DisabledAgents::parse(excluded))
+            .unwrap();
+        assert_eq!(rows.len(), count, "excluded agents: {excluded}");
+        assert!(
+            rows.iter()
+                .all(|row| row.settled && row.evidence_json.as_deref() == Some("current"))
+        );
+    }
+    assert!(
+        store
+            .hygiene_summary_rows("native", 2_001, &DisabledAgents::default())
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .hygiene_summary_rows("ssh:test", 0, &DisabledAgents::default())
+            .unwrap()
+            .is_empty()
+    );
+    store
+        .lock()
+        .execute("UPDATE session_evidence SET analyzer_revision = NULL", [])
+        .unwrap();
+    let rows = store
+        .hygiene_summary_rows("native", 0, &DisabledAgents::default())
+        .unwrap();
+    assert!(
+        rows.iter()
+            .all(|row| !row.settled && row.evidence_json.is_none())
+    );
+    store
+        .lock()
+        .execute("UPDATE session_evidence SET status = 'unsupported'", [])
+        .unwrap();
+    let rows = store
+        .hygiene_summary_rows("native", 0, &DisabledAgents::default())
+        .unwrap();
+    assert!(
+        rows.iter()
+            .all(|row| row.settled && row.evidence_json.is_none())
     );
 }
 
@@ -2055,14 +2137,15 @@ fn selected_history_reaches_candidates_after_the_first_worker_page() {
         connection
             .execute(
                 "UPDATE burn_check_assessment SET status = 'completed',
-                 boundary_activity_cursor = ?1, updated_at_epoch = ?2
+                 boundary_activity_cursor = ?1, updated_at_epoch = ?2, evaluator_revision = ?6
               WHERE environment_key = ?3 AND agent = ?4 AND session_id = ?5",
                 rusqlite::params![
                     selected.activity_cursor,
                     now,
                     selected.session.key.environment_key,
                     selected.session.key.agent,
-                    selected.session.key.session_id
+                    selected.session.key.session_id,
+                    antiburn_local::analysis::ignored_instructions::evaluator_revision()
                 ],
             )
             .unwrap();

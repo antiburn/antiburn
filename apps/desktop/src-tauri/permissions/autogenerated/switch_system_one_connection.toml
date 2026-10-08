@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-switch-system-one-connection"
+description = "Enables the switch_system_one_connection command without any pre-configured scope."
+commands.allow = ["switch_system_one_connection"]
+
+[[permission]]
+identifier = "deny-switch-system-one-connection"
+description = "Denies the switch_system_one_connection command without any pre-configured scope."
+commands.deny = ["switch_system_one_connection"]

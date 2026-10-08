@@ -1,5 +1,5 @@
 import { AGENT_SLUGS, agentSessionFilterLabel } from "./presentation/agents"
-import { CHECK_DEFINITIONS } from "./presentation/checkDefinitions"
+import { CHECK_DEFINITIONS, isCheckAvailable } from "./presentation/checkDefinitions"
 import type { BurnCheckDetectorId } from "./insightsIpc"
 import { detectPlatform, type Platform } from "./platform"
 import { MAIN_VIEWS, type MainViewId } from "./navigation/mainViews"
@@ -132,9 +132,8 @@ export function searchApp(
   return APP_SEARCH_CATALOG.filter(
     (result) =>
       (!result.platform || result.platform === platform) &&
-      (checksAvailable ||
-        result.target.kind !== "check" ||
-        result.target.check !== "ignoredInstructions") &&
+      (result.target.kind !== "check" ||
+        isCheckAvailable(result.target.check, checksAvailable)) &&
       (stepSettingsAvailable || result.target.kind !== "stepSetting"),
   )
     .map((result) => {

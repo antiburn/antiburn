@@ -247,6 +247,8 @@ fn burn_check_payload_keeps_check_samples_diverse_and_target_samples_independent
         });
     }
     let target = BurnCheckTarget {
+        over_exploring_reason: None,
+        decision_proof: None,
         finding_id: "finding".into(),
         action_id: "action".into(),
         finding: FindingDisplay {
@@ -305,6 +307,7 @@ fn burn_check_payload_keeps_check_samples_diverse_and_target_samples_independent
             truncated: false,
         },
         1000,
+        false,
     )
     .unwrap();
     assert_eq!(payload.samples.len(), 6);

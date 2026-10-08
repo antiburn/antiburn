@@ -88,10 +88,6 @@ export async function getCheckAvailability(): Promise<CheckAvailability> {
   return value
 }
 
-export async function setTypeSafeApiKey(key?: string): Promise<CheckAvailability> {
-  return invoke<CheckAvailability>("set_typesafe_api_key", { key: key || null })
-}
-
 export async function setSmartBurnChecksEnabled(enabled: boolean): Promise<CheckAvailability> {
   return invoke<CheckAvailability>("set_smart_burn_checks_enabled", { enabled })
 }

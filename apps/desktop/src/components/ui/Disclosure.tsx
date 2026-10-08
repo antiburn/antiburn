@@ -9,8 +9,8 @@ import { cn } from "../../lib/cn"
  * surface rather than inside a `Card`, for explanatory prose that would read as
  * an over-built list if every paragraph were given a container.
  *
- * Uncontrolled, because a disclosure's open state is presentation, not data.
- * Pass `defaultOpen` for the one that should start expanded.
+ * Pass `defaultOpen` for an initially expanded disclosure. Use `open` and
+ * `onOpenChange` when navigation controls the expanded state.
  *
  * Hand-rolled rather than pulled from a library: the whole contract here is a
  * button, `aria-expanded`, and `aria-controls`, which is not worth a
@@ -20,14 +20,19 @@ export function Disclosure({
   label,
   children,
   defaultOpen = false,
+  open: controlledOpen,
+  onOpenChange,
   className = "",
 }: {
   label: string
   children: ReactNode
   defaultOpen?: boolean
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
   className?: string
 }) {
-  const [open, setOpen] = useState(defaultOpen)
+  const [localOpen, setOpen] = useState(defaultOpen)
+  const open = controlledOpen ?? localOpen
   const bodyId = useId()
 
   return (
@@ -36,7 +41,10 @@ export function Disclosure({
         type="button"
         aria-expanded={open}
         aria-controls={bodyId}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          setOpen(!open)
+          onOpenChange?.(!open)
+        }}
         // No hover fill and no press feedback: these sit on the bare window
         // surface as prose, not as list rows, and the global button:active
         // opacity rule (styles/controls.css) made a paragraph heading

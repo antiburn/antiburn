@@ -66,6 +66,14 @@ metadata failures, launch failures, verification timeouts, and settled refreshes
 `live_source_failed` also includes the typed error detail. These events contain
 no credentials or CLI output. A settled refresh means the credential carrier
 changed; the subsequent usage request still determines whether recovery worked.
+When Claude Desktop is the only Claude app and no Claude Code or Pi login
+exists, the check fails as `authentication` with detail `DesktopOnly`. Claude
+Desktop's own sign-in is never read.
+
+To test without Pi's logins, start a debug build with
+`ANTIBURN_IGNORE_PI_AUTH=1`. Live usage then ignores `~/.pi/agent/auth.json`
+for Claude and Codex, and logs `pi_auth_ignored`. Release builds ignore the
+variable.
 
 At launch, the `info` event `cli_located` records where antiburn finds the
 `claude` CLI: `process_path`, `install_dir` (an install directory outside the

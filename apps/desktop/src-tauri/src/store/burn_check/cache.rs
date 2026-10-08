@@ -3,6 +3,8 @@ use super::*;
 pub(super) const RESPONSE_CACHE_KEY: &str = "internal:burnCheckResponseCacheV1";
 const MAX_RESPONSE_CACHE_ENTRIES: usize = 128;
 const MAX_RESPONSE_CACHE_BYTES: usize = 512 * 1024;
+const MAX_DISPATCH_ATTEMPTS: usize = 32_768;
+const DISPATCH_ATTEMPT_RETENTION_SECS: i64 = 30 * 24 * 60 * 60;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedAssessmentResponse {
@@ -20,9 +22,37 @@ pub enum BurnCheckRequestAdmission {
     Admitted,
     Stale,
     Unresolved,
+    Deferred,
+    Exhausted,
 }
 
 impl Store {
+    /// Report runnable work when at least one target is ready. Use per-target
+    /// readiness before packing and require all targets at final admission.
+    pub fn burn_check_dispatch_readiness(
+        &self,
+        identities: &[String],
+        now: i64,
+    ) -> anyhow::Result<BurnCheckRequestAdmission> {
+        let readiness = self.burn_check_target_readiness(identities, now)?;
+        Ok(
+            if readiness.contains(&BurnCheckRequestAdmission::Admitted) {
+                BurnCheckRequestAdmission::Admitted
+            } else {
+                blocked_readiness(&readiness)
+            },
+        )
+    }
+
+    /// Return one readiness value for each identity in input order.
+    pub fn burn_check_target_readiness(
+        &self,
+        identities: &[String],
+        now: i64,
+    ) -> anyhow::Result<Vec<BurnCheckRequestAdmission>> {
+        dispatch_readiness_in(&self.lock(), identities, now)
+    }
+
     pub fn burn_check_requests_are_unresolved(
         &self,
         identities: &[String],
@@ -70,6 +100,13 @@ impl Store {
         let mut connection = self.lock();
         let transaction =
             connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "DELETE FROM burn_check_dispatch_attempt
+              WHERE last_attempt_at_epoch <= ?1
+                AND NOT EXISTS (SELECT 1 FROM burn_check_request_outcome AS outcome
+                                 WHERE outcome.request_identity = burn_check_dispatch_attempt.request_identity)",
+            [now.saturating_sub(DISPATCH_ATTEMPT_RETENTION_SECS)],
+        )?;
         let assessment_is_current: bool = transaction.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM burn_check_assessment
@@ -94,7 +131,43 @@ impl Store {
             transaction.commit()?;
             return Ok(BurnCheckRequestAdmission::Stale);
         }
+        let readiness = blocked_readiness(&dispatch_readiness_in(&transaction, identities, now)?);
+        if readiness != BurnCheckRequestAdmission::Admitted {
+            return Ok(readiness);
+        }
+        let retained: usize = transaction.query_row(
+            "SELECT count(*) FROM burn_check_dispatch_attempt",
+            [],
+            |row| row.get(0),
+        )?;
+        let new: usize = transaction.query_row(
+            "SELECT count(*) FROM json_each(?1) AS ids WHERE NOT EXISTS
+                (SELECT 1 FROM burn_check_dispatch_attempt WHERE request_identity = ids.value)",
+            [serde_json::to_string(identities)?],
+            |row| row.get(0),
+        )?;
+        if retained.saturating_add(new) > MAX_DISPATCH_ATTEMPTS {
+            return Ok(BurnCheckRequestAdmission::Exhausted);
+        }
         let tracked = track_burn_check_requests_in(&transaction, identities, reservation_id, now)?;
+        if tracked {
+            for identity in identities {
+                transaction.execute(
+                     "INSERT INTO burn_check_dispatch_attempt
+                        (request_identity, environment_key, agent, session_id, attempts, last_attempt_at_epoch)
+                      VALUES (?1, ?2, ?3, ?4, 1, ?5)
+                      ON CONFLICT(request_identity) DO UPDATE SET attempts = attempts + 1,
+                          next_attempt_at_epoch = NULL, last_attempt_at_epoch = excluded.last_attempt_at_epoch",
+                    rusqlite::params![
+                        identity,
+                        input.key.environment_key,
+                        input.key.agent,
+                        input.key.session_id,
+                        now
+                    ],
+                )?;
+            }
+        }
         transaction.commit()?;
         Ok(if tracked {
             BurnCheckRequestAdmission::Admitted
@@ -102,6 +175,94 @@ impl Store {
             BurnCheckRequestAdmission::Unresolved
         })
     }
+
+    pub(crate) fn burn_check_dispatch_attempts(
+        &self,
+        identities: &[String],
+    ) -> anyhow::Result<usize> {
+        Ok(self.lock().query_row(
+            "SELECT COALESCE(MAX(attempts), 0) FROM burn_check_dispatch_attempt
+             WHERE request_identity IN (SELECT value FROM json_each(?1))",
+            [serde_json::to_string(identities)?],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// A rejected dispatch can retry later. Unknown delivery retains its block.
+    pub(crate) fn defer_burn_check_dispatch(
+        &self,
+        input: &BurnCheckInput,
+        identities: &[String],
+        retry_at: Option<i64>,
+    ) -> anyhow::Result<()> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE burn_check_dispatch_attempt SET next_attempt_at_epoch = ?2,
+                 terminal = (?2 IS NULL OR attempts >= 3)
+             WHERE request_identity IN (SELECT value FROM json_each(?1))",
+            rusqlite::params![serde_json::to_string(identities)?, retry_at],
+        )?;
+        if let Some(retry_at) = retry_at {
+            transaction.execute(
+                "UPDATE burn_check_assessment SET next_attempt_at_epoch = ?6
+                 WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                   AND check_id = ?4 AND input_revision = ?5",
+                rusqlite::params![
+                    input.key.environment_key,
+                    input.key.agent,
+                    input.key.session_id,
+                    input.check_id,
+                    input.input_revision,
+                    retry_at
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+}
+
+fn dispatch_readiness_in(
+    connection: &rusqlite::Connection,
+    identities: &[String],
+    now: i64,
+) -> anyhow::Result<Vec<BurnCheckRequestAdmission>> {
+    let mut statement = connection.prepare(
+        "SELECT EXISTS(SELECT 1 FROM burn_check_request_outcome
+                      WHERE request_identity = ids.value),
+                COALESCE(attempt.terminal = 1 OR attempt.attempts >= 3, 0),
+                COALESCE(attempt.next_attempt_at_epoch > ?2, 0)
+         FROM json_each(?1) AS ids
+         LEFT JOIN burn_check_dispatch_attempt AS attempt ON attempt.request_identity = ids.value
+         ORDER BY CAST(ids.key AS INTEGER)",
+    )?;
+    let rows = statement.query_map(
+        rusqlite::params![serde_json::to_string(identities)?, now],
+        |row| {
+            Ok(if row.get::<_, bool>(0)? {
+                BurnCheckRequestAdmission::Unresolved
+            } else if row.get::<_, bool>(1)? {
+                BurnCheckRequestAdmission::Exhausted
+            } else if row.get::<_, bool>(2)? {
+                BurnCheckRequestAdmission::Deferred
+            } else {
+                BurnCheckRequestAdmission::Admitted
+            })
+        },
+    )?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+fn blocked_readiness(readiness: &[BurnCheckRequestAdmission]) -> BurnCheckRequestAdmission {
+    [
+        BurnCheckRequestAdmission::Unresolved,
+        BurnCheckRequestAdmission::Exhausted,
+        BurnCheckRequestAdmission::Deferred,
+    ]
+    .into_iter()
+    .find(|blocked| readiness.contains(blocked))
+    .unwrap_or(BurnCheckRequestAdmission::Admitted)
 }
 
 fn validate_request_tracking(identities: &[String], reservation_id: &str) -> anyhow::Result<()> {
@@ -266,6 +427,121 @@ fn insert_cache_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mixed_sibling_readiness_keeps_fresh_targets_dispatchable() {
+        let store = Store::open_in_memory(std::path::Path::new("synthetic-state")).unwrap();
+        store
+            .lock()
+            .execute_batch(
+                "INSERT INTO session (environment_key, agent, session_id, source_kind, source_label,
+                                      first_seen_at, last_seen_at)
+                 VALUES ('native', 'synthetic', 'session', 'file', 'synthetic.jsonl', '1000', '1000');
+                 INSERT INTO burn_check_dispatch_attempt
+                (request_identity, environment_key, agent, session_id, attempts,
+                 next_attempt_at_epoch, terminal)
+             VALUES ('deferred', 'native', 'synthetic', 'session', 1, 2000, 0),
+                    ('exhausted', 'native', 'synthetic', 'session', 3, NULL, 0),
+                    ('terminal', 'native', 'synthetic', 'session', 1, NULL, 1);",
+            )
+            .unwrap();
+        store
+            .track_burn_check_request("unresolved", "reservation", 1000)
+            .unwrap();
+        store.set_internal_value(ENABLED_AT_KEY, "1000");
+        store
+            .set_check_enabled(DetectorId::IgnoredInstructions, true)
+            .unwrap();
+        store
+            .lock()
+            .execute_batch(
+                "INSERT INTO burn_check_assessment (environment_key, agent, session_id, check_id,
+                 incarnation, input_revision, status, lease_expires_at_epoch,
+                 created_at_epoch, updated_at_epoch)
+             VALUES ('native', 'synthetic', 'session', 'ignored_instructions', 1,
+                     'revision', 'running', 3000, 1000, 1000);",
+            )
+            .unwrap();
+        let input = BurnCheckInput {
+            key: SessionKey::new("native", "synthetic", "session"),
+            check_id: "ignored_instructions".to_owned(),
+            incarnation: 1,
+            source_generation: 1,
+            source_fingerprint: None,
+            activity_cursor: "cursor".to_owned(),
+            published_fence: 1,
+            input_revision: "revision".to_owned(),
+            evaluator_revision: "evaluator".to_owned(),
+            boundary_at_epoch: 1000,
+        };
+        let identities =
+            ["deferred", "fresh", "unresolved", "exhausted", "terminal"].map(str::to_owned);
+        assert_eq!(
+            store
+                .burn_check_target_readiness(&identities, 1000)
+                .unwrap(),
+            vec![
+                BurnCheckRequestAdmission::Deferred,
+                BurnCheckRequestAdmission::Admitted,
+                BurnCheckRequestAdmission::Unresolved,
+                BurnCheckRequestAdmission::Exhausted,
+                BurnCheckRequestAdmission::Exhausted
+            ],
+        );
+        for blocked in [
+            &identities[0],
+            &identities[2],
+            &identities[3],
+            &identities[4],
+        ] {
+            let mixed = [blocked.clone(), identities[1].clone()];
+            assert_eq!(
+                store.burn_check_dispatch_readiness(&mixed, 1000).unwrap(),
+                BurnCheckRequestAdmission::Admitted
+            );
+            assert_ne!(
+                store
+                    .admit_burn_check_requests(&input, &mixed, "new-reservation", 1000)
+                    .unwrap(),
+                BurnCheckRequestAdmission::Admitted
+            );
+            assert_eq!(
+                store
+                    .burn_check_dispatch_attempts(&["fresh".to_owned()])
+                    .unwrap(),
+                0
+            );
+            assert!(
+                !store
+                    .burn_check_requests_are_unresolved(&["fresh".to_owned()])
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            store
+                .burn_check_dispatch_readiness(&identities, 1000)
+                .unwrap(),
+            BurnCheckRequestAdmission::Admitted
+        );
+        assert_eq!(
+            store
+                .burn_check_dispatch_readiness(&["deferred".to_owned()], 2000)
+                .unwrap(),
+            BurnCheckRequestAdmission::Admitted
+        );
+        assert_eq!(
+            store
+                .admit_burn_check_requests(&input, &["fresh".to_owned()], "fresh-reservation", 1000)
+                .unwrap(),
+            BurnCheckRequestAdmission::Admitted
+        );
+        assert_eq!(
+            store
+                .burn_check_dispatch_attempts(&["fresh".to_owned()])
+                .unwrap(),
+            1
+        );
+    }
 
     #[test]
     fn response_cache_usage_and_dispatch_resolution_commit_atomically() {

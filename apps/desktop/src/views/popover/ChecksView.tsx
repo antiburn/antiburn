@@ -132,8 +132,16 @@ function CheckRows({ checks }: { checks: readonly ChecksCategoryPayload[] }) {
               <span className="block truncate type-body font-medium! text-label">
                 {row.label}
               </span>
-              <span className="block truncate type-footnote tabular-nums text-label-tertiary">
+              <span
+                className={`flex min-w-0 items-center gap-1.5 truncate font-mono type-footnote tabular-nums ${row.provisional ? "text-system-green" : check.lifecycle === "failing" ? "text-burn-check-failure-text" : check.lifecycle === "passing" ? "text-burn-check-pass-fill" : "text-label-tertiary"}`}
+              >
                 {row.summary}
+                {row.checking && (
+                  <span className="inline-flex shrink-0 items-center gap-1 text-label-tertiary">
+                    <LoaderCircle size={13} className="animate-spin" aria-hidden="true" />
+                    Checking
+                  </span>
+                )}
               </span>
             </span>
             {row.metric && (

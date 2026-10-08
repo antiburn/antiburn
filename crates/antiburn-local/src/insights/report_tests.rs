@@ -544,7 +544,13 @@ fn findings_without_a_denominator_use_a_bounded_fallback() {
 fn fallback_estimates_cover_each_detector_and_stay_bounded() {
     for detector in DetectorId::ALL {
         let Some(estimate) = fallback_token_burn_basis_points(detector, u64::MAX, 1) else {
-            assert_eq!(detector, DetectorId::IgnoredInstructions);
+            assert!(matches!(
+                detector,
+                DetectorId::IgnoredInstructions
+                    | DetectorId::SkillOpportunities
+                    | DetectorId::OverExploring
+                    | DetectorId::ScopeCreep
+            ));
             continue;
         };
         assert!((1..=MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS).contains(&estimate));
@@ -886,6 +892,9 @@ fn findings_without_supported_prices_use_fallbacks() {
             Some(333),
             Some(700),
             None,
+            None,
+            None,
+            None,
         ]
     );
 }
@@ -946,6 +955,9 @@ fn supported_evidence_estimates_each_check_independently() {
             Some(400),
             Some(333),
             Some(700),
+            None,
+            None,
+            None,
             None,
         ]
     );
@@ -1809,7 +1821,13 @@ fn unknown_start_and_pending_rows_never_enter_a_detector_denominator() {
     assert_eq!(report.detectors, baseline_report.detectors);
     assert_eq!(report.detector_statuses, baseline_report.detector_statuses);
     for detector in DetectorId::ALL {
-        if detector == DetectorId::IgnoredInstructions {
+        if matches!(
+            detector,
+            DetectorId::IgnoredInstructions
+                | DetectorId::SkillOpportunities
+                | DetectorId::OverExploring
+                | DetectorId::ScopeCreep
+        ) {
             continue;
         }
         let counts = report.detectors[detector.index()];
@@ -2354,7 +2372,13 @@ fn status_for(row: SessionEvidence, detector: DetectorId) -> DetectorStatus {
 #[test]
 fn clean_facts_are_a_superset_of_finding_facts() {
     for detector in DetectorId::ALL {
-        if detector == DetectorId::IgnoredInstructions {
+        if matches!(
+            detector,
+            DetectorId::IgnoredInstructions
+                | DetectorId::SkillOpportunities
+                | DetectorId::OverExploring
+                | DetectorId::ScopeCreep
+        ) {
             continue;
         }
         let required = requirements(detector);
@@ -2373,7 +2397,13 @@ fn degrading_a_clean_only_fact_to_partial_blocks_clean() {
     // ThreadMembership, which has no partial state), must stop the
     // detector from reading Clean.
     for detector in DetectorId::ALL {
-        if detector == DetectorId::IgnoredInstructions {
+        if matches!(
+            detector,
+            DetectorId::IgnoredInstructions
+                | DetectorId::SkillOpportunities
+                | DetectorId::OverExploring
+                | DetectorId::ScopeCreep
+        ) {
             continue;
         }
         let baseline = status_for(complete_row("complete"), detector);
@@ -2410,7 +2440,13 @@ fn unsupporting_a_finding_fact_makes_the_session_ineligible() {
     // (b) Every finding fact, set to Unsupported, must make the
     // session ineligible for that detector.
     for detector in DetectorId::ALL {
-        if detector == DetectorId::IgnoredInstructions {
+        if matches!(
+            detector,
+            DetectorId::IgnoredInstructions
+                | DetectorId::SkillOpportunities
+                | DetectorId::OverExploring
+                | DetectorId::ScopeCreep
+        ) {
             continue;
         }
         assert!(
@@ -2590,6 +2626,9 @@ fn trigger_finding(detector: DetectorId, catalogs: &ReportCatalogs) -> SessionEv
         DetectorId::IgnoredInstructions => {
             unreachable!("stored assessment findings are tested outside metric evidence")
         }
+        DetectorId::SkillOpportunities | DetectorId::OverExploring | DetectorId::ScopeCreep => {
+            unreachable!("skill opportunities are not metric evidence findings")
+        }
     }
     row
 }
@@ -2617,6 +2656,9 @@ fn a_finding_wins_over_a_partial_clean_only_fact_at_report_level() {
                 | DetectorId::UnusedMcpServers
                 | DetectorId::UnusedSkills
                 | DetectorId::IgnoredInstructions
+                | DetectorId::SkillOpportunities
+                | DetectorId::OverExploring
+                | DetectorId::ScopeCreep
         ) {
             // OverpoweredSubagents has no clean-only fact (see
             // `trigger_finding`'s doc comment). UnusedBuiltInTools,

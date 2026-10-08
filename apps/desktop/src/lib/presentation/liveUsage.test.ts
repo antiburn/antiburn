@@ -12,6 +12,7 @@ import {
   liveAuthNote,
   liveDetectionNote,
   liveDisplayableProviders,
+  liveErrorHasDocs,
   liveErrorNote,
   liveExtraUsageLabel,
   liveForProvider,
@@ -614,6 +615,27 @@ describe("live detection notes", () => {
     )
   })
 
+  it("names Claude Desktop instead of saying nothing was found", () => {
+    for (const detection of ["notInstalled", "installedNotSignedIn"] as const) {
+      expect(liveDetectionNote("anthropic", detection, true, undefined, "Claude Desktop")).toBe(
+        "Found Claude Desktop. Limits need Claude Code signed in on this computer.",
+      )
+    }
+    // A found login, or Pi's own note, keeps its wording.
+    expect(
+      liveDetectionNote(
+        "anthropic",
+        "signedIn",
+        true,
+        "Claude Code (Keychain)",
+        "Claude Desktop",
+      ),
+    ).toBe("Signed in through Claude Code (Keychain).")
+    expect(
+      liveDetectionNote("anthropic", "installedNotSignedIn", true, "Pi", "Claude Desktop"),
+    ).toBe("Found Pi, but it isn't signed in to Claude Code.")
+  })
+
   it("names the tool the login came from, never a command", () => {
     expect(liveDetectionNote("anthropic", "signedIn", true, "Claude Code (Keychain)")).toBe(
       "Signed in through Claude Code (Keychain).",
@@ -685,11 +707,28 @@ describe("the failure surface", () => {
     expect(liveUnavailableProviders(noisy)).toHaveLength(1)
   })
 
+  it("links only the Claude Desktop-only failure to the docs", () => {
+    expect(liveErrorHasDocs("desktopOnly")).toBe(true)
+    for (const detail of [
+      undefined,
+      "keychainUnreadable",
+      "refreshUnsupported",
+      "cliMissing",
+      "signInRequired",
+      "refreshPending",
+    ] as const) {
+      expect(liveErrorHasDocs(detail)).toBe(false)
+    }
+  })
+
   it("phrases each failure category in a couple of words", () => {
     expect(liveUnavailableReason("rateLimited")).toBe("rate limited")
     expect(liveUnavailableReason("authentication")).toBe("sign-in needed")
     expect(liveUnavailableReason("authentication", "refreshPending")).toBe("update pending")
     expect(liveUnavailableReason("authentication", "cliMissing")).toBe("tool unavailable")
+    expect(liveUnavailableReason("authentication", "desktopOnly")).toBe(
+      "not available for Claude Desktop",
+    )
     expect(liveUnavailableReason("authentication", "signInRequired")).toBe("sign-in needed")
     expect(liveUnavailableReason("schema")).toBe("unreadable reply")
     expect(liveUnavailableReason("somethingNew")).toBe("unreachable")
@@ -724,6 +763,10 @@ describe("the failure surface", () => {
       error: sourceError({ category: "authentication", detail: "refreshPending" }),
       note: "Couldn't update Claude usage. Try again shortly.",
     },
+    {
+      error: sourceError({ category: "authentication", detail: "desktopOnly" }),
+      note: "Usage limits not available for Claude Desktop.",
+    },
   ])("qualifies $error.detail and preserves it for the HUD", ({ error, note }) => {
     expect(liveErrorNote(error.category, error.provider, error.detail)).toBe(note)
     const entries = liveUnavailableProviders(summary({ providers: [], errors: [error] }))
@@ -752,8 +795,14 @@ describe("the failure surface", () => {
       "cliMissing",
       "signInRequired",
       "refreshPending",
+      "desktopOnly",
     ]
-    const claudeSignInDetails = ["cliMissing", "signInRequired", "refreshPending"]
+    const claudeSignInDetails = [
+      "cliMissing",
+      "signInRequired",
+      "refreshPending",
+      "desktopOnly",
+    ]
     for (const provider of [undefined, "anthropic", "google", "openai", "unrecognized"]) {
       for (const category of categories) {
         for (const detail of details) {

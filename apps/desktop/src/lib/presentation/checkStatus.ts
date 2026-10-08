@@ -1,4 +1,8 @@
-import type { ChecksReportPayload, SessionHygieneEvidenceState } from "../insightsIpc"
+import type {
+  ChecksCategoryPayload,
+  ChecksReportPayload,
+  SessionHygieneEvidenceState,
+} from "../insightsIpc"
 import type { SessionHygieneCheck } from "./sessionHygiene"
 
 type BurnCheckLifecycle =
@@ -9,6 +13,15 @@ type BurnCheckLifecycle =
   | "activelyGrowing"
   | "unsupported"
   | "unavailable"
+
+export function checkHasProvisionalResult(category: ChecksCategoryPayload): boolean {
+  return (
+    category.checking === true &&
+    category.finding === 0 &&
+    category.lifecycle !== "failing" &&
+    category.lifecycle !== "awaitingVerification"
+  )
+}
 
 type BurnCheckScope = "sessionChecks" | "reportCategories"
 type BurnCheckOutcome = "failed" | "passed" | "unassessed"

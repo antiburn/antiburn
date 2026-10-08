@@ -205,7 +205,7 @@ describe("BurnChecksView layout", { timeout: 15_000 }, () => {
 
     const message = await screen.findByText("No finding in 0 complete sessions.")
     expect(message.parentElement?.querySelector("svg")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Ignored Instructions, Passed" })).toBeVisible()
+    expect(screen.getByRole("button", { name: "Ignored instructions, Passed" })).toBeVisible()
   })
 
   it("counts check types including snoozed and unassessed checks, not session results", () => {

@@ -303,6 +303,8 @@ mod tests {
             deferred_evidence: 0,
             resources: crate::insights_report::ResourceAssessment::default(),
             enabled_detectors: antiburn_local::insights::DetectorSelection::all(),
+            check_progress: Default::default(),
+            sampled_instructions: false,
         }
     }
 

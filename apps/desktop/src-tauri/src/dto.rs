@@ -991,8 +991,16 @@ pub struct SessionQuotaPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ChecksCategoryPayload {
     pub id: BurnCheckDetectorId,
-    /// True only for a published, sampled Ignored Instructions assessment.
+    /// True when the check reviews selected evidence.
     pub sampled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checking: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checking_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial_context: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_coverage: Option<ChecksReviewCoveragePayload>,
     /// The current remediation state. `None` means the category has no complete assessment.
     pub lifecycle: Option<ChecksCategoryLifecyclePayload>,
     pub finding: u64,
@@ -1002,6 +1010,23 @@ pub struct ChecksCategoryPayload {
     pub unavailable: u64,
     /// Hundredths of one percent, bounded to `0..=10000`.
     pub estimated_token_burn_basis_points: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChecksReviewCoveragePayload {
+    /// Terminal review targets, including uncertain answers.
+    pub reviewed: u64,
+    /// All review targets. Unknown when any applicable session has a missing or capped inventory.
+    pub total: Option<u64>,
+    /// Reviewed targets with an uncertain answer. This count is a subset of `reviewed`.
+    pub uncertain: Option<u64>,
+    /// Targets without a terminal answer. This count does not promise another review.
+    pub pending: Option<u64>,
+    /// Reviewed targets that wait for task completion, not for a review answer.
+    pub pending_completion: Option<u64>,
+    /// True when queued, running, or resumable work has runnable targets.
+    pub continuing: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1016,6 +1041,7 @@ pub enum ChecksCategoryLifecyclePayload {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChecksReportPayload {
+    pub smart_checks_available: bool,
     pub evidence_settled: bool,
     /// Sessions the report window's denominator counts, regardless of
     /// evidence state. `pending_evidence` is the subset of this total that is
@@ -1047,6 +1073,9 @@ pub enum BurnCheckDetectorId {
     OveruseOfFastMode,
     CacheChurn,
     IgnoredInstructions,
+    SkillOpportunities,
+    OverExploring,
+    ScopeCreep,
 }
 
 /// A reader-owned suppression for one entire burn check.
@@ -1079,6 +1108,9 @@ impl From<BurnCheckDetectorId> for DetectorId {
             BurnCheckDetectorId::OveruseOfFastMode => Self::OveruseOfFastMode,
             BurnCheckDetectorId::CacheChurn => Self::CacheChurn,
             BurnCheckDetectorId::IgnoredInstructions => Self::IgnoredInstructions,
+            BurnCheckDetectorId::SkillOpportunities => Self::SkillOpportunities,
+            BurnCheckDetectorId::OverExploring => Self::OverExploring,
+            BurnCheckDetectorId::ScopeCreep => Self::ScopeCreep,
         }
     }
 }
@@ -1164,6 +1196,10 @@ impl From<SourceFormat> for BurnCheckSourceFormat {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BurnCheckFindingPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub over_exploring_reason: Option<antiburn_local::checks::over_exploring::Reason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_proof: Option<crate::remediation::IgnoredInstructionDecisionProof>,
     pub detector: BurnCheckDetectorId,
     pub agent: String,
     pub source_format: BurnCheckSourceFormat,
@@ -2193,6 +2229,9 @@ impl From<DetectorId> for BurnCheckDetectorId {
             DetectorId::OveruseOfFastMode => Self::OveruseOfFastMode,
             DetectorId::CacheChurn => Self::CacheChurn,
             DetectorId::IgnoredInstructions => Self::IgnoredInstructions,
+            DetectorId::SkillOpportunities => Self::SkillOpportunities,
+            DetectorId::OverExploring => Self::OverExploring,
+            DetectorId::ScopeCreep => Self::ScopeCreep,
         }
     }
 }
@@ -2498,6 +2537,8 @@ impl From<crate::remediation::BurnCheckTarget> for BurnCheckTargetPayload {
             finding_id: value.finding_id,
             action_id: value.action_id,
             finding: BurnCheckFindingPayload {
+                over_exploring_reason: value.over_exploring_reason,
+                decision_proof: value.decision_proof,
                 detector: finding.detector.into(),
                 agent: finding.agent.slug().to_owned(),
                 source_format: finding.source_format.into(),
@@ -2806,6 +2847,10 @@ impl ChecksReportPayload {
                 ChecksCategoryPayload {
                     id: id.into(),
                     sampled: false,
+                    checking: None,
+                    checking_count: None,
+                    partial_context: None,
+                    review_coverage: None,
                     lifecycle: None,
                     finding: counts.finding,
                     agents: if counts.finding > 0 {
@@ -2831,6 +2876,7 @@ impl ChecksReportPayload {
             .flatten();
         Self {
             evidence_settled,
+            smart_checks_available: true,
             window_sessions: report.context.coverage.discovered,
             pending_evidence,
             deferred_evidence,
@@ -3132,6 +3178,10 @@ pub struct LiveUsageSourceError {
     pub category: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<SourceErrorDetail>,
+    /// The plan named in a local file, when the failed source has no reading
+    /// to carry it. For example Claude Desktop's `~/.claude.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<LiveProviderPlan>,
 }
 
 /// One provider antiburn can meter, and whether the reader shows it.
@@ -3157,6 +3207,10 @@ pub struct LiveUsageMeter {
     /// `carrier`'s display name, so the views never restate the enum.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carrier_label: Option<String>,
+    /// The provider's desktop app by name, when it is installed, whatever
+    /// login was found. For example "Claude Desktop".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_app_label: Option<String>,
 }
 
 /// Live provider usage, as one snapshot.

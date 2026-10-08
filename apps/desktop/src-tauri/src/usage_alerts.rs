@@ -830,6 +830,7 @@ mod tests {
                 display_name: "Codex".into(),
                 category: "unavailable".into(),
                 detail: None,
+                plan: None,
             }],
             generated_at: "2026-08-20T00:00:00Z".into(),
         };

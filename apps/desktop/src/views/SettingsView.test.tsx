@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { NOTICE_TEXT, THIRD_PARTY_NOTICES_TEXT } from "../lib/legalNotices"
 import { SettingsView } from "./SettingsView"
 import { searchApp, resolveSettingsSearchTarget } from "../lib/appSearch"
+import { defaultConnection } from "../lib/smartCheckProviders"
 
 /**
  * The settings window's persistence, through the mocked command layer.
@@ -144,6 +145,8 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
     switch (command) {
       case "get_settings":
         return Promise.resolve(SETTINGS)
+      case "get_system_one_settings":
+        return Promise.resolve({ activeId: "jev", profiles: { jev: defaultConnection("jev") } })
       case "set_settings":
         // The store answers with what it actually stored, and that is what the
         // panes must then render.

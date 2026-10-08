@@ -61,7 +61,7 @@ mod presence;
 use std::time::Duration;
 
 use super::LiveUsageSource;
-use super::model::{Freshness, ProviderUsageSnapshot};
+use super::model::{Freshness, ProviderUsageSnapshot, SourceErrorDetail};
 
 /// The stable id both [`codex_fetch`] and [`codex_app_server`] stamp their
 /// snapshots with. One registered source, two ways of answering for it — the
@@ -134,11 +134,21 @@ pub fn collect(
                 category = error.category(),
                 detail = ?outcome.detail
             );
+            // Only a Desktop-only failure proves that no other login is in
+            // play, so only then can the local file's plan name the account.
+            let plan = if outcome.snapshots.is_empty()
+                && outcome.detail == Some(SourceErrorDetail::DesktopOnly)
+            {
+                source.local_plan()
+            } else {
+                None
+            };
             collected.errors.push(SourceFailure {
                 source: source.id(),
                 provider: source.provider(),
                 error,
                 detail: outcome.detail,
+                plan,
             });
         }
         for snapshot in outcome.snapshots {
@@ -169,7 +179,9 @@ pub struct SourceFailure {
     /// The canonical provider id the source answers for.
     pub provider: &'static str,
     pub error: super::model::ProviderUsageError,
-    pub detail: Option<super::model::SourceErrorDetail>,
+    pub detail: Option<SourceErrorDetail>,
+    /// The plan named in a local file, when the failure has no reading.
+    pub plan: Option<crate::dto::LiveProviderPlan>,
 }
 
 impl Collected {

@@ -1,0 +1,7 @@
+{"type":"session","version":3,"id":"synthetic","timestamp":"2026-01-01T00:00:00Z","cwd":"/synthetic"}
+{"type":"model_change","id":"model","parentId":null,"timestamp":"2026-01-01T00:00:01Z","provider":"synthetic","modelId":"synthetic-model"}
+{"type":"thinking_level_change","id":"thinking","parentId":"model","timestamp":"2026-01-01T00:00:02Z","thinkingLevel":"low"}
+{"type":"message","id":"task","parentId":"thinking","timestamp":"2026-01-01T00:00:03Z","message":{"role":"user","content":[{"type":"text","text":"Review the small function. Keep billing unchanged."}]}}
+{"type":"message","id":"call","parentId":"task","timestamp":"2026-01-01T00:00:04Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call-id","name":"read","arguments":{"path":"src/example.py","offset":7,"limit":3}}]}}
+{"type":"message","id":"result","parentId":"call","timestamp":"2026-01-01T00:00:05Z","message":{"role":"toolResult","toolCallId":"call-id","toolName":"read","content":[{"type":"text","text":"return café\n\nreturn 2\n\n[4 more lines in file. Use offset=10 to continue.]"}],"isError":false}}
+{"type":"message","id":"selected","parentId":"result","timestamp":"2026-01-01T00:00:06Z","message":{"role":"user","content":[{"type":"text","text":"<skill name=\"boundary-review\" location=\"/synthetic/.agents/skills/boundary-review/SKILL.md\">\nReferences are relative to /synthetic/.agents/skills/boundary-review.\n\nReview boundary values. Run tests.\n</skill>\n\nKeep billing unchanged. Report remaining gaps."}]}}

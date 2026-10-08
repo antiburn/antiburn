@@ -75,6 +75,7 @@
     "allow-open-folder-access-settings",
     "allow-open-main-window-section",
     "allow-open-settings-window",
+    "allow-open-claude-desktop-limits-docs",
     "allow-open-remote-helper-downloads",
     "allow-open-burn-check-sample",
     "allow-prepare-auto-fix-burn-check-target",
