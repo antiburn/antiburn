@@ -1,9 +1,7 @@
 use super::findings::CurrentFindingSession;
 use super::*;
 
-use crate::agent_config::{
-    ConfigContext, ResourceKind, advisory_resource_inventory, skill_opportunity_snapshot,
-};
+use crate::agent_config::{ConfigContext, skill_opportunity_snapshot};
 use crate::jev::worker::JevCheckDescriptor;
 use antiburn_local::checks::skill_opportunities::{
     SkillOpportunitiesResult, SkillOpportunitySnapshot,
@@ -70,8 +68,7 @@ fn skill_opportunity_findings_with_home(
     let stored = connection
         .query_row(
             "SELECT incarnation, source_generation, source_fingerprint, published_fence,
-                    status, input_revision, result_revision, evaluator_revision, result_json,
-                    last_error_category
+                    status, input_revision, result_revision, evaluator_revision, result_json
                FROM burn_check_assessment
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
                 AND check_id = ?4",
@@ -92,7 +89,6 @@ fn skill_opportunity_findings_with_home(
                     row.get::<_, Option<String>>(6)?,
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?,
-                    row.get::<_, Option<String>>(9)?,
                 ))
             },
         )
@@ -107,7 +103,6 @@ fn skill_opportunity_findings_with_home(
         result_revision,
         evaluator_revision,
         result_json,
-        error_category,
     )) = stored
     else {
         return Ok(None);
@@ -139,8 +134,7 @@ fn skill_opportunity_findings_with_home(
         return Ok(None);
     }
     let complete = status == "completed" && result.complete;
-    let partial_findings = status == "failed"
-        && error_category.as_deref() == Some("sampling_incomplete")
+    let partial_findings = matches!(status.as_str(), "completed" | "failed")
         && !result.complete
         && !result.findings.is_empty();
     if (!complete && !partial_findings)
@@ -153,12 +147,10 @@ fn skill_opportunity_findings_with_home(
     for opportunity in &result.findings {
         let comparison = &opportunity.comparison;
         if comparison.inventory_revision != snapshot.revision()
-            || !snapshot.skills().iter().any(|skill| {
-                skill.identity == comparison.skill.identity
-                    && skill.revision == comparison.skill.definition_revision
-                    && skill.name == comparison.skill.name
-                    && skill.description == comparison.skill.description
-            })
+            || !snapshot
+                .skills()
+                .iter()
+                .any(|skill| comparison.skill.matches_definition(skill))
         {
             return Ok(None);
         }
@@ -180,14 +172,6 @@ pub(super) fn current_skill_snapshot(
 ) -> Option<SkillOpportunitySnapshot> {
     let agent = AgentKind::from_slug(agent)?;
     let context = ConfigContext::native(agent, home, workspace_candidate);
-    let resources = advisory_resource_inventory(&context, []).ok()?;
-    if resources
-        .issues
-        .iter()
-        .any(|issue| issue.kind.is_none() || issue.kind == Some(ResourceKind::Skill))
-    {
-        return None;
-    }
     skill_opportunity_snapshot(&context).ok()
 }
 
@@ -241,15 +225,16 @@ mod tests {
         });
         for name in recorded_skill
             .into_iter()
-            .chain(std::iter::once("unused-review"))
+            .chain(["unused-review", "future-review"])
         {
             let path = root.join(name).join("SKILL.md");
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(
-                &path,
-                format!("---\nname: {name}\ndescription: Review API boundaries and tests.\n---\n"),
-            )
-            .unwrap();
+            let text = if name == "future-review" {
+                "# Review API boundaries\nCheck parser inputs and add boundary tests.\n".repeat(600)
+            } else {
+                format!("---\nname: {name}\ndescription: Review API boundaries and tests.\n---\n")
+            };
+            std::fs::write(&path, text).unwrap();
         }
         if agent == AgentKind::Codex {
             std::fs::write(
@@ -269,6 +254,17 @@ mod tests {
                 ),
             )
             .unwrap();
+        }
+        for (name, text) in [
+            ("malformed", "---\nname: [\n---\n"),
+            (
+                "unsupported",
+                "---\nname: unsupported\ndescription: 42\n---\n",
+            ),
+        ] {
+            let path = root.join(name).join("SKILL.md");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
         }
         let context = ConfigContext::native(agent, home, workspace.clone());
         let snapshot = store
@@ -304,20 +300,16 @@ mod tests {
                     .questions
                     .keys()
                     .map(|question| {
-                        let choice = if question == "equivalent_use" {
-                            "no"
-                        } else {
-                            "yes"
-                        };
+                        let choice = "useful_opportunity";
                         (
                             question.clone(),
                             JevAnswer::Choice {
                                 choice: choice.into(),
                                 confidence: 1.0,
                                 probabilities: std::collections::BTreeMap::from([
-                                    ("yes".into(), if choice == "yes" { 1.0 } else { 0.0 }),
-                                    ("no".into(), if choice == "no" { 1.0 } else { 0.0 }),
-                                    ("unknown".into(), 0.0),
+                                    ("useful_opportunity".into(), 1.0),
+                                    ("no_opportunity".into(), 0.0),
+                                    ("uncertain".into(), 0.0),
                                 ]),
                             },
                         )
@@ -351,6 +343,12 @@ mod tests {
             saved["use_revision"] = serde_json::json!(prepared.use_revision);
             saved.to_string()
         };
+        let restored: SkillOpportunitiesResult =
+            serde_json::from_str(&saved_json(&result)).unwrap();
+        assert!(
+            crate::skill_opportunities_worker::publication_has_assessed_coverage(&restored),
+            "{agent:?}: serialized coverage must remain valid"
+        );
         assert!(
             store
                 .queue_burn_check_assessment(&prepared.durable, 1000, 180)
@@ -390,14 +388,18 @@ mod tests {
             ),
             "{agent:?}"
         );
-        let resources = advisory_resource_inventory(&context, []).unwrap();
         assert!(
-            resources
-                .issues
+            current_inventory
+                .skills()
                 .iter()
-                .all(|issue| issue.kind.is_some() && issue.kind != Some(ResourceKind::Skill)),
-            "{agent:?}: {:?}",
-            resources.issues
+                .all(|skill| skill.name != "malformed" && skill.name != "unsupported"),
+            "{agent:?}: unsupported siblings must not become definitions"
+        );
+        assert!(
+            result.findings.iter().all(|finding| finding.comparison.limitations.contains(
+                &antiburn_local::checks::skill_opportunities::SkillOpportunityLimit::InventoryIncomplete
+            )),
+            "{agent:?}: admitted findings must retain incomplete inventory limits"
         );
         assert!(
             result
@@ -422,6 +424,14 @@ mod tests {
         let mut unstable = result.findings[0].clone();
         unstable.comparison.work[0].reference.stable = false;
         assert!(Finding::skill_opportunity(&evidence, &unstable).is_none());
+        let mut partial_work = result.findings[0].clone();
+        partial_work.comparison.absence_assessable = false;
+        partial_work.comparison.use_eligibility.absence =
+            antiburn_local::checks::skill_opportunities::SkillAbsenceEvidence::Unassessable;
+        partial_work.comparison.work_context_assessable = false;
+        assert!(Finding::skill_opportunity(&evidence, &partial_work).is_some());
+        partial_work.revisions.questions -= 1;
+        assert!(Finding::skill_opportunity(&evidence, &partial_work).is_none());
         let read = || {
             skill_opportunity_findings_with_home(
                 &store.lock(),
@@ -440,8 +450,32 @@ mod tests {
             )
             .unwrap()
         };
-        let findings = read().unwrap();
+        assert_eq!(
+            current_skill_snapshot(
+                candidate.session.key.agent.as_str(),
+                workspace.clone(),
+                home
+            )
+            .unwrap()
+            .revision(),
+            prepared.inventory_revision,
+            "{agent:?}"
+        );
+        for opportunity in &result.findings {
+            assert!(
+                current_inventory
+                    .skills()
+                    .iter()
+                    .any(|skill| opportunity.comparison.skill.matches_definition(skill)),
+                "{agent:?}: {:?} must bind {:?}",
+                opportunity.comparison.skill,
+                current_inventory.skills()
+            );
+        }
+        let findings = read()
+            .unwrap_or_else(|| panic!("{agent:?}: current report must retain validated findings"));
         assert!(!findings.is_empty(), "{agent:?}");
+        assert!(result.findings.iter().any(|finding| finding.comparison.skill.reference.partial && finding.comparison.skill.reference.source == antiburn_local::checks::skill_opportunities::SkillReferenceSource::MarkdownFallback), "{agent:?}: selected fallback ranges must reach the report");
         let review = |json: &str| {
             super::super::progress::published_coverage(
                 "skill_opportunities",
@@ -451,6 +485,16 @@ mod tests {
             )
         };
         assert!(review(&saved_json(&result)).is_some(), "{agent:?}");
+        let mut outcomes = result.clone();
+        outcomes.decisions[0].outcome =
+            antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome::Uncertain;
+        let (counts, _) = review(&saved_json(&outcomes)).unwrap();
+        assert_eq!(counts.uncertain, 1);
+        outcomes.decisions[0].outcome =
+            antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome::Unassessed;
+        outcomes.decisions[0].judgments = None;
+        let (counts, _) = review(&saved_json(&outcomes)).unwrap();
+        assert_eq!(counts.uncertain, 1);
         let mut mismatched_use: serde_json::Value =
             serde_json::from_str(&saved_json(&result)).unwrap();
         mismatched_use["use_revision"] = serde_json::json!("different-use");
@@ -471,13 +515,40 @@ mod tests {
         assert!(read().is_some(), "{agent:?}");
         partial.coverage.not_selected_items = 0;
         store.lock().execute("UPDATE burn_check_assessment SET result_json = ?1 WHERE check_id = 'skill_opportunities'", [saved_json(&partial)]).unwrap();
-        assert!(read().is_none(), "{agent:?}");
+        assert!(read().is_some(), "{agent:?}");
+        let sibling_failure = prepared
+            .check
+            .reduce(&plan, &answers[..answers.len() - 1], false)
+            .unwrap();
+        assert!(!sibling_failure.complete);
+        assert!(!sibling_failure.findings.is_empty());
+        assert!(sibling_failure.decisions.iter().any(|decision| decision.outcome == antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome::Unassessed));
+        store.lock().execute("UPDATE burn_check_assessment SET result_json = ?1 WHERE check_id = 'skill_opportunities'", [saved_json(&sibling_failure)]).unwrap();
+        store.lock().execute("UPDATE burn_check_assessment SET last_error_category = 'provider_error' WHERE check_id = 'skill_opportunities'", []).unwrap();
+        assert!(
+            read().is_some(),
+            "{agent:?}: a failed sibling does not erase validated positives"
+        );
+        let mut no_positive = sibling_failure.clone();
+        no_positive.findings.clear();
+        for decision in &mut no_positive.decisions {
+            if decision.outcome
+                == antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome::Advisory
+            {
+                decision.outcome = antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome::NoOpportunity;
+            }
+        }
+        store.lock().execute("UPDATE burn_check_assessment SET result_json = ?1 WHERE check_id = 'skill_opportunities'", [saved_json(&no_positive)]).unwrap();
+        assert!(
+            read().is_none(),
+            "{agent:?}: a failed assessment cannot become clean"
+        );
         let mut incomplete = result.clone();
         incomplete.coverage.selected_items = 0;
         store.lock().execute("UPDATE burn_check_assessment SET result_json = ?1, status = 'completed', last_error_category = NULL WHERE check_id = 'skill_opportunities'", [saved_json(&incomplete)]).unwrap();
         assert!(read().is_none(), "{agent:?}");
         store.lock().execute("UPDATE burn_check_assessment SET result_json = ?1, status = 'failed', last_error_category = 'provider_error' WHERE check_id = 'skill_opportunities'", [saved_json(&result)]).unwrap();
-        assert!(read().is_none(), "{agent:?}");
+        assert_eq!(read().is_some(), !result.complete, "{agent:?}");
         store.lock().execute("UPDATE burn_check_assessment SET status = 'completed', last_error_category = NULL WHERE check_id = 'skill_opportunities'", []).unwrap();
         assert!(read().is_some(), "{agent:?}");
         store.lock().execute("UPDATE burn_check_assessment SET result_revision = 'stale' WHERE check_id = 'skill_opportunities'", []).unwrap();

@@ -268,7 +268,7 @@ fn opencode_selected_skill_requires_native_completed_metadata_and_full_document(
 #[test]
 fn skill_consumer_uses_normalized_facts_without_native_tool_names() {
     let native = parsed_records(OPENCODE);
-    let (_temporary, _store, mut content) = opencode_content(&native[0]);
+    let (_temporary, store, mut content) = opencode_content(&native[0]);
     for action in &mut content.actions {
         action.tool_name = Some("normalized_skill_loader".into());
     }
@@ -283,7 +283,18 @@ fn skill_consumer_uses_normalized_facts_without_native_tool_names() {
         usage.events()[1].lifecycle,
         SkillUseLifecycle::DocumentSelected
     );
-    assert_eq!(matching_candidates(&content, AgentKind::OpenCode), 0);
+    let plan = matching_plan(&store, &content, AgentKind::OpenCode);
+    assert_eq!(
+        plan.prepared.comparisons[0].used_current_skills[0].name,
+        "review"
+    );
+    assert!(
+        plan.shared_context.as_ref().unwrap().fields["use"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["event"]["lifecycle"] == "document_selected")
+    );
 }
 
 #[test]
@@ -757,10 +768,20 @@ fn current_inventory_binding_stays_inferred_and_candidates_keep_time_and_use_lim
     let before_creation = inventory
         .eligible_candidates_with_recorded_use(&work, &usage)
         .unwrap();
-    assert_eq!(before_creation.len(), 1);
-    assert_eq!(before_creation[0].skill().identity, "unknown-birth");
+    assert_eq!(before_creation.len(), 3);
+    assert_eq!(before_creation[0].skill().identity, "used-file");
+    assert_eq!(before_creation[1].skill().identity, "unused-file");
+    assert_eq!(before_creation[2].skill().identity, "unknown-birth");
+    assert_eq!(
+        before_creation[1].reference_snapshot().fields["created_at_ms"],
+        1767225601500i64
+    );
+    assert_eq!(
+        before_creation[1].reference_snapshot().fields["relevant_work_at_ms"],
+        1767225601000i64
+    );
     assert!(
-        before_creation[0]
+        before_creation[2]
             .limitations()
             .contains(&SkillOpportunityLimit::CreationTimeUnknown)
     );
@@ -773,13 +794,38 @@ fn current_inventory_binding_stays_inferred_and_candidates_keep_time_and_use_lim
         before_creation[0].reference_snapshot().fields["use_snapshot_revision"],
         usage.revision()
     );
+    for candidate in &before_creation {
+        assert!(
+            candidate
+                .limitations()
+                .contains(&SkillOpportunityLimit::CurrentInventoryOnly)
+        );
+        assert!(
+            candidate
+                .limitations()
+                .contains(&SkillOpportunityLimit::UseEvidenceIncomplete)
+        );
+        assert!(
+            candidate
+                .limitations()
+                .contains(&SkillOpportunityLimit::UseIdentityInferred)
+        );
+        assert_eq!(
+            candidate.reference_snapshot().fields["use_coverage"],
+            json!(usage.coverage())
+        );
+        assert_eq!(
+            candidate.reference_snapshot().fields["limitations"],
+            json!(candidate.limitations())
+        );
+    }
     work.relevant_work_at_ms = Some(1767225602000);
     assert_eq!(
         inventory
             .eligible_candidates_with_recorded_use(&work, &usage)
             .unwrap()
             .len(),
-        2
+        3
     );
     work.scope.project_identity = Some("other-project".into());
     assert_eq!(
@@ -888,12 +934,6 @@ fn codex_skill_records() -> Vec<Value> {
     records[2]["payload"]["id"] = json!("codex-assistant-mention");
     records[3]["payload"]["id"] = json!("codex-user-mention");
     records
-}
-
-fn published_selected_skill(agent: AgentKind) -> SessionContentEvidence {
-    let input = selected_skill_input(agent);
-    let store = store(&input);
-    selected(&store, &input.agent, input.source_format, "root", 1)
 }
 
 fn selected_skill_input(agent: AgentKind) -> SessionInput {
@@ -1090,10 +1130,154 @@ fn matching_candidates(content: &SessionContentEvidence, agent: AgentKind) -> us
         .len()
 }
 
+fn matching_plan(
+    store: &MemoryTurnRowStore,
+    content: &SessionContentEvidence,
+    agent: AgentKind,
+) -> antiburn_local::analysis::jev::JevCheckPlan<PreparedSkillOpportunities> {
+    use antiburn_local::analysis::jev::JevCheck;
+    use antiburn_local::analysis::session_scope::{
+        SessionScopeBoundary, SessionScopeBranch, SessionScopeBuilder,
+    };
+
+    let agent_name = match agent {
+        AgentKind::OpenCode => "opencode",
+        AgentKind::Codex => "codex",
+        AgentKind::Pi => "pi",
+        _ => unreachable!(),
+    };
+    let mut page = store.with_connection(|connection| {
+        query_turn_content_offset_selected(
+            connection,
+            &TurnSessionKey {
+                environment_key: "native",
+                agent: agent_name,
+                session_id: "root",
+            },
+            &FenceScope::single(content.publication_fence),
+            None,
+            &Default::default(),
+            0,
+            SKILL_OPPORTUNITIES_INPUT_SELECTION,
+        )
+        .unwrap()
+    });
+    let source = page.parts.last().unwrap().clone();
+    let work_turn = source.turn_index + 1;
+    page.source_generation = Some(1);
+    page.parts.clear();
+    for (offset, kind, text) in [
+        (
+            0,
+            ContentKind::UserText,
+            "Review resource ownership in the worker.",
+        ),
+        (
+            1,
+            ContentKind::ToolInput,
+            r#"{"command":"cargo test worker_shutdown"}"#,
+        ),
+        (
+            2,
+            ContentKind::ToolResult,
+            "FAILED: worker resource remains open",
+        ),
+    ] {
+        let mut part = source.clone();
+        part.turn_index = work_turn + offset;
+        part.part_index = 0;
+        part.uuid = Some(format!("advisory-work-{offset}"));
+        part.message_id = None;
+        part.role = if offset == 0 { "user" } else { "assistant" };
+        part.scope = "main".into();
+        part.context_only = false;
+        part.stable_event_identity = true;
+        part.part = ContentPart::new(kind, text);
+        if offset != 0 {
+            part.part = part
+                .part
+                .with_tool_identity(Some("Bash".into()), Some("work-call".into()));
+        }
+        page.parts.push(part);
+    }
+    let mut builder = SessionScopeBuilder::new(
+        content.source_format,
+        SessionScopeBoundary {
+            source_key: source.source_key,
+            thread_id: source.thread_id,
+            turn_index: work_turn + 2,
+            part_index: 0,
+            branch: SessionScopeBranch::ProvenLinear,
+        },
+        page.publication_fence,
+        1,
+        true,
+    )
+    .unwrap();
+    builder.push_page(page.clone(), false).unwrap();
+    let scope = builder.finish().unwrap();
+    let work = prepare_session_content(
+        &content.session_identity_digest,
+        content.source_format,
+        page,
+        vec![],
+    );
+    let mut content = content.clone();
+    content.actions.extend(work.actions);
+    let bound = boundary(&content, agent);
+    let usage = SkillUseSnapshot::from_published_content(
+        &select_session_content(&content, SKILL_USE_SELECTION),
+        &bound,
+    )
+    .unwrap();
+    let inventory = SkillOpportunitySnapshot::new(
+        bound.scope.clone(),
+        vec![SkillDefinition {
+            identity: "review-file".into(),
+            revision: "current-revision".into(),
+            name: "review".into(),
+            aliases: vec![],
+            description: "Review resource ownership.".into(),
+            frontmatter: json!({"description":"Review resource ownership."}),
+            scope: bound.scope,
+            enabled: true,
+            created_at_ms: None,
+        }],
+        true,
+    )
+    .unwrap();
+    let check = SkillOpportunitiesCheck::new(&content, &inventory, &usage, &scope).unwrap();
+    let plan = check.prepare(&check.session_context()).unwrap();
+    assert_eq!(plan.work_items.len(), 1);
+    assert_eq!(plan.prepared.comparisons.len(), 1);
+    assert_eq!(plan.prepared.comparisons[0].skill.identity, "review-file");
+    assert_eq!(
+        plan.shared_context.as_ref().unwrap().fields["use_coverage"],
+        json!(usage.coverage())
+    );
+    assert!(
+        plan.prepared.comparisons[0]
+            .limitations
+            .contains(&SkillOpportunityLimit::CreationTimeUnknown)
+    );
+    assert!(
+        plan.prepared.comparisons[0]
+            .limitations
+            .contains(&SkillOpportunityLimit::SelectedUseWindowOnly)
+    );
+    assert_eq!(
+        plan.work_items[0].window.fields["limitations"],
+        json!(plan.prepared.comparisons[0].limitations)
+    );
+    plan
+}
+
 #[test]
-fn persisted_selection_suppresses_matching_candidates_without_human_authority_or_success() {
+fn persisted_selection_supplies_equivalence_context_without_human_authority_or_success() {
     for agent in [AgentKind::Codex, AgentKind::Pi] {
-        let mut content = published_selected_skill(agent);
+        let input = selected_skill_input(agent);
+        let store = store(&input);
+        let mut content = selected(&store, &input.agent, input.source_format, "root", 1);
         let action = content
             .actions
             .iter_mut()
@@ -1104,18 +1288,40 @@ fn persisted_selection_suppresses_matching_candidates_without_human_authority_or
         let snapshot =
             SkillUseSnapshot::from_published_content(&content, &boundary(&content, agent)).unwrap();
         assert_eq!(snapshot.events().len(), 1, "{content:?}");
-        assert!(matches!(
+        assert_eq!(
             snapshot.events()[0].lifecycle,
-            SkillUseLifecycle::DocumentSelected | SkillUseLifecycle::Requested
-        ));
-        assert_eq!(matching_candidates(&content, agent), 0);
+            SkillUseLifecycle::DocumentSelected
+        );
+        let plan = matching_plan(&store, &content, agent);
+        let comparison = &plan.prepared.comparisons[0];
+        assert!(!comparison.absence_assessable);
+        assert_eq!(
+            comparison.use_eligibility.absence,
+            SkillAbsenceEvidence::Unassessable
+        );
+        assert!(comparison.use_eligibility.equivalent_comparison_required);
+        assert_eq!(comparison.used_current_skills[0].identity, "review-file");
+        assert_eq!(
+            comparison.use_citations,
+            vec![snapshot.events()[0].reference.clone()]
+        );
+        assert_eq!(
+            plan.shared_context.as_ref().unwrap().fields["use"][0]["event"]["lifecycle"],
+            "document_selected"
+        );
+        assert_eq!(
+            plan.work_items[0].window.fields["current_skill"]["content"]["chunks"][0]["text"],
+            "Review resource ownership."
+        );
     }
 }
 
 #[test]
-fn incomplete_or_mismatched_persisted_selection_does_not_suppress_candidates() {
+fn incomplete_or_mismatched_persisted_selection_keeps_typed_use_limits() {
     for agent in [AgentKind::Codex, AgentKind::Pi] {
-        let original = published_selected_skill(agent);
+        let input = selected_skill_input(agent);
+        let store = store(&input);
+        let original = selected(&store, &input.agent, input.source_format, "root", 1);
         for case in 0..12 {
             let mut content = original.clone();
             if case == 0 {
@@ -1145,11 +1351,58 @@ fn incomplete_or_mismatched_persisted_selection_does_not_suppress_candidates() {
                     }
                 }
             }
-            assert_eq!(
-                matching_candidates(&content, agent),
-                1,
-                "{agent:?} case {case}"
-            );
+            let usage =
+                SkillUseSnapshot::from_published_content(&content, &boundary(&content, agent))
+                    .unwrap();
+            if case == 8 {
+                assert_eq!(usage.events().len(), 1);
+                assert_eq!(
+                    usage.events()[0].lifecycle,
+                    SkillUseLifecycle::DocumentSelected
+                );
+                assert!(
+                    matches!(&usage.events()[0].skill, RecordedSkillIdentity::Document { name, .. } if name == "other-skill")
+                );
+            } else {
+                assert!(
+                    usage.events().iter().all(|event| !matches!(
+                        event.lifecycle,
+                        SkillUseLifecycle::DocumentSelected | SkillUseLifecycle::Succeeded
+                    )),
+                    "{agent:?} case {case}"
+                );
+            }
+            assert!(!usage.proves_session_wide_absence());
+            let plan = matching_plan(&store, &content, agent);
+            if case == 8 {
+                assert!(plan.prepared.comparisons[0].used_current_skills.is_empty());
+                assert!(
+                    !plan.prepared.comparisons[0]
+                        .use_eligibility
+                        .equivalent_comparison_required
+                );
+                assert!(
+                    plan.shared_context.as_ref().unwrap().fields["use"]
+                        .as_array()
+                        .unwrap()
+                        .is_empty()
+                );
+                assert!(plan.prepared.comparisons[0].use_citations.is_empty());
+            }
+            if case == 0 {
+                assert!(!plan.prepared.comparisons[0].work_context_assessable);
+                assert!(
+                    plan.coverage
+                        .limitations
+                        .contains(&"selected_work_content_incomplete".into())
+                );
+                assert!(
+                    plan.shared_context.as_ref().unwrap().fields["use_coverage"]["limitations"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&json!(SkillUseLimit::IncompleteSelectedContent))
+                );
+            }
         }
     }
 }
@@ -1158,7 +1411,9 @@ fn incomplete_or_mismatched_persisted_selection_does_not_suppress_candidates() {
 fn selected_proof_preserves_requested_status_and_excludes_unselected_ranges() {
     use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
     use antiburn_local::analysis::jev_evidence::JevRecordedSkillStatus;
-    let mut content = published_selected_skill(AgentKind::Codex);
+    let input = selected_skill_input(AgentKind::Codex);
+    let store = store(&input);
+    let mut content = selected(&store, &input.agent, input.source_format, "root", 1);
     let proof = content
         .actions
         .iter_mut()
@@ -1178,11 +1433,24 @@ fn selected_proof_preserves_requested_status_and_excludes_unselected_ranges() {
         SkillUseSnapshot::from_published_content(&content, &boundary(&content, AgentKind::Codex))
             .unwrap();
     assert_eq!(snapshot.events()[0].lifecycle, SkillUseLifecycle::Requested);
-    assert_eq!(matching_candidates(&content, AgentKind::Codex), 0);
+    let plan = matching_plan(&store, &content, AgentKind::Codex);
+    assert_eq!(
+        plan.shared_context.as_ref().unwrap().fields["use"][0]["event"]["lifecycle"],
+        "requested"
+    );
+    assert!(
+        plan.prepared.comparisons[0]
+            .use_eligibility
+            .equivalent_comparison_required
+    );
+    assert_eq!(
+        plan.prepared.comparisons[0].used_current_skills[0].name,
+        "review"
+    );
 }
 
 #[test]
-fn codex_wrapper_without_selected_skill_producer_tag_does_not_suppress_use() {
+fn codex_wrapper_without_selected_skill_producer_tag_is_not_recorded_use() {
     let (_, content) = jsonl_content("codex", SourceFormat::CodexRolloutJsonl, CODEX);
     assert!(
         content
@@ -1191,19 +1459,35 @@ fn codex_wrapper_without_selected_skill_producer_tag_does_not_suppress_use() {
             .all(|action| action.metadata.selected_skill.is_none())
     );
     assert_eq!(matching_candidates(&content, AgentKind::Codex), 1);
+    let usage =
+        SkillUseSnapshot::from_published_content(&content, &boundary(&content, AgentKind::Codex))
+            .unwrap();
+    assert!(usage.events().is_empty());
 }
 
 #[test]
 fn opencode_codex_and_pi_publish_equivalent_document_selection() {
     use antiburn_local::analysis::jev_evidence::JevRecordedSkillStatus;
     let native = parsed_records(OPENCODE);
-    let (_temporary, _store, opencode) = opencode_content(&native[0]);
+    let (_temporary, opencode_store, opencode) = opencode_content(&native[0]);
+    let codex_input = selected_skill_input(AgentKind::Codex);
+    let codex_store = store(&codex_input);
+    let pi_input = selected_skill_input(AgentKind::Pi);
+    let pi_store = store(&pi_input);
     let mut expected_fact = None;
     let mut expected_event = None;
-    for (agent, content) in [
-        (AgentKind::OpenCode, opencode),
-        (AgentKind::Codex, published_selected_skill(AgentKind::Codex)),
-        (AgentKind::Pi, published_selected_skill(AgentKind::Pi)),
+    for (agent, store, content) in [
+        (AgentKind::OpenCode, opencode_store, opencode),
+        (
+            AgentKind::Codex,
+            Arc::clone(&codex_store),
+            selected(&codex_store, "codex", codex_input.source_format, "root", 1),
+        ),
+        (
+            AgentKind::Pi,
+            Arc::clone(&pi_store),
+            selected(&pi_store, "pi", pi_input.source_format, "root", 1),
+        ),
     ] {
         assert!(
             content
@@ -1249,12 +1533,29 @@ fn opencode_codex_and_pi_publish_equivalent_document_selection() {
         } else {
             expected_event = Some(normalized);
         }
-        assert_eq!(matching_candidates(&content, agent), 0);
+        let plan = matching_plan(&store, &content, agent);
+        assert_eq!(
+            plan.prepared.comparisons[0].used_current_skills[0].name,
+            "review"
+        );
+        assert!(
+            plan.prepared.comparisons[0]
+                .use_eligibility
+                .equivalent_comparison_required
+        );
+        assert!(
+            plan.shared_context.as_ref().unwrap().fields["use"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["event"]["lifecycle"] == "document_selected"
+                    && entry["event"]["name"] == "review")
+        );
     }
 }
 
 #[test]
-fn pi_quoted_empty_and_incomplete_wrappers_do_not_suppress_use() {
+fn pi_quoted_empty_and_incomplete_wrappers_are_not_recorded_use() {
     for text in [
         "Quoted: <skill name=\"review\" location=\"/synthetic/skills/review/SKILL.md\">\nReferences are relative to /synthetic/skills/review.\n\nReview resources.\n</skill>",
         "<skill name=\"review\" location=\"/synthetic/skills/review/SKILL.md\">\nReferences are relative to /synthetic/skills/review.\n\n\n</skill>",
@@ -1266,5 +1567,9 @@ fn pi_quoted_empty_and_incomplete_wrappers_do_not_suppress_use() {
         ];
         let (_, content) = jsonl_content("pi", SourceFormat::PiV3Jsonl, &jsonl(&records));
         assert_eq!(matching_candidates(&content, AgentKind::Pi), 1, "{text}");
+        let usage =
+            SkillUseSnapshot::from_published_content(&content, &boundary(&content, AgentKind::Pi))
+                .unwrap();
+        assert!(usage.events().is_empty(), "{text}");
     }
 }

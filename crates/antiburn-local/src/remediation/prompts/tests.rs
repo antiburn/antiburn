@@ -104,6 +104,8 @@ fn causes() -> Vec<FindingCause> {
             group_id: "work-group".into(),
             work: Vec::new(),
             task_scope: Vec::new(),
+            observation_kind: crate::checks::scope_creep::WorkObservationKind::Attempt,
+            decision_probability: 0.9,
             scope_digest: "scope".into(),
             model: "model".into(),
             model_revision: None,
@@ -137,6 +139,69 @@ fn causes() -> Vec<FindingCause> {
             },
         })),
     ]
+}
+
+#[test]
+fn scope_constructor_bounds_probability_and_prompt_distinguishes_proposals() {
+    use crate::analysis::jev_evidence::ContentEventReference;
+    use crate::checks::scope_creep::{WorkBinding, WorkObservationKind};
+    let mut evidence = crate::checks::test_support::claude_evidence("scope-session");
+    evidence.capabilities.source_format = crate::analysis::SourceFormat::ClaudeJsonl;
+    let FindingCause::ScopeCreep(mut scope) = causes()
+        .into_iter()
+        .find(|cause| matches!(cause, FindingCause::ScopeCreep(_)))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    scope.work.push(WorkBinding {
+        reference: ContentEventReference {
+            id: "work".into(),
+            source_key_digest: "source".into(),
+            thread_digest: "thread".into(),
+            turn_index: 1,
+            native_record_id: Some("native".into()),
+            part_index: 0,
+            stable: true,
+        },
+        digest: "work-digest".into(),
+    });
+    for probability in [0.75, 1.0] {
+        scope.decision_probability = probability;
+        assert!(
+            Finding::scope_creep(&evidence, &scope).is_some(),
+            "empty retained scope is valid"
+        );
+    }
+    for probability in [
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        -0.1,
+        0.749,
+        1.001,
+    ] {
+        scope.decision_probability = probability;
+        assert!(Finding::scope_creep(&evidence, &scope).is_none());
+    }
+    scope.decision_probability = 0.9;
+    for (kind, verb) in [
+        (WorkObservationKind::Attempt, "Attempts"),
+        (WorkObservationKind::Proposal, "Proposes"),
+    ] {
+        scope.observation_kind = kind;
+        let finding = Finding::scope_creep(&evidence, &scope).unwrap();
+        assert!(finding.display().unwrap().observation.starts_with(verb));
+        let prompt = remediation_prompt(&finding).unwrap();
+        assert!(
+            prompt
+                .as_str()
+                .contains("does not prove completed execution")
+        );
+        assert!(!prompt.as_str().contains("Performs"));
+    }
+    scope.revisions.questions -= 1;
+    assert!(Finding::scope_creep(&evidence, &scope).is_none());
 }
 
 #[test]

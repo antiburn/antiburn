@@ -262,7 +262,12 @@ pub(super) fn published_coverage(
             .result
             .decisions
             .iter()
-            .filter(|decision| decision.outcome == SkillOpportunityOutcome::Unassessed)
+            .filter(|decision| {
+                matches!(
+                    decision.outcome,
+                    SkillOpportunityOutcome::Unassessed | SkillOpportunityOutcome::Uncertain
+                )
+            })
             .count();
         (saved.result.coverage, uncertain, false)
     } else if check_id == "scope_creep" {
@@ -275,7 +280,12 @@ pub(super) fn published_coverage(
             .assessment
             .decisions
             .iter()
-            .filter(|decision| decision.status == ScopeCreepStatus::Unassessed)
+            .filter(|decision| {
+                matches!(
+                    decision.status,
+                    ScopeCreepStatus::Unassessed | ScopeCreepStatus::Uncertain
+                )
+            })
             .count();
         (
             saved.assessment.coverage,
@@ -610,6 +620,25 @@ mod tests {
         assert_eq!(coverage.pending, 2);
         assert!(coverage.uncertain > 0);
         assert!(published_coverage("scope_creep", "old-input", &json, None).is_none());
+        let mut outcomes: serde_json::Value = serde_json::from_str(&json).unwrap();
+        outcomes["assessment"]["decisions"][0]["status"] = serde_json::json!("uncertain");
+        let (uncertain, _) = published_coverage(
+            "scope_creep",
+            &input.durable.input_revision,
+            &outcomes.to_string(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(uncertain.uncertain, coverage.uncertain);
+        outcomes["assessment"]["decisions"][0]["status"] = serde_json::json!("clean");
+        let (clean, _) = published_coverage(
+            "scope_creep",
+            &input.durable.input_revision,
+            &outcomes.to_string(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(clean.uncertain + 1, uncertain.uncertain);
 
         let result = antiburn_local::checks::skill_opportunities::SkillOpportunitiesResult {
             findings: Vec::new(),

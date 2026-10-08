@@ -1,10 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::agent_config::{
-    ConfigContext, EnabledState, ResourceKind, SkillSnapshotError, advisory_resource_inventory,
-    skill_opportunity_snapshot,
-};
+use crate::agent_config::{ConfigContext, skill_opportunity_snapshot};
 use crate::store::{SessionKey, Store};
 use antiburn_local::checks::skill_opportunities::{
     SKILL_USE_SELECTION, SkillOpportunitiesCheck, SkillOpportunitySnapshot, SkillUseBoundary,
@@ -162,31 +159,83 @@ fn current_inventory(
     context: &ConfigContext,
 ) -> Result<SkillOpportunitySnapshot, InputLoadError> {
     validate_environment(environment, context)?;
-    let resources = advisory_resource_inventory(context, [])
-        .map_err(|error| InputLoadError::Inventory(SkillSnapshotError::Config(error)))?;
-    if resources
-        .issues
-        .iter()
-        .any(|issue| issue.kind.is_none() || issue.kind == Some(ResourceKind::Skill))
-    {
-        return Err(unavailable(InputUnavailable::InventoryIncomplete));
+    skill_opportunity_snapshot(context).map_err(InputLoadError::Inventory)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use antiburn_local::checks::skill_opportunities::{
+        SkillOpportunityLimit, SkillUseEvidence, SkillUseOrdering, SkillUseStatus, SkillWorkContext,
+    };
+    use antiburn_local::model::AgentKind;
+
+    #[test]
+    fn inventory_admits_bound_definitions_with_unsupported_siblings_and_unknown_use() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join(".claude/skills");
+        for (name, text) in [
+            (
+                "review",
+                "---\nname: review\ndescription: Review code.\n---\n",
+            ),
+            ("malformed", "---\nname: [\n---\n"),
+            ("unsupported", "---\ndescription: 42\n---\n"),
+        ] {
+            let path = root.join(name).join("SKILL.md");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        let context = ConfigContext::native(AgentKind::Claude, directory.path(), None);
+        let inventory = current_inventory("native", &context).unwrap();
+        assert_eq!(inventory.skills().len(), 1);
+        let definition = &inventory.skills()[0];
+        assert_eq!(definition.name, "review");
+        assert!(definition.enabled);
+        assert!(!definition.identity.is_empty());
+        assert!(!definition.revision.is_empty());
+        let work = SkillWorkContext {
+            session_identity: "session".into(),
+            scope: inventory.scope().clone(),
+            relevant_work_at_ms: None,
+        };
+        let usage = SkillUseEvidence {
+            session_identity: work.session_identity.clone(),
+            scope: work.scope.clone(),
+            status: SkillUseStatus::Unknown,
+            ordering: SkillUseOrdering::Unknown,
+            events: Vec::new(),
+        };
+        let candidates = inventory.eligible_candidates(&work, &usage).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert!(
+            candidates[0]
+                .limitations()
+                .contains(&SkillOpportunityLimit::InventoryIncomplete)
+        );
+        assert!(
+            candidates[0]
+                .limitations()
+                .contains(&SkillOpportunityLimit::UseEvidenceIncomplete)
+        );
+        assert_eq!(usage.status, SkillUseStatus::Unknown);
+        assert!(matches!(
+            current_inventory("ssh", &context),
+            Err(InputLoadError::Unavailable(
+                InputUnavailable::UnsupportedInventoryEnvironment
+            ))
+        ));
+        std::fs::remove_dir_all(root.join("malformed")).unwrap();
+        std::fs::remove_dir_all(root.join("unsupported")).unwrap();
+        let complete = current_inventory("native", &context).unwrap();
+        assert_eq!(complete.skills(), inventory.skills());
+        assert_ne!(complete.revision(), inventory.revision());
+        assert!(
+            !complete.eligible_candidates(&work, &usage).unwrap()[0]
+                .limitations()
+                .contains(&SkillOpportunityLimit::InventoryIncomplete)
+        );
     }
-    let inventory = skill_opportunity_snapshot(context).map_err(InputLoadError::Inventory)?;
-    if resources
-        .resources
-        .iter()
-        .filter(|resource| resource.kind == ResourceKind::Skill)
-        .any(|resource| {
-            resource.enabled == EnabledState::Unknown
-                || !inventory.skills().iter().any(|skill| {
-                    skill.name == resource.canonical_name
-                        || skill.aliases.contains(&resource.canonical_name)
-                })
-        })
-    {
-        return Err(unavailable(InputUnavailable::InventoryIncomplete));
-    }
-    Ok(inventory)
 }
 
 /// A caller observes a bounded set of admitted native contexts. No scheduler is modified.

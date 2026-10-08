@@ -3,7 +3,7 @@ use crate::jev::worker::JevCheckDescriptor;
 use antiburn_local::analysis::SourceFormat;
 use antiburn_local::analysis::jev::JevCheck;
 use antiburn_local::checks::sampling::{Candidate, SamplingLimits, SamplingProgress, StableId};
-use antiburn_local::checks::skill_opportunities::{SkillUseLifecycle, SkillUseStatus};
+use antiburn_local::checks::skill_opportunities::SkillUseLifecycle;
 
 #[test]
 fn native_skill_requests_and_document_selections_prepare_without_asserting_success() {
@@ -138,7 +138,7 @@ fn native_skill_requests_and_document_selections_prepare_without_asserting_succe
             plan.prepared
                 .comparisons
                 .iter()
-                .all(|comparison| comparison.skill.name != skill),
+                .any(|comparison| comparison.skill.name == skill),
             "{agent}"
         );
         let answers = plan
@@ -152,20 +152,17 @@ fn native_skill_requests_and_document_selections_prepare_without_asserting_succe
                     .questions
                     .keys()
                     .map(|question| {
-                        let choice = if question == "sufficiency" {
-                            "yes"
-                        } else {
-                            "no"
-                        };
+                        assert_eq!(question, "opportunity");
+                        let choice = "no_opportunity";
                         (
                             question.clone(),
                             antiburn_local::analysis::jev::JevAnswer::Choice {
                                 choice: choice.into(),
                                 confidence: 1.0,
                                 probabilities: std::collections::BTreeMap::from([
-                                    ("yes".into(), if choice == "yes" { 1.0 } else { 0.0 }),
-                                    ("no".into(), if choice == "no" { 1.0 } else { 0.0 }),
-                                    ("unknown".into(), 0.0),
+                                    ("useful_opportunity".into(), 0.0),
+                                    ("no_opportunity".into(), 1.0),
+                                    ("uncertain".into(), 0.0),
                                 ]),
                             },
                         )
@@ -194,6 +191,83 @@ fn native_skill_requests_and_document_selections_prepare_without_asserting_succe
         );
         assert!(result.findings.is_empty(), "{agent}");
         assert!(super::publication_has_assessed_coverage(&result), "{agent}");
+        let mut sampling = super::new_sampling_progress().unwrap();
+        super::synchronize_sampling(&first, &mut sampling).unwrap();
+        sampling.begin_run();
+        let jobs: Vec<_> = std::iter::from_fn(|| sampling.choose_job()).collect();
+        let sampled = super::prepare_sampled(&first, &plan.capabilities, &jobs).unwrap();
+        assert_eq!(sampled.work_items.len(), jobs.len());
+        let mut partial_answers = answers.clone();
+        for answer in &mut partial_answers {
+            let comparison = plan
+                .prepared
+                .comparisons
+                .iter()
+                .find(|comparison| comparison.id == answer.work_item_id)
+                .unwrap();
+            let choice = if comparison.skill.name == "unused-review" {
+                "useful_opportunity"
+            } else {
+                "uncertain"
+            };
+            answer.answers.insert(
+                "opportunity".into(),
+                antiburn_local::analysis::jev::JevAnswer::Choice {
+                    choice: choice.into(),
+                    confidence: 0.1,
+                    probabilities: ["useful_opportunity", "no_opportunity", "uncertain"]
+                        .into_iter()
+                        .map(|key| (key.into(), if key == choice { 1.0 } else { 0.0 }))
+                        .collect(),
+                },
+            );
+        }
+        let partial = first
+            .check
+            .reduce(&sampled, &partial_answers, true)
+            .unwrap();
+        assert!(!partial.complete);
+        assert!(!partial.findings.is_empty());
+        assert!(super::publication_has_assessed_coverage(&partial));
+        for job in &jobs {
+            first
+                .check
+                .record_sampling_result(&mut sampling, job, &partial)
+                .unwrap();
+            let pairs = super::sampled_pairs_for_job(
+                &sampled,
+                &partial,
+                job,
+                candidate.incarnation,
+                &first.durable.input_revision,
+            );
+            assert_eq!(pairs.len(), 1);
+            assert!(pairs[0].pair.assessed);
+        }
+        assert_eq!(
+            sampling
+                .coverage(first.check.sampling_identity())
+                .unwrap()
+                .completed,
+            jobs.len()
+        );
+        sampling.begin_run();
+        assert!(sampling.choose_job().is_none());
+        let mut finding = partial.findings[0].clone();
+        finding.comparison.absence_assessable = false;
+        finding.comparison.work_context_assessable = false;
+        finding.comparison.use_eligibility.absence =
+            antiburn_local::checks::skill_opportunities::SkillAbsenceEvidence::Unassessable;
+        assert!(super::publishable_finding(&finding));
+        let mut merged = first.check.reduce(&plan, &[], false).unwrap();
+        super::merge_skill_result(&mut merged, partial.clone());
+        assert!(
+            merged
+                .decisions
+                .iter()
+                .all(|decision| decision.judgments.is_some())
+        );
+        assert_eq!(merged.findings, partial.findings);
         let mut unassessed = result.clone();
         unassessed.coverage.selected_items = 0;
         assert!(
@@ -201,12 +275,14 @@ fn native_skill_requests_and_document_selections_prepare_without_asserting_succe
             "{agent}"
         );
         let mut incomplete = result.clone();
+        incomplete.complete = true;
         incomplete.coverage.not_selected_items = 1;
         assert!(
             !super::publication_has_assessed_coverage(&incomplete),
             "{agent}"
         );
         let mut limited = result.clone();
+        limited.complete = true;
         limited.coverage.limitations.push("synthetic_limit".into());
         assert!(
             !super::publication_has_assessed_coverage(&limited),
@@ -1007,33 +1083,6 @@ fn new_publication_or_source_generation_fences_old_skill_work() {
                 .unwrap()
         );
     }
-}
-
-#[test]
-fn incomplete_native_lifecycle_never_proves_absence() {
-    assert!(super::typed_lifecycle_is_complete(
-        SkillUseStatus::Complete,
-        false,
-        &[
-            SkillUseLifecycle::Requested,
-            SkillUseLifecycle::DocumentSelected
-        ]
-    ));
-    assert!(!super::typed_lifecycle_is_complete(
-        SkillUseStatus::Complete,
-        true,
-        &[SkillUseLifecycle::Succeeded]
-    ));
-    assert!(!super::typed_lifecycle_is_complete(
-        SkillUseStatus::Partial,
-        false,
-        &[SkillUseLifecycle::Succeeded]
-    ));
-    assert!(super::typed_lifecycle_is_complete(
-        SkillUseStatus::Complete,
-        false,
-        &[SkillUseLifecycle::Succeeded, SkillUseLifecycle::Failed]
-    ));
 }
 
 #[test]

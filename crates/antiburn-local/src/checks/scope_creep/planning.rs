@@ -82,6 +82,15 @@ pub struct WorkGroup {
     pub context: Vec<WorkBinding>,
     pub window_ids: Vec<String>,
     pub limitation: Option<String>,
+    pub task_scope: Vec<JevEvidenceReference>,
+    pub observation_kind: WorkObservationKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkObservationKind {
+    Attempt,
+    Proposal,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -216,8 +225,7 @@ impl ScopeCreepCheck {
         StableId::new("scope_creep", &[b"1"])
     }
 
-    /// Synchronize all candidates before selecting jobs in the shared sampler.
-    /// Each window needs every question. An abstention is not completion.
+    /// A valid uncertain decision completes the same evidence revision.
     pub fn sampling_candidates(plan: &JevCheckPlan<ScopeCreepPrepared>) -> Vec<Candidate> {
         plan.prepared
             .groups
@@ -326,49 +334,7 @@ impl JevCheck for ScopeCreepCheck {
         capabilities: &ModelCapabilities,
     ) -> Result<JevCheckPlan<Self::Prepared>, JevError> {
         self.validate_context(context)?;
-        let shared = self
-            .input
-            .scope
-            .scope_creep_context()
-            .map(|_| self.shared_context.clone());
-        let mut limitation = shared.as_ref().err().cloned();
-        if !self.input.scope.occurrences().iter().any(|occurrence| {
-            occurrence.field == JevInputField::UserMessage
-                && occurrence.authority == crate::analysis::session_scope::ScopeAuthority::User
-        }) {
-            limitation = Some(SessionScopeError::Missing(
-                crate::analysis::session_scope::ScopeMissingReason::NoUserContext,
-            ));
-        }
-        if limitation.is_none() {
-            let probe = JevWorkItem {
-                id: "scope_question_fit".into(),
-                window: JevInputWindow {
-                    fields: json!({"bound_work": [], "supporting_activity": [], "activity_window": 0, "activity_window_count": 1}),
-                    evidence: Vec::new(),
-                },
-                questions: questions(false),
-            };
-            // Charge the actual follow-up questions before any initial dispatch.
-            // This probe supplies no work and never becomes a model request.
-            match pack_context(
-                &[probe],
-                &self.input.scope,
-                &self.shared_context,
-                capabilities,
-            ) {
-                Err(error) => limitation = Some(error),
-                Ok(packed) if packed.batches.is_empty() => {
-                    limitation = Some(SessionScopeError::ScopeTooLarge)
-                }
-                Ok(_) => {}
-            }
-        }
-        if !self.input.content.complete && limitation.is_none() {
-            limitation = Some(SessionScopeError::Missing(
-                crate::analysis::session_scope::ScopeMissingReason::IncompleteSource,
-            ));
-        }
+        let limitation = None;
         let semantic_epoch = StableId::new(
             "scope_semantics",
             &[
@@ -381,29 +347,14 @@ impl JevCheck for ScopeCreepCheck {
         );
         let mut groups = form_groups(&self.input)?;
         let mut work_items = Vec::new();
-        if limitation.is_none() {
-            for group in &mut groups {
-                let items = build_windows(
-                    group,
-                    &self.input.content.actions,
-                    self.input.scope.as_ref(),
-                    &self.shared_context,
-                    capabilities,
-                )?;
-                work_items.extend(items);
-            }
-            if groups
-                .iter()
-                .any(|group| group.limitation.as_deref() == Some("scope_context_too_large"))
-            {
-                limitation = Some(SessionScopeError::ScopeTooLarge);
-                work_items.clear();
-            }
-        }
-        if limitation.is_some() {
-            for group in &mut groups {
-                group.window_ids.clear();
-            }
+        for group in &mut groups {
+            work_items.extend(build_windows(
+                group,
+                &self.input.content.actions,
+                self.input.scope.as_ref(),
+                &self.shared_context,
+                capabilities,
+            )?);
         }
         let skipped_item_ids = groups
             .iter()
@@ -411,6 +362,12 @@ impl JevCheck for ScopeCreepCheck {
             .map(|group| group.id.clone())
             .collect::<Vec<_>>();
         let mut limitations = context.limitations.clone();
+        if !self.input.content.complete {
+            limitations.push("partial_source_context".into());
+        }
+        limitations.extend(groups.iter().filter_map(|group| group.limitation.clone()));
+        limitations.sort();
+        limitations.dedup();
         if let Some(error) = &limitation {
             limitations.push(match error {
                 SessionScopeError::ScopeTooLarge => "scope_context_too_large".into(),
@@ -431,7 +388,7 @@ impl JevCheck for ScopeCreepCheck {
             skipped_item_ids,
             work_items,
             capabilities: capabilities.clone(),
-            shared_context: shared.ok(),
+            shared_context: None,
             prepared: ScopeCreepPrepared {
                 scope_digest: self.scope_digest.clone(),
                 semantic_epoch,
@@ -454,13 +411,7 @@ impl JevCheck for ScopeCreepCheck {
         if result.work_item_id != item.id {
             return Err(JevError::InvalidCheckPlan);
         }
-        // Always settle every question. Even negative performed answers need
-        // authority and sufficiency checks before a clean decision is possible.
-        Ok(Some(JevWorkItem {
-            id: format!("{}::followup", item.id),
-            window: item.window.clone(),
-            questions: questions(false),
-        }))
+        Ok(None)
     }
 
     fn reduce(
@@ -592,27 +543,11 @@ fn scope_context(input: &ScopeCreepInput) -> Result<JevSharedRequestContext, Jev
         );
     }
     context.fields["recorded_facts"] = json!({
-        "scope_complete_through_boundary": true,
+        "scope_complete_through_boundary": input.content.complete,
         "scope_provenance_resolved": input.scope.scope_creep_context().is_ok(),
         "assessment_boundary": {"turn": input.boundary.turn_index, "part": input.boundary.part_index},
     });
     Ok(context)
-}
-
-fn pack_context(
-    items: &[JevWorkItem],
-    scope: &SessionScopeSnapshot,
-    shared: &JevSharedRequestContext,
-    capabilities: &ModelCapabilities,
-) -> Result<JevPackingResult, SessionScopeError> {
-    // Keep source eligibility and capability validation at the shared boundary.
-    // Charge the additional exact order and provenance fields to actual packing.
-    scope.pack_scope_creep(items, capabilities)?;
-    Ok(pack_work_items_with_shared_context(
-        items,
-        capabilities,
-        shared,
-    ))
 }
 
 fn binding(action: &ContentAction) -> WorkBinding {
@@ -625,53 +560,46 @@ fn binding(action: &ContentAction) -> WorkBinding {
 fn form_groups(input: &ScopeCreepInput) -> Result<Vec<WorkGroup>, JevError> {
     let actions = &input.content.actions;
     let mut groups = Vec::new();
-    let mut turns = BTreeSet::new();
-    for anchor in actions
-        .iter()
-        .filter(|action| action.kind == "tool_input" && !action.context_only)
-    {
-        if !is_work_anchor(anchor) || !turns.insert(anchor.reference.turn_index) {
+    for anchor in actions.iter().filter(|action| !action.context_only) {
+        let proposal = matches!(anchor.kind.as_str(), "assistant" | "assistant_text")
+            && anchor.authority == "assistant";
+        if !is_work_anchor(anchor) && !proposal {
             continue;
         }
-        // A recorded assistant turn is a candidate episode, not proof of
-        // coherence. The semantic questions reject mixed tasks and partial scope.
-        let calls: BTreeSet<_> = actions
-            .iter()
-            .filter(|action| {
-                action.reference.turn_index == anchor.reference.turn_index && is_work_anchor(action)
-            })
-            .filter_map(|action| {
-                Some((
-                    action.tool_call_id.as_deref()?,
-                    action.tool_name.as_deref()?,
-                ))
-            })
-            .filter(|(call, tool)| {
-                !actions.iter().any(|action| {
-                    action.tool_call_id.as_deref() == Some(call)
-                        && action.tool_name.as_deref() == Some(tool)
-                        && input
-                            .ignored_instruction_work_ids
-                            .contains(&action.reference.id)
+        if proposal
+            && actions
+                .iter()
+                .skip_while(|action| action.reference.id != anchor.reference.id)
+                .skip(1)
+                .take_while(|action| action.authority != "user")
+                .any(|action| {
+                    is_work_anchor(action)
+                        && action
+                            .reference
+                            .turn_index
+                            .abs_diff(anchor.reference.turn_index)
+                            <= 2
                 })
-            })
-            .collect();
-        if calls.is_empty() {
+        {
+            continue;
+        }
+        if input
+            .ignored_instruction_work_ids
+            .contains(&anchor.reference.id)
+        {
             continue;
         }
         let work: Vec<_> = actions
             .iter()
             .filter(|action| {
-                action
-                    .tool_call_id
-                    .as_deref()
-                    .zip(action.tool_name.as_deref())
-                    .is_some_and(|key| calls.contains(&key))
+                action.reference.id == anchor.reference.id
+                    || (!proposal
+                        && action.kind == "tool_result"
+                        && action.tool_call_id == anchor.tool_call_id
+                        && action.tool_name == anchor.tool_name)
             })
-            .filter(|action| matches!(action.kind.as_str(), "tool_input" | "tool_result"))
             .collect();
         let work_ids: BTreeSet<_> = work.iter().map(|action| &action.reference.id).collect();
-        // User turns define task episodes. The full latest user scope is separate.
         let start = actions
             .iter()
             .filter(|action| {
@@ -695,50 +623,36 @@ fn form_groups(input: &ScopeCreepInput) -> Result<Vec<WorkGroup>, JevError> {
             .filter(|action| {
                 action.reference.turn_index >= start
                     && action.reference.turn_index < end
+                    && action
+                        .reference
+                        .turn_index
+                        .abs_diff(anchor.reference.turn_index)
+                        <= 2
                     && !work_ids.contains(&action.reference.id)
             })
+            .filter(|action| action.text.len() <= 1024)
+            .take(4)
             .map(binding)
             .collect();
         let work = work.into_iter().map(binding).collect::<Vec<_>>();
-        if groups
-            .iter()
-            .map(|group: &WorkGroup| group.work.len() + group.context.len())
-            .sum::<usize>()
-            + work.len()
-            + context.len()
-            > MAX_EVENTS
-        {
-            return Err(JevError::InvalidCheckContext);
-        }
         let id = digest(&work)?;
-        let has_results = calls.iter().all(|(call, tool)| {
-            actions.iter().any(|action| {
-                action.kind == "tool_result"
-                    && action.tool_call_id.as_deref() == Some(call)
-                    && action.tool_name.as_deref() == Some(tool)
-            })
-        });
-        let multiple_inputs = calls.iter().any(|(call, tool)| {
-            actions
-                .iter()
-                .filter(|action| {
-                    action.kind == "tool_input"
-                        && action.tool_call_id.as_deref() == Some(call)
-                        && action.tool_name.as_deref() == Some(tool)
-                })
-                .count()
-                != 1
-        });
+        let has_results = work
+            .iter()
+            .any(|work| work.reference.id != anchor.reference.id);
         let unstable = work.iter().any(|binding| !binding.reference.stable);
         groups.push(WorkGroup {
             id,
             work,
             context,
             window_ids: Vec::new(),
-            limitation: if multiple_inputs {
-                Some("ambiguous_tool_call_binding".into())
-            } else if !has_results {
-                Some("performed_result_unavailable".into())
+            task_scope: Vec::new(),
+            observation_kind: if proposal {
+                WorkObservationKind::Proposal
+            } else {
+                WorkObservationKind::Attempt
+            },
+            limitation: if !has_results && !proposal {
+                Some("attempt_result_unavailable".into())
             } else if unstable {
                 Some("unstable_work_binding".into())
             } else {
@@ -771,7 +685,7 @@ fn build_windows(
     shared: &JevSharedRequestContext,
     capabilities: &ModelCapabilities,
 ) -> Result<Vec<JevWorkItem>, JevError> {
-    if group.limitation.is_some() {
+    if group.limitation.as_deref() == Some("unstable_work_binding") {
         return Ok(Vec::new());
     }
     let by_id: BTreeMap<_, _> = actions
@@ -783,81 +697,137 @@ fn build_windows(
         .iter()
         .map(|binding| by_id[binding.reference.id.as_str()])
         .collect();
-    if work.iter().any(|action| action.truncated)
-        || group
-            .context
-            .iter()
-            .any(|binding| by_id[binding.reference.id.as_str()].truncated)
-    {
+    if work.iter().any(|action| action.truncated) {
         group.limitation = Some("truncated_activity".into());
-        return Ok(Vec::new());
     }
-    let mut windows = Vec::new();
     let mut context = Vec::new();
-    let fits = |item: &JevWorkItem| -> Result<bool, SessionScopeError> {
-        let mut all_questions = item.clone();
-        all_questions.questions.extend(questions(false));
-        Ok(
-            !pack_context(&[all_questions], scope, shared, capabilities)?
-                .batches
-                .is_empty(),
-        )
-    };
-    let bare = window(group, &work, &[], 0, scope)?;
-    match fits(&bare) {
-        Err(SessionScopeError::ScopeTooLarge) => {
-            group.limitation = Some("scope_context_too_large".into());
-            return Ok(Vec::new());
-        }
-        Err(error) => {
-            return Err(match error {
-                SessionScopeError::Missing(_) => JevError::InvalidCheckContext,
-                SessionScopeError::ScopeTooLarge => JevError::InvalidCheckPlan,
-            });
-        }
-        Ok(false) => {
-            group.limitation = Some("work_context_too_large".into());
-            return Ok(Vec::new());
-        }
-        Ok(true) => {}
-    }
-    // Split only supporting activity at recorded event boundaries. Every window
-    // retains the exact work and complete scope. Never clip an event's text.
     for binding in &group.context {
         let action = by_id[binding.reference.id.as_str()];
         context.push(action);
-        let item = window(group, &work, &context, windows.len(), scope)?;
-        if !fits(&item).map_err(|_| JevError::InvalidCheckContext)? {
-            context.pop();
-            if !context.is_empty() {
-                windows.push(window(group, &work, &context, windows.len(), scope)?);
-            }
-            context = vec![action];
-            if !fits(&window(group, &work, &context, windows.len(), scope)?)
-                .map_err(|_| JevError::InvalidCheckContext)?
-            {
-                group.limitation = Some("supporting_event_too_large".into());
-                return Ok(Vec::new());
-            }
-        }
     }
-    if !context.is_empty() || windows.is_empty() {
-        windows.push(window(group, &work, &context, windows.len(), scope)?);
+    let mut item = window(group, &work, &context, 0, scope)?;
+    let occurrences = shared.fields["occurrences"]
+        .as_array()
+        .ok_or(JevError::InvalidCheckContext)?;
+    let values = shared.fields["values"]
+        .as_array()
+        .ok_or(JevError::InvalidCheckContext)?;
+    let selected = select_scope_records(scope, shared, &work[0].reference);
+    group.task_scope = selected
+        .iter()
+        .filter_map(|index| shared.evidence.get(*index).cloned())
+        .enumerate()
+        .map(|(index, mut reference)| {
+            reference.part_id = format!("task_scope[{index}]");
+            reference
+        })
+        .collect();
+    let mut clipped = selected.len() < occurrences.len();
+    let record_bytes = (64 * 1024 / selected.len().max(1)).min(8192);
+    let records = selected
+        .into_iter()
+        .map(|index| {
+            let occurrence = &occurrences[index];
+            let value_index = scope.occurrences()[index].value_index;
+            let value = &values[value_index];
+            let encoded = serde_json::to_string(value).map_err(|_| JevError::InvalidCheckContext)?;
+            let value = if encoded.len() > record_bytes {
+                clipped = true;
+                json!({"excerpt": encoded.chars().take(record_bytes / 4).collect::<String>(), "truncated": true})
+            } else { value.clone() };
+            Ok(json!({"occurrence": occurrence, "content": value}))
+        })
+        .collect::<Result<Vec<_>, JevError>>()?;
+    if clipped && group.limitation.is_none() {
+        group.limitation = Some("scope_window_partial".into());
     }
-    let count = windows.len();
-    for item in &mut windows {
-        item.window.fields["activity_window_count"] = json!(count);
-        item.window.fields["recorded_facts"]["all_episode_context_in_this_window"] =
-            json!(count == 1);
-        item.id = digest(&(&group.id, &item.window.fields, &item.window.evidence))?;
-    }
-    // Final serialized metadata is also charged to the fit check.
-    if windows.iter().any(|item| !matches!(fits(item), Ok(true))) {
-        group.limitation = Some("activity_metadata_exceeds_limit".into());
+    item.window.fields["task_scope"] = json!(records);
+    item.window.fields["limitations"] = json!({"scope_window_partial": clipped, "activity": group.limitation, "source": shared.fields["limitations"]});
+    item.window.evidence.extend(group.task_scope.clone());
+    item.id = digest(&(&group.id, &item.window.fields, &item.window.evidence))?;
+    if pack_work_items_with_capabilities(&[item.clone()], capabilities)
+        .batches
+        .is_empty()
+    {
+        group.limitation = Some("work_context_too_large".into());
         return Ok(Vec::new());
     }
-    group.window_ids = windows.iter().map(|item| item.id.clone()).collect();
-    Ok(windows)
+    group.window_ids = vec![item.id.clone()];
+    Ok(vec![item])
+}
+
+fn select_scope_records(
+    scope: &SessionScopeSnapshot,
+    shared: &JevSharedRequestContext,
+    work: &ContentEventReference,
+) -> BTreeSet<usize> {
+    use crate::analysis::session_scope::ScopeAuthority;
+    const MAX_AUTHORITY_RECORDS: usize = 48;
+    const MAX_REPLY_CONTEXT_RECORDS: usize = 16;
+    let position = (work.turn_index, work.part_index);
+    let authoritative: Vec<_> = scope
+        .occurrences()
+        .iter()
+        .enumerate()
+        .filter(|(index, occurrence)| {
+            occurrence.authority == ScopeAuthority::User
+                || shared.fields["occurrences"][*index]["recorded_user_approved_plan"] == true
+        })
+        .map(|(index, _)| index)
+        .collect();
+    let mut selected: BTreeSet<_> = if authoritative.len() <= MAX_AUTHORITY_RECORDS {
+        authoritative.iter().copied().collect()
+    } else {
+        let before = authoritative
+            .iter()
+            .copied()
+            .filter(|index| {
+                let reference = &scope.occurrences()[*index].reference;
+                (reference.turn_index, reference.part_index) <= position
+            })
+            .collect::<Vec<_>>();
+        let after = authoritative
+            .iter()
+            .copied()
+            .filter(|index| {
+                let reference = &scope.occurrences()[*index].reference;
+                (reference.turn_index, reference.part_index) > position
+            })
+            .collect::<Vec<_>>();
+        authoritative
+            .iter()
+            .copied()
+            .take(16)
+            .chain(before.into_iter().rev().take(16))
+            .chain(after.iter().copied().take(8))
+            .chain(after.iter().copied().rev().take(8))
+            .collect()
+    };
+    // Short replies need the preceding proposal before unrelated assistant text.
+    let mut replies: Vec<_> = selected.iter().copied().collect();
+    replies.sort_by_key(|index| {
+        scope.values()[scope.occurrences()[*index].value_index]
+            .as_str()
+            .map(str::len)
+            .unwrap_or(usize::MAX)
+    });
+    let mut supporting = BTreeSet::new();
+    for index in replies {
+        if let Some(previous) = scope.occurrences()[..index]
+            .iter()
+            .enumerate()
+            .rev()
+            .take_while(|(_, occurrence)| occurrence.authority != ScopeAuthority::User)
+            .find(|(_, occurrence)| occurrence.field == JevInputField::AssistantMessage)
+        {
+            supporting.insert(previous.0);
+        }
+        if supporting.len() == MAX_REPLY_CONTEXT_RECORDS {
+            break;
+        }
+    }
+    selected.extend(supporting);
+    selected
 }
 
 fn window(
@@ -865,7 +835,7 @@ fn window(
     work: &[&ContentAction],
     context: &[&ContentAction],
     index: usize,
-    scope: &SessionScopeSnapshot,
+    _scope: &SessionScopeSnapshot,
 ) -> Result<JevWorkItem, JevError> {
     let mut evidence = Vec::new();
     let mut operations = BTreeMap::new();
@@ -886,39 +856,23 @@ fn window(
      -> Vec<Value> {
         actions.iter().enumerate().map(|(index, action)| {
             evidence.push(JevEvidenceReference { part_id: format!("{key}[{index}]"), source_id: action.reference.id.clone(), content_kind: action.kind.clone(), role });
-            // Native range bindings stay local. Question and plan metadata are
-            // already present in the complete shared scope at this exact order.
             let operation = action.tool_name.as_deref().zip(action.tool_call_id.as_deref()).and_then(|key| operations.get(&key));
             json!({"kind": action.kind, "role": action.turn_role, "authority": action.authority, "turn": action.reference.turn_index, "part": action.reference.part_index, "tool": action.tool_name, "operation": operation, "text": action.text, "normalized_fields": action.normalized_fields, "operation_state": action.metadata.state})
         }).collect()
     };
-    let first = work
-        .iter()
-        .map(|action| (action.reference.turn_index, action.reference.part_index))
-        .min()
-        .ok_or(JevError::InvalidCheckContext)?;
-    let last = work
-        .iter()
-        .map(|action| (action.reference.turn_index, action.reference.part_index))
-        .max()
-        .ok_or(JevError::InvalidCheckContext)?;
     let fields = json!({
         "bound_work": render(work, "bound_work", JevEvidenceRole::Candidate, &mut evidence),
         "supporting_activity": render(context, "supporting_activity", JevEvidenceRole::SupportingContext, &mut evidence),
         "activity_window": index, "activity_window_count": 1,
         "recorded_facts": {
-            "bound_work_complete": true, "matched_call_results_present": true,
-            "selected_events_untruncated": true, "all_episode_context_in_this_window": true,
-            "scope_order": scope.occurrences().iter().enumerate().map(|(index, occurrence)| {
-                let position = (occurrence.reference.turn_index, occurrence.reference.part_index);
-                json!({"occurrence":index,"relative_to_work":if position < first { "before_work" } else if position > last { "after_work" } else { "during_work" }})
-            }).collect::<Vec<_>>(),
+            "matched_call_results_present": work.iter().any(|action| action.kind == "tool_result"),
+            "selected_events_untruncated": work.iter().chain(context).all(|action| !action.truncated),
         },
     });
     let id = digest(&(&group.id, &fields, &evidence))?;
     Ok(JevWorkItem {
         id,
         window: JevInputWindow { fields, evidence },
-        questions: questions(true),
+        questions: questions(),
     })
 }

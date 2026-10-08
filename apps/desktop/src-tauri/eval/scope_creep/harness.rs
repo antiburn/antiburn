@@ -49,13 +49,14 @@ async fn evaluate(
             } else {
                 "unassessed"
             };
-            let exact = result.findings.len() == 1
+            let exact = !result.findings.is_empty()
                 && result.findings.iter().all(|finding| {
-                    plan.prepared
-                        .groups
-                        .iter()
-                        .any(|group| finding.group_id == group.id && finding.work == group.work)
-                        && finding.task_scope == plan.prepared.scope_bindings
+                    plan.prepared.groups.iter().any(|group| {
+                        finding.group_id == group.id
+                            && finding.work == group.work
+                            && finding.task_scope == group.task_scope
+                            && finding.observation_kind == group.observation_kind
+                    }) && finding.decision_probability >= DECISION_THRESHOLD
                         && finding.scope_digest == plan.prepared.scope_digest
                         && finding.revisions == REVISIONS
                         && finding.model == plan.capabilities.model
@@ -67,24 +68,13 @@ async fn evaluate(
                 .work_items
                 .iter()
                 .map(|item| {
-                    ScopeQuestion::ALL
-                        .into_iter()
-                        .flat_map(|question| {
-                            question
-                                .answer_keys()
-                                .iter()
-                                .map(move |key| (question, *key))
-                        })
-                        .filter(|(question, key)| {
-                            let id = if *question == ScopeQuestion::Performed {
-                                item.id.clone()
-                            } else {
-                                format!("{}::followup", item.id)
-                            };
+                    item.questions
+                        .keys()
+                        .filter(|key| {
                             outcome
                                 .progress
                                 .results
-                                .get(&id)
+                                .get(&item.id)
                                 .is_none_or(|result| !result.answers.contains_key(*key))
                         })
                         .count()
@@ -129,7 +119,7 @@ pub(crate) async fn run() -> Result<(), String> {
     for case in &cases {
         let row = evaluate(case, &client, &usage).await;
         stopped = support::run::stop_reason(
-            case.authority_fixture && row["observed"] != "unassessed",
+            false,
             row["missing_scheduled_answers"]
                 .as_u64()
                 .is_some_and(|count| count > 0),
@@ -161,6 +151,11 @@ fn preparation_preserves_exact_work_and_unavailable_authority() {
         for case in fixtures::cases(suite) {
             let check = fixtures::check(&case);
             let plan = check.prepare(check.context()).unwrap();
+            assert!(plan.shared_context.is_none());
+            assert!(
+                plan.work_items.iter().all(|item| item.questions.len() == 1
+                    && item.questions.contains_key("scope_decision"))
+            );
             assert!(!plan.prepared.groups.is_empty(), "{}", case.id);
             assert!(
                 plan.prepared
@@ -183,6 +178,58 @@ fn preparation_preserves_exact_work_and_unavailable_authority() {
                         .all(|decision| decision.status == ScopeCreepStatus::Unassessed)
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn live_regression_cases_bind_one_operation_and_keep_approval_and_failure_context() {
+    for scenario in [
+        "optional_feature",
+        "approval_start",
+        "approval_middle",
+        "approval_end",
+        "necessary_dependency",
+        "failed_execution",
+    ] {
+        let case = fixtures::cases("development")
+            .into_iter()
+            .find(|case| case.scenario == scenario)
+            .unwrap();
+        let check = fixtures::check(&case);
+        let plan = check.prepare(check.context()).unwrap();
+        assert_eq!(plan.prepared.groups.len(), 1, "{scenario}");
+        assert_eq!(plan.work_items.len(), 1, "{scenario}");
+        assert_eq!(plan.work_items[0].questions.len(), 1);
+        let fields = &plan.work_items[0].window.fields;
+        assert!(
+            fields
+                .to_string()
+                .contains("Fix the login token expiry bug")
+        );
+        if scenario.starts_with("approval_") {
+            let records = fields["task_scope"].as_array().unwrap();
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| record["occurrence"]["authority"] == "user")
+                    .count(),
+                34
+            );
+            assert!(
+                records
+                    .iter()
+                    .any(|record| record["content"].as_str().is_some_and(|text| text
+                        .starts_with("I explicitly authorize this entire additional work"))),
+                "{scenario}"
+            );
+        }
+        if scenario == "failed_execution" {
+            assert!(
+                fields["bound_work"]
+                    .to_string()
+                    .contains("The write failed before any file changed")
+            );
         }
     }
 }

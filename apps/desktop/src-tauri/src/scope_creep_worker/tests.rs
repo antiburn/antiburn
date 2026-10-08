@@ -272,30 +272,6 @@ impl NativeFixture {
 }
 
 fn answer(question: ScopeQuestion, key: &str) -> JevAnswer {
-    if let Some((positive, _)) = question.noul_answers() {
-        return JevAnswer::Noul {
-            noul: if key == positive.key() { 1.0 } else { 0.0 },
-        };
-    }
-    if question == ScopeQuestion::Materiality {
-        let antiburn_local::analysis::jev::JevQuestion::Score { criteria, .. } =
-            question.question()
-        else {
-            panic!("expected score");
-        };
-        return JevAnswer::Score {
-            score: 1.0,
-            legend: criteria
-                .into_iter()
-                .enumerate()
-                .map(|(index, criterion)| {
-                    (index.to_string(), criterion.as_str().unwrap().to_owned())
-                })
-                .collect(),
-            confidence: 1.0,
-            probabilities: BTreeMap::from([("0".into(), 0.0), ("1".into(), 1.0)]),
-        };
-    }
     let antiburn_local::analysis::jev::JevQuestion::Choice { criteria, .. } = question.question()
     else {
         panic!("expected choice");
@@ -315,42 +291,26 @@ fn results(input: &PreparedInput, acceptance: bool) -> Vec<JevWorkItemResult> {
         .plan
         .work_items
         .iter()
-        .flat_map(|item| {
-            let mut evidence = input.plan.shared_context.as_ref().unwrap().evidence.clone();
-            evidence.extend(item.window.evidence.clone());
-            [true, false].map(|initial| JevWorkItemResult {
-                request_id: format!("{}:{initial}", item.id),
-                work_item_id: if initial {
-                    item.id.clone()
-                } else {
-                    format!("{}::followup", item.id)
-                },
-                model: input.plan.capabilities.model.clone(),
-                evidence: evidence.clone(),
-                usage: JevUsage {
-                    input_tokens: 10,
-                    output_tokens: 2,
-                },
-                answers: ScopeQuestion::ALL
-                    .into_iter()
-                    .filter(|question| (*question == ScopeQuestion::Performed) == initial)
-                    .flat_map(|question| {
-                        question.answer_keys().iter().map(move |key| {
-                            (
-                                (*key).into(),
-                                answer(
-                                    question,
-                                    if acceptance && question == ScopeQuestion::LaterAcceptance {
-                                        "accepted"
-                                    } else {
-                                        question.positive()
-                                    },
-                                ),
-                            )
-                        })
-                    })
-                    .collect(),
-            })
+        .map(|item| JevWorkItemResult {
+            request_id: item.id.clone(),
+            work_item_id: item.id.clone(),
+            model: input.plan.capabilities.model.clone(),
+            evidence: item.window.evidence.clone(),
+            usage: JevUsage {
+                input_tokens: 10,
+                output_tokens: 2,
+            },
+            answers: BTreeMap::from([(
+                "scope_decision".into(),
+                answer(
+                    ScopeQuestion::Decision,
+                    if acceptance {
+                        "no_issue"
+                    } else {
+                        "likely_scope_expansion"
+                    },
+                ),
+            )]),
         })
         .collect()
 }
@@ -417,8 +377,13 @@ fn persisted_native_scope_approval_withdraws_findings_and_saved_prompt_citations
     );
     let latest = load_input(&fixture.store, &current, &capabilities).unwrap();
     assert_ne!(input.durable.input_revision, latest.durable.input_revision);
-    let shared = latest.plan.shared_context.as_ref().unwrap();
-    assert!(shared.fields.to_string().contains("I approve and accept"));
+    assert!(
+        latest.plan.work_items[0]
+            .window
+            .fields
+            .to_string()
+            .contains("I approve and accept")
+    );
     let result = latest
         .check
         .reduce(&latest.plan, &results(&latest, true), true)
@@ -438,7 +403,7 @@ fn persisted_native_scope_approval_withdraws_findings_and_saved_prompt_citations
 }
 
 #[test]
-fn every_selected_and_followup_request_retains_full_latest_scope() {
+fn selected_work_has_one_local_decision_and_resumable_four_target_turns() {
     let fixture = NativeFixture::paged();
     let candidate = fixture.publish();
     let input = load_input(
@@ -477,9 +442,9 @@ fn every_selected_and_followup_request_retains_full_latest_scope() {
             let followup = input
                 .check
                 .reconcile(item, initial, input.check.context())
-                .unwrap()
                 .unwrap();
-            assert_eq!(followup.window, item.window);
+            assert!(followup.is_none());
+            assert_eq!(item.questions.len(), 1);
         }
         let selected_results = all_results
             .iter()
@@ -494,7 +459,7 @@ fn every_selected_and_followup_request_retains_full_latest_scope() {
         let reduction = input.check.reduce(&plan, &selected_results, true).unwrap();
         record_completion(&mut sampling, &job, &reduction).unwrap();
     }
-    assert_eq!(selected.len(), 8);
+    assert_eq!(selected.len(), 4);
     let mut restored: SamplingProgress =
         serde_json::from_str(&serde_json::to_string(&sampling).unwrap()).unwrap();
     assert!(restored.choose_job().is_none());
@@ -503,7 +468,7 @@ fn every_selected_and_followup_request_retains_full_latest_scope() {
     while let Some(job) = restored.choose_job() {
         next.insert(job.candidate);
     }
-    assert_eq!(selected.union(&next).count(), 9);
+    assert_eq!(selected.union(&next).count(), 8);
 }
 
 #[test]
@@ -577,15 +542,16 @@ fn restart_config_switch_delete_and_clear_fence_publications() {
 }
 
 #[test]
-fn oversized_full_scope_has_typed_limitation_and_no_dispatch_work() {
+fn oversized_atomic_target_has_typed_limitation_and_no_dispatch_work() {
     let fixture = NativeFixture::new(1);
     let candidate = fixture.publish();
     let mut capabilities = ModelCapabilities::jev_default();
     capabilities.request_body_bytes.value = Some(1);
     let input = load_input(&fixture.store, &candidate, &capabilities).unwrap();
+    assert!(input.plan.prepared.session_limitation.is_none());
     assert_eq!(
-        input.plan.prepared.session_limitation,
-        Some(SessionScopeError::ScopeTooLarge)
+        input.plan.prepared.groups[0].limitation.as_deref(),
+        Some("work_context_too_large")
     );
     assert!(input.plan.work_items.is_empty());
     assert!(ScopeCreepCheck::sampling_candidates(&input.plan).is_empty());
@@ -616,7 +582,7 @@ fn oversized_full_scope_has_typed_limitation_and_no_dispatch_work() {
             &fixture.store,
             &input,
             &cursor,
-            "scope_context_too_large",
+            "work_context_too_large",
             None
         )
         .unwrap()
@@ -665,7 +631,7 @@ fn publication_gate_rejects_partial_clean_and_changed_revisions_or_work_bindings
     assert!(!valid_publication(&saved));
     assert_eq!(
         CHECK.evaluator_revision(),
-        "scope-creep-adapter-v1:7:2:22:10"
+        "scope-creep-adapter-v2:8:4:24:11"
     );
 }
 
@@ -721,7 +687,7 @@ fn persisted_cursor_resumes_a_bounded_run_and_provider_change_keeps_fair_order()
     while restored.sampling.as_mut().unwrap().choose_job().is_some() {
         remaining += 1;
     }
-    assert_eq!(remaining, 7);
+    assert_eq!(remaining, 3);
     let switched = restore_cursor(Some(&saved), &input.durable, 8);
     assert!(switched.active_job.is_none());
     assert!(switched.result.is_none());
@@ -729,7 +695,7 @@ fn persisted_cursor_resumes_a_bounded_run_and_provider_change_keeps_fair_order()
 }
 
 #[test]
-fn actual_native_requests_repeat_full_scope_and_fit_failure_makes_zero_requests() {
+fn mocked_native_production_request_persists_one_decision_and_fit_failure_makes_zero_requests() {
     use antiburn_local::analysis::jev::{JevResponse, run_jev_check_prepared};
     use std::sync::atomic::{AtomicUsize, Ordering};
     let fixture = NativeFixture::new(1);
@@ -751,10 +717,7 @@ fn actual_native_requests_repeat_full_scope_and_fit_failure_makes_zero_requests(
             JevRunProgress::default(),
             admit_jev_orchestration().await.unwrap(),
             |batch| {
-                assert_eq!(
-                    batch.request.state["shared_context"],
-                    input.plan.shared_context.as_ref().unwrap().fields
-                );
+                assert_eq!(batch.request.questions.len(), 1);
                 assert!(
                     batch
                         .request
@@ -780,11 +743,11 @@ fn actual_native_requests_repeat_full_scope_and_fit_failure_makes_zero_requests(
                         .answer_owners
                         .iter()
                         .map(|(id, (_, key))| {
-                            let question = ScopeQuestion::ALL
-                                .into_iter()
-                                .find(|question| question.answer_keys().contains(&key.as_str()))
-                                .unwrap();
-                            (id.clone(), answer(question, question.positive()))
+                            assert_eq!(key, "scope_decision");
+                            (
+                                id.clone(),
+                                answer(ScopeQuestion::Decision, "likely_scope_expansion"),
+                            )
                         })
                         .collect(),
                 };
@@ -796,8 +759,23 @@ fn actual_native_requests_repeat_full_scope_and_fit_failure_makes_zero_requests(
         .unwrap()
     });
     assert!(outcome.complete, "{:?}", outcome.failure);
-    assert_eq!(count.load(Ordering::SeqCst), 2);
+    assert_eq!(count.load(Ordering::SeqCst), 1);
     assert_eq!(outcome.result.findings.len(), 1);
+    let id = outcome.result.findings[0].id.clone();
+    persist(&fixture.store, &input, outcome.result);
+    let saved = current_publication(&fixture.store.lock(), &SourceFence::from(&candidate))
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.assessment.findings[0].decision_probability, 1.0);
+    assert_eq!(
+        saved.assessment.decisions[0].outcome,
+        Some(ScopeAnswer::LikelyScopeExpansion)
+    );
+    assert!(
+        saved_finding_citations(&fixture.store.lock(), &SourceFence::from(&candidate), &id)
+            .unwrap()
+            .is_some()
+    );
     let mut capabilities = ModelCapabilities::jev_default();
     capabilities.request_body_bytes.value = Some(1);
     let limited = load_input(&fixture.store, &candidate, &capabilities).unwrap();
@@ -820,8 +798,205 @@ fn actual_native_requests_repeat_full_scope_and_fit_failure_makes_zero_requests(
         .unwrap()
     });
     assert_eq!(count.load(Ordering::SeqCst), 0);
+    assert!(outcome.result.session_limitation.is_none());
+    assert_eq!(outcome.result.coverage.skipped_items, 1);
+}
+
+#[test]
+fn valid_uncertainty_is_reviewed_and_durable_without_clean_coverage() {
+    let fixture = NativeFixture::new(1);
+    let candidate = fixture.publish();
+    let input = load_input(
+        &fixture.store,
+        &candidate,
+        &ModelCapabilities::jev_default(),
+    )
+    .unwrap();
+    let mut answers = results(&input, false);
+    answers[0].answers = BTreeMap::from([(
+        "scope_decision".into(),
+        answer(ScopeQuestion::Decision, "uncertain"),
+    )]);
+    let result = input.check.reduce(&input.plan, &answers, true).unwrap();
+    assert_eq!(result.assessed_candidates, 1);
+    assert_eq!(result.remaining_candidates, 0);
+    assert!(!publication_has_clean_coverage(&result));
+    assert!(valid_publication(&publication(&input, result.clone())));
+    let mut sampling = new_sampling().unwrap();
+    sampling
+        .synchronize(
+            ScopeCreepCheck::check_identity(),
+            input.plan.prepared.semantic_epoch,
+            &ScopeCreepCheck::sampling_candidates(&input.plan),
+        )
+        .unwrap();
+    sampling.begin_run();
+    let job = sampling.choose_job().unwrap();
+    record_completion(&mut sampling, &job, &result).unwrap();
+    let mut cursor = restore_cursor(None, &input.durable, 7);
+    cursor.sampling = Some(sampling);
+    cursor.result = Some(result);
+    fixture
+        .store
+        .queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)
+        .unwrap();
+    fixture
+        .store
+        .claim_burn_check_assessment(
+            &input.durable,
+            unix_now(),
+            POLICY.lease_secs,
+            POLICY.idle_secs,
+        )
+        .unwrap();
+    assert!(save_failure(&fixture.store, &input, &cursor, "sampling_incomplete", None).unwrap());
+    let reopened = Store::open(fixture.directory.path()).unwrap();
+    let saved = reopened
+        .burn_check_assessment(&input.durable.key, CHECK_ID)
+        .unwrap()
+        .unwrap();
+    let mut restored = restore_cursor(Some(&saved), &input.durable, 7);
+    restored.sampling.as_mut().unwrap().begin_run();
+    assert!(restored.sampling.as_mut().unwrap().choose_job().is_none());
+    assert!(
+        current_publication(&reopened.lock(), &SourceFence::from(&candidate))
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn failed_attempt_publication_uses_same_partial_decision_semantics() {
+    let fixture = NativeFixture::new(0);
+    fixture.append(2, "assistant", json!({"type":"tool","tool":"write","callID":"failed-billing", "state":{"status":"error", "input":{"filePath":"/synthetic/billing.rs","content":"Implement an independent billing API"},"error":"Permission denied; no file changed."}}));
+    let candidate = fixture.publish();
+    let input = load_input(
+        &fixture.store,
+        &candidate,
+        &ModelCapabilities::jev_default(),
+    )
+    .unwrap();
+    assert_eq!(input.plan.work_items.len(), 1);
+    let result = input
+        .check
+        .reduce(&input.plan, &results(&input, false), true)
+        .unwrap();
+    assert_eq!(result.findings.len(), 1);
     assert_eq!(
-        outcome.result.session_limitation,
-        Some(SessionScopeError::ScopeTooLarge)
+        result.findings[0].observation_kind,
+        antiburn_local::checks::scope_creep::WorkObservationKind::Attempt
+    );
+    assert!(publishable_finding(
+        &result.findings[0],
+        &publication(&input, result.clone())
+    ));
+    let mut changed = publication(&input, result);
+    changed.assessment.findings[0].decision_probability = 0.74;
+    assert!(!valid_publication(&changed));
+}
+
+#[test]
+fn accepted_positive_survives_a_failed_sibling_and_remains_non_clean_after_restart() {
+    use antiburn_local::analysis::jev::{JevResponse, run_jev_check_prepared};
+    let fixture = NativeFixture::new(2);
+    let candidate = fixture.publish();
+    let mut capabilities = ModelCapabilities::jev_default();
+    capabilities.questions_per_request.value = Some(1);
+    let input = load_input(&fixture.store, &candidate, &capabilities).unwrap();
+    assert_eq!(input.plan.work_items.len(), 2);
+    let mut plan = input.plan.clone();
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let outcome = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        run_jev_check_prepared(
+            &input.check,
+            input.check.context(),
+            &mut plan,
+            JevRunProgress::default(),
+            admit_jev_orchestration().await.unwrap(),
+            |batch| {
+                let response = if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    Ok(JevResponse {
+                        model: batch.request.model.clone(),
+                        usage: JevUsage {
+                            input_tokens: 10,
+                            output_tokens: 2,
+                        },
+                        answers: batch
+                            .answer_owners
+                            .keys()
+                            .map(|id| {
+                                (
+                                    id.clone(),
+                                    answer(ScopeQuestion::Decision, "likely_scope_expansion"),
+                                )
+                            })
+                            .collect(),
+                    })
+                } else {
+                    Err(JevError::InvalidCheckPlan)
+                };
+                async move { response }
+            },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap()
+    });
+    assert!(outcome.failure.is_some());
+    assert!(!outcome.complete);
+    assert_eq!(outcome.result.findings.len(), 1);
+    let id = outcome.result.findings[0].id.clone();
+    let mut sampling = new_sampling().unwrap();
+    sampling
+        .synchronize(
+            ScopeCreepCheck::check_identity(),
+            input.plan.prepared.semantic_epoch,
+            &ScopeCreepCheck::sampling_candidates(&input.plan),
+        )
+        .unwrap();
+    sampling.begin_run();
+    while let Some(job) = sampling.choose_job() {
+        record_completion(&mut sampling, &job, &outcome.result).unwrap();
+    }
+    let mut cursor = restore_cursor(None, &input.durable, 7);
+    cursor.sampling = Some(sampling);
+    cursor.result = Some(input.check.reduce(&input.plan, &[], false).unwrap());
+    cursor.run_progress = outcome.progress;
+    merge_result(cursor.result.as_mut().unwrap(), outcome.result, &plan);
+    for result in cursor.run_progress.results.values() {
+        cursor
+            .accepted_request_usage
+            .insert(result.request_id.clone(), result.usage);
+    }
+    update_result_counts(&mut cursor, &input);
+    assert_eq!(cursor.result.as_ref().unwrap().assessed_candidates, 1);
+    assert_eq!(cursor.result.as_ref().unwrap().remaining_candidates, 1);
+    assert!(!publication_has_clean_coverage(
+        cursor.result.as_ref().unwrap()
+    ));
+    fixture
+        .store
+        .queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)
+        .unwrap();
+    fixture
+        .store
+        .claim_burn_check_assessment(
+            &input.durable,
+            unix_now(),
+            POLICY.lease_secs,
+            POLICY.idle_secs,
+        )
+        .unwrap();
+    assert!(save_failure(&fixture.store, &input, &cursor, "provider_error", None).unwrap());
+    let reopened = Store::open(fixture.directory.path()).unwrap();
+    let saved = current_publication(&reopened.lock(), &SourceFence::from(&candidate))
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.assessment.findings.len(), 1);
+    assert!(!publication_has_clean_coverage(&saved.assessment));
+    assert!(
+        saved_finding_citations(&reopened.lock(), &SourceFence::from(&candidate), &id)
+            .unwrap()
+            .is_some()
     );
 }

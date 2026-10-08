@@ -144,7 +144,11 @@ pub(super) fn retain_definition(
         directory_name: directory_name.to_owned(),
         resource_scope: scope,
         identity,
-        revision: digest(frontmatter.to_string().as_bytes()),
+        revision: digest(
+            serde_json::json!((&frontmatter, &description))
+                .to_string()
+                .as_bytes(),
+        ),
         name,
         description,
         frontmatter,
@@ -194,7 +198,7 @@ fn parse_frontmatter(
     let text = std::str::from_utf8(bytes).ok()?.replace("\r\n", "\n");
     let mut lines = text.lines();
     if lines.next()? != "---" {
-        return None;
+        return Some((directory_name.to_owned(), text, serde_json::json!({})));
     }
     let mut yaml = String::new();
     let mut closed = false;
@@ -213,24 +217,35 @@ fn parse_frontmatter(
         return None;
     }
     let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).ok()?;
-    let frontmatter = serde_json::to_value(parsed).ok()?;
+    let frontmatter = if yaml.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::to_value(parsed).ok()?
+    };
     let object = frontmatter.as_object()?;
     let name = match object.get("name") {
         Some(value) => value.as_str()?,
         None => directory_name,
     }
     .trim();
-    let description = object.get("description")?.as_str()?.trim();
+    let description = match object.get("description") {
+        None | Some(serde_json::Value::Null) => "",
+        Some(value) => value.as_str()?.trim(),
+    };
     if name.is_empty()
         || name.len() > 256
         || name.chars().any(char::is_control)
-        || description.is_empty()
         || description.len() > MAX_SKILL_DESCRIPTION_BYTES
         || frontmatter.to_string().len() > MAX_SKILL_FRONTMATTER_BYTES
     {
         return None;
     }
-    Some((name.to_owned(), description.to_owned(), frontmatter))
+    let reference = if description.is_empty() {
+        text.clone()
+    } else {
+        description.to_owned()
+    };
+    Some((name.to_owned(), reference, frontmatter))
 }
 
 fn path_identity(path: &Path) -> String {

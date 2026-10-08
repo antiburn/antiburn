@@ -8,11 +8,10 @@ use antiburn_local::analysis::jev::capabilities::ModelCapabilities;
 use antiburn_local::analysis::jev::{
     JevCheck, JevCheckPlan, JevError, JevRunProgress, JevUsage, admit_jev_orchestration,
 };
-use antiburn_local::analysis::session_scope::SessionScopeError;
 use antiburn_local::checks::sampling::{SamplingJob, SamplingLimits, SamplingProgress, StableId};
 use antiburn_local::checks::scope_creep::{
-    REVISIONS, ScopeCreepCheck, ScopeCreepFinding, ScopeCreepPrepared, ScopeCreepResult,
-    ScopeCreepStatus, ScopeQuestion,
+    DECISION_THRESHOLD, REVISIONS, ScopeAnswer, ScopeCreepCheck, ScopeCreepFinding,
+    ScopeCreepPrepared, ScopeCreepResult, ScopeCreepStatus, ScopeQuestion,
 };
 use rusqlite::{OptionalExtension, params};
 use tauri::Emitter;
@@ -29,7 +28,7 @@ use crate::store::{
 };
 
 pub(crate) const CHECK_ID: &str = "scope_creep";
-const CURSOR_REVISION: u32 = 1;
+const CURSOR_REVISION: u32 = 2;
 const POLICY: CheckPolicy = CheckPolicy {
     idle_secs: 180,
     lease_secs: 300,
@@ -257,12 +256,20 @@ pub(crate) fn prepare(
         .content()
         .actions
         .iter()
-        .map(|action| (action.reference.id.clone(), action.text.clone()))
+        .map(|action| {
+            (
+                action.reference.id.clone(),
+                action.text.chars().take(4096).collect(),
+            )
+        })
         .collect();
     for occurrence in snapshot.scope().occurrences() {
         let text = serde_json::to_string(&snapshot.scope().values()[occurrence.value_index])
             .map_err(InputLoadError::Serialization)?;
-        citations.insert(occurrence.reference.id.clone(), text);
+        citations.insert(
+            occurrence.reference.id.clone(),
+            text.chars().take(4096).collect(),
+        );
     }
     Ok(PreparedInput {
         durable: BurnCheckInput {
@@ -316,8 +323,8 @@ fn new_sampling() -> anyhow::Result<SamplingProgress> {
     SamplingProgress::new(SamplingLimits {
         checks: 1,
         candidates_per_check: 65_536,
-        answers_per_candidate: 65_536 * ScopeQuestion::ALL.len(),
-        judgments_per_run: 8,
+        answers_per_candidate: 1,
+        judgments_per_run: 4,
     })
     .map_err(|error| anyhow::anyhow!("invalid sampling limits: {error:?}"))
 }
@@ -461,11 +468,18 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     if cursor.result.is_none() {
         cursor.result = Some(input.check.reduce(&input.plan, &[], false)?);
     }
-    if input.plan.prepared.session_limitation == Some(SessionScopeError::ScopeTooLarge) {
+    if !input.plan.prepared.groups.is_empty()
+        && input
+            .plan
+            .prepared
+            .groups
+            .iter()
+            .all(|group| group.limitation.as_deref() == Some("work_context_too_large"))
+    {
         cursor.blocked_fit_key = Some(input.fit_key.clone());
         handle
             .with_current_generation(key_generation, || {
-                if save_failure(store, &input, &cursor, "scope_context_too_large", None)? {
+                if save_failure(store, &input, &cursor, "work_context_too_large", None)? {
                     let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
                     record_assessment(
                         app,
@@ -530,6 +544,26 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             return Ok(());
         }
         cursor.run_progress = outcome.progress;
+        for result in cursor.run_progress.results.values() {
+            if let Some(previous) = cursor
+                .accepted_request_usage
+                .insert(result.request_id.clone(), result.usage)
+                && previous != result.usage
+            {
+                anyhow::bail!("scope request usage changed");
+            }
+        }
+        record_completion(
+            cursor.sampling.as_mut().expect("initialized"),
+            &job,
+            &outcome.result,
+        )?;
+        merge_result(
+            cursor.result.as_mut().expect("initialized"),
+            outcome.result,
+            &plan,
+        );
+        update_result_counts(&mut cursor, &input);
         if let Some(error) = outcome.failure {
             let rejected = matches!(error, JevError::AuthenticationRejected);
             let saved = handle
@@ -563,60 +597,13 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             rejection?;
             return Ok(());
         }
-        for result in cursor.run_progress.results.values() {
-            if let Some(previous) = cursor
-                .accepted_request_usage
-                .insert(result.request_id.clone(), result.usage)
-                && previous != result.usage
-            {
-                anyhow::bail!("scope request usage changed");
-            }
-        }
-        if outcome.complete {
-            record_completion(
-                cursor.sampling.as_mut().expect("initialized"),
-                &job,
-                &outcome.result,
-            )?;
-        }
-        merge_result(
-            cursor.result.as_mut().expect("initialized"),
-            outcome.result,
-            &plan,
-        );
         cursor.active_job = None;
         cursor.run_progress = JevRunProgress::default();
         if !save_cursor(store, &input.durable, &cursor)? {
             return Ok(());
         }
     }
-    let coverage = cursor
-        .sampling
-        .as_ref()
-        .expect("initialized")
-        .coverage(ScopeCreepCheck::check_identity())
-        .expect("synchronized");
-    let result = cursor.result.as_mut().expect("initialized");
-    result.assessed_candidates = coverage.completed;
-    result.remaining_candidates = input
-        .plan
-        .prepared
-        .groups
-        .len()
-        .saturating_sub(coverage.completed);
-    result.coverage.selected_items = coverage.completed;
-    result.coverage.not_selected_items = coverage.remaining;
-    result.request_count = cursor.accepted_request_usage.len();
-    result.input_tokens = cursor
-        .accepted_request_usage
-        .values()
-        .map(|usage| usage.input_tokens)
-        .sum();
-    result.output_tokens = cursor
-        .accepted_request_usage
-        .values()
-        .map(|usage| usage.output_tokens)
-        .sum();
+    update_result_counts(&mut cursor, &input);
     let published = handle
         .with_current_generation(key_generation, || {
             let outcome = publish_current(store, candidate, &capabilities, &input, &cursor)?;
@@ -631,6 +618,53 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
     }
     Ok(())
+}
+
+fn update_result_counts(cursor: &mut AssessmentCursor, input: &PreparedInput) {
+    let coverage = cursor
+        .sampling
+        .as_ref()
+        .expect("initialized")
+        .coverage(ScopeCreepCheck::check_identity())
+        .expect("synchronized");
+    let result = cursor.result.as_mut().expect("initialized");
+    result.coverage = input.plan.coverage.clone();
+    if result
+        .decisions
+        .iter()
+        .any(|decision| decision.status == ScopeCreepStatus::Uncertain)
+    {
+        result
+            .coverage
+            .limitations
+            .push("uncertain_decision".into());
+    }
+    result.assessed_candidates = coverage.completed;
+    result.remaining_candidates = input
+        .plan
+        .prepared
+        .groups
+        .len()
+        .saturating_sub(coverage.completed);
+    result.coverage.selected_items = coverage.completed;
+    result.coverage.not_selected_items = coverage.remaining;
+    if result.remaining_candidates > 0 {
+        result
+            .coverage
+            .limitations
+            .push("assessment_incomplete".into());
+    }
+    result.request_count = cursor.accepted_request_usage.len();
+    result.input_tokens = cursor
+        .accepted_request_usage
+        .values()
+        .map(|usage| usage.input_tokens)
+        .sum();
+    result.output_tokens = cursor
+        .accepted_request_usage
+        .values()
+        .map(|usage| usage.output_tokens)
+        .sum();
 }
 
 fn record_assessment(
@@ -655,7 +689,7 @@ fn record_completion(
 ) -> anyhow::Result<()> {
     if let Some(decision) = result.decisions.iter().find(|decision| {
         StableId::new("scope_work", &[decision.group_id.as_bytes()]) == job.candidate
-            && decision.status != ScopeCreepStatus::Unassessed
+            && decision.outcome.is_some()
     }) {
         for answer in &decision.reduced_answer_ids {
             sampling
@@ -779,7 +813,10 @@ pub(crate) fn publication_has_clean_coverage(result: &ScopeCreepResult) -> bool 
         && !result.coverage.processing_limit_reached
         && result.coverage.limitations.is_empty()
         && result.decisions.iter().all(|decision| {
-            decision.status != ScopeCreepStatus::Unassessed && decision.limitation.is_none()
+            matches!(
+                decision.status,
+                ScopeCreepStatus::Finding | ScopeCreepStatus::Clean
+            ) && decision.limitation.is_none()
         })
 }
 
@@ -837,7 +874,7 @@ fn valid_publication(publication: &Publication) -> bool {
             == result
                 .decisions
                 .iter()
-                .filter(|decision| decision.status != ScopeCreepStatus::Unassessed)
+                .filter(|decision| decision.outcome.is_some())
                 .count()
         && result.remaining_candidates
             == prepared
@@ -845,65 +882,57 @@ fn valid_publication(publication: &Publication) -> bool {
                 .len()
                 .saturating_sub(result.assessed_candidates)
         && result.decisions.iter().all(|decision| {
-            if decision.status == ScopeCreepStatus::Unassessed {
-                return true;
-            }
             let group = prepared
                 .groups
                 .iter()
                 .find(|group| group.id == decision.group_id)
                 .expect("validated groups");
-            group.limitation.is_none()
-                && !group.window_ids.is_empty()
-                && decision.limitation.is_none()
-                && decision.judgments.len() == group.window_ids.len()
-                && [
-                    ScopeQuestion::Authority,
-                    ScopeQuestion::Sufficiency,
-                    ScopeQuestion::Coherence,
-                ]
-                .iter()
-                .all(|question| decision.proof_questions.contains(question))
-                && group.window_ids.iter().all(|window| {
-                    decision.proof_questions.iter().all(|question| {
-                        decision
-                            .accepted_questions
-                            .get(window)
-                            .is_some_and(|accepted| accepted.contains(question))
-                            && decision
-                                .judgments
-                                .get(window)
-                                .and_then(|judgments| judgments.get(question))
-                                .is_some_and(|answer| {
-                                    if decision.status == ScopeCreepStatus::Finding
-                                        || matches!(
-                                            question,
-                                            ScopeQuestion::Authority
-                                                | ScopeQuestion::Sufficiency
-                                                | ScopeQuestion::Coherence
-                                        )
-                                    {
-                                        answer.key() == question.positive()
-                                    } else {
-                                        matches!(
-                                            (question, answer.key()),
-                                            (ScopeQuestion::Performed, "not_performed")
-                                                | (ScopeQuestion::Approval, "authorized")
-                                                | (ScopeQuestion::Necessity, "necessary")
-                                                | (ScopeQuestion::OptionalWork, "not_optional")
-                                                | (ScopeQuestion::Materiality, "minor")
-                                                | (ScopeQuestion::LaterAcceptance, "accepted")
-                                        )
-                                    }
-                                })
-                    })
-                })
-                && decision.proof_questions.len() >= 4
+            valid_decision(decision, group, prepared)
         })
         && result
             .findings
             .iter()
             .all(|finding| publishable_finding(finding, publication))
+}
+
+fn valid_decision(
+    decision: &antiburn_local::checks::scope_creep::ScopeCreepDecision,
+    group: &antiburn_local::checks::scope_creep::WorkGroup,
+    prepared: &ScopeCreepPrepared,
+) -> bool {
+    let Some(outcome) = decision.outcome else {
+        return decision.status == ScopeCreepStatus::Unassessed
+            && decision.decision_probability.is_none()
+            && decision.reduced_answer_ids.is_empty();
+    };
+    let Some(probability) = decision.decision_probability else {
+        return false;
+    };
+    if !probability.is_finite()
+        || !(0.0..=1.0).contains(&probability)
+        || group.window_ids.len() != 1
+    {
+        return false;
+    }
+    let expected = match outcome {
+        ScopeAnswer::LikelyScopeExpansion if probability >= DECISION_THRESHOLD => {
+            ScopeCreepStatus::Finding
+        }
+        ScopeAnswer::LikelyScopeExpansion | ScopeAnswer::Uncertain => ScopeCreepStatus::Uncertain,
+        ScopeAnswer::NoIssue => ScopeCreepStatus::Clean,
+        _ => return false,
+    };
+    let epoch = String::from(prepared.semantic_epoch);
+    decision.status == expected
+        && decision.reduced_answer_ids
+            == [StableId::new(
+                "scope_answer",
+                &[
+                    epoch.as_bytes(),
+                    group.window_ids[0].as_bytes(),
+                    ScopeQuestion::Decision.key().as_bytes(),
+                ],
+            )]
 }
 
 pub(crate) fn publishable_finding(finding: &ScopeCreepFinding, publication: &Publication) -> bool {
@@ -934,9 +963,12 @@ pub(crate) fn publishable_finding(finding: &ScopeCreepFinding, publication: &Pub
     expected_id.is_ok_and(|id| id == finding.id)
         && finding.work == group.work
         && !finding.work.is_empty()
-        && group.limitation.is_none()
-        && finding.task_scope == publication.prepared.scope_bindings
-        && !finding.task_scope.is_empty()
+        && finding.task_scope == group.task_scope
+        && finding.observation_kind == group.observation_kind
+        && finding.decision_probability.is_finite()
+        && finding.decision_probability >= DECISION_THRESHOLD
+        && finding.decision_probability <= 1.0
+        && decision.decision_probability == Some(finding.decision_probability)
         && finding.scope_digest == publication.prepared.scope_digest
         && finding.revisions == REVISIONS
         && finding.model == publication.capabilities.model
@@ -944,23 +976,7 @@ pub(crate) fn publishable_finding(finding: &ScopeCreepFinding, publication: &Pub
         && finding.source_generation == publication.prepared.source_generation
         && finding.publication_fence == publication.prepared.publication_fence
         && decision.status == ScopeCreepStatus::Finding
-        && decision.limitation.is_none()
-        && decision.proof_questions == ScopeQuestion::ALL
-        && !group.window_ids.is_empty()
-        && decision.judgments.len() == group.window_ids.len()
-        && group.window_ids.iter().all(|window| {
-            ScopeQuestion::ALL.into_iter().all(|question| {
-                decision
-                    .accepted_questions
-                    .get(window)
-                    .is_some_and(|accepted| accepted.contains(&question))
-                    && decision
-                        .judgments
-                        .get(window)
-                        .and_then(|judgments| judgments.get(&question))
-                        .is_some_and(|answer| answer.key() == question.positive())
-            })
-        })
+        && valid_decision(decision, group, &publication.prepared)
         && finding.work.iter().all(|work| {
             work.reference.stable
                 && !work.digest.is_empty()
@@ -1030,8 +1046,8 @@ pub(crate) fn current_publication(
     }
     let complete = status == "completed" && publication_has_clean_coverage(&publication.assessment);
     let partial = status == "failed"
-        && category.as_deref() == Some("sampling_incomplete")
-        && !publication.assessment.findings.is_empty();
+        && (category.as_deref() == Some("sampling_incomplete")
+            || !publication.assessment.findings.is_empty());
     Ok((complete || partial).then_some(publication))
 }
 

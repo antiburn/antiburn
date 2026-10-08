@@ -18,11 +18,34 @@ Skill Opportunities has a registered descriptor, prompt, report, and shared UI
 path for the four pinned native sources in
 [retained-root smart-check inputs](session-coverage.md#retained-root-smart-check-inputs).
 Its immutable current-inventory
-snapshot retains full semantic descriptions/frontmatter and optional filesystem
-birth time. Agent, project, environment, enablement, ambiguous identity, and
-recorded-use filters constrain candidates. Creation after the relevant work
-timestamp excludes a candidate; missing time stays advisory. This current-data
+snapshot retains semantic frontmatter, selected reference text, and optional
+filesystem birth time. Only a valid nonempty description is sent as reference
+text. Missing, null, or blank descriptions and plain Markdown use the full
+Markdown as a fallback source; invalid YAML and non-string descriptions remain
+unsupported. Large fallback sources use at most four structural 4 KiB chunks
+with byte ranges and a partial flag. Known used skills follow the same rule.
+Agent, project, environment, and enablement constrain candidates. Ambiguous
+recorded-use identity and creation after the relevant work timestamp remain
+advisory limits, not candidate exclusions; missing time stays explicit. This current-data
 heuristic does not prove historical availability or contents.
+
+Each selected skill/work comparison uses one choice: useful opportunity, no
+opportunity, or uncertain. A validated positive can use partial selected work
+or unknown recorded-use absence. It does not prove that the skill was unused or
+that the work completed. Current source, inventory, use, and evaluator revisions
+must match. A failed assessment can retain validated positive siblings; partial
+or uncertain assessments cannot produce Clean.
+
+Incomplete current inventory retains valid definitions with an explicit limit.
+Report and evaluation matching validate selected reference text, source, byte
+ranges, partial coverage, and definition revision against the current definition.
+
+Scope Creep uses one choice per selected work group. Findings require a finite
+decision probability from 0.75 through 1.0 and distinguish recorded attempts
+from proposals. Retained task context can be empty; it does not prove complete
+approval history. Findings do not prove completed execution. Recorded approvals
+still constrain the decision. Uncertain and unassessed groups count separately
+from reviewed clean outcomes.
 
 The native skill-use adapter is fixture-characterized for `ClaudeJsonl`,
 `OpenCodeSqliteV2`, `CodexRolloutJsonl`, and `PiV3Jsonl` under the

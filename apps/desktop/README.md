@@ -32,8 +32,13 @@ server, or backend.
   Scope Creep, Over-exploring, and Skill Opportunities through the same master setting and
   provider connection. These checks can send recorded user task context,
   selected work, edit content and tool results, supported question/plan records,
-  current skill names, descriptions and semantic frontmatter, and use/time
-  limits. Private thinking stays excluded. Results are source-limited;
+  current skill names, selected reference text, and use/time limits. Skill
+  Opportunities sends only a valid nonempty description as reference text.
+  Missing, null, or blank descriptions and plain Markdown use bounded chunks
+  of the full Markdown, including frontmatter and body, with byte ranges and
+  a partial flag. Invalid YAML and non-string descriptions remain unsupported.
+  Known used skills follow the same rule. Private thinking stays excluded.
+  Results are source-limited;
   Skill Opportunities does not prove past skill visibility or execution. Each
   request sends bounded selected fields, not all transcripts. All four checks
   offer prompt-only guidance, with no Auto Fix, verification watch, or savings

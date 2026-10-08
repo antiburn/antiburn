@@ -16,13 +16,19 @@ Thank you for contributing.
 ## Privacy and safety
 
 Local Skill Opportunities reference inputs retain bounded current skill names,
-full descriptions, semantic frontmatter/metadata, optional filesystem birth
-time, and selected native skill-use identity/lifecycle/timing. Current inventory
+descriptions or full Markdown fallback sources, semantic frontmatter/metadata,
+optional filesystem birth time, and selected native skill-use
+identity/lifecycle/timing. Current inventory
 does not prove historical visibility or contents. This local adapter sends no
 requests by itself. The production worker sends selected skill fields and use
-limits to the configured provider; frontmatter and metadata can contain paths or other
-private values. Keep these inputs and native record/call IDs out of first-party
-analytics and ordinary report DTOs. Select individual reference snapshots rather
+limits to the configured provider. A valid nonempty description is the only
+reference text sent. Missing, null, or blank descriptions and plain Markdown
+use bounded structural chunks of the full Markdown, with byte ranges and a
+partial flag. These fallback chunks can include frontmatter, paths, or other
+private values. Invalid YAML and non-string descriptions remain unsupported.
+Known used skills follow the same selection. Keep these inputs and native
+record/call IDs out of first-party analytics and ordinary report DTOs.
+Select individual reference snapshots rather
 than serialize the entire inventory.
 
 antiburn keeps its session index locally and needs no project-operated account.

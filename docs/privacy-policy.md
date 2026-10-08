@@ -55,8 +55,14 @@ Scope Creep, Over-exploring, and Skill Opportunities use the shared setting and 
 connection for pinned native Claude Code, Codex, OpenCode SQLite, and Pi sessions.
 Their selected inputs
 can include recorded user task context, supporting work, read requests and
-results, supported question/plan records, current skill names, descriptions and
-semantic frontmatter, and recorded skill-use and time limits. Work evidence can
+results, supported question/plan records, current skill names, selected skill
+reference text, and recorded skill-use and time limits. A valid nonempty skill
+description is the only reference text sent. If the description is missing,
+null, or blank, or the file is plain Markdown, selected chunks of the full
+Markdown can be sent instead, including its frontmatter and body. Invalid YAML
+and non-string descriptions remain unsupported. Fallback chunks carry byte
+ranges and a partial flag; they do not claim complete file coverage. This rule
+also applies to known used skills. Work evidence can
 include edit content, command, read, search, and other tool inputs/results where
 the check selects them. Skill selection does not prove execution or past visibility.
 Private thinking is excluded. Selected text and paths can contain private data.

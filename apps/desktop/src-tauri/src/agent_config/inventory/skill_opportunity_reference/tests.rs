@@ -58,9 +58,8 @@ Private skill body.
 }
 
 #[test]
-fn name_only_malformed_duplicate_and_oversized_shapes_are_unavailable() {
+fn malformed_duplicate_and_oversized_shapes_are_unavailable() {
     for text in [
-        "---\nname: review\n---\n",
         "---\ndescription: []\n---\n",
         "---\ndescription: one\ndescription: two\n---\n",
         "---\ndescription: unfinished\n",
@@ -136,6 +135,42 @@ fn full_description_is_not_cut_to_the_existing_aggregate_name_limit() {
     let (_, parsed, _) = parse_frontmatter(text.as_bytes(), "review").unwrap();
     assert_eq!(parsed, description.trim());
     assert!(parsed.len() > 256);
+}
+
+#[test]
+fn missing_null_blank_descriptions_and_plain_markdown_select_full_markdown() {
+    for text in [
+        "---\n---\nFALLBACK_BODY_MARKER\n",
+        "---\nname: review\n---\nFALLBACK_BODY_MARKER\n",
+        "---\ndescription: null\n---\nFALLBACK_BODY_MARKER\n",
+        "---\ndescription: '  '\n---\nFALLBACK_BODY_MARKER\n",
+        "# Review\n\nFALLBACK_BODY_MARKER\n",
+    ] {
+        let (_, reference, _) = parse_frontmatter(text.as_bytes(), "review").unwrap();
+        assert_eq!(reference, text);
+    }
+    for text in [
+        "---\ndescription: 42\n---\nBODY\n",
+        "---\ndescription: true\n---\nBODY\n",
+        "---\ndescription: [broken\n---\nBODY\n",
+    ] {
+        assert!(parse_frontmatter(text.as_bytes(), "review").is_none());
+    }
+}
+
+#[test]
+fn fallback_body_changes_revision_and_large_markdown_remains_eligible() {
+    let (_temporary, context) = roots();
+    let path = context.home_root.join(".claude/skills/review/SKILL.md");
+    write(&path, "---\nname: review\n---\nOriginal fallback.\n");
+    let first = skill_opportunity_snapshot(&context).unwrap();
+    write(&path, "---\nname: review\n---\nChanged fallback.\n");
+    let changed = skill_opportunity_snapshot(&context).unwrap();
+    assert_ne!(first.skills()[0].revision, changed.skills()[0].revision);
+    let large = "# Review\n\nReview resource ownership.\n".repeat(1000);
+    write(&path, &large);
+    let snapshot = skill_opportunity_snapshot(&context).unwrap();
+    assert_eq!(snapshot.skills()[0].description, large);
 }
 
 #[test]

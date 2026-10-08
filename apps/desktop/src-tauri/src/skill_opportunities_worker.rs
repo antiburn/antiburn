@@ -10,9 +10,8 @@ use antiburn_local::analysis::jev::{
 };
 use antiburn_local::checks::sampling::{SamplingJob, SamplingLimits, SamplingProgress};
 use antiburn_local::checks::skill_opportunities::{
-    SKILL_OPPORTUNITIES_CHECK_ID, SKILL_OPPORTUNITIES_REVISIONS, SkillAbsenceEvidence,
-    SkillOpportunitiesCheck, SkillOpportunitiesResult, SkillOpportunityFinding, SkillUseLifecycle,
-    SkillUseLimit, SkillUseStatus,
+    SKILL_OPPORTUNITIES_CHECK_ID, SKILL_OPPORTUNITIES_REVISIONS, SkillOpportunitiesCheck,
+    SkillOpportunitiesResult, SkillOpportunityFinding,
 };
 use antiburn_local::model::AgentKind;
 use tauri::Emitter;
@@ -31,11 +30,11 @@ const POLICY: CheckPolicy = CheckPolicy {
     lease_secs: 300,
     retry_delay_secs: 300,
 };
-const MAX_SAMPLE_JUDGMENTS: usize = 8;
+const MAX_SAMPLE_JUDGMENTS: usize = 4;
 const MAX_SAMPLE_CANDIDATES: usize = 4096;
-const MAX_SAMPLE_ANSWERS: usize = 8;
+const MAX_SAMPLE_ANSWERS: usize = 1;
 const MAX_SAMPLE_CHECKS: usize = 1;
-const CURSOR_REVISION: u32 = 4;
+const CURSOR_REVISION: u32 = 5;
 
 static INPUT_OBSERVATIONS: LazyLock<Mutex<InventoryRevisionObserver>> =
     LazyLock::new(|| Mutex::new(InventoryRevisionObserver::default()));
@@ -74,6 +73,7 @@ struct SkillCursor {
     provider_generation: u64,
     sampling: Option<SamplingProgress>,
     active_job: Option<SamplingJob>,
+    batch_jobs: Vec<SamplingJob>,
     run_progress: JevRunProgress,
     result: Option<SkillOpportunitiesResult>,
 }
@@ -87,6 +87,7 @@ impl Default for SkillCursor {
             provider_generation: 0,
             sampling: None,
             active_job: None,
+            batch_jobs: Vec::new(),
             run_progress: JevRunProgress::default(),
             result: None,
         }
@@ -266,8 +267,24 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 None => break,
             },
         };
+        let mut jobs = vec![job];
+        jobs.extend(cursor.batch_jobs.clone());
+        if cursor.run_progress == JevRunProgress::default() {
+            while jobs.len() < 4 {
+                let Some(job) = cursor
+                    .sampling
+                    .as_mut()
+                    .expect("sampling was initialized")
+                    .choose_job()
+                else {
+                    break;
+                };
+                jobs.push(job);
+            }
+            cursor.batch_jobs = jobs.iter().skip(1).cloned().collect();
+        }
         let orchestration = admit_jev_orchestration().await?;
-        let mut plan = prepare_sampled(&input, &capabilities, std::slice::from_ref(&job))?;
+        let mut plan = prepare_sampled(&input, &capabilities, &jobs)?;
         let mut outcome = run_prepared(
             BatchExecution {
                 app,
@@ -294,8 +311,34 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             return Ok(());
         }
         if let Some(error) = outcome.failure.take() {
+            for job in &jobs {
+                let reviewed = sampled_pairs_for_job(
+                    &plan,
+                    &outcome.result,
+                    job,
+                    candidate.incarnation,
+                    &input.durable.input_revision,
+                );
+                if reviewed.iter().any(|pair| pair.pair.assessed) {
+                    input
+                        .check
+                        .record_sampling_result(
+                            cursor.sampling.as_mut().expect("sampling was initialized"),
+                            job,
+                            &outcome.result,
+                        )
+                        .map_err(|error| anyhow::anyhow!("sampling outcome rejected: {error:?}"))?;
+                }
+            }
+            merge_skill_result(
+                cursor.result.get_or_insert_with(|| outcome.result.clone()),
+                outcome.result,
+            );
             cursor.run_progress = outcome.progress;
-            let result_json = serde_json::to_string(&outcome.result)?;
+            let result_json = publication_json(
+                &input,
+                cursor.result.as_ref().expect("result was initialized"),
+            )?;
             let progress_json = serde_json::to_string(&cursor)?;
             let saved = write_fence.commit(|| {
                 let published = store.fail_burn_check_assessment_with_result(
@@ -330,26 +373,29 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             rejection?;
             return Ok(());
         }
-        input
-            .check
-            .record_sampling_result(
-                cursor.sampling.as_mut().expect("sampling was initialized"),
-                &job,
+        for job in &jobs {
+            input
+                .check
+                .record_sampling_result(
+                    cursor.sampling.as_mut().expect("sampling was initialized"),
+                    job,
+                    &outcome.result,
+                )
+                .map_err(|error| anyhow::anyhow!("sampling outcome rejected: {error:?}"))?;
+            sampled_pairs.extend(sampled_pairs_for_job(
+                &plan,
                 &outcome.result,
-            )
-            .map_err(|error| anyhow::anyhow!("sampling outcome rejected: {error:?}"))?;
-        sampled_pairs.extend(sampled_pairs_for_job(
-            &plan,
-            &outcome.result,
-            &job,
-            candidate.incarnation,
-            &input.durable.input_revision,
-        ));
+                job,
+                candidate.incarnation,
+                &input.durable.input_revision,
+            ));
+        }
         merge_skill_result(
             cursor.result.get_or_insert_with(|| outcome.result.clone()),
             outcome.result,
         );
         cursor.active_job = None;
+        cursor.batch_jobs.clear();
         cursor.run_progress = JevRunProgress::default();
         let progress_json = serde_json::to_string(&cursor)?;
         if !write_fence
@@ -385,7 +431,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             coverage: antiburn_local::analysis::jev::JevCoverage::default(),
             complete: false,
         });
-    result.complete = complete;
+    result.complete = complete && result.coverage.limitations.is_empty() && result.decisions.iter().all(|decision| matches!(decision.outcome, antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome::Advisory | antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome::NoOpportunity));
     if let Some(coverage) = cursor
         .sampling
         .as_ref()
@@ -486,24 +532,33 @@ fn record_assessment(
 
 pub(crate) fn publication_has_assessed_coverage(result: &SkillOpportunitiesResult) -> bool {
     use antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome;
-    !result.coverage.processing_limit_reached
-        && result.coverage.selected_items > 0
-        && result.coverage.selected_items >= result.decisions.len()
+    result.coverage.selected_items > 0
         && if result.complete {
-            result.coverage.not_selected_items == 0
+            result.coverage.selected_items >= result.decisions.len()
+                && result.coverage.not_selected_items == 0
                 && result.coverage.skipped_items == 0
                 && result.coverage.limitations.is_empty()
+                && result.decisions.iter().all(|decision| {
+                    decision.judgments.is_some()
+                        && matches!(
+                            decision.outcome,
+                            SkillOpportunityOutcome::Advisory
+                                | SkillOpportunityOutcome::NoOpportunity
+                        )
+                })
         } else {
-            result.coverage.not_selected_items > 0 && !result.findings.is_empty()
+            true
         }
+        && result
+            .decisions
+            .iter()
+            .any(|decision| decision.judgments.is_some())
         && result.decisions.iter().all(|decision| {
-            decision.judgments.is_some()
-                && decision.outcome != SkillOpportunityOutcome::Unassessed
-                && (decision.outcome != SkillOpportunityOutcome::Advisory
-                    || result
-                        .findings
-                        .iter()
-                        .any(|finding| finding.comparison == decision.comparison))
+            decision.outcome != SkillOpportunityOutcome::Advisory
+                || result
+                    .findings
+                    .iter()
+                    .any(|finding| finding.comparison == decision.comparison)
         })
         && result.findings.iter().all(|finding| {
             publishable_finding(finding)
@@ -788,7 +843,7 @@ fn sampled_pairs_for_job(
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_default();
-    plan.prepared.comparisons.iter().map(|comparison| {
+    plan.prepared.comparisons.iter().filter(|comparison| antiburn_local::checks::sampling::StableId::new("skill-opportunities", &[comparison.id.as_bytes()]) == job.candidate).map(|comparison| {
         let decision = result.decisions.iter().find(|decision| decision.comparison.id == comparison.id);
         let assessed = decision.is_some_and(|decision| decision.outcome != antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome::Unassessed);
         SampledSkillPair {
@@ -803,11 +858,15 @@ fn sampled_pairs_for_job(
 
 fn merge_skill_result(target: &mut SkillOpportunitiesResult, page: SkillOpportunitiesResult) {
     for decision in page.decisions {
-        if !target
+        if let Some(existing) = target
             .decisions
-            .iter()
-            .any(|existing| existing.comparison.id == decision.comparison.id)
+            .iter_mut()
+            .find(|existing| existing.comparison.id == decision.comparison.id)
         {
+            if existing.judgments.is_none() && decision.judgments.is_some() {
+                *existing = decision;
+            }
+        } else {
             target.decisions.push(decision);
         }
     }
@@ -907,7 +966,6 @@ pub(crate) fn prepare(
             &candidate.session.key.agent,
             snapshot.content().source_format,
         ) != SourceLimit::Supported
-        || !skill_use_is_typed_and_complete(&inputs)
     {
         return Err(InputLoadError::Unavailable(
             crate::smart_check_inputs::InputUnavailable::IncompleteEvidence,
@@ -934,63 +992,6 @@ pub(crate) fn prepare(
         inventory_revision: inputs.inventory().revision().to_owned(),
         use_revision: inputs.usage().revision().to_owned(),
     })
-}
-
-fn skill_use_is_typed_and_complete(inputs: &SkillInputs) -> bool {
-    let coverage = inputs.usage().coverage();
-    inputs.usage().publication_fence() == Some(inputs.input().scope().publication_fence())
-        && inputs.usage().events().iter().all(|event| {
-            event.source_format == inputs.input().content().source_format
-                && !matches!(
-                    event.skill,
-                    antiburn_local::checks::skill_opportunities::RecordedSkillIdentity::Unknown
-                )
-                && event.producer
-                    != antiburn_local::checks::skill_opportunities::SkillUseProducer::Unknown
-                && event.reference.stable
-                && inputs.input().content().actions.iter().any(|action| {
-                    action.reference == event.reference && action.tool_call_id == event.tool_call_id
-                })
-                && event.request_reference.as_ref().is_none_or(|reference| {
-                    reference.stable
-                        && reference.source_key_digest == event.reference.source_key_digest
-                        && reference.thread_digest == event.reference.thread_digest
-                        && inputs.input().content().actions.iter().any(|action| {
-                            action.reference == *reference
-                                && action.tool_call_id == event.tool_call_id
-                        })
-                })
-        })
-        && typed_lifecycle_is_complete(
-            coverage.status,
-            coverage
-                .limitations
-                .contains(&SkillUseLimit::NativeMetadataUnavailable),
-            &inputs
-                .usage()
-                .events()
-                .iter()
-                .map(|event| event.lifecycle)
-                .collect::<Vec<_>>(),
-        )
-}
-
-fn typed_lifecycle_is_complete(
-    status: SkillUseStatus,
-    metadata_unavailable: bool,
-    lifecycles: &[SkillUseLifecycle],
-) -> bool {
-    status == SkillUseStatus::Complete
-        && !metadata_unavailable
-        && lifecycles.iter().all(|lifecycle| {
-            matches!(
-                lifecycle,
-                SkillUseLifecycle::Succeeded
-                    | SkillUseLifecycle::Failed
-                    | SkillUseLifecycle::Requested
-                    | SkillUseLifecycle::DocumentSelected
-            )
-        })
 }
 
 /// Synchronize the semantic inventory before choosing bounded fair jobs.
@@ -1047,11 +1048,8 @@ where
 pub(crate) fn publishable_finding(finding: &SkillOpportunityFinding) -> bool {
     !finding.comparison.work.is_empty()
         && !finding.evidence.is_empty()
-        && finding.comparison.absence_assessable
         && !finding.comparison.use_revision.is_empty()
-        && finding.comparison.use_eligibility.absence
-            == SkillAbsenceEvidence::SelectedWindowNoMatchingUse
-        && finding.comparison.work_context_assessable
+        && finding.revisions == SKILL_OPPORTUNITIES_REVISIONS
 }
 
 #[cfg(test)]

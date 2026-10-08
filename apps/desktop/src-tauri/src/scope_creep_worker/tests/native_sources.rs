@@ -381,14 +381,11 @@ fn assert_native_scope_source((agent, session, format, records): (&str, &str, So
         "{agent}"
     );
     assert!(
-        changed_input
-            .plan
-            .shared_context
-            .as_ref()
-            .unwrap()
+        changed_input.plan.work_items.iter().any(|item| item
+            .window
             .fields
             .to_string()
-            .contains("I approve and accept the completed billing feature."),
+            .contains("I approve and accept the completed billing feature.")),
         "{agent}"
     );
     assert!(

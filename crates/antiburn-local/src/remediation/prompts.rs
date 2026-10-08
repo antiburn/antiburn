@@ -116,7 +116,7 @@ fn fallback_prompt_parts(detector: DetectorId) -> (&'static str, &'static str) {
         ),
         DetectorId::ScopeCreep => (
             "Scope Creep",
-            "Preserve the latest recorded approvals and seek approval before substantial optional work.",
+            "Preserve recorded approvals and ask before attempting or proposing substantial optional work.",
         ),
         DetectorId::OverExploring => (
             "Over-exploring",
@@ -168,7 +168,7 @@ fn build_prompt_with_mode(
     } else if cause.detector() == DetectorId::OverExploring {
         "1. Preserve necessary discovery, dependency checks, audits, and useful rereads.\n2. Suggest a concise instruction for similar future work. Stop when enough evidence answers the task question. Do not claim to repair this session."
     } else if cause.detector() == DetectorId::ScopeCreep {
-        "1. Preserve the latest recorded task and approvals in future work.\n2. Suggest a concise instruction to seek approval before substantial optional work. Do not claim to repair this session."
+        "1. Preserve the recorded task and approvals in future work.\n2. Suggest a concise instruction to ask before attempting or proposing substantial optional work. Do not claim to repair this session."
     } else if cause.detector() == DetectorId::IgnoredInstructions {
         "1. Follow the cited instruction.\n2. Correct the affected work."
     } else {
@@ -326,15 +326,15 @@ fn prompt_facts(
 ) -> Result<PromptFacts, RemediationUnavailableReason> {
     let mut facts = PromptFacts::new(agent);
     match cause {
-        FindingCause::ScopeCreep(_) => {
+        FindingCause::ScopeCreep(evidence) => {
             facts.push(
                 PromptFactRole::WorkContext,
-                "Substantial optional work outside the latest recorded task scope.",
+                scope_work_text(evidence.observation_kind),
                 true,
             )?;
             facts.push(
                 PromptFactRole::SelectedWindowLimit,
-                "The finding compares recorded work with the full current retained scope.",
+                "The finding compares a recorded attempt or proposal with retained task context. It does not prove completed execution or complete approval history.",
                 true,
             )?;
         }
@@ -467,11 +467,22 @@ fn over_exploring_reason_text(reason: crate::checks::over_exploring::Reason) -> 
     }
 }
 
+fn scope_work_text(kind: crate::checks::scope_creep::WorkObservationKind) -> &'static str {
+    match kind {
+        crate::checks::scope_creep::WorkObservationKind::Attempt => {
+            "Attempts substantial optional work outside the recorded task scope."
+        }
+        crate::checks::scope_creep::WorkObservationKind::Proposal => {
+            "Proposes substantial optional work outside the recorded task scope."
+        }
+    }
+}
+
 pub(super) fn prompt_parts(cause: &FindingCause) -> (String, &'static str, &'static str) {
     match cause {
-        FindingCause::ScopeCreep(_) => (
-            "Performs substantial optional work outside the latest recorded task scope.".into(),
-            "Improve future instructions. Preserve later approvals and seek approval before substantial optional work.",
+        FindingCause::ScopeCreep(evidence) => (
+            scope_work_text(evidence.observation_kind).into(),
+            "Improve future instructions. Preserve recorded approvals and ask before attempting or proposing substantial optional work.",
             "This prompt does not repair or verify the reviewed session.",
         ),
         FindingCause::OverExploring(evidence) => (

@@ -46,9 +46,9 @@ fn snapshot(skills: Vec<SkillDefinition>) -> SkillOpportunitySnapshot {
 }
 
 #[test]
-fn creation_is_compared_to_relevant_work_not_episode_end() {
+fn current_recommendations_do_not_require_historical_availability() {
     let snapshot = snapshot(vec![skill()]);
-    for (time, expected) in [(99, 0), (100, 1), (101, 1)] {
+    for (time, expected) in [(99, 1), (100, 1), (101, 1)] {
         assert_eq!(
             snapshot
                 .eligible_candidates(&work(Some(time)), &usage())
@@ -57,12 +57,12 @@ fn creation_is_compared_to_relevant_work_not_episode_end() {
             expected
         );
     }
-    // Creation at 100 falls inside an episode from 90 to 110.
-    assert!(
+    assert_eq!(
         snapshot
             .eligible_candidates(&work(Some(90)), &usage())
             .unwrap()
-            .is_empty()
+            .len(),
+        1
     );
     assert_eq!(
         snapshot
@@ -91,7 +91,7 @@ fn unknown_times_are_advisory_and_never_prove_historical_visibility() {
 }
 
 #[test]
-fn disabled_and_ambiguous_definitions_are_not_candidates() {
+fn disabled_definitions_are_excluded_and_duplicate_names_keep_exact_identity() {
     let mut disabled = skill();
     disabled.enabled = false;
     assert!(
@@ -102,21 +102,23 @@ fn disabled_and_ambiguous_definitions_are_not_candidates() {
     );
     let mut duplicate = skill();
     duplicate.identity = "other-file".into();
-    assert!(
+    assert_eq!(
         snapshot(vec![skill(), duplicate])
             .eligible_candidates(&work(Some(100)), &usage())
             .unwrap()
-            .is_empty()
+            .len(),
+        2
     );
     let mut alias = skill();
     alias.identity = "alias-file".into();
     alias.name = "code-review".into();
     alias.aliases.clear();
-    assert!(
+    assert_eq!(
         snapshot(vec![skill(), alias])
             .eligible_candidates(&work(Some(100)), &usage())
             .unwrap()
-            .is_empty()
+            .len(),
+        2
     );
 }
 
@@ -154,7 +156,7 @@ fn event(
 }
 
 #[test]
-fn exact_identity_and_conservative_alias_requests_exclude_used_skills() {
+fn recorded_use_remains_context_for_current_skill_candidates() {
     for (identity, kind) in [
         ("definition-id", SkillUseIdentity::Exact),
         ("review", SkillUseIdentity::Inferred),
@@ -167,11 +169,12 @@ fn exact_identity_and_conservative_alias_requests_exclude_used_skills() {
         ] {
             let mut usage = usage();
             usage.events.push(event(identity, kind, lifecycle));
-            assert!(
+            assert_eq!(
                 snapshot(vec![skill()])
                     .eligible_candidates(&work(Some(100)), &usage)
                     .unwrap()
-                    .is_empty()
+                    .len(),
+                1
             );
         }
     }
@@ -234,7 +237,12 @@ fn reference_is_selected_and_revision_tracks_time_use_and_description() {
         .unwrap()[0]
         .reference_snapshot();
     assert_eq!(first.kind, "skill_opportunity");
-    assert_eq!(first.fields["description"], skill().description);
+    assert_eq!(
+        first.fields["content"]["chunks"][0]["text"],
+        skill().description
+    );
+    assert_eq!(first.fields["content"]["source"], "description");
+    assert!(first.fields.get("frontmatter").is_none());
     assert!(first.fields.get("scope").is_none());
     assert!(first.fields.get("events").is_none());
     let later = snapshot
@@ -278,6 +286,72 @@ fn name_only_and_oversized_definitions_are_rejected() {
         SkillOpportunitySnapshot::new(scope(), vec![large], true),
         Err(SkillInputError::LimitExceeded)
     );
+}
+
+#[test]
+fn large_fallback_uses_bounded_structural_chunks_with_exact_ranges() {
+    let mut definition = skill();
+    definition.frontmatter = serde_json::json!({"name": "review"});
+    definition.description = "# Review\n\nReview é resource ownership.\n".repeat(40000);
+    let snapshot = snapshot(vec![definition.clone()]);
+    let reference =
+        snapshot.eligible_candidates(&work(None), &usage()).unwrap()[0].reference_snapshot();
+    let content = &reference.fields["content"];
+    assert_eq!(content["source"], "markdown_fallback");
+    assert_eq!(content["partial"], true);
+    assert_eq!(content["total_bytes"], definition.description.len());
+    let chunks = content["chunks"].as_array().unwrap();
+    assert_eq!(chunks.len(), 4);
+    let mut previous_end = 0;
+    for chunk in chunks {
+        let start = chunk["start_byte"].as_u64().unwrap() as usize;
+        let end = chunk["end_byte"].as_u64().unwrap() as usize;
+        assert!(start >= previous_end);
+        assert!(end - start <= 4096);
+        assert_eq!(chunk["text"], &definition.description[start..end]);
+        assert!(definition.description[..end].ends_with('\n'));
+        previous_end = end;
+    }
+    assert_eq!(previous_end, definition.description.len());
+    assert!(chunks[1]["start_byte"].as_u64().unwrap() > 20 * 1024);
+    assert!(
+        snapshot.eligible_candidates(&work(None), &usage()).unwrap()[0]
+            .limitations()
+            .contains(&SkillOpportunityLimit::ReferenceContentPartial)
+    );
+}
+
+#[test]
+fn full_description_and_short_fallback_are_not_marked_partial() {
+    let mut definition = skill();
+    definition.description = "Review ownership and error paths.\n".repeat(400);
+    definition.frontmatter["description"] = serde_json::json!(definition.description);
+    let content = definition.reference_content();
+    assert_eq!(content["source"], "description");
+    assert_eq!(content["chunks"][0]["text"], definition.description);
+    assert_eq!(content["partial"], false);
+    definition.frontmatter = serde_json::json!({});
+    definition.description = "# Review\n\nCheck resource ownership.\n".into();
+    let content = definition.reference_content();
+    assert_eq!(content["source"], "markdown_fallback");
+    assert_eq!(content["chunks"][0]["text"], definition.description);
+    assert_eq!(content["partial"], false);
+}
+
+#[test]
+fn non_string_descriptions_remain_invalid_in_engine_inputs() {
+    for value in [
+        serde_json::json!(42),
+        serde_json::json!(true),
+        serde_json::json!([]),
+    ] {
+        let mut definition = skill();
+        definition.frontmatter["description"] = value;
+        assert_eq!(
+            SkillOpportunitySnapshot::new(scope(), vec![definition], true),
+            Err(SkillInputError::InvalidDefinition)
+        );
+    }
 }
 
 #[test]

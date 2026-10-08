@@ -482,12 +482,24 @@ fn skill_citations_include_work_current_descriptions_and_exact_recorded_use() {
         reference_revision: "reference".into(),
         name: "Parser review".into(),
         description: "Review parser boundaries.".into(),
+        reference: SkillReferenceCoverage {
+            source: SkillReferenceSource::Description,
+            ranges: vec![(0, "Review parser boundaries.".len())],
+            total_bytes: "Review parser boundaries.".len(),
+            partial: false,
+        },
         created_at_ms: None,
     };
     let used_skill = CurrentSkillCitation {
         identity: "format-skill".into(),
         name: "Format review".into(),
         description: "Review output formatting.".into(),
+        reference: SkillReferenceCoverage {
+            source: SkillReferenceSource::Description,
+            ranges: vec![(0, "Review output formatting.".len())],
+            total_bytes: "Review output formatting.".len(),
+            partial: false,
+        },
         ..skill.clone()
     };
     let finding = SkillOpportunityFinding {
@@ -563,6 +575,30 @@ fn skill_citations_include_work_current_descriptions_and_exact_recorded_use() {
     assert_eq!(
         complete_skill_opportunity_evidence(saved.clone(), &finding, &[]).status,
         BurnCheckEvidenceStatus::Unavailable
+    );
+    let mut fallback = cause.clone();
+    let FindingCause::SkillOpportunity {
+        evidence: Some(evidence),
+        ..
+    } = &mut fallback
+    else {
+        unreachable!()
+    };
+    evidence.comparison.skill.reference.source = SkillReferenceSource::MarkdownFallback;
+    evidence.comparison.skill.reference.partial = true;
+    let partial = stored_skill_opportunity_evidence(&fallback).unwrap();
+    let reference = partial
+        .items
+        .iter()
+        .find(|item| item.reference == "parser-skill")
+        .unwrap();
+    assert!(reference.explanation.contains("Markdown file"));
+    assert!(
+        reference
+            .limitation
+            .as_deref()
+            .unwrap()
+            .contains("Only selected byte ranges")
     );
     let mut changed = usage;
     changed.reference.thread_digest = "other-thread".into();

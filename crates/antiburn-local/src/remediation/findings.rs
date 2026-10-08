@@ -5,7 +5,7 @@ use crate::analysis::{SessionEvidence, SourceFormat};
 use crate::checks::ignored_instructions::{
     AssessmentFinding, FindingCertainty, InstructionProvenance, InstructionScope,
 };
-use crate::checks::skill_opportunities::{SkillAbsenceEvidence, SkillOpportunityFinding};
+use crate::checks::skill_opportunities::SkillOpportunityFinding;
 use crate::insights::{
     DetectorId, ReportCatalogs, SessionTokenBurnEvidence, clean_facts_complete, eligible,
 };
@@ -624,10 +624,7 @@ impl Finding {
             || comparison.skill.identity.trim().is_empty()
             || comparison.skill.name.trim().is_empty()
             || comparison.skill.description.trim().is_empty()
-            || comparison.use_eligibility.absence
-                != SkillAbsenceEvidence::SelectedWindowNoMatchingUse
-            || !comparison.absence_assessable
-            || !comparison.work_context_assessable
+            || result.revisions != crate::checks::skill_opportunities::SKILL_OPPORTUNITIES_REVISIONS
             || comparison.work.is_empty()
         {
             return None;
@@ -714,7 +711,9 @@ impl Finding {
             || result.model.is_empty()
             || result.revisions != crate::checks::scope_creep::REVISIONS
             || result.work.is_empty()
-            || result.task_scope.is_empty()
+            || !result.decision_probability.is_finite()
+            || !(crate::checks::scope_creep::DECISION_THRESHOLD..=1.0)
+                .contains(&result.decision_probability)
             || result.work.iter().any(|work| {
                 !work.reference.stable || work.reference.id.is_empty() || work.digest.is_empty()
             })

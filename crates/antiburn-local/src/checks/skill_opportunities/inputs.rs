@@ -24,12 +24,99 @@ pub struct SkillDefinition {
     pub revision: String,
     pub name: String,
     pub aliases: Vec<String>,
+    /// The description, or the full Markdown when no description exists.
     pub description: String,
-    /// Semantic frontmatter only. The skill body is excluded.
+    /// Semantic frontmatter only. Provider requests exclude these fields.
     pub frontmatter: serde_json::Value,
     pub scope: SkillScope,
     pub enabled: bool,
     pub created_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillReferenceSource {
+    Description,
+    MarkdownFallback,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillReferenceCoverage {
+    pub source: SkillReferenceSource,
+    pub ranges: Vec<(usize, usize)>,
+    pub total_bytes: usize,
+    pub partial: bool,
+}
+
+pub(crate) fn representative_ranges(text: &str, chunk_bytes: usize) -> Vec<(usize, usize)> {
+    let ranges = crate::analysis::jev::text_ranges::text_ranges(text, chunk_bytes, 0);
+    if ranges.len() <= 4 {
+        return ranges;
+    }
+    [
+        0,
+        (ranges.len() - 1) / 3,
+        (ranges.len() - 1) / 2,
+        ranges.len() - 1,
+    ]
+    .map(|index| ranges[index])
+    .to_vec()
+}
+
+impl SkillReferenceCoverage {
+    pub(crate) fn content(&self, selected_text: &str) -> serde_json::Value {
+        let mut offset = 0;
+        let chunks = self
+            .ranges
+            .iter()
+            .map(|&(start, end)| {
+                let text = &selected_text[offset..offset + end - start];
+                offset += end - start;
+                serde_json::json!({"start_byte": start, "end_byte": end, "text": text})
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({"source": self.source, "chunks": chunks, "total_bytes": self.total_bytes, "partial": self.partial})
+    }
+}
+
+impl SkillDefinition {
+    fn has_description(&self) -> bool {
+        self.frontmatter["description"]
+            .as_str()
+            .is_some_and(|description| !description.trim().is_empty())
+    }
+
+    pub(crate) fn selected_reference(
+        &self,
+        chunk_bytes: usize,
+    ) -> (String, SkillReferenceCoverage) {
+        let description = self.has_description();
+        let ranges = if description && self.description.len() <= 4 * chunk_bytes {
+            vec![(0, self.description.len())]
+        } else {
+            representative_ranges(&self.description, chunk_bytes)
+        };
+        let selected = ranges
+            .iter()
+            .map(|&(start, end)| &self.description[start..end])
+            .collect::<String>();
+        let coverage = SkillReferenceCoverage {
+            source: if description {
+                SkillReferenceSource::Description
+            } else {
+                SkillReferenceSource::MarkdownFallback
+            },
+            partial: selected.len() < self.description.len(),
+            total_bytes: self.description.len(),
+            ranges,
+        };
+        (selected, coverage)
+    }
+
+    pub(crate) fn reference_content(&self) -> serde_json::Value {
+        let (text, coverage) = self.selected_reference(4096);
+        coverage.content(&text)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -209,6 +296,9 @@ pub enum SkillOpportunityLimit {
     InventoryIncomplete,
     SelectedUseWindowOnly,
     AggregateUseCannotProveAbsence,
+    ReferenceContentPartial,
+    KnownUseContextPartial,
+    TaskContextPartial,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,7 +361,7 @@ impl SkillOpportunitySnapshot {
         let mut identities = std::collections::BTreeSet::new();
         for skill in &skills {
             let frontmatter_bytes = skill.frontmatter.to_string().len();
-            if skill.description.len() > MAX_SKILL_DESCRIPTION_BYTES
+            if (skill.has_description() && skill.description.len() > MAX_SKILL_DESCRIPTION_BYTES)
                 || frontmatter_bytes > MAX_SKILL_FRONTMATTER_BYTES
                 || skill.aliases.len() > 16
             {
@@ -286,6 +376,10 @@ impl SkillOpportunitySnapshot {
                 || skill.revision.len() > 256
                 || skill.description.trim().is_empty()
                 || !skill.frontmatter.is_object()
+                || skill
+                    .frontmatter
+                    .get("description")
+                    .is_some_and(|value| !value.is_null() && !value.is_string())
                 || !identities.insert(&skill.identity)
                 || skill
                     .aliases
@@ -294,7 +388,8 @@ impl SkillOpportunitySnapshot {
             {
                 return Err(SkillInputError::InvalidDefinition);
             }
-            bytes = bytes.saturating_add(frontmatter_bytes + skill.description.len());
+            bytes = bytes
+                .saturating_add(frontmatter_bytes + skill.reference_content().to_string().len());
         }
         if bytes > MAX_SNAPSHOT_BYTES {
             return Err(SkillInputError::LimitExceeded);
@@ -374,34 +469,13 @@ impl SkillOpportunitySnapshot {
         let use_revision = digest(&serde_json::json!(usage));
         let mut candidates = Vec::new();
         for skill in &self.skills {
-            if !skill.enabled
-                || matches!((skill.created_at_ms, work.relevant_work_at_ms),
-                    (Some(created), Some(work)) if created > work)
-                || usage.events.iter().any(|event| match event.identity_kind {
-                    SkillUseIdentity::Exact => event.identity == skill.identity,
-                    SkillUseIdentity::Inferred => {
-                        event.identity == skill.identity
-                            || skill.name == event.identity
-                            || skill.aliases.contains(&event.identity)
-                    }
-                })
-            {
-                continue;
-            }
-            // Duplicate names or aliases cannot bind an absence to one definition.
-            if self.skills.iter().any(|other| {
-                other.identity != skill.identity
-                    && (other.name == skill.name
-                        || other.aliases.contains(&skill.name)
-                        || skill.aliases.contains(&other.name)
-                        || skill
-                            .aliases
-                            .iter()
-                            .any(|alias| other.aliases.contains(alias)))
-            }) {
+            if !skill.enabled {
                 continue;
             }
             let mut limitations = vec![SkillOpportunityLimit::CurrentInventoryOnly];
+            if skill.selected_reference(4096).1.partial {
+                limitations.push(SkillOpportunityLimit::ReferenceContentPartial);
+            }
             if skill.created_at_ms.is_none() {
                 limitations.push(SkillOpportunityLimit::CreationTimeUnknown);
             }
@@ -429,8 +503,8 @@ impl SkillOpportunitySnapshot {
                 skill: skill.clone(),
                 reference: {
                     let fields = serde_json::json!({
-                        "name": skill.name, "description": skill.description,
-                        "frontmatter": skill.frontmatter, "created_at_ms": skill.created_at_ms,
+                        "name": skill.name, "content": skill.reference_content(),
+                        "created_at_ms": skill.created_at_ms,
                         "relevant_work_at_ms": work.relevant_work_at_ms,
                         "limitations": limitations, "use_status": usage.status,
                         "use_ordering": usage.ordering, "use_revision": use_revision,

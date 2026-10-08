@@ -149,6 +149,9 @@ fn stored_skill_opportunity_evidence(cause: &FindingCause) -> Option<BurnCheckTa
     };
     let comparison = &evidence.comparison;
     let mut skill_limits = vec!["The current skill does not prove past availability."];
+    if comparison.skill.reference.partial {
+        skill_limits.push("Only selected byte ranges support this recommendation. The full reference was not reviewed.");
+    }
     if comparison.limitations.contains(
         &antiburn_local::checks::skill_opportunities::SkillOpportunityLimit::CreationTimeUnknown,
     ) {
@@ -167,36 +170,49 @@ fn stored_skill_opportunity_evidence(cause: &FindingCause) -> Option<BurnCheckTa
         start_line: None,
         end_line: None,
         excerpt: bounded_evidence_excerpt(&comparison.skill.description),
-        explanation: "This is the current skill description.".to_owned(),
+        explanation: match comparison.skill.reference.source {
+            antiburn_local::checks::skill_opportunities::SkillReferenceSource::Description => "This is selected text from the current skill description.",
+            antiburn_local::checks::skill_opportunities::SkillReferenceSource::MarkdownFallback => "This is selected text from the current skill Markdown file. The skill has no description.",
+        }.to_owned(),
         limitation: Some(skill_limits.join(" ")),
     }];
-    items.extend(comparison.work.iter().map(|work| BurnCheckEvidenceItem {
-        label: BurnCheckEvidenceLabel::ObservedAction,
-        source_label: "Recorded work".to_owned(),
-        reference: work.reference.id.clone(),
-        observed_at_ms: work.timestamp_ms,
-        start_line: None,
-        end_line: None,
-        excerpt: bounded_evidence_excerpt(&work.text),
-        explanation: "This work matches the current skill description.".to_owned(),
-        limitation: Some(evidence.absence_limit.clone()),
-    }));
+    items.extend(
+        comparison.work.iter().map(|work| BurnCheckEvidenceItem {
+            label: BurnCheckEvidenceLabel::ObservedAction,
+            source_label: "Recorded work".to_owned(),
+            reference: work.reference.id.clone(),
+            observed_at_ms: work.timestamp_ms,
+            start_line: None,
+            end_line: None,
+            excerpt: bounded_evidence_excerpt(&work.text),
+            explanation:
+                "This observed work could benefit from the selected current skill reference."
+                    .to_owned(),
+            limitation: Some(evidence.absence_limit.clone()),
+        }),
+    );
     items.extend(
         comparison
             .used_current_skills
             .iter()
             .map(|skill| BurnCheckEvidenceItem {
                 label: BurnCheckEvidenceLabel::Context,
-                source_label: format!("Current used-skill description · {}", skill.name),
+                source_label: format!("Current used-skill reference · {}", skill.name),
                 reference: skill.identity.clone(),
                 observed_at_ms: None,
                 start_line: None,
                 end_line: None,
                 excerpt: bounded_evidence_excerpt(&skill.description),
-                explanation: "This current description supports the equivalent-skill comparison."
-                    .into(),
+                explanation: match skill.reference.source {
+                    antiburn_local::checks::skill_opportunities::SkillReferenceSource::Description => "This selected current description supplies context about a recorded skill.",
+                    antiburn_local::checks::skill_opportunities::SkillReferenceSource::MarkdownFallback => "This selected current Markdown supplies context about a recorded skill without a description.",
+                }.into(),
                 limitation: Some(
-                    "Current text does not prove the description at the time of work.".into(),
+                    if skill.reference.partial {
+                        "Only selected byte ranges were reviewed. Current text does not prove the reference at the time of work."
+                    } else {
+                        "Current text does not prove the reference at the time of work."
+                    }.into(),
                 ),
             }),
     );
@@ -1480,11 +1496,14 @@ impl RemediationController {
                 label, source_label: if label == BurnCheckEvidenceLabel::Instruction { "Latest recorded task scope" } else { "Recorded work" }.into(),
                 reference: id.clone(), observed_at_ms: None, start_line: None, end_line: None,
                 excerpt: bounded_evidence_excerpt(text), explanation: if label == BurnCheckEvidenceLabel::Instruction {
-                    "This event is part of the complete latest recorded task scope, including approval evidence."
+                    "This event supplies retained task context. Recorded approvals constrain the finding."
                 } else {
-                    "This recorded work is assessed against the complete latest task scope."
+                    match scope.observation_kind {
+                        antiburn_local::checks::scope_creep::WorkObservationKind::Attempt => "This recorded attempt is assessed against retained task context. It does not prove completed execution.",
+                        antiburn_local::checks::scope_creep::WorkObservationKind::Proposal => "This recorded proposal is assessed against retained task context. It does not prove attempted or completed execution.",
+                    }
                 }.into(),
-                limitation: Some(if text.len() > 4096 { "This preview is truncated. The finding uses the full current retained scope." } else { "The finding uses the current retained root snapshot, not proof of original historical retention." }.into()),
+                limitation: Some(if text.len() > 4096 { "This preview is truncated. The finding uses retained task context, not proof of complete approval history." } else { "The finding uses the current retained root snapshot, not proof of complete approval history." }.into()),
             });
         }
         Ok(BurnCheckTargetEvidence {

@@ -210,13 +210,35 @@ records in that selected window. It never proves session-wide or equivalent-use
 absence. Existing aggregates remain inferred requests with unknown time/order
 and cannot prove absence.
 
-Current skill discovery separately retains full semantic YAML frontmatter and
-descriptions within the existing native agent/project/environment boundary.
-It excludes comments and skill bodies and caps descriptions at 16 KiB,
-frontmatter at 32 KiB, and the returned inventory snapshot at 1 MiB. Optional
+Skill Opportunities can retain a validated positive from partial selected work
+or unknown recorded-use absence. It binds current inventory and use revisions
+and does not infer completed work, past availability, or unused skills. A failed
+assessment can retain validated positive siblings without a clean result.
+Scope Creep labels selected work as an attempt or proposal and compares it with
+retained task context, including recorded approvals. Empty retained task context
+does not block a positive by itself and does not establish complete approval
+history or completed execution. These rules do not widen the accepted source
+shapes or versions.
+
+Current skill discovery retains semantic YAML frontmatter and selected reference
+text within the existing native agent/project/environment boundary. A valid
+nonempty description is the only reference text sent; body changes do not
+change its revision. Missing, null, or blank descriptions and plain Markdown
+select the full Markdown instead, including frontmatter and body, and its text
+changes update the revision. Invalid YAML and non-string descriptions remain
+unsupported. Descriptions are capped at 16 KiB and frontmatter at 32 KiB.
+Large fallback text remains eligible: requests select at most four structural
+4 KiB chunks with exact byte ranges, total source bytes, and a partial flag.
+Incomplete inventory retains admitted valid definitions with an explicit limit.
+Current report citations bind the selected reference source and ranges to the
+current definition revision; they do not require full fallback text equality.
+The 1 MiB inventory budget counts semantic frontmatter and bounded reference
+fields, not the unselected fallback suffix. Known used skills use the same
+selection and share reference text across comparisons in a request. Optional
 creation time comes only from filesystem birth metadata, not modification or
-change time. The naive filter excludes a skill created after the relevant work
-timestamp, including creation during an episode. Missing times remain advisory.
+change time. Creation after the relevant work timestamp, including creation
+during an episode, remains an advisory limit, not a candidate exclusion.
+Missing times remain explicit.
 Current contents, names, aliases, enablement, and birth time do not prove past
 visibility, activation, or contents. Ordinary inventory/report DTOs do not gain
 these private fields.

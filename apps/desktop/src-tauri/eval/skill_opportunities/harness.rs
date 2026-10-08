@@ -119,3 +119,134 @@ fn missing_judgments_do_not_publish_or_remove_positive_labels() {
         }
     }
 }
+
+#[test]
+fn single_pair_choices_preserve_partial_findings_and_complete_uncertainty_sampling() {
+    use antiburn_local::analysis::jev::{JevAnswer, JevUsage, JevWorkItemResult};
+    use antiburn_local::checks::sampling::{SamplingLimits, SamplingProgress};
+    use antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome;
+    for case in fixtures::cases("development") {
+        let context = case.check.session_context();
+        let mut sampling = SamplingProgress::new(SamplingLimits {
+            checks: 1,
+            candidates_per_check: 4096,
+            answers_per_candidate: 1,
+            judgments_per_run: 4,
+        })
+        .unwrap();
+        case.check.synchronize_sampling(&mut sampling).unwrap();
+        sampling.begin_run();
+        let Some(job) = sampling.choose_job() else {
+            continue;
+        };
+        let plan = case
+            .check
+            .prepare_sampled(
+                &context,
+                &antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default(),
+                std::slice::from_ref(&job),
+            )
+            .unwrap();
+        if plan.work_items.is_empty() {
+            continue;
+        }
+        assert_eq!(plan.work_items.len(), 1);
+        let item = &plan.work_items[0];
+        assert_eq!(item.questions.len(), 1);
+        assert!(item.questions.contains_key("opportunity"));
+        let mut answer = JevWorkItemResult {
+            request_id: item.id.clone(),
+            work_item_id: item.id.clone(),
+            model: plan.capabilities.model.clone(),
+            answers: std::collections::BTreeMap::from([(
+                "opportunity".into(),
+                JevAnswer::Choice {
+                    choice: "uncertain".into(),
+                    probabilities: std::collections::BTreeMap::from([
+                        ("useful_opportunity".into(), 0.05),
+                        ("no_opportunity".into(), 0.05),
+                        ("uncertain".into(), 0.9),
+                    ]),
+                    confidence: 0.1,
+                },
+            )]),
+            evidence: plan
+                .shared_context
+                .as_ref()
+                .unwrap()
+                .evidence
+                .iter()
+                .chain(&item.window.evidence)
+                .cloned()
+                .collect(),
+            usage: JevUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+            },
+        };
+        let result = case
+            .check
+            .reduce(&plan, std::slice::from_ref(&answer), true)
+            .unwrap();
+        assert_eq!(
+            result.decisions[0].outcome,
+            SkillOpportunityOutcome::Uncertain
+        );
+        assert!(!result.complete);
+        case.check
+            .record_sampling_result(&mut sampling, &job, &result)
+            .unwrap();
+        let mut restored: SamplingProgress =
+            serde_json::from_value(serde_json::to_value(sampling).unwrap()).unwrap();
+        case.check.synchronize_sampling(&mut restored).unwrap();
+        restored.begin_run();
+        assert_eq!(
+            restored
+                .coverage(case.check.sampling_identity())
+                .unwrap()
+                .completed,
+            1
+        );
+        assert!(
+            restored
+                .choose_job()
+                .is_none_or(|next| next.candidate != job.candidate)
+        );
+        for (probability, expected) in [
+            (0.74, SkillOpportunityOutcome::Uncertain),
+            (0.75, SkillOpportunityOutcome::Advisory),
+        ] {
+            answer.answers.insert(
+                "opportunity".into(),
+                JevAnswer::Choice {
+                    choice: "useful_opportunity".into(),
+                    probabilities: std::collections::BTreeMap::from([
+                        ("useful_opportunity".into(), probability),
+                        ("no_opportunity".into(), (1.0 - probability) / 2.0),
+                        ("uncertain".into(), (1.0 - probability) / 2.0),
+                    ]),
+                    confidence: 0.1,
+                },
+            );
+            let result = case
+                .check
+                .reduce(&plan, std::slice::from_ref(&answer), true)
+                .unwrap();
+            assert_eq!(result.decisions[0].outcome, expected, "{}", case.id);
+            assert_eq!(
+                result.findings.len(),
+                usize::from(expected == SkillOpportunityOutcome::Advisory)
+            );
+            if case.family == "missing_history" && expected == SkillOpportunityOutcome::Advisory {
+                let score = scoring::score(
+                    &case,
+                    &result,
+                    &plan.work_items,
+                    plan.skipped_item_ids.len(),
+                );
+                assert_eq!(score["unsafe_publications"], 0);
+                assert_eq!(score["historical_claims"], 0);
+            }
+        }
+    }
+}

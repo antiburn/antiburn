@@ -816,7 +816,7 @@ fn skills_use_same_fence_and_never_claim_session_wide_absence() {
 }
 
 #[test]
-fn native_codex_skill_inventory_requires_workspace_trust_and_valid_definitions() {
+fn native_codex_skill_inventory_retains_valid_definitions_with_incomplete_limits() {
     use crate::scope_creep_worker::tests::native_sources;
     use antiburn_local::analysis::jev::JevInputField;
     let directory = tempfile::tempdir().unwrap();
@@ -860,12 +860,28 @@ fn native_codex_skill_inventory_requires_workspace_trust_and_valid_definitions()
             .unwrap();
         store.load_smart_check_skill_inputs(snapshot, &context)
     };
-    assert!(matches!(
-        load(),
-        Err(InputLoadError::Unavailable(
-            InputUnavailable::InventoryIncomplete
-        ))
-    ));
+    let inventory_is_incomplete = |inputs: &SkillInputs| {
+        let work = skill_opportunities::SkillWorkContext {
+            session_identity: inputs.usage().evidence().session_identity.clone(),
+            scope: inputs.inventory().scope().clone(),
+            relevant_work_at_ms: None,
+        };
+        let candidates = inputs
+            .inventory()
+            .eligible_candidates(&work, inputs.usage().evidence())
+            .unwrap();
+        assert!(!candidates.is_empty());
+        candidates.iter().all(|candidate| {
+            candidate
+                .limitations()
+                .contains(&skill_opportunities::SkillOpportunityLimit::InventoryIncomplete)
+        })
+    };
+    let untrusted = load().unwrap();
+    assert_eq!(untrusted.inventory().skills().len(), 1);
+    assert_eq!(untrusted.inventory().skills()[0].name, "verify");
+    let untrusted_revision = untrusted.inventory().revision();
+    assert!(inventory_is_incomplete(&untrusted));
     let config_path = home.join(".codex/config.toml");
     let trusted_config = format!(
         "[projects.{}]\ntrust_level = \"trusted\"\n",
@@ -873,6 +889,8 @@ fn native_codex_skill_inventory_requires_workspace_trust_and_valid_definitions()
     );
     std::fs::write(&config_path, &trusted_config).unwrap();
     let inputs = load().unwrap();
+    assert_ne!(inputs.inventory().revision(), untrusted_revision);
+    assert!(!inventory_is_incomplete(&inputs));
     assert_eq!(inputs.inventory().skills().len(), 1);
     assert_eq!(inputs.inventory().skills()[0].name, "verify");
     assert!(inputs.input().content().actions.iter().any(|action| {
@@ -889,20 +907,21 @@ fn native_codex_skill_inventory_requires_workspace_trust_and_valid_definitions()
         )
     );
     std::fs::remove_file(&config_path).unwrap();
-    assert!(matches!(
-        load(),
-        Err(InputLoadError::Unavailable(
-            InputUnavailable::InventoryIncomplete
-        ))
-    ));
+    let untrusted = load().unwrap();
+    assert_eq!(untrusted.inventory().skills(), inputs.inventory().skills());
+    assert!(inventory_is_incomplete(&untrusted));
     std::fs::write(&config_path, &trusted_config).unwrap();
     std::fs::write(&skill_path, "---\nname: verify\n---\n").unwrap();
-    assert!(matches!(
-        load(),
-        Err(InputLoadError::Unavailable(
-            InputUnavailable::InventoryIncomplete
-        ))
-    ));
+    let fallback = load().unwrap();
+    assert_eq!(fallback.inventory().skills().len(), 1);
+    assert_eq!(
+        fallback.inventory().skills()[0].description,
+        "---\nname: verify\n---\n"
+    );
+    assert_ne!(
+        fallback.inventory().revision(),
+        inputs.inventory().revision()
+    );
 }
 
 #[test]

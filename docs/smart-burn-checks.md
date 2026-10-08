@@ -89,13 +89,21 @@ file versions.
 
 Skill Opportunities compares recorded work with current installed skill
 descriptions and typed selected skill-use evidence. It sends selected task/work
-context, matching skill names, descriptions, semantic frontmatter, and use/time
-limits to the configured provider. OpenCode result proof needs selected
+context, matching skill names, selected reference text, and use/time limits to
+the configured provider. A valid nonempty description is the only skill
+reference text sent. Missing, null, or blank descriptions and plain Markdown
+use the full Markdown as the fallback source, including frontmatter and body.
+Fallback requests select at most four structural 4 KiB chunks with byte ranges,
+total source bytes, and an explicit partial flag. Invalid YAML and non-string
+descriptions remain unsupported. Known used skills follow the same rule and
+share their reference text across comparisons in a request.
+OpenCode result proof needs selected
 `OtherToolOutput`; input-only projections cannot carry result text. Codex and Pi
 document selections and Claude requests/failures remain distinct facts, not
 execution proof.
 It does not prove past visibility or whole-session absence. Reliable birth time
-only excludes skills created after the relevant work; missing time stays explicit.
+records creation after the relevant work as an advisory limit, not a candidate
+exclusion; missing time stays explicit.
 
 All four checks preserve exact source citations and exclude private thinking.
 Prompts suggest better instructions for future work. They do not repair the
