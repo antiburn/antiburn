@@ -71,6 +71,7 @@ mod history_tests {
             title_source: None,
             cwd: None,
             surface: "unknown".to_string(),
+            client: "unknown".into(),
             updated_at_epoch: Some(NOW),
             activity_cursor: "test".to_string(),
             activity_source: "event".to_string(),

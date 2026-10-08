@@ -2538,6 +2538,7 @@ async fn describe_one_with_activity(
         title_source,
         cwd: metadata.and_then(|metadata| metadata.cwd.clone()),
         surface: log.surface_label(home).to_string(),
+        client: session_client(&log, preview).to_string(),
         updated_at_epoch,
         activity_cursor,
         activity_source,
@@ -2545,6 +2546,16 @@ async fn describe_one_with_activity(
         fork_parent_session_id,
         source_fingerprint,
     }))
+}
+
+/// The fine client label for a session. Only Claude has one today.
+fn session_client(log: &SessionLog, preview: Option<&str>) -> &'static str {
+    match log.agent_type {
+        AgentKind::Claude => {
+            antiburn_local::discovery::agents::claude::claude_client(log, preview).as_str()
+        }
+        _ => "unknown",
+    }
 }
 
 /// The fork parent this session's own source declares, if any.

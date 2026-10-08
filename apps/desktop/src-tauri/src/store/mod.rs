@@ -289,7 +289,7 @@ const RECENT_SESSIONS_SQL: &str = "SELECT environment_key, agent, session_id, so
                  AND r.session_id = s.session_id
                  AND r.kind = 'forkParent'
                LIMIT 1),
-            s.source_fingerprint
+            s.source_fingerprint, s.client
        FROM session s
       WHERE COALESCE(updated_at_epoch, 0) >= ?1
       ORDER BY COALESCE(updated_at_epoch, 0) DESC, session_id DESC
@@ -1744,6 +1744,25 @@ impl Store {
             .collect::<rusqlite::Result<HashMap<_, _>>>()?)
     }
 
+    /// Count local Claude sessions active since `since_epoch`, by client label.
+    ///
+    /// Remote-host rows have no client label, so this count excludes them.
+    pub fn claude_client_counts_since(&self, since_epoch: i64) -> Result<Vec<(String, u64)>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT client, COUNT(*) FROM session
+             WHERE agent = 'claude-code'
+               AND environment_key NOT LIKE 'ssh:%'
+               AND COALESCE(updated_at_epoch, 0) >= ?1
+             GROUP BY client ORDER BY client",
+        )?;
+        Ok(statement
+            .query_map([since_epoch], |row| {
+                Ok((row.get(0)?, row.get::<_, i64>(1)?.max(0) as u64))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Delete every indexed row owned by one immutable remote-host identity.
     pub fn delete_remote_host(&self, host_id: &str) -> Result<(usize, Revision)> {
         anyhow::ensure!(
@@ -3146,12 +3165,12 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
              title, title_source, cwd, surface, updated_at_epoch,
              activity_cursor, activity_source, subagent_count,
              first_seen_at, last_seen_at, source_fingerprint, source_generation,
-             incarnation)
+             incarnation, client)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
                  CASE WHEN ?7 IS NOT NULL THEN ?8 ELSE NULL END,
                  ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?16,
                  CASE WHEN ?16 IS NOT NULL THEN 1 ELSE 0 END,
-                 ?17)
+                 ?17, ?18)
          ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
              source_kind = excluded.source_kind,
              source_label = excluded.source_label,
@@ -3164,6 +3183,10 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
              END,
              cwd = COALESCE(excluded.cwd, session.cwd),
              surface = excluded.surface,
+             client = CASE
+                 WHEN excluded.client = 'unknown' THEN session.client
+                 ELSE excluded.client
+             END,
              updated_at_epoch = CASE
                  WHEN session.activity_source = 'event'
                       AND excluded.activity_source <> 'event'
@@ -3212,6 +3235,7 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
             now,
             record.source_fingerprint,
             incarnation.0,
+            record.client,
         ],
     )?;
 
@@ -3450,7 +3474,7 @@ const SESSION_SELECT_SQL: &str =
                          AND r.session_id = s.session_id
                          AND r.kind = 'forkParent'
                        LIMIT 1),
-                    s.source_fingerprint
+                    s.source_fingerprint, s.client
                FROM session s";
 
 fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
@@ -3473,6 +3497,9 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> 
         subagent_count: row.get(13)?,
         fork_parent_session_id: row.get(14)?,
         source_fingerprint: row.get(15)?,
+        // Read this column by name. Some queries add columns after the
+        // shared session columns.
+        client: row.get("client")?,
     })
 }
 

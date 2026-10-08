@@ -832,7 +832,8 @@ impl Store {
                      s.activity_cursor, evidence.published_fence,
                       CASE WHEN assessment.boundary_generation = -2 AND assessment.status = 'completed'
                            THEN assessment.updated_at_epoch ELSE assessment.boundary_at_epoch END,
-                      assessment.boundary_generation, assessment.boundary_positions_json
+                      assessment.boundary_generation, assessment.boundary_positions_json,
+                      s.client
                FROM session s
              LEFT JOIN burn_check_assessment AS assessment
                ON assessment.environment_key = s.environment_key

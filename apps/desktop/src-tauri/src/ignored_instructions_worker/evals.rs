@@ -1398,6 +1398,7 @@ fn synthetic_session_record(
         title_source: Some("explicit".to_owned()),
         cwd: Some(project.to_string_lossy().into_owned()),
         surface: "cli".to_owned(),
+        client: "unknown".into(),
         updated_at_epoch: Some(updated_at),
         activity_cursor: format!("synthetic-before-enable-{id}"),
         activity_source: "event".to_owned(),

@@ -22,6 +22,7 @@ fn session_record(session_id: &str, fingerprint: &str) -> SessionRecord {
         title_source: None,
         cwd: None,
         surface: "cli".into(),
+        client: "unknown".into(),
         updated_at_epoch: Some(1_000),
         activity_cursor: String::new(),
         activity_source: "event".into(),

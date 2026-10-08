@@ -13,6 +13,7 @@ use super::*;
 mod activity_tests;
 mod burn_check_tests;
 mod claim_fence_tests;
+mod client_count_tests;
 mod coverage_tests;
 mod evidence_tests;
 #[path = "tests/history_tests.rs"]
@@ -40,6 +41,7 @@ fn session(session_id: &str, updated_at: i64) -> SessionRecord {
         title_source: Some("explicit".into()),
         cwd: Some("/home/avery/code/widgets".into()),
         surface: "cli".into(),
+        client: "unknown".into(),
         updated_at_epoch: Some(updated_at),
         activity_cursor: String::new(),
         activity_source: "mtime".into(),

@@ -22,6 +22,7 @@ fn session(id: &str, updated: i64) -> SessionRecord {
         title_source: None,
         cwd: None,
         surface: "cli".into(),
+        client: "unknown".into(),
         updated_at_epoch: Some(updated),
         activity_cursor: id.into(),
         activity_source: "mtime".into(),

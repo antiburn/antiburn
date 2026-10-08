@@ -30,6 +30,7 @@ fn session(session_id: &str, updated_at: i64) -> SessionRecord {
         title_source: Some("explicit".into()),
         cwd: Some("/home/avery/code/widgets".into()),
         surface: "cli".into(),
+        client: "unknown".into(),
         updated_at_epoch: Some(updated_at),
         activity_cursor: String::new(),
         activity_source: "mtime".into(),

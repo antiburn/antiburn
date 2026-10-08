@@ -83,6 +83,7 @@ pub const MIGRATIONS: &[&str] = &[
     V70,
     V71,
     V72,
+    V73,
 ];
 
 const V69: &str = r#"
@@ -1603,4 +1604,14 @@ UPDATE setting
                  ORDER BY slug)
        ), '')
  WHERE key = 'disabledAgents';
+"#;
+
+/// v73 adds the session's client label.
+///
+/// The surface column has only `cli` and `ide_desktop`. This column keeps a
+/// finer closed value, such as `claude_desktop` or `vscode`. Existing rows
+/// start as `unknown`, and a scan sets the value when it describes the
+/// session again.
+const V73: &str = r#"
+ALTER TABLE session ADD COLUMN client TEXT NOT NULL DEFAULT 'unknown';
 "#;

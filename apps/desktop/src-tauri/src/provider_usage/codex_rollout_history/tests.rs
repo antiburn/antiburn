@@ -41,6 +41,7 @@ fn candidate_store(directory: &Path, source: &Path, session_id: &str, account: &
         title_source: None,
         cwd: None,
         surface: "cli".to_owned(),
+        client: "unknown".into(),
         updated_at_epoch: Some(now),
         activity_cursor: "synthetic".to_owned(),
         activity_source: "event".to_owned(),

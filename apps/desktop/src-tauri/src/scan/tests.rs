@@ -750,6 +750,33 @@ async fn a_descriptor_takes_the_metadata_session_id() {
 
     assert_eq!(record.key.session_id, "metadata-id");
     assert!(record.source_fingerprint.is_some());
+    assert_eq!(record.client, "unknown");
+}
+
+#[tokio::test]
+async fn a_claude_descriptor_takes_the_client_from_the_transcript_head() {
+    let home = tempfile::TempDir::new().unwrap();
+    let project = home.path().join(".claude/projects/-repo");
+    std::fs::create_dir_all(&project).unwrap();
+    let path = project.join("desktop-session.jsonl");
+    std::fs::write(
+        &path,
+        concat!(
+            r#"{"type":"queue-operation","operation":"enqueue","sessionId":"desktop-session"}"#,
+            "\n",
+            r#"{"type":"user","entrypoint":"claude-desktop","sessionId":"desktop-session","cwd":"/repo"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+
+    let DescribeOutcome::Session(record) =
+        describe_one(log(AgentKind::Claude, path, 100), home.path(), None).await
+    else {
+        panic!("session should be described");
+    };
+
+    assert_eq!(record.client, "claude_desktop");
 }
 
 #[tokio::test]
@@ -1564,6 +1591,7 @@ fn record(agent: &str, session_id: &str, updated_at: Option<i64>) -> SessionReco
         title_source: None,
         cwd: None,
         surface: "cli".into(),
+        client: "unknown".into(),
         updated_at_epoch: updated_at,
         activity_cursor: String::new(),
         activity_source: "mtime".into(),
@@ -2203,6 +2231,7 @@ fn record_for_facets(session_id: &str, title: Option<&str>, at: i64) -> SessionR
         title_source: title.map(|_| "vendor".to_string()),
         cwd: Some("/home/avery/code/widgets".into()),
         surface: "cli".into(),
+        client: "unknown".into(),
         updated_at_epoch: Some(at),
         activity_cursor: "cursor".into(),
         activity_source: "event".into(),

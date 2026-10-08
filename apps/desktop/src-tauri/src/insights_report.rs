@@ -1132,6 +1132,7 @@ pub(crate) mod tests {
             title_source: None,
             cwd: None,
             surface: "cli".to_owned(),
+            client: "unknown".into(),
             updated_at_epoch: Some(updated_at_epoch),
             activity_cursor: String::new(),
             activity_source: "event".to_owned(),

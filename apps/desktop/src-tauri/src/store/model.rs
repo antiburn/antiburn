@@ -253,6 +253,9 @@ pub struct SessionRecord {
     pub cwd: Option<String>,
     /// `cli`, `ide_desktop`, or `unknown`.
     pub surface: String,
+    /// The finer client label: `cli`, `claude_desktop`, `vscode`,
+    /// `jetbrains`, `sdk`, or `unknown`. Only Claude sessions set it.
+    pub client: String,
     /// Most recent meaningful transcript activity, in unix seconds. A
     /// filesystem mtime is retained only when the source has no usable event
     /// timestamp; see [`Self::activity_source`].

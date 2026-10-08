@@ -767,6 +767,7 @@ mod tests {
                     title_source: None,
                     cwd: None,
                     surface: "unknown".to_string(),
+                    client: "unknown".into(),
                     updated_at_epoch: Some(1),
                     activity_cursor: "synthetic".to_string(),
                     activity_source: "event".to_string(),
