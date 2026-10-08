@@ -81,9 +81,9 @@ fn skill_opportunity_findings_with_home(
             |row| {
                 Ok((
                     row.get::<_, u64>(0)?,
-                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<i64>>(1)?,
                     row.get::<_, Option<String>>(2)?,
-                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<i64>>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, Option<String>>(5)?,
                     row.get::<_, Option<String>>(6)?,
@@ -92,7 +92,8 @@ fn skill_opportunity_findings_with_home(
                 ))
             },
         )
-        .optional()?;
+        .optional()
+        .context("read stored skill-opportunity assessment")?;
     let Some((
         incarnation,
         source_generation,
@@ -111,9 +112,9 @@ fn skill_opportunity_findings_with_home(
         return Ok(None);
     };
     if incarnation != session.incarnation
-        || source_generation != session.source_generation
+        || source_generation != Some(session.source_generation)
         || source_fingerprint.as_deref() != session.source_fingerprint
-        || published_fence != session.published_fence
+        || published_fence != Some(session.published_fence)
         || result_revision.as_deref() != Some(input_revision.as_str())
         || evaluator_revision.as_deref()
             != Some(
@@ -207,6 +208,55 @@ pub(super) fn publication_revisions_match(
 mod tests {
     use super::*;
     use antiburn_local::analysis::jev::{JevAnswer, JevCheck, JevUsage, JevWorkItemResult};
+
+    #[test]
+    fn boundary_only_skill_assessment_is_unavailable() {
+        let (store, candidate) = crate::over_exploring_worker::tests::fixture(None, "user");
+        let home = tempfile::tempdir().unwrap();
+        store
+            .set_check_enabled(DetectorId::SkillOpportunities, true)
+            .unwrap();
+        store
+            .capture_burn_check_boundaries(&["skill_opportunities"], 1000)
+            .unwrap();
+        let evidence: SessionEvidence = serde_json::from_str(
+            &store
+                .evidence(&candidate.session.key)
+                .unwrap()
+                .unwrap()
+                .evidence_json
+                .unwrap(),
+        )
+        .unwrap();
+        let connection = store.lock();
+        let state: (String, Option<i64>, Option<i64>) = connection
+            .query_row(
+                "SELECT status, source_generation, published_fence FROM burn_check_assessment
+                 WHERE check_id = 'skill_opportunities'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(state, ("idle".into(), None, None));
+        assert!(current_skill_snapshot("opencode", None, home.path()).is_some());
+        let findings = skill_opportunity_findings_with_home(
+            &connection,
+            &evidence,
+            IgnoredInstructionSessionIdentity {
+                environment_key: &candidate.session.key.environment_key,
+                agent: &candidate.session.key.agent,
+                session_id: &candidate.session.key.session_id,
+                incarnation: candidate.incarnation,
+                source_generation: candidate.source_generation,
+                source_fingerprint: candidate.source_fingerprint.as_deref(),
+                published_fence: candidate.published_fence,
+            },
+            None,
+            home.path(),
+        )
+        .unwrap();
+        assert!(findings.is_none());
+    }
 
     fn assert_current_skill_report(
         store: &crate::store::Store,
