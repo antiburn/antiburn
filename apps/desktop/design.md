@@ -612,62 +612,32 @@ Notes for what isn't expressible as a token:
   hairline, stacking when their container narrows. A figure's method goes in its tooltip.
   A new headline number joins this row rather than drawing its own.
 
-- **Memories page** — the body is `px-8 pt-6 pb-16` inside a `ScrollPane`, as `grid gap-y-6`.
-  It opens with one `HeroFigures` row (Agents with a memory folder, Projects, Memories, Used
-  recently: the share of memories a session read in the last 7 days; writes do not count) in a
-  "Memory totals" `section`, then an "About memories" card (
-  `session-card bg-session-card rounded-(--radius-popover) px-4 py-3 flex flex-col gap-y-3`:
-  short `type-callout text-label-secondary max-w-180` summary paragraphs, then a closed
-  `Disclosure` "More about how memories work"
-  whose body is `grid gap-y-3 type-footnote text-label-secondary` headed blocks, code spans in
-  `font-mono type-footnote`), then the project list as `grid gap-y-1.5`. Each project is a card,
-  `session-card bg-session-card rounded-(--radius-popover)`, with a full-width header button on
-  `grid-cols-[auto_minmax(0,1fr)_auto]`: a 14px chevron that turns 90 degrees, a one-line
-  title (the folder name in `type-body font-medium! text-label`, `·`, the full path in
-  `font-mono type-metadata text-label-tertiary`, a `CountPill`, an orange `type-footnote`
-  "need attention" count, and a `text-label-tertiary` "folder not found" note when the folder is
-  gone), and at the right a `font-mono type-metadata tabular-nums text-label-tertiary` session
-  summary with the memory count and total size, or "no sessions found". The open body is `grid gap-y-3 px-3 pb-3 ps-9`. Its first line
-  is a `flex flex-wrap items-baseline gap-x-3 type-footnote text-label-tertiary` index line:
-  the owning agent's 12px icon and name, then "MEMORY.md · N entries" and a Reveal text button,
-  or an orange "No MEMORY.md index" note; a
-  backup note and the Windows note use the same style. Dangling entries list below it as
-  `font-mono type-footnote text-label-secondary` `title → target` with a red Remove line text
-  button. The memory grid is `grid-cols-[auto_minmax(0,1fr)_auto_auto_auto_auto] gap-x-4
-gap-y-0.5` whose memory rows are `grid-cols-subgrid`. A project with no session history uses
-  `grid-cols-[auto_minmax(0,1fr)_auto_auto]` and drops the two fact columns. A row is a 40px
-  button with a `type-body` title, an inline orange `type-metadata` "not in index" marker for
-  an orphan, a centred `type-footnote` kind, two centred `type-footnote text-label-secondary`
-  facts ("read 2d ago", "written 5d ago", blank when unknown), and a right-aligned
-  `font-mono type-footnote tabular-nums text-label-tertiary` file size. The hook is not on the
-  row. An open row adds a `grid gap-y-4 px-3 py-2` panel. Its first line is `flex justify-between
-type-body`: a tertiary "Filename: a.md" (with a truncation note) on the left and two text
-  buttons on the right in `flex items-center gap-x-4`, Reveal in
-  `type-footnote font-medium text-accent hover:underline` and Delete in
-  `type-footnote text-system-red-text hover:underline` (no confirm dialog; the same red recipe
-  is Remove line). Then three `grid gap-y-1 mt-2` source blocks, each headed by a
-  `flex justify-between items-baseline pb-1 border-b border-separator text-label-tertiary
-type-body` row with the label left and a caption right. "MEMORY.md entry" shows
-  "Title:" and "Hook:" in a `grid grid-cols-[auto_1fr] gap-x-2 type-footnote text-label`
-  (or a tertiary `type-callout` "No hook on this line."), or a `type-footnote
-text-system-orange` "Not in the index" line for an orphan. "Frontmatter" and "Body" show
-  their text in a `font-mono type-footnote whitespace-pre-wrap break-words text-label` `pre`,
-  or a tertiary "No frontmatter" or "Empty" note. A deleted row stays in place with
-  its title in `text-label-tertiary line-through`, its facts blank, and a
-  `type-footnote text-label-secondary` "Deleted" note beside an
-  `type-footnote font-medium text-accent hover:underline` Undo button. A failed action shows
-  a `role="alert"` `type-footnote text-system-orange` line with a Reload text button.
-  While the first load runs the page is one centred `role="status"` block: a spinning `LoaderCircle`
-  in tertiary ink over a `type-body` "Loading memories" line. An empty page renders
-  a centred `Brain` icon in tertiary ink over a `type-body` title and a `type-callout` caption.
-  Session detail's Tools tab ends with a "Memories touched" block: a `type-caption
-text-label-tertiary` heading over one `grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-x-4
-gap-y-1` grid whose rows are `grid-cols-subgrid`. A row is a `type-body text-label` title
-  over a `font-mono type-footnote text-label-tertiary` file name, a `type-footnote
-text-label-secondary` "read ×N" or "written ×N", a `font-mono type-footnote tabular-nums`
-  time (or "—"), and a `type-footnote text-accent hover:underline` "Show in Memories" text
-  button, or a `text-label-tertiary` "deleted" note. The button opens the Memories page with
-  that row open and focused.
+- **Memories page** — one `HeroFigures` row (Agents, Projects, Memories, and Used recently:
+  the share of memories a session read in the last 7 days; writes do not count), then an
+  "About memories" card on the session-card recipe with `type-callout text-label-secondary`
+  summary paragraphs and a closed `Disclosure` for the longer explanation, then one
+  session card per project, 6px apart. A project card's header is a full-width button:
+  chevron, folder name in `type-body font-medium!`, the full path in
+  `font-mono type-metadata text-label-tertiary`, a `CountPill`, and at the right a mono
+  `type-metadata` session summary with the memory count and total size, or "no sessions
+  found". Inside, a `type-footnote text-label-tertiary` index line names the agent and the
+  `MEMORY.md` entry count, and dangling entries list under it with a red "Remove line" text
+  button. Memories are one grid with subgrid rows: title (with an orange `type-metadata`
+  "not in index" marker for an orphan), centred kind, centred read and written facts in
+  secondary ink (blank when unknown), and a right-aligned mono file size; a project with no
+  session history drops the two fact columns. The hook is not on the row. An open row shows
+  the file name with Reveal and Delete text buttons (accent and `text-system-red-text`
+  recipes, no confirm dialog), then three source blocks, "MEMORY.md entry", "Frontmatter"
+  and "Body", each with a `border-b border-separator` heading row and its text in a
+  `font-mono type-footnote` `pre`, or a tertiary note when the source is absent; an orphan's
+  index block is an orange "Not in the index" line. A deleted row stays in place struck
+  through in tertiary ink with a "Deleted" note and an Undo text button; a failed action is
+  a `role="alert"` orange `type-footnote` line with a Reload text button. The first load is a
+  centred `LoaderCircle` over "Loading memories"; the empty page is a centred `Brain` icon
+  over a `type-body` title and `type-callout` caption. Session detail's Tools tab ends with
+  a "Memories touched" grid with subgrid rows: title over mono file name, "read ×N" or
+  "written ×N", time, and a "Show in Memories" text button (or a tertiary "deleted" note)
+  that opens the Memories page with that row open and focused.
 
 - **Limits page** — the scope picker is a pill that floats over the bottom centre of
   the page, in the shape of the session detail's section picker and in its selected
