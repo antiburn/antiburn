@@ -32,6 +32,10 @@ CI changes, and documentation that no user acts on stay out — see
 - After the first run, antiburn reads your older sessions in the
   background, as far back as Keep session data allows. The Sessions count
   on the Overview climbs as it reads them.
+- antiburn now records which Claude app started each Claude session: the
+  CLI, Claude Desktop, VS Code, JetBrains, or the SDK. When analytics are
+  on, it sends one anonymised count per app once a day, in rounded buckets.
+  It never sends paths, session ids, or the raw value from the transcript.
 
 ### Changed
 

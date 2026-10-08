@@ -252,8 +252,9 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                 <li>A count rounded to a range, when the event has one.</li>
                 <li>
                   A short label &mdash; which surface, Settings pane, provider, setting, agent
-                  category, navigation direction, sidebar state, search result category, or
-                  failure category. Never work content, search text, or a value you entered.
+                  category, Claude client (CLI, Desktop, or an editor), navigation direction,
+                  sidebar state, search result category, or failure category. Never work content,
+                  search text, or a value you entered.
                 </li>
                 <li>
                   A second such label when an event has two things to tell apart, such as native

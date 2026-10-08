@@ -905,3 +905,57 @@ after the first run — so it only ever reports `first_run`. No control
 identity, setting value, or search query reaches this event. The Rust
 boundary rejects an unlisted label or detail and any extra field
 (`step_settings_viewed_uses_closed_vocabulary`).
+
+## Claude client mix (2026-10-08)
+
+Question: what share of active installs use the Claude CLI, Claude Desktop,
+VS Code, JetBrains, or the SDK? The answer guides where antiburn puts work
+for Claude users. The metric is the share of weekly reporting installations
+by Claude client mix: CLI only, Desktop only, IDE only (`vscode` or
+`jetbrains`), and mixed (two or more known clients). The denominator is
+reporting installations on supporting app versions with at least one
+`antiburn.claude_client_mix_observed` event in the week. Approximate session
+shares per client come from the buckets. Limit: this counts antiburn users
+with analytics on, not Claude users in general. State that limit with every
+number.
+
+Trigger and owner: the scan scheduler calls the event boundary after a full
+discovery pass succeeds. Scoped watcher passes and failed passes do not call
+it. The boundary reads a durable `internal:claudeClientMixSentAtEpochV1`
+marker from the settings table and does nothing when the last report is less
+than 24 hours old. Otherwise it counts local Claude Code sessions (`native`
+and `wsl` environments, not remote hosts) with activity in the last 7 days,
+grouped by the stored `session.client` value. It writes the marker before it
+records the events, and a failed marker write records nothing. This is
+background health, not visible use: it does not show that the reader opened
+antiburn.
+
+Properties: `label` is `cli`, `claude_desktop`, `vscode`, `jetbrains`,
+`sdk`, or `unknown`; `bucket` is the standard count bucket. A Rust match maps
+each stored value to this list, and an unlisted stored value becomes
+`unknown`. The scan maps the transcript's `entrypoint` field to the same list
+(`claude-cli` and `cli` to `cli`; `claude-desktop` and Cowork's `local-agent`
+to `claude_desktop`; values containing `vscode`, `jetbrains`, or `intellij`;
+values starting with `sdk`). The raw `entrypoint`, session ids, paths,
+projects, models, and timestamps never reach the event. The event adds no
+wire property.
+
+Volume and suppression: at most one event per client with a non-zero count,
+so at most six events per install per day. No Claude sessions in the window
+sends nothing and writes no marker. A restart does not reset the 24-hour
+limit. Opt-out, environment disablement, and an unconfigured build send
+nothing and write no marker.
+
+Version boundary: this is a new event. Sessions indexed before the release
+keep `client = unknown` until their transcript changes and the scan
+describes them again, so the first week after an update over-counts
+`unknown`. Segment by app version and treat the first week as warm-up.
+
+Tests: `analytics::claude_client_mix::tests` prove one event per non-zero
+client with bucket values only, the `unknown` fallback for an unlisted stored
+value, no event and no marker with no Claude sessions or with analytics off,
+the 24-hour limit, and that the marker survives a reopened store.
+`discovery::agents::claude::tests` cover the `entrypoint` mapping table, the
+missing field, the bounded head, and the Desktop manifest label. The
+consent-gated wrapper follows the `quota_window_closed` precedent and is
+covered by review.

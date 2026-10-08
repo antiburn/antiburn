@@ -375,6 +375,17 @@ path after discovery. SQLite readers fingerprint rows visible through the live
 connection, including uncheckpointed WAL rows, and compare again after a
 transaction snapshot completes.
 
+Each stored Claude session also carries a `client` label: `cli`,
+`claude_desktop`, `vscode`, `jetbrains`, `sdk`, or `unknown`. The scan reads
+the `entrypoint` field from the first eight records of the transcript head.
+`local-agent` (Cowork) maps to `claude_desktop`. A transcript without an
+`entrypoint`, such as one from an older Claude Code release, stays `unknown`;
+the path alone never implies `cli`. Rows stored before schema V73 stay
+`unknown` until a scan describes their transcript again. A later rescan that
+cannot read a client keeps the known value. Other agents store `unknown`.
+This label does not change the coarse `surface` value, accepted source
+formats, or check eligibility.
+
 The evidence accumulator retains at most 16,384 distinct thread UUIDs. Each UUID
 must be at most 256 bytes. A new UUID after the set is full, or an oversized
 UUID, makes attribution incomplete and records `Partial(CapExceeded)`. Resume
