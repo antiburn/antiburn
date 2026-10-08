@@ -2740,6 +2740,63 @@ fn git_error_admission_holds_the_session_when_git_cannot_run() {
     );
 }
 
+#[test]
+fn a_git_outage_holds_a_stored_session_instead_of_rejecting_it() {
+    let mut stored = record("claude", "stored-session", Some(1_000));
+    let mut fresh = record("claude", "fresh-session", Some(2_000));
+    let mut gate = GateCounts::default();
+    let mut rejected = Vec::new();
+    let mut git_hold = GitHold::default();
+
+    for (session, error) in [(&mut stored, "first error"), (&mut fresh, "second error")] {
+        let mut changed_record = true;
+        let flow = apply_repo_admission(
+            RepoAdmission::GitUnavailable(error.into()),
+            session,
+            &mut changed_record,
+            &mut gate,
+            &mut rejected,
+            &mut git_hold,
+        );
+        // `Break` keeps the record out of the rows that the pass writes.
+        assert_eq!(flow, ControlFlow::Break(()));
+    }
+
+    // The pass deletes only rejected rows, so the stored row stays.
+    assert!(rejected.is_empty());
+    assert_eq!(gate, GateCounts::default());
+    assert_eq!(
+        git_hold,
+        GitHold {
+            sessions: 2,
+            error: Some("first error".into()),
+        }
+    );
+}
+
+#[test]
+fn a_rejected_session_goes_to_the_rejected_rows() {
+    let mut session = record("claude", "no-repo-session", Some(1_000));
+    let mut changed_record = false;
+    let mut gate = GateCounts::default();
+    let mut rejected = Vec::new();
+    let mut git_hold = GitHold::default();
+
+    let flow = apply_repo_admission(
+        RepoAdmission::Rejected,
+        &mut session,
+        &mut changed_record,
+        &mut gate,
+        &mut rejected,
+        &mut git_hold,
+    );
+
+    assert_eq!(flow, ControlFlow::Break(()));
+    assert_eq!(rejected, vec![session.key.clone()]);
+    assert_eq!(gate.no_repo, 1);
+    assert_eq!(git_hold, GitHold::default());
+}
+
 #[tokio::test]
 async fn repo_admission_reads_only_file_transcripts() {
     let dir = tempfile::tempdir().expect("tempdir");

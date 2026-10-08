@@ -86,6 +86,7 @@
 //! the process.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1975,9 +1976,7 @@ async fn describe_with_gate(
     let mut list_changed = false;
     let mut gate = GateCounts::default();
     #[cfg(not(test))]
-    let mut git_unavailable = 0_usize;
-    #[cfg(not(test))]
-    let mut git_error: Option<String> = None;
+    let mut git_hold = GitHold::default();
     let mut read_completed = 0_usize;
     let mut read_total = total_logs;
     let mut read_done = 0_usize;
@@ -2059,33 +2058,18 @@ async fn describe_with_gate(
                         let cwd = cwd.to_string();
                         let mut record = record;
                         let mut changed_record = changed_record;
-                        let root =
-                            match repo_admission(&record, &cwd, include_non_repo_folders).await {
-                                RepoAdmission::Repository(root) => Some(root),
-                                RepoAdmission::InferredRepository(root) => {
-                                    record.cwd = Some(root.to_string_lossy().into_owned());
-                                    // Persist the new CWD, also for a reused record.
-                                    changed_record = true;
-                                    Some(root)
-                                }
-                                RepoAdmission::Folder => {
-                                    gate.folder += 1;
-                                    None
-                                }
-                                RepoAdmission::Rejected => {
-                                    gate.no_repo += 1;
-                                    rejected.push(record.key.clone());
-                                    continue;
-                                }
-                                // Keep the stored row, if any, and do not add
-                                // a new one. A later pass admits the session
-                                // when Git runs again.
-                                RepoAdmission::GitUnavailable(error) => {
-                                    git_unavailable += 1;
-                                    git_error.get_or_insert(error);
-                                    continue;
-                                }
-                            };
+                        let admission =
+                            repo_admission(&record, &cwd, include_non_repo_folders).await;
+                        let ControlFlow::Continue(root) = apply_repo_admission(
+                            admission,
+                            &mut record,
+                            &mut changed_record,
+                            &mut gate,
+                            &mut rejected,
+                            &mut git_hold,
+                        ) else {
+                            continue;
+                        };
                         if let Some(root) = root {
                             let root = git::canonical_main_repo_root(&root).await;
                             // Apply the shared opt-out gate to both the working
@@ -2118,10 +2102,10 @@ async fn describe_with_gate(
         }
     }
     #[cfg(not(test))]
-    if let Some(error) = git_error {
+    if let Some(error) = &git_hold.error {
         ::tracing::warn!(
             event = "scan_git_unavailable",
-            sessions = git_unavailable,
+            sessions = git_hold.sessions,
             error = %error,
         );
     }
@@ -2218,6 +2202,54 @@ async fn repo_admission(
         RepoAdmission::Folder
     } else {
         RepoAdmission::Rejected
+    }
+}
+
+/// Sessions that the repository gate holds because Git cannot run.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct GitHold {
+    sessions: usize,
+    /// The first Git error of the pass.
+    error: Option<String>,
+}
+
+/// Apply one [`RepoAdmission`] to `record`.
+///
+/// `Continue` keeps the record, with the repository root to check against the
+/// opt-out list, if any. `Break` drops the record from this pass. A rejected
+/// record also goes into `rejected`, and the scan deletes its stored row. A
+/// held record does not: the scan keeps its stored row, if any, adds no new
+/// row, and admits the session on a later pass when Git runs again.
+fn apply_repo_admission(
+    admission: RepoAdmission,
+    record: &mut SessionRecord,
+    changed_record: &mut bool,
+    gate: &mut GateCounts,
+    rejected: &mut Vec<SessionKey>,
+    git_hold: &mut GitHold,
+) -> ControlFlow<(), Option<std::path::PathBuf>> {
+    match admission {
+        RepoAdmission::Repository(root) => ControlFlow::Continue(Some(root)),
+        RepoAdmission::InferredRepository(root) => {
+            record.cwd = Some(root.to_string_lossy().into_owned());
+            // Persist the new CWD, also for a reused record.
+            *changed_record = true;
+            ControlFlow::Continue(Some(root))
+        }
+        RepoAdmission::Folder => {
+            gate.folder += 1;
+            ControlFlow::Continue(None)
+        }
+        RepoAdmission::Rejected => {
+            gate.no_repo += 1;
+            rejected.push(record.key.clone());
+            ControlFlow::Break(())
+        }
+        RepoAdmission::GitUnavailable(error) => {
+            git_hold.sessions += 1;
+            git_hold.error.get_or_insert(error);
+            ControlFlow::Break(())
+        }
     }
 }
 
