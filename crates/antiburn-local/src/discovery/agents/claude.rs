@@ -192,12 +192,7 @@ impl AgentExplorer for ClaudeExplorer {
 /// record carries one (`"entrypoint":"claude-vscode"`, `"claude-desktop"`,
 /// `"claude-cli"`, `"sdk-ts"`, …).
 pub fn entrypoint_surface(content: &str) -> Option<&'static str> {
-    for line in content.lines().take(MAX_LINES_TO_SCAN) {
-        if let Some(value) = extract_json_string_field(line, "entrypoint") {
-            return Some(classify_entrypoint(value));
-        }
-    }
-    None
+    first_entrypoint(content).map(classify_entrypoint)
 }
 
 /// Number of leading session lines scanned for the `entrypoint` marker. The
@@ -218,6 +213,79 @@ fn classify_entrypoint(entrypoint: &str) -> &'static str {
     } else {
         // claude-cli, sdk-ts, sdk-python, terminal launches → treat as CLI.
         "cli"
+    }
+}
+
+/// The Claude client that wrote a session, from a closed vocabulary.
+///
+/// This label is finer than the `cli` / `ide_desktop` surface. It never keeps
+/// the raw `entrypoint` value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaudeClient {
+    Cli,
+    Desktop,
+    Vscode,
+    Jetbrains,
+    Sdk,
+    Unknown,
+}
+
+impl ClaudeClient {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ClaudeClient::Cli => "cli",
+            ClaudeClient::Desktop => "claude_desktop",
+            ClaudeClient::Vscode => "vscode",
+            ClaudeClient::Jetbrains => "jetbrains",
+            ClaudeClient::Sdk => "sdk",
+            ClaudeClient::Unknown => "unknown",
+        }
+    }
+}
+
+/// Classify a session's Claude client.
+///
+/// The transcript's `entrypoint` decides first. A session that only the
+/// Claude Desktop manifest names is `Desktop`. Other sessions are `Unknown`:
+/// pre-2.x transcripts have no `entrypoint`, and the path does not tell the
+/// CLI from Desktop or an IDE.
+pub fn claude_client(log: &SessionLog, content: Option<&str>) -> ClaudeClient {
+    let inline_content = match &log.source {
+        SessionSource::Inline { content, .. } => Some(content.as_str()),
+        _ => None,
+    };
+    if let Some(entrypoint) = content
+        .or(inline_content)
+        .and_then(|content| first_entrypoint(content))
+    {
+        return classify_client(entrypoint);
+    }
+    if let SessionSource::Inline { label, .. } = &log.source
+        && label.starts_with("claude-desktop:")
+    {
+        return ClaudeClient::Desktop;
+    }
+    ClaudeClient::Unknown
+}
+
+fn first_entrypoint(content: &str) -> Option<&str> {
+    content
+        .lines()
+        .take(MAX_LINES_TO_SCAN)
+        .find_map(|line| extract_json_string_field(line, "entrypoint"))
+}
+
+fn classify_client(entrypoint: &str) -> ClaudeClient {
+    let lower = entrypoint.to_ascii_lowercase();
+    match lower.as_str() {
+        "claude-cli" | "cli" => ClaudeClient::Cli,
+        // Claude Desktop writes `local-agent` for Cowork sessions.
+        "local-agent" => ClaudeClient::Desktop,
+        _ if lower.contains("desktop") => ClaudeClient::Desktop,
+        _ if lower.contains("vscode") => ClaudeClient::Vscode,
+        _ if lower.contains("jetbrains") || lower.contains("intellij") => ClaudeClient::Jetbrains,
+        _ if lower.starts_with("sdk") => ClaudeClient::Sdk,
+        _ => ClaudeClient::Unknown,
     }
 }
 
@@ -1252,5 +1320,96 @@ mod tests {
         for bad in ["../etc/passwd", "..\\..\\windows", "abc/../def", ""] {
             assert!(resolve_cli_transcript_path(&dirs, bad).await.is_none());
         }
+    }
+
+    fn file_log() -> SessionLog {
+        SessionLog {
+            environment: Default::default(),
+            agent_type: AgentKind::Claude,
+            source: SessionSource::File(PathBuf::from(
+                "/Users/x/.claude/projects/-Users-x-foo/s.jsonl",
+            )),
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn claude_client_maps_every_known_entrypoint_to_a_closed_value() {
+        let cases = [
+            ("claude-cli", ClaudeClient::Cli, "cli"),
+            ("cli", ClaudeClient::Cli, "cli"),
+            ("claude-desktop", ClaudeClient::Desktop, "claude_desktop"),
+            ("local-agent", ClaudeClient::Desktop, "claude_desktop"),
+            ("claude-vscode", ClaudeClient::Vscode, "vscode"),
+            ("claude-jetbrains", ClaudeClient::Jetbrains, "jetbrains"),
+            ("intellij", ClaudeClient::Jetbrains, "jetbrains"),
+            ("sdk-ts", ClaudeClient::Sdk, "sdk"),
+            ("sdk-py", ClaudeClient::Sdk, "sdk"),
+            ("sdk-cli", ClaudeClient::Sdk, "sdk"),
+            ("some-future-client", ClaudeClient::Unknown, "unknown"),
+            ("", ClaudeClient::Unknown, "unknown"),
+        ];
+        for (entrypoint, expected, wire) in cases {
+            let content = format!(
+                "{{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"sessionId\":\"s\"}}\n\
+                 {{\"type\":\"user\",\"entrypoint\":\"{entrypoint}\",\"sessionId\":\"s\"}}"
+            );
+            let client = claude_client(&file_log(), Some(&content));
+            assert_eq!(client, expected, "entrypoint {entrypoint:?}");
+            assert_eq!(client.as_str(), wire);
+        }
+    }
+
+    #[test]
+    fn claude_client_without_entrypoint_is_unknown_not_cli() {
+        let content = r#"{"type":"user","cwd":"/x","sessionId":"s"}"#;
+        assert_eq!(
+            claude_client(&file_log(), Some(content)),
+            ClaudeClient::Unknown
+        );
+        assert_eq!(claude_client(&file_log(), None), ClaudeClient::Unknown);
+    }
+
+    #[test]
+    fn claude_client_reads_only_the_bounded_head() {
+        let mut content = String::new();
+        for _ in 0..MAX_LINES_TO_SCAN {
+            content.push_str("{\"type\":\"queue-operation\"}\n");
+        }
+        content.push_str(r#"{"type":"user","entrypoint":"claude-desktop"}"#);
+        assert_eq!(
+            claude_client(&file_log(), Some(&content)),
+            ClaudeClient::Unknown
+        );
+    }
+
+    #[test]
+    fn claude_client_names_desktop_manifest_sessions_desktop() {
+        let log = SessionLog {
+            environment: Default::default(),
+            agent_type: AgentKind::Claude,
+            source: SessionSource::Inline {
+                label:
+                    "claude-desktop:Library/Application Support/Claude/claude-code-sessions/a.json"
+                        .to_string(),
+                content: r#"{"sessionId":"s","cwd":"/x"}"#.to_string(),
+            },
+            updated_at: None,
+        };
+        assert_eq!(claude_client(&log, None), ClaudeClient::Desktop);
+    }
+
+    #[test]
+    fn claude_client_prefers_inline_entrypoint_over_the_desktop_label() {
+        let log = SessionLog {
+            environment: Default::default(),
+            agent_type: AgentKind::Claude,
+            source: SessionSource::Inline {
+                label: "claude-desktop:x".to_string(),
+                content: r#"{"type":"user","entrypoint":"claude-vscode"}"#.to_string(),
+            },
+            updated_at: None,
+        };
+        assert_eq!(claude_client(&log, None), ClaudeClient::Vscode);
     }
 }
