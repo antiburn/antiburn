@@ -154,9 +154,11 @@ export const STEP_SETTINGS_TARGETS = {
   },
   smartCheckProvider: {
     step: "checks",
-    label: "Use Ollama or another provider",
+    label: "Provider",
     aliases: [
       "smart check provider",
+      "Use Ollama or another provider",
+      "decision model",
       "Ollama",
       "Cloudflare",
       "custom endpoint",
@@ -170,13 +172,20 @@ export const STEP_SETTINGS_TARGETS = {
   },
   smartChecksEnabled: {
     step: "checks",
-    label: "Enable Smart Burn Checks",
+    label: "Enable smart burn checks",
     aliases: ["pause smart checks", "Jev checks"],
   },
   typeSafeApiKey: {
     step: "checks",
     label: "API key",
-    aliases: ["TypeSafe API key", "Jev", "enable checks", "usage charges"],
+    aliases: [
+      "TypeSafe API key",
+      "Cloudflare API token",
+      "provider credential",
+      "Jev",
+      "enable checks",
+      "usage charges",
+    ],
   },
 } as const satisfies Record<
   string,

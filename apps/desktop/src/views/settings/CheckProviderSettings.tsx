@@ -1,6 +1,7 @@
 import { useState, useSyncExternalStore } from "react"
 import { ChevronDown } from "lucide-react"
 import { Card } from "../../components/ui/Card"
+import { Disclosure } from "../../components/ui/Disclosure"
 import { PushButton } from "../../components/ui/PushButton"
 import { SectionGroup } from "../../components/ui/SectionGroup"
 import {
@@ -10,6 +11,7 @@ import {
   type ModelCapabilities,
 } from "../../lib/smartCheckProviders"
 import { ProviderSettingsSession } from "./ProviderSettingsSession"
+import type { CheckAvailability } from "../../lib/checkAvailability"
 import { StepSettingsRow as SettingsRow } from "../main-window/overview/stepSettings/StepSettingsSearchRows"
 
 const inputClass =
@@ -51,10 +53,12 @@ export function CheckProviderSettings({
   control,
   targetRevision = 0,
   legacyKeySaved = false,
+  usage,
 }: {
   control?: string | null | undefined
   targetRevision?: number | undefined
   legacyKeySaved?: boolean
+  usage?: CheckAvailability["usage"]
 }) {
   const [session] = useState(() => new ProviderSettingsSession())
   const state = useSyncExternalStore(
@@ -115,7 +119,10 @@ export function CheckProviderSettings({
   return (
     <SectionGroup title="Decision model">
       <Card>
-        <SettingsRow searchId="smartCheckProvider" label="Provider">
+        <SettingsRow
+          searchId="smartCheckProvider"
+          description="Choose a connection, then save and use it for smart burn checks. Testing does not activate it."
+        >
           <div className="space-y-3">
             <select
               aria-label="Smart check provider"
@@ -293,7 +300,7 @@ export function CheckProviderSettings({
               disabled={disabled || needsCredential}
               onClick={() => void session.run("save")}
             >
-              Save connection
+              Save and use connection
             </PushButton>
             {savedConnection && state.saved?.activeId !== state.selectedId && (
               <PushButton disabled={state.busy} onClick={() => void session.run("switch")}>
@@ -319,7 +326,7 @@ export function CheckProviderSettings({
               Working…
             </p>
           )}
-          {state.status && !current?.tested && (
+          {state.status && (
             <p role="status" className="mt-2 type-footnote text-label-secondary">
               {state.status}
             </p>
@@ -332,6 +339,7 @@ export function CheckProviderSettings({
         </SettingsRow>
         <SettingsRow
           searchId="smartCheckLimits"
+          description="Context window, token, and request size bounds. These are not spending limits."
           trailing={
             <button
               type="button"
@@ -348,7 +356,13 @@ export function CheckProviderSettings({
           {open && (
             <div id="check-model-limits">
               <p className="mt-2 type-footnote text-label-secondary">
-                Manual limits can lower the model's request bounds.
+                Refresh to read available model limits. Each value shows its source; unknown
+                values are not discovered limits.
+              </p>
+              <p className="mt-2 type-footnote text-label-secondary">
+                {provider === "jev"
+                  ? "Jev uses documented model limits. Manual overrides are not available."
+                  : "Leave manual limits empty to use discovered values or documented defaults. Manual values can lower known bounds or supply missing token limits."}
               </p>
               <PushButton
                 className="mt-2"
@@ -397,6 +411,35 @@ export function CheckProviderSettings({
             </div>
           )}
         </SettingsRow>
+        {usage && (
+          <div className="px-3">
+            <Disclosure label="Model usage">
+              <p className="type-footnote text-label-secondary">
+                Recorded smart burn check totals on this device across all connections, not just
+                the connection shown above. Clear Local Data resets these totals.
+              </p>
+              <p className="mt-2 type-footnote text-label-secondary">
+                {usage.confirmedCalls > 0 || usage.inputTokens > 0 || usage.outputTokens > 0
+                  ? `${usage.inputTokens.toLocaleString()} input tokens · ${usage.outputTokens.toLocaleString()} output tokens · ${usage.confirmedCalls.toLocaleString()} confirmed requests`
+                  : "No confirmed model requests yet."}
+              </p>
+              <p className="mt-1 type-footnote text-label-secondary">
+                {usage.estimatedUsd === null
+                  ? "Cost estimate unavailable."
+                  : `${usage.estimatedUsd} estimated cost. This is not a bill.`}
+              </p>
+              <p className="mt-1 type-footnote text-label-secondary">
+                {usage.cacheHits.toLocaleString()} cached results reused.
+              </p>
+              {usage.unknownOutcomes > 0 && (
+                <p className="mt-1 type-footnote text-label-secondary">
+                  {usage.unknownOutcomes.toLocaleString()} request outcomes are unknown and are
+                  not included in the estimate.
+                </p>
+              )}
+            </Disclosure>
+          </div>
+        )}
       </Card>
       <p className="mt-3 type-footnote text-label-secondary">
         Checks send selected session content and skill descriptions to the provider in use,

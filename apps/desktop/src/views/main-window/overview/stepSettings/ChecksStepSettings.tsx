@@ -2,7 +2,6 @@ import { LoaderCircle } from "lucide-react"
 import { useState, useSyncExternalStore } from "react"
 
 import { Card } from "../../../../components/ui/Card"
-import { Disclosure } from "../../../../components/ui/Disclosure"
 import { PushButton } from "../../../../components/ui/PushButton"
 import { SegmentedControl } from "../../../../components/ui/SegmentedControl"
 import { SectionGroup } from "../../../../components/ui/SectionGroup"
@@ -195,10 +194,6 @@ export function ChecksStepSettings({
     }
   }
 
-  const usage =
-    state.usage.inputTokens > 0 || state.usage.confirmedCalls > 0
-      ? `${state.usage.inputTokens.toLocaleString()} input tokens · ${state.usage.estimatedUsd ?? "cost unavailable"} estimated · ${state.usage.confirmedCalls.toLocaleString()} requests`
-      : "No model requests yet."
   const historyValue = String(state.historyDays)
   const progress = historyStatus(state)
   const historyRunning = state.backfill.queued + state.backfill.running > 0
@@ -247,7 +242,7 @@ export function ChecksStepSettings({
         <Card>
           <StepSettingsToggleRow
             searchId="smartChecksEnabled"
-            description="A decision model reviews selected session content to find instruction conflicts, scope creep, over-exploring, and skill opportunities."
+            description="Run smart burn checks using the decision model below."
             checked={state.configured}
             disabled={busy}
             onChange={(enabled) => void toggleChecks(enabled)}
@@ -323,16 +318,8 @@ export function ChecksStepSettings({
         control={control}
         targetRevision={targetRevision}
         legacyKeySaved={state.savedKey}
+        usage={state.usage}
       />
-      <Disclosure label="Model usage">
-        <p className="type-footnote text-label-secondary">{usage}</p>
-        {state.usage.unknownOutcomes > 0 && (
-          <p className="mt-1 type-footnote text-label-secondary">
-            {state.usage.unknownOutcomes.toLocaleString()} request outcomes are unknown and are
-            not included in the estimate.
-          </p>
-        )}
-      </Disclosure>
     </div>
   )
 }

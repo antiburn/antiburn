@@ -194,15 +194,21 @@ export class ProviderSettingsSession {
   async run(action: "test" | "save" | "refresh" | "remove" | "switch") {
     if (this.state.busy) return
     const id = this.state.selectedId
-    const current = this.state.drafts[id]
+    let current = this.state.drafts[id]
     if (!current) return
-    this.publish({ busy: true, error: null, status: null })
+    if (action === "test") current = { ...current, tested: false }
+    if (action === "refresh") current = { ...current, capabilities: null }
+    this.publish({
+      busy: true,
+      error: null,
+      status: null,
+      drafts: { ...this.state.drafts, [id]: current },
+    })
     try {
       if (action === "test") {
         await testProviderConnection(current.draft)
         this.publish({
           drafts: { ...this.state.drafts, [id]: { ...current, tested: true } },
-          status: "This draft passed the connection test.",
         })
       } else if (action === "refresh") {
         const capabilities = await refreshProviderLimits(current.draft)

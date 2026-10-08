@@ -153,7 +153,7 @@ it.each([
   fireEvent.click(screen.getByRole("switch", { name: label }))
   await waitFor(() => expect(setCheckEnabled).toHaveBeenCalledWith(id, true))
   expect(screen.getByRole("switch", { name: label })).toBeChecked()
-  expect(screen.getByRole("switch", { name: "Enable Smart Burn Checks" })).not.toBeChecked()
+  expect(screen.getByRole("switch", { name: "Enable smart burn checks" })).not.toBeChecked()
   expect(screen.getByRole("switch", { name: "Unused skills" })).toBeChecked()
 })
 
@@ -203,7 +203,7 @@ it("saves a password draft and clears the key after native storage succeeds", as
   expect(input).toHaveAttribute("type", "password")
   await waitFor(() => expect(input).toBeEnabled())
   fireEvent.change(input, { target: { value: "synthetic-key" } })
-  fireEvent.click(screen.getByRole("button", { name: "Save connection" }))
+  fireEvent.click(screen.getByRole("button", { name: "Save and use connection" }))
   await waitFor(() =>
     expect(providerInvoke).toHaveBeenCalledWith(
       "save_system_one_connection",
@@ -226,12 +226,12 @@ it("saves a password draft and clears the key after native storage succeeds", as
 it("restores a saved key without a Settings action", async () => {
   getAvailability.mockResolvedValue({ ...emptyAvailability, savedKey: true, configured: true })
   render(<ChecksStepSettings />)
-  const toggle = await screen.findByRole("switch", { name: "Enable Smart Burn Checks" })
+  const toggle = await screen.findByRole("switch", { name: "Enable smart burn checks" })
   expect(toggle).toHaveAttribute("aria-checked", "true")
   expect(screen.queryByText(/Smart Burn Checks on/)).not.toBeInTheDocument()
-  expect(providerInvoke.mock.calls.some(([command]) => command === "save_system_one_connection")).toBe(
-    false,
-  )
+  expect(
+    providerInvoke.mock.calls.some(([command]) => command === "save_system_one_connection"),
+  ).toBe(false)
   await waitFor(() => expect(screen.getByLabelText("TypeSafe API key")).toBeEnabled())
   expect(screen.getByLabelText("TypeSafe API key")).toHaveAttribute(
     "placeholder",
@@ -247,7 +247,7 @@ it("pauses checks without removing the saved key", async () => {
     configured: false,
   })
   render(<ChecksStepSettings />)
-  const toggle = await screen.findByRole("switch", { name: "Enable Smart Burn Checks" })
+  const toggle = await screen.findByRole("switch", { name: "Enable smart burn checks" })
   fireEvent.click(toggle)
   await waitFor(() => expect(setChecksEnabled).toHaveBeenCalledWith(false))
   expect(toggle).toHaveAttribute("aria-checked", "false")
@@ -267,7 +267,7 @@ it("renders keyless Ollama as paused after the backend enablement change", async
       }),
   )
   render(<ChecksStepSettings />)
-  const toggle = screen.getByRole("switch", { name: "Enable Smart Burn Checks" })
+  const toggle = screen.getByRole("switch", { name: "Enable smart burn checks" })
   await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"))
   await waitFor(() =>
     expect(screen.getByLabelText("Smart check provider")).toHaveValue("ollama"),
@@ -298,7 +298,7 @@ it("renders an active credential removal and the backend pause event together", 
   })
   getAvailability.mockResolvedValue({ ...emptyAvailability, configured: true })
   render(<ChecksStepSettings />)
-  const toggle = screen.getByRole("switch", { name: "Enable Smart Burn Checks" })
+  const toggle = screen.getByRole("switch", { name: "Enable smart burn checks" })
   await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"))
   fireEvent.click(await screen.findByRole("button", { name: "Remove credential" }))
   await screen.findByText("Credential removed.")
@@ -315,7 +315,7 @@ it.each([
   getAvailability.mockResolvedValue(emptyAvailability)
   setChecksEnabled.mockRejectedValueOnce(message)
   render(<ChecksStepSettings />)
-  const toggle = screen.getByRole("switch", { name: "Enable Smart Burn Checks" })
+  const toggle = screen.getByRole("switch", { name: "Enable smart burn checks" })
   await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"))
   fireEvent.click(toggle)
   expect(await screen.findByRole("alert")).toHaveTextContent(message)
@@ -341,7 +341,7 @@ it("requires a replacement after TypeSafe rejects the saved key", async () => {
   fireEvent.change(screen.getByLabelText("TypeSafe API key"), {
     target: { value: "replacement-key" },
   })
-  fireEvent.click(screen.getByRole("button", { name: "Save connection" }))
+  fireEvent.click(screen.getByRole("button", { name: "Save and use connection" }))
   await waitFor(() =>
     expect(providerInvoke).toHaveBeenCalledWith(
       "save_system_one_connection",
@@ -372,8 +372,34 @@ it("shows bounded local usage and unknown outcomes separately", async () => {
   )
   expect(screen.queryByText(/1,200 input tokens/)).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole("button", { name: "Model usage" }))
-  await screen.findByText(/1,200 input tokens · \$0\.0000504 estimated · 3 requests/)
+  await screen.findByText("1,200 input tokens · 18 output tokens · 3 confirmed requests")
+  expect(screen.getByText("$0.0000504 estimated cost. This is not a bill.")).toBeVisible()
+  expect(screen.getByText("2 cached results reused.")).toBeVisible()
   expect(screen.getByText(/1 request outcomes are unknown/)).toBeInTheDocument()
+  expect(
+    screen.getByText(/across all connections, not just the connection shown above/),
+  ).toBeVisible()
+  const limitsRow = screen
+    .getByRole("button", { name: "Model limits" })
+    .closest("[data-settings-control]")
+  expect(
+    limitsRow?.nextElementSibling?.contains(
+      screen.getByRole("button", { name: "Model usage" }),
+    ),
+  ).toBe(true)
+})
+
+it("keeps unknown request outcomes separate from confirmed usage and unavailable costs", async () => {
+  getAvailability.mockResolvedValue({
+    ...emptyAvailability,
+    usage: { ...emptyAvailability.usage, estimatedUsd: null, unknownOutcomes: 2 },
+  })
+  render(<ChecksStepSettings />)
+  fireEvent.click(screen.getByRole("button", { name: "Model usage" }))
+  expect(await screen.findByText("Cost estimate unavailable.")).toBeVisible()
+  expect(screen.getByText("No confirmed model requests yet.")).toBeVisible()
+  expect(screen.getByText(/2 request outcomes are unknown/)).toBeVisible()
+  expect(screen.queryByText(/null estimated/)).not.toBeInTheDocument()
 })
 
 it("retains the previous status on refresh failure and clears the error after recovery", async () => {
@@ -381,14 +407,14 @@ it("retains the previous status on refresh failure and clears the error after re
   getAvailability.mockResolvedValueOnce(previous)
   const first = render(<ChecksStepSettings />)
   await waitFor(() =>
-    expect(screen.getByRole("switch", { name: "Enable Smart Burn Checks" })).toBeChecked(),
+    expect(screen.getByRole("switch", { name: "Enable smart burn checks" })).toBeChecked(),
   )
   first.unmount()
 
   getAvailability.mockRejectedValueOnce(new Error("database"))
   const second = render(<ChecksStepSettings />)
   expect(await screen.findByRole("alert")).toHaveTextContent("Could not refresh check status")
-  expect(screen.getByRole("switch", { name: "Enable Smart Burn Checks" })).toHaveAttribute(
+  expect(screen.getByRole("switch", { name: "Enable smart burn checks" })).toHaveAttribute(
     "aria-checked",
     "true",
   )
@@ -408,7 +434,7 @@ it("shows an availability-event failure without clearing the last known usage", 
   }
   getAvailability.mockResolvedValue(availability)
   render(<ChecksStepSettings />)
-  const toggle = screen.getByRole("switch", { name: "Enable Smart Burn Checks" })
+  const toggle = screen.getByRole("switch", { name: "Enable smart burn checks" })
   await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"))
   await waitFor(() => expect(availabilityEvent.callback).not.toBeNull())
 
@@ -423,7 +449,7 @@ it("shows an availability-event failure without clearing the last known usage", 
   act(() => availabilityEvent.callback?.({ status: "updated", snapshot: emptyAvailability }))
 
   expect(screen.queryByRole("alert")).not.toBeInTheDocument()
-  expect(screen.getByRole("switch", { name: "Enable Smart Burn Checks" })).toHaveAttribute(
+  expect(screen.getByRole("switch", { name: "Enable smart burn checks" })).toHaveAttribute(
     "aria-checked",
     "false",
   )
@@ -586,7 +612,9 @@ it("keeps setup, history, and the API key in separate plain-language groups", as
   expect(screen.getByLabelText("Smart check provider")).toBeVisible()
   expect(await screen.findByLabelText("Provider model")).toBeVisible()
   expect(screen.getByLabelText("TypeSafe API key")).toBeVisible()
-  expect(screen.getByText(/A decision model reviews selected session content/)).toBeVisible()
+  expect(
+    screen.getByText("Run smart burn checks using the decision model below."),
+  ).toBeVisible()
 })
 
 it("requires a nonblank credential before saving an unsaved Jev connection", async () => {
@@ -597,7 +625,7 @@ it("requires a nonblank credential before saving an unsaved Jev connection", asy
   render(<ChecksStepSettings />)
   const input = screen.getByLabelText("TypeSafe API key")
   await waitFor(() => expect(input).toBeEnabled())
-  const saveConnection = screen.getByRole("button", { name: "Save connection" })
+  const saveConnection = screen.getByRole("button", { name: "Save and use connection" })
   expect(saveConnection).toBeDisabled()
   fireEvent.change(input, { target: { value: "   " } })
   expect(saveConnection).toBeDisabled()
