@@ -1,5 +1,6 @@
 import { useState, useSyncExternalStore } from "react"
 
+import { LimitsDocsLink } from "../../../../components/providerUsage/LimitsDocsLink"
 import { Card } from "../../../../components/ui/Card"
 import { Row } from "../../../../components/ui/Row"
 import { SectionGroup } from "../../../../components/ui/SectionGroup"
@@ -18,6 +19,7 @@ import {
 } from "../../../../lib/ipc"
 import {
   liveDetectionNote,
+  liveErrorHasDocs,
   liveErrorNote,
   liveSourceAge,
   liveUnavailableReason,
@@ -208,7 +210,11 @@ export function UsageMetersSection({
                   disabled={!on}
                 />
               }
-            ></Row>
+            >
+              {shown && !reading && failure && liveErrorHasDocs(failure.detail) && (
+                <LimitsDocsLink />
+              )}
+            </Row>
           )
         })}
       </Card>
@@ -290,7 +296,13 @@ function meterNote({
       ? "Signed in · rate limited · retrying"
       : liveErrorNote(failure.category, provider, failure.detail)
   }
-  return liveDetectionNote(provider, meter.detection ?? "unknown", on, meter.carrierLabel)
+  return liveDetectionNote(
+    provider,
+    meter.detection ?? "unknown",
+    on,
+    meter.carrierLabel,
+    meter.desktopAppLabel,
+  )
 }
 
 export function LimitsStepSettings() {

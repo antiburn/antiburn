@@ -3132,6 +3132,10 @@ pub struct LiveUsageSourceError {
     pub category: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<SourceErrorDetail>,
+    /// The plan named in a local file, when the failed source has no reading
+    /// to carry it. For example Claude Desktop's `~/.claude.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<LiveProviderPlan>,
 }
 
 /// One provider antiburn can meter, and whether the reader shows it.
@@ -3157,6 +3161,10 @@ pub struct LiveUsageMeter {
     /// `carrier`'s display name, so the views never restate the enum.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carrier_label: Option<String>,
+    /// The provider's desktop app by name, when it is installed, whatever
+    /// login was found. For example "Claude Desktop".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_app_label: Option<String>,
 }
 
 /// Live provider usage, as one snapshot.

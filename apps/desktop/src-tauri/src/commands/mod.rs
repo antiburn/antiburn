@@ -2766,6 +2766,14 @@ pub fn open_analytics_documentation(app: tauri::AppHandle) -> CommandResult<()> 
     app.opener().open_url(url, None::<&str>).map_err(fail)
 }
 
+/// Open the page that explains why Claude Desktop alone shows no limits.
+#[tauri::command]
+pub fn open_claude_desktop_limits_docs(app: tauri::AppHandle) -> CommandResult<()> {
+    app.opener()
+        .open_url("https://antiburn.com/docs/claude-desktop", None::<&str>)
+        .map_err(fail)
+}
+
 fn analytics_documentation_url(version: &str) -> String {
     format!("https://github.com/antiburn/antiburn/blob/antiburn-v{version}/docs/analytics.md")
 }

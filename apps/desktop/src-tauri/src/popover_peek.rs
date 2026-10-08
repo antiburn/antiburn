@@ -535,6 +535,7 @@ mod tests {
             display_name: provider.to_string(),
             category: "unavailable".to_string(),
             detail: None,
+            plan: None,
         }
     }
 
@@ -707,6 +708,7 @@ mod tests {
                         detection: Default::default(),
                         carrier: None,
                         carrier_label: None,
+                        desktop_app_label: None,
                     },
                     LiveUsageMeter {
                         provider: "openai".to_string(),
@@ -715,6 +717,7 @@ mod tests {
                         detection: Default::default(),
                         carrier: None,
                         carrier_label: None,
+                        desktop_app_label: None,
                     },
                 ],
                 generated_at: "now".to_string(),
