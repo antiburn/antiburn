@@ -721,7 +721,7 @@ period. Read the event by `label` and `detail`:
 | `open_from_session` | `succeeded`                                              | How often a session detail row opens a memory in the Memories view. |
 
 Exclusions: `unsupported` installations (Windows) cannot act, so leave them
-out of the archive and restore rates. The event carries no count, path, name,
+out of the archive, restore and remove_index_line rates. The event carries no count, path, name,
 or content. Rates use action counts per viewing installation, not per memory.
 
 ### Quota window accuracy — 2026-09-18

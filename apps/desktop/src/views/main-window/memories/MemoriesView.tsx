@@ -100,7 +100,7 @@ function MemoriesExplainer() {
             At the start of every session Claude injects <Code>MEMORY.md</Code>. Each line is a
             link with a title and a short hook, and that's all Claude knows about a memory until
             it reads it. A memory with no index line is invisible to Claude, and an index line
-            with a missing files wastes context.
+            with a missing file wastes context.
           </p>
           <p>
             <Heading>What's in a file.</Heading>A frontmatter block (<Code>name</Code>,{" "}

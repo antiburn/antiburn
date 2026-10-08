@@ -564,7 +564,7 @@ inventoried from disk. The scan reads `*.md` files and the `MEMORY.md` index
 with lenient frontmatter and index parsing, and it caps bytes per file, files
 per project, and bytes per project. Usage facts come from `Read`, `Write`,
 `Edit`, `MultiEdit`, and `Bash` tool inputs that the turn content store already
-holds. Windows-style paths (`C:\`, `C:/`, Git Bash `/c/` and `~` forms) are
+holds; sessions from remote hosts are not counted. Windows-style paths (`C:\`, `C:/`, Git Bash `/c/` and `~` forms) are
 matched by shape. No Windows session has been checked against this yet, so
 Windows usage facts are a best guess. A `Bash` reference matches path text in
 the command, so a command that builds the path from variables or a relative `cd` is

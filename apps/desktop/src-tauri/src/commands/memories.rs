@@ -562,12 +562,9 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join("dev")).unwrap();
         let target = home.path().join("dev").join("gone");
-        let slug: String = target
-            .display()
-            .to_string()
-            .chars()
-            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-            .collect();
+        // Only the drive colon and the separators are encoded. The temp path
+        // can hold `~` and `.`, which the walk must find on disk as they are.
+        let slug = target.display().to_string().replace(['\\', ':'], "-");
         assert_eq!(
             best_effort_decode_slug(&slug, home.path()).await,
             Some(target.display().to_string())

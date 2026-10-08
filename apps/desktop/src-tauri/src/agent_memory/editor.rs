@@ -497,7 +497,22 @@ fn archive(
         return Err(stop);
     }
 
-    fs::remove_file(&path).map_err(|error| failed("Could not remove the memory file", error))?;
+    if let Err(error) = fs::remove_file(&path) {
+        // The index line is gone but the file is still there. Put the line
+        // back so the file does not become an orphan, and drop the archive
+        // copy that nothing refers to.
+        if let (Some(index), Some(_)) = (&index, &removal) {
+            let _ = write_atomic(
+                &root.join(INDEX_FILE),
+                &index.checked.permissions,
+                index.text.as_bytes(),
+                false,
+            );
+        }
+        let _ = fs::remove_file(&data_path);
+        let _ = fs::remove_file(&sidecar_path);
+        return Err(failed("Could not remove the memory file", error));
+    }
     sync_dir(&root).map_err(|error| failed("Could not sync the memory folder", error))?;
     Ok(MemoryEditOutcome::Archived {
         archive_id,
@@ -610,7 +625,7 @@ fn restore(
     write_atomic(&target, &archived.permissions, &archived.bytes, true)?;
 
     // The memory file is back. An index problem now does not undo that, so
-    // report the index line as not restored.
+    // report the index line as not restored instead of a failure.
     let mut index_line_restored = false;
     if let Some(text) = restored_text {
         let committed = match &index {
@@ -622,11 +637,7 @@ fn restore(
                 true,
             ),
         };
-        match committed {
-            Ok(()) => index_line_restored = true,
-            Err(Stop::Outcome(_)) => {}
-            Err(failure) => return Err(failure),
-        }
+        index_line_restored = committed.is_ok();
     }
 
     sidecar.restored_at_ms = Some(now_ms()?);

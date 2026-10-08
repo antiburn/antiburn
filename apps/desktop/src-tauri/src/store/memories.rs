@@ -31,6 +31,7 @@ pub(crate) fn claude_sessions_by_project_slug(
             AND t.agent = s.agent
             AND t.session_id = s.session_id
           WHERE s.agent = 'claude-code'
+            AND s.environment_key NOT LIKE 'ssh:%'
           GROUP BY s.environment_key, s.agent, s.session_id",
     )?;
     let mut rows = statement.query([])?;

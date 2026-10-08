@@ -56,6 +56,7 @@ const CALL_SELECT: &str = "SELECT t.environment_key, t.session_id, t.ts_ms, t.sc
            JOIN turn AS t ON t.rowid = c.turn_rowid
           WHERE c.kind = 'tool_input'
             AND t.agent = 'claude-code'
+            AND t.environment_key NOT LIKE 'ssh:%'
             AND c.tool_name IN ('Read', 'Write', 'Edit', 'MultiEdit', 'Bash')
             AND (instr(c.normalized_fields_json, ?1) > 0
                  OR instr(c.content, ?1) > 0
@@ -329,6 +330,7 @@ mod tests {
     }
 
     struct Seed<'a> {
+        environment: &'a str,
         agent: &'a str,
         session: &'a str,
         scope: &'a str,
@@ -342,6 +344,7 @@ mod tests {
     impl<'a> Seed<'a> {
         fn new(tool: &'a str, content: String) -> Self {
             Self {
+                environment: "native",
                 agent: "claude-code",
                 session: "s1",
                 scope: "main",
@@ -355,16 +358,23 @@ mod tests {
 
         fn insert(self, conn: &Connection, index: usize) {
             conn.execute(
-                "INSERT OR IGNORE INTO session VALUES ('native', ?1, ?2)",
-                (self.agent, self.session),
+                "INSERT OR IGNORE INTO session VALUES (?1, ?2, ?3)",
+                (self.environment, self.agent, self.session),
             )
             .unwrap();
             conn.execute(
                 "INSERT INTO turn (rowid, environment_key, agent, session_id, claim_fence,
                     source_key, thread_id, turn_index, scope, role, ts_ms, input_tokens,
                     cache_read_tokens, cache_write_tokens, output_tokens, is_compaction_boundary)
-                 VALUES (?1, 'native', ?2, ?3, 1, 'src', 'th', ?1, ?4, 'assistant', ?5, 0, 0, 0, 0, 0)",
-                (index as i64, self.agent, self.session, self.scope, self.ts_ms),
+                 VALUES (?1, ?6, ?2, ?3, 1, 'src', 'th', ?1, ?4, 'assistant', ?5, 0, 0, 0, 0, 0)",
+                (
+                    index as i64,
+                    self.agent,
+                    self.session,
+                    self.scope,
+                    self.ts_ms,
+                    self.environment,
+                ),
             )
             .unwrap();
             conn.execute(
@@ -393,6 +403,23 @@ mod tests {
             "Bash",
             serde_json::json!({ "command": command }).to_string(),
         )
+    }
+
+    #[test]
+    fn ignores_calls_from_remote_hosts() {
+        let conn = connection();
+        let a = format!("{MEM}/a.md");
+        let mut remote = Seed::new("Read", "{}".into());
+        remote.environment = "ssh:box";
+        remote.fields = wrapped("read_file_path", &a);
+        remote.insert(&conn, 1);
+        let mut local = bash(&format!("cat {a}"));
+        local.session = "s2";
+        local.insert(&conn, 2);
+
+        let calls = query_memory_tool_calls(&conn, Path::new(HOME)).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].session_id, "s2");
     }
 
     #[test]
