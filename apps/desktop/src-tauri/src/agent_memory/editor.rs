@@ -499,15 +499,16 @@ fn archive(
 
     if let Err(error) = fs::remove_file(&path) {
         // The index line is gone but the file is still there. Put the line
-        // back so the file does not become an orphan, and drop the archive
-        // copy that nothing refers to.
-        if let (Some(index), Some(_)) = (&index, &removal) {
-            let _ = write_atomic(
-                &root.join(INDEX_FILE),
-                &index.checked.permissions,
-                index.text.as_bytes(),
-                false,
-            );
+        // back so the file does not become an orphan, but only while the
+        // index still holds the text this call committed. Then drop the
+        // archive copy that nothing refers to.
+        if let (Some(index), Some(removal)) = (&index, &removal) {
+            let index_path = root.join(INDEX_FILE);
+            if let Ok(current) = read_checked(&index_path, &root)
+                && current.bytes == removal.text.as_bytes()
+            {
+                let _ = replace_checked(&index_path, &root, &current, index.text.as_bytes());
+            }
         }
         let _ = fs::remove_file(&data_path);
         let _ = fs::remove_file(&sidecar_path);
