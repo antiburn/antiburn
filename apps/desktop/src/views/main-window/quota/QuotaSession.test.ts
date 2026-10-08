@@ -42,6 +42,9 @@ function setup(overrides: Partial<QuotaAdapter> = {}) {
   const adapter: QuotaAdapter = {
     getAccounts: vi.fn().mockResolvedValue({ accounts: [account()], generatedAt: "g1" }),
     getUsage: vi.fn().mockResolvedValue(usage("u1")),
+    getLiveUsage: vi
+      .fn()
+      .mockResolvedValue({ providers: [], errors: [], meters: [], generatedAt: "g1" }),
     getVisible: vi.fn().mockResolvedValue(true),
     onVisible: vi.fn(async (handler) => {
       visible = handler
