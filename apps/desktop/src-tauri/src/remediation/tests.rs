@@ -1996,8 +1996,8 @@ fn recorded_read_findings_reach_evidence_and_future_prompts_without_watches() {
         assert!(copied.prompt.contains("future research instructions"));
         store.lock().execute("UPDATE burn_check_assessment SET status = 'queued' WHERE check_id = 'over_exploring'", []).unwrap();
         for (available, expected) in [
-            (true, crate::dto::SessionHygieneStatus::Checking),
-            (false, crate::dto::SessionHygieneStatus::CouldntCheck),
+            (true, crate::dto::SessionHygieneStatus::Finding),
+            (false, crate::dto::SessionHygieneStatus::Finding),
         ] {
             assert_eq!(
                 crate::insights_report::smart_session_statuses(
@@ -2016,12 +2016,15 @@ fn recorded_read_findings_reach_evidence_and_future_prompts_without_watches() {
                 .burn_check_target_evidence(&store, &target.action_id)
                 .unwrap()
                 .status,
-            BurnCheckEvidenceStatus::Unavailable
+            BurnCheckEvidenceStatus::Available
         );
+        let continued_prompt = controller
+            .copy_prompt_fix_burn_check_targets(&store, std::slice::from_ref(&target.action_id))
+            .unwrap();
         assert!(
-            controller
-                .copy_prompt_fix_burn_check_targets(&store, std::slice::from_ref(&target.action_id))
-                .is_err()
+            continued_prompt
+                .prompt
+                .contains("future research instructions")
         );
     }
 }

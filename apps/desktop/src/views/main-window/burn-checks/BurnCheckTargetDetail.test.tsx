@@ -87,9 +87,7 @@ describe("target cost line", () => {
           },
         }),
       ),
-    ).toBe(
-      "~$8.20 in cache reads of this unused definition across 1 session, sub-agent requests included.",
-    )
+    ).toBe("Estimated ~$8.20 in cache reads across 1 session, including sub-agent requests.")
   })
 
   it("falls back to occurrence wording when the affected-session count is unavailable", () => {
@@ -103,7 +101,7 @@ describe("target cost line", () => {
         }),
       ),
     ).toBe(
-      "~$1.00 in cache reads of this unused definition across 2 occurrences, sub-agent requests included.",
+      "Estimated ~$1.00 in cache reads across 2 occurrences, including sub-agent requests.",
     )
   })
 
@@ -129,6 +127,7 @@ describe("BurnCheckTargetDetail", () => {
   const evidenceItem = (
     label: BurnCheckTargetEvidencePayload["items"][number]["label"],
     reference: string,
+    overrides: Partial<BurnCheckTargetEvidencePayload["items"][number]> = {},
   ): BurnCheckTargetEvidencePayload["items"][number] => ({
     label,
     reference,
@@ -139,6 +138,7 @@ describe("BurnCheckTargetDetail", () => {
     endLine: null,
     explanation: "",
     limitation: null,
+    ...overrides,
   })
   const observedProof: NonNullable<BurnCheckTargetEvidencePayload["decisionProof"]> = {
     contrast: "The recorded tool request conflicts with this instruction.",
@@ -195,7 +195,6 @@ describe("BurnCheckTargetDetail", () => {
         <BurnCheckTargetDetail target={current} refresh={() => undefined} openEvidence />,
       )
       const skeleton = screen.getByRole("status", { name: "Loading evidence" })
-      expect(skeleton.parentElement).toHaveClass("min-h-72")
       expect(skeleton.parentElement).toHaveAttribute("aria-busy", "true")
       expect(skeleton.querySelectorAll("[data-placeholder]")).toHaveLength(6)
       expect(skeleton.querySelectorAll(".h-16")).toHaveLength(2)
@@ -229,18 +228,13 @@ describe("BurnCheckTargetDetail", () => {
         }),
       )
       const excerpt = screen.getByText("Text action")
-      expect(excerpt.closest("[data-snapshot-action-id]")).toHaveClass("min-h-72")
+      expect(excerpt.closest("[data-snapshot-action-id]")).not.toBeNull()
       expect(screen.queryByRole("status", { name: "Loading evidence" })).not.toBeInTheDocument()
       expect(view.container.querySelector("[data-placeholder]")).toBeNull()
-      const info = screen.getByLabelText("About this evidence")
-      expect(info.closest("h3")).not.toBeNull()
-      expect(info.previousElementSibling).toHaveTextContent(
-        detector === "ignoredInstructions" ? "Git Style" : "Quality Review",
-      )
-      act(() => info.focus())
-      expect(await screen.findByRole("tooltip")).toHaveTextContent(
-        "Current source does not prove historical activation.",
-      )
+      expect(screen.queryByLabelText("About this evidence")).not.toBeInTheDocument()
+      expect(
+        screen.queryByText("Current source does not prove historical activation."),
+      ).not.toBeInTheDocument()
 
       view.rerender(
         <BurnCheckTargetDetail
@@ -277,16 +271,11 @@ describe("BurnCheckTargetDetail", () => {
         openEvidence
       />,
     )
-    const summary = await screen.findByRole("region", { name: "Assessment decision" })
+    expect(await screen.findByText("What happened")).toBeVisible()
     expect(
-      within(summary).getByRole("link", { name: "Context · Source context" }),
-    ).toBeVisible()
-    for (const link of within(summary).getAllByRole("link")) {
-      fireEvent.click(link)
-      const destination = document.getElementById(link.getAttribute("href")!.slice(1))
-      expect(destination).toBeVisible()
-      expect(destination).toHaveFocus()
-    }
+      screen.queryByRole("region", { name: "Assessment decision" }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText("Text context")).not.toBeInTheDocument()
     expect(screen.queryByText("private-revision")).not.toBeInTheDocument()
   })
 
@@ -429,15 +418,11 @@ describe("BurnCheckTargetDetail", () => {
           openEvidence
         />,
       )
-      const summary = await screen.findByRole("region", { name: "Assessment decision" })
-      expect(within(summary).getByText(contrast)).toBeVisible()
-      expect(within(summary).getAllByRole("link")).toHaveLength(3)
-      fireEvent.click(within(summary).getByRole("link", { name: "Source task" }))
-      for (const link of within(summary).getAllByRole("link")) {
-        const destination = document.getElementById(link.getAttribute("href")!.slice(1))
-        expect(destination).toBeVisible()
-      }
-      expect(screen.getByText("Text request")).toBeVisible()
+      expect(screen.queryByText(contrast)).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole("region", { name: "Assessment decision" }),
+      ).not.toBeInTheDocument()
+      expect(await screen.findByText("Text request")).toBeVisible()
       expect(screen.getByText("Text result")).toBeVisible()
     },
   )
@@ -494,7 +479,7 @@ describe("BurnCheckTargetDetail", () => {
       const oldDestination =
         detector === "ignoredInstructions" ? oldExcerpt : oldExcerpt.closest("li")!
       const oldCitationId = oldDestination.id
-      expect(screen.getAllByRole("link").length).toBeGreaterThan(0)
+      expect(screen.queryAllByRole("link")).toHaveLength(0)
 
       view.rerender(
         <BurnCheckTargetDetail
@@ -519,12 +504,7 @@ describe("BurnCheckTargetDetail", () => {
         />,
       )
       expect(getBurnCheckTargetEvidence).toHaveBeenCalledTimes(2)
-      const pausedCitation = screen.getAllByText(
-        detector === "ignoredInstructions" ? "Action" : "Source action",
-      )[0]!
-      expect(pausedCitation).toHaveAttribute("aria-disabled", "true")
-      fireEvent.click(pausedCitation)
-      expect(oldDestination).not.toHaveFocus()
+      expect(screen.queryAllByRole("link")).toHaveLength(0)
 
       view.rerender(
         <BurnCheckTargetDetail
@@ -572,14 +552,8 @@ describe("BurnCheckTargetDetail", () => {
         "current-action",
       )
       expect(updatedExcerpt.closest("[aria-busy]")).toHaveAttribute("aria-busy", "false")
-      const citation = screen.getByRole("link", {
-        name: detector === "ignoredInstructions" ? "Action" : "Source action",
-      })
-      expect(citation.getAttribute("href")).not.toBe(`#${oldCitationId}`)
-      fireEvent.click(citation)
-      const destination = document.getElementById(citation.getAttribute("href")!.slice(1))
-      expect(destination).toHaveTextContent("Updated main work")
-      expect(destination).toBeVisible()
+      expect(screen.getByText("Updated main work")).toBeVisible()
+      expect(screen.queryAllByRole("link")).toHaveLength(0)
       expect(getBurnCheckTargetEvidence).toHaveBeenCalledTimes(3)
     },
   )
@@ -722,17 +696,12 @@ describe("BurnCheckTargetDetail", () => {
           openEvidence
         />,
       )
-      const summary = await screen.findByRole("region", { name: "Assessment decision" })
       expect(
-        within(summary).getByText(
-          detector === "skillOpportunities" ? "Suggestion" : "Assessment",
-        ),
-      ).toBeVisible()
-      expect(within(summary).getAllByRole("link")).toHaveLength(4)
-      fireEvent.click(within(summary).getByRole("link", { name: "Source support-1" }))
-      for (const link of within(summary).getAllByRole("link")) {
-        expect(document.getElementById(link.getAttribute("href")!.slice(1))).toBeVisible()
-      }
+        screen.queryByRole("region", { name: "Assessment decision" }),
+      ).not.toBeInTheDocument()
+      expect(await screen.findByText("Work performed")).toBeVisible()
+      expect(screen.queryByText("Suggestion")).not.toBeInTheDocument()
+      expect(screen.queryAllByRole("link")).toHaveLength(0)
       expect(screen.queryByText(/chain.of.thought/i)).not.toBeInTheDocument()
     },
   )
@@ -756,22 +725,9 @@ describe("BurnCheckTargetDetail", () => {
         />,
       )
       await screen.findByText("Text work")
-      const info = screen.getByLabelText("About this evidence")
-      expect(info.tagName).toBe("SPAN")
-      expect(info.previousElementSibling).toHaveTextContent("Workflow")
-      expect(info.closest("h3")).not.toBeNull()
+      expect(screen.queryByLabelText("About this evidence")).not.toBeInTheDocument()
       expect(screen.queryByRole("heading", { name: "Details" })).not.toBeInTheDocument()
       expect(screen.queryByText(limitation)).not.toBeInTheDocument()
-      act(() => info.focus())
-      expect(await screen.findByRole("tooltip")).toHaveTextContent(limitation)
-      if (detector === "skillOpportunities")
-        expect(screen.getByRole("tooltip")).toHaveTextContent(
-          "Current inventory does not prove availability during this session.",
-        )
-      if (detector === "scopeCreep")
-        expect(screen.getByRole("tooltip")).toHaveTextContent(
-          "Assistant proposals and tool permission do not establish approval.",
-        )
     },
   )
 
@@ -883,18 +839,17 @@ describe("BurnCheckTargetDetail", () => {
       />,
     )
     expect(await screen.findByText("Fix the login timeout.")).toBeVisible()
-    expect(screen.getByText("Latest task scope · Recorded user task")).toBeVisible()
-    expect(screen.getByText("Recorded work")).toBeVisible()
-    expect(screen.getByText("Recorded edit", { selector: "p" })).toBeVisible()
+    expect(screen.getByText("Requested task · Recorded user task")).toBeVisible()
+    expect(screen.getByText("Work performed")).toBeVisible()
+    expect(screen.getByText("Added an unrelated dashboard.")).toBeVisible()
     expect(screen.queryByText("Work outside the agreed task")).not.toBeInTheDocument()
     expect(
-      screen.getByText(
+      screen.queryByText(
         "Keep future work within the agreed task. Ask for approval before adding work.",
       ),
-    ).toBeVisible()
-    fireEvent.click(screen.getByRole("button", { name: "Show context" }))
+    ).not.toBeInTheDocument()
     expect(screen.getByText("Approve only the login fix.")).toBeVisible()
-    expect(screen.getByText("Recorded user approval", { selector: "p" })).toBeVisible()
+    expect(screen.queryByRole("button", { name: "Show context" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Fix" })).not.toBeInTheDocument()
   })
   it.each([
@@ -911,10 +866,10 @@ describe("BurnCheckTargetDetail", () => {
         reportRow
       />,
     )
-    expect(screen.getByText(copy)).toBeVisible()
+    expect(screen.queryByText(copy)).not.toBeInTheDocument()
     expect(
-      screen.getByText("Read only the files and sections needed for future work."),
-    ).toBeVisible()
+      screen.queryByText("Read only the files and sections needed for future work."),
+    ).not.toBeInTheDocument()
   })
   it("reloads skill evidence after an action revision and rejects the old response", async () => {
     let resolveOld!: (value: Awaited<ReturnType<typeof getBurnCheckTargetEvidence>>) => void
@@ -1026,22 +981,21 @@ describe("BurnCheckTargetDetail", () => {
         refresh={refresh}
       />,
     )
-    expect(screen.getByText("Use matching skills for similar future work.")).toBeVisible()
+    expect(
+      screen.queryByText("Use matching skills for similar future work."),
+    ).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Fix" })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
     expect(
       await screen.findByText("Review parser boundaries and test malformed records."),
     ).toBeVisible()
-    expect(screen.getByText("Current skill · parser-review")).toBeVisible()
-    expect(screen.getByText("Recorded work")).toBeVisible()
+    expect(screen.getByText("Relevant skill · parser-review")).toBeVisible()
+    expect(screen.getByText("Work performed")).toBeVisible()
     expect(screen.getByText("Added malformed-record parser tests.")).toBeVisible()
     expect(view.container.querySelector("time")).toBeNull()
     expect(screen.queryByText(limit)).not.toBeInTheDocument()
-    act(() => screen.getByLabelText("About this evidence").focus())
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(limit)
-    expect(screen.getByRole("tooltip")).toHaveTextContent(
-      "No matching skill use appears in the selected session evidence.",
-    )
+    expect(screen.queryByLabelText("About this evidence")).not.toBeInTheDocument()
+    expect(screen.queryByText(limit)).not.toBeInTheDocument()
     expect(screen.queryByText("skill-citation")).not.toBeInTheDocument()
     expect(screen.queryByText("work-citation")).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Copy fix prompt" }))
@@ -1149,35 +1103,18 @@ describe("BurnCheckTargetDetail", () => {
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
-    const decision = await screen.findByRole("region", { name: "Assessment decision" })
+    expect(await screen.findByText("What happened")).toBeVisible()
     expect(
-      within(decision).getByText(
-        "The selected earlier events and this action conflict with the prerequisite rule.",
-      ),
-    ).toBeInTheDocument()
-    expect(within(decision).getByRole("link", { name: "Instruction" })).toBeInTheDocument()
-    expect(within(decision).getByRole("link", { name: "Action" })).toBeInTheDocument()
-    expect(within(decision).getAllByRole("link", { name: /Prerequisite/ })).toHaveLength(2)
+      screen.queryByRole("region", { name: "Assessment decision" }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryAllByRole("link")).toHaveLength(0)
     expect(screen.getAllByText(/AGENTS\.md · Release/)).toHaveLength(1)
-    act(() => screen.getByLabelText("About this evidence").focus())
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(
-      "The saved source includes every event used by this check.",
-    )
-    expect(screen.getByRole("tooltip")).toHaveTextContent(
-      "Earlier events used by this check are saved.",
-    )
+    expect(screen.queryByLabelText("About this evidence")).not.toBeInTheDocument()
     expect(screen.getByText("Request validation before publishing.")).toBeInTheDocument()
     expect(screen.getByText("Published without validation.")).toBeInTheDocument()
     expect(screen.queryByText("revision-digest")).not.toBeInTheDocument()
     expect(screen.queryByText("earlier-event")).not.toBeInTheDocument()
-    const citation = within(decision).getByRole("link", {
-      name: "Prerequisite · Earlier validation request",
-    })
-    fireEvent.click(citation)
-    const excerpt = screen.getByText("Request the required validation.")
-    expect(excerpt.closest("details")).toHaveAttribute("open")
-    expect(excerpt).toHaveFocus()
-    expect(citation).toHaveAttribute("href", `#${excerpt.id}`)
+    expect(screen.queryByText("Request the required validation.")).not.toBeInTheDocument()
   })
 
   it("keeps legacy evidence rendering when no decision proof is saved", async () => {
@@ -1266,32 +1203,22 @@ describe("BurnCheckTargetDetail", () => {
     expect(screen.queryByRole("region", { name: "Occurrences" })).not.toBeInTheDocument()
     expect(screen.queryByText(/Occurrence \d/)).not.toBeInTheDocument()
     expect(screen.queryByText("different action")).not.toBeInTheDocument()
-    fireEvent.click(within(evidence).getByText("Supporting events"))
+    expect(within(evidence).getByText("What happened")).toBeVisible()
+    expect(within(evidence).queryAllByRole("link")).toHaveLength(0)
     const excerpts = evidence.querySelectorAll("pre")
-    expect([...excerpts].map((node) => node.textContent)).toEqual([
-      "command\n  --flag",
-      "first\n  event",
-      "second\n  event",
-    ])
+    expect([...excerpts].map((node) => node.textContent)).toEqual(["command\n  --flag"])
     expect(within(evidence).queryByText(/Saved action text/)).not.toBeInTheDocument()
     expect(
       within(evidence).queryByText("Some nearby context is no longer available."),
     ).not.toBeInTheDocument()
-    const info = screen.getByLabelText("About this evidence")
-    expect(info.tagName).toBe("SPAN")
-    expect(info).toHaveAttribute("tabindex", "0")
-    expect(info.previousElementSibling).toHaveTextContent("Workflow")
-    expect(info.closest("h3")).not.toBeNull()
+    expect(screen.queryByLabelText("About this evidence")).not.toBeInTheDocument()
     expect(screen.queryByRole("heading", { name: "Details" })).not.toBeInTheDocument()
     expect(
       screen.queryByRole("button", { name: "About this evidence" }),
     ).not.toBeInTheDocument()
-    fireEvent.click(info)
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
-    fireEvent.pointerMove(info, { pointerType: "mouse" })
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(
-      "Some nearby context is no longer available.",
-    )
+    expect(
+      screen.queryByText("Some nearby context is no longer available."),
+    ).not.toBeInTheDocument()
     expect(getBurnCheckTargetEvidence).toHaveBeenCalledTimes(1)
   })
 
@@ -1348,12 +1275,12 @@ describe("BurnCheckTargetDetail", () => {
     expect(screen.queryByText("Instruction text unavailable.")).not.toBeInTheDocument()
     expect(screen.queryByText("The instruction file changed.")).not.toBeInTheDocument()
     expect(
-      screen.getByText("Instruction · AGENTS.md · Testing · lines 24–27"),
+      screen.getByText("Current instruction · AGENTS.md · Testing · lines 24–27"),
     ).toBeInTheDocument()
-    expect(screen.getByText("x".repeat(900))).toBeInTheDocument()
+    expect(screen.getByText("x".repeat(360) + "…")).toBeVisible()
+    expect(screen.getByText("x".repeat(900)).closest("details")).not.toHaveAttribute("open")
     expect(screen.queryByText("earlier event")).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Show context" }))
-    expect(screen.getByText("earlier event")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Show context" })).not.toBeInTheDocument()
   })
 
   it("shows the original action and supporting events for Ignored Instructions", async () => {
@@ -1416,16 +1343,8 @@ describe("BurnCheckTargetDetail", () => {
     expect(screen.getByText(".config/opencode/AGENTS.md · line 45")).toBeInTheDocument()
     expect(screen.getAllByText(/\.config\/opencode\/AGENTS\.md/)).toHaveLength(1)
     expect(screen.getByRole("region", { name: "Evidence" })).not.toHaveClass("border-t")
-    expect(
-      screen.getByText(
-        JSON.stringify({
-          command: "rg -n 'long search string' .",
-          workdir: "/private/project",
-        }),
-      ),
-    ).toBeInTheDocument()
-    fireEvent.click(screen.getByText("Supporting events"))
-    expect(screen.getByText("Unneeded surrounding event")).toBeInTheDocument()
+    expect(screen.getByText("Command: rg -n 'long search string' .")).toBeInTheDocument()
+    expect(screen.queryByText("Unneeded surrounding event")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Show context" })).not.toBeInTheDocument()
   })
 
@@ -1460,7 +1379,7 @@ describe("BurnCheckTargetDetail", () => {
           element.textContent === `first line\n  ${"detail ".repeat(40)}`,
       ),
     ).toBeInTheDocument()
-    expect(screen.getByText(/Bash input · This is the cited action/)).toBeInTheDocument()
+    expect(screen.queryByText("This is the cited action.")).not.toBeInTheDocument()
     expect(
       screen.queryByRole("button", { name: "Show original formatting" }),
     ).not.toBeInTheDocument()
@@ -1506,12 +1425,9 @@ describe("BurnCheckTargetDetail", () => {
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
-    expect(await screen.findByLabelText("About this evidence")).toBeInTheDocument()
+    expect(await screen.findByText("Current instruction")).toBeInTheDocument()
     expect(screen.queryByText(limitation)).not.toBeInTheDocument()
-    expect(screen.getByText("Current instruction")).toBeVisible()
-    act(() => screen.getByLabelText("About this evidence").focus())
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(limitation)
-    expect(screen.getAllByRole("tooltip")).toHaveLength(1)
+    expect(screen.queryByLabelText("About this evidence")).not.toBeInTheDocument()
     expect(screen.getByText("Merged without tests.")).toBeInTheDocument()
   })
 
@@ -1622,7 +1538,7 @@ describe("BurnCheckTargetDetail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
     expect(getBurnCheckTargetEvidence).toHaveBeenCalledTimes(2)
     expect(await screen.findAllByText("Quality Review")).not.toHaveLength(0)
-    expect(screen.getByText("Session action")).toBeInTheDocument()
+    expect(screen.getByText("What happened")).toBeInTheDocument()
     expect(screen.queryByText("The Workflow tool was never invoked.")).not.toBeInTheDocument()
     expect(screen.getByText("The cited session action is unavailable.")).toBeInTheDocument()
     expect(screen.getByText("Saved excerpts aren’t available.")).toBeInTheDocument()
@@ -1702,13 +1618,13 @@ describe("BurnCheckTargetDetail", () => {
       fireEvent.click(screen.getByRole("button", { name: "Show evidence" })),
     )
     expect(await screen.findByText("git push --force")).toBeInTheDocument()
-    expect(screen.getByText("Observed session action")).toBeInTheDocument()
+    expect(screen.queryByText("Observed session action")).not.toBeInTheDocument()
     expect(
       screen.getByText("Global configuration (~/.config/opencode/AGENTS.md)"),
     ).toBeInTheDocument()
     expect(screen.getByRole("heading", { name: /Code Discovery/ })).toBeInTheDocument()
     expect(
-      screen.getByText("Session action").parentElement?.querySelector("time"),
+      screen.getByText("What happened").parentElement?.querySelector("time"),
     ).not.toBeNull()
     expect(getBurnCheckTargetEvidence).toHaveBeenCalledWith("action-fresh")
     await act(async () =>
@@ -1744,10 +1660,7 @@ describe("BurnCheckTargetDetail", () => {
 
     expect(await screen.findByText("Used a forbidden command.")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /Occurrence/ })).not.toBeInTheDocument()
-    act(() => screen.getByLabelText("About this evidence").focus())
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(
-      "These excerpts show one finding from this group.",
-    )
+    expect(screen.queryByLabelText("About this evidence")).not.toBeInTheDocument()
     expect(getBurnCheckTargetEvidence).toHaveBeenCalledWith("action-fresh")
   })
 
@@ -1927,6 +1840,155 @@ describe("BurnCheckTargetDetail", () => {
       />,
     )
     expect(screen.queryByRole("button", { name: "Project folder" })).toBeNull()
+  })
+
+  it("shows compact headings for all four smart checks", async () => {
+    const cases = [
+      ["ignoredInstructions", "What happened"],
+      ["scopeCreep", "Work performed"],
+      ["overExploring", "Files read"],
+      ["skillOpportunities", "Work performed"],
+    ] as const
+    for (const [detector, heading] of cases) {
+      vi.mocked(getBurnCheckTargetEvidence).mockResolvedValueOnce({
+        status: "available",
+        items: [evidenceItem("observedAction", `${detector}-action`)],
+      })
+      const view = render(
+        <BurnCheckTargetDetail
+          target={target({
+            finding: { ...target().finding, detector },
+            evidenceAvailable: true,
+          })}
+          refresh={() => undefined}
+          openEvidence
+        />,
+      )
+      expect(await screen.findByText(heading)).toBeVisible()
+      expect(
+        screen.queryByRole("region", { name: "Assessment decision" }),
+      ).not.toBeInTheDocument()
+      expect(screen.queryByText("Assessment")).not.toBeInTheDocument()
+      expect(screen.queryByText("Suggestion")).not.toBeInTheDocument()
+      view.unmount()
+    }
+  })
+
+  it("formats typed action fields and keeps read contents collapsed", async () => {
+    vi.mocked(getBurnCheckTargetEvidence).mockResolvedValue({
+      status: "available",
+      items: [
+        evidenceItem("observedAction", "request", {
+          sourceLabel: "Recorded read request",
+          excerpt: JSON.stringify({
+            type: "tool_use",
+            name: "read",
+            file_path: "src/detail.ts",
+            offset: 12,
+            limit: 4,
+          }),
+        }),
+        evidenceItem("observedAction", "codex-read", {
+          sourceLabel: "Recorded command",
+          excerpt: JSON.stringify({
+            command: ["/bin/zsh", "-lc", "nl -ba src/codex.rs"],
+            parsed_cmd: [{ type: "read", path: "src/codex.rs", cmd: "nl -ba src/codex.rs" }],
+          }),
+        }),
+        evidenceItem("observedAction", "pi-read", {
+          sourceLabel: "Recorded read request",
+          excerpt: JSON.stringify({ arguments: { path: "src/pi.rs", offset: 5 } }),
+        }),
+        evidenceItem("observedAction", "opencode-read", {
+          sourceLabel: "Recorded read request",
+          excerpt: JSON.stringify({
+            input: { filePath: "src/opencode.rs", offset: 3, limit: 2 },
+          }),
+        }),
+        evidenceItem("observedAction", "result", {
+          sourceLabel: "Read result",
+          excerpt: `<path>src/detail.ts</path>\n${"private file content ".repeat(20)}`,
+        }),
+      ],
+    })
+    render(
+      <BurnCheckTargetDetail
+        target={target({
+          finding: { ...target().finding, detector: "overExploring" },
+          evidenceAvailable: true,
+        })}
+        refresh={() => undefined}
+        openEvidence
+      />,
+    )
+    expect(await screen.findByText("Read: src/detail.ts, line 12–15")).toBeVisible()
+    expect(screen.getByText("Read: src/codex.rs")).toBeVisible()
+    expect(screen.getByText("Read: src/pi.rs, line 5")).toBeVisible()
+    expect(screen.getByText("Read: src/opencode.rs, line 3–4")).toBeVisible()
+    expect(screen.getByText("Contents of src/detail.ts")).toBeVisible()
+    const content = screen.getByText(
+      (_, element) =>
+        element?.tagName === "PRE" &&
+        (element.textContent?.includes("private file content ".repeat(20)) ?? false),
+    )
+    expect(content.closest("details")).not.toHaveAttribute("open")
+    fireEvent.click(screen.getByText("Show file contents"))
+    expect(content.closest("details")).toHaveAttribute("open")
+    expect(
+      screen.queryByText(/Assessment|Suggestion|Supporting events|Show context/),
+    ).not.toBeInTheDocument()
+  })
+
+  it("hides loaded evidence when Hide details is pressed", async () => {
+    vi.mocked(getBurnCheckTargetEvidence).mockResolvedValue({
+      status: "available",
+      items: [evidenceItem("observedAction", "action")],
+    })
+    render(
+      <BurnCheckTargetDetail
+        target={target({
+          finding: { ...target().finding, detector: "scopeCreep" },
+          evidenceAvailable: true,
+        })}
+        refresh={() => undefined}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
+    expect(await screen.findByText("Text action")).toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: "Hide details" }))
+    expect(screen.queryByText("Text action")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Show evidence" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    )
+  })
+
+  it("does not show a generic evidence disclaimer", async () => {
+    vi.mocked(getBurnCheckTargetEvidence).mockResolvedValue({
+      status: "available",
+      items: [
+        evidenceItem("observedAction", "action", {
+          explanation: "Internal assessment explanation.",
+          limitation: "Internal evidence limitation.",
+        }),
+      ],
+    })
+    render(
+      <BurnCheckTargetDetail
+        target={target({
+          finding: { ...target().finding, detector: "skillOpportunities" },
+          evidenceAvailable: true,
+        })}
+        refresh={() => undefined}
+        openEvidence
+      />,
+    )
+    expect(await screen.findByText("Text action")).toBeVisible()
+    expect(screen.queryByText("Internal assessment explanation.")).not.toBeInTheDocument()
+    expect(screen.queryByText("Internal evidence limitation.")).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(/assessment decision|supporting events|selected events/i),
+    ).not.toBeInTheDocument()
   })
 })
 

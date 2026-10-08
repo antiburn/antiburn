@@ -3,6 +3,8 @@ use super::*;
 pub(super) const RESPONSE_CACHE_KEY: &str = "internal:burnCheckResponseCacheV1";
 const MAX_RESPONSE_CACHE_ENTRIES: usize = 128;
 const MAX_RESPONSE_CACHE_BYTES: usize = 512 * 1024;
+const MAX_DISPATCH_ATTEMPTS: usize = 32_768;
+const DISPATCH_ATTEMPT_RETENTION_SECS: i64 = 30 * 24 * 60 * 60;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedAssessmentResponse {
@@ -98,6 +100,13 @@ impl Store {
         let mut connection = self.lock();
         let transaction =
             connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "DELETE FROM burn_check_dispatch_attempt
+              WHERE last_attempt_at_epoch <= ?1
+                AND NOT EXISTS (SELECT 1 FROM burn_check_request_outcome AS outcome
+                                 WHERE outcome.request_identity = burn_check_dispatch_attempt.request_identity)",
+            [now.saturating_sub(DISPATCH_ATTEMPT_RETENTION_SECS)],
+        )?;
         let assessment_is_current: bool = transaction.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM burn_check_assessment
@@ -137,23 +146,24 @@ impl Store {
             [serde_json::to_string(identities)?],
             |row| row.get(0),
         )?;
-        if retained.saturating_add(new) > 32768 {
+        if retained.saturating_add(new) > MAX_DISPATCH_ATTEMPTS {
             return Ok(BurnCheckRequestAdmission::Exhausted);
         }
         let tracked = track_burn_check_requests_in(&transaction, identities, reservation_id, now)?;
         if tracked {
             for identity in identities {
                 transaction.execute(
-                    "INSERT INTO burn_check_dispatch_attempt
-                       (request_identity, environment_key, agent, session_id, attempts)
-                     VALUES (?1, ?2, ?3, ?4, 1)
-                     ON CONFLICT(request_identity) DO UPDATE SET attempts = attempts + 1,
-                         next_attempt_at_epoch = NULL",
+                     "INSERT INTO burn_check_dispatch_attempt
+                        (request_identity, environment_key, agent, session_id, attempts, last_attempt_at_epoch)
+                      VALUES (?1, ?2, ?3, ?4, 1, ?5)
+                      ON CONFLICT(request_identity) DO UPDATE SET attempts = attempts + 1,
+                          next_attempt_at_epoch = NULL, last_attempt_at_epoch = excluded.last_attempt_at_epoch",
                     rusqlite::params![
                         identity,
                         input.key.environment_key,
                         input.key.agent,
-                        input.key.session_id
+                        input.key.session_id,
+                        now
                     ],
                 )?;
             }

@@ -160,7 +160,7 @@ fn v71_starts_the_fence_counter_above_every_stored_fence() {
         Path::new("/tmp/antiburn-v71-claim-fence-migration").to_path_buf(),
     )
     .unwrap();
-    assert_eq!(store.schema_version().unwrap(), 73);
+    assert_eq!(store.schema_version().unwrap(), 74);
 
     let claim = store
         .claim_next_evidence(&["claude-code"], 100, 300)

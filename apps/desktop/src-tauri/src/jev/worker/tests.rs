@@ -663,3 +663,176 @@ fn transport_attempts_and_backoff_survive_reenrollment_and_store_reopen() {
     assert_eq!(store.burn_check_dispatch_attempts(&identities).unwrap(), 0);
     assert!(store.burn_check_scheduler_cursor().unwrap().is_none());
 }
+
+#[test]
+fn dispatch_attempt_retention_prunes_expired_records_but_keeps_unknown_delivery() {
+    let (store, input, _, _) = checkpoint_fixture();
+    let now = unix_now();
+    store
+        .track_burn_check_request("unknown-delivery", "reservation", now)
+        .unwrap();
+    store
+        .lock()
+        .execute_batch(
+            "INSERT INTO burn_check_dispatch_attempt
+               (request_identity, environment_key, agent, session_id, attempts, last_attempt_at_epoch)
+             VALUES ('unknown-delivery', 'native', 'claude-code', 'checkpoint', 1, 1);
+             WITH RECURSIVE identities(value) AS (
+                 SELECT 1 UNION ALL SELECT value + 1 FROM identities WHERE value < 32768
+             )
+             INSERT INTO burn_check_dispatch_attempt
+               (request_identity, environment_key, agent, session_id, attempts, last_attempt_at_epoch)
+             SELECT 'expired-' || value, 'native', 'claude-code', 'checkpoint', 3, 1
+               FROM identities;",
+        )
+        .unwrap();
+    let identities = vec!["new-request".to_owned()];
+
+    assert_eq!(
+        store
+            .admit_burn_check_requests(&input, &identities, "new-reservation", now)
+            .unwrap(),
+        BurnCheckRequestAdmission::Admitted
+    );
+    assert_eq!(
+        store
+            .burn_check_dispatch_attempts(&["unknown-delivery".to_owned()])
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .burn_check_dispatch_readiness(&["unknown-delivery".to_owned()], now)
+            .unwrap(),
+        BurnCheckRequestAdmission::Unresolved
+    );
+    let retained: usize = store
+        .lock()
+        .query_row(
+            "SELECT count(*) FROM burn_check_dispatch_attempt",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, 2);
+}
+
+#[test]
+fn provider_retry_after_cooldown_blocks_other_requests_for_same_provider() {
+    let now = tokio::time::Instant::now();
+    let mut pacing = ProviderPacing::new(now);
+    apply_provider_cooldown(
+        &mut pacing,
+        &JevError::RateLimited {
+            retry_after: Some(Duration::from_secs(17)),
+        },
+        now,
+    );
+
+    assert!(!pacing.admit("first", 10, now + Duration::from_secs(16)));
+    assert!(pacing.admit("second", 10, now + Duration::from_secs(17)));
+}
+
+#[tokio::test]
+async fn cached_response_recovers_after_third_transport_attempt() {
+    use antiburn_local::analysis::jev::{JevAnswer, JevQuestion, JevRequest, JevUsage};
+
+    let (store, input, handle, generation) = checkpoint_fixture();
+    let connection = handle.system_one_connection();
+    let request = JevRequest {
+        model: connection.model.clone(),
+        state: serde_json::json!({"activity": "synthetic"}),
+        questions: std::collections::BTreeMap::from([(
+            "q".into(),
+            JevQuestion::Noul {
+                instructions: serde_json::json!("Is this valid?"),
+                criteria: None,
+            },
+        )]),
+    };
+    let batch = std::sync::Arc::new(JevRequestBatch {
+        id: "batch".into(),
+        serialized_bytes: serde_json::to_vec(&request).unwrap().len(),
+        request,
+        work_item_ids: vec!["work".into()],
+        work_item_digests: std::collections::BTreeMap::from([(
+            "work".into(),
+            "semantic-work".into(),
+        )]),
+        answer_owners: std::collections::BTreeMap::from([(
+            "q".into(),
+            ("work".into(), "q".into()),
+        )]),
+        evidence_owners: Default::default(),
+        digest: "cacheable-request".into(),
+    });
+    let digest = compatible_request_identity(&connection, &input, &batch.digest);
+    let response = JevResponse {
+        model: connection.model.clone(),
+        answers: std::collections::BTreeMap::from([("q".into(), JevAnswer::Noul { noul: 0.9 })]),
+        usage: JevUsage {
+            input_tokens: 12,
+            output_tokens: 3,
+        },
+    };
+    store
+        .lock()
+        .execute(
+            "INSERT INTO burn_check_response_cache
+               (provider, request_digest, returned_model, response_json, input_tokens,
+                output_tokens, created_at_epoch)
+             VALUES (?1, ?2, ?3, ?4, 12, 3, ?5)",
+            rusqlite::params![
+                provider_id(connection.provider),
+                digest,
+                response.model,
+                serde_json::to_string(&response).unwrap(),
+                unix_now()
+            ],
+        )
+        .unwrap();
+    let identities = batch_request_identities(&connection, &input, &batch);
+    for identity in &identities {
+        store
+            .lock()
+            .execute(
+                "INSERT INTO burn_check_dispatch_attempt
+                   (request_identity, environment_key, agent, session_id, attempts, terminal)
+                 VALUES (?1, ?2, ?3, ?4, 3, 1)",
+                rusqlite::params![
+                    identity,
+                    input.key.environment_key,
+                    input.key.agent,
+                    input.key.session_id
+                ],
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        preflight_admission(BurnCheckRequestAdmission::Exhausted),
+        Ok(())
+    );
+
+    let events = SessionEvents::default();
+    let notify = || {};
+    let cached = execute_batch(
+        BatchContext {
+            store: &store,
+            input: &input,
+            client: TypeSafeClient::new("synthetic-key".into()).unwrap(),
+            handle: &handle,
+            key_generation: generation,
+            events: &events,
+            idle_secs: IDLE_SECS,
+            lease_secs: 300,
+            capabilities: &connection.capabilities().unwrap(),
+        },
+        batch,
+        &notify,
+    )
+    .await
+    .expect("cached response bypasses the exhausted network-attempt cap");
+
+    assert_eq!(cached.answers, response.answers);
+    assert_eq!(store.burn_check_dispatch_attempts(&identities).unwrap(), 3);
+}

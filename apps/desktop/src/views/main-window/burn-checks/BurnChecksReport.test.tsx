@@ -356,6 +356,67 @@ describe("smart check report integration", () => {
     },
   )
 
+  it("keeps a search-selected check reachable when it moves into Passed", async () => {
+    const check = { ...report.categories[2]!, id: "overExploring" as const }
+    const { adapter, session, view } = setup(null, false, aggregate, {
+      ...report,
+      categories: [check],
+    })
+    view.rerender(
+      createElement(BurnChecksView, {
+        active: true,
+        session,
+        focusedCheck: check.id,
+        focusRevision: 1,
+      }),
+    )
+    await screen.findByRole("button", { name: "Over-exploring, Not assessed" })
+    vi.mocked(adapter.getReport).mockResolvedValue({
+      ...report,
+      categories: [{ ...check, clean: 1, lifecycle: "passing" }],
+    })
+    await act(async () => session.refresh())
+
+    const passedGroup = await screen.findByRole("button", { name: "Passed checks 1" })
+    expect(passedGroup).toHaveAttribute("aria-expanded", "true")
+    const row = screen.getByRole("button", { name: "Over-exploring, Passed" })
+    expect(row).toHaveAttribute("aria-pressed", "true")
+    expect(row).toHaveFocus()
+  })
+
+  it("opens Not assessed when a search-selected check moves there", async () => {
+    const check = {
+      ...report.categories[2]!,
+      id: "overExploring" as const,
+      clean: 1,
+      lifecycle: "passing" as const,
+    }
+    const { adapter, session, view } = setup(null, false, aggregate, {
+      ...report,
+      categories: [check],
+    })
+    view.rerender(
+      createElement(BurnChecksView, {
+        active: true,
+        session,
+        focusedCheck: check.id,
+        focusRevision: 1,
+      }),
+    )
+    await screen.findByRole("button", { name: "Over-exploring, Passed" })
+    vi.mocked(adapter.getReport).mockResolvedValue({
+      ...report,
+      categories: [{ ...check, clean: 0, lifecycle: null, checking: false, finding: 0 }],
+    })
+    await act(async () => session.refresh())
+
+    const disclosure = await screen.findByRole("button", { name: "Not assessed (1)" })
+    expect(disclosure).toHaveAttribute("aria-expanded", "true")
+    const row = screen.getByRole("button", { name: "Over-exploring, Not assessed" })
+    expect(row).toHaveAttribute("aria-pressed", "true")
+    expect(row).toHaveFocus()
+  })
+
   it("hides provider-dependent rows with the same availability as search", async () => {
     setup(null, false, aggregate, {
       ...report,

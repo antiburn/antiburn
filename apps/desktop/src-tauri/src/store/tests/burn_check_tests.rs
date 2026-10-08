@@ -736,6 +736,27 @@ fn replacing_a_rejected_key_retries_only_auth_failures() {
             .len(),
         1
     );
+    store
+        .lock()
+        .execute(
+            "UPDATE burn_check_assessment SET last_error_category = 'outcome_unknown',
+                    next_attempt_at_epoch = 100_000
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND check_id = ?4",
+            rusqlite::params![
+                input.key.environment_key,
+                input.key.agent,
+                input.key.session_id,
+                input.check_id
+            ],
+        )
+        .unwrap();
+    store.retry_rejected_burn_checks().unwrap();
+    assert!(
+        store
+            .burn_check_candidates("ignored_instructions", 40_001, 180, 10)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

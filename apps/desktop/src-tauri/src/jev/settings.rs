@@ -305,6 +305,23 @@ fn ensure_no_pending_removal(store: &Store) -> Result<(), &'static str> {
     Ok(())
 }
 
+fn legacy_removal_pending(store: &Store) -> bool {
+    store
+        .internal_value(CREDENTIAL_CHANGE_PENDING_KEY)
+        .as_deref()
+        == Some("true")
+}
+
+fn clear_legacy_removal<V: CredentialVault>(store: &Store, vault: &V) -> Result<(), &'static str> {
+    delete_credential(vault, None)?;
+    store
+        .set_internal_value_checked(SAVED_KEY_KEY, "false")
+        .map_err(|_| "Could not save the credential removal state.")?;
+    store
+        .set_internal_value_checked(CREDENTIAL_CHANGE_PENDING_KEY, "false")
+        .map_err(|_| "Could not save the credential removal state.")
+}
+
 fn profiles(store: &Store) -> Result<ConnectionProfiles, &'static str> {
     migrate_provider_state(store)?;
     store
@@ -334,6 +351,9 @@ fn persist_connection_profile(
     worker: &WorkerHandle,
 ) -> Result<(SystemOneConnection, Option<String>, bool), &'static str> {
     ensure_no_pending_removal(store)?;
+    if legacy_removal_pending(store) {
+        clear_legacy_removal(store, vault)?;
+    }
     let resolved = resolve_credential(&connection, credential.clone(), vault)?;
     if connection_requires_credential(&connection) && resolved.is_none() {
         return Err("The selected provider needs a credential. Add one and retry.");
@@ -1370,6 +1390,7 @@ pub(crate) async fn remove_typesafe_api_key(
     let was_enabled = store.internal_value(ENABLED_AT_KEY).is_some();
     let active_uses_legacy_key =
         matches!(active.credential, Some(CredentialReference::LegacyTypeSafe));
+    let retrying_legacy_removal = legacy_removal_pending(&store);
     if active_uses_legacy_key {
         app.state::<WorkerHandle>().suspend_system_one();
         store
@@ -1387,13 +1408,15 @@ pub(crate) async fn remove_typesafe_api_key(
             crate::analytics::event::SmartCheckLifecycle::Enablement { enabled: false },
         );
     }
-    let removal =
-        tauri::async_runtime::spawn_blocking(|| delete_credential(&SystemCredentialVault, None))
-            .await
-            .map_err(|_| "Credential storage is unavailable.".to_owned())?
-            .map_err(str::to_owned);
+    let removal = tauri::async_runtime::spawn_blocking({
+        let store = store.inner().clone();
+        move || clear_legacy_removal(&store, &SystemCredentialVault)
+    })
+    .await
+    .map_err(|_| "Credential storage is unavailable.".to_owned())?
+    .map_err(str::to_owned);
     if let Err(error) = removal {
-        if active_uses_legacy_key {
+        if active_uses_legacy_key || retrying_legacy_removal {
             *STARTUP_ERROR
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) =
@@ -1402,13 +1425,7 @@ pub(crate) async fn remove_typesafe_api_key(
         changed(&app);
         return Err(error);
     }
-    store
-        .set_internal_value_checked(SAVED_KEY_KEY, "false")
-        .map_err(|_| "Could not save the credential removal state.".to_owned())?;
-    if active_uses_legacy_key {
-        store
-            .set_internal_value_checked(CREDENTIAL_CHANGE_PENDING_KEY, "false")
-            .map_err(|_| "Could not save the credential removal state.".to_owned())?;
+    if active_uses_legacy_key || retrying_legacy_removal {
         *STARTUP_ERROR
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
@@ -1552,10 +1569,11 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        AUTH_REJECTED_KEY, CONNECTION_PROFILES_KEY, CREDENTIAL_CHANGE_PENDING_KEY,
-        CheckAvailabilityEvent, CredentialVault, ENABLED_AT_KEY, PROVIDER_MIGRATION_KEY,
-        active_connection, delete_credential, migrate_provider_state, persist_connection_profile,
-        preserve_saved_key_marker, restore_saved_key, saved_key_marker, write_credential,
+        AUTH_REJECTED_KEY, CONNECTION_PENDING_KEY, CONNECTION_PROFILES_KEY,
+        CREDENTIAL_CHANGE_PENDING_KEY, CheckAvailabilityEvent, CredentialVault, ENABLED_AT_KEY,
+        PROVIDER_MIGRATION_KEY, active_connection, delete_credential, migrate_provider_state,
+        persist_connection_profile, preserve_saved_key_marker, restore_saved_key, saved_key_marker,
+        write_credential,
     };
     use crate::jev::worker::WorkerHandle;
     use crate::store::Store;
@@ -2545,6 +2563,67 @@ mod tests {
             .is_err()
         );
         assert!(!worker.is_available());
+    }
+
+    #[test]
+    fn failed_legacy_removal_can_retry_after_replacement_and_reenable_checks() {
+        let store =
+            Store::open_in_memory(Path::new("/tmp/antiburn-legacy-removal-retry")).expect("store");
+        migrate_provider_state(&store).expect("migrate");
+        store.set_internal_value(ENABLED_AT_KEY, "123");
+        store.set_internal_value(CREDENTIAL_CHANGE_PENDING_KEY, "true");
+        let vault = OfflineVault::default();
+        let mut profiles = super::profiles(&store).expect("read profiles");
+        let replacement = crate::jev::config::SystemOneConnection {
+            provider: crate::jev::config::SystemOneProvider::Ollama,
+            endpoint: crate::jev::config::SystemOneEndpoint::BaseUrl(
+                "http://127.0.0.1:11434".into(),
+            ),
+            model: "clef-flash".into(),
+            credential: None,
+            ..Default::default()
+        };
+        let worker = WorkerHandle::default();
+        vault.fail_delete.set(true);
+        assert!(
+            persist_connection_profile(
+                &store,
+                &mut profiles,
+                "local",
+                replacement.clone(),
+                None,
+                &vault,
+                &worker,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            active_connection(&store).unwrap().provider,
+            crate::jev::config::SystemOneProvider::Jev
+        );
+        vault.fail_delete.set(false);
+        persist_connection_profile(
+            &store,
+            &mut profiles,
+            "local",
+            replacement,
+            None,
+            &vault,
+            &worker,
+        )
+        .expect("retry cleanup and provider replacement");
+        assert_eq!(
+            store
+                .internal_value(CREDENTIAL_CHANGE_PENDING_KEY)
+                .as_deref(),
+            Some("false")
+        );
+        store.set_internal_value(CONNECTION_PENDING_KEY, "");
+        restore_saved_key(&store, &worker, || {
+            panic!("replacement must not read legacy key")
+        })
+        .expect("restore replacement");
+        assert!(worker.is_available());
     }
 
     #[test]

@@ -407,8 +407,9 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(screen.queryByRole("button", { name: "Show evidence" })).not.toBeInTheDocument()
-    expect(screen.getAllByText("Supporting events")).toHaveLength(2)
-    expect(screen.getAllByText("Earlier event")).toHaveLength(2)
+    expect(screen.queryByText("Supporting events")).not.toBeInTheDocument()
+    expect(screen.queryByText("Earlier event")).not.toBeInTheDocument()
+    expect(screen.queryByText("Later context")).not.toBeInTheDocument()
     expect(commands.evidence).toHaveBeenCalledWith("first-action")
     expect(commands.evidence).toHaveBeenCalledWith("second-action")
     expect(
@@ -433,8 +434,6 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
       ],
     ])
     expect(screen.queryByRole("button", { name: "Show context" })).not.toBeInTheDocument()
-    expect(screen.getAllByText("Earlier event")).toHaveLength(2)
-    expect(screen.getAllByText("Later context")).toHaveLength(2)
     expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
   })
 

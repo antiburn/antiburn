@@ -600,10 +600,9 @@ fn command_parts(item: &Value) -> Option<Vec<ContentPart>> {
 }
 
 fn clipped(text: &str) -> bool {
-    text.len() >= 64 * 1024
-        || text.to_ascii_lowercase().contains("truncated")
-        || text.contains("…")
-        || text.contains("... omitted")
+    text.len() > crate::analysis::interface::MAX_CONTENT_PART_BYTES
+        || text.contains("[output truncated]")
+        || text.contains("\t[truncated]")
 }
 
 fn numbered_slice(command: &str, item: &Value) -> Option<(String, u64, u64)> {
@@ -815,4 +814,23 @@ fn file_parts(item: &Value) -> Option<Vec<ContentPart>> {
         item["stdout"].as_str()?,
     ));
     Some(vec![input, result])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clipped;
+    use crate::analysis::interface::MAX_CONTENT_PART_BYTES;
+
+    #[test]
+    fn ordinary_output_text_is_not_truncation_framing() {
+        for text in [
+            "The output was truncated by the test fixture.",
+            "Completed successfully…",
+            "The omitted section is described here.",
+        ] {
+            assert!(!clipped(text));
+        }
+        assert!(clipped("first line\n[output truncated]\n"));
+        assert!(clipped(&"x".repeat(MAX_CONTENT_PART_BYTES + 1)));
+    }
 }

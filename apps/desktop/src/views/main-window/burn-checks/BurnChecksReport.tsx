@@ -664,7 +664,18 @@ export function BurnChecksReport({
     ...snoozedChecks,
   ]
   const reportKey = checks
-    .map((check) => check.id)
+    .map((check) => {
+      const group = snoozedIds.has(check.id)
+        ? "snoozed"
+        : activeFailures.some((item) => item.id === check.id)
+          ? "failed"
+          : activeAwaiting.some((item) => item.id === check.id)
+            ? "awaiting"
+            : activeWins.some((item) => item.id === check.id)
+              ? "passed"
+              : "unassessed"
+      return `${check.id}:${group}`
+    })
     .sort()
     .join(":")
   const initialId =
@@ -849,7 +860,7 @@ export function BurnChecksReport({
             if (
               check.id === focusedCheck &&
               check.id === selectedVisibleId &&
-              lastFocus.current !== searchRequest
+              (lastFocus.current !== searchRequest || document.activeElement === document.body)
             ) {
               lastFocus.current = searchRequest
               node.scrollIntoView({ block: "nearest" })

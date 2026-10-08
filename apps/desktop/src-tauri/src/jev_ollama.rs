@@ -235,10 +235,7 @@ impl OllamaClient {
         };
         let capabilities = ModelCapabilities {
             total_input_tokens: CapabilityLimit::known(cap, source),
-            state_and_longest_question_tokens: CapabilityLimit::known(
-                cap.saturating_sub(1024),
-                source,
-            ),
+            state_and_longest_question_tokens: CapabilityLimit::known(cap, source),
             state_and_longest_question_bytes: CapabilityLimit::unknown(),
             request_body_bytes: CapabilityLimit::known(
                 MAX_REQUEST_BODY_BYTES as u64,
@@ -566,6 +563,21 @@ mod tests {
             assert_eq!(
                 discovered.capabilities.runtime_context_tokens.source,
                 CapabilitySource::RuntimeMetadata
+            );
+            assert_eq!(
+                discovered.capabilities.total_input_tokens.value,
+                Some(context)
+            );
+            assert_eq!(
+                discovered
+                    .capabilities
+                    .state_and_longest_question_tokens
+                    .value,
+                Some(context)
+            );
+            assert_eq!(
+                discovered.capabilities.usable_input_tokens(),
+                Some(context.saturating_sub(1024))
             );
         }
         server.await.unwrap();

@@ -84,6 +84,7 @@ pub const MIGRATIONS: &[&str] = &[
     V71,
     V72,
     V73,
+    V74,
 ];
 
 const V73: &str = r#"
@@ -103,6 +104,12 @@ CREATE TABLE burn_check_dispatch_attempt (
     FOREIGN KEY (environment_key, agent, session_id)
       REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
 ) STRICT;
+"#;
+
+const V74: &str = r#"
+ALTER TABLE burn_check_dispatch_attempt
+    ADD COLUMN last_attempt_at_epoch INTEGER NOT NULL DEFAULT 0;
+UPDATE burn_check_dispatch_attempt SET last_attempt_at_epoch = unixepoch();
 "#;
 
 const V69: &str = r#"

@@ -73,6 +73,7 @@ struct TokenStart {
 
 struct ProviderPacing {
     next_start: tokio::time::Instant,
+    cooldown_until: tokio::time::Instant,
     starts: std::collections::VecDeque<TokenStart>,
 }
 
@@ -80,6 +81,7 @@ impl ProviderPacing {
     fn new(now: tokio::time::Instant) -> Self {
         Self {
             next_start: now,
+            cooldown_until: now,
             starts: std::collections::VecDeque::new(),
         }
     }
@@ -97,7 +99,8 @@ impl ProviderPacing {
         }
         let tokens = self.starts.iter().map(|start| start.tokens).sum::<u64>();
         let estimated_tokens = estimated_tokens.clamp(1, MAX_REQUEST_TOKENS);
-        if now < self.next_start
+        if now < self.cooldown_until
+            || now < self.next_start
             || tokens.saturating_add(estimated_tokens) > GLOBAL_INPUT_TOKENS_PER_SECOND
         {
             return false;
@@ -119,6 +122,10 @@ impl ProviderPacing {
         {
             start.tokens = tokens.min(MAX_REQUEST_TOKENS);
         }
+    }
+
+    fn defer(&mut self, now: tokio::time::Instant, duration: Duration) {
+        self.cooldown_until = self.cooldown_until.max(now + duration);
     }
 }
 
@@ -1021,14 +1028,7 @@ where
             let [admission] = readiness.as_slice() else {
                 return Err(JevError::InvalidCheckPlan);
             };
-            match admission {
-                BurnCheckRequestAdmission::Admitted => Ok(()),
-                BurnCheckRequestAdmission::Unresolved => Err(JevError::RequestOutcomeUnknown),
-                BurnCheckRequestAdmission::Exhausted => Err(JevError::ProviderUnavailable),
-                BurnCheckRequestAdmission::Deferred | BurnCheckRequestAdmission::Stale => {
-                    Err(JevError::Cancelled)
-                }
-            }
+            preflight_admission(*admission)
         },
     )
     .await;
@@ -1064,6 +1064,16 @@ where
             .map_err(|_| JevError::ProgressStorageFailure)?;
     }
     outcome
+}
+
+fn preflight_admission(admission: BurnCheckRequestAdmission) -> Result<(), JevError> {
+    match admission {
+        BurnCheckRequestAdmission::Admitted | BurnCheckRequestAdmission::Exhausted => Ok(()),
+        BurnCheckRequestAdmission::Unresolved => Err(JevError::RequestOutcomeUnknown),
+        BurnCheckRequestAdmission::Deferred | BurnCheckRequestAdmission::Stale => {
+            Err(JevError::Cancelled)
+        }
+    }
 }
 
 fn save_checkpoint(
@@ -1530,6 +1540,11 @@ async fn execute_batch_inner(
                 Ok(response)
             }
             Err(error) => {
+                let mut pacing = provider_pacing(provider)
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                apply_provider_cooldown(&mut pacing, &error, tokio::time::Instant::now());
+                drop(pacing);
                 let retry_at = retry_delay(&error, attempt).map(|delay| {
                     unix_now().saturating_add(i64::try_from(delay.as_secs()).unwrap_or(i64::MAX))
                 });
@@ -1565,6 +1580,22 @@ async fn execute_batch_inner(
                 Err(error)
             }
         }
+    }
+}
+
+fn apply_provider_cooldown(
+    pacing: &mut ProviderPacing,
+    error: &JevError,
+    now: tokio::time::Instant,
+) {
+    if let JevError::RateLimited {
+        retry_after: Some(delay),
+    }
+    | JevError::ProviderOverloaded {
+        retry_after: Some(delay),
+    } = error
+    {
+        pacing.defer(now, *delay);
     }
 }
 

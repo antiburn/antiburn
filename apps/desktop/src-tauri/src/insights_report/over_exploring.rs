@@ -98,8 +98,10 @@ pub(super) fn over_exploring_findings_for_session(
         return Ok(None);
     }
     let complete = status == "completed" && publication_has_clean_coverage(&publication.assessment);
-    let partial = matches!(status.as_str(), "completed" | "failed")
-        && !publication.assessment.findings.is_empty();
+    let partial = matches!(
+        status.as_str(),
+        "completed" | "failed" | "queued" | "running"
+    ) && !publication.assessment.findings.is_empty();
     if !complete && !partial {
         return Ok(None);
     }
@@ -341,6 +343,37 @@ mod tests {
             let prompt = antiburn_local::remediation::remediation_prompt(finding).unwrap();
             !prompt.as_str().is_empty()
         }));
+        let read = || {
+            over_exploring_findings_for_session(
+                &store.lock(),
+                &evidence,
+                IgnoredInstructionSessionIdentity {
+                    environment_key: &candidate.session.key.environment_key,
+                    agent: &candidate.session.key.agent,
+                    session_id: &candidate.session.key.session_id,
+                    incarnation: candidate.incarnation,
+                    source_generation: candidate.source_generation,
+                    source_fingerprint: candidate.source_fingerprint.as_deref(),
+                    published_fence: candidate.published_fence,
+                },
+            )
+            .unwrap()
+        };
+        for status in ["queued", "running", "failed", "completed"] {
+            store
+                .lock()
+                .execute("UPDATE burn_check_assessment SET status = ?1", [status])
+                .unwrap();
+            assert!(read().is_some(), "{status} retains the valid finding");
+        }
+        store
+            .lock()
+            .execute(
+                "UPDATE session_evidence SET published_fence = published_fence + 1",
+                [],
+            )
+            .unwrap();
+        assert!(read().is_none(), "an invalidated publication is not clean");
     }
 
     #[test]

@@ -155,7 +155,10 @@ absent successful `is_error` resolves only through that matching payload. Pi
 0.84.4 retains returned text separately from continuation notices and validates
 native clipping details. Codex 0.160.1 accepts only the characterized
 `nl -ba PATH | sed -n 'START,ENDp'` slice with a matching native parsed-command
-path and consecutive numbered stdout. These contracts prove observed lines,
+path and consecutive numbered stdout. Completed command output is clipped only
+for the exact `[output truncated]` producer marker or when it reaches the
+content-part byte cap; ordinary prose such as "truncated" and ellipsis
+characters are not producer framing. These contracts prove observed lines,
 not requested extent or whole-file access. Images, PDF, directories, persistence
 and partial-view notices, mismatches, and unsupported renderers supply no extent.
 No external output file is read.
