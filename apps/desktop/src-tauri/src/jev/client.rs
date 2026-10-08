@@ -15,6 +15,19 @@ use antiburn_local::analysis::jev::{
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
+fn async_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("a client with no custom TLS material always builds")
+    })
+}
+
 /// The client keeps the key private and never includes it in debug output.
 #[derive(Clone)]
 pub(crate) struct TypeSafeClient {
@@ -45,18 +58,8 @@ impl TypeSafeClient {
         capabilities: &ModelCapabilities,
     ) -> Result<JevResponse, JevError> {
         let body = JevSystemOneAdapter::encode_request(request, capabilities)?;
-        static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-        let client = CLIENT.get_or_init(|| {
-            let _ = rustls::crypto::ring::default_provider().install_default();
-            reqwest::Client::builder()
-                .connect_timeout(CONNECT_TIMEOUT)
-                .timeout(REQUEST_TIMEOUT)
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .expect("a client with no custom TLS material always builds")
-        });
         let send_started = Instant::now();
-        let mut response = client
+        let mut response = async_client()
             .post(endpoint)
             .bearer_auth(self.api_key.as_ref())
             .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -251,14 +254,7 @@ pub async fn evaluate_custom(
     capabilities: &ModelCapabilities,
 ) -> Result<JevResponse, JevError> {
     let body = JevSystemOneAdapter::encode_request(request, capabilities)?;
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let client = reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(REQUEST_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| JevError::ProviderUnavailable)?;
-    let mut builder = client
+    let mut builder = async_client()
         .post(endpoint)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(body);
@@ -341,6 +337,84 @@ mod custom_transport_tests {
                 },
             )]),
         }
+    }
+
+    #[tokio::test]
+    async fn custom_transport_reuses_connections_without_reusing_credentials() {
+        use std::io::BufRead;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(socket);
+            for authenticated in [true, false] {
+                let mut headers = String::new();
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    headers.push_str(&line);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let headers = headers.to_ascii_lowercase();
+                assert_eq!(
+                    headers.contains("authorization: bearer first"),
+                    authenticated
+                );
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("content-length:")
+                            .map(|value| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                reader.read_exact(&mut vec![0; length]).unwrap();
+                let response = json!({
+                    "model": "proxy-model", "answers": {"q": {"type": "noul", "noul": 0.2}},
+                    "usage": {"input_tokens": 10, "output_tokens": 1}
+                });
+                let body = if authenticated {
+                    response
+                } else {
+                    json!({"success": true, "result": response})
+                }
+                .to_string();
+                write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+                reader.get_mut().flush().unwrap();
+            }
+        });
+        let mut capabilities = ModelCapabilities::jev_default();
+        capabilities.model = "proxy-model".into();
+        for (credential, mode) in [
+            (Some("first"), SystemOneResponseMode::Direct),
+            (None, SystemOneResponseMode::CloudflareEnvelope),
+        ] {
+            let response = tokio::time::timeout(
+                Duration::from_secs(10),
+                evaluate_custom(
+                    &endpoint,
+                    credential,
+                    mode,
+                    &request("proxy-model"),
+                    &capabilities,
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(response.model, "proxy-model");
+        }
+        server.join().unwrap();
     }
 
     #[tokio::test]
