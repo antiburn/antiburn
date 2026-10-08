@@ -1,5 +1,135 @@
 use super::*;
 use antiburn_local::analysis::ignored_instructions::*;
+use antiburn_local::insights::ReportWindow;
+
+#[test]
+fn request_only_read_citations_survive_provider_failure_without_claiming_output() {
+    use crate::over_exploring_worker::{
+        prepare, publication,
+        tests::{fixture, reduced},
+    };
+    use antiburn_local::checks::over_exploring::Reason;
+    let directory = tempfile::tempdir().unwrap();
+    let (store, candidate) = fixture(Some(directory.path()), "user");
+    store
+        .lock()
+        .execute("DELETE FROM turn_content WHERE kind = 'tool_result'", [])
+        .unwrap();
+    let snapshot = store
+        .load_smart_check_inputs(
+            &candidate.session.key,
+            candidate.published_fence,
+            candidate.source_generation,
+            crate::smart_check_inputs::DetectorInput::OverExploring,
+        )
+        .unwrap();
+    let input = prepare(
+        &candidate,
+        snapshot,
+        &antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default(),
+    )
+    .unwrap();
+    let result = reduced(&input, Reason::UnrelatedFiles);
+    assert!(!result.findings.is_empty());
+    assert!(!crate::over_exploring_worker::publication_has_clean_coverage(&result));
+    assert!(
+        result
+            .findings
+            .iter()
+            .flat_map(|finding| &finding.reads)
+            .all(|read| read.result_id.is_none() && read.output_digest.is_none())
+    );
+    let published = publication(&input, result);
+    let now = now_epoch();
+    assert!(
+        store
+            .queue_burn_check_assessment(&input.durable, now, 180)
+            .unwrap()
+    );
+    assert!(
+        store
+            .claim_burn_check_assessment(&input.durable, now, 300, 180)
+            .unwrap()
+    );
+    assert!(
+        store
+            .fail_burn_check_assessment_with_result(
+                &input.durable,
+                &crate::store::BurnCheckFailure {
+                    error_category: "provider_unavailable",
+                    result_json: &serde_json::to_string(&published).unwrap(),
+                    progress_json: "{}",
+                    retry_at_epoch: None,
+                },
+                now,
+                180,
+            )
+            .unwrap()
+    );
+    let controller = RemediationController::new(directory.path().to_owned());
+    let targets = controller
+        .list_burn_check_targets_at(
+            &store,
+            DetectorId::OverExploring,
+            BurnCheckTargetContext {
+                environment_key: "native".into(),
+                window: ReportWindow {
+                    start_epoch: 0,
+                    end_epoch: 2000,
+                },
+            },
+            TargetListOptions {
+                now,
+                home: None,
+                cache_actions: true,
+            },
+        )
+        .unwrap();
+    assert!(!targets.targets.is_empty());
+    let target = &targets.targets[0];
+    let evidence = controller
+        .burn_check_target_evidence(&store, &target.action_id)
+        .unwrap();
+    assert_eq!(evidence.status, BurnCheckEvidenceStatus::Available);
+    let finding = published
+        .assessment
+        .findings
+        .iter()
+        .find(|finding| finding.work_item_id == evidence.occurrences[0].finding_id)
+        .unwrap();
+    let expected: BTreeSet<_> = finding
+        .task_evidence
+        .iter()
+        .map(|item| item.source_id.as_str())
+        .chain(finding.reads.iter().map(|read| read.request_id.as_str()))
+        .collect();
+    let actual: BTreeSet<_> = evidence
+        .items
+        .iter()
+        .map(|item| item.reference.as_str())
+        .collect();
+    assert_eq!(actual, expected);
+    assert!(
+        evidence
+            .items
+            .iter()
+            .filter(|item| item.label == BurnCheckEvidenceLabel::ObservedAction)
+            .all(|item| item
+                .limitation
+                .as_deref()
+                .unwrap()
+                .contains("request alone does not prove returned content"))
+    );
+    let prompt = controller
+        .copy_prompt_fix_burn_check_targets(&store, std::slice::from_ref(&target.action_id))
+        .unwrap();
+    assert!(prompt.prompt.contains("Requests reads"));
+    assert!(
+        prompt
+            .prompt
+            .contains("A request alone does not prove returned content")
+    );
+}
 
 fn typed_cause(
     prerequisite: PrerequisiteOutcome,

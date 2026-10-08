@@ -346,7 +346,7 @@ fn prompt_facts(
             )?;
             facts.push(
                 PromptFactRole::SelectedWindowLimit,
-                "Only the cited observed reads support this claim.",
+                "The cited read requests and available results support this claim. A request alone does not prove returned content. The assessment uses bounded representative text ranges.",
                 true,
             )?;
         }
@@ -461,8 +461,8 @@ fn sanitize_prompt_value(value: &str) -> Option<SafeValue> {
 fn over_exploring_reason_text(reason: crate::checks::over_exploring::Reason) -> &'static str {
     use crate::checks::over_exploring::Reason;
     match reason {
-        Reason::UnrelatedFiles => "Reads files unrelated to the task.",
-        Reason::ExcessiveFileBreadth => "Reads more files than the task needs.",
+        Reason::UnrelatedFiles => "Requests reads of files likely unrelated to the task.",
+        Reason::ExcessiveFileBreadth => "Requests reads of more files than the task likely needs.",
         Reason::ExcessiveWithinFileReading => "Reads more of a file than the task needs.",
     }
 }
@@ -747,7 +747,7 @@ fn coverage_limitation(
         return "This result uses the current retained root snapshot. It does not prove that original historical records were never removed.";
     }
     if detector == DetectorId::OverExploring {
-        return "This result covers the cited recorded reads, not all research or every token in the episode.";
+        return "This result covers cited read requests and available results using bounded representative text ranges. A request alone does not prove returned content or wasted tokens.";
     }
     if matches!(cause, FindingCause::SkillOpportunity { .. }) {
         return "This advisory uses only cited work from the selected window. It does not show that the skill was required or would have improved the work.";

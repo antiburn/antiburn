@@ -23,7 +23,9 @@ pub fn row(
         .unwrap_or_default();
     let clean = complete
         && result.is_some_and(|result| {
-            !result.clean_episode_ids.is_empty()
+            !result.completed_work_item_ids.is_empty()
+                && result.coverage.not_selected_items == 0
+                && result.completed_work_item_ids.len() == result.coverage.selected_items
                 && result.unassessed.is_empty()
                 && result.findings.is_empty()
         });
@@ -73,10 +75,7 @@ fn metrics(cases: &[Case], rows: &[Value], reason: Option<Reason>) -> Value {
             .filter(|finding| reason.is_none_or(|reason| finding.reason == reason))
         {
             publications += 1;
-            if row["failure"].is_null()
-                && row["complete"] == true
-                && let Some(index) = remaining.iter().position(|expected| *expected == finding)
-            {
+            if let Some(index) = remaining.iter().position(|expected| *expected == finding) {
                 remaining.remove(index);
                 tp += 1;
             }
@@ -123,10 +122,20 @@ pub fn report(cases: &[Case], rows: &[Value]) -> Value {
 }
 
 #[test]
+fn a_bound_positive_survives_a_sibling_provider_failure_in_metrics() {
+    let case = super::fixtures::cases("development").remove(0);
+    let row = json!({"id":case.id,"reason":case.reason,"observed":case.expected,"outcome":"finding","clean":false,"complete":false,"failure":"provider_unavailable"});
+    let result = report(&[case], &[row]);
+    assert_eq!(result["overall"]["joint_true_positives"], 1);
+    assert_eq!(result["overall"]["joint_false_positives"], 0);
+    assert_eq!(result["overall"]["failures"], 1);
+}
+
+#[test]
 fn a_wrong_read_binding_is_not_a_true_positive() {
     let case = super::fixtures::cases("development").remove(0);
     let mut observed = case.expected.clone();
-    observed[0].reads[0].output_digest = "wrong-binding".into();
+    observed[0].reads[0].output_digest = Some("wrong-binding".into());
     let row = json!({"id":case.id,"reason":case.reason,"observed":observed,"outcome":"finding","clean":false,"complete":true,"failure":null});
     let result = report(&[case], &[row]);
     assert_eq!(result["overall"]["joint_true_positives"], 0);

@@ -18,6 +18,18 @@ use crate::store::{
 
 const OUTPUT: &str = "<path>/synthetic/parser.rs</path>\n<type>file</type>\n<content>\n1: parser\n\n(End of file - total 1 lines)\n</content>";
 
+fn read_output<'a>(
+    input: &'a over_exploring::OverExploringInput,
+    read: &over_exploring::ReadObservation,
+) -> Option<&'a str> {
+    let result = read.result.as_ref()?;
+    input
+        .events
+        .iter()
+        .find(|event| event.reference.id == result.reference_id)
+        .map(|event| event.text.as_str())
+}
+
 fn publish(
     environment: &str,
     fillers: usize,
@@ -237,11 +249,11 @@ fn parse_publish_load_joins_read_across_pages_and_keeps_full_scope() {
         over_exploring::EpisodeState::Complete
     );
     assert_eq!(
-        episodes.episodes[0].reads[0].output.as_deref(),
+        read_output(&episodes, &episodes.episodes[0].reads[0]),
         Some(OUTPUT)
     );
     assert_eq!(
-        episodes.episodes[0].subsequent[0].text,
+        episodes.events[episodes.episodes[0].subsequent[0]].text,
         "Now inspect tests."
     );
     assert_eq!(
@@ -295,13 +307,13 @@ fn open_investigations_preserve_reads_without_a_later_edit() {
             let plan = over_exploring::OverExploringCheck
                 .prepare(&context)
                 .unwrap();
-            assert!(plan.work_items.is_empty());
-            assert!(
-                plan.coverage
-                    .limitations
-                    .iter()
-                    .any(|limit| limit == "IncompleteHistory")
-            );
+            assert!(!plan.work_items.is_empty());
+            assert!(!plan.prepared.history_complete);
+            let assessment = over_exploring::OverExploringCheck
+                .reduce(&plan, &[], false)
+                .unwrap();
+            assert!(assessment.clean_episode_ids.is_empty());
+            assert!(!assessment.unassessed.is_empty());
         } else {
             assert!(matches!(
                 spans[0].completion,
@@ -426,10 +438,9 @@ fn selected_evidence_gaps_preserve_retained_activity() {
                 .text,
             OUTPUT
         );
+        let input = snapshot.over_exploring_input().unwrap();
         assert_eq!(
-            snapshot.over_exploring_input().unwrap().episodes[0].reads[0]
-                .output
-                .as_deref(),
+            read_output(&input, &input.episodes[0].reads[0]),
             Some(OUTPUT)
         );
     }
@@ -454,7 +465,10 @@ fn broken_sibling_outputs_do_not_erase_independent_read_pairs() {
         assert!(!snapshot.content().complete);
         let input = snapshot.over_exploring_input().unwrap();
         assert_eq!(input.episodes[0].reads.len(), 1);
-        assert_eq!(input.episodes[0].reads[0].output.as_deref(), Some(OUTPUT));
+        assert_eq!(
+            read_output(&input, &input.episodes[0].reads[0]),
+            Some(OUTPUT)
+        );
         let read = &input.episodes[0].reads[0];
         assert_eq!(
             read.result
@@ -505,7 +519,7 @@ fn missing_result_preserves_request_and_marks_partial_context_for_each_detector(
         if detector == DetectorInput::OverExploring {
             let input = snapshot.over_exploring_input().unwrap();
             assert!(input.episodes[0].reads[0].result.is_none());
-            assert!(input.episodes[0].reads[0].output.is_none());
+            assert!(read_output(&input, &input.episodes[0].reads[0]).is_none());
         }
     }
 }
@@ -536,10 +550,9 @@ fn oversized_sibling_is_a_page_loss_not_a_session_failure() {
             .iter()
             .any(|limit| limit == "oversized_content_part")
     );
+    let input = snapshot.over_exploring_input().unwrap();
     assert_eq!(
-        snapshot.over_exploring_input().unwrap().episodes[0].reads[0]
-            .output
-            .as_deref(),
+        read_output(&input, &input.episodes[0].reads[0]),
         Some(OUTPUT)
     );
 }
@@ -697,12 +710,12 @@ fn truncated_user_does_not_block_independent_task_and_read_episode() {
             episode
                 .events
                 .iter()
-                .any(|action| action.text == "Inspect the parser independently.")
+                .any(|index| input.events[*index].text == "Inspect the parser independently.")
         })
         .unwrap();
     assert_eq!(independent.reads.len(), 1);
     let read = &independent.reads[0];
-    assert_eq!(read.output.as_deref(), Some(OUTPUT));
+    assert_eq!(read_output(&input, read), Some(OUTPUT));
     assert_eq!(
         read.result
             .as_ref()

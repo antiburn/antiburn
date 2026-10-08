@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::json;
 
@@ -43,16 +43,17 @@ fn part(index: u64, kind: ContentKind, text: &str, call: Option<&str>) -> Publis
 }
 
 fn fixture(
-    task: &str,
+    task_text: &str,
     paths: &[&str],
+    body: &str,
     later: &str,
 ) -> (SessionContentEvidence, SessionScopeSnapshot, EpisodeSpan) {
     let mut parts = vec![
-        part(0, ContentKind::UserText, task, None),
+        part(0, ContentKind::UserText, task_text, None),
         part(
             1,
             ContentKind::AssistantText,
-            "Investigate the task and check the relevant dependencies.",
+            "Investigate the task and its dependencies.",
             None,
         ),
     ];
@@ -65,19 +66,25 @@ fn fixture(
             &json!({"filePath": path, "limit": 2000}).to_string(),
             Some(&call),
         ));
-        parts.push(part(order + 1, ContentKind::ToolResult, &format!("<path>{path}</path>\n<type>file</type>\n<content>\n1: recorded content\n\n(End of file - total 1 lines)\n</content>"), Some(&call)));
+        let lines = body
+            .lines()
+            .enumerate()
+            .map(|(index, line)| format!("{}: {line}", index + 1))
+            .collect::<Vec<_>>();
+        let output = format!(
+            "<path>{path}</path>\n<type>file</type>\n<content>\n{}\n\n(End of file - total {} lines)\n</content>",
+            lines.join("\n"),
+            lines.len()
+        );
+        parts.push(part(
+            order + 1,
+            ContentKind::ToolResult,
+            &output,
+            Some(&call),
+        ));
     }
-    let end = parts.last().unwrap().turn_index;
-    parts.push(part(end + 1, ContentKind::AssistantText, later, None));
-    fixture_from_parts(parts, 1, usize::try_from(end).unwrap())
-}
-
-fn fixture_from_parts(
-    parts: Vec<PublishedContentPart>,
-    first: usize,
-    last: usize,
-) -> (SessionContentEvidence, SessionScopeSnapshot, EpisodeSpan) {
-    let boundary = parts.last().unwrap().turn_index;
+    let last = parts.last().unwrap().turn_index;
+    parts.push(part(last + 1, ContentKind::AssistantText, later, None));
     let page = PublishedContent {
         publication_fence: 4,
         source_generation: Some(3),
@@ -89,7 +96,7 @@ fn fixture_from_parts(
         SessionScopeBoundary {
             source_key: "transcript".into(),
             thread_id: "branch".into(),
-            turn_index: boundary,
+            turn_index: last + 1,
             part_index: 0,
             branch: SessionScopeBranch::ProvenLinear,
         },
@@ -103,20 +110,34 @@ fn fixture_from_parts(
     let mut content =
         prepare_session_content("session", SourceFormat::OpenCodeSqliteV2, page, Vec::new());
     content.complete = true;
-    for event in &mut content.actions[..first] {
-        event.context_only = true;
-    }
+    content.actions[0].context_only = true;
     let span = EpisodeSpan {
-        first_event_id: content.actions[first].reference.id.clone(),
-        last_event_id: content.actions[last].reference.id.clone(),
+        first_event_id: content.actions[1].reference.id.clone(),
+        last_event_id: content.actions[usize::try_from(last).unwrap()]
+            .reference
+            .id
+            .clone(),
         state: EpisodeState::Complete,
     };
     (content, task, span)
 }
 
-fn input(task_text: &str, paths: &[&str], later: &str) -> OverExploringInput {
-    let (content, task, span) = fixture(task_text, paths, later);
+fn input(paths: &[&str]) -> OverExploringInput {
+    let (content, task, span) = fixture(
+        "Fix the parser.",
+        paths,
+        "recorded content",
+        "The investigation is complete.",
+    );
     build_episodes(&content, &task, &[span]).unwrap()
+}
+
+fn cache_age_source() -> String {
+    let mut source = "pub fn accepts(value: usize, maximum: usize) -> bool {\n    value < maximum\n}\n#[test]\nfn endpoint_is_valid() { assert!(accepts(10, 10)); }\n#[test]\nfn overflow_is_invalid() { assert!(!accepts(11, 10)); }\n".to_owned();
+    for index in 0..28 {
+        source.push_str(&format!("fn render_panel_{index}() -> &'static str {{\n    \"Panel {index}: choose a display theme\"\n}}\n\n"));
+    }
+    source
 }
 
 fn plan(input: &OverExploringInput) -> JevCheckPlan<PreparedAssessment> {
@@ -125,35 +146,34 @@ fn plan(input: &OverExploringInput) -> JevCheckPlan<PreparedAssessment> {
         .unwrap()
 }
 
-fn answer(choice: &str) -> JevAnswer {
+fn answer(choice: &str, probability: f64) -> JevAnswer {
     JevAnswer::Choice {
         choice: choice.into(),
-        confidence: 0.98,
-        probabilities: BTreeMap::from([
-            (
-                "supported".into(),
-                if choice == "supported" { 0.98 } else { 0.01 },
-            ),
-            (
-                "justified".into(),
-                if choice == "justified" { 0.98 } else { 0.01 },
-            ),
-            (
-                "unknown".into(),
-                if choice == "unknown" { 0.98 } else { 0.01 },
-            ),
-        ]),
+        confidence: 0.5,
+        probabilities: ["likely_excess", "justified_or_minor", "uncertain"]
+            .into_iter()
+            .map(|value| {
+                (
+                    value.into(),
+                    if value == choice {
+                        probability
+                    } else {
+                        (1.0 - probability) / 2.0
+                    },
+                )
+            })
+            .collect(),
     }
 }
 
 fn results(
     plan: &JevCheckPlan<PreparedAssessment>,
-    positive: Option<Reason>,
+    choice: &str,
+    probability: f64,
 ) -> Vec<JevWorkItemResult> {
     plan.work_items
         .iter()
         .map(|item| {
-            let target = &plan.prepared.targets[&item.id];
             let mut evidence = plan.shared_context.as_ref().unwrap().evidence.clone();
             evidence.extend(item.window.evidence.clone());
             JevWorkItemResult {
@@ -165,43 +185,27 @@ fn results(
                     output_tokens: 1,
                 },
                 evidence,
-                answers: super::questions::GATES
-                    .into_iter()
-                    .map(|gate| {
-                        (
-                            gate.into(),
-                            answer(choice_for(gate, target.reason, positive)),
-                        )
-                    })
-                    .collect(),
+                answers: BTreeMap::from([(QUESTION_ID.into(), answer(choice, probability))]),
             }
         })
         .collect()
 }
 
-fn choice_for(gate: &str, reason: Reason, positive: Option<Reason>) -> &'static str {
-    if gate == "substantial" && positive != Some(reason)
-        || gate == "relevance" && reason == Reason::ExcessiveWithinFileReading
-    {
-        "justified"
-    } else {
-        "supported"
-    }
+fn progress() -> SamplingProgress {
+    SamplingProgress::new(SamplingLimits {
+        checks: 4,
+        candidates_per_check: MAX_SAMPLING_CANDIDATES,
+        answers_per_candidate: 1024,
+        judgments_per_run: 3,
+    })
+    .unwrap()
 }
 
 #[test]
-fn native_read_shapes_reach_stable_episodes_with_observed_not_requested_ranges() {
-    let input = input(
-        "Fix the parser.",
-        &["parser.rs", "library.rs"],
-        "The investigation is complete.",
-    );
-    assert_eq!(input.episodes.len(), 1);
+fn native_bindings_keep_observed_extent_separate_from_request() {
+    let input = input(&["parser.rs", "library.rs"]);
     let episode = &input.episodes[0];
-    assert_eq!(episode.reads.len(), 2);
-    assert_eq!(episode.before[0].text, "Fix the parser.");
-    assert_eq!(episode.subsequent.len(), 1);
-    assert_eq!(episode.reads[0].request.extent.offset, None);
+    assert_eq!(input.events[episode.before[0]].text, "Fix the parser.");
     assert_eq!(episode.reads[0].request.extent.limit, Some(2000));
     assert_eq!(
         episode.reads[0]
@@ -214,238 +218,370 @@ fn native_read_shapes_reach_stable_episodes_with_observed_not_requested_ranges()
             .limit,
         Some(1)
     );
-    assert_eq!(episode.id, input.episodes[0].id);
     let plan = plan(&input);
-    assert!(!plan.work_items.is_empty());
-    let serialized = serde_json::to_string(&plan.work_items[0].window.fields).unwrap();
-    assert!(!serialized.contains(&episode.reads[0].request.reference_id));
-    assert!(!serialized.contains("whole_file"));
-    assert!(serialized.contains("recorded content"));
-}
-
-#[test]
-fn every_reason_publishes_only_its_exact_read_bindings() {
-    let input = input(
-        "Fix the parser.",
-        &["parser.rs", "other.rs", "parser.rs"],
-        "Investigation complete.",
-    );
-    let plan = plan(&input);
-    for reason in [
-        Reason::UnrelatedFiles,
-        Reason::ExcessiveFileBreadth,
-        Reason::ExcessiveWithinFileReading,
-    ] {
-        let reduced = OverExploringCheck
-            .reduce(&plan, &results(&plan, Some(reason)), true)
-            .unwrap();
-        assert!(!reduced.findings.is_empty());
-        assert!(
-            reduced
-                .findings
-                .iter()
-                .all(|finding| finding.reason == reason)
-        );
-        for finding in &reduced.findings {
-            let target = &plan.prepared.targets[&finding.work_item_id];
-            assert_eq!(finding.reads, target.bindings);
-            assert_eq!(finding.episode_id, input.episodes[0].id);
-            assert_eq!(finding.task_evidence, input.task_context.evidence);
-            assert_eq!(finding.model, plan.capabilities.model);
-            assert_eq!(finding.semantic_revision, plan.input_revision);
-            for (binding, index) in finding.reads.iter().zip(&target.read_indexes) {
-                let read = &input.episodes[0].reads[*index];
-                assert_eq!(binding.request_id, read.request.reference_id);
-                assert_eq!(
-                    binding.result_id,
-                    read.result.as_ref().unwrap().reference_id
-                );
-            }
-        }
-        assert_eq!(reduced.completed_episode_ids, vec![input.episodes[0].id]);
-        assert!(reduced.clean_episode_ids.is_empty());
-    }
-}
-
-#[test]
-fn every_semantic_gate_is_required_and_unknown_is_not_clean() {
-    let plan = plan(&input("Fix the parser.", &["parser.rs"], "Complete."));
-    for gate in [
-        "relevance",
-        "useful_information",
-        "later_use",
-        "substantial",
-        "sufficiency",
-    ] {
-        for choice in ["justified", "unknown"] {
-            let mut results = results(&plan, Some(Reason::UnrelatedFiles));
-            for result in &mut results {
-                result.answers.insert(gate.into(), answer(choice));
-            }
-            let assessment = OverExploringCheck.reduce(&plan, &results, true).unwrap();
-            assert!(assessment.findings.is_empty(), "{gate}: {choice}");
-            if choice == "unknown" || gate == "sufficiency" {
-                assert!(assessment.clean_episode_ids.is_empty());
-                assert!(!assessment.unassessed.is_empty());
-            }
-        }
-    }
-}
-
-#[test]
-fn diligence_negative_controls_survive_all_reason_gates() {
-    let cases = [
-        (
-            "Audit all repository files for security risks.",
-            "The risk audit needs this evidence.",
-            "useful_information",
-        ),
-        (
-            "Fix the parser dependency failure.",
-            "Discovered an imported dependency and used its contract.",
-            "useful_information",
-        ),
-        (
-            "Find the failing code path.",
-            "These reads eliminate the initial hypothesis.",
-            "useful_information",
-        ),
-        (
-            "Change the cross-cutting API.",
-            "All callers require review.",
-            "useful_information",
-        ),
-        (
-            "Verify concurrent file changes.",
-            "Reread the file after its version changed.",
-            "useful_information",
-        ),
-        (
-            "Fix the small file.",
-            "The one-line file supplies needed surrounding context.",
-            "substantial",
-        ),
-        (
-            "Explain the failure without edits.",
-            "The final explanation uses the returned text.",
-            "later_use",
-        ),
-    ];
-    for (task, later, gate) in cases {
-        let input = input(task, &["parser.rs", "dependency.rs", "parser.rs"], later);
-        let plan = plan(&input);
-        for reason in [
-            Reason::UnrelatedFiles,
-            Reason::ExcessiveFileBreadth,
-            Reason::ExcessiveWithinFileReading,
-        ] {
-            let mut outcomes = results(&plan, Some(reason));
-            for outcome in &mut outcomes {
-                outcome.answers.insert(gate.into(), answer("justified"));
-            }
-            let reduced = OverExploringCheck.reduce(&plan, &outcomes, true).unwrap();
-            assert!(reduced.findings.is_empty(), "{task}: {reason:?}");
-            assert_eq!(reduced.clean_episode_ids, vec![input.episodes[0].id]);
-            let fields = serde_json::to_string(&plan.work_items[0].window.fields).unwrap();
-            assert!(fields.contains(later));
-            assert!(
-                serde_json::to_string(&plan.shared_context)
-                    .unwrap()
-                    .contains(task)
-            );
-        }
-    }
-}
-
-#[test]
-fn counts_ranges_and_no_edit_cannot_override_a_semantic_negative() {
-    let input = input(
-        "Audit dependencies.",
-        &["parser.rs"; 12],
-        "No changes are needed.",
-    );
-    let plan = plan(&input);
+    assert_eq!(plan.work_items.len(), MAX_TARGETS_PER_TURN);
+    assert_eq!(plan.prepared.targets.len(), 5);
+    assert_eq!(plan.coverage.not_selected_items, 2);
     assert!(
         !plan
-            .prepared
-            .targets
-            .values()
-            .any(|target| target.reason == Reason::ExcessiveFileBreadth)
+            .coverage
+            .limitations
+            .contains(&"SampledEvidence".into())
     );
-    let reduced = OverExploringCheck
-        .reduce(&plan, &results(&plan, None), true)
-        .unwrap();
-    assert!(reduced.findings.is_empty());
-    assert_eq!(reduced.clean_episode_ids.len(), 1);
+    for item in &plan.work_items {
+        assert_eq!(item.questions.len(), 1);
+        let JevQuestion::Choice { criteria, .. } = &item.questions[QUESTION_ID] else {
+            panic!("Expected Choice");
+        };
+        assert_eq!(
+            criteria.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["justified_or_minor", "likely_excess", "uncertain"]
+        );
+    }
+    assert_eq!(
+        plan.revisions,
+        JevCheckRevisions {
+            projection: 5,
+            chunking: 4,
+            questions: 11,
+            reducer: 7
+        }
+    );
 }
 
 #[test]
-fn incomplete_failed_truncated_directory_and_deferred_reads_abstain_without_calls() {
-    for variant in [
-        "history",
-        "deferred",
-        "missing",
-        "failed",
-        "status",
-        "directory",
-        "truncated",
-        "request",
-        "before",
-        "after",
-    ] {
-        let mut input = input("Fix the parser.", &["parser.rs"], "Complete.");
-        let episode = &mut input.episodes[0];
-        match variant {
-            "history" => input.complete = false,
-            "deferred" => episode.state = EpisodeState::Deferred,
-            "missing" => episode.reads[0].result = None,
-            "failed" => {
-                episode.reads[0].result.as_mut().unwrap().status =
-                    crate::analysis::jev_evidence::JevReadStatus::Failed
-            }
-            "status" => {
-                episode.reads[0].result.as_mut().unwrap().status =
-                    crate::analysis::jev_evidence::JevReadStatus::Unknown
-            }
-            "directory" => {
-                episode.reads[0].result.as_mut().unwrap().kind =
-                    crate::analysis::jev_evidence::JevReadResultKind::Directory
-            }
-            "truncated" => episode.reads[0].result.as_mut().unwrap().truncated = true,
-            "request" => episode.reads[0].request.truncated = true,
-            "before" => episode.before[0].truncated = true,
-            "after" => episode.subsequent[0].truncated = true,
-            _ => unreachable!(),
-        }
-        let plan = plan(&input);
-        assert!(plan.work_items.is_empty(), "{variant}");
-        let reduced = OverExploringCheck.reduce(&plan, &[], true).unwrap();
-        assert!(reduced.findings.is_empty());
+fn selected_probability_gates_each_reason_without_a_confidence_gate() {
+    let input = input(&["library.rs", "parser.rs"]);
+    let plan = plan(&input);
+    assert_eq!(
+        plan.work_items
+            .iter()
+            .map(|item| plan.prepared.targets[&item.id].reason)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        3
+    );
+    for (probability, expected) in [(0.749, false), (0.75, true), (0.98, true)] {
+        let reduced = OverExploringCheck
+            .reduce(&plan, &results(&plan, "likely_excess", probability), true)
+            .unwrap();
+        assert_eq!(reduced.findings.len(), if expected { 3 } else { 0 });
+        assert_eq!(reduced.completed_work_item_ids.len(), 3);
         assert!(reduced.clean_episode_ids.is_empty());
-        assert!(!reduced.unassessed.is_empty());
+        for decision in reduced.findings {
+            assert_eq!(decision.outcome, SemanticOutcome::LikelyExcess);
+            assert_eq!(decision.probability, probability);
+            assert_eq!(
+                decision.reads,
+                plan.prepared.targets[&decision.work_item_id].bindings
+            );
+            assert_eq!(decision.task_evidence, input.task_context.evidence);
+            assert!(!decision.source_evidence.is_empty());
+        }
     }
 }
 
 #[test]
-fn unknown_extent_never_inherits_requested_limits_or_completes_episode() {
-    let mut input = input("Fix the parser.", &["parser.rs"], "Complete.");
-    input.episodes[0].reads[0]
-        .result
+fn uncertain_and_justified_answers_are_distinct_terminal_results() {
+    let plan = plan(&input(&["parser.rs"]));
+    for choice in ["uncertain", "justified_or_minor"] {
+        let reduced = OverExploringCheck
+            .reduce(&plan, &results(&plan, choice, 0.98), true)
+            .unwrap();
+        assert!(reduced.findings.is_empty());
+        assert_eq!(
+            reduced.completed_episode_ids,
+            vec![plan.prepared.episodes[0].id]
+        );
+        assert_eq!(reduced.clean_episode_ids.is_empty(), choice == "uncertain");
+        let mut progress = progress();
+        synchronize_sampling(&plan, &mut progress).unwrap();
+        progress.begin_run();
+        while let Some(job) = progress.choose_job() {
+            plan.prepared
+                .record_completion(&reduced, &job, &mut progress)
+                .unwrap();
+        }
+        let check = crate::checks::sampling::StableId::new("smart-check", &[b"over_exploring"]);
+        assert_eq!(progress.coverage(check).unwrap().completed, 2);
+    }
+}
+
+#[test]
+fn partial_history_deferred_and_truncated_inputs_remain_usable() {
+    let (mut content, task, mut span) = fixture(
+        "Fix the parser.",
+        &["parser.rs"],
+        "recorded content",
+        "Investigation continues.",
+    );
+    content.complete = false;
+    content.limitations = vec!["history_loss".into(), "open_investigation".into()];
+    content.actions[0].truncated = true;
+    span.state = EpisodeState::Deferred;
+    let input = build_episodes(&content, &task, &[span]).unwrap();
+    let plan = plan(&input);
+    assert!(!plan.work_items.is_empty());
+    for item in &plan.work_items {
+        assert_eq!(item.window.fields["history_complete"], false);
+        assert_eq!(item.window.fields["episode_state"], "deferred");
+        assert_eq!(
+            item.window.fields["source_limits"],
+            json!(["history_loss", "open_investigation"])
+        );
+        assert_eq!(item.window.fields["before"][0]["source_truncated"], true);
+    }
+    let reduced = OverExploringCheck
+        .reduce(&plan, &results(&plan, "uncertain", 0.98), true)
+        .unwrap();
+    assert_eq!(reduced.completed_work_item_ids.len(), plan.work_items.len());
+    assert!(reduced.clean_episode_ids.is_empty());
+}
+
+#[test]
+fn no_issue_on_partial_sources_keeps_durable_limits_without_full_clean() {
+    for (variant, expected) in [
+        ("history", Abstention::IncompleteHistory),
+        ("deferred", Abstention::DeferredEpisode),
+        ("source", Abstention::SourceLimited),
+        ("task", Abstention::SourceLimited),
+        ("truncated", Abstention::TruncatedEvidence),
+        ("read_request", Abstention::TruncatedEvidence),
+        ("read_result", Abstention::TruncatedEvidence),
+    ] {
+        let mut input = input(&["parser.rs"]);
+        match variant {
+            "history" => input.complete = false,
+            "deferred" => input.episodes[0].state = EpisodeState::Deferred,
+            "source" => input.limitations.push("history_loss".into()),
+            "task" => input.task_context.fields["limitations"] = json!(["history_loss"]),
+            "truncated" => input.events[0].truncated = true,
+            "read_request" => {
+                input.events[2]
+                    .metadata
+                    .read_request
+                    .as_mut()
+                    .unwrap()
+                    .truncated = true;
+                input.episodes[0].reads[0].request.truncated = true;
+            }
+            "read_result" => {
+                input.events[3]
+                    .metadata
+                    .read_result
+                    .as_mut()
+                    .unwrap()
+                    .truncated = true;
+                input.episodes[0].reads[0]
+                    .result
+                    .as_mut()
+                    .unwrap()
+                    .truncated = true;
+            }
+            _ => unreachable!(),
+        }
+        let mut plan = plan(&input);
+        let mut progress = progress();
+        synchronize_sampling(&plan, &mut progress).unwrap();
+        progress.begin_run();
+        let jobs = (0..MAX_TARGETS_PER_TURN)
+            .filter_map(|_| progress.choose_job())
+            .collect::<Vec<_>>();
+        PreparedAssessment::select_jobs(&mut plan, &jobs).unwrap();
+        let reduced = OverExploringCheck
+            .reduce(&plan, &results(&plan, "justified_or_minor", 0.98), true)
+            .unwrap();
+        let restored: Assessment =
+            serde_json::from_slice(&serde_json::to_vec(&reduced).unwrap()).unwrap();
+        assert!(restored.findings.is_empty(), "{variant}");
+        assert!(restored.clean_episode_ids.is_empty(), "{variant}");
+        assert_eq!(
+            restored.completed_work_item_ids.len(),
+            plan.work_items.len()
+        );
+        assert!(
+            restored
+                .unassessed
+                .iter()
+                .any(|item| item.limitation == expected),
+            "{variant}"
+        );
+        assert!(
+            restored
+                .coverage
+                .limitations
+                .contains(&format!("{expected:?}")),
+            "{variant}"
+        );
+        for job in &jobs {
+            plan.prepared
+                .record_completion(&restored, job, &mut progress)
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_thousand_events_pack_with_bounded_support_and_exact_target_indexes() {
+    let (mut content, task, span) = fixture(
+        "Fix the parser.",
+        &["parser.rs"],
+        "recorded content",
+        "The explanation uses the source.",
+    );
+    let mut later = content.actions.pop().unwrap();
+    let mut result = content.actions.pop().unwrap();
+    let mut request = content.actions.pop().unwrap();
+    request.reference.turn_index = 500;
+    result.reference.turn_index = 501;
+    let template = content.actions[1].clone();
+    for index in 2..999 {
+        if index == 500 {
+            content.actions.push(request.clone());
+            continue;
+        }
+        if index == 501 {
+            content.actions.push(result.clone());
+            continue;
+        }
+        let mut event = template.clone();
+        event.reference.id = format!("noise-{index}");
+        event.reference.turn_index = index;
+        event.text = "An unrelated progress update.".into();
+        content.actions.push(event);
+    }
+    later.reference.turn_index = 999;
+    content.actions.push(later);
+    let input = build_episodes(&content, &task, &[span]).unwrap();
+    assert_eq!(input.events.len(), 1000);
+    let plan = plan(&input);
+    assert_eq!(plan.work_items.len(), 2);
+    assert!(plan.skipped_item_ids.is_empty());
+    for item in &plan.work_items {
+        let fields = &item.window.fields;
+        let records = ["before", "events", "subsequent"]
+            .into_iter()
+            .flat_map(|key| fields[key].as_array().unwrap())
+            .collect::<Vec<_>>();
+        assert!(records.len() <= MAX_SUPPORTING_EVENTS + 2);
+        assert_eq!(fields["event_selection"]["source_events"], 1000);
+        assert_eq!(fields["event_selection"]["partial"], true);
+        let read = &fields["reads"][0];
+        let request_index = usize::try_from(read["request_event_index"].as_u64().unwrap()).unwrap();
+        let result_index = usize::try_from(read["result_event_index"].as_u64().unwrap()).unwrap();
+        assert_eq!(fields["events"][request_index]["source_index"], 500);
+        assert_eq!(fields["events"][result_index]["source_index"], 501);
+        assert_ne!(request_index, 499);
+        assert!(
+            serde_json::to_string(fields)
+                .unwrap()
+                .contains("The explanation uses the source.")
+        );
+        assert_eq!(fields["before"][0]["source_index"], 0);
+        let citation = item
+            .window
+            .evidence
+            .iter()
+            .find(|citation| citation.part_id == format!("events[{result_index}].ranges[0].text"))
+            .unwrap();
+        assert_eq!(citation.source_id, input.events[501].reference.id);
+    }
+    let reduced = OverExploringCheck
+        .reduce(&plan, &results(&plan, "justified_or_minor", 0.98), true)
+        .unwrap();
+    assert!(reduced.clean_episode_ids.is_empty());
+    assert!(
+        reduced
+            .coverage
+            .limitations
+            .contains(&"SampledEvidence".into())
+    );
+}
+
+#[test]
+fn a_128_path_inventory_synchronizes_all_257_targets_with_the_engine_bound() {
+    let paths = (0..128)
+        .map(|index| format!("file-{index}.rs"))
+        .collect::<Vec<_>>();
+    let input = input(&paths.iter().map(String::as_str).collect::<Vec<_>>());
+    let plan = plan(&input);
+    assert_eq!(plan.prepared.targets.len(), 257);
+    assert_eq!(plan.prepared.candidates.len(), 257);
+    let mut progress = progress();
+    synchronize_sampling(&plan, &mut progress).unwrap();
+    let check = crate::checks::sampling::StableId::new("smart-check", &[b"over_exploring"]);
+    assert_eq!(progress.coverage(check).unwrap().eligible, 257);
+    assert_eq!(progress.coverage(check).unwrap().remaining, 257);
+}
+
+#[test]
+fn missing_results_bind_only_actual_request_ids_and_never_inherit_extent() {
+    let (mut content, task, span) = fixture(
+        "Fix the parser.",
+        &["parser.rs"],
+        "recorded content",
+        "Complete.",
+    );
+    content.actions[3]
+        .metadata
+        .read_result
         .as_mut()
         .unwrap()
-        .returned_extent = None;
+        .request_reference_id = None;
+    let input = build_episodes(&content, &task, &[span]).unwrap();
+    assert!(input.episodes[0].reads[0].result.is_none());
     let plan = plan(&input);
+    assert_eq!(plan.work_items.len(), 1);
     assert!(
         plan.prepared
             .targets
             .values()
-            .all(|target| target.reason != Reason::ExcessiveWithinFileReading)
+            .all(|target| target.reason == Reason::UnrelatedFiles)
     );
     let reduced = OverExploringCheck
-        .reduce(&plan, &results(&plan, None), true)
+        .reduce(&plan, &results(&plan, "likely_excess", 0.98), true)
         .unwrap();
+    let binding = &reduced.findings[0].reads[0];
+    assert_eq!(binding.request_id, input.events[2].reference.id);
+    assert_eq!(binding.result_id, None);
+    assert_eq!(binding.output_digest, None);
+    assert_eq!(
+        plan.work_items[0].window.fields["reads"][0]["observed"],
+        json!(null)
+    );
+    assert_eq!(
+        plan.work_items[0].window.fields["reads"][0]["result_event_index"],
+        json!(null)
+    );
     assert!(reduced.clean_episode_ids.is_empty());
-    assert!(reduced.completed_episode_ids.is_empty());
+}
+
+#[test]
+fn unknown_observed_extent_does_not_block_other_reasons() {
+    let (mut content, task, span) = fixture(
+        "Fix the parser.",
+        &["parser.rs"],
+        "recorded content",
+        "Complete.",
+    );
+    content.actions[3]
+        .metadata
+        .read_result
+        .as_mut()
+        .unwrap()
+        .returned_extent = None;
+    let input = build_episodes(&content, &task, &[span]).unwrap();
+    let plan = plan(&input);
+    assert_eq!(plan.work_items.len(), 1);
+    let reduced = OverExploringCheck
+        .reduce(&plan, &results(&plan, "likely_excess", 0.98), true)
+        .unwrap();
+    assert_eq!(reduced.findings.len(), 1);
+    assert_eq!(reduced.findings[0].reason, Reason::UnrelatedFiles);
+    assert_eq!(
+        plan.work_items[0].window.fields["reads"][0]["observed"]["extent"],
+        json!(null)
+    );
     assert!(
         reduced
             .unassessed
@@ -455,76 +591,163 @@ fn unknown_extent_never_inherits_requested_limits_or_completes_episode() {
 }
 
 #[test]
-fn interrupted_execution_preserves_supported_targets_without_completing_episode() {
-    let plan = plan(&input(
-        "Fix the parser.",
-        &["parser.rs", "other.rs"],
-        "Complete.",
-    ));
-    let outcomes = results(&plan, Some(Reason::UnrelatedFiles));
-    for (outcomes, complete) in [(&outcomes[..1], true), (&outcomes[..], false)] {
-        let reduced = OverExploringCheck
-            .reduce(&plan, outcomes, complete)
-            .unwrap();
-        assert!(!reduced.findings.is_empty());
-        assert!(reduced.clean_episode_ids.is_empty());
-        assert!(reduced.completed_episode_ids.is_empty());
-    }
-}
-
-#[test]
-fn mismatched_models_evidence_work_ids_and_distributions_are_rejected() {
-    let plan = plan(&input("Fix the parser.", &["parser.rs"], "Complete."));
-    for variant in [
-        "model",
-        "source",
-        "role",
-        "work",
-        "duplicate",
-        "missing",
-        "nan",
-        "sum",
-        "confidence",
-    ] {
-        let mut results = results(&plan, Some(Reason::UnrelatedFiles));
-        match variant {
-            "model" => results[0].model = "other-model".into(),
-            "source" => results[0].evidence[0].source_id = "another-task".into(),
-            "role" => results[0].evidence[0].role = JevEvidenceRole::Candidate,
-            "work" => results[0].work_item_id = "different-work".into(),
-            "duplicate" => results.push(results[0].clone()),
-            "missing" => {
-                results[0].answers.remove("relevance");
-            }
-            "nan" | "sum" | "confidence" => {
-                let JevAnswer::Choice {
-                    probabilities,
-                    confidence,
-                    ..
-                } = results[0].answers.get_mut("relevance").unwrap()
-                else {
-                    unreachable!()
-                };
-                if variant == "confidence" {
-                    *confidence = 2.0;
-                } else {
-                    probabilities.insert(
-                        "supported".into(),
-                        if variant == "nan" { f64::NAN } else { 0.5 },
-                    );
-                }
-            }
-            _ => unreachable!(),
+fn continuation_rematerializes_unselected_descriptors_without_losing_inventory() {
+    let mut plan = plan(&input(&["a.rs", "b.rs", "c.rs", "d.rs"]));
+    let inventory = plan.prepared.candidates.clone();
+    assert_eq!(inventory.len(), 9);
+    let mut progress = progress();
+    synchronize_sampling(&plan, &mut progress).unwrap();
+    let mut previous = BTreeSet::new();
+    for _ in 0..2 {
+        progress.begin_run();
+        let jobs = (0..3)
+            .map(|_| progress.choose_job().unwrap())
+            .collect::<Vec<_>>();
+        PreparedAssessment::select_jobs(&mut plan, &jobs).unwrap();
+        assert_eq!(plan.work_items.len(), 3);
+        for item in &plan.work_items {
+            assert!(previous.insert(item.id.clone()));
         }
-        assert!(
-            OverExploringCheck.reduce(&plan, &results, true).is_err(),
-            "{variant}"
-        );
+        let reduced = OverExploringCheck
+            .reduce(&plan, &results(&plan, "uncertain", 0.98), true)
+            .unwrap();
+        for job in &jobs {
+            plan.prepared
+                .record_completion(&reduced, job, &mut progress)
+                .unwrap();
+        }
+        assert_eq!(plan.prepared.candidates, inventory);
+        assert!(progress.choose_job().is_none());
+    }
+    assert_eq!(previous.len(), 6);
+}
+
+#[test]
+fn oversized_utf8_events_use_exact_structural_representative_ranges() {
+    let body = "fn boundary() { /* é 🦀 */ }\n".repeat(4000);
+    let (content, task, span) = fixture("Fix the parser.", &["parser.rs"], &body, "Complete.");
+    let input = build_episodes(&content, &task, &[span]).unwrap();
+    let plan = plan(&input);
+    assert_eq!(plan.work_items.len(), 2);
+    assert!(
+        plan.coverage
+            .limitations
+            .contains(&"SampledEvidence".into())
+    );
+    let reduced = OverExploringCheck
+        .reduce(&plan, &results(&plan, "justified_or_minor", 0.98), true)
+        .unwrap();
+    assert!(reduced.clean_episode_ids.is_empty());
+    assert_eq!(reduced.completed_work_item_ids.len(), 2);
+    assert!(
+        reduced
+            .unassessed
+            .iter()
+            .all(|item| item.limitation == Abstention::SampledEvidence)
+    );
+    for item in &plan.work_items {
+        let event = &item.window.fields["events"][2];
+        assert_eq!(event["partial"], true);
+        let ranges = event["ranges"].as_array().unwrap();
+        assert_eq!(ranges.len(), MAX_EVENT_RANGES);
+        let source = &input.events[3].text;
+        let all = crate::analysis::jev::text_ranges::text_ranges(source, EVENT_RANGE_BYTES, 0);
+        for (range, expected) in ranges
+            .iter()
+            .zip([all[0], all[all.len() / 2], all[all.len() - 1]])
+        {
+            let start = usize::try_from(range["start"].as_u64().unwrap()).unwrap();
+            let end = usize::try_from(range["end"].as_u64().unwrap()).unwrap();
+            assert_eq!((start, end), expected);
+            assert!(end - start <= EVENT_RANGE_BYTES);
+            assert_eq!(range["text"].as_str().unwrap(), &source[start..end]);
+        }
+        for (index, _) in ranges.iter().enumerate() {
+            let citation = item
+                .window
+                .evidence
+                .iter()
+                .find(|citation| citation.part_id == format!("events[2].ranges[{index}].text"))
+                .unwrap();
+            assert_eq!(citation.source_id, input.events[3].reference.id);
+            assert_eq!(citation.role, JevEvidenceRole::Candidate);
+        }
+        let text_bytes: usize = ["before", "events", "subsequent"]
+            .into_iter()
+            .flat_map(|key| item.window.fields[key].as_array().unwrap())
+            .flat_map(|event| event["ranges"].as_array().unwrap())
+            .map(|range| range["text"].as_str().unwrap().len())
+            .sum();
+        assert!(text_bytes <= MAX_WINDOW_TEXT_BYTES);
     }
 }
 
 #[test]
-fn builder_rejects_wrong_branch_order_call_result_digest_and_overlapping_spans() {
+fn source_text_is_retained_once_across_many_episode_descriptors() {
+    let (content, task, _) = fixture(
+        "Audit dependencies.",
+        &["a.rs", "b.rs", "c.rs", "d.rs"],
+        &"recorded content\n".repeat(1000),
+        "Complete.",
+    );
+    let spans = (0..4)
+        .map(|index| EpisodeSpan {
+            first_event_id: content.actions[index * 2 + 2].reference.id.clone(),
+            last_event_id: content.actions[index * 2 + 3].reference.id.clone(),
+            state: EpisodeState::Complete,
+        })
+        .collect::<Vec<_>>();
+    let input = build_episodes(&content, &task, &spans).unwrap();
+    assert_eq!(input.events, content.actions);
+    let bytes = serde_json::to_vec(&input).unwrap().len();
+    let source_bytes = serde_json::to_vec(&content.actions).unwrap().len();
+    assert!(bytes < source_bytes * 2);
+    let mut plan = plan(&input);
+    assert_eq!(plan.prepared.episodes.len(), 4);
+    assert_eq!(plan.prepared.events.len(), content.actions.len());
+    assert_eq!(plan.work_items.len(), 3);
+    assert_eq!(plan.prepared.targets.len(), 8);
+    assert!(
+        plan.coverage
+            .limitations
+            .contains(&"SampledEvidence".into())
+    );
+    let inventory = plan.prepared.candidates.clone();
+    let mut progress = progress();
+    synchronize_sampling(&plan, &mut progress).unwrap();
+    let mut completed = BTreeSet::new();
+    for _ in 0..3 {
+        progress.begin_run();
+        let jobs = (0..MAX_TARGETS_PER_TURN)
+            .filter_map(|_| progress.choose_job())
+            .collect::<Vec<_>>();
+        PreparedAssessment::select_jobs(&mut plan, &jobs).unwrap();
+        assert_eq!(plan.work_items.len(), jobs.len());
+        assert!(
+            plan.coverage
+                .limitations
+                .contains(&"SampledEvidence".into())
+        );
+        let reduced = OverExploringCheck
+            .reduce(&plan, &results(&plan, "justified_or_minor", 0.98), true)
+            .unwrap();
+        assert!(reduced.clean_episode_ids.is_empty());
+        for job in &jobs {
+            assert!(completed.insert(job.candidate));
+            plan.prepared
+                .record_completion(&reduced, job, &mut progress)
+                .unwrap();
+        }
+        assert_eq!(plan.prepared.candidates, inventory);
+        assert_eq!(plan.prepared.events, content.actions);
+    }
+    assert_eq!(completed.len(), inventory.len());
+    progress.begin_run();
+    assert!(progress.choose_job().is_none());
+}
+
+#[test]
+fn source_binding_and_projection_corruption_are_rejected() {
     for variant in [
         "branch",
         "order",
@@ -538,7 +761,12 @@ fn builder_rejects_wrong_branch_order_call_result_digest_and_overlapping_spans()
         "publication",
         "overlap",
     ] {
-        let (mut content, task, span) = fixture("Fix the parser.", &["parser.rs"], "Complete.");
+        let (mut content, task, span) = fixture(
+            "Fix the parser.",
+            &["parser.rs"],
+            "recorded content",
+            "Complete.",
+        );
         let mut spans = vec![span.clone()];
         match variant {
             "branch" => content.actions[2].reference.thread_digest = "sibling".into(),
@@ -588,202 +816,460 @@ fn builder_rejects_wrong_branch_order_call_result_digest_and_overlapping_spans()
             "{variant}"
         );
     }
+    let mut input = input(&["parser.rs"]);
+    input.episodes[0].reads[0]
+        .result
+        .as_mut()
+        .unwrap()
+        .reference_id = "invented".into();
+    assert!(
+        OverExploringCheck
+            .prepare(&build_jev_context(&input).unwrap())
+            .is_err()
+    );
 }
 
 #[test]
-fn changed_task_results_and_later_use_invalidate_semantics_not_episode_identity() {
-    let initial = input("Fix the parser.", &["parser.rs"], "Complete.");
-    let first = plan(&initial);
-    for variant in ["task", "output", "later"] {
-        let mut changed = initial.clone();
+fn invalid_results_and_legacy_plans_are_rejected() {
+    let plan = plan(&input(&["parser.rs"]));
+    for variant in [
+        "model",
+        "source",
+        "role",
+        "work",
+        "duplicate",
+        "missing",
+        "extra",
+        "nan",
+        "sum",
+        "confidence",
+    ] {
+        let mut results = results(&plan, "likely_excess", 0.98);
         match variant {
-            "task" => {
-                changed.task_context.fields["values"][0] = json!("Audit the whole repository.")
+            "model" => results[0].model = "other-model".into(),
+            "source" => results[0].evidence[0].source_id = "another-task".into(),
+            "role" => results[0].evidence[0].role = JevEvidenceRole::Candidate,
+            "work" => results[0].work_item_id = "different-work".into(),
+            "duplicate" => results.push(results[0].clone()),
+            "missing" => {
+                results[0].answers.clear();
             }
-            "output" => {
-                changed.episodes[0].reads[0]
-                    .result
-                    .as_mut()
-                    .unwrap()
-                    .recorded_output_digest = "new-output".into()
+            "extra" => {
+                results[0]
+                    .answers
+                    .insert("relevance".into(), answer("likely_excess", 0.98));
             }
-            "later" => {
-                changed.episodes[0].subsequent[0].text = "The explanation uses these reads.".into()
+            "nan" | "sum" | "confidence" => {
+                let JevAnswer::Choice {
+                    probabilities,
+                    confidence,
+                    ..
+                } = results[0].answers.get_mut(QUESTION_ID).unwrap()
+                else {
+                    unreachable!()
+                };
+                if variant == "confidence" {
+                    *confidence = 2.0;
+                } else {
+                    probabilities.insert(
+                        "likely_excess".into(),
+                        if variant == "nan" { f64::NAN } else { 0.5 },
+                    );
+                }
             }
             _ => unreachable!(),
         }
-        let second = plan(&changed);
+        assert!(
+            OverExploringCheck.reduce(&plan, &results, true).is_err(),
+            "{variant}"
+        );
+    }
+    let mut stale = plan.clone();
+    stale.revisions.questions = 7;
+    assert!(OverExploringCheck.reduce(&stale, &[], true).is_err());
+}
+
+#[test]
+fn source_and_task_changes_invalidate_target_answers() {
+    let initial = input(&["parser.rs"]);
+    let first = plan(&initial);
+    for variant in ["task", "later", "limits", "state"] {
+        let mut changed = initial.clone();
+        match variant {
+            "task" => changed.task_context.fields["values"][0] = json!("Audit all files."),
+            "later" => {
+                changed.events.last_mut().unwrap().text = "This explanation uses the source.".into()
+            }
+            "limits" => changed.limitations.push("history_loss".into()),
+            "state" => changed.episodes[0].state = EpisodeState::Deferred,
+            _ => unreachable!(),
+        }
+        let changed = plan(&changed);
         assert_eq!(
-            first.prepared.candidates[0].episode_id,
-            second.prepared.candidates[0].episode_id
+            first.prepared.episodes[0].id,
+            changed.prepared.episodes[0].id
         );
         assert_ne!(
             first.prepared.candidates[0].required_answers,
-            second.prepared.candidates[0].required_answers
+            changed.prepared.candidates[0].required_answers
         );
         assert!(
             OverExploringCheck
-                .reduce(
-                    &second,
-                    &results(&first, Some(Reason::UnrelatedFiles)),
-                    true
-                )
+                .reduce(&changed, &results(&first, "likely_excess", 0.98), true)
                 .is_err()
         );
     }
 }
 
 #[test]
-fn sampler_restart_completion_and_context_invalidation_use_shared_progress() {
-    let input = input("Fix the parser.", &["parser.rs"], "Complete.");
-    let mut plan = plan(&input);
-    let mut progress = SamplingProgress::new(SamplingLimits {
-        checks: 4,
-        candidates_per_check: 256,
-        answers_per_candidate: 1024,
-        judgments_per_run: 1,
-    })
-    .unwrap();
-    synchronize_sampling(&plan, &mut progress).unwrap();
-    progress.begin_run();
-    let job = progress.choose_job().unwrap();
-    PreparedAssessment::select_jobs(&mut plan, std::slice::from_ref(&job)).unwrap();
-    let partial = OverExploringCheck.reduce(&plan, &[], false).unwrap();
-    assert!(
-        plan.prepared
-            .record_completion(&partial, &job, &mut progress)
-            .is_err()
+fn capability_failure_preserves_full_task_and_inventory() {
+    let (content, task, span) = fixture(
+        &"ordered task context ".repeat(200),
+        &["parser.rs"],
+        "recorded content",
+        "Complete.",
     );
-    let encoded = serde_json::to_vec(&progress).unwrap();
-    progress = serde_json::from_slice(&encoded).unwrap();
-    let reduced = OverExploringCheck
-        .reduce(&plan, &results(&plan, None), true)
+    let input = build_episodes(&content, &task, &[span]).unwrap();
+    let mut small = ModelCapabilities::jev_default();
+    small.request_body_bytes.value = Some(1024);
+    let plan = OverExploringCheck
+        .prepare_with_capabilities(&build_jev_context(&input).unwrap(), &small)
         .unwrap();
-    plan.prepared
-        .record_completion(&reduced, &job, &mut progress)
-        .unwrap();
-    assert_eq!(progress.coverage(job.check).unwrap().completed, 1);
-    assert!(progress.choose_job().is_none());
-    let mut changed = input;
-    changed.task_context.fields["values"][0] = json!("Audit all files.");
-    let changed = super::tests::plan(&changed);
-    synchronize_sampling(&changed, &mut progress).unwrap();
-    assert_eq!(progress.coverage(job.check).unwrap().completed, 0);
-    assert!(progress.choose_job().is_none());
-    progress.begin_run();
-    assert_eq!(progress.choose_job().unwrap().candidate, job.candidate);
+    assert!(plan.work_items.is_empty());
+    assert_eq!(plan.prepared.targets.len(), 2);
+    assert_eq!(plan.shared_context.as_ref().unwrap(), &input.task_context);
+    assert_eq!(plan.skipped_item_ids.len(), 2);
 }
 
 #[test]
-fn capability_fit_keeps_full_task_and_abstains_instead_of_clipping() {
-    let input = input(
-        &format!(
-            "Do not change billing. {}",
-            "ordered task context ".repeat(200)
-        ),
-        &["parser.rs"],
-        "Complete.",
-    );
-    let context = build_jev_context(&input).unwrap();
-    let large = OverExploringCheck.prepare(&context).unwrap();
-    assert!(!large.work_items.is_empty());
-    let mut small = ModelCapabilities::jev_default();
-    small.request_body_bytes.value = Some(1024);
-    let small = OverExploringCheck
-        .prepare_with_capabilities(&context, &small)
-        .unwrap();
-    assert!(small.work_items.is_empty());
-    assert_eq!(small.shared_context, large.shared_context);
-    assert!(
-        small
-            .prepared
-            .unassessed
-            .iter()
-            .any(|item| item.limitation == Abstention::ContextTooLarge)
-    );
+fn production_payload_keeps_the_explicit_audit_request_for_each_named_reason() {
+    let request = "The cache_age endpoint is inclusive: accepts(10, 10) must be true and accepts(11, 10) must be false. Correct src/cache_age.rs. Audit the relevant validation paths and supply a written report before editing.";
+    let source = cache_age_source();
+    let report = "requested_audit result: the original source condition excludes 10 and accepts 9. The dependency must validate inclusive endpoints; caller limits 10 through 15 must stay inclusive. The source observations establish the condition, overflow test, unchanged caller contracts and absence of cleanup side effects. Test design: assert every caller endpoint and assert endpoint+1 is rejected. These observations support the requested explanation and risk report.";
+    let (content, task, span) = fixture(request, &["src/cache_age.rs"; 3], &source, report);
+    let input = build_episodes(&content, &task, &[span]).unwrap();
+    let plan = plan(&input);
     let packed = pack_work_items_with_shared_context(
-        &large.work_items,
-        &large.capabilities,
-        large.shared_context.as_ref().unwrap(),
+        &plan.work_items,
+        &plan.capabilities,
+        plan.shared_context.as_ref().unwrap(),
     );
-    assert!(!packed.batches.is_empty());
+    assert!(packed.skipped_item_ids.is_empty());
+    let mut reasons = BTreeSet::new();
     for batch in packed.batches {
-        assert_eq!(
-            batch.request.state["shared_context"],
-            input.task_context.fields
+        validate_jev_request_with_capabilities(&batch.request, &plan.capabilities).unwrap();
+        assert!(
+            batch.request.state["shared_context"]["values"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(request))
         );
+        for work in batch.request.state["work_items"].as_array().unwrap() {
+            let reason: Reason = serde_json::from_value(work["context"]["reason"].clone()).unwrap();
+            reasons.insert(reason);
+            assert!(
+                work["context"]["reads"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|read| read["requested"]["paths"] == json!(["src/cache_age.rs"]))
+            );
+            assert!(
+                serde_json::to_string(&work["context"])
+                    .unwrap()
+                    .contains(report)
+            );
+        }
+        for question in batch.request.questions.values() {
+            let JevQuestion::Choice {
+                instructions,
+                criteria,
+            } = question
+            else {
+                panic!("Expected Choice");
+            };
+            assert!(
+                instructions["question"]["requested_coverage"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Diagnosis does not cancel the audit.")
+            );
+            assert!(instructions["question"]["reason_boundary"].as_str().unwrap().contains(
+                "A task-relevant file with excessive regions or repeats is not an unrelated file"
+            ));
+            assert_eq!(criteria.len(), 3);
+        }
     }
+    assert_eq!(
+        reasons,
+        BTreeSet::from([Reason::UnrelatedFiles, Reason::ExcessiveWithinFileReading])
+    );
+    assert!(
+        plan.shared_context
+            .as_ref()
+            .unwrap()
+            .evidence
+            .iter()
+            .any(
+                |reference| reference.source_id == content.actions[0].reference.id
+                    && reference.role == JevEvidenceRole::Instruction
+            )
+    );
 }
 
 #[tokio::test]
-async fn shared_runner_packs_validates_and_reduces_all_three_reasons_offline() {
-    let input = input("Fix the parser.", &["parser.rs", "other.rs"], "Complete.");
-    let context = build_jev_context(&input).unwrap();
-    for reason in [
-        Reason::UnrelatedFiles,
-        Reason::ExcessiveFileBreadth,
-        Reason::ExcessiveWithinFileReading,
-    ] {
+async fn mock_payload_separates_initial_diagnosis_from_later_repeat_targets() {
+    let request = "The cache_age endpoint is inclusive: accepts(10, 10) must be true and accepts(11, 10) must be false. Correct src/cache_age.rs. Change only the inclusive endpoint comparison. No audit, refactor, or alternative implementation is requested.";
+    let diagnosis = "The recorded accepts function uses <; the failing endpoint test requires <=. I will replace that operator at src/cache_age.rs:2.";
+    for timestamps_present in [true, false] {
+        let (mut content, task, _) = fixture(
+            request,
+            &["src/cache_age.rs"; 5],
+            &cache_age_source(),
+            "The endpoint correction is complete: value <= maximum.",
+        );
+        let mut established = content.actions[1].clone();
+        established.reference.id = "established-cause".into();
+        established.text = diagnosis.into();
+        content.actions.insert(4, established);
+        for (index, event) in content.actions.iter_mut().enumerate() {
+            event.reference.turn_index = u64::try_from(index).unwrap();
+            event.timestamp_ms = timestamps_present.then(|| i64::try_from(index).unwrap());
+        }
+        let spans = [
+            EpisodeSpan {
+                first_event_id: content.actions[1].reference.id.clone(),
+                last_event_id: content.actions[4].reference.id.clone(),
+                state: EpisodeState::Complete,
+            },
+            EpisodeSpan {
+                first_event_id: content.actions[5].reference.id.clone(),
+                last_event_id: content.actions[12].reference.id.clone(),
+                state: EpisodeState::Complete,
+            },
+        ];
+        let input = build_episodes(&content, &task, &spans).unwrap();
+        let prepared = plan(&input);
+        let initial = prepared
+            .prepared
+            .targets
+            .values()
+            .find(|target| {
+                target.reason == Reason::ExcessiveWithinFileReading
+                    && target.episode_id == input.episodes[0].id
+            })
+            .unwrap();
+        let later = prepared
+            .prepared
+            .targets
+            .values()
+            .find(|target| {
+                target.reason == Reason::ExcessiveWithinFileReading
+                    && target.episode_id == input.episodes[1].id
+            })
+            .unwrap();
+        assert_eq!(initial.bindings.len(), 1);
+        assert_eq!(later.bindings.len(), 4);
+        assert_eq!(
+            initial.bindings[0].output_digest,
+            later.bindings[0].output_digest
+        );
+        assert!(
+            later
+                .bindings
+                .iter()
+                .all(|read| read.request_id != initial.bindings[0].request_id)
+        );
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<JevRequest>::new()));
+        let capture = captured.clone();
         let outcome = run_jev_check(
             &OverExploringCheck,
-            &context,
+            &build_jev_context(&input).unwrap(),
             JevRunProgress::default(),
-            move |batch| async move {
-                validate_jev_request_with_capabilities(
-                    &batch.request,
-                    &ModelCapabilities::jev_default(),
-                )?;
-                let answers = batch
-                    .request
-                    .questions
-                    .keys()
-                    .map(|id| {
-                        let (work, gate) = &batch.answer_owners[id];
-                        let index = batch
-                            .work_item_ids
-                            .iter()
-                            .position(|item| item == work)
-                            .unwrap();
-                        let item_reason: Reason = serde_json::from_value(
-                            batch.request.state["work_items"][index]["context"]["reason"].clone(),
-                        )
-                        .unwrap();
-                        (
-                            id.clone(),
-                            answer(choice_for(gate, item_reason, Some(reason))),
-                        )
+            move |batch| {
+                let capture = capture.clone();
+                async move {
+                    capture.lock().unwrap().push(batch.request.clone());
+                    Ok(JevResponse {
+                        model: batch.request.model.clone(),
+                        answers: batch
+                            .request
+                            .questions
+                            .keys()
+                            .map(|id| (id.clone(), answer("uncertain", 0.98)))
+                            .collect(),
+                        usage: JevUsage {
+                            input_tokens: 10,
+                            output_tokens: 1,
+                        },
                     })
-                    .collect();
-                Ok(JevResponse {
-                    model: batch.request.model.clone(),
-                    answers,
-                    usage: JevUsage {
-                        input_tokens: 10,
-                        output_tokens: 1,
-                    },
-                })
+                }
             },
             |_| Ok(()),
         )
         .await
         .unwrap();
         assert!(outcome.complete, "{:?}", outcome.failure);
-        assert!(!outcome.result.findings.is_empty());
-        assert!(
-            outcome
-                .result
-                .findings
-                .iter()
-                .all(|finding| finding.reason == reason)
+        let captured = captured.lock().unwrap();
+        let (batch, context) = captured
+            .iter()
+            .flat_map(|batch| {
+                batch.state["work_items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(move |work| (batch, &work["context"]))
+            })
+            .find(|(_, context)| {
+                context["reason"] == json!("excessive_within_file_reading")
+                    && context["reads"][0]["request_source_index"] == 2
+            })
+            .unwrap();
+        assert_eq!(context["target_read_indexes"], json!([0]));
+        assert_eq!(context["reads"].as_array().unwrap().len(), 1);
+        let read = &context["reads"][0];
+        assert_eq!(read["request_source_index"], 2);
+        assert_eq!(read["result_source_index"], 3);
+        assert_eq!(
+            read["request_timestamp_ms"],
+            json!(timestamps_present.then_some(2))
         );
+        assert_eq!(
+            read["result_timestamp_ms"],
+            json!(timestamps_present.then_some(3))
+        );
+        let cause = context["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["source_index"] == 4)
+            .unwrap();
+        assert!(serde_json::to_string(cause).unwrap().contains(diagnosis));
+        assert_eq!(
+            cause["timestamp_ms"],
+            json!(timestamps_present.then_some(4))
+        );
+        assert!(
+            context["before"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|event| event["source_index"].as_u64().unwrap() < 2)
+        );
+        assert!(
+            context["subsequent"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|event| event["source_index"].as_u64().unwrap() > 4)
+        );
+        assert_eq!(
+            context["subsequent"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|event| event["kind"] == "tool_input")
+                .count(),
+            4
+        );
+        assert!(
+            batch.state["shared_context"]["values"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(request))
+        );
+        for question in batch.questions.values() {
+            let JevQuestion::Choice { instructions, .. } = question else {
+                panic!("Expected Choice");
+            };
+            assert!(
+                instructions["question"]["temporal_scope"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Do not borrow later repetition")
+            );
+        }
+    }
+}
+
+#[test]
+fn legitimate_investigation_context_and_proportionality_rules_reach_the_question() {
+    for (task_text, later) in [
+        (
+            "Audit all files for security risks.",
+            "The audit needs this evidence.",
+        ),
+        (
+            "Fix the dependency failure.",
+            "The imported dependency explains its caller contract.",
+        ),
+        (
+            "Find the failing code path.",
+            "The investigation eliminates a reasonable hypothesis.",
+        ),
+        ("Change the cross-cutting API.", "All callers need review."),
+        ("Verify concurrent file changes.", "Reread changed content."),
+        ("Fix the small file.", "One line gives the needed context."),
+        (
+            "Explain the failure without edits.",
+            "The explanation uses the source.",
+        ),
+    ] {
+        let (content, task, span) =
+            fixture(task_text, &["parser.rs"; 12], "recorded content", later);
+        let input = build_episodes(&content, &task, &[span]).unwrap();
+        let plan = plan(&input);
+        let reduced = OverExploringCheck
+            .reduce(&plan, &results(&plan, "justified_or_minor", 0.98), true)
+            .unwrap();
+        assert!(reduced.findings.is_empty());
+        assert_eq!(reduced.clean_episode_ids.len(), 1);
+        assert!(
+            serde_json::to_string(&plan.shared_context)
+                .unwrap()
+                .contains(task_text)
+        );
+        let fields = serde_json::to_string(&plan.work_items[0].window.fields).unwrap();
+        assert!(fields.contains(later));
+        let question = serde_json::to_string(&plan.work_items[0].questions).unwrap();
+        assert!(question.contains("proportionality"));
+        assert!(question.contains("reasonable hypothesis elimination"));
     }
 }
 
 #[tokio::test]
-async fn runner_failure_preserves_abstention_and_never_completes_or_cleans() {
-    let context =
-        build_jev_context(&input("Fix the parser.", &["parser.rs"], "Complete.")).unwrap();
+async fn offline_runner_validates_one_choice_and_keeps_failures_pending() {
+    let context = build_jev_context(&input(&["parser.rs"])).unwrap();
     let outcome = run_jev_check(
+        &OverExploringCheck,
+        &context,
+        JevRunProgress::default(),
+        |batch| async move {
+            validate_jev_request_with_capabilities(
+                &batch.request,
+                &ModelCapabilities::jev_default(),
+            )?;
+            Ok(JevResponse {
+                model: batch.request.model.clone(),
+                answers: batch
+                    .request
+                    .questions
+                    .keys()
+                    .map(|id| (id.clone(), answer("likely_excess", 0.98)))
+                    .collect(),
+                usage: JevUsage {
+                    input_tokens: 10,
+                    output_tokens: 1,
+                },
+            })
+        },
+        |_| Ok(()),
+    )
+    .await
+    .unwrap();
+    assert!(outcome.complete, "{:?}", outcome.failure);
+    assert_eq!(outcome.result.findings.len(), 2);
+    let failed = run_jev_check(
         &OverExploringCheck,
         &context,
         JevRunProgress::default(),
@@ -792,877 +1278,8 @@ async fn runner_failure_preserves_abstention_and_never_completes_or_cleans() {
     )
     .await
     .unwrap();
-    assert!(!outcome.complete);
-    assert!(!outcome.progress.failed_item_ids.is_empty());
-    assert!(outcome.result.findings.is_empty());
-    assert!(outcome.result.clean_episode_ids.is_empty());
-    assert!(!outcome.result.unassessed.is_empty());
-}
-
-#[test]
-fn sampling_and_binding_keep_disjoint_episodes_separate() {
-    let (content, task, _) = fixture("Fix the parser.", &["parser.rs", "other.rs"], "Complete.");
-    let spans = vec![
-        EpisodeSpan {
-            first_event_id: content.actions[1].reference.id.clone(),
-            last_event_id: content.actions[3].reference.id.clone(),
-            state: EpisodeState::Complete,
-        },
-        EpisodeSpan {
-            first_event_id: content.actions[4].reference.id.clone(),
-            last_event_id: content.actions[5].reference.id.clone(),
-            state: EpisodeState::Complete,
-        },
-    ];
-    let input = build_episodes(&content, &task, &spans).unwrap();
-    assert_eq!(input.episodes.len(), 2);
-    assert_ne!(input.episodes[0].id, input.episodes[1].id);
-    let mut plan = plan(&input);
-    let inventory = plan.prepared.candidates.clone();
-    let mut progress = SamplingProgress::new(SamplingLimits {
-        checks: 4,
-        candidates_per_check: 256,
-        answers_per_candidate: 1024,
-        judgments_per_run: 1,
-    })
-    .unwrap();
-    synchronize_sampling(&plan, &mut progress).unwrap();
-    progress.begin_run();
-    let job = progress.choose_job().unwrap();
-    PreparedAssessment::select_jobs(&mut plan, std::slice::from_ref(&job)).unwrap();
-    assert_eq!(plan.coverage.not_selected_items, 1);
-    let reduced = OverExploringCheck
-        .reduce(&plan, &results(&plan, Some(Reason::UnrelatedFiles)), true)
-        .unwrap();
-    assert_eq!(reduced.completed_episode_ids, vec![job.candidate]);
-    assert!(
-        reduced
-            .findings
-            .iter()
-            .all(|finding| finding.episode_id == job.candidate)
-    );
-    plan.prepared
-        .record_completion(&reduced, &job, &mut progress)
-        .unwrap();
-    assert_eq!(progress.coverage(job.check).unwrap().remaining, 1);
-    assert_eq!(plan.prepared.candidates, inventory);
-    assert!(progress.choose_job().is_none());
-}
-
-#[test]
-fn unbound_reads_and_omitted_inventory_do_not_become_clean() {
-    let (mut content, task, span) = fixture("Fix the parser.", &["parser.rs"], "Complete.");
-    assert!(build_episodes(&content, &task, &[]).is_err());
-    content.actions[3]
-        .metadata
-        .read_result
-        .as_mut()
-        .unwrap()
-        .request_reference_id = None;
-    let input = build_episodes(&content, &task, &[span]).unwrap();
-    let plan = plan(&input);
-    assert!(plan.work_items.is_empty());
-    let reduced = OverExploringCheck.reduce(&plan, &[], true).unwrap();
-    assert!(reduced.clean_episode_ids.is_empty());
-    assert!(!reduced.unassessed.is_empty());
-}
-
-#[test]
-fn late_user_context_requires_latest_snapshot_and_cannot_reuse_earlier_authority() {
-    let (mut content, task, span) = fixture("Fix the parser.", &["parser.rs"], "Complete.");
-    let mut user = content.actions[0].clone();
-    user.reference.id = "later-user".into();
-    user.reference.turn_index = 6;
-    user.text = "Actually audit every file.".into();
-    content.actions.push(user);
-    assert!(build_episodes(&content, &task, &[span]).is_err());
-}
-
-#[test]
-fn completion_from_old_subsequent_work_is_rejected_after_requeue() {
-    let input = input("Fix the parser.", &["parser.rs"], "Complete.");
-    let initial = plan(&input);
-    let reduced = OverExploringCheck
-        .reduce(&initial, &results(&initial, None), true)
-        .unwrap();
-    let mut changed = input;
-    changed.episodes[0].subsequent[0].text = "The later explanation uses this evidence.".into();
-    let changed = plan(&changed);
-    assert_eq!(initial.prepared.epoch, changed.prepared.epoch);
-    let mut progress = SamplingProgress::new(SamplingLimits {
-        checks: 4,
-        candidates_per_check: 256,
-        answers_per_candidate: 1024,
-        judgments_per_run: 1,
-    })
-    .unwrap();
-    synchronize_sampling(&changed, &mut progress).unwrap();
-    progress.begin_run();
-    let job = progress.choose_job().unwrap();
-    assert!(
-        changed
-            .prepared
-            .record_completion(&reduced, &job, &mut progress)
-            .is_err()
-    );
-    assert_eq!(progress.coverage(job.check).unwrap().completed, 0);
-}
-
-#[test]
-fn same_relative_path_in_different_directories_is_not_one_file() {
-    let mut input = input(
-        "Fix both services.",
-        &["config.rs", "config.rs"],
-        "Complete.",
-    );
-    input.episodes[0].reads[0].request.cwd = Some("service-a".into());
-    input.episodes[0].reads[1].request.cwd = Some("service-b".into());
-    let plan = plan(&input);
-    let extent: Vec<_> = plan
-        .prepared
-        .targets
-        .values()
-        .filter(|target| target.reason == Reason::ExcessiveWithinFileReading)
-        .collect();
-    assert_eq!(extent.len(), 2);
-    assert!(extent.iter().all(|target| target.read_indexes.len() == 1));
-    assert!(
-        plan.prepared
-            .targets
-            .values()
-            .any(|target| target.reason == Reason::ExcessiveFileBreadth)
-    );
-}
-
-#[test]
-fn large_repeated_windows_stop_at_local_preparation_bound() {
-    let mut input = input("Audit dependencies.", &["parser.rs"; 24], "Complete.");
-    input.episodes[0].before[0].text = "recorded context ".repeat(70_000);
-    let plan = plan(&input);
-    assert!(plan.work_items.is_empty());
-    assert!(plan.coverage.processing_limit_reached);
-    assert!(
-        plan.prepared
-            .unassessed
-            .iter()
-            .any(|item| item.limitation == Abstention::PreparationLimitReached)
-    );
-    let result = OverExploringCheck.reduce(&plan, &[], true).unwrap();
-    assert!(result.clean_episode_ids.is_empty());
-}
-
-fn recorded_read(parts: &mut Vec<PublishedContentPart>, path: &str, body: &str) {
-    let order = u64::try_from(parts.len()).unwrap();
-    let call = format!("call-{order}");
-    parts.push(part(
-        order,
-        ContentKind::ToolInput,
-        &json!({"filePath":path}).to_string(),
-        Some(&call),
-    ));
-    let lines: Vec<_> = body
-        .lines()
-        .enumerate()
-        .map(|(index, line)| format!("{}: {line}", index + 1))
-        .collect();
-    parts.push(part(order + 1, ContentKind::ToolResult, &format!("<path>{path}</path>\n<type>file</type>\n<content>\n{}\n\n(End of file - total {} lines)\n</content>", lines.join("\n"), lines.len()), Some(&call)));
-}
-
-fn recorded_tool(
-    parts: &mut Vec<PublishedContentPart>,
-    kind: ContentKind,
-    tool: &str,
-    call: &str,
-    text: &str,
-) {
-    let mut record = part(u64::try_from(parts.len()).unwrap(), kind, text, None);
-    record.part = record
-        .part
-        .with_tool_identity(Some(tool.into()), Some(call.into()));
-    record.part.metadata.state = JevOperationState::Completed;
-    parts.push(record);
-}
-
-fn diagnosed_input(reason: Reason, useful_later: bool) -> OverExploringInput {
-    let mut parts = vec![part(
-        0,
-        ContentKind::UserText,
-        "Fix expires_at(10, 10): an entry expires when now equals its deadline. Change only the boundary condition and test it. Do not audit unrelated documentation or archived implementations.",
-        None,
-    )];
-    recorded_tool(
-        &mut parts,
-        ContentKind::ToolInput,
-        "bash",
-        "diagnostic-test",
-        r#"{"command":"cargo test expires_at_deadline"}"#,
-    );
-    recorded_tool(
-        &mut parts,
-        ContentKind::ToolResult,
-        "bash",
-        "diagnostic-test",
-        "test expires_at_deadline FAILED\nassertion failed: expired(10, 10)\nactual: false; expected: true\nexit code: 101",
-    );
-    recorded_read(
-        &mut parts,
-        "src/lib.rs",
-        "mod expiry;\npub use expiry::expired;",
-    );
-    recorded_read(
-        &mut parts,
-        "src/expiry.rs",
-        "pub fn expired(now: u64, deadline: u64) -> bool {\n    now > deadline\n}",
-    );
-    let first = parts.len();
-    parts.push(part(u64::try_from(first).unwrap(), ContentKind::AssistantText, "The failing boundary test and expired implementation show that > must be >=. The active library imports expiry, not archive modules.", None));
-    match reason {
-        Reason::UnrelatedFiles => recorded_read(&mut parts, "docs/garden.txt", &"Plant tulips in autumn; use loose soil and water after planting.\nPrune roses after winter; remove dead branches before new growth.\n".repeat(24)),
-        Reason::ExcessiveFileBreadth => {
-            for index in 0..6 {
-                recorded_read(&mut parts, &format!("archive/expiry_{index}.rs"), "// Archived example; not part of the library modules.\npub fn expired(now: u64, deadline: u64) -> bool {\n    now > deadline\n}\n#[test]\nfn old_example() { assert!(expired(11, 10)); }");
-            }
-        }
-        Reason::ExcessiveWithinFileReading => {
-            let body = "pub fn expired(now: u64, deadline: u64) -> bool {\n    now > deadline\n}\n";
-            for _ in 0..8 { recorded_read(&mut parts, "src/expiry.rs", body); }
-        }
-    }
-    let last = parts.len() - 1;
-    recorded_tool(
-        &mut parts,
-        ContentKind::ToolInput,
-        "edit",
-        "correction",
-        r#"{"filePath":"src/expiry.rs","oldString":"now > deadline","newString":"now >= deadline"}"#,
-    );
-    recorded_tool(
-        &mut parts,
-        ContentKind::ToolResult,
-        "edit",
-        "correction",
-        "Updated src/expiry.rs: now >= deadline",
-    );
-    recorded_tool(
-        &mut parts,
-        ContentKind::ToolInput,
-        "bash",
-        "verification",
-        r#"{"command":"cargo test expires_at_deadline"}"#,
-    );
-    recorded_tool(
-        &mut parts,
-        ContentKind::ToolResult,
-        "bash",
-        "verification",
-        "test expires_at_deadline ... ok\n1 passed; 0 failed; exit code: 0",
-    );
-    if useful_later {
-        parts.push(part(
-            u64::try_from(parts.len()).unwrap(),
-            ContentKind::UserText,
-            "Also explain the archived expiry examples and how their old boundary behaves.",
-            None,
-        ));
-        parts.push(part(u64::try_from(parts.len()).unwrap(), ContentKind::AssistantText, "The recorded archived examples return false at now == deadline and true at now > deadline. Their existing test covers only the latter. The explanation uses that source content; the current implementation now expires at equality.", None));
-    }
-    let (content, task, span) = fixture_from_parts(parts, first, last);
-    build_episodes(&content, &task, &[span]).unwrap()
-}
-
-#[test]
-fn concrete_diagnosis_and_performed_correction_reach_each_reason_target() {
-    for reason in [
-        Reason::UnrelatedFiles,
-        Reason::ExcessiveFileBreadth,
-        Reason::ExcessiveWithinFileReading,
-    ] {
-        let input = diagnosed_input(reason, false);
-        let plan = plan(&input);
-        let reduced = OverExploringCheck
-            .reduce(&plan, &results(&plan, Some(reason)), true)
-            .unwrap();
-        assert!(!reduced.findings.is_empty());
-        for finding in reduced.findings {
-            let item = plan
-                .work_items
-                .iter()
-                .find(|item| item.id == finding.work_item_id)
-                .unwrap();
-            let fields = serde_json::to_string(&item.window.fields).unwrap();
-            assert!(fields.contains("actual: false; expected: true"));
-            assert!(fields.contains("mod expiry"));
-            assert!(fields.contains("Updated src/expiry.rs: now >= deadline"));
-            assert!(fields.contains("1 passed; 0 failed"));
-            for index in &plan.prepared.targets[&item.id].read_indexes {
-                let read = &item.window.fields["reads"][index];
-                assert_eq!(read["read_index"], *index);
-                assert_eq!(read["is_target"], true);
-                let result_index = read["result_event_index"].as_u64().unwrap();
-                assert!(
-                    item.window.fields["events"][usize::try_from(result_index).unwrap()]["text"]
-                        .as_str()
-                        .unwrap()
-                        .contains("<content>")
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn useful_later_explanation_vetoes_breadth_even_when_other_semantic_gates_support() {
-    let initial = diagnosed_input(Reason::ExcessiveFileBreadth, false);
-    let later = diagnosed_input(Reason::ExcessiveFileBreadth, true);
-    assert_eq!(initial.episodes[0].id, later.episodes[0].id);
-    let plan = plan(&later);
-    let mut outcomes = results(&plan, Some(Reason::ExcessiveFileBreadth));
-    for outcome in &mut outcomes {
-        outcome
-            .answers
-            .insert("later_use".into(), answer("justified"));
-    }
-    let reduced = OverExploringCheck.reduce(&plan, &outcomes, true).unwrap();
-    assert!(reduced.findings.is_empty());
-    assert_eq!(reduced.clean_episode_ids, vec![later.episodes[0].id]);
-    assert!(
-        OverExploringCheck
-            .reduce(
-                &plan,
-                &results(
-                    &super::tests::plan(&initial),
-                    Some(Reason::ExcessiveFileBreadth)
-                ),
-                true
-            )
-            .is_err()
-    );
-}
-
-#[test]
-fn shared_validator_and_reducer_accept_identical_rounding_without_renormalizing() {
-    let plan = plan(&diagnosed_input(Reason::ExcessiveFileBreadth, false));
-    for probabilities in [
-        BTreeMap::from([
-            ("supported".into(), 0.93),
-            ("justified".into(), 0.02),
-            ("unknown".into(), 0.04),
-        ]),
-        BTreeMap::from([
-            ("supported".into(), 0.94),
-            ("justified".into(), 0.03),
-            ("unknown".into(), 0.04),
-        ]),
-    ] {
-        let mut outcomes = results(&plan, Some(Reason::ExcessiveFileBreadth));
-        let target = outcomes
-            .iter_mut()
-            .find(|outcome| {
-                plan.prepared.targets[&outcome.work_item_id].reason == Reason::ExcessiveFileBreadth
-            })
-            .unwrap();
-        target.answers.insert(
-            "justified_breadth".into(),
-            JevAnswer::Choice {
-                choice: "supported".into(),
-                confidence: 0.90,
-                probabilities: probabilities.clone(),
-            },
-        );
-        let item = plan
-            .work_items
-            .iter()
-            .find(|item| item.id == target.work_item_id)
-            .unwrap();
-        let response = JevResponse {
-            model: target.model.clone(),
-            answers: target.answers.clone(),
-            usage: target.usage,
-        };
-        let request = JevRequest {
-            model: target.model.clone(),
-            state: item.window.fields.clone(),
-            questions: item.questions.clone(),
-        };
-        validate_jev_response(&response, &request).unwrap();
-        assert!(
-            OverExploringCheck
-                .reduce(&plan, &outcomes, true)
-                .unwrap()
-                .findings
-                .iter()
-                .any(|finding| finding.reason == Reason::ExcessiveFileBreadth)
-        );
-        let JevAnswer::Choice {
-            probabilities: retained,
-            ..
-        } = &response.answers["justified_breadth"]
-        else {
-            unreachable!()
-        };
-        assert_eq!(retained, &probabilities);
-    }
-    let mut outcomes = results(&plan, Some(Reason::ExcessiveFileBreadth));
-    let target = &mut outcomes[0];
-    target.answers.insert(
-        "justified_breadth".into(),
-        JevAnswer::Choice {
-            choice: "supported".into(),
-            confidence: 0.90,
-            probabilities: BTreeMap::from([
-                ("supported".into(), 0.90),
-                ("justified".into(), 0.02),
-                ("unknown".into(), 0.04),
-            ]),
-        },
-    );
-    let item = plan
-        .work_items
-        .iter()
-        .find(|item| item.id == target.work_item_id)
-        .unwrap();
-    let response = JevResponse {
-        model: target.model.clone(),
-        answers: target.answers.clone(),
-        usage: target.usage,
-    };
-    let request = JevRequest {
-        model: target.model.clone(),
-        state: item.window.fields.clone(),
-        questions: item.questions.clone(),
-    };
-    assert!(validate_jev_response(&response, &request).is_err());
-    assert!(OverExploringCheck.reduce(&plan, &outcomes, true).is_err());
-}
-
-#[test]
-fn distribution_concentration_is_not_a_second_semantic_probability_gate() {
-    let plan = plan(&diagnosed_input(Reason::ExcessiveWithinFileReading, false));
-    for (probability, confidence, expected) in [
-        (0.90, 0.85, true),
-        (0.92, 0.89, true),
-        (0.89, 0.835, false),
-        (0.89, 0.99, false),
-        (0.71, 0.565, false),
-    ] {
-        let mut outcomes = results(&plan, Some(Reason::ExcessiveWithinFileReading));
-        for outcome in &mut outcomes {
-            if plan.prepared.targets[&outcome.work_item_id].reason
-                != Reason::ExcessiveWithinFileReading
-            {
-                continue;
-            }
-            for gate in super::questions::GATES {
-                let choice = choice_for(
-                    gate,
-                    Reason::ExcessiveWithinFileReading,
-                    Some(Reason::ExcessiveWithinFileReading),
-                );
-                outcome.answers.insert(
-                    gate.into(),
-                    JevAnswer::Choice {
-                        choice: choice.into(),
-                        confidence,
-                        probabilities: BTreeMap::from([
-                            (
-                                "supported".into(),
-                                if choice == "supported" {
-                                    probability
-                                } else {
-                                    (1.0 - probability) / 2.0
-                                },
-                            ),
-                            (
-                                "justified".into(),
-                                if choice == "justified" {
-                                    probability
-                                } else {
-                                    (1.0 - probability) / 2.0
-                                },
-                            ),
-                            ("unknown".into(), (1.0 - probability) / 2.0),
-                        ]),
-                    },
-                );
-            }
-        }
-        let reduced = OverExploringCheck.reduce(&plan, &outcomes, true).unwrap();
-        assert_eq!(
-            reduced
-                .findings
-                .iter()
-                .any(|finding| finding.reason == Reason::ExcessiveWithinFileReading),
-            expected
-        );
-        if !expected {
-            assert!(reduced.clean_episode_ids.is_empty());
-        }
-    }
-}
-
-#[test]
-fn uncertain_sibling_reasons_do_not_block_exactly_bound_supported_breadth() {
-    let input = diagnosed_input(Reason::ExcessiveFileBreadth, false);
-    let plan = plan(&input);
-    let mut outcomes = results(&plan, Some(Reason::ExcessiveFileBreadth));
-    for outcome in &mut outcomes {
-        if plan.prepared.targets[&outcome.work_item_id].reason != Reason::ExcessiveFileBreadth {
-            for gate in super::questions::GATES {
-                outcome.answers.insert(gate.into(), answer("unknown"));
-            }
-        }
-    }
-    let reduced = OverExploringCheck.reduce(&plan, &outcomes, true).unwrap();
-    assert_eq!(reduced.findings.len(), 1);
-    assert_eq!(reduced.findings[0].reason, Reason::ExcessiveFileBreadth);
-    assert_eq!(
-        reduced.findings[0].reads,
-        plan.prepared.targets[&reduced.findings[0].work_item_id].bindings
-    );
-    assert!(reduced.clean_episode_ids.is_empty());
-    assert!(reduced.completed_episode_ids.is_empty());
-    assert!(reduced.completed_work_item_ids.is_empty());
-    assert!(reduced.unassessed.iter().all(
-        |item| item.work_item_id.is_some() && item.reason != Some(Reason::ExcessiveFileBreadth)
-    ));
-}
-
-#[test]
-fn semantic_unknown_and_recorded_justification_are_distinct_outcomes() {
-    let plan = plan(&diagnosed_input(Reason::UnrelatedFiles, false));
-    let mut outcomes = results(&plan, Some(Reason::UnrelatedFiles));
-    for outcome in &mut outcomes {
-        outcome
-            .answers
-            .insert("useful_information".into(), answer("unknown"));
-    }
-    let reduced = OverExploringCheck.reduce(&plan, &outcomes, true).unwrap();
-    assert!(reduced.findings.is_empty());
-    assert!(reduced.clean_episode_ids.is_empty());
-    for outcome in &mut outcomes {
-        outcome
-            .answers
-            .insert("substantial".into(), answer("justified"));
-    }
-    let reduced = OverExploringCheck.reduce(&plan, &outcomes, true).unwrap();
-    assert!(reduced.findings.is_empty());
-    assert_eq!(reduced.clean_episode_ids.len(), 1);
-}
-
-#[test]
-fn uncertainty_on_another_target_of_the_same_reason_does_not_expand_or_block_a_finding() {
-    let input = input(
-        "Fix the parser.",
-        &["garden.txt", "library.rs"],
-        "Complete.",
-    );
-    let plan = plan(&input);
-    let mut outcomes = results(&plan, Some(Reason::UnrelatedFiles));
-    let unrelated: Vec<_> = plan
-        .prepared
-        .targets
-        .iter()
-        .filter(|(_, target)| target.reason == Reason::UnrelatedFiles)
-        .map(|(id, _)| id.clone())
-        .collect();
-    assert_eq!(unrelated.len(), 2);
-    let uncertain = outcomes
-        .iter_mut()
-        .find(|outcome| outcome.work_item_id == unrelated[0])
-        .unwrap();
-    for gate in super::questions::GATES {
-        uncertain.answers.insert(gate.into(), answer("unknown"));
-    }
-    let reduced = OverExploringCheck.reduce(&plan, &outcomes, true).unwrap();
-    assert_eq!(reduced.findings.len(), 1);
-    assert_eq!(reduced.findings[0].work_item_id, unrelated[1]);
-    assert_eq!(
-        reduced.findings[0].reads,
-        plan.prepared.targets[&unrelated[1]].bindings
-    );
-    assert!(
-        reduced
-            .unassessed
-            .iter()
-            .any(|item| item.work_item_id.as_ref() == Some(&unrelated[0]))
-    );
-    assert!(reduced.completed_episode_ids.is_empty());
-    assert!(reduced.clean_episode_ids.is_empty());
-}
-
-#[test]
-fn unknown_observed_extent_does_not_block_supported_unrelated_work_or_invent_extent() {
-    let mut input = diagnosed_input(Reason::UnrelatedFiles, false);
-    input.episodes[0].reads[0]
-        .result
-        .as_mut()
-        .unwrap()
-        .returned_extent = None;
-    let plan = plan(&input);
-    assert!(
-        plan.prepared
-            .targets
-            .values()
-            .all(|target| target.reason != Reason::ExcessiveWithinFileReading)
-    );
-    let reduced = OverExploringCheck
-        .reduce(&plan, &results(&plan, Some(Reason::UnrelatedFiles)), true)
-        .unwrap();
-    assert_eq!(reduced.findings.len(), 1);
-    assert_eq!(reduced.findings[0].reason, Reason::UnrelatedFiles);
-    assert!(
-        reduced
-            .unassessed
-            .iter()
-            .any(|item| item.limitation == Abstention::UnknownObservedExtent)
-    );
-    assert!(reduced.completed_episode_ids.is_empty());
-    assert!(reduced.clean_episode_ids.is_empty());
-}
-
-#[test]
-fn revised_semantics_reject_legacy_plans_and_overlapping_question_answers() {
-    let plan = plan(&diagnosed_input(Reason::UnrelatedFiles, false));
-    assert_eq!(
-        plan.revisions,
-        JevCheckRevisions {
-            projection: 2,
-            chunking: 1,
-            questions: 7,
-            reducer: 4
-        }
-    );
-    let mut stale = plan.clone();
-    stale.revisions = JevCheckRevisions {
-        projection: 2,
-        chunking: 1,
-        questions: 3,
-        reducer: 3,
-    };
-    assert_eq!(
-        OverExploringCheck.reduce(&stale, &results(&plan, Some(Reason::UnrelatedFiles)), true),
-        Err(JevError::InvalidCheckPlan)
-    );
-    let mut old_answers = results(&plan, Some(Reason::UnrelatedFiles));
-    old_answers[0]
-        .answers
-        .insert("reason".into(), answer("supported"));
-    assert!(
-        OverExploringCheck
-            .reduce(&plan, &old_answers, true)
-            .is_err()
-    );
-    assert!(plan.work_items.iter().all(|item| {
-        item.questions
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            == [
-                "justified_breadth",
-                "justified_extent",
-                "later_use",
-                "relevance",
-                "substantial",
-                "sufficiency",
-                "useful_information",
-            ]
-    }));
-}
-
-#[test]
-fn within_file_substantial_threshold_keeps_independent_questions_strict() {
-    for reason in [Reason::UnrelatedFiles, Reason::ExcessiveWithinFileReading] {
-        let plan = plan(&diagnosed_input(reason, false));
-        let mut answers = results(&plan, Some(reason));
-        for result in &mut answers {
-            if plan.prepared.targets[&result.work_item_id].reason == reason {
-                result.answers.insert(
-                    "substantial".into(),
-                    JevAnswer::Choice {
-                        choice: "supported".into(),
-                        confidence: 0.2,
-                        probabilities: BTreeMap::from([
-                            ("supported".into(), 0.71),
-                            ("justified".into(), 0.14),
-                            ("unknown".into(), 0.15),
-                        ]),
-                    },
-                );
-            }
-        }
-        let reduced = OverExploringCheck.reduce(&plan, &answers, true).unwrap();
-        assert_eq!(
-            reduced
-                .findings
-                .iter()
-                .any(|finding| finding.reason == reason),
-            reason == Reason::ExcessiveWithinFileReading
-        );
-        for gate in ["useful_information", "later_use", "sufficiency"] {
-            let mut below = answers.clone();
-            for result in &mut below {
-                if plan.prepared.targets[&result.work_item_id].reason == reason {
-                    result.answers.insert(
-                        gate.into(),
-                        JevAnswer::Choice {
-                            choice: "supported".into(),
-                            confidence: 0.99,
-                            probabilities: BTreeMap::from([
-                                ("supported".into(), 0.89),
-                                ("justified".into(), 0.05),
-                                ("unknown".into(), 0.06),
-                            ]),
-                        },
-                    );
-                }
-            }
-            assert!(
-                !OverExploringCheck
-                    .reduce(&plan, &below, true)
-                    .unwrap()
-                    .findings
-                    .iter()
-                    .any(|finding| finding.reason == reason)
-            );
-        }
-    }
-}
-
-#[test]
-fn pre_enrollment_reads_supply_context_without_becoming_finding_targets() {
-    let (mut content, task, span) =
-        fixture("Fix the parser.", &["parser.rs", "other.rs"], "Complete.");
-    content.actions[2].context_only = true;
-    let earlier_request = content.actions[2].reference.id.clone();
-    let input = build_episodes(&content, &task, &[span]).unwrap();
-    assert_eq!(input.episodes[0].reads.len(), 1);
-    let plan = plan(&input);
-    assert!(!plan.work_items.is_empty());
-    let reduced = OverExploringCheck
-        .reduce(&plan, &results(&plan, Some(Reason::UnrelatedFiles)), true)
-        .unwrap();
-    assert!(!reduced.findings.is_empty());
-    assert!(
-        reduced
-            .findings
-            .iter()
-            .flat_map(|finding| &finding.reads)
-            .all(|read| read.request_id != earlier_request)
-    );
-}
-
-#[test]
-fn reason_specific_questions_do_not_copy_or_veto_other_dimensions() {
-    use SemanticOutcome::{Justified, Supported};
-    for reason in [
-        Reason::UnrelatedFiles,
-        Reason::ExcessiveFileBreadth,
-        Reason::ExcessiveWithinFileReading,
-    ] {
-        let plan = plan(&diagnosed_input(reason, false));
-        for gate in super::questions::GATES {
-            for choice in ["justified", "unknown"] {
-                let mut outcomes = results(&plan, Some(reason));
-                for outcome in &mut outcomes {
-                    if plan.prepared.targets[&outcome.work_item_id].reason != reason {
-                        continue;
-                    }
-                    outcome.answers.insert(gate.into(), answer(choice));
-                }
-                let result = OverExploringCheck.reduce(&plan, &outcomes, true).unwrap();
-                let ignored = match reason {
-                    Reason::UnrelatedFiles => {
-                        ["justified_breadth", "justified_extent"].contains(&gate)
-                    }
-                    Reason::ExcessiveFileBreadth => {
-                        ["relevance", "justified_extent"].contains(&gate)
-                    }
-                    Reason::ExcessiveWithinFileReading => gate == "justified_breadth",
-                };
-                let still_supported = ignored
-                    || reason == Reason::ExcessiveWithinFileReading
-                        && gate == "relevance"
-                        && choice == "justified";
-                assert_eq!(
-                    result
-                        .findings
-                        .iter()
-                        .any(|finding| finding.reason == reason),
-                    still_supported,
-                    "{reason:?}: {gate}: {choice}"
-                );
-                if still_supported {
-                    let finding = result
-                        .findings
-                        .iter()
-                        .find(|finding| finding.reason == reason)
-                        .unwrap();
-                    assert_eq!(finding.judgments.sufficiency, Supported);
-                    assert_eq!(finding.judgments.useful_information, Supported);
-                    assert_eq!(finding.judgments.later_use, Supported);
-                    assert_eq!(finding.judgments.substantial, Supported);
-                    if reason == Reason::ExcessiveWithinFileReading {
-                        assert_eq!(finding.judgments.relevance, Justified);
-                        assert_eq!(finding.judgments.justified_extent, Supported);
-                    }
-                    let saved: Decision =
-                        serde_json::from_value(serde_json::to_value(finding).unwrap()).unwrap();
-                    assert_eq!(saved, *finding);
-                } else if choice == "unknown" || gate == "sufficiency" {
-                    assert!(result.clean_episode_ids.is_empty(), "{reason:?}: {gate}");
-                    assert!(result.completed_episode_ids.is_empty());
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn insufficient_semantic_evidence_blocks_clean_even_with_recorded_justification() {
-    for reason in [
-        Reason::UnrelatedFiles,
-        Reason::ExcessiveFileBreadth,
-        Reason::ExcessiveWithinFileReading,
-    ] {
-        let plan = plan(&diagnosed_input(reason, true));
-        for sufficiency in ["justified", "unknown"] {
-            for veto in ["useful_information", "later_use", "substantial"] {
-                let mut outcomes = results(&plan, None);
-                for outcome in &mut outcomes {
-                    outcome
-                        .answers
-                        .insert("sufficiency".into(), answer(sufficiency));
-                    outcome.answers.insert(veto.into(), answer("justified"));
-                }
-                let result = OverExploringCheck.reduce(&plan, &outcomes, true).unwrap();
-                assert!(result.findings.is_empty());
-                assert!(result.clean_episode_ids.is_empty());
-                assert!(result.completed_episode_ids.is_empty());
-                assert!(result.completed_work_item_ids.is_empty());
-                assert!(
-                    result
-                        .unassessed
-                        .iter()
-                        .all(|item| item.limitation == Abstention::UncertainDecision)
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn within_file_reading_requires_relevant_files_even_with_excessive_extent() {
-    let plan = plan(&diagnosed_input(Reason::ExcessiveWithinFileReading, false));
-    let mut outcomes = results(&plan, Some(Reason::ExcessiveWithinFileReading));
-    for outcome in &mut outcomes {
-        if plan.prepared.targets[&outcome.work_item_id].reason == Reason::ExcessiveWithinFileReading
-        {
-            outcome
-                .answers
-                .insert("relevance".into(), answer("supported"));
-        }
-    }
-    let result = OverExploringCheck.reduce(&plan, &outcomes, true).unwrap();
-    assert!(result.findings.is_empty());
-    assert_eq!(result.clean_episode_ids.len(), 1);
+    assert!(!failed.complete);
+    assert!(failed.result.completed_work_item_ids.is_empty());
+    assert!(failed.result.clean_episode_ids.is_empty());
+    assert!(!failed.result.unassessed.is_empty());
 }

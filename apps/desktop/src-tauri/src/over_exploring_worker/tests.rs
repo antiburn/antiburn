@@ -11,6 +11,7 @@ use antiburn_local::analysis::{
     CompositeSink, EvidenceSource, RawSource, SessionEvidenceAccumulator, SessionInput,
     SessionMetricsAccumulator, SourceKind, TurnRowSink, TurnRowStore, reader_for,
 };
+use antiburn_local::checks::over_exploring::Reason;
 use serde_json::json;
 
 #[test]
@@ -207,7 +208,7 @@ fn native_reads_reach_preparation_history_and_source_bound_publication() {
 }
 
 #[test]
-fn original_incomplete_codex_read_fixture_remains_deferred() {
+fn incomplete_codex_read_fixture_keeps_request_based_targets() {
     use crate::scope_creep_worker::tests::native_sources;
     let (agent, session, format, records) = native_sources::sources()[0];
     let directory = tempfile::tempdir().unwrap();
@@ -222,8 +223,11 @@ fn original_incomplete_codex_read_fixture_remains_deferred() {
     let candidate =
         native_sources::publish(&store, agent, session, format, records, directory.path());
     let input = load_input(&store, &candidate, &ModelCapabilities::jev_default()).unwrap();
-    assert!(input.plan.prepared.targets.is_empty());
-    assert!(input.plan.prepared.candidates.is_empty());
+    assert!(
+        input.plan.prepared.targets.values().any(|target| {
+            target.reason == Reason::UnrelatedFiles && !target.bindings.is_empty()
+        })
+    );
 }
 
 #[test]
@@ -264,6 +268,21 @@ fn opencode_sqlite_observed_reads_reach_worker_preparation() {
 }
 
 pub(crate) fn fixture(directory: Option<&Path>, ending: &str) -> (Store, BurnCheckCandidate) {
+    fixture_with_paths(
+        directory,
+        ending,
+        &[
+            "/synthetic/parser.rs".into(),
+            "/synthetic/billing.rs".into(),
+        ],
+    )
+}
+
+fn fixture_with_paths(
+    directory: Option<&Path>,
+    ending: &str,
+    paths: &[String],
+) -> (Store, BurnCheckCandidate) {
     let source_dir = tempfile::tempdir().unwrap();
     let source_path = source_dir.path().join("opencode.db");
     let source = rusqlite::Connection::open(&source_path).unwrap();
@@ -275,10 +294,7 @@ pub(crate) fn fixture(directory: Option<&Path>, ending: &str) -> (Store, BurnChe
         "user",
         json!({"type":"text","text":"Fix the parser. Keep billing unchanged."}),
     )];
-    for (index, path) in ["/synthetic/parser.rs", "/synthetic/billing.rs"]
-        .iter()
-        .enumerate()
-    {
+    for (index, path) in paths.iter().enumerate() {
         records.push(("assistant", json!({"type":"tool","tool":"read","callID":format!("read-{index}"),
             "state":{"status":"completed","input":{"filePath":path,"offset":1,"limit":2},
             "output":format!("<path>{path}</path>\n<type>file</type>\n<content>\n1: recorded code\n2: more code\n\n(End of file - total 2 lines)\n</content>")}})));
@@ -438,31 +454,56 @@ pub(crate) fn fixture(directory: Option<&Path>, ending: &str) -> (Store, BurnChe
 }
 
 pub(crate) fn reduced(input: &PreparedInput, reason: Reason) -> Assessment {
-    let results = input
-        .plan
-        .work_items
+    let mut sampling = new_sampling().unwrap();
+    over_exploring::synchronize_sampling(&input.plan, &mut sampling).unwrap();
+    let mut result = OverExploringCheck.reduce(&input.plan, &[], false).unwrap();
+    result.unassessed = input.plan.prepared.unassessed.clone();
+    while sampling.coverage(check_identity()).unwrap().remaining > 0 {
+        sampling.begin_run();
+        while let Some(job) = sampling.choose_job() {
+            let mut plan = input.plan.clone();
+            PreparedAssessment::select_jobs(&mut plan, std::slice::from_ref(&job)).unwrap();
+            let page = OverExploringCheck
+                .reduce(&plan, &mock_results_for_plan(&plan, reason), true)
+                .unwrap();
+            plan.prepared
+                .record_completion(&page, &job, &mut sampling)
+                .unwrap();
+            merge_result(&mut result, page, &plan);
+        }
+    }
+    result.coverage.selected_items = result.completed_work_item_ids.len();
+    result.coverage.not_selected_items = 0;
+    result
+}
+
+fn mock_results(input: &PreparedInput, reason: Reason) -> Vec<JevWorkItemResult> {
+    mock_results_for_plan(&input.plan, reason)
+}
+
+fn mock_results_for_plan(
+    plan: &JevCheckPlan<PreparedAssessment>,
+    reason: Reason,
+) -> Vec<JevWorkItemResult> {
+    plan.work_items
         .iter()
         .map(|item| {
-            let selected = input.plan.prepared.targets[&item.id].reason;
+            let selected = plan.prepared.targets[&item.id].reason;
             let answers = item
                 .questions
                 .keys()
                 .map(|gate| {
-                    let choice = if gate == "sufficiency" {
-                        "supported"
-                    } else if selected != reason
-                        || (reason == Reason::ExcessiveWithinFileReading && gate == "relevance")
-                    {
-                        "justified"
+                    let choice = if selected != reason {
+                        "justified_or_minor"
                     } else {
-                        "supported"
+                        "likely_excess"
                     };
                     (
                         gate.clone(),
                         JevAnswer::Choice {
                             choice: choice.into(),
                             confidence: 1.0,
-                            probabilities: ["supported", "justified", "unknown"]
+                            probabilities: ["likely_excess", "justified_or_minor", "uncertain"]
                                 .into_iter()
                                 .map(|key| (key.into(), if key == choice { 1.0 } else { 0.0 }))
                                 .collect(),
@@ -473,10 +514,9 @@ pub(crate) fn reduced(input: &PreparedInput, reason: Reason) -> Assessment {
             JevWorkItemResult {
                 request_id: "synthetic-request".into(),
                 work_item_id: item.id.clone(),
-                model: input.plan.capabilities.model.clone(),
+                model: plan.capabilities.model.clone(),
                 answers,
-                evidence: input
-                    .plan
+                evidence: plan
                     .shared_context
                     .as_ref()
                     .unwrap()
@@ -491,10 +531,7 @@ pub(crate) fn reduced(input: &PreparedInput, reason: Reason) -> Assessment {
                 },
             }
         })
-        .collect::<Vec<_>>();
-    OverExploringCheck
-        .reduce(&input.plan, &results, true)
-        .unwrap()
+        .collect()
 }
 
 #[test]
@@ -580,14 +617,56 @@ fn production_loader_binds_all_reasons_to_observed_reads_and_full_task() {
             assert_eq!(finding.reason, reason);
             assert!(publishable_finding(finding, &publication));
             let mut broken = finding.clone();
-            broken.reads[0].result_id = "not-an-observed-result".into();
+            broken.reads[0].result_id = Some("not-an-observed-result".into());
+            assert!(!publishable_finding(&broken, &publication));
+            let mut broken = finding.clone();
+            broken.reads[0].output_digest = Some("not-the-recorded-output".into());
+            assert!(!publishable_finding(&broken, &publication));
+            let mut broken = finding.clone();
+            broken.task_evidence[0].part_id = "not-the-selected-task-part".into();
+            assert!(!publishable_finding(&broken, &publication));
+            let mut broken = finding.clone();
+            broken.source_evidence[0].part_id = "not-the-selected-source-range".into();
+            assert!(!publishable_finding(&broken, &publication));
+            let mut broken = finding.clone();
+            broken.probability = 0.74;
             assert!(!publishable_finding(&broken, &publication));
         }
     }
+    let revisions = OverExploringCheck.revisions();
     assert_eq!(
         CHECK.evaluator_revision(),
-        "over-exploring-adapter-v2:2:1:7:4"
+        format!(
+            "over-exploring-adapter-v4:{}:{}:{}:{}",
+            revisions.projection, revisions.chunking, revisions.questions, revisions.reducer
+        )
     );
+}
+
+#[test]
+fn fresh_and_cached_results_require_exact_source_range_references() {
+    let (store, candidate) = fixture(None, "user");
+    let input = load_input(&store, &candidate, &ModelCapabilities::jev_default()).unwrap();
+    let fresh = mock_results(&input, Reason::UnrelatedFiles);
+    let cached: Vec<JevWorkItemResult> =
+        serde_json::from_str(&serde_json::to_string(&fresh).unwrap()).unwrap();
+    assert_eq!(
+        OverExploringCheck
+            .reduce(&input.plan, &fresh, true)
+            .unwrap(),
+        OverExploringCheck
+            .reduce(&input.plan, &cached, true)
+            .unwrap()
+    );
+    let source_start = input.plan.shared_context.as_ref().unwrap().evidence.len();
+    for mut results in [fresh, cached] {
+        results[0].evidence[source_start].part_id = "different-range-of-the-same-source".into();
+        assert!(
+            OverExploringCheck
+                .reduce(&input.plan, &results, true)
+                .is_err()
+        );
+    }
 }
 
 #[test]
@@ -661,6 +740,223 @@ fn durable_sampling_reopens_without_replenishing_and_rejects_provider_and_revisi
             .unwrap()
             .completed,
         1
+    );
+}
+
+#[test]
+fn accepted_128_path_inventory_queues_all_257_targets() {
+    let paths = (0..128)
+        .map(|index| format!("/synthetic/file_{index}.rs"))
+        .collect::<Vec<_>>();
+    let (store, candidate) = fixture_with_paths(None, "user", &paths);
+    let input = load_input(&store, &candidate, &ModelCapabilities::jev_default()).unwrap();
+    assert_eq!(input.plan.prepared.candidates.len(), 257);
+    assert_eq!(input.sampling_overflow, 0);
+    let mut sampling = new_sampling().unwrap();
+    over_exploring::synchronize_sampling(&input.plan, &mut sampling).unwrap();
+    assert_eq!(sampling.coverage(check_identity()).unwrap().eligible, 257);
+    assert!(
+        store
+            .queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)
+            .unwrap()
+    );
+    assert!(
+        store
+            .claim_burn_check_assessment(
+                &input.durable,
+                unix_now(),
+                POLICY.lease_secs,
+                POLICY.idle_secs
+            )
+            .unwrap()
+    );
+    let mut cursor = restore_cursor(None, &input.durable, 7);
+    cursor.sampling = Some(sampling);
+    assert!(save_cursor(&store, &input.durable, &cursor).unwrap());
+    let saved = store
+        .burn_check_assessment(&input.durable.key, CHECK_ID)
+        .unwrap()
+        .unwrap();
+    let restored = restore_cursor(Some(&saved), &input.durable, 7);
+    assert_eq!(
+        restored
+            .sampling
+            .unwrap()
+            .coverage(check_identity())
+            .unwrap()
+            .eligible,
+        257
+    );
+}
+
+#[test]
+fn inventory_overflow_preserves_a_positive_and_publishes_an_explicit_gap() {
+    let (store, candidate) = fixture(None, "user");
+    let mut input = load_input(&store, &candidate, &ModelCapabilities::jev_default()).unwrap();
+    let mut descriptor = input.plan.prepared.candidates[0].clone();
+    while input.plan.prepared.candidates.len() <= MAX_SAMPLING_CANDIDATES {
+        let index = input.plan.prepared.candidates.len().to_le_bytes();
+        descriptor.candidate_id = StableId::new("synthetic-inventory", &[&index]);
+        descriptor.work_item_ids = vec![descriptor.candidate_id.into()];
+        descriptor.required_answers = vec![StableId::new("synthetic-answer", &[&index])];
+        input.plan.prepared.candidates.push(descriptor.clone());
+    }
+    input.sampling_overflow = bound_sampling_inventory(&mut input.plan);
+    assert_eq!(input.sampling_overflow, 1);
+    assert_eq!(
+        input.plan.prepared.candidates.len(),
+        MAX_SAMPLING_CANDIDATES
+    );
+    let mut sampling = new_sampling().unwrap();
+    over_exploring::synchronize_sampling(&input.plan, &mut sampling).unwrap();
+    let result = OverExploringCheck
+        .reduce(
+            &input.plan,
+            &mock_results(&input, Reason::UnrelatedFiles),
+            true,
+        )
+        .unwrap();
+    assert!(!result.findings.is_empty());
+    let published = publication(&input, result.clone());
+    assert!(published.assessment.coverage.processing_limit_reached);
+    assert!(
+        published
+            .assessment
+            .coverage
+            .limitations
+            .iter()
+            .any(|limit| limit == "sampling_inventory_limit")
+    );
+    assert_eq!(
+        published.assessment.coverage.not_selected_items,
+        MAX_SAMPLING_CANDIDATES + 1 - published.assessment.coverage.selected_items
+    );
+    assert!(!publication_has_clean_coverage(&published.assessment));
+    assert!(
+        published
+            .assessment
+            .findings
+            .iter()
+            .all(|finding| publishable_finding(finding, &published))
+    );
+    assert!(
+        store
+            .queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)
+            .unwrap()
+    );
+    assert!(
+        store
+            .claim_burn_check_assessment(
+                &input.durable,
+                unix_now(),
+                POLICY.lease_secs,
+                POLICY.idle_secs
+            )
+            .unwrap()
+    );
+    let mut cursor = restore_cursor(None, &input.durable, 7);
+    cursor.result = Some(result);
+    assert_eq!(
+        publish_current(
+            &store,
+            &candidate,
+            &ModelCapabilities::jev_default(),
+            &input,
+            &cursor
+        )
+        .unwrap(),
+        Some(crate::analytics::event::SmartCheckAssessmentOutcome::Finding)
+    );
+    let saved = store
+        .burn_check_assessment(&input.durable.key, CHECK_ID)
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.status, "failed");
+    let category: String = store.lock().query_row(
+        "SELECT last_error_category FROM burn_check_assessment WHERE check_id = 'over_exploring'",
+        [], |row| row.get(0)).unwrap();
+    assert_eq!(category, "sampling_incomplete");
+    let saved: Publication = serde_json::from_str(saved.result_json.as_deref().unwrap()).unwrap();
+    assert!(saved.assessment.coverage.processing_limit_reached);
+    assert!(!saved.assessment.findings.is_empty());
+}
+
+#[test]
+fn a_sampling_run_selects_at_most_three_single_answer_targets() {
+    let (store, candidate) = fixture(None, "user");
+    let input = load_input(&store, &candidate, &ModelCapabilities::jev_default()).unwrap();
+    assert!(input.plan.prepared.candidates.len() > MAX_TARGETS_PER_TURN);
+    assert!(input.plan.prepared.candidates.iter().all(|candidate| {
+        candidate.work_item_ids.len() == 1 && candidate.required_answers.len() == 1
+    }));
+    let mut sampling = new_sampling().unwrap();
+    over_exploring::synchronize_sampling(&input.plan, &mut sampling).unwrap();
+    sampling.begin_run();
+    for _ in 0..MAX_TARGETS_PER_TURN {
+        let job = sampling.choose_job().unwrap();
+        let mut plan = input.plan.clone();
+        PreparedAssessment::select_jobs(&mut plan, std::slice::from_ref(&job)).unwrap();
+        assert_eq!(plan.work_items.len(), 1);
+        assert_eq!(plan.work_items[0].questions.len(), 1);
+        let result = OverExploringCheck
+            .reduce(
+                &plan,
+                &mock_results_for_plan(&plan, Reason::UnrelatedFiles),
+                true,
+            )
+            .unwrap();
+        plan.prepared
+            .record_completion(&result, &job, &mut sampling)
+            .unwrap();
+    }
+    assert!(sampling.choose_job().is_none());
+    assert!(sampling.coverage(check_identity()).unwrap().remaining > 0);
+}
+
+#[test]
+fn terminal_uncertainty_finishes_sampling_without_claiming_clean_coverage() {
+    let (store, candidate) = fixture(None, "user");
+    let input = load_input(&store, &candidate, &ModelCapabilities::jev_default()).unwrap();
+    let mut sampling = new_sampling().unwrap();
+    over_exploring::synchronize_sampling(&input.plan, &mut sampling).unwrap();
+    sampling.begin_run();
+    let job = sampling.choose_job().unwrap();
+    let mut plan = input.plan.clone();
+    PreparedAssessment::select_jobs(&mut plan, std::slice::from_ref(&job)).unwrap();
+    assert_eq!(plan.work_items.len(), 1);
+    let mut results = mock_results_for_plan(&plan, Reason::UnrelatedFiles);
+    results.retain(|result| result.work_item_id == plan.work_items[0].id);
+    for answer in results[0].answers.values_mut() {
+        *answer = JevAnswer::Choice {
+            choice: "uncertain".into(),
+            confidence: 1.0,
+            probabilities: BTreeMap::from([
+                ("likely_excess".into(), 0.0),
+                ("justified_or_minor".into(), 0.0),
+                ("uncertain".into(), 1.0),
+            ]),
+        };
+    }
+    let result = OverExploringCheck.reduce(&plan, &results, true).unwrap();
+    assert!(
+        result
+            .completed_work_item_ids
+            .contains(&plan.work_items[0].id)
+    );
+    assert!(!result.unassessed.is_empty());
+    assert!(result.findings.is_empty());
+    assert!(!publication_has_clean_coverage(&result));
+    plan.prepared
+        .record_completion(&result, &job, &mut sampling)
+        .unwrap();
+    assert_eq!(sampling.coverage(check_identity()).unwrap().completed, 1);
+    let restored: SamplingProgress =
+        serde_json::from_str(&serde_json::to_string(&sampling).unwrap()).unwrap();
+    let mut restored = restored;
+    assert!(
+        restored
+            .choose_job()
+            .is_none_or(|next| next.candidate != job.candidate)
     );
 }
 
@@ -743,14 +1039,115 @@ fn deletion_clear_and_publication_changes_fence_checkpoints_and_publication() {
 }
 
 #[test]
-fn deferred_and_absent_episodes_never_produce_clean_coverage() {
+fn unanswered_targets_never_produce_clean_coverage() {
     let (store, candidate) = fixture(None, "assistant");
     let input = load_input(&store, &candidate, &ModelCapabilities::jev_default()).unwrap();
     let result = OverExploringCheck.reduce(&input.plan, &[], true).unwrap();
     assert!(!publication_has_clean_coverage(&result));
     assert!(!result.unassessed.is_empty());
     assert!(result.findings.is_empty());
-    assert!(input.plan.prepared.candidates.is_empty());
+    assert!(!input.plan.prepared.candidates.is_empty());
+}
+
+#[test]
+fn request_only_positive_survives_partial_history_and_missing_extent() {
+    let (store, candidate) = fixture(None, "assistant");
+    let mut input = load_input(&store, &candidate, &ModelCapabilities::jev_default()).unwrap();
+    let mut projected: over_exploring::OverExploringInput =
+        serde_json::from_value(input.context.check_context.clone()).unwrap();
+    projected.complete = false;
+    for event in &mut projected.events {
+        if event.metadata.read_result.is_some() {
+            event.metadata.read_result = None;
+            event.text.clear();
+        }
+    }
+    for episode in &mut projected.episodes {
+        for read in &mut episode.reads {
+            read.result = None;
+        }
+    }
+    input.context = over_exploring::build_jev_context(&projected).unwrap();
+    input.plan = OverExploringCheck.prepare(&input.context).unwrap();
+    let result = reduced(&input, Reason::UnrelatedFiles);
+    assert!(!result.findings.is_empty());
+    let publication = publication(&input, result);
+    assert!(!publication_has_clean_coverage(&publication.assessment));
+    for finding in &publication.assessment.findings {
+        assert!(
+            finding
+                .reads
+                .iter()
+                .all(|read| read.result_id.is_none() && read.output_digest.is_none())
+        );
+        assert!(publishable_finding(finding, &publication));
+    }
+}
+
+#[test]
+fn sibling_failure_keeps_completed_positive_targets_in_durable_publication() {
+    let (store, candidate) = fixture(None, "user");
+    let input = load_input(&store, &candidate, &ModelCapabilities::jev_default()).unwrap();
+    let results = mock_results(&input, Reason::UnrelatedFiles);
+    let positive = results
+        .iter()
+        .find(|result| {
+            input.plan.prepared.targets[&result.work_item_id].reason == Reason::UnrelatedFiles
+        })
+        .unwrap()
+        .clone();
+    let partial = OverExploringCheck
+        .reduce(&input.plan, &[positive], false)
+        .unwrap();
+    assert_eq!(partial.findings.len(), 1);
+    let id = partial.findings[0].work_item_id.clone();
+    let mut cursor = restore_cursor(None, &input.durable, 7);
+    cursor.result = Some(OverExploringCheck.reduce(&input.plan, &[], false).unwrap());
+    merge_result(cursor.result.as_mut().unwrap(), partial, &input.plan);
+    let mut sibling_plan = input.plan.clone();
+    sibling_plan.work_items.retain(|item| item.id != id);
+    let failed = OverExploringCheck
+        .reduce(&sibling_plan, &[], false)
+        .unwrap();
+    merge_result(cursor.result.as_mut().unwrap(), failed, &sibling_plan);
+    assert_eq!(cursor.result.as_ref().unwrap().findings[0].work_item_id, id);
+    assert!(
+        store
+            .queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)
+            .unwrap()
+    );
+    assert!(
+        store
+            .claim_burn_check_assessment(
+                &input.durable,
+                unix_now(),
+                POLICY.lease_secs,
+                POLICY.idle_secs
+            )
+            .unwrap()
+    );
+    assert!(
+        save_failure(
+            &store,
+            &input,
+            &cursor,
+            "provider_unavailable",
+            Some(unix_now() + 300)
+        )
+        .unwrap()
+    );
+    let saved = store
+        .burn_check_assessment(&input.durable.key, CHECK_ID)
+        .unwrap()
+        .unwrap();
+    let publication: Publication =
+        serde_json::from_str(saved.result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(publication.assessment.findings.len(), 1);
+    assert!(publishable_finding(
+        &publication.assessment.findings[0],
+        &publication
+    ));
+    assert!(!publication_has_clean_coverage(&publication.assessment));
 }
 
 #[test]

@@ -73,19 +73,24 @@ includes the complete compact scope. Later recorded approval withdraws stale
 findings and prompt actions. Task context that exceeds the model limit remains
 unassessed; the check does not split, summarize, or silently truncate approvals.
 
-Over-exploring reviews completed investigation episodes against recorded task
-context. Its three reasons are unrelated files, excessive file breadth, and
-excessive within-file reading. Counts and requested ranges do not prove waste.
-The provider receives selected user task context, read requests and recorded
-results, and supporting activity. Missing history, unfinished episodes, and
-unsupported read results remain unassessed.
-A finished read alone does not complete an episode. Current episodes need later
-completed edit activity; a next authorizing user boundary needs resolved,
-unambiguous tool operations. A pending request can resolve through a unique later
-completed native result. An explicitly running request remains deferred even if
-a result says completed. Unresolved, failed, missing, orphaned, and ambiguous
-operations remain deferred. Observed lines do not prove whole-file access or
-file versions.
+Over-exploring reviews read targets against recorded task context. Its three
+reasons are unrelated files, excessive file breadth, and excessive within-file
+reading. Counts and requested ranges rank targets; they do not prove waste.
+Each target receives one choice: `likely_excess`, `justified_or_minor`, or
+`uncertain`. A finding requires the actual `likely_excess` choice with finite
+probability of at least 0.75. A valid uncertain answer completes that target's
+review but never establishes Clean.
+The provider receives recorded task context, read requests, available matched
+results, and earlier and later retained activity. No later edit is required for
+a useful read. Requests alone can support unrelated-file or file-breadth findings;
+within-file findings require supported observed extents. A request alone does not
+prove returned content. Each event supplies at most three representative 4 KiB
+UTF-8 byte ranges within a 48 KiB target text budget. Range boundaries and partial
+flags identify omitted text; the provider does not receive complete large outputs.
+Source gaps, unfinished sibling operations, and provider failures do not erase
+independent positive targets. They cannot establish a complete clean result.
+Review counts use targets, not episodes. Observed lines do not prove whole-file
+access, file versions, or wasted tokens.
 
 Skill Opportunities compares recorded work with current installed skill
 descriptions and typed selected skill-use evidence. It sends selected task/work

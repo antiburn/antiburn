@@ -119,26 +119,72 @@ fn causes() -> Vec<FindingCause> {
             reason: crate::checks::over_exploring::Reason::ExcessiveFileBreadth,
             reads: vec![crate::checks::over_exploring::ReadBinding {
                 request_id: "read".into(),
-                result_id: "result".into(),
-                output_digest: "digest".into(),
+                result_id: Some("result".into()),
+                output_digest: Some("digest".into()),
             }],
             task_evidence: Vec::new(),
+            source_evidence: Vec::new(),
             semantic_revision: "revision".into(),
             model: "model".into(),
             revisions: crate::analysis::jev::JevCheck::revisions(
                 &crate::checks::over_exploring::OverExploringCheck,
             ),
-            judgments: crate::checks::over_exploring::EvidenceJudgments {
-                relevance: crate::checks::over_exploring::SemanticOutcome::Supported,
-                useful_information: crate::checks::over_exploring::SemanticOutcome::Supported,
-                justified_breadth: crate::checks::over_exploring::SemanticOutcome::Supported,
-                justified_extent: crate::checks::over_exploring::SemanticOutcome::Supported,
-                later_use: crate::checks::over_exploring::SemanticOutcome::Supported,
-                substantial: crate::checks::over_exploring::SemanticOutcome::Supported,
-                sufficiency: crate::checks::over_exploring::SemanticOutcome::Supported,
-            },
+            outcome: crate::checks::over_exploring::SemanticOutcome::LikelyExcess,
+            probability: 0.9,
         })),
     ]
+}
+
+#[test]
+fn over_exploring_constructor_validates_choice_probability_and_optional_result_pair() {
+    use crate::analysis::jev::{JevEvidenceReference, JevEvidenceRole};
+    use crate::checks::over_exploring::SemanticOutcome;
+    let evidence = crate::checks::test_support::claude_evidence("read-session");
+    let FindingCause::OverExploring(mut decision) = causes()
+        .into_iter()
+        .find(|cause| matches!(cause, FindingCause::OverExploring(_)))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let reference = JevEvidenceReference {
+        source_id: "read".into(),
+        part_id: "events[0].ranges[0].text".into(),
+        content_kind: "tool_input".into(),
+        role: JevEvidenceRole::Candidate,
+    };
+    decision.task_evidence = vec![reference.clone()];
+    decision.source_evidence = vec![reference];
+    decision.reads[0].result_id = None;
+    decision.reads[0].output_digest = None;
+    decision.probability = 0.75;
+    let finding = Finding::over_exploring(&evidence, &decision).unwrap();
+    let prompt = remediation_prompt(&finding).unwrap();
+    assert!(
+        prompt
+            .as_str()
+            .contains("A request alone does not prove returned content")
+    );
+    assert!(prompt.as_str().contains("representative text ranges"));
+    for probability in [0.749, f64::NAN, f64::INFINITY, 1.001] {
+        decision.probability = probability;
+        assert!(Finding::over_exploring(&evidence, &decision).is_none());
+    }
+    decision.probability = 0.9;
+    for outcome in [
+        SemanticOutcome::JustifiedOrMinor,
+        SemanticOutcome::Uncertain,
+    ] {
+        decision.outcome = outcome;
+        assert!(Finding::over_exploring(&evidence, &decision).is_none());
+    }
+    decision.outcome = SemanticOutcome::LikelyExcess;
+    decision.reads[0].result_id = Some("result".into());
+    assert!(Finding::over_exploring(&evidence, &decision).is_none());
+    decision.reads[0].output_digest = Some("digest".into());
+    assert!(Finding::over_exploring(&evidence, &decision).is_some());
+    decision.reads[0].result_id = None;
+    assert!(Finding::over_exploring(&evidence, &decision).is_none());
 }
 
 #[test]

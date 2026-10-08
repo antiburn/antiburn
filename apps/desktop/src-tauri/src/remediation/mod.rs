@@ -1580,26 +1580,52 @@ impl RemediationController {
             else {
                 return Ok(unavailable_instruction_evidence());
             };
-            let Some(result) = snapshot
-                .content()
-                .actions
-                .iter()
-                .find(|action| action.reference.id == binding.result_id)
-            else {
-                return Ok(unavailable_instruction_evidence());
-            };
-            if antiburn_local::analysis::ignored_instructions::sha256_hex(result.text.as_bytes())
-                != binding.output_digest
+            if request
+                .metadata
+                .read_request
+                .as_ref()
+                .is_none_or(|read| read.reference_id != binding.request_id)
             {
                 return Ok(unavailable_instruction_evidence());
             }
-            for action in [request, result] {
+            let result = match (&binding.result_id, &binding.output_digest) {
+                (None, None) => None,
+                (Some(id), Some(digest)) => {
+                    let Some(result) = snapshot
+                        .content()
+                        .actions
+                        .iter()
+                        .find(|action| &action.reference.id == id)
+                    else {
+                        return Ok(unavailable_instruction_evidence());
+                    };
+                    if antiburn_local::analysis::ignored_instructions::sha256_hex(
+                        result.text.as_bytes(),
+                    ) != *digest
+                        || !result.reference.stable
+                        || result.tool_call_id.is_none()
+                        || result.tool_call_id != request.tool_call_id
+                        || result.tool_name != request.tool_name
+                        || result.metadata.read_result.as_ref().is_none_or(|read| {
+                            read.reference_id != *id
+                                || read.request_reference_id.as_deref()
+                                    != Some(binding.request_id.as_str())
+                                || read.recorded_output_digest != *digest
+                        })
+                    {
+                        return Ok(unavailable_instruction_evidence());
+                    }
+                    Some(result)
+                }
+                _ => return Ok(unavailable_instruction_evidence()),
+            };
+            for action in std::iter::once(request).chain(result) {
                 items.push(BurnCheckEvidenceItem {
                     label: BurnCheckEvidenceLabel::ObservedAction, source_label: "Recorded read".into(),
                     reference: action.reference.id.clone(), observed_at_ms: action.timestamp_ms,
                     start_line: None, end_line: None, excerpt: bounded_evidence_excerpt(&action.text),
                     explanation: current.finding.display().map_err(|_| ControllerError::TargetChanged)?.observation,
-                    limitation: Some("The cited reads support this claim. Not every read or token in the episode is waste.".into()),
+                    limitation: Some("The assessment uses bounded representative text ranges. A read request alone does not prove returned content. Not every read or token in the episode is waste.".into()),
                 });
             }
         }

@@ -680,13 +680,21 @@ impl Finding {
             evidence.capabilities.source_format,
         ) || decision.reads.is_empty()
             || decision.task_evidence.is_empty()
+            || decision.source_evidence.is_empty()
+            || decision.work_item_id.is_empty()
             || decision.semantic_revision.is_empty()
             || decision.model.is_empty()
-            || decision.judgments.sufficiency != SemanticOutcome::Supported
+            || decision.outcome != SemanticOutcome::LikelyExcess
+            || !decision.probability.is_finite()
+            || !(crate::checks::over_exploring::SEMANTIC_PROBABILITY_THRESHOLD..=1.0)
+                .contains(&decision.probability)
             || decision.reads.iter().any(|read| {
                 read.request_id.is_empty()
-                    || read.result_id.is_empty()
-                    || read.output_digest.is_empty()
+                    || match (&read.result_id, &read.output_digest) {
+                        (None, None) => false,
+                        (Some(id), Some(digest)) => id.is_empty() || digest.is_empty(),
+                        _ => true,
+                    }
             })
         {
             return None;

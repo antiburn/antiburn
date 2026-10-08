@@ -151,6 +151,7 @@ fn check_report_progress_with_home(
             continue;
         };
         if status.as_deref() == Some("failed")
+            && check_id != "over_exploring"
             && !matches!(error.as_deref(), Some("sampling_incomplete" | "continuing"))
         {
             missing_denominator = true;
@@ -301,10 +302,27 @@ pub(super) fn published_coverage(
             .assessment
             .unassessed
             .iter()
-            .map(|item| item.episode_id)
+            .filter_map(|item| item.work_item_id.as_deref())
             .collect::<BTreeSet<_>>()
             .len();
-        (saved.assessment.coverage, uncertain, false)
+        let coverage = saved.assessment.coverage;
+        let partial = !coverage.limitations.is_empty();
+        return Some((
+            ChecksReviewCoveragePayload {
+                reviewed: saved
+                    .assessment
+                    .completed_work_item_ids
+                    .iter()
+                    .collect::<BTreeSet<_>>()
+                    .len() as u64,
+                total: (!partial)
+                    .then_some((coverage.selected_items + coverage.not_selected_items) as u64),
+                uncertain: uncertain as u64,
+                pending: coverage.not_selected_items as u64,
+                continuing: false,
+            },
+            partial,
+        ));
     };
     let partial = scope_partial || !coverage.limitations.is_empty();
     Some((
@@ -449,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn over_exploring_uncertainty_counts_episodes_once_across_work_items() {
+    fn over_exploring_uncertainty_counts_targets_in_the_same_episode() {
         let (store, candidate) = fixture(None, "user");
         let input = prepare(
             &candidate,
@@ -471,7 +489,7 @@ mod tests {
         for (index, item) in result.unassessed.iter_mut().enumerate() {
             item.work_item_id = Some(format!("reason-{index}"));
         }
-        result.coverage.selected_items = 1;
+        result.coverage.selected_items = 3;
         result.coverage.not_selected_items = 0;
         result.coverage.skipped_items = 0;
         result.coverage.limitations.clear();
@@ -479,9 +497,9 @@ mod tests {
         let (coverage, _) =
             published_coverage("over_exploring", &input.durable.input_revision, &json, None)
                 .unwrap();
-        assert_eq!(coverage.reviewed, 1);
-        assert_eq!(coverage.total, Some(1));
-        assert_eq!(coverage.uncertain, 1);
+        assert_eq!(coverage.reviewed, 0);
+        assert_eq!(coverage.total, Some(3));
+        assert_eq!(coverage.uncertain, 3);
     }
 
     #[test]
@@ -768,7 +786,7 @@ mod tests {
         assert!(!progress.checking);
         assert!(progress.partial_context);
         let coverage = progress.coverage.unwrap();
-        assert_eq!(coverage.reviewed, 2);
+        assert_eq!(coverage.reviewed, 0);
         assert_eq!(coverage.total, None);
         assert_eq!(coverage.pending, 3);
         assert!(coverage.uncertain > 0);

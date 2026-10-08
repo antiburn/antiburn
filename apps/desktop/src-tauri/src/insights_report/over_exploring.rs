@@ -83,7 +83,7 @@ pub(super) fn over_exploring_findings_for_session(
             },
         )
         .optional()?;
-    let Some((status, Some(input), Some(revision), Some(json), category)) = stored else {
+    let Some((status, Some(input), Some(revision), Some(json), _category)) = stored else {
         return Ok(None);
     };
     let Ok(publication) = serde_json::from_str::<Publication>(&json) else {
@@ -98,8 +98,7 @@ pub(super) fn over_exploring_findings_for_session(
         return Ok(None);
     }
     let complete = status == "completed" && publication_has_clean_coverage(&publication.assessment);
-    let partial = status == "failed"
-        && category.as_deref() == Some("sampling_incomplete")
+    let partial = matches!(status.as_str(), "completed" | "failed")
         && !publication.assessment.findings.is_empty();
     if !complete && !partial {
         return Ok(None);
@@ -415,7 +414,11 @@ mod tests {
                 .unwrap()
         );
         assert!(read().is_none());
-        let mut result = OverExploringCheck.reduce(&input.plan, &[], true).unwrap();
+        let mut result = crate::over_exploring_worker::tests::reduced(
+            &input,
+            antiburn_local::checks::over_exploring::Reason::UnrelatedFiles,
+        );
+        result.findings.clear();
         result.unassessed.clear();
         result.completed_episode_ids = input
             .plan
@@ -425,12 +428,6 @@ mod tests {
             .map(|candidate| candidate.episode_id)
             .collect();
         result.clean_episode_ids = result.completed_episode_ids.clone();
-        result.completed_work_item_ids = input
-            .plan
-            .work_items
-            .iter()
-            .map(|item| item.id.clone())
-            .collect();
         let json = serde_json::to_string(&publication(&input, result)).unwrap();
         store
             .lock()

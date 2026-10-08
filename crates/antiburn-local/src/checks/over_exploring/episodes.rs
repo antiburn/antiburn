@@ -11,8 +11,8 @@ use crate::analysis::session_scope::{ScopeAuthority, SessionScopeSnapshot};
 use crate::checks::ignored_instructions::sha256_hex;
 use crate::checks::sampling::StableId;
 
-const MAX_EPISODES: usize = 256;
-const MAX_EVENTS: usize = 4096;
+pub(super) const MAX_EPISODES: usize = 256;
+pub(super) const MAX_EVENTS: usize = 4096;
 const MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,18 +35,17 @@ pub struct EpisodeSpan {
 pub struct ReadObservation {
     pub request: JevReadRequest,
     pub result: Option<JevReadResult>,
-    pub output: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvestigationEpisode {
     pub id: StableId,
     pub state: EpisodeState,
-    pub before: Vec<ContentAction>,
-    pub events: Vec<ContentAction>,
+    pub before: Vec<usize>,
+    pub events: Vec<usize>,
     /// All later recorded work through the same assessment boundary. No edit
     /// is required for a read to be useful.
-    pub subsequent: Vec<ContentAction>,
+    pub subsequent: Vec<usize>,
     pub reads: Vec<ReadObservation>,
 }
 
@@ -54,11 +53,14 @@ pub struct InvestigationEpisode {
 pub struct OverExploringInput {
     pub session_identity: String,
     pub task_context: JevSharedRequestContext,
+    /// Episode indexes refer to this ordered source inventory.
+    pub events: Vec<ContentAction>,
+    pub limitations: Vec<String>,
     pub episodes: Vec<InvestigationEpisode>,
     pub complete: bool,
 }
 
-/// Use a complete branch-scoped projection and the snapshot from the same
+/// Use a branch-scoped projection and the snapshot from the same
 /// publication. Spans are disjoint, ordered, and anchored in stable records.
 pub fn build_episodes(
     content: &SessionContentEvidence,
@@ -69,10 +71,6 @@ pub fn build_episodes(
         || content.session_identity_digest.is_empty()
         || content.actions.len() > MAX_EVENTS
         || spans.len() > MAX_EPISODES
-        || task
-            .occurrences()
-            .iter()
-            .any(|item| item.authority == ScopeAuthority::UnknownInfluence)
     {
         return Err(JevError::InvalidCheckContext);
     }
@@ -91,15 +89,6 @@ pub fn build_episodes(
         if action_bytes > MAX_INPUT_BYTES {
             return Err(JevError::InvalidCheckContext);
         }
-    }
-    // Each episode retains the full event sequence and its read observations.
-    // Check the local memory bound before copying those records.
-    if action_bytes
-        .checked_mul(spans.len())
-        .and_then(|bytes| bytes.checked_mul(2))
-        .is_none_or(|bytes| bytes > MAX_INPUT_BYTES)
-    {
-        return Err(JevError::InvalidCheckContext);
     }
     let mut ids = BTreeSet::new();
     let branch = actions.first().map(|action| {
@@ -158,9 +147,9 @@ pub fn build_episodes(
             return Err(JevError::InvalidCheckContext);
         }
         previous_end = Some(end);
-        let events = actions[start..=end].to_vec();
+        let events = &actions[start..=end];
         let mut reads = Vec::new();
-        for event in &events {
+        for event in events {
             if event.context_only {
                 continue;
             }
@@ -206,7 +195,6 @@ pub fn build_episodes(
             reads.push(ReadObservation {
                 request: request.clone(),
                 result: matched.and_then(|event| event.metadata.read_result.clone()),
-                output: matched.map(|event| event.text.clone()),
             });
         }
         if reads.is_empty() {
@@ -223,9 +211,9 @@ pub fn build_episodes(
         episodes.push(InvestigationEpisode {
             id,
             state: span.state,
-            before: actions[..start].to_vec(),
-            events,
-            subsequent: actions[end + 1..].to_vec(),
+            before: (0..start).collect(),
+            events: (start..=end).collect(),
+            subsequent: (end + 1..actions.len()).collect(),
             reads,
         });
     }
@@ -241,9 +229,9 @@ pub fn build_episodes(
     }
     let input = OverExploringInput {
         session_identity: content.session_identity_digest.clone(),
-        task_context: task
-            .scope_creep_context()
-            .map_err(|_| JevError::InvalidCheckContext)?,
+        task_context: task.user_context(),
+        events: actions.clone(),
+        limitations: content.limitations.clone(),
         episodes,
         complete: content.complete,
     };
@@ -270,7 +258,7 @@ pub fn build_jev_context(input: &OverExploringInput) -> Result<JevSessionContext
         input_revision: sha256_hex(&bytes),
         session_identity: input.session_identity.clone(),
         check_context: json!(input),
-        limitations: Vec::new(),
+        limitations: input.limitations.clone(),
         reference_snapshots: Vec::new(),
         evidence_store: Default::default(),
     })

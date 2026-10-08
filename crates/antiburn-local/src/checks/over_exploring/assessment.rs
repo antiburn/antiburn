@@ -1,9 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
-
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-
+use super::episodes::{InvestigationEpisode, MAX_EPISODES, MAX_EVENTS, OverExploringInput};
+use super::questions::{QUESTION_ID, questions};
 use crate::analysis::jev::capabilities::ModelCapabilities;
+use crate::analysis::jev::text_ranges::text_ranges;
 use crate::analysis::jev::{
     JevAnswer, JevCheck, JevCheckPlan, JevCheckRevisions, JevCoverage, JevError,
     JevEvidenceReference, JevEvidenceRole, JevInputField, JevInputSelection, JevInputWindow,
@@ -12,15 +10,17 @@ use crate::analysis::jev::{
 };
 use crate::analysis::jev_evidence::{ContentAction, JevReadResultKind, JevReadStatus, JevReadUnit};
 use crate::checks::sampling::{Candidate, SamplingError, SamplingJob, SamplingProgress, StableId};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 
-use super::episodes::{EpisodeState, InvestigationEpisode, OverExploringInput};
-use super::questions::{GATES, questions};
-
-/// Gate on the selected outcome probability. Choice confidence measures the
-/// same distribution's concentration; it is not a second probability of truth.
-pub const SEMANTIC_PROBABILITY_THRESHOLD: f64 = 0.90;
-pub const WITHIN_FILE_SUBSTANTIAL_PROBABILITY_THRESHOLD: f64 = 0.70;
-const MAX_PREPARED_BYTES: usize = 16 * 1024 * 1024;
+pub const SEMANTIC_PROBABILITY_THRESHOLD: f64 = 0.75;
+pub const MAX_TARGETS_PER_TURN: usize = 3;
+pub const EVENT_RANGE_BYTES: usize = 4096;
+pub const MAX_EVENT_RANGES: usize = 3;
+pub const MAX_WINDOW_TEXT_BYTES: usize = 24 * 1024;
+pub const MAX_SUPPORTING_EVENTS: usize = 64;
+pub const MAX_SAMPLING_CANDIDATES: usize = 2 * MAX_EVENTS + MAX_EPISODES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,12 +35,11 @@ pub enum Reason {
 pub enum Abstention {
     IncompleteHistory,
     DeferredEpisode,
-    MissingReadResult,
-    AmbiguousReadBinding,
-    UnknownObservedExtent,
     TruncatedEvidence,
+    SourceLimited,
+    SampledEvidence,
+    UnknownObservedExtent,
     ContextTooLarge,
-    PreparationLimitReached,
     PartialAssessment,
     UncertainDecision,
 }
@@ -48,8 +47,16 @@ pub enum Abstention {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadBinding {
     pub request_id: String,
-    pub result_id: String,
-    pub output_digest: String,
+    pub result_id: Option<String>,
+    pub output_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticOutcome {
+    LikelyExcess,
+    JustifiedOrMinor,
+    Uncertain,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -57,39 +64,19 @@ pub struct Decision {
     pub episode_id: StableId,
     pub work_item_id: String,
     pub reason: Reason,
-    /// These reads support the bounded reason claim. A breadth finding does
-    /// not assert that every cited read is unnecessary.
     pub reads: Vec<ReadBinding>,
     pub task_evidence: Vec<JevEvidenceReference>,
+    pub source_evidence: Vec<JevEvidenceReference>,
     pub semantic_revision: String,
     pub model: String,
     pub revisions: JevCheckRevisions,
-    pub judgments: EvidenceJudgments,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SemanticOutcome {
-    Supported,
-    Justified,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EvidenceJudgments {
-    pub relevance: SemanticOutcome,
-    pub useful_information: SemanticOutcome,
-    pub justified_breadth: SemanticOutcome,
-    pub justified_extent: SemanticOutcome,
-    pub later_use: SemanticOutcome,
-    pub substantial: SemanticOutcome,
-    pub sufficiency: SemanticOutcome,
+    pub outcome: SemanticOutcome,
+    pub probability: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Unassessed {
     pub episode_id: StableId,
-    #[serde(default)]
     pub work_item_id: Option<String>,
     pub reason: Option<Reason>,
     pub limitation: Abstention,
@@ -120,10 +107,16 @@ pub struct PreparedAssessment {
     pub targets: BTreeMap<String, Target>,
     pub candidates: Vec<SamplingCandidate>,
     pub unassessed: Vec<Unassessed>,
+    /// Keep source records once. Materialize only selected target windows.
+    pub episodes: Vec<InvestigationEpisode>,
+    pub events: Vec<ContentAction>,
+    pub history_complete: bool,
+    pub limitations: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SamplingCandidate {
+    pub candidate_id: StableId,
     pub episode_id: StableId,
     pub work_item_ids: Vec<String>,
     pub required_answers: Vec<StableId>,
@@ -134,20 +127,17 @@ pub struct OverExploringCheck;
 impl JevCheck for OverExploringCheck {
     type Prepared = PreparedAssessment;
     type Result = Assessment;
-
     fn id(&self) -> &'static str {
         "over_exploring"
     }
-
     fn revisions(&self) -> JevCheckRevisions {
         JevCheckRevisions {
-            projection: 2,
-            chunking: 1,
-            questions: 7,
-            reducer: 4,
+            projection: 5,
+            chunking: 4,
+            questions: 11,
+            reducer: 7,
         }
     }
-
     fn input_selection(&self) -> JevInputSelection {
         JevInputSelection::from_fields(&[
             JevInputField::UserMessage,
@@ -168,22 +158,18 @@ impl JevCheck for OverExploringCheck {
             JevInputField::OtherToolOutput,
         ])
     }
-
     fn supports_incremental_reuse(&self) -> bool {
         true
     }
-
     fn incremental_identity(&self, context: &JevSessionContext) -> Value {
         json!({"session": context.session_identity, "input": context.input_revision, "revisions": self.revisions()})
     }
-
     fn prepare(
         &self,
         context: &JevSessionContext,
     ) -> Result<JevCheckPlan<Self::Prepared>, JevError> {
         self.prepare_with_capabilities(context, &ModelCapabilities::jev_default())
     }
-
     fn prepare_with_capabilities(
         &self,
         context: &JevSessionContext,
@@ -191,8 +177,13 @@ impl JevCheck for OverExploringCheck {
     ) -> Result<JevCheckPlan<Self::Prepared>, JevError> {
         let input: OverExploringInput = serde_json::from_value(context.check_context.clone())
             .map_err(|_| JevError::InvalidCheckContext)?;
+        let task_limited = input.task_context.fields["limitations"]
+            .as_array()
+            .is_some_and(|limits| !limits.is_empty());
         if input.session_identity != context.session_identity
             || input.task_context.evidence.is_empty()
+            || input.events.len() > MAX_EVENTS
+            || input.episodes.len() > MAX_EPISODES
         {
             return Err(JevError::InvalidCheckContext);
         }
@@ -207,126 +198,101 @@ impl JevCheck for OverExploringCheck {
             targets: BTreeMap::new(),
             candidates: Vec::new(),
             unassessed: Vec::new(),
+            episodes: input.episodes,
+            events: input.events,
+            history_complete: input.complete,
+            limitations: input.limitations,
         };
-        let mut items = Vec::new();
-        let mut skipped = Vec::new();
-        let mut prepared_bytes = 0usize;
-        let mut episodes = input.episodes.iter().collect::<Vec<_>>();
-        // Read count ranks episodes. It does not establish any verdict.
-        episodes.sort_by_key(|episode| std::cmp::Reverse(episode.reads.len()));
+        let source_bytes = serde_json::to_vec(&(
+            &prepared.events,
+            prepared.history_complete,
+            &prepared.limitations,
+        ))
+        .map_err(|_| JevError::RequestSerialization)?;
+        let source_revision = StableId::new("over-exploring-source-v2", &[&source_bytes]);
         let mut seen = BTreeSet::new();
-        for episode in episodes {
+        let mut covered = BTreeSet::new();
+        for episode in &prepared.episodes {
+            validate_episode(episode, &prepared.events)?;
             if !seen.insert(episode.id) {
                 return Err(JevError::InvalidCheckContext);
             }
-            if let Some(limitation) = episode_limit(episode, input.complete) {
-                prepared.unassessed.push(Unassessed {
-                    episode_id: episode.id,
-                    work_item_id: None,
-                    reason: None,
-                    limitation,
-                });
-                continue;
+            if episode.events.iter().any(|index| !covered.insert(*index)) {
+                return Err(JevError::InvalidCheckContext);
             }
-            let targets = episode_targets(episode, &mut prepared.unassessed)?;
-            let mut episode_items = Vec::new();
-            let mut episode_targets = BTreeMap::new();
-            let mut episode_bytes = 0usize;
-            let mut preparation_limit = false;
-            for target in targets {
-                let window = window(episode, &target)?;
-                let questions = questions();
-                let bytes = serde_json::to_vec(&(episode.id, &target, &window, &questions, epoch))
-                    .map_err(|_| JevError::RequestSerialization)?;
-                let id: String = StableId::new("over-exploring-work-v1", &[&bytes]).into();
-                episode_bytes = episode_bytes
-                    .saturating_add(bytes.len())
-                    .saturating_add(id.len());
-                if prepared_bytes.saturating_add(episode_bytes) > MAX_PREPARED_BYTES {
-                    preparation_limit = true;
-                    break;
+            for (limited, limitation) in [
+                (!prepared.history_complete, Abstention::IncompleteHistory),
+                (
+                    episode.state == super::EpisodeState::Deferred,
+                    Abstention::DeferredEpisode,
+                ),
+                (
+                    !prepared.limitations.is_empty() || task_limited,
+                    Abstention::SourceLimited,
+                ),
+                (
+                    prepared.events.iter().any(|event| {
+                        event.truncated
+                            || event
+                                .metadata
+                                .read_request
+                                .as_ref()
+                                .is_some_and(|read| read.truncated)
+                            || event
+                                .metadata
+                                .read_result
+                                .as_ref()
+                                .is_some_and(|read| read.truncated)
+                    }),
+                    Abstention::TruncatedEvidence,
+                ),
+            ] {
+                if limited {
+                    prepared.unassessed.push(Unassessed {
+                        episode_id: episode.id,
+                        work_item_id: None,
+                        reason: None,
+                        limitation,
+                    });
                 }
-                episode_targets.insert(id.clone(), target);
-                episode_items.push(JevWorkItem {
-                    id,
-                    window,
-                    questions,
-                });
             }
-            if preparation_limit {
-                prepared.unassessed.push(Unassessed {
+            let episode_bytes = serde_json::to_vec(&(episode, source_revision))
+                .map_err(|_| JevError::RequestSerialization)?;
+            let episode_revision = StableId::new("over-exploring-source-v2", &[&episode_bytes]);
+            for target in episode_targets(episode, &mut prepared.unassessed)? {
+                let bytes = serde_json::to_vec(&(&target, episode_revision, epoch))
+                    .map_err(|_| JevError::RequestSerialization)?;
+                let candidate_id = StableId::new("over-exploring-target-v2", &[&bytes]);
+                let id: String = candidate_id.into();
+                prepared.candidates.push(SamplingCandidate {
+                    candidate_id,
                     episode_id: episode.id,
-                    work_item_id: None,
-                    reason: None,
-                    limitation: Abstention::PreparationLimitReached,
+                    work_item_ids: vec![id.clone()],
+                    required_answers: vec![answer_id(&id)],
                 });
-                continue;
+                prepared.targets.insert(id, target);
             }
-            let packed = pack_work_items_with_shared_context(
-                &episode_items,
-                capabilities,
-                &input.task_context,
-            );
-            if !packed.skipped_item_ids.is_empty() {
-                skipped.extend(episode_items.iter().map(|item| item.id.clone()));
-                prepared.unassessed.push(Unassessed {
-                    episode_id: episode.id,
-                    work_item_id: None,
-                    reason: None,
-                    limitation: Abstention::ContextTooLarge,
-                });
-                continue;
-            }
-            if episode_items.is_empty() {
-                continue;
-            }
-            let candidate = SamplingCandidate {
-                episode_id: episode.id,
-                work_item_ids: episode_items.iter().map(|item| item.id.clone()).collect(),
-                required_answers: episode_items
-                    .iter()
-                    .flat_map(|item| GATES.map(|gate| answer_id(&item.id, gate)))
-                    .collect(),
-            };
-            prepared.candidates.push(candidate);
-            prepared_bytes += episode_bytes;
-            prepared.targets.extend(episode_targets);
-            items.extend(episode_items);
         }
-        let coverage = JevCoverage {
-            selected_items: prepared.candidates.len(),
-            processing_limit_reached: prepared
-                .unassessed
-                .iter()
-                .any(|item| item.limitation == Abstention::PreparationLimitReached),
-            skipped_items: prepared
-                .unassessed
-                .iter()
-                .map(|item| item.episode_id)
-                .collect::<BTreeSet<_>>()
-                .len(),
-            limitations: prepared
-                .unassessed
-                .iter()
-                .map(|item| format!("{:?}", item.limitation))
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect(),
-            ..Default::default()
-        };
-        Ok(JevCheckPlan {
+        let selected = prepared
+            .candidates
+            .iter()
+            .take(MAX_TARGETS_PER_TURN)
+            .map(|candidate| candidate.candidate_id)
+            .collect::<BTreeSet<_>>();
+        let mut plan = JevCheckPlan {
             check_id: self.id().into(),
             input_revision: context.input_revision.clone(),
             revisions: self.revisions(),
-            work_items: items,
-            skipped_item_ids: skipped,
-            coverage,
+            work_items: Vec::new(),
+            skipped_item_ids: Vec::new(),
+            coverage: JevCoverage::default(),
             capabilities: capabilities.clone(),
             shared_context: Some(input.task_context),
             prepared,
-        })
+        };
+        materialize(&mut plan, &selected)?;
+        Ok(plan)
     }
-
     fn reduce(
         &self,
         plan: &JevCheckPlan<Self::Prepared>,
@@ -340,6 +306,15 @@ impl JevCheck for OverExploringCheck {
         if plan.check_id != self.id() || plan.revisions != self.revisions() {
             return Err(JevError::InvalidCheckPlan);
         }
+        let mut assessment = Assessment {
+            epoch: plan.prepared.epoch,
+            findings: Vec::new(),
+            clean_episode_ids: Vec::new(),
+            completed_episode_ids: Vec::new(),
+            completed_work_item_ids: Vec::new(),
+            unassessed: plan.prepared.unassessed.clone(),
+            coverage: plan.coverage.clone(),
+        };
         let mut outcomes = BTreeMap::new();
         for result in results {
             let item = plan
@@ -351,99 +326,73 @@ impl JevCheck for OverExploringCheck {
             evidence.extend(item.window.evidence.clone());
             if result.model != plan.capabilities.model
                 || result.evidence != evidence
-                || result.answers.len() != GATES.len()
+                || result.answers.len() != 1
                 || outcomes.contains_key(&item.id)
             {
                 return Err(JevError::InvalidCheckPlan);
             }
-            let reason = plan
+            let (outcome, probability) = judgment(result, item)?;
+            outcomes.insert(item.id.clone(), outcome);
+            // A valid uncertain answer is terminal, but never a clean result.
+            assessment.completed_work_item_ids.push(item.id.clone());
+            let target = plan
                 .prepared
                 .targets
                 .get(&item.id)
-                .ok_or(JevError::InvalidCheckPlan)?
-                .reason;
-            let judgments = judgments(result, item, reason)?;
-            outcomes.insert(item.id.clone(), (verdict(judgments, reason), judgments));
-        }
-        let mut assessment = Assessment {
-            epoch: plan.prepared.epoch,
-            findings: Vec::new(),
-            clean_episode_ids: Vec::new(),
-            completed_episode_ids: Vec::new(),
-            completed_work_item_ids: Vec::new(),
-            unassessed: plan.prepared.unassessed.clone(),
-            coverage: plan.coverage.clone(),
-        };
-        let selected: BTreeSet<_> = plan.work_items.iter().map(|item| &item.id).collect();
-        for candidate in &plan.prepared.candidates {
-            if !candidate
-                .work_item_ids
-                .iter()
-                .any(|id| selected.contains(id))
-            {
-                continue;
-            }
-            let start = assessment.findings.len();
-            for id in &candidate.work_item_ids {
-                let target = plan
-                    .prepared
-                    .targets
-                    .get(id)
-                    .ok_or(JevError::InvalidCheckPlan)?;
-                match outcomes.get(id) {
-                    Some((Verdict::Clean, _)) => continue,
-                    Some((Verdict::Unknown, _)) | None => {
-                        assessment.unassessed.push(Unassessed {
-                            episode_id: candidate.episode_id,
-                            work_item_id: Some(id.clone()),
-                            reason: Some(target.reason),
-                            limitation: if outcomes.contains_key(id) {
-                                Abstention::UncertainDecision
-                            } else {
-                                Abstention::PartialAssessment
-                            },
-                        });
-                        continue;
-                    }
-                    Some((Verdict::Finding, _)) => {}
-                }
-                assessment.findings.push(Decision {
-                    episode_id: candidate.episode_id,
-                    work_item_id: id.clone(),
+                .ok_or(JevError::InvalidCheckPlan)?;
+            match outcome {
+                SemanticOutcome::LikelyExcess => assessment.findings.push(Decision {
+                    episode_id: target.episode_id,
+                    work_item_id: item.id.clone(),
                     reason: target.reason,
                     reads: target.bindings.clone(),
                     task_evidence: shared.evidence.clone(),
+                    source_evidence: item.window.evidence.clone(),
                     semantic_revision: plan.input_revision.clone(),
                     model: plan.capabilities.model.clone(),
                     revisions: plan.revisions,
-                    judgments: outcomes[id].1,
-                });
+                    outcome,
+                    probability,
+                }),
+                SemanticOutcome::JustifiedOrMinor => {}
+                SemanticOutcome::Uncertain => assessment.unassessed.push(Unassessed {
+                    episode_id: target.episode_id,
+                    work_item_id: Some(item.id.clone()),
+                    reason: Some(target.reason),
+                    limitation: Abstention::UncertainDecision,
+                }),
             }
-            if !complete
-                && !assessment
-                    .unassessed
-                    .iter()
-                    .any(|item| item.episode_id == candidate.episode_id)
-            {
+        }
+        for item in &plan.work_items {
+            if !outcomes.contains_key(&item.id) {
+                let target = &plan.prepared.targets[&item.id];
                 assessment.unassessed.push(Unassessed {
-                    episode_id: candidate.episode_id,
-                    work_item_id: None,
-                    reason: None,
+                    episode_id: target.episode_id,
+                    work_item_id: Some(item.id.clone()),
+                    reason: Some(target.reason),
                     limitation: Abstention::PartialAssessment,
                 });
             }
-            // Unsupported extent remains unassessed, even when other reasons finish.
-            if !assessment
-                .unassessed
+        }
+        for episode in &plan.prepared.episodes {
+            let ids: Vec<_> = plan
+                .prepared
+                .targets
                 .iter()
-                .any(|item| item.episode_id == candidate.episode_id)
-            {
-                assessment.completed_episode_ids.push(candidate.episode_id);
-                assessment
-                    .completed_work_item_ids
-                    .extend(candidate.work_item_ids.clone());
-                if start == assessment.findings.len() {
-                    assessment.clean_episode_ids.push(candidate.episode_id);
+                .filter(|(_, target)| target.episode_id == episode.id)
+                .map(|(id, _)| id)
+                .collect();
+            if complete && !ids.is_empty() && ids.iter().all(|id| outcomes.contains_key(*id)) {
+                assessment.completed_episode_ids.push(episode.id);
+                if ids
+                    .iter()
+                    .all(|id| outcomes[*id] == SemanticOutcome::JustifiedOrMinor)
+                    && !assessment
+                        .unassessed
+                        .iter()
+                        .any(|item| item.episode_id == episode.id)
+                {
+                    assessment.clean_episode_ids.push(episode.id);
                 }
             }
         }
@@ -451,125 +400,118 @@ impl JevCheck for OverExploringCheck {
     }
 }
 
-fn episode_limit(episode: &InvestigationEpisode, complete: bool) -> Option<Abstention> {
-    if !complete {
-        return Some(Abstention::IncompleteHistory);
-    }
-    if episode.state == EpisodeState::Deferred {
-        return Some(Abstention::DeferredEpisode);
-    }
-    if episode
-        .reads
-        .iter()
-        .any(|read| read.request.paths.len() != 1)
-    {
-        return Some(Abstention::AmbiguousReadBinding);
-    }
-    if episode
+fn validate_episode(
+    episode: &InvestigationEpisode,
+    source: &[ContentAction],
+) -> Result<(), JevError> {
+    if !episode
         .before
         .iter()
         .chain(&episode.events)
         .chain(&episode.subsequent)
-        .any(|event| event.truncated)
+        .copied()
+        .eq(0..source.len())
     {
-        return Some(Abstention::TruncatedEvidence);
+        return Err(JevError::InvalidCheckContext);
     }
-    if episode.reads.iter().any(|read| {
-        read.request.truncated || read.result.as_ref().is_some_and(|result| result.truncated)
-    }) {
-        return Some(Abstention::TruncatedEvidence);
-    }
-    if episode.reads.iter().any(|read| {
-        read.output.is_none()
-            || read.result.as_ref().is_none_or(|result| {
-                result.status != JevReadStatus::Success || result.kind != JevReadResultKind::File
-            })
-    }) {
-        return Some(Abstention::MissingReadResult);
-    }
-    if episode.events.iter().any(|event| {
-        event.metadata.read_result.as_ref().is_some_and(|result| {
-            if episode.events.iter().any(|request| {
-                request.context_only
-                    && result.request_reference_id.as_deref() == Some(&request.reference.id)
-            }) {
-                return false;
+    let mut seen = BTreeSet::new();
+    for read in &episode.reads {
+        let request = episode
+            .events
+            .iter()
+            .map(|index| &source[*index])
+            .find(|event| event.reference.id == read.request.reference_id)
+            .ok_or(JevError::InvalidCheckContext)?;
+        if !seen.insert(&read.request.reference_id)
+            || request.context_only
+            || request.metadata.read_request.as_ref() != Some(&read.request)
+        {
+            return Err(JevError::InvalidCheckContext);
+        }
+        if let Some(result) = &read.result {
+            let event = episode
+                .events
+                .iter()
+                .map(|index| &source[*index])
+                .find(|event| event.reference.id == result.reference_id)
+                .ok_or(JevError::InvalidCheckContext)?;
+            if event.metadata.read_result.as_ref() != Some(result)
+                || result.request_reference_id.as_deref() != Some(&read.request.reference_id)
+                || result.recorded_output_digest
+                    != crate::checks::ignored_instructions::sha256_hex(event.text.as_bytes())
+                || result.recorded_output_bytes
+                    != u64::try_from(event.text.len()).map_err(|_| JevError::InvalidCheckContext)?
+            {
+                return Err(JevError::InvalidCheckContext);
             }
-            !episode.reads.iter().any(|read| {
-                read.result
-                    .as_ref()
-                    .is_some_and(|observed| observed.reference_id == result.reference_id)
-            })
-        })
-    }) {
-        return Some(Abstention::MissingReadResult);
+        }
     }
-    None
+    Ok(())
 }
 
 fn episode_targets(
     episode: &InvestigationEpisode,
     unassessed: &mut Vec<Unassessed>,
 ) -> Result<Vec<Target>, JevError> {
-    let make = |reason, indexes: Vec<usize>| -> Result<Target, JevError> {
-        Ok(Target {
-            episode_id: episode.id,
-            reason,
-            bindings: indexes
-                .iter()
-                .map(|index| {
-                    let result = episode.reads[*index]
+    let make = |reason, indexes: Vec<usize>| Target {
+        episode_id: episode.id,
+        reason,
+        bindings: indexes
+            .iter()
+            .map(|index| {
+                let read = &episode.reads[*index];
+                ReadBinding {
+                    request_id: read.request.reference_id.clone(),
+                    result_id: read
                         .result
                         .as_ref()
-                        .ok_or(JevError::InvalidCheckContext)?;
-                    Ok(ReadBinding {
-                        request_id: episode.reads[*index].request.reference_id.clone(),
-                        result_id: result.reference_id.clone(),
-                        output_digest: result.recorded_output_digest.clone(),
-                    })
-                })
-                .collect::<Result<_, JevError>>()?,
-            read_indexes: indexes,
-        })
+                        .map(|result| result.reference_id.clone()),
+                    output_digest: read
+                        .result
+                        .as_ref()
+                        .map(|result| result.recorded_output_digest.clone()),
+                }
+            })
+            .collect(),
+        read_indexes: indexes,
     };
-    let mut targets = Vec::new();
-    let mut paths: BTreeMap<(Option<&str>, &str), Vec<usize>> = BTreeMap::new();
+    let mut paths = BTreeMap::<(Option<&str>, &str), Vec<usize>>::new();
     for (index, read) in episode.reads.iter().enumerate() {
-        targets.push(make(Reason::UnrelatedFiles, vec![index])?);
-        let path = read
-            .request
-            .paths
-            .first()
-            .ok_or(JevError::InvalidCheckContext)?;
+        if read.request.paths.len() != 1 || read.request.reference_id.is_empty() {
+            return Err(JevError::InvalidCheckContext);
+        }
         paths
-            .entry((read.request.cwd.as_deref(), path))
+            .entry((read.request.cwd.as_deref(), &read.request.paths[0]))
             .or_default()
             .push(index);
     }
+    let mut targets = Vec::new();
+    // Set-wide breadth comes first. Counts rank targets; they do not prove excess.
     if paths.len() > 1 {
         targets.push(make(
             Reason::ExcessiveFileBreadth,
             (0..episode.reads.len()).collect(),
-        )?);
+        ));
     }
     for indexes in paths.values() {
+        targets.push(make(Reason::UnrelatedFiles, indexes.clone()));
         let supported = indexes.iter().all(|index| {
-            episode.reads[*index]
-                .result
-                .as_ref()
-                .and_then(|result| result.returned_extent.as_ref())
-                .is_some_and(|extent| {
-                    extent.unit != JevReadUnit::Unknown
-                        && extent.offset.is_some()
-                        && (extent.limit.is_some_and(|limit| limit > 0)
-                            || extent
-                                .end_inclusive
-                                .zip(extent.offset)
-                                .is_some_and(|(end, start)| end >= start))
-                })
+            episode.reads[*index].result.as_ref().is_some_and(|result| {
+                result.status == JevReadStatus::Success
+                    && result.kind == JevReadResultKind::File
+                    && result.returned_extent.as_ref().is_some_and(|extent| {
+                        extent.unit != JevReadUnit::Unknown
+                            && extent.offset.is_some()
+                            && (extent.limit.is_some_and(|limit| limit > 0)
+                                || extent
+                                    .end_inclusive
+                                    .zip(extent.offset)
+                                    .is_some_and(|(end, start)| end >= start))
+                    })
+            })
         });
         if supported {
-            targets.push(make(Reason::ExcessiveWithinFileReading, indexes.clone())?);
+            targets.push(make(Reason::ExcessiveWithinFileReading, indexes.clone()));
         } else {
             unassessed.push(Unassessed {
                 episode_id: episode.id,
@@ -582,62 +524,206 @@ fn episode_targets(
     Ok(targets)
 }
 
-fn event_fields(event: &ContentAction) -> Value {
-    json!({"role": event.turn_role, "kind": event.kind, "authority": event.authority, "tool": event.tool_name, "text": event.text, "timestamp_ms": event.timestamp_ms})
+fn selected_events(
+    episode: &InvestigationEpisode,
+    source: &[ContentAction],
+    target: &Target,
+) -> Result<BTreeSet<usize>, JevError> {
+    let target_ids = target
+        .bindings
+        .iter()
+        .flat_map(|binding| {
+            std::iter::once(binding.request_id.as_str()).chain(binding.result_id.as_deref())
+        })
+        .collect::<BTreeSet<_>>();
+    let targets = episode
+        .events
+        .iter()
+        .copied()
+        .filter(|index| target_ids.contains(source[*index].reference.id.as_str()))
+        .collect::<BTreeSet<_>>();
+    let first = *targets.first().ok_or(JevError::InvalidCheckContext)?;
+    let mut supporting = BTreeSet::new();
+    // Keep recent context at both boundaries, including the later outcome.
+    for events in [&episode.before, &episode.subsequent] {
+        supporting.extend(
+            events
+                .iter()
+                .rev()
+                .filter(|index| !targets.contains(index))
+                .take(8)
+                .copied(),
+        );
+    }
+    let mut ranked = episode
+        .before
+        .iter()
+        .chain(&episode.events)
+        .chain(&episode.subsequent)
+        .copied()
+        .filter(|index| !targets.contains(index))
+        .collect::<Vec<_>>();
+    ranked.sort_by_key(|index| {
+        let event = &source[*index];
+        let priority = if event.authority == "user" {
+            0
+        } else if event.metadata.read_request.is_some() || event.metadata.read_result.is_some() {
+            1
+        } else if event.kind == "tool_input" || event.kind == "tool_result" {
+            2
+        } else {
+            3
+        };
+        let distance = targets
+            .iter()
+            .fold(index.abs_diff(first), |distance, target| {
+                distance.min(index.abs_diff(*target))
+            });
+        (priority, distance, *index)
+    });
+    for index in ranked {
+        if supporting.len() == MAX_SUPPORTING_EVENTS {
+            break;
+        }
+        supporting.insert(index);
+    }
+    supporting.extend(targets);
+    Ok(supporting)
 }
 
-fn window(episode: &InvestigationEpisode, target: &Target) -> Result<JevInputWindow, JevError> {
+fn window(
+    episode: &InvestigationEpisode,
+    source: &[ContentAction],
+    target: &Target,
+    history_complete: bool,
+) -> Result<JevInputWindow, JevError> {
     let mut evidence = Vec::new();
+    let mut budget = MAX_WINDOW_TEXT_BYTES;
+    let selected_sources = selected_events(episode, source, target)?;
+    let mut fields = json!({"reason": target.reason, "target_read_indexes": target.read_indexes,
+        "history_complete": history_complete, "episode_state": episode.state,
+        "limits": {"event_range_bytes": EVENT_RANGE_BYTES, "max_event_ranges": MAX_EVENT_RANGES,
+            "window_text_bytes": MAX_WINDOW_TEXT_BYTES, "max_supporting_events": MAX_SUPPORTING_EVENTS,
+            "range_unit": "utf8_bytes", "end_exclusive": true},
+        "event_selection": {"source_events": source.len(), "selected_events": selected_sources.len(),
+            "partial": selected_sources.len() < source.len()}});
+    let is_target = |event: &ContentAction| {
+        target.bindings.iter().any(|binding| {
+            binding.request_id == event.reference.id
+                || binding.result_id.as_deref() == Some(&event.reference.id)
+        })
+    };
+    let mut selected = BTreeMap::new();
+    // Target records consume the text budget before supporting context.
+    for priority in [true, false] {
+        for (key, events) in [
+            ("events", &episode.events),
+            ("before", &episode.before),
+            ("subsequent", &episode.subsequent),
+        ] {
+            for (index, source_index) in events
+                .iter()
+                .filter(|index| selected_sources.contains(index))
+                .enumerate()
+            {
+                let event = source
+                    .get(*source_index)
+                    .ok_or(JevError::InvalidCheckContext)?;
+                if is_target(event) != priority {
+                    continue;
+                }
+                let ranges = text_ranges(&event.text, EVENT_RANGE_BYTES, 0);
+                let indexes: BTreeSet<_> = if ranges.len() <= MAX_EVENT_RANGES {
+                    (0..ranges.len()).collect()
+                } else {
+                    [0, ranges.len() / 2, ranges.len() - 1]
+                        .into_iter()
+                        .collect()
+                };
+                let mut excerpts = Vec::new();
+                let mut retained = 0;
+                for range_index in indexes {
+                    let (start, end) = ranges[range_index];
+                    if end - start > budget {
+                        continue;
+                    }
+                    budget -= end - start;
+                    retained += end - start;
+                    let part_id = format!("{key}[{index}].ranges[{}].text", excerpts.len());
+                    excerpts
+                        .push(json!({"start": start, "end": end, "text": &event.text[start..end]}));
+                    evidence.push(JevEvidenceReference {
+                        part_id,
+                        source_id: event.reference.id.clone(),
+                        content_kind: event.kind.clone(),
+                        role: if priority {
+                            JevEvidenceRole::Candidate
+                        } else {
+                            JevEvidenceRole::SupportingContext
+                        },
+                    });
+                }
+                selected.insert((key, index), json!({"source_index": source_index, "role": event.turn_role, "kind": event.kind,
+                    "authority": event.authority, "tool": event.tool_name, "timestamp_ms": event.timestamp_ms,
+                    "source_truncated": event.truncated, "source_bytes": event.text.len(),
+                    "range_count": ranges.len(), "partial": retained < event.text.len(), "ranges": excerpts}));
+            }
+        }
+    }
     for (key, events) in [
         ("before", &episode.before),
         ("events", &episode.events),
         ("subsequent", &episode.subsequent),
     ] {
-        for (index, event) in events.iter().enumerate() {
-            evidence.push(JevEvidenceReference {
-                part_id: format!("{key}[{index}]"),
-                source_id: event.reference.id.clone(),
-                content_kind: event.kind.clone(),
-                role: if target.bindings.iter().any(|binding| {
-                    binding.request_id == event.reference.id
-                        || binding.result_id == event.reference.id
-                }) {
-                    JevEvidenceRole::Candidate
-                } else {
-                    JevEvidenceRole::SupportingContext
-                },
-            });
-        }
+        let count = events
+            .iter()
+            .filter(|index| selected_sources.contains(index))
+            .count();
+        let records = (0..count)
+            .map(|index| {
+                selected
+                    .remove(&(key, index))
+                    .ok_or(JevError::InvalidCheckContext)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        fields[key] = json!(records);
     }
-    let reads: Vec<_> = episode.reads.iter().enumerate().map(|(index, read)| {
-        let result = read.result.as_ref().ok_or(JevError::InvalidCheckContext)?;
-        let request_index = episode.events.iter().position(|event| event.reference.id == read.request.reference_id).ok_or(JevError::InvalidCheckContext)?;
-        let result_index = episode.events.iter().position(|event| event.reference.id == result.reference_id).ok_or(JevError::InvalidCheckContext)?;
-        Ok(json!({
-            "read_index": index, "is_target": target.read_indexes.contains(&index),
+    let event_indexes = episode
+        .events
+        .iter()
+        .filter(|index| selected_sources.contains(index))
+        .copied()
+        .collect::<Vec<_>>();
+    let reads: Vec<_> = episode.reads.iter().enumerate().filter(|(_, read)| {
+        event_indexes.iter().any(|index| source[*index].reference.id == read.request.reference_id)
+    }).map(|(index, read)| {
+        let request_index = event_indexes.iter().position(|index| source[*index].reference.id == read.request.reference_id)
+            .ok_or(JevError::InvalidCheckContext)?;
+        let result_index = read.result.as_ref().and_then(|result| event_indexes.iter()
+            .position(|index| source[*index].reference.id == result.reference_id));
+        let request_source_index = event_indexes[request_index];
+        let result_source_index = read.result.as_ref().and_then(|result| episode.events.iter().copied()
+            .find(|index| source[*index].reference.id == result.reference_id));
+        Ok(json!({"read_index": index, "is_target": target.read_indexes.contains(&index),
             "request_event_index": request_index, "result_event_index": result_index,
-            "requested": {"paths": read.request.paths, "cwd": read.request.cwd, "extent": read.request.extent, "native_extent": read.request.native_extent, "truncated": read.request.truncated, "extent_contract": read.request.extent_contract},
-            "observed": {"status": result.status, "kind": result.kind, "extent": result.returned_extent, "output_bytes": result.recorded_output_bytes, "truncated": result.truncated, "extent_contract": result.extent_contract},
-        }))
+            "request_source_index": request_source_index, "result_source_index": result_source_index,
+            "request_timestamp_ms": source[request_source_index].timestamp_ms,
+            "result_timestamp_ms": result_source_index.and_then(|index| source[index].timestamp_ms),
+            "result_content_selected": result_index.is_some(),
+            "requested": {"paths": read.request.paths, "cwd": read.request.cwd, "extent": read.request.extent,
+                "native_extent": read.request.native_extent, "truncated": read.request.truncated, "extent_contract": read.request.extent_contract},
+            "observed": read.result.as_ref().map(|result| json!({"status": result.status, "kind": result.kind,
+                "extent": result.returned_extent, "output_bytes": result.recorded_output_bytes,
+                "truncated": result.truncated, "extent_contract": result.extent_contract}))}))
     }).collect::<Result<_, JevError>>()?;
-    Ok(JevInputWindow {
-        fields: json!({"reason": target.reason, "target_read_indexes": target.read_indexes, "reads": reads, "before": episode.before.iter().map(event_fields).collect::<Vec<_>>(), "events": episode.events.iter().map(event_fields).collect::<Vec<_>>(), "subsequent": episode.subsequent.iter().map(event_fields).collect::<Vec<_>>() }),
-        evidence,
-    })
+    fields["reads"] = json!(reads);
+    Ok(JevInputWindow { fields, evidence })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Verdict {
-    Finding,
-    Clean,
-    Unknown,
-}
-
-fn judgments(
+fn judgment(
     result: &JevWorkItemResult,
     item: &JevWorkItem,
-    reason: Reason,
-) -> Result<EvidenceJudgments, JevError> {
+) -> Result<(SemanticOutcome, f64), JevError> {
     validate_jev_response(
         &JevResponse {
             model: result.model.clone(),
@@ -650,83 +736,36 @@ fn judgments(
             questions: item.questions.clone(),
         },
     )?;
-    let mut values = Vec::new();
-    for gate in GATES {
-        let Some(JevAnswer::Choice {
-            choice,
-            probabilities,
-            ..
-        }) = result.answers.get(gate)
-        else {
-            return Err(JevError::ResponseAnswerTypeMismatch);
-        };
-        let threshold = if reason == Reason::ExcessiveWithinFileReading && gate == "substantial" {
-            WITHIN_FILE_SUBSTANTIAL_PROBABILITY_THRESHOLD
-        } else {
-            SEMANTIC_PROBABILITY_THRESHOLD
-        };
-        values.push(if probabilities[choice] < threshold {
-            SemanticOutcome::Unknown
-        } else {
-            match choice.as_str() {
-                "supported" => SemanticOutcome::Supported,
-                "justified" => SemanticOutcome::Justified,
-                "unknown" => SemanticOutcome::Unknown,
-                _ => return Err(JevError::ResponseAnswerTypeMismatch),
-            }
-        });
-    }
-    Ok(EvidenceJudgments {
-        relevance: values[0],
-        useful_information: values[1],
-        justified_breadth: values[2],
-        justified_extent: values[3],
-        later_use: values[4],
-        substantial: values[5],
-        sufficiency: values[6],
-    })
-}
-
-fn verdict(judgments: EvidenceJudgments, reason: Reason) -> Verdict {
-    use SemanticOutcome::{Justified, Supported, Unknown};
-    if judgments.sufficiency != Supported {
-        return Verdict::Unknown;
-    }
-    let reason_gates = match reason {
-        Reason::UnrelatedFiles => vec![judgments.relevance],
-        Reason::ExcessiveFileBreadth => vec![judgments.justified_breadth],
-        Reason::ExcessiveWithinFileReading => vec![
-            // Within-file excess requires relevant files, not unrelated work.
-            match judgments.relevance {
-                Justified => Supported,
-                Supported => Justified,
-                Unknown => Unknown,
-            },
-            judgments.justified_extent,
-        ],
+    let Some(JevAnswer::Choice {
+        choice,
+        probabilities,
+        ..
+    }) = result.answers.get(QUESTION_ID)
+    else {
+        return Err(JevError::ResponseAnswerTypeMismatch);
     };
-    let required = reason_gates
-        .into_iter()
-        .chain([
-            judgments.useful_information,
-            judgments.later_use,
-            judgments.substantial,
-        ])
-        .collect::<Vec<_>>();
-    if required.contains(&Justified) {
-        return Verdict::Clean;
-    }
-    if required.contains(&Unknown) {
-        return Verdict::Unknown;
-    }
-    Verdict::Finding
+    let probability = probabilities[choice];
+    let outcome = if probability < SEMANTIC_PROBABILITY_THRESHOLD {
+        SemanticOutcome::Uncertain
+    } else {
+        match choice.as_str() {
+            "likely_excess" => SemanticOutcome::LikelyExcess,
+            "justified_or_minor" => SemanticOutcome::JustifiedOrMinor,
+            "uncertain" => SemanticOutcome::Uncertain,
+            _ => return Err(JevError::ResponseAnswerTypeMismatch),
+        }
+    };
+    Ok((outcome, probability))
 }
 
-fn answer_id(work_item: &str, gate: &str) -> StableId {
+fn answer_id(work_item: &str) -> StableId {
     StableId::new(
-        "over-exploring-answer-v1",
-        &[work_item.as_bytes(), gate.as_bytes()],
+        "over-exploring-answer-v2",
+        &[work_item.as_bytes(), QUESTION_ID.as_bytes()],
     )
+}
+fn check_identity() -> StableId {
+    StableId::new("smart-check", &[b"over_exploring"])
 }
 
 pub fn synchronize_sampling(
@@ -741,23 +780,111 @@ pub fn synchronize_sampling(
             .candidates
             .iter()
             .map(|candidate| Candidate {
-                id: candidate.episode_id,
+                id: candidate.candidate_id,
                 required_answers: candidate.required_answers.clone(),
             })
             .collect::<Vec<_>>(),
     )
 }
 
-fn check_identity() -> StableId {
-    StableId::new("smart-check", &[b"over_exploring"])
+fn materialize(
+    plan: &mut JevCheckPlan<PreparedAssessment>,
+    selected: &BTreeSet<StableId>,
+) -> Result<(), JevError> {
+    let shared = plan
+        .shared_context
+        .as_ref()
+        .ok_or(JevError::InvalidCheckPlan)?;
+    plan.work_items.clear();
+    plan.skipped_item_ids.clear();
+    plan.prepared.unassessed.retain(|item| {
+        !matches!(
+            item.limitation,
+            Abstention::ContextTooLarge | Abstention::SampledEvidence
+        )
+    });
+    for candidate in plan
+        .prepared
+        .candidates
+        .iter()
+        .filter(|candidate| selected.contains(&candidate.candidate_id))
+    {
+        for id in &candidate.work_item_ids {
+            let target = &plan.prepared.targets[id];
+            let episode = plan
+                .prepared
+                .episodes
+                .iter()
+                .find(|episode| episode.id == target.episode_id)
+                .ok_or(JevError::InvalidCheckPlan)?;
+            let mut item = JevWorkItem {
+                id: id.clone(),
+                window: window(
+                    episode,
+                    &plan.prepared.events,
+                    target,
+                    plan.prepared.history_complete,
+                )?,
+                questions: questions(target.reason),
+            };
+            item.window.fields["source_limits"] = json!(plan.prepared.limitations);
+            let sampled = item.window.fields["event_selection"]["partial"] == true
+                || ["before", "events", "subsequent"].iter().any(|key| {
+                    item.window.fields[*key]
+                        .as_array()
+                        .is_some_and(|events| events.iter().any(|event| event["partial"] == true))
+                });
+            let packed = pack_work_items_with_shared_context(
+                std::slice::from_ref(&item),
+                &plan.capabilities,
+                shared,
+            );
+            if packed.skipped_item_ids.is_empty() {
+                if sampled {
+                    plan.prepared.unassessed.push(Unassessed {
+                        episode_id: target.episode_id,
+                        work_item_id: Some(id.clone()),
+                        reason: Some(target.reason),
+                        limitation: Abstention::SampledEvidence,
+                    });
+                }
+                plan.work_items.push(item);
+            } else {
+                plan.skipped_item_ids.push(id.clone());
+                plan.prepared.unassessed.push(Unassessed {
+                    episode_id: target.episode_id,
+                    work_item_id: Some(id.clone()),
+                    reason: Some(target.reason),
+                    limitation: Abstention::ContextTooLarge,
+                });
+            }
+        }
+    }
+    plan.coverage = JevCoverage {
+        selected_items: selected.len(),
+        not_selected_items: plan.prepared.candidates.len() - selected.len(),
+        skipped_items: plan.skipped_item_ids.len(),
+        limitations: plan
+            .prepared
+            .unassessed
+            .iter()
+            .map(|item| format!("{:?}", item.limitation))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+    Ok(())
 }
 
 impl PreparedAssessment {
-    /// Select jobs from the shared worker's bounded run. Do not start a run here.
     pub fn select_jobs(
         plan: &mut JevCheckPlan<Self>,
         jobs: &[SamplingJob],
     ) -> Result<(), JevError> {
+        if jobs.len() > MAX_TARGETS_PER_TURN {
+            return Err(JevError::InvalidCheckPlan);
+        }
         let mut selected = BTreeSet::new();
         for job in jobs {
             if job.check != check_identity()
@@ -766,25 +893,15 @@ impl PreparedAssessment {
                     .prepared
                     .candidates
                     .iter()
-                    .any(|candidate| candidate.episode_id == job.candidate)
+                    .any(|candidate| candidate.candidate_id == job.candidate)
                 || !selected.insert(job.candidate)
             {
                 return Err(JevError::InvalidCheckPlan);
             }
         }
-        plan.work_items.retain(|item| {
-            plan.prepared
-                .targets
-                .get(&item.id)
-                .is_some_and(|target| selected.contains(&target.episode_id))
-        });
-        plan.coverage.selected_items = selected.len();
-        plan.coverage.not_selected_items = plan.prepared.candidates.len() - selected.len();
-        Ok(())
+        materialize(plan, &selected)
     }
-
-    /// Commit an episode only after complete, certain reduction. Partial and
-    /// extent-limited episodes retain their sampling gap.
+    /// Record valid answers, including uncertainty. Provider failures remain pending.
     pub fn record_completion(
         &self,
         result: &Assessment,
@@ -794,20 +911,17 @@ impl PreparedAssessment {
         if job.check != check_identity() || job.epoch != self.epoch || result.epoch != self.epoch {
             return Err(SamplingError::StaleJob);
         }
-        if !result.completed_episode_ids.contains(&job.candidate) {
-            return Err(SamplingError::IncompleteCandidate);
-        }
         let candidate = self
             .candidates
             .iter()
-            .find(|candidate| candidate.episode_id == job.candidate)
+            .find(|candidate| candidate.candidate_id == job.candidate)
             .ok_or(SamplingError::StaleJob)?;
         if !candidate
             .work_item_ids
             .iter()
             .all(|id| result.completed_work_item_ids.contains(id))
         {
-            return Err(SamplingError::StaleJob);
+            return Err(SamplingError::IncompleteCandidate);
         }
         for answer in &candidate.required_answers {
             progress.record_reduced_answer(job, *answer)?;

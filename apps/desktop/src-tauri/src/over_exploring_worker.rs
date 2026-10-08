@@ -9,7 +9,8 @@ use antiburn_local::analysis::jev::{
     admit_jev_orchestration,
 };
 use antiburn_local::checks::over_exploring::{
-    self, Assessment, Decision, OverExploringCheck, PreparedAssessment, Reason, SemanticOutcome,
+    self, Assessment, Decision, MAX_TARGETS_PER_TURN, OverExploringCheck, PreparedAssessment,
+    SEMANTIC_PROBABILITY_THRESHOLD, SemanticOutcome, Target,
 };
 use antiburn_local::checks::sampling::{SamplingJob, SamplingLimits, SamplingProgress, StableId};
 use tauri::Emitter;
@@ -26,7 +27,9 @@ use crate::store::{
 };
 
 pub(crate) const CHECK_ID: &str = "over_exploring";
-const CURSOR_REVISION: u32 = 2;
+const CURSOR_REVISION: u32 = 4;
+// Accepted input has at most 4096 events and 256 disjoint episodes.
+const MAX_SAMPLING_CANDIDATES: usize = 2 * 4096 + 256;
 const POLICY: CheckPolicy = CheckPolicy {
     idle_secs: 180,
     lease_secs: 300,
@@ -76,6 +79,7 @@ pub(crate) struct PreparedInput {
     pub(crate) context: JevSessionContext,
     pub(crate) plan: JevCheckPlan<PreparedAssessment>,
     snapshot_revision: String,
+    sampling_overflow: usize,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -85,6 +89,8 @@ pub(crate) struct Publication {
     pub(crate) semantic_revision: String,
     pub(crate) model: String,
     pub(crate) work_evidence: BTreeMap<String, Vec<JevEvidenceReference>>,
+    pub(crate) work_targets: BTreeMap<String, Target>,
+    pub(crate) task_evidence: Vec<JevEvidenceReference>,
     #[serde(flatten)]
     pub(crate) assessment: Assessment,
 }
@@ -111,9 +117,10 @@ pub(crate) fn prepare(
     }
     let context = over_exploring::build_jev_context(&snapshot.over_exploring_input()?)
         .map_err(InputLoadError::Preparation)?;
-    let plan = OverExploringCheck
+    let mut plan = OverExploringCheck
         .prepare_with_capabilities(&context, capabilities)
         .map_err(InputLoadError::Preparation)?;
+    let sampling_overflow = bound_sampling_inventory(&mut plan);
     let evaluator_revision = CHECK.evaluator_revision();
     let bytes = serde_json::to_vec(&(
         snapshot.input_revision(),
@@ -139,6 +146,7 @@ pub(crate) fn prepare(
         context,
         plan,
         snapshot_revision: snapshot.input_revision().to_owned(),
+        sampling_overflow,
     })
 }
 
@@ -162,12 +170,29 @@ fn load_input(
     )
 }
 
+fn bound_sampling_inventory(plan: &mut JevCheckPlan<PreparedAssessment>) -> usize {
+    let overflow = plan
+        .prepared
+        .candidates
+        .len()
+        .saturating_sub(MAX_SAMPLING_CANDIDATES);
+    if overflow > 0 {
+        plan.prepared.candidates.truncate(MAX_SAMPLING_CANDIDATES);
+        plan.coverage.not_selected_items = plan
+            .prepared
+            .candidates
+            .len()
+            .saturating_sub(plan.coverage.selected_items);
+    }
+    overflow
+}
+
 fn new_sampling() -> anyhow::Result<SamplingProgress> {
     SamplingProgress::new(SamplingLimits {
         checks: 1,
-        candidates_per_check: 256,
-        answers_per_candidate: 4096 * 3 * 7,
-        judgments_per_run: 8,
+        candidates_per_check: MAX_SAMPLING_CANDIDATES,
+        answers_per_candidate: 1,
+        judgments_per_run: MAX_TARGETS_PER_TURN,
     })
     .map_err(|error| anyhow::anyhow!("invalid sampling limits: {error:?}"))
 }
@@ -315,6 +340,11 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             return Ok(());
         }
         cursor.run_progress = outcome.progress;
+        merge_result(
+            cursor.result.as_mut().expect("initialized"),
+            outcome.result.clone(),
+            &plan,
+        );
         if let Some(error) = outcome.failure {
             let rejected = matches!(error, JevError::AuthenticationRejected);
             let saved = handle
@@ -348,11 +378,11 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             rejection?;
             return Ok(());
         }
-        if outcome.complete
-            && outcome
-                .result
-                .completed_episode_ids
-                .contains(&job.candidate)
+        if !plan.work_items.is_empty()
+            && plan
+                .work_items
+                .iter()
+                .all(|item| outcome.result.completed_work_item_ids.contains(&item.id))
         {
             plan.prepared
                 .record_completion(
@@ -362,11 +392,6 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 )
                 .map_err(|error| anyhow::anyhow!("sampling completion rejected: {error:?}"))?;
         }
-        merge_result(
-            cursor.result.as_mut().expect("initialized"),
-            outcome.result,
-            job.candidate,
-        );
         cursor.active_job = None;
         cursor.run_progress = JevRunProgress::default();
         if !save_cursor(store, &input.durable, &cursor)? {
@@ -382,6 +407,18 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     let result = cursor.result.as_mut().expect("initialized");
     result.coverage.selected_items = coverage.completed;
     result.coverage.not_selected_items = coverage.remaining;
+    result.coverage.skipped_items = result
+        .unassessed
+        .iter()
+        .filter(|item| item.limitation == over_exploring::Abstention::ContextTooLarge)
+        .count();
+    result.coverage.limitations = result
+        .unassessed
+        .iter()
+        .map(|item| format!("{:?}", item.limitation))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let published = handle
         .with_current_generation(key_generation, || {
             let outcome = publish_current(store, candidate, &capabilities, &input, &cursor)?;
@@ -432,12 +469,11 @@ fn publish_current(
     }
     let publication = publication(input, cursor.result.as_ref().expect("initialized").clone());
     let clean = publication_has_clean_coverage(&publication.assessment);
-    let has_finding = !publication.assessment.findings.is_empty()
-        && publication
-            .assessment
-            .findings
-            .iter()
-            .all(|finding| publishable_finding(finding, &publication));
+    let has_finding = publication
+        .assessment
+        .findings
+        .iter()
+        .any(|finding| publishable_finding(finding, &publication));
     let published = if clean {
         store.complete_burn_check_assessment(
             &input.durable,
@@ -506,17 +542,33 @@ fn save_failure(
     )
 }
 
-fn merge_result(target: &mut Assessment, page: Assessment, episode: StableId) {
+fn merge_result(
+    target: &mut Assessment,
+    page: Assessment,
+    plan: &JevCheckPlan<PreparedAssessment>,
+) {
+    let selected: BTreeSet<_> = plan
+        .work_items
+        .iter()
+        .map(|item| item.id.as_str())
+        .chain(plan.skipped_item_ids.iter().map(String::as_str))
+        .collect();
     target
         .findings
-        .retain(|finding| finding.episode_id != episode);
+        .retain(|finding| !selected.contains(finding.work_item_id.as_str()));
     target.findings.extend(page.findings);
-    target.unassessed.retain(|item| item.episode_id != episode);
-    target.unassessed.extend(
-        page.unassessed
-            .into_iter()
-            .filter(|item| item.episode_id == episode),
-    );
+    target.unassessed.retain(|item| {
+        item.work_item_id
+            .as_deref()
+            .is_none_or(|id| !selected.contains(id))
+    });
+    target
+        .unassessed
+        .extend(page.unassessed.into_iter().filter(|item| {
+            item.work_item_id
+                .as_deref()
+                .is_some_and(|id| selected.contains(id))
+        }));
     for (saved, incoming) in [
         (&mut target.clean_episode_ids, page.clean_episode_ids),
         (
@@ -524,8 +576,9 @@ fn merge_result(target: &mut Assessment, page: Assessment, episode: StableId) {
             page.completed_episode_ids,
         ),
     ] {
-        saved.retain(|id| *id != episode);
         saved.extend(incoming);
+        saved.sort();
+        saved.dedup();
     }
     target
         .completed_work_item_ids
@@ -534,7 +587,15 @@ fn merge_result(target: &mut Assessment, page: Assessment, episode: StableId) {
     target.completed_work_item_ids.dedup();
 }
 
-pub(crate) fn publication(input: &PreparedInput, assessment: Assessment) -> Publication {
+pub(crate) fn publication(input: &PreparedInput, mut assessment: Assessment) -> Publication {
+    if input.sampling_overflow > 0 {
+        assessment.coverage.not_selected_items += input.sampling_overflow;
+        assessment.coverage.processing_limit_reached = true;
+        assessment
+            .coverage
+            .limitations
+            .push("sampling_inventory_limit".into());
+    }
     let shared = input
         .plan
         .shared_context
@@ -545,23 +606,30 @@ pub(crate) fn publication(input: &PreparedInput, assessment: Assessment) -> Publ
         snapshot_revision: input.snapshot_revision.clone(),
         semantic_revision: input.context.input_revision.clone(),
         model: input.plan.capabilities.model.clone(),
-        work_evidence: input
+        task_evidence: shared.evidence.clone(),
+        work_targets: input
             .plan
-            .work_items
+            .prepared
+            .targets
             .iter()
-            .filter(|item| {
+            .filter(|(id, _)| {
                 assessment
                     .findings
                     .iter()
-                    .any(|finding| finding.work_item_id == item.id)
+                    .any(|finding| &finding.work_item_id == *id)
             })
-            .map(|item| {
+            .map(|(id, target)| (id.clone(), target.clone()))
+            .collect(),
+        work_evidence: assessment
+            .findings
+            .iter()
+            .map(|finding| {
                 (
-                    item.id.clone(),
+                    finding.work_item_id.clone(),
                     shared
                         .evidence
                         .iter()
-                        .chain(&item.window.evidence)
+                        .chain(&finding.source_evidence)
                         .cloned()
                         .collect(),
                 )
@@ -572,25 +640,15 @@ pub(crate) fn publication(input: &PreparedInput, assessment: Assessment) -> Publ
 }
 
 pub(crate) fn publication_has_clean_coverage(result: &Assessment) -> bool {
-    let completed: BTreeSet<_> = result.completed_episode_ids.iter().copied().collect();
-    let clean: BTreeSet<_> = result.clean_episode_ids.iter().copied().collect();
-    let finding_episodes: BTreeSet<_> = result
-        .findings
-        .iter()
-        .map(|finding| finding.episode_id)
-        .collect();
+    let completed: BTreeSet<_> = result.completed_work_item_ids.iter().collect();
     result.coverage.selected_items > 0
         && result.coverage.not_selected_items == 0
         && result.coverage.skipped_items == 0
         && !result.coverage.processing_limit_reached
         && result.coverage.limitations.is_empty()
         && result.unassessed.is_empty()
-        && result.completed_episode_ids.len() == result.coverage.selected_items
-        && completed.len() == result.completed_episode_ids.len()
-        && clean.len() == result.clean_episode_ids.len()
-        && clean.is_disjoint(&finding_episodes)
-        && completed == clean.union(&finding_episodes).copied().collect()
-        && !result.completed_work_item_ids.is_empty()
+        && completed.len() == result.coverage.selected_items
+        && completed.len() == result.completed_work_item_ids.len()
         && result.findings.iter().all(|finding| {
             result
                 .completed_work_item_ids
@@ -602,43 +660,29 @@ pub(crate) fn publishable_finding(finding: &Decision, publication: &Publication)
     let Some(evidence) = publication.work_evidence.get(&finding.work_item_id) else {
         return false;
     };
-    let bindings: BTreeSet<_> = finding
-        .reads
-        .iter()
-        .map(|read| (&read.request_id, &read.result_id))
-        .collect();
-    let judgments = finding.judgments;
-    let supported = SemanticOutcome::Supported;
+    let Some(target) = publication.work_targets.get(&finding.work_item_id) else {
+        return false;
+    };
+    let bindings: BTreeSet<_> = finding.reads.iter().map(|read| &read.request_id).collect();
     finding.semantic_revision == publication.semantic_revision
         && finding.model == publication.model
         && finding.revisions == OverExploringCheck.revisions()
+        && finding.outcome == SemanticOutcome::LikelyExcess
+        && finding.probability.is_finite()
+        && (SEMANTIC_PROBABILITY_THRESHOLD..=1.0).contains(&finding.probability)
         && !finding.task_evidence.is_empty()
+        && finding.task_evidence == publication.task_evidence
+        && finding.reads == target.bindings
+        && finding.reason == target.reason
+        && finding.episode_id == target.episode_id
         && finding
             .task_evidence
             .iter()
-            .all(|item| evidence.contains(item))
+            .chain(&finding.source_evidence)
+            .eq(evidence.iter())
         && !finding.reads.is_empty()
         && bindings.len() == finding.reads.len()
-        && finding.reads.iter().all(|read| {
-            !read.output_digest.is_empty()
-                && read.request_id != read.result_id
-                && evidence
-                    .iter()
-                    .any(|item| item.source_id == read.request_id)
-                && evidence.iter().any(|item| item.source_id == read.result_id)
-        })
-        && judgments.sufficiency == supported
-        && judgments.useful_information == supported
-        && judgments.later_use == supported
-        && judgments.substantial == supported
-        && match finding.reason {
-            Reason::UnrelatedFiles => judgments.relevance == supported,
-            Reason::ExcessiveFileBreadth => judgments.justified_breadth == supported,
-            Reason::ExcessiveWithinFileReading => {
-                judgments.relevance == SemanticOutcome::Justified
-                    && judgments.justified_extent == supported
-            }
-        }
+        && finding.reads.iter().all(|read| !read.request_id.is_empty())
 }
 
 #[cfg(test)]

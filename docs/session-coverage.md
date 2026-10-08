@@ -23,6 +23,14 @@ work, bounded reads, skill selection, and normalized human/result context.
 Scope Creep, Over-exploring, and Skill Opportunities reach the native desktop
 through these four accepted agent/source pairs:
 
+Over-exploring retains each source event once and uses indexes for investigation
+context. Its windows select bounded representative text ranges with explicit
+partial flags. Bound requests can support unrelated-file and file-breadth targets
+without a result. Within-file targets still require the characterized returned
+extents below. Missing results and incomplete sibling operations remain evidence
+limits; independent positive targets can still reach findings. A request citation
+does not prove returned content, file versions, or wasted tokens.
+
 - Claude Code / `ClaudeJsonl`: local CLI 2.1.278 accepted-log shape. The root is
   human text or the characterized informational prelude. Exact retained parent
   chains and explicit `origin.kind:human`, `promptSource:typed`, and

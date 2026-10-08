@@ -126,7 +126,7 @@ The report keeps assessment work separate from remediation lifecycle. A category
 is checking only when a current, version-matched assessment in the report window
 is queued or running. A failed assessment marked for continuation can carry a
 continuation notice; it does not imply a running request or a clean result.
-Review counts use check-owned comparison, episode, or candidate units. They
+Review counts use check-owned comparison, target, or candidate units. They
 are not comparable across checks. Uncertain outcomes and unselected work remain
 separate. The total is unknown when source or selected-context limits prevent a
 complete denominator, or any included session lacks a valid current publication
@@ -152,8 +152,15 @@ still reject stale or misbound evidence.
 
 `ReadFileRequest` and `ReadFileResult` require explicit Jev field selection.
 `ReadFileOutput` separately selects recorded result text. These fields are
-shared evidence APIs used by Over-exploring. Eligibility also needs accepted
-retained scope, a completed episode, and supported result evidence. Smart checks
+shared evidence APIs used by Over-exploring. Eligibility needs accepted retained
+task context and bound read requests. Unrelated-file and file-breadth targets can
+use requests without results; within-file targets require supported observed
+extents. Findings require the actual `likely_excess` choice with finite probability
+in 0.75–1.0. Available matched results bind both result ID and output digest;
+half-present pairs are invalid. Independent positive targets remain available
+with sibling or provider failures. Incomplete evidence never establishes Clean.
+Provider windows use bounded representative text ranges with partial flags,
+not complete large outputs. Review counts use completed target IDs. Smart checks
 have no Auto Fix, verification, or savings estimate.
 
 Requested line units are characterized for exact Claude `Read`, Pi `read`, and
@@ -534,10 +541,10 @@ limits; they do not establish complete history outside the selected window.
 | Pi | SkillOpportunities | Y | Y | N | N | N | Native 0.84.4 core V3 retained root; wrapper selection/requests do not prove extension identity or successful execution; current inventory is not historical visibility. |
 | Cursor | SkillOpportunities | N | N | N | N | N | No accepted source format or product descriptor/report path is available. |
 | Antigravity | SkillOpportunities | N | N | N | N | N | No accepted source format or product descriptor/report path is available. |
-| Claude Code | OverExploring | Y | Y | N | N | N | Native CLI 2.1.278 retained scope and matched text Read results; completed episodes and observed extents required; no whole-file inference. |
-| Codex | OverExploring | Y | Y | N | N | N | Native 0.160.1 retained scope and pinned numbered single-file shell slice; native item/path and stdout joins required; other shell forms unsupported. |
-| OpenCode | OverExploring | Y | Y | N | N | N | Native `OpenCodeSqliteV2` text-only root history and pinned numbered read results only. All three reasons require supported recorded results; no verification or savings. |
-| Pi | OverExploring | Y | Y | N | N | N | Native 0.84.4 core V3 retained scope and exact Read text/clipping contract; continuation is not whole-file access; incomplete episodes unassessed. |
+| Claude Code | OverExploring | Y | Y | N | N | N | Native CLI 2.1.278 retained task context and bound Read requests; within-file targets require matched text results with observed extents; no whole-file inference. |
+| Codex | OverExploring | Y | Y | N | N | N | Native 0.160.1 retained task context and pinned numbered single-file shell slice requests; observed extents require native item/path and stdout joins; other shell forms unsupported. |
+| OpenCode | OverExploring | Y | Y | N | N | N | Native `OpenCodeSqliteV2` retained text task context and bound read requests. Within-file targets require pinned numbered result extents; no verification or savings. |
+| Pi | OverExploring | Y | Y | N | N | N | Native 0.84.4 core V3 retained task context and bound Read requests; within-file targets require exact text/clipping extents; continuation is not whole-file access. |
 | Cursor | OverExploring | N | N | N | N | N | Complete task history and observed-result support are unavailable. |
 | Antigravity | OverExploring | N | N | N | N | N | Complete task history and observed-result support are unavailable. |
 | Claude Code | ScopeCreep | Y | Y | N | N | N | Native CLI 2.1.278 retained root with explicit human markers; SDK/meta/synthetic text and tool permission do not authorize scope; original retention not proved. |

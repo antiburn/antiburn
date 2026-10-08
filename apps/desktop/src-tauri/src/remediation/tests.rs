@@ -1863,7 +1863,7 @@ fn recorded_read_findings_reach_evidence_and_future_prompts_without_watches() {
         Reason::ExcessiveWithinFileReading,
     ] {
         let mut result = reduced(&input, reason);
-        result.coverage.selected_items = result.completed_episode_ids.len();
+        result.coverage.selected_items = result.completed_work_item_ids.len();
         assert!(
             crate::over_exploring_worker::publication_has_clean_coverage(&result),
             "{result:?}"
@@ -1955,11 +1955,9 @@ fn recorded_read_findings_reach_evidence_and_future_prompts_without_watches() {
             .task_evidence
             .iter()
             .map(|item| item.source_id.as_str())
-            .chain(
-                expected
-                    .iter()
-                    .flat_map(|read| [read.request_id.as_str(), read.result_id.as_str()]),
-            )
+            .chain(expected.iter().flat_map(|read| {
+                std::iter::once(read.request_id.as_str()).chain(read.result_id.as_deref())
+            }))
             .collect();
         let actual_ids: BTreeSet<_> = evidence
             .items
@@ -1978,8 +1976,10 @@ fn recorded_read_findings_reach_evidence_and_future_prompts_without_watches() {
                 evidence
                     .items
                     .iter()
-                    .any(|item| item.reference == read.result_id
-                        && item.excerpt.contains("recorded code"))
+                    .any(
+                        |item| Some(item.reference.as_str()) == read.result_id.as_deref()
+                            && item.excerpt.contains("recorded code")
+                    )
             );
         }
         let copied = controller
