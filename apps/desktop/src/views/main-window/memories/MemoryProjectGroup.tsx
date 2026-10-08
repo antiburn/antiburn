@@ -175,6 +175,7 @@ function MemoryRow({
           >
             {entry.title}
           </span>
+          {/* The hook stays off the collapsed row. The open row shows it with its source. */}
           {!entry.inIndex && !deleted && (
             <span className="ms-2 shrink-0 type-metadata text-system-orange">not in index</span>
           )}
@@ -238,6 +239,7 @@ function MemoryRow({
             <div className="flex items-center gap-x-4">
               <RevealTextButton onReveal={onReveal} />
 
+              {/* No confirm dialog: delete archives the file and the row offers Undo. */}
               {writesSupported && (
                 <button type="button" onClick={onDelete} className={DESTRUCTIVE_TEXT_BUTTON}>
                   Delete

@@ -29,6 +29,8 @@ function memoryTotals(
     for (const memory of project.memories) {
       if (state.archived.has(memory.path)) continue
       memories += 1
+      // Only reads count as use. A write shows that an agent guessed the
+      // memory might be needed, not that it was.
       const read = memory.facts.lastReferencedMs
       if (read != null && now - read <= USED_WINDOW_MS) used += 1
     }
