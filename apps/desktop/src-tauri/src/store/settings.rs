@@ -11,6 +11,14 @@ use super::{
 };
 
 impl Store {
+    /// Delete an internal scalar. Errors are swallowed, as in
+    /// [`Store::set_internal_value`].
+    #[cfg(debug_assertions)]
+    pub fn remove_internal_value(&self, key: &str) {
+        let connection = self.lock();
+        let _ = connection.execute("DELETE FROM setting WHERE key = ?1", [key]);
+    }
+
     /// Every preference, with defaults filled in for keys never written.
     pub fn settings(&self) -> Result<AppSettings> {
         let connection = self.lock();
@@ -114,30 +122,6 @@ impl Store {
         tx.commit()?;
         self.update_settings_snapshot(&saved);
         Ok((previous, saved, result))
-    }
-
-    /// Make setup pending without changing the reader's data or choices.
-    pub fn restart_onboarding(&self) -> Result<(AppSettings, AppSettings)> {
-        let mut connection = self.lock();
-        let tx = connection.transaction()?;
-        let previous = read_settings(&tx)?;
-        let mut saved = previous.clone();
-        saved.onboarding_completed = false;
-        let saved = saved.normalized();
-        write_settings(&tx, &saved)?;
-        tx.execute(
-            "INSERT INTO setting (key, value) VALUES ('internal:onboardingFlow', 'restart')
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [],
-        )?;
-        tx.commit()?;
-        self.update_settings_snapshot(&saved);
-        Ok((previous, saved))
-    }
-
-    /// Whether the pending setup flow came from the explicit restart action.
-    pub fn onboarding_flow_is_restart(&self) -> bool {
-        self.internal_value("internal:onboardingFlow").as_deref() == Some("restart")
     }
 
     /// Replace every preference, returning what was actually stored (clamped).
@@ -256,6 +240,20 @@ pub(super) fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("liveUsageEnabled")
             .map(|value| value == "true")
             .unwrap_or(defaults.live_usage_enabled),
+        // No stored answer means either a fresh install (default: not
+        // started) or an install that finished setup before this flag
+        // existed. The onboarding-completed value tells the two apart: an
+        // install that already finished setup keeps live usage active
+        // exactly as it was.
+        live_usage_started: stored
+            .get("internal:liveUsageStarted")
+            .map(|value| value == "true")
+            .unwrap_or_else(|| {
+                stored
+                    .get("onboardingCompleted")
+                    .map(|value| value == "true")
+                    .unwrap_or(defaults.live_usage_started)
+            }),
         live_usage_hidden_providers: stored
             .get("liveUsageHiddenProviders")
             .map(|value| HiddenMeters::parse(value))
@@ -396,6 +394,10 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
     put.execute(params![
         "liveUsageEnabled",
         bool_text(settings.live_usage_enabled)
+    ])?;
+    put.execute(params![
+        "internal:liveUsageStarted",
+        bool_text(settings.live_usage_started)
     ])?;
     put.execute(params![
         "liveUsageHiddenProviders",

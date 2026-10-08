@@ -106,13 +106,8 @@
   min-block-size: 0;
 }
 
-:root[data-platform="macos"] .settings-titlebar,
-:root[data-platform="macos"] .onboarding-titlebar {
+:root[data-platform="macos"] .settings-titlebar {
   block-size: var(--native-titlebar-clearance);
-}
-
-:root[data-platform="macos"] .onboarding-header {
-  min-block-size: var(--native-titlebar-clearance);
 }
 
 :root[data-platform="macos"] .settings-sidebar {
@@ -144,10 +139,6 @@
   .ui-settings-row-control:not(:empty) {
     padding-block-start: var(--space-sm);
   }
-}
-
-.onboarding-step {
-  align-items: safe center;
 }
 
 .main-window-collection-detail {
@@ -218,21 +209,5 @@
 
   .ui-menu {
     max-inline-size: calc(100vw - var(--space-lg));
-  }
-
-  .onboarding-sources {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto auto;
-    block-size: auto;
-    gap: var(--space-lg);
-    padding-inline: var(--space-lg);
-  }
-
-  .onboarding-sources > div {
-    min-inline-size: 0;
-  }
-
-  .onboarding-sources .ui-scroll-viewport {
-    max-block-size: 40vh;
   }
 }

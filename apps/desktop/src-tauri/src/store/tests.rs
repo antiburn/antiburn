@@ -12,6 +12,7 @@ use super::*;
 
 mod activity_tests;
 mod burn_check_tests;
+mod claim_fence_tests;
 mod coverage_tests;
 mod evidence_tests;
 #[path = "tests/history_tests.rs"]
@@ -577,7 +578,7 @@ fn account_observation_migration_initializes_the_latest_timestamp() {
 #[test]
 fn surface_migration_reopens_only_claude_rows_labelled_cli() {
     let connection = rusqlite::Connection::open_in_memory().unwrap();
-    for &sql in &super::schema::MIGRATIONS[..70] {
+    for &sql in &super::schema::MIGRATIONS[..72] {
         connection.execute_batch(sql).unwrap();
     }
     for (agent, session_id, surface) in [
@@ -595,7 +596,7 @@ fn surface_migration_reopens_only_claude_rows_labelled_cli() {
             )
             .unwrap();
     }
-    connection.pragma_update(None, "user_version", 70).unwrap();
+    connection.pragma_update(None, "user_version", 72).unwrap();
 
     let store = Store::from_connection(
         connection,
@@ -2439,16 +2440,17 @@ fn account_switches_bind_only_sessions_near_each_observation() {
 }
 
 #[test]
-fn live_usage_is_only_active_once_both_the_switch_and_onboarding_agree() {
+fn live_usage_is_only_active_once_both_the_switch_and_the_start_click_agree() {
     // The switch defaults on, but that alone must never be enough: the
     // credential read this feature depends on — and, on macOS, the Keychain
-    // prompt it can trigger — must wait for onboarding to finish.
+    // prompt it can trigger — must wait for a deliberate click in the
+    // Overview's usage area.
     let mut settings = AppSettings::default();
     assert!(settings.live_usage_enabled, "the default is on");
-    assert!(!settings.onboarding_completed, "the default is not");
+    assert!(!settings.live_usage_started, "the default is not");
     assert!(!settings.live_usage_active());
 
-    settings.onboarding_completed = true;
+    settings.live_usage_started = true;
     assert!(settings.live_usage_active());
 
     settings.live_usage_enabled = false;

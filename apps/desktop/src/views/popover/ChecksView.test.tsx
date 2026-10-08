@@ -47,6 +47,8 @@ const presentation: ChecksPresentation = {
   refreshUnavailable: false,
   burnChecks: aggregateBurnCheckPresentation({
     pendingEvidence: 0,
+    deferredEvidence: 0,
+    windowSessions: 0,
     evidenceSettled: true,
     estimatedTokenBurnBasisPoints: 1_625,
     categories: [failure, ...wins],
@@ -133,6 +135,8 @@ describe("Checks", () => {
       refreshUnavailable: false,
       burnChecks: aggregateBurnCheckPresentation({
         pendingEvidence: 0,
+        deferredEvidence: 0,
+        windowSessions: 0,
         evidenceSettled: true,
         estimatedTokenBurnBasisPoints: 0,
         categories: [passedCategory],
@@ -146,6 +150,8 @@ describe("Checks", () => {
       wins: [partialCategory],
       burnChecks: aggregateBurnCheckPresentation({
         pendingEvidence: 0,
+        deferredEvidence: 0,
+        windowSessions: 0,
         evidenceSettled: true,
         estimatedTokenBurnBasisPoints: 0,
         categories: [partialCategory],
@@ -166,6 +172,8 @@ describe("Checks", () => {
       refreshUnavailable: false,
       burnChecks: aggregateBurnCheckPresentation({
         pendingEvidence: 0,
+        deferredEvidence: 0,
+        windowSessions: 0,
         evidenceSettled: true,
         estimatedTokenBurnBasisPoints: null,
         categories: [unassessedCategory],
@@ -207,6 +215,8 @@ describe("Checks", () => {
           burnChecks: aggregateBurnCheckPresentation(
             {
               pendingEvidence: 0,
+              deferredEvidence: 0,
+              windowSessions: 0,
               evidenceSettled: false,
               estimatedTokenBurnBasisPoints: 1_625,
               categories: [failure, ...wins],
@@ -524,6 +534,8 @@ describe("Checks", () => {
           refreshUnavailable: false,
           burnChecks: aggregateBurnCheckPresentation({
             pendingEvidence: 0,
+            deferredEvidence: 0,
+            windowSessions: 0,
             evidenceSettled: true,
             estimatedTokenBurnBasisPoints: 0,
             categories: wins,
@@ -551,6 +563,8 @@ describe("Checks", () => {
           refreshUnavailable: false,
           burnChecks: aggregateBurnCheckPresentation({
             pendingEvidence: 0,
+            deferredEvidence: 0,
+            windowSessions: 0,
             evidenceSettled: true,
             estimatedTokenBurnBasisPoints: 0,
             categories: [category("sessionsOverDepth", { clean: 8, unavailable: 4 })],

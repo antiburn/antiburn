@@ -15,10 +15,19 @@ credits. Antiburn shows local usage estimates in Settings.
 
 ## Setup, controls, and local data
 
-Open **Settings → Checks**, enable Smart Burn Checks, and add a TypeSafe API key.
-The setting controls automatic checks. You can choose future sessions or start a
-7- or 30-day history review there. The history window applies to the requested
-review; it does not prove which instructions were active during older actions.
+Open the **Checks** step settings to choose checks. Each local and Smart Burn
+Check has an app-wide enabled preference. Existing local checks retain their
+enabled behavior when this control is introduced; Ignored Instructions retains
+the consent already saved for it. A check added in a later release starts off
+until the reader opts in.
+
+Smart Burn Checks also require the Smart Checks group to be active and a
+TypeSafe API key. The group control and provider setup do not replace or reset
+the individual choices. You can choose future sessions or start a 7- or 30-day
+history review there. A history request includes only enabled eligible Smart
+Checks. Enabling a check does not silently add the disabled interval to a
+history run. The history window applies to the requested review; it does not
+prove which instructions were active during older actions.
 
 Pause checks to stop new assessments while keeping the saved key. Remove the key
 to stop new TypeSafe requests. Remove a session to delete that session's local
@@ -26,6 +35,13 @@ check state; already-incurred usage remains in the local totals. **Clear Local
 Data** also removes local sessions, check state, unresolved requests, and usage
 totals. See the [privacy policy](privacy-policy.md) for retention and data
 handling details.
+
+Disabling one check stops its check-specific work and hides its active findings,
+counts, and actions. Antiburn retains completed results, compatible cached
+answers, remediation history, and incurred usage. Re-enabling can make retained
+compatible results eligible again; local checks can recompute from retained
+evidence. If every check is off, the product reports that no checks are enabled
+and does not describe the sessions as Clean or Passed.
 
 ## Ignored Instructions
 

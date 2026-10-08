@@ -2,8 +2,8 @@
 
 # Design review: {window} — {surface}
 
-- **Window:** {popover | settings | onboarding | notification} ({width} × {height})
-- **Surface:** {activity | session | usage | pane name | step name | resting | expanded}
+- **Window:** {popover | settings | notification} ({width} × {height})
+- **Surface:** {activity | session | usage | pane name | resting | expanded}
 - **Build:** {dev instance, branch, or commit}
 - **Date:** {YYYY-MM-DD}
 - **Reviewer:** antiburn design-review skill

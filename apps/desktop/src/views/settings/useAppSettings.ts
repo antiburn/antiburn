@@ -51,9 +51,9 @@ const settingsStore = createExternalStore<SettingsSnapshot>({
       return { settings: DEFAULT_SETTINGS, loaded: true }
     }
   },
-  // Writes can come from another window (onboarding and the popover share the
-  // same settings store); the broadcast keeps this window's copy — and its
-  // theme — current too.
+  // Writes can come from another window (the main window and the popover
+  // share the same settings store); the broadcast keeps this window's copy —
+  // and its theme — current too.
   subscribe: (set) =>
     onSettingsChanged((stored) => {
       settingsRevision += 1

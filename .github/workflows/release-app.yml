@@ -86,6 +86,7 @@ jobs:
 
       - name: Apply the manual build version
         if: github.event_name == 'workflow_dispatch'
+        shell: bash
         env:
           VERSION: ${{ inputs.version }}
         run: node scripts/prepare-app-version.mjs "$VERSION"
@@ -215,6 +216,7 @@ jobs:
 
       - name: Apply the manual build version
         if: github.event_name == 'workflow_dispatch'
+        shell: bash
         env:
           VERSION: ${{ needs.verify.outputs.version }}
         run: node scripts/prepare-app-version.mjs "$VERSION"
@@ -326,8 +328,8 @@ jobs:
             artifact: linux-x64
             arch_label: x64
             updater_platform: linux-x86_64-appimage
-            linuxdeploy_asset_id: "538917371"
-            linuxdeploy_sha256: "36a2d7e274d12e1050d0e9ecfe11d339ed54720b2bec464c286d53f8b07f5c62"
+            linuxdeploy_asset_id: "313839329"
+            linuxdeploy_sha256: "c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
           # The same glibc-floor reasoning: ubuntu-24.04-arm pins the ARM64
           # floor at glibc 2.39.
           - name: Linux ARM64
@@ -337,8 +339,8 @@ jobs:
             artifact: linux-arm64
             arch_label: aarch64
             updater_platform: linux-aarch64-appimage
-            linuxdeploy_asset_id: "538917074"
-            linuxdeploy_sha256: "556ab80baa98e600aa80f0dcedfb70bca0e1ce7e9f147fb345be3fcc3e91b2b1"
+            linuxdeploy_asset_id: "313839294"
+            linuxdeploy_sha256: "620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -376,7 +378,8 @@ jobs:
             libxdo-dev \
             patchelf \
             pkg-config \
-            wget
+            wget \
+            xdg-utils
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
@@ -403,6 +406,7 @@ jobs:
 
       - name: Apply the manual build version
         if: github.event_name == 'workflow_dispatch'
+        shell: bash
         env:
           VERSION: ${{ needs.verify.outputs.version }}
         run: node scripts/prepare-app-version.mjs "$VERSION"
@@ -454,10 +458,8 @@ jobs:
       # are no detached signatures, and latest.json would point at downloads
       # nothing can verify.
       #
-      # Windows platform signing can be waived, but only deliberately and only
-      # loudly: set ALLOW_UNSIGNED_WINDOWS to `true`, and the draft says so in
-      # its own first line. macOS releases always require Developer ID signing
-      # and notarization. Nothing here ever fakes a signature.
+      # Windows requires Azure Authenticode signing. macOS requires Developer ID
+      # signing and notarization.
       - name: Check the signing credentials this build needs
         id: signing
         shell: bash
@@ -474,7 +476,6 @@ jobs:
           AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
           AZURE_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_SIGNING_ACCOUNT_NAME }}
           AZURE_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_SIGNING_CERTIFICATE_PROFILE_NAME }}
-          ALLOW_UNSIGNED_WINDOWS: ${{ vars.ALLOW_UNSIGNED_WINDOWS }}
         run: |
           set -euo pipefail
           missing=""
@@ -496,23 +497,16 @@ jobs:
               platform_signing=developer-id
               ;;
             Windows)
-              configured=0
               for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID AZURE_SIGNING_ENDPOINT AZURE_SIGNING_ACCOUNT_NAME AZURE_SIGNING_CERTIFICATE_PROFILE_NAME; do
-                if [[ -n "${!name:-}" ]]; then
-                  configured=$((configured + 1))
-                else
+                if [[ -z "${!name:-}" ]]; then
                   missing="${missing:+${missing}, }${name}"
                 fi
               done
-              if [[ "$configured" -eq 6 ]]; then
-                platform_signing=authenticode
-              elif [[ "$configured" -eq 0 && "${ALLOW_UNSIGNED_WINDOWS:-}" == "true" ]]; then
-                echo "::warning::Building the Windows installer WITHOUT an Authenticode signature, because ALLOW_UNSIGNED_WINDOWS is true. SmartScreen will warn on download."
-                platform_signing=unsigned
-              else
-                echo "::error::Missing Azure signing variables in the 'release' environment: ${missing}. A partial Azure configuration cannot use the unsigned waiver."
+              if [[ -n "$missing" ]]; then
+                echo "::error::Missing required Azure signing variables in the 'release' environment: ${missing}. Windows builds require Authenticode signing."
                 exit 1
               fi
+              platform_signing=authenticode
               ;;
             *)
               # Linux packages carry no platform code signature: neither the
@@ -622,6 +616,24 @@ jobs:
           AZURE_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_SIGNING_CERTIFICATE_PROFILE_NAME }}
         run: ./scripts/setup-windows-signing.ps1
 
+      - name: Verify Azure signing integration
+        if: runner.os == 'Windows' && steps.signing.outputs.platform_signing == 'authenticode'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $directory = Join-Path $env:RUNNER_TEMP 'windows-signing-probe'
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          $source = Join-Path $directory 'signing-probe.rs'
+          $binary = Join-Path $directory 'signing-probe.exe'
+          Set-Content -LiteralPath $source -Value 'fn main() {}' -Encoding ascii
+          rustc --crate-name signing_probe --target $env:TARGET $source -o $binary
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signing probe compilation failed with exit code $LASTEXITCODE."
+          }
+          ./scripts/windows-signing.ps1 -FilePath $binary
+
       # `icon.icns` and `icon.ico` are the two platform containers that are not
       # checked in (see src-tauri/icons/README.md). `tauri icon` also re-samples
       # the PNGs from the 1024px master, so the analytically generated ones are
@@ -635,8 +647,7 @@ jobs:
           test -f apps/desktop/src-tauri/icons/icon.icns
           test -f apps/desktop/src-tauri/icons/icon.ico
 
-      # Tauri 2.11.4 caches a 2024 linuxdeploy build that bundles libwayland-client.
-      # This pinned build follows the AppImage graphics-library exclusions.
+      # Use retained linuxdeploy release 1-alpha-20251107-1, not moving continuous assets.
       # The asset id and hash are per-architecture matrix values; the cache
       # file name must match what tauri-bundler looks for on this host, and
       # `uname -m` gives that same architecture label.
@@ -764,15 +775,27 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           . ./scripts/windows-signing.ps1
-          Assert-WindowsSignature -FilePath "apps/desktop/src-tauri/target/$env:TARGET/release/antiburn.exe"
+          # Tauri restores the unsigned build executable after packaging.
+          # Verify the installed payload instead of that restored copy.
           $bundle = "apps/desktop/src-tauri/target/$env:TARGET/release/bundle/nsis"
-          $installers = Get-ChildItem -Path $bundle -Filter *.exe
-          if ($installers.Count -eq 0) {
-            Write-Host "::error::No NSIS installer was produced."
-            exit 1
+          $installers = @(Get-ChildItem -Path $bundle -Filter *.exe)
+          if ($installers.Count -ne 1) {
+            throw "Expected one NSIS installer, found $($installers.Count)."
           }
-          foreach ($installer in $installers) {
-            Assert-WindowsSignature -FilePath $installer.FullName
+          $installer = $installers[0]
+          Assert-WindowsSignature -FilePath $installer.FullName
+          $directory = Join-Path $env:RUNNER_TEMP 'antiburn-install-verification'
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', "/D=$directory") -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Silent installation failed with exit code $($process.ExitCode)."
+          }
+          $application = Join-Path $directory 'antiburn.exe'
+          $uninstaller = Join-Path $directory 'uninstall.exe'
+          Assert-WindowsSignature -FilePath $application
+          Assert-WindowsSignature -FilePath $uninstaller
+          $process = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+          if ($process.ExitCode -ne 0 -or (Test-Path -LiteralPath $application)) {
+            throw "Silent uninstall failed with exit code $($process.ExitCode)."
           }
 
       # Collection is driven by the detached signatures rather than by a table

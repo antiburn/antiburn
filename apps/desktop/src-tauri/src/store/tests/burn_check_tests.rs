@@ -342,7 +342,126 @@ async fn shared_runner_persists_each_response_before_the_slow_tail_and_resumes_w
     assert_eq!(resumed.result, 3);
 }
 
-const CHECK_IDS: &[&str] = &["ignored_instructions", "future_check"];
+const CHECK_IDS: &[&str] = &["ignored_instructions", "cache_churn"];
+
+#[test]
+fn disabling_a_smart_check_closes_durable_request_admission() {
+    let store = store();
+    let mut record = session("disabled-before-dispatch", 10_000);
+    record.activity_cursor = "before".to_owned();
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    publish_ready(&store, &record, 1);
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], 20_000)
+        .unwrap();
+    record.activity_cursor = "after".to_owned();
+    record.updated_at_epoch = Some(29_000);
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    publish_ready(&store, &record, 2);
+    let candidate = store
+        .burn_check_candidates("ignored_instructions", 40_000, 180, 10)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let input = input(&candidate, "disabled-before-dispatch-revision");
+    assert!(
+        store
+            .queue_burn_check_assessment(&input, 40_000, 180)
+            .unwrap()
+    );
+    assert!(
+        store
+            .claim_burn_check_assessment(&input, 40_000, 300, 180)
+            .unwrap()
+    );
+    let BurnCheckReservation::Reserved(reservation_id) = store
+        .reserve_burn_check_usage(&input, "synthetic-provider", "model-v1", 100, 40_001, 180)
+        .unwrap()
+    else {
+        panic!("enabled current work must reserve usage");
+    };
+
+    assert!(
+        store
+            .set_check_enabled_with_smart_transition(
+                antiburn_local::checks::DetectorId::IgnoredInstructions,
+                false,
+                true,
+                40_001,
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .admit_burn_check_requests(
+                &input,
+                &["disabled-request".to_owned()],
+                &reservation_id,
+                40_002,
+            )
+            .unwrap(),
+        BurnCheckRequestAdmission::Stale
+    );
+    assert!(
+        store
+            .set_check_enabled_with_smart_transition(
+                antiburn_local::checks::DetectorId::IgnoredInstructions,
+                true,
+                true,
+                40_003,
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .admit_burn_check_requests(
+                &input,
+                &["old-generation-request".to_owned()],
+                &reservation_id,
+                40_004,
+            )
+            .unwrap(),
+        BurnCheckRequestAdmission::Stale
+    );
+    assert!(
+        store
+            .queue_burn_check_assessment(&input, 40_005, 180)
+            .unwrap()
+    );
+    assert!(
+        store
+            .claim_burn_check_assessment(&input, 40_005, 300, 180)
+            .unwrap()
+    );
+    let BurnCheckReservation::Reserved(paused_reservation_id) = store
+        .reserve_burn_check_usage(&input, "synthetic-provider", "model-v1", 100, 40_006, 180)
+        .unwrap()
+    else {
+        panic!("re-enabled current work must reserve usage");
+    };
+    store.disable_burn_checks().unwrap();
+    assert_eq!(
+        store
+            .admit_burn_check_requests(
+                &input,
+                &["paused-master-request".to_owned()],
+                &paused_reservation_id,
+                40_007,
+            )
+            .unwrap(),
+        BurnCheckRequestAdmission::Stale
+    );
+}
 
 #[test]
 fn replacing_a_rejected_key_retries_only_auth_failures() {
@@ -734,12 +853,12 @@ fn scheduler_revision_belongs_to_each_registered_check() {
         .unwrap();
     publish_ready(&store, &record, 2);
     let candidate = store
-        .burn_check_candidates_for_revision("future_check", "revision-a", 40_000, 180, 10)
+        .burn_check_candidates_for_revision("cache_churn", "revision-a", 40_000, 180, 10)
         .unwrap()
         .pop()
         .unwrap();
     let mut input = input(&candidate, "selected-input");
-    input.check_id = "future_check".to_owned();
+    input.check_id = "cache_churn".to_owned();
     input.evaluator_revision = "revision-a".to_owned();
     assert!(
         store
@@ -758,23 +877,23 @@ fn scheduler_revision_belongs_to_each_registered_check() {
     );
     assert!(
         store
-            .burn_check_candidates_for_revision("future_check", "revision-a", 40_002, 180, 10)
+            .burn_check_candidates_for_revision("cache_churn", "revision-a", 40_002, 180, 10)
             .unwrap()
             .is_empty()
     );
     assert_eq!(
         store
-            .burn_check_candidates_for_revision("future_check", "revision-b", 40_002, 180, 10)
+            .burn_check_candidates_for_revision("cache_churn", "revision-b", 40_002, 180, 10)
             .unwrap()
             .len(),
         1
     );
     store
-        .record_burn_check_candidate_issue_for_check("future_check", &candidate, true, 0, 40_002)
+        .record_burn_check_candidate_issue_for_check("cache_churn", &candidate, true, 0, 40_002)
         .unwrap();
     assert_eq!(
         store
-            .burn_check_assessment(&record.key, "future_check")
+            .burn_check_assessment(&record.key, "cache_churn")
             .unwrap()
             .unwrap()
             .status,
@@ -826,7 +945,7 @@ fn history_and_recent_candidates_share_a_bounded_scheduler_batch() {
         [false, true, false, true]
     );
     let future = store
-        .burn_check_candidates("future_check", 40_000, 180, 4)
+        .burn_check_candidates("cache_churn", 40_000, 180, 4)
         .unwrap();
     assert_eq!(future.len(), 2);
     assert!(future.iter().all(|candidate| !candidate.historical));

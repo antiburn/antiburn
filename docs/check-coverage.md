@@ -27,6 +27,18 @@ path is `Unknown` or `Unsupported`.
 `Assessable` describes an accepted source contract, not every session or past
 release. A clean result still needs complete session facts and eligible activity.
 
+These statuses describe evidence capability. Runtime enablement is a separate
+app-wide product gate for every check. A disabled check does not evaluate new
+check-specific work or contribute active findings, clean results, counts,
+remediation actions, verification watches, or savings. Its completed results,
+compatible cache entries, remediation history, and incurred usage remain
+stored. Re-enabling may use retained compatible results, but it does not turn
+the disabled interval into Smart Check history; history remains an explicit
+request. Existing checks preserve their prior enabled state during migration,
+and each check introduced by a later release defaults off until the reader opts
+in. With no checks enabled, the desktop must report that state rather than
+claiming Clean or Passed.
+
 ## Checks
 
 | Code | Check                 |
@@ -51,7 +63,7 @@ a bounded contract. No row promises parity across all historical versions.
 
 | `SourceFormat`                 | Passive source format                                                     | Version statement                                                                                                                                                                                                                         | Current reader                        |
 | ------------------------------ | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| `ClaudeJsonl`                  | Claude Code session JSONL and child sidecars                              | Private 2.1.220-2.1.246 observation contract; main JSONL and sidecar shapes are pinned separately; known lifecycle-only records are allowlisted as inert                                                                                  | Dedicated                             |
+| `ClaudeJsonl`                  | Claude Code session JSONL and child sidecars, including Claude Desktop Cowork transcripts from nested `.claude/projects` roots | Private 2.1.220-2.1.246 observation contract; main JSONL and sidecar shapes are pinned separately; known lifecycle-only records are allowlisted as inert. A synthetic fixture characterizes the Cowork main JSONL keys observed with Claude Desktop 2.2553.1 (embedded Claude Code 2.1.275); this does not widen the pinned range. The Cowork `audit*.jsonl` log is not read and supplies no evidence | Dedicated                             |
 | `CodexRolloutJsonl`            | Codex rollout JSONL, with discovered child rollouts                       | Recorder commit `e7637306bc9246a3e42e407cb94f96b7ed345e3e`; synthetic fixtures include protocol echoes and bounded legacy reverted forks                                                                                                  | Dedicated                             |
 | `OpenCodeJsonl`                | OpenCode legacy exported session data                                     | Accepted export wrappers and native message/part shapes; pinned research below                                                                                                                                                            | Dedicated                             |
 | `OpenCodeSqliteV2`             | OpenCode SQLite `session`, `message`, `part` tables                       | Fixture-backed `id`/foreign-key contract in a read-only transaction snapshot; optional time/title/part-ID columns; not CoreV2 `session_message`                                                                                           | Dedicated                             |
@@ -952,7 +964,7 @@ rows. Active attempts remain until they verify or recur.
 The stored estimated-savings value is the target's pre-remediation opportunity;
 it is not recent usage. The aggregate-savings read returns only exact current
 cycles that remain fixed, retain a fixed verification result and verified
-boundary, match their stored finding snapshot, and are not actively snoozed.
+boundary, match their stored finding snapshot, are enabled, and are not actively snoozed.
 The renderer additionally requires a visibly Passed detector and hides Savings
 when no eligible cycle remains. Confirmed savings alone can use eligible
 post-verification sessions.

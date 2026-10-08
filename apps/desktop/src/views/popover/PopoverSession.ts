@@ -68,8 +68,7 @@ import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types
  * React reads immutable snapshots through `useSyncExternalStore`; IPC calls,
  * event subscriptions, and the window's own keyboard handling stay here,
  * where they belong to the external systems that created them rather than to
- * a component lifecycle. See `views/onboarding/OnboardingSession.ts` for the
- * same shape applied to the first-run window.
+ * a component lifecycle.
  */
 
 export interface PopoverSnapshot {
@@ -1035,8 +1034,9 @@ export class PopoverSession {
     const hasLiveReading = liveDisplayableProviders(this.snapshot.liveUsage).some(
       (provider) => liveWindows(provider).length > 0,
     )
+    // A missing credential (Claude Desktop alone) is an empty state, not an error.
     const hasLiveError = liveUsageObservations(this.snapshot.liveUsage).some(
-      ({ state }) => state !== "fresh" && state !== "stale",
+      ({ state }) => state !== "fresh" && state !== "stale" && state !== "no_credentials",
     )
     const hasData = (this.snapshot.entries?.length ?? 0) > 0 || hasLocalUsage || hasLiveReading
     if (hasData) {

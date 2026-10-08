@@ -12,6 +12,7 @@ import {
   useSyncExternalStore,
 } from "react"
 
+import { UnavailableNote } from "../../../components/providerUsage/UnavailableNote"
 import { useStableAccountNumbers } from "../../../components/providerUsage/useStableAccountNumbers"
 import { HeroFigures, type HeroFigureCell } from "../../../components/ui/HeroFigures"
 import { ScrollPane } from "../../../components/ui/ScrollPane"
@@ -21,6 +22,11 @@ import { cn } from "../../../lib/cn"
 import { traceEvent, traceSpan } from "../../../lib/perfTrace"
 import { prefersReducedMotion } from "../../../lib/popoverHeight"
 import { agentDisplayName } from "../../../lib/presentation/agents"
+import {
+  liveErrorHasDocs,
+  liveUnavailableProviders,
+  providerGroupLabel,
+} from "../../../lib/presentation/liveUsage"
 import { formatSpendFigure } from "../../../lib/presentation/providerUsage"
 import { relativeTime } from "../../../lib/presentation/relativeTime"
 import type { QuotaAccountPayload, QuotaLanePayload } from "../../../lib/providerUsageIpc"
@@ -436,6 +442,14 @@ export function QuotaView({
 
   const loading = state.accounts == null && !state.accountsError
   const accountsEmpty = state.accounts != null && state.accounts.length === 0
+  // Providers that can never have readings here, such as Claude Desktop with
+  // no Claude Code sign-in. "Turn on live usage" does not help these readers.
+  const limitsNotAvailable =
+    accountsEmpty && state.liveUsage
+      ? liveUnavailableProviders(state.liveUsage).filter((entry) =>
+          liveErrorHasDocs(entry.detail),
+        )
+      : []
   const usage = state.usage
   // The full-page loading state above covers the first load. A later
   // reload (account, lane, or range change) keeps the stale reading on
@@ -636,6 +650,24 @@ export function QuotaView({
               Retry
             </button>
           </div>
+        </div>
+      ) : limitsNotAvailable.length > 0 ? (
+        <div className="flex flex-col gap-(--space-lg) p-8">
+          {limitsNotAvailable.map((entry) => (
+            <div
+              key={entry.provider}
+              role="group"
+              aria-label={providerGroupLabel(entry.displayName, entry.planLabel)}
+            >
+              <h2 className="type-footnote font-medium tracking-wide text-label">
+                <span className="uppercase">{entry.displayName}</span>
+                {entry.planLabel && (
+                  <span className="text-label-secondary"> · {entry.planLabel}</span>
+                )}
+              </h2>
+              <UnavailableNote entry={entry} className="pt-(--space-md)" />
+            </div>
+          ))}
         </div>
       ) : accountsEmpty ? (
         <p className="p-8 type-body text-label-secondary">

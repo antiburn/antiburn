@@ -980,8 +980,7 @@ pub struct AppSettings {
     pub activity_window_days: u32,
     /// Days to keep local session data. `-1` keeps it until explicit deletion.
     pub session_data_retention_days: i32,
-    /// False until the first-run flow finishes; gates onboarding and the
-    /// automatic first scan.
+    /// False until the first-run flow finishes.
     pub onboarding_completed: bool,
     /// Whether the packaged app should register itself to start after sign-in.
     pub launch_at_login: bool,
@@ -1044,6 +1043,15 @@ pub struct AppSettings {
     /// [`AppSettings::live_usage_active`] for the second, unconditional gate
     /// that also has to hold before any of this runs.
     pub live_usage_enabled: bool,
+    /// Whether the reader has started live usage from the Overview.
+    ///
+    /// False for a new install until a deliberate click in the Overview's
+    /// usage area runs `start_live_usage`. That click, not setup finishing,
+    /// is what may trigger the macOS Keychain prompt the credential read
+    /// needs. An install that finished setup before this flag existed is
+    /// treated as already started; see `read_settings`.
+    #[serde(default)]
+    pub live_usage_started: bool,
     /// The providers whose meter the reader turned off. See [`HiddenMeters`].
     ///
     /// This is a narrower form of the switch above it: that one stops every
@@ -1126,11 +1134,13 @@ impl Default for AppSettings {
             // not sit behind a first-run choice. The switch is the opt-out
             // for a reader who wants no background traffic at all.
             live_usage_enabled: true,
+            // False: a new install has not clicked "Show live limits" yet.
+            live_usage_started: false,
             // Empty: every provider antiburn can meter is metered. A reader
             // who wants fewer meters says so one provider at a time.
             live_usage_hidden_providers: HiddenMeters::default(),
-            // Empty: every agent with sessions shows. Onboarding and the
-            // Sources pane write slugs here when the reader turns one off.
+            // Empty: every agent with sessions shows. The Sources pane writes
+            // slugs here when the reader turns one off.
             disabled_agents: DisabledAgents::default(),
             // Official analytics-capable builds start enabled. Source builds
             // omit the client unless the builder selects its Cargo feature.
@@ -1153,19 +1163,34 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    /// Whether the menu-bar icon shows now. The icon stays hidden until the
+    /// first run finishes, because the popover has no data before then and
+    /// the main window is the only place where the first run continues.
+    pub fn tray_shown(&self) -> bool {
+        self.tray_icon_visible && self.onboarding_completed
+    }
+
+    /// Whether the Dock icon shows now. During the first run the menu-bar
+    /// icon is hidden, so the Dock icon always shows and the reader can
+    /// still get back to the app.
+    pub fn dock_shown(&self) -> bool {
+        self.dock_icon_visible || !self.onboarding_completed
+    }
+
     /// Whether live usage collection may actually run right now.
     ///
     /// Two gates, both required, and both checked fresh on every pass rather
     /// than latched: [`Self::live_usage_enabled`] (on by default; the
-    /// reader's opt-out) and [`Self::onboarding_completed`]. The onboarding
-    /// half exists so the credential read this feature depends on — and, on
-    /// macOS, the Keychain prompt that read can trigger — never happens
-    /// before the reader has seen what this app is. Every call site that
-    /// might collect or fetch a live usage source must go through this rather
-    /// than reading `live_usage_enabled` alone. App refreshes use
+    /// reader's opt-out) and [`Self::live_usage_started`] (off by default;
+    /// the reader's deliberate opt-in). The second gate exists so the
+    /// credential read this feature depends on — and, on macOS, the Keychain
+    /// prompt that read can trigger — never happens before the reader asks
+    /// for live limits. Every call site that might collect or fetch a live
+    /// usage source must go through this rather than reading
+    /// `live_usage_enabled` alone. App refreshes use
     /// `usage_alerts::refresh_publish_and_evaluate`.
     pub fn live_usage_active(&self) -> bool {
-        self.live_usage_enabled && self.onboarding_completed
+        self.live_usage_enabled && self.live_usage_started
     }
 
     /// Clamp anything a caller could get wrong. Called on both read and write,

@@ -144,7 +144,12 @@ impl Cooldown {
                     inner.last_attempt = Some((Instant::now(), true));
                 }
                 Err(failure) => {
-                    if let Some(known) = failure.last_known
+                    if failure.detail == Some(SourceErrorDetail::DesktopOnly) {
+                        // No login is left that antiburn can read, so an
+                        // earlier reading no longer describes a live account.
+                        // It goes, the same as after a negative answer.
+                        inner.snapshot = None;
+                    } else if let Some(known) = failure.last_known
                         && seed_takes_over(inner.snapshot.as_ref(), &known, now)
                     {
                         inner.snapshot = Some(*known);
@@ -378,6 +383,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_desktop_only_failure_drops_the_earlier_reading() {
+        let cooldown = Cooldown::new();
+        cooldown.poll(at(1_000), DEFAULT_MAX_AGE, || {
+            Ok(Some(snapshot(at(1_000), 40.0)))
+        });
+        cooldown.open_for_test();
+        let outcome = cooldown.poll(at(1_001), DEFAULT_MAX_AGE, || {
+            Err(FetchFailure {
+                error: ProviderUsageError::Authentication,
+                detail: Some(SourceErrorDetail::DesktopOnly),
+                last_known: None,
+            })
+        });
+        assert!(outcome.snapshots.is_empty());
+        assert_eq!(outcome.detail, Some(SourceErrorDetail::DesktopOnly));
     }
 
     #[test]

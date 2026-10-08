@@ -584,7 +584,7 @@ describe("BurnChecksView grouping", { timeout: 15_000 }, () => {
     expect(screen.queryByText("Checks have not been assessed.")).not.toBeInTheDocument()
     view.unmount()
     setup(null, false, aggregate, { ...report, evidenceSettled: true, categories: [] })
-    expect(await screen.findByText("No active checks.")).toBeVisible()
+    expect(await screen.findByText("No checks enabled.")).toBeVisible()
     expect(screen.queryByRole("button", { name: /Not assessed \d/ })).not.toBeInTheDocument()
   })
 

@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core"
-import { listen, type UnlistenFn } from "@tauri-apps/api/event"
+import { listen, type UnlistenFn } from "./tauriEvents"
 
 export interface MainWindowSessionIdentity {
   agent: string
@@ -10,11 +10,18 @@ export interface MainWindowSessionIdentity {
 
 export type MainWindowSectionId = "overview" | "activity" | "burnChecks"
 
+/** One Overview step-settings modal the shell can open directly, from
+ *  outside the retained renderer (a popover attention banner today). */
+export type MainWindowOverviewStep = "agents" | "sessions" | "checks"
+
 /** One exact destination requested from outside the retained main renderer. */
 interface MainWindowNavigationDestination {
   section: MainWindowSectionId
   target: MainWindowSessionIdentity | null
   remoteHostId?: string | null
+  /** Set only for an `"overview"` destination that must also open one
+   *  step's settings modal. */
+  overviewStep?: MainWindowOverviewStep | null
 }
 
 /** One revisioned request shared by event and renderer recovery paths. */
@@ -77,10 +84,17 @@ export async function openMainWindowSession(target: MainWindowSessionIdentity): 
   await invoke("open_main_window_session", { target })
 }
 
-/** Open or focus the main window and select one top-level section. */
-export async function openMainWindowSection(section: MainWindowSectionId): Promise<void> {
+/** Open or focus the main window and select one top-level section. For
+ *  `"overview"`, `overviewStep` also opens that step's settings modal. */
+export async function openMainWindowSection(
+  section: MainWindowSectionId,
+  overviewStep?: MainWindowOverviewStep,
+): Promise<void> {
   if (!isTauri()) return
-  await invoke("open_main_window_section", { section })
+  await invoke(
+    "open_main_window_section",
+    overviewStep ? { section, overviewStep } : { section },
+  )
 }
 
 /** Open Sessions with one remote source and no other active facets. */

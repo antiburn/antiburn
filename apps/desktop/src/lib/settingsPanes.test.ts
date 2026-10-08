@@ -6,7 +6,6 @@ describe("isSettingsPane", () => {
   it("recognizes every registered pane", () => {
     for (const pane of [
       "general",
-      "sources",
       "notifications",
       "usage",
       "appearance",
@@ -22,5 +21,10 @@ describe("isSettingsPane", () => {
     expect(isSettingsPane("reports")).toBe(false)
     expect(isSettingsPane(undefined)).toBe(false)
     expect(isSettingsPane(7)).toBe(false)
+  })
+
+  it("rejects the Sources and Checks panes, retired to Overview step modals", () => {
+    expect(isSettingsPane("sources")).toBe(false)
+    expect(isSettingsPane("checks")).toBe(false)
   })
 })

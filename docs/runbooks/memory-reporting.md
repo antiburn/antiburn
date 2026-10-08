@@ -61,7 +61,7 @@ profile-retention, and executable options.
 For each run, the runner:
 
 1. Creates an isolated home, temporary directory, and XDG directories.
-2. Completes onboarding through Steve in an unmeasured setup launch.
+2. Completes the first run through Steve in an unmeasured setup launch.
 3. Starts a fresh measured `.app` through macOS Launch Services.
 4. Finds the app's menu-bar item through PID-scoped accessibility elements.
 5. Clicks the reported item coordinates and waits for the `Sessions` landmark.

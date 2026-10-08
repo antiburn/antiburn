@@ -32,7 +32,7 @@ export type FlowPhase =
   | "done"
 
 /** How one folder's request ended. */
-export type FolderVerdict = "granted" | "denied" | "recorded-denial" | "error"
+type FolderVerdict = "granted" | "denied" | "recorded-denial" | "error"
 
 /**
  * How long to wait between folders.

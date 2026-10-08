@@ -424,7 +424,7 @@ describe("BurnCheckTargetDetail", () => {
     expect(getBurnCheckTargetEvidence).toHaveBeenCalledTimes(2)
     expect(await screen.findAllByText("Quality Review")).not.toHaveLength(0)
     expect(screen.getByText("Where it was ignored")).toBeInTheDocument()
-    expect(screen.getByText("The Workflow tool was never invoked.")).toBeInTheDocument()
+    expect(await screen.findByText("The Workflow tool was never invoked.")).toBeInTheDocument()
     expect(
       screen.getByText(/exact instruction and action text was not saved/),
     ).toBeInTheDocument()

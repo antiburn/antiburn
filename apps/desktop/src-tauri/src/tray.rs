@@ -95,7 +95,7 @@ const MENU_OPEN_POPOVER: &str = "open-popover";
 const MENU_PIN: &str = "pin";
 const MENU_SETTINGS: &str = "settings";
 #[cfg(debug_assertions)]
-const MENU_RESET_ONBOARDING: &str = "reset-onboarding";
+const MENU_RESET_FIRST_RUN: &str = "reset-first-run";
 #[cfg(debug_assertions)]
 const MENU_RANDOM_USAGE: &str = "random-usage";
 #[cfg(debug_assertions)]
@@ -146,7 +146,7 @@ const OPEN_LABEL: &str = "Open antiburn";
 #[cfg(target_os = "linux")]
 const OPEN_POPOVER_LABEL: &str = "Open Usage Popover";
 #[cfg(debug_assertions)]
-const RESET_ONBOARDING_LABEL: &str = "Reset Onboarding";
+const RESET_FIRST_RUN_LABEL: &str = "Reset First Run";
 #[cfg(debug_assertions)]
 const RANDOM_USAGE_LABEL: &str = "Simulate Random Usage";
 #[cfg(debug_assertions)]
@@ -274,6 +274,30 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
     Ok(tray)
 }
 
+/// Debug-only: add a Debug menu with "Reset First Run" to the macOS menu
+/// bar. The menu-bar icon is hidden during the first run, so its own reset
+/// item is out of reach then. Both items use the same ID, and Tauri sends
+/// every menu event to [`on_menu_event`], so one handler serves both.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub fn install_debug_app_menu(app: &AppHandle) -> tauri::Result<()> {
+    let menu = Menu::default(app)?;
+    let reset_first_run_item = MenuItem::with_id(
+        app,
+        MENU_RESET_FIRST_RUN,
+        RESET_FIRST_RUN_LABEL,
+        true,
+        None::<&str>,
+    )?;
+    menu.append(&tauri::menu::Submenu::with_items(
+        app,
+        "Debug",
+        true,
+        &[&reset_first_run_item],
+    )?)?;
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::default(app)?;
@@ -322,7 +346,7 @@ fn retire_popover_for_tray_visibility(visible: bool) -> bool {
 pub fn set_visible(app: &AppHandle, visible: bool) -> tauri::Result<()> {
     if retire_popover_for_tray_visibility(visible) {
         popover::set_pinned(app, false);
-        popover::hide_for_onboarding(app);
+        popover::hide_for_surface_handoff(app);
         if let Some(menu) = app.try_state::<TrayMenu>()
             && let Err(error) = menu.pin.set_text(PIN_LABEL)
         {
@@ -484,6 +508,8 @@ pub(crate) fn simulate_burn_checks(app: &AppHandle, report: &mut crate::dto::Che
     }
     report.estimated_token_burn_basis_points = Some(125);
     report.evidence_settled = false;
+    // 8 assessed sessions (below) plus 12 still pending.
+    report.window_sessions = 20;
     report.pending_evidence = 12;
     for category in &mut report.categories {
         category.finding = 0;
@@ -766,10 +792,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let actual_size_item =
         MenuItem::with_id(app, MENU_ACTUAL_SIZE, "Actual Size", true, None::<&str>)?;
     #[cfg(debug_assertions)]
-    let reset_onboarding_item = MenuItem::with_id(
+    let reset_first_run_item = MenuItem::with_id(
         app,
-        MENU_RESET_ONBOARDING,
-        RESET_ONBOARDING_LABEL,
+        MENU_RESET_FIRST_RUN,
+        RESET_FIRST_RUN_LABEL,
         true,
         None::<&str>,
     )?;
@@ -826,7 +852,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         &zoom_out_item,
         &actual_size_item,
         #[cfg(debug_assertions)]
-        &reset_onboarding_item,
+        &reset_first_run_item,
         #[cfg(debug_assertions)]
         &random_usage_item,
         #[cfg(debug_assertions)]
@@ -1027,11 +1053,11 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             change_interface_scale(app, crate::interface_scale::InterfaceScaleChange::Reset)
         }
         #[cfg(debug_assertions)]
-        MENU_RESET_ONBOARDING => {
+        MENU_RESET_FIRST_RUN => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(error) = commands::restart_onboarding(app).await {
-                    ::tracing::error!(event = "onboarding_restart_failed", trigger = "tray", error);
+                if let Err(error) = commands::reset_first_run(app).await {
+                    ::tracing::error!(event = "first_run_reset_failed", trigger = "tray", error);
                 }
             });
         }
@@ -1409,6 +1435,7 @@ mod tests {
                 display_name: "Codex".to_string(),
                 category: "unavailable".to_string(),
                 detail: None,
+                plan: None,
             }],
             generated_at: "2026-09-04T12:20:01Z".to_string(),
             ..Default::default()

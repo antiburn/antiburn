@@ -121,7 +121,8 @@ the signing service is hosted in another region.
 Basic includes 5,000 signatures per month at a published USD 9.99/month before
 tax. Each file signed consumes a signature. Tauri signs the app, NSIS plugin
 copies, uninstaller, and installer, so each release target uses several
-signatures. Check current [pricing](https://azure.microsoft.com/pricing/details/artifact-signing/)
+signatures. The Windows signing probe adds one signature per target and verifies
+live authentication before the full compile. Check current [pricing](https://azure.microsoft.com/pricing/details/artifact-signing/)
 before changing the subscription.
 
 Add these as **environment variables** under Settings → Environments → `release`:
@@ -206,8 +207,11 @@ installer and its updater signature. Never sign an installer again after its
 detached updater signature, checksum, or provenance is generated.
 
 The build rejects SignTool warnings and errors. Final verification checks the
-app executable and NSIS installer. Windows acceptance also checks the installed
-uninstaller. A valid timestamp lets signatures remain valid after leaf expiry;
+NSIS installer, silently installs it into a runner temporary directory, and
+checks the installed executable and uninstaller before uninstalling. Tauri
+restores its unsigned raw build executable after packaging, so checking that
+file would reject a correctly signed installer. A valid timestamp lets
+signatures remain valid after leaf expiry;
 the verifier uses Windows trust validation rather than rejecting every expired
 leaf certificate.
 
@@ -217,13 +221,11 @@ endpoint commonly produces 403. Do not change the role to Owner or add a secret
 fallback. Runtime or DLL-load errors require checking the pinned x64 toolchain
 and its `DOTNET_ROOT` configuration, especially on ARM64.
 
-#### Legacy unsigned waiver
+#### Required Windows signing
 
-`ALLOW_UNSIGNED_WINDOWS` is a repository variable. It permits a clearly labelled
-unsigned Windows build only when **all six Azure variables are absent**. With
-all six configured, signing is required even if the waiver is still `true`.
-A partial configuration fails; a signing failure cannot use the waiver.
-Remove the variable after signed release acceptance. macOS releases always
+Both Windows targets require Azure Authenticode signing. Missing configuration,
+signing failures, or failed verification stop the build. The former
+`ALLOW_UNSIGNED_WINDOWS` waiver is removed and has no effect. macOS releases
 require Developer ID signing and notarization.
 
 #### Enabling Windows installer signature enforcement
@@ -233,8 +235,8 @@ unsigned Windows packages. Activate strict bootstrap verification after the
 first signed production release passes Windows acceptance and becomes latest:
 
 1. Rehearse both Windows targets with the configured Azure signing profile.
-2. Remove `ALLOW_UNSIGNED_WINDOWS` and confirm both inventory entries use
-   `authenticode`.
+2. Confirm both inventory entries use `authenticode`; unsigned Windows builds
+   are no longer permitted.
 3. Extend `Assert-InstallerIntegrity` in the root `install.ps1` with
    `Get-AuthenticodeSignature`. Require `Valid` status and the expected antiburn
    publisher identity.
@@ -326,6 +328,11 @@ for manual acceptance, not the published update endpoint.
 Signing and notarization consume the existing service quotas. Installing a
 manual build with the same version uses the regular app identity and paths;
 perform acceptance on the intended Windows test systems.
+
+Linux packaging pins both architecture assets from retained linuxdeploy release
+`1-alpha-20251107-1` by asset ID and SHA-256. Do not pin the moving `continuous`
+release: upstream replaces its assets and deletes their old IDs. Keep the
+post-build host-Wayland boundary check when changing this tool.
 
 ### 2.1 Decide the version
 

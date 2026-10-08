@@ -20,9 +20,9 @@
 //!
 //! When a pass runs:
 //!
-//! - **At launch**, once, if onboarding is finished. A first-run install has no
-//!   sources selected yet, so scanning before the flow completes would only
-//!   spend disk on a window nobody can see.
+//! - **At launch**, once, unless discovery is paused. A fresh install runs
+//!   this pass too: the first-run Overview follows it, rather than waiting
+//!   for an explicit scan request.
 //! - **Every [`TICK`], unconditionally.** R1/R2: the watcher is the primary
 //!   freshness path now, so the tick is 5 minutes of reconciliation for what
 //!   it cannot see — a WSL session (never watched) or a rare dropped OS
@@ -105,7 +105,8 @@ use tokio::task::JoinSet;
 
 use crate::agents;
 use crate::analysis;
-use crate::dto::ScanStatus;
+use crate::dto::{AgentFoundCount, ReadGateCounts, ReadProgress, ScanPhase, ScanStatus};
+use crate::first_run_gate::{FirstRunGate, FirstRunStage};
 use crate::repositories;
 use crate::session_lifecycle::{self, AnonymousCover, AnonymousGen};
 use crate::storage_health::{self, checked};
@@ -129,6 +130,11 @@ pub const TICK: Duration = Duration::from_secs(300);
 /// and blocking-pool pressure during a whole-machine pass.
 const METADATA_CONCURRENCY: usize = 16;
 
+/// How often the read stage's `scan:progress` event may repeat while the
+/// stage is still running. The stage always emits one more event right after
+/// its last file, whatever this interval says.
+const READ_PROGRESS_THROTTLE: Duration = Duration::from_millis(150);
+
 /// Scope key for the engine's ignored-path store. The engine namespaces opt-outs
 /// so one machine can hold several independent sets; this app keeps one.
 pub const IGNORE_SCOPE: &str = "local";
@@ -143,7 +149,7 @@ pub const EVENT_FINISHED: &str = "scan:finished";
 /// to correlate timestamps against reader actions after the fact.
 #[derive(Debug, Clone)]
 pub enum ScanTrigger {
-    /// The one pass run at startup, after onboarding has finished.
+    /// The one pass run at startup, unless discovery is paused.
     Launch,
     /// The scheduler's unconditional [`TICK`].
     Tick,
@@ -170,8 +176,8 @@ pub enum ScanTrigger {
     /// The reader asked for a rescan explicitly. Stays current-window only —
     /// see [`Self::HistoricalScan`] for the trigger that widens.
     ManualRescan,
-    /// The reader asked for the dedicated historical pass (Settings ›
-    /// General › Historical scan), or the scheduler started the one-time
+    /// The reader asked for the dedicated historical pass (Sessions step ›
+    /// Scanning › Older sessions), or the scheduler started the one-time
     /// automatic pass for the current retention. Widens discovery past the
     /// current window — see `history::window_secs`.
     HistoricalScan,
@@ -337,8 +343,10 @@ pub struct ScanController {
     /// The retention for which this launch already asked for the automatic
     /// historical pass. A failed or cancelled pass does not ask again until
     /// the next launch, so a lasting failure cannot repeat it after every
-    /// pass, and a cancel holds. The reader's own Historical scan ignores it.
+    /// pass, and a cancel holds. The reader's own "Older sessions" scan ignores it.
     history_auto_requested_for: Mutex<Option<i32>>,
+    /// True while a historical pass runs its discovery or describe phase.
+    history_pass_running: AtomicBool,
 }
 
 impl ScanController {
@@ -452,6 +460,11 @@ impl ScanController {
 
     /// Records that a current-window pass finished. Idempotent: a later
     /// pass's finish leaves this set.
+    /// Whether a historical pass runs its discovery or describe phase now.
+    pub(crate) fn history_pass_running(&self) -> bool {
+        self.history_pass_running.load(Ordering::SeqCst)
+    }
+
     pub(crate) fn mark_current_pass_done(&self) {
         self.first_current_pass_done.store(true, Ordering::SeqCst);
     }
@@ -526,7 +539,8 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         // The ledger of anonymous activity this task has reported. Only
         // passes this task runs can cover it.
         let mut ledger = AnonymousLedger::default();
-        // A fresh install has nothing to scan until the reader picks sources.
+        // A fresh install runs this pass too: the first-run Overview follows
+        // it, rather than waiting for an explicit scan request.
         if scheduled_scanning_allowed(&app) {
             run_covered_pass(&app, &mut ledger, ScanTrigger::Launch, PassScope::Full).await;
         }
@@ -799,13 +813,12 @@ fn deadline_after_health_change(
 
 /// Whether the scheduler may start a pass of its own right now.
 ///
-/// Two gates, both of them the reader's: onboarding has to be finished (before
-/// that there are no chosen sources to scan), and discovery must not be paused.
-/// Neither gate applies to an explicitly requested [`run_pass`].
+/// One gate, the reader's: discovery must not be paused. Does not apply to an
+/// explicitly requested [`run_pass`].
 fn scheduled_scanning_allowed(app: &AppHandle) -> bool {
     app.state::<Store>()
         .settings()
-        .map(|settings| settings.onboarding_completed && !settings.discovery_paused)
+        .map(|settings| !settings.discovery_paused)
         .unwrap_or(false)
 }
 
@@ -851,6 +864,7 @@ pub(crate) async fn try_run_pass(
             }
             return None;
         }
+        let full_pass = progress_pass(&trigger, &scope);
         let started = controller.update(|status| {
             status.running = true;
             status.completed_agents = 0;
@@ -860,10 +874,34 @@ pub(crate) async fn try_run_pass(
             status.re_described = 0;
             status.error = None;
             status.cancelled = false;
+            // FTUE's first-run steps read `phase`/`found_by_agent`/`read`/
+            // `gate` as one full pass's outcome (see `pass`'s own `full_pass`
+            // gate). A scoped pass (T3/T5) must not blank them either: a
+            // reader who looks up only after such a pass started would
+            // otherwise see a finished full pass's result go blank.
+            if full_pass {
+                status.phase = ScanPhase::Finding;
+                // Every agent this pass searches, in a fixed order, so a
+                // reader sees which agents are still searching.
+                status.found_by_agent = AgentKind::ALL
+                    .iter()
+                    .map(|agent| AgentFoundCount {
+                        agent: agent.slug().to_string(),
+                        sessions: 0,
+                        done: false,
+                    })
+                    .collect();
+                status.read = ReadProgress::default();
+                status.gate = None;
+            }
         });
         let _ = app.emit(EVENT_STARTED, started);
     }
-    history::push_progress(app, matches!(trigger, ScanTrigger::HistoricalScan), true);
+    app.state::<ScanController>().history_pass_running.store(
+        matches!(trigger, ScanTrigger::HistoricalScan),
+        Ordering::SeqCst,
+    );
+    history::push_progress(app, true);
     ::tracing::debug!(event = "scan_pass_started", trigger = trigger.label());
     let pass_started_at = Instant::now();
 
@@ -919,7 +957,10 @@ pub(crate) async fn try_run_pass(
             _ => {}
         }
     }
-    history::push_progress(app, false, true);
+    controller
+        .history_pass_running
+        .store(false, Ordering::SeqCst);
+    history::push_progress(app, true);
     history::maybe_start_automatic_pass(app);
     let finished = controller.status();
     let duration_ms = pass_started_at.elapsed().as_millis() as u64;
@@ -1030,14 +1071,52 @@ struct PassSummary {
 /// see `history_window_secs`.
 const CURRENT_WINDOW_SECS: i64 = crate::store::model::CURRENT_WINDOW_DAYS as i64 * 86_400;
 
+/// Tells if a pass moves the Overview progress fields of [`ScanStatus`]:
+/// only a full pass over the current window does.
+fn progress_pass(trigger: &ScanTrigger, scope: &PassScope) -> bool {
+    matches!(scope, PassScope::Full) && !matches!(trigger, ScanTrigger::HistoricalScan)
+}
+
+/// The first-run takeover's own gate on a full pass: wait for `stage`
+/// before letting the pass continue. A pass [`progress_pass`] says is not
+/// gated (a scoped watcher pass, or the dedicated historical pass) returns
+/// `true` at once.
+///
+/// While the first run is still at an earlier stage, this is also what the
+/// launch pass holds the scan slot on: no other full pass can start until
+/// it returns, which keeps a scoped watcher pass (T3/T5) from writing
+/// sessions before the reader's own Sessions step starts.
+///
+/// Returns `false` only when the wait is itself cancelled first, which the
+/// caller must treat as an ordinary cancel: end the pass with no writes.
+async fn wait_for_first_run_stage(app: &AppHandle, full_pass: bool, stage: FirstRunStage) -> bool {
+    if !full_pass {
+        return true;
+    }
+    let controller = app.state::<ScanController>();
+    let gate = app.state::<FirstRunGate>();
+    gate.wait_until(stage, || controller.cancelled()).await
+}
+
+/// The summary [`pass`] returns when a first-run gate wait ends as
+/// cancelled: the same empty, uncovering outcome a plain scan cancel gives
+/// today, because nothing has been discovered or written yet.
+fn gate_cancelled_summary() -> PassSummary {
+    PassSummary {
+        sessions: 0,
+        list_changed: false,
+        re_described: 0,
+    }
+}
+
 /// The body of one pass. Split out so [`run_pass`] owns only the in-flight
 /// bookkeeping and the events.
 ///
 /// `scope` narrows discovery, the upsert's evidence cohort, and per-agent
 /// scan bookkeeping to a burst-named subset of agents (T3/T5); everything
 /// else runs exactly as a full pass. See [`PassScope`]. `trigger` decides
-/// only whether this pass refreshes the repository list (R4); it plays no
-/// other part here.
+/// the discovery window, whether this pass refreshes the repository list
+/// (R4), and whether it moves the progress fields (see [`progress_pass`]).
 async fn pass(
     app: &AppHandle,
     _activity_window_days: Option<u32>,
@@ -1047,6 +1126,14 @@ async fn pass(
     let store = app.state::<Store>();
     let now = unix_now();
     let is_history_pass = matches!(trigger, ScanTrigger::HistoricalScan);
+    // The Overview progress row reads `phase`, `found_by_agent`, `read`, and
+    // `gate` as the outcome of one full pass over the current window. A
+    // scoped pass (T3/T5) must not move them: it can start and finish while
+    // an unrelated watched agent is still writing, and a reader who looks up
+    // in that window would otherwise see a finished pass's result go blank.
+    // A history pass must not move them either, because it covers a wider
+    // window than the row shows.
+    let full_pass = progress_pass(trigger, scope);
     let since_secs = if is_history_pass {
         let retention_days = store.settings_snapshot().session_data_retention_days;
         history::window_secs(retention_days, now).unwrap_or(CURRENT_WINDOW_SECS)
@@ -1057,6 +1144,12 @@ async fn pass(
     let ignored = ignored_paths::load_ignored(store.state_dir(), IGNORE_SCOPE);
     let home = home_dir().unwrap_or_default();
 
+    // The first-run takeover's "Agents" step: discovery does not
+    // start until the reader leaves the welcome step.
+    if !wait_for_first_run_stage(app, full_pass, FirstRunStage::Agents).await {
+        return Ok(gate_cancelled_summary());
+    }
+
     let logs = match scope {
         PassScope::Full => {
             let progress_app = app.clone();
@@ -1064,7 +1157,7 @@ async fn pass(
                 .discover_recent_sessions_with_progress(
                     now,
                     since_secs,
-                    move |agent, found, completed, total| {
+                    move |_agent, found, completed, total| {
                         let controller = progress_app.state::<ScanController>();
                         let status = controller.update(|status| {
                             status.completed_agents = completed;
@@ -1072,7 +1165,6 @@ async fn pass(
                             status.sessions += found;
                         });
                         let _ = progress_app.emit(EVENT_PROGRESS, status);
-                        let _ = agent;
                     },
                 )
                 .await
@@ -1097,9 +1189,58 @@ async fn pass(
     let (logs, precomputed) = if is_history_pass {
         (logs, std::collections::HashMap::new())
     } else {
-        current_window_candidates(logs, &previous_records, now).await
+        let found_app = app.clone();
+        current_window_candidates_with_progress(
+            logs,
+            &previous_records,
+            now,
+            &mut |agent, sessions| {
+                if !full_pass {
+                    return;
+                }
+                let controller = found_app.state::<ScanController>();
+                let status = controller.update(|status| {
+                    if let Some(entry) = status
+                        .found_by_agent
+                        .iter_mut()
+                        .find(|entry| entry.agent == agent.slug())
+                    {
+                        entry.sessions = sessions;
+                        entry.done = true;
+                    }
+                });
+                let _ = found_app.emit(EVENT_PROGRESS, status);
+            },
+        )
+        .await
     };
     let include_non_repo_folders = store.settings_snapshot().include_non_repo_folders;
+
+    // The first-run takeover's "Sessions" step: reading does not
+    // start until the reader leaves the live limits step. `found_by_agent` is
+    // already every entry `done` at this point, with `phase` still
+    // `Finding` — the shared contract the frontend reads "the Agents step is done" by.
+    if !wait_for_first_run_stage(app, full_pass, FirstRunStage::Sessions).await {
+        return Ok(gate_cancelled_summary());
+    }
+
+    // The read stage's total starts at every file discovery found. A
+    // sub-agent transcript can only be told apart from a session by reading
+    // it, so `read_progress` (below) shrinks this total as it finds one,
+    // rather than guessing the exclusion up front.
+    if full_pass {
+        let controller = app.state::<ScanController>();
+        let status = controller.update(|status| {
+            status.phase = ScanPhase::Reading;
+            status.read = ReadProgress {
+                completed: 0,
+                total: logs.len(),
+            };
+        });
+        let _ = app.emit(EVENT_PROGRESS, status);
+    }
+    let read_app = app.clone();
+    let mut last_read_emit = Instant::now();
     let described = describe_with_gate(
         logs,
         &home,
@@ -1107,6 +1248,23 @@ async fn pass(
         &previous_records,
         &precomputed,
         include_non_repo_folders,
+        &mut |completed, total, force| {
+            if !full_pass {
+                return;
+            }
+            // W4-style throttle: at most one event every ~150ms while the
+            // stage runs, but the caller always forces the last one so the
+            // final frame is never stale.
+            if !force && last_read_emit.elapsed() < READ_PROGRESS_THROTTLE {
+                return;
+            }
+            last_read_emit = Instant::now();
+            let controller = read_app.state::<ScanController>();
+            let status = controller.update(|status| {
+                status.read = ReadProgress { completed, total };
+            });
+            let _ = read_app.emit(EVENT_PROGRESS, status);
+        },
     )
     .await;
     let Described {
@@ -1114,7 +1272,19 @@ async fn pass(
         rejected,
         changed,
         list_changed,
+        gate,
     } = &described;
+    if full_pass {
+        let kept = records.len();
+        let gate_counts = read_gate_counts(gate, kept);
+        let controller = app.state::<ScanController>();
+        let status = controller.update(|status| {
+            status.phase = ScanPhase::Saving;
+            status.gate = Some(gate_counts);
+            apply_admitted_agent_counts(&mut status.found_by_agent, records);
+        });
+        let _ = app.emit(EVENT_PROGRESS, status);
+    }
     let evidence_agents: Vec<&str> = match scope {
         PassScope::Full => agents::evidence_cohort(),
         PassScope::Agents(agents) => agents.iter().map(|agent| agent.slug()).collect(),
@@ -1601,6 +1771,8 @@ struct Described {
     /// patch: this pass indexed a session absent from `previous_records`, or
     /// rejected a sub-agent transcript.
     list_changed: bool,
+    /// How the repository gate resolved every read session.
+    gate: GateCounts,
 }
 
 /// One candidate's last activity, computed by [`filter_current_window`]
@@ -1688,14 +1860,40 @@ async fn current_window_candidates(
     Vec<SessionLog>,
     std::collections::HashMap<SessionActivityKey, CandidateActivity>,
 ) {
+    current_window_candidates_with_progress(logs, previous_records, now, &mut |_, _| {}).await
+}
+
+/// [`current_window_candidates`], and `on_found` gets each agent's count of
+/// current-window candidate files when the filter finishes that agent. An
+/// agent that discovery found nothing for gets 0 before the filter starts.
+/// The Agents step's card shows this candidate count while discovery runs;
+/// once the read stage finishes, `pass` replaces it with the sessions that
+/// stage actually admits, so the finished count agrees with what the Read
+/// step reads.
+async fn current_window_candidates_with_progress(
+    logs: Vec<SessionLog>,
+    previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
+    now: i64,
+    on_found: &mut (dyn FnMut(AgentKind, usize) + Send),
+) -> (
+    Vec<SessionLog>,
+    std::collections::HashMap<SessionActivityKey, CandidateActivity>,
+) {
     let cutoff = now - CURRENT_WINDOW_SECS;
     let mut by_agent: BTreeMap<AgentKind, Vec<SessionLog>> = BTreeMap::new();
     for log in logs {
         by_agent.entry(log.agent_type).or_default().push(log);
     }
+    for agent in AgentKind::ALL {
+        if !by_agent.contains_key(agent) {
+            on_found(*agent, 0);
+        }
+    }
     let mut survivors = Vec::new();
-    for agent_logs in by_agent.into_values() {
-        survivors.extend(filter_current_window(agent_logs, previous_records, cutoff).await);
+    for (agent, agent_logs) in by_agent {
+        let kept = filter_current_window(agent_logs, previous_records, cutoff).await;
+        on_found(agent, kept.len());
+        survivors.extend(kept);
     }
     let mut logs = Vec::with_capacity(survivors.len());
     let mut precomputed = std::collections::HashMap::with_capacity(survivors.len());
@@ -1736,6 +1934,7 @@ async fn describe_with_states(
         previous_records,
         &std::collections::HashMap::new(),
         false,
+        &mut |_, _, _| {},
     )
     .await
 }
@@ -1748,6 +1947,13 @@ async fn describe_with_states(
 /// same way as `previous_records`; a history pass (which skips that filter)
 /// passes an empty map, and every candidate falls back to describe's own
 /// computation exactly as before.
+///
+/// `on_progress(completed, total, force)` reports read progress as it runs.
+/// `total` starts at `logs.len()` and drops by one for every sub-agent
+/// transcript this pass recognizes — a transcript can only be told apart from
+/// a session by reading it, so a call never raises `total` back up, and
+/// `completed` never exceeds it. `force` is true only for the call after the
+/// last log, so a caller that throttles still sees a final, accurate frame.
 async fn describe_with_gate(
     logs: Vec<SessionLog>,
     home: &std::path::Path,
@@ -1755,17 +1961,22 @@ async fn describe_with_gate(
     previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
     precomputed: &std::collections::HashMap<SessionActivityKey, CandidateActivity>,
     include_non_repo_folders: bool,
+    on_progress: &mut (dyn FnMut(usize, usize, bool) + Send),
 ) -> Described {
     // Scan unit fixtures skip the repository gate. The `repo_admission` tests
     // cover the setting.
     #[cfg(test)]
     let _ = include_non_repo_folders;
     let indexed_titles = indexed_titles_for_logs(&logs).await;
+    let total_logs = logs.len();
     let mut records = Vec::with_capacity(logs.len());
     let mut rejected = Vec::new();
     let mut changed = Vec::new();
     let mut list_changed = false;
     let mut gate = GateCounts::default();
+    let mut read_completed = 0_usize;
+    let mut read_total = total_logs;
+    let mut read_done = 0_usize;
     for chunk in logs.chunks(METADATA_CONCURRENCY) {
         let mut set = JoinSet::new();
         for log in chunk {
@@ -1793,6 +2004,18 @@ async fn describe_with_gate(
             });
         }
         while let Some(joined) = set.join_next().await {
+            // A sub-agent transcript is a companion, not a session: it
+            // shrinks the read total instead of advancing `read_completed`.
+            // Checked by reference, and counted before the match below, so
+            // every `continue` inside that match still reports progress.
+            let is_subagent = matches!(&joined, Ok((DescribeOutcome::Subagent(_), _)));
+            read_done += 1;
+            if is_subagent {
+                read_total = read_total.saturating_sub(1);
+            } else {
+                read_completed += 1;
+            }
+            on_progress(read_completed, read_total, read_done == total_logs);
             match joined {
                 Ok((DescribeOutcome::Session(record), changed_record)) => {
                     if record.cwd.is_none() {
@@ -1907,6 +2130,19 @@ async fn describe_with_gate(
         rejected,
         changed,
         list_changed,
+        gate,
+    }
+}
+
+/// Map the read stage's internal gate tally to the IPC payload shape. `kept`
+/// is not a [`GateCounts`] field: it is the caller's own count of records
+/// that passed the gate, since [`GateCounts`] only tracks exclusions.
+fn read_gate_counts(gate: &GateCounts, kept: usize) -> ReadGateCounts {
+    ReadGateCounts {
+        kept,
+        outside_repository: gate.no_repo,
+        excluded: gate.ignored,
+        unreadable: gate.missing_cwd,
     }
 }
 
@@ -2576,6 +2812,24 @@ fn source_kind(source: &SessionSource) -> &'static str {
         SessionSource::File(_) => "file",
         SessionSource::Inline { .. } => "inline",
         SessionSource::ProviderDb { .. } => "providerDb",
+    }
+}
+
+/// Replace discovery's candidate-file count in every `found_by_agent` entry
+/// with the sessions this pass actually admits for that agent — 0 for an
+/// agent with none. `records` is the read stage's output, after it has
+/// dropped every sub-agent transcript and gate-rejected session, so this is
+/// the count the Agents list and its icon row must agree on. `done` was
+/// already true from discovery, and stays true.
+fn apply_admitted_agent_counts(found_by_agent: &mut [AgentFoundCount], records: &[SessionRecord]) {
+    let totals = per_agent_totals(records);
+    let admitted: std::collections::BTreeMap<&str, usize> = totals
+        .iter()
+        .map(|(agent, seen, _cursor)| (agent.as_str(), *seen as usize))
+        .collect();
+    for entry in found_by_agent.iter_mut() {
+        entry.sessions = admitted.get(entry.agent.as_str()).copied().unwrap_or(0);
+        entry.done = true;
     }
 }
 

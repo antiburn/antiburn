@@ -22,9 +22,9 @@
     "tool-catalog": "node scripts/build-tool-catalog.mjs"
   },
   "devDependencies": {
-    "@secretlint/secretlint-rule-preset-recommend": "13.0.5",
-    "aislop": "^0.16.1",
-    "secretlint": "13.0.5",
+    "@secretlint/secretlint-rule-preset-recommend": "13.0.7",
+    "aislop": "^0.17.0",
+    "secretlint": "13.0.7",
     "yaml": "^2.9.1"
   }
 }

@@ -601,6 +601,9 @@ async fn refresh_sessions_locked(
     // the same filter keeps a stale touch from reading as current here too.
     let (logs, precomputed) = super::current_window_candidates(logs, &previous_map, now).await;
     let include_non_repo_folders = store.settings_snapshot().include_non_repo_folders;
+    // A targeted refresh covers a handful of sessions a watcher burst named;
+    // it is not the surface the first-run progress reads, so it reports no
+    // read progress.
     let described = super::describe_with_gate(
         logs,
         &home,
@@ -608,6 +611,7 @@ async fn refresh_sessions_locked(
         &previous_map,
         &precomputed,
         include_non_repo_folders,
+        &mut |_, _, _| {},
     )
     .await;
     let record_keys = described
@@ -924,6 +928,39 @@ mod tests {
         assert_eq!(work.quiet_agents, BTreeSet::from([AgentKind::Claude]));
         assert!(work.agents.is_empty());
         assert!(!work.is_empty());
+    }
+
+    /// Claude Desktop's Cowork session tree for `home`, through the real
+    /// registry.
+    fn claude_cowork_root(home: &Path) -> PathBuf {
+        Explorers::DISK
+            .watch_roots_for(&AgentKind::Claude, home)
+            .into_iter()
+            .map(|root| root.path)
+            .find(|path| path.ends_with("local-agent-mode-sessions"))
+            .expect("Claude watches its Cowork sessions")
+    }
+
+    #[test]
+    fn a_cowork_audit_log_is_quiet_but_a_nested_transcript_is_activity() {
+        let home = PathBuf::from("/home/avery");
+        let workspace = claude_cowork_root(&home).join("org/account/local_ws");
+        let audit = workspace.join("audit.jsonl");
+        let lookup = |_: &BTreeSet<String>| HashMap::new();
+
+        let work = classify_burst(std::slice::from_ref(&audit), &home, &lookup);
+        assert_eq!(work.quiet_agents, BTreeSet::from([AgentKind::Claude]));
+        assert!(work.agents.is_empty());
+
+        for transcript in [
+            workspace.join(".claude/projects/-home-avery-demo/new.jsonl"),
+            claude_manifest_root(&home)
+                .join("org/account/local_ws/.claude/projects/-home-avery-demo/new.jsonl"),
+        ] {
+            let work = classify_burst(&[audit.clone(), transcript], &home, &lookup);
+            assert_eq!(work.agents, BTreeSet::from([AgentKind::Claude]));
+            assert!(work.quiet_agents.is_empty());
+        }
     }
 
     #[test]

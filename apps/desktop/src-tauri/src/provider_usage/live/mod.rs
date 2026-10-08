@@ -29,9 +29,9 @@
 //! credential they already hold, is ordinary traffic, not a risky one — so it
 //! runs by default rather than behind a first-run choice. Both sources still
 //! check [`crate::store::AppSettings::live_usage_active`] before doing
-//! anything: the reader's own opt-out switch, *and* onboarding having
-//! finished, so the credential read — and the macOS Keychain prompt it can
-//! trigger — never happens before the reader has seen what this app is. See
+//! anything: the reader's own opt-out switch, *and* a deliberate click in the
+//! Overview's usage area, so the credential read — and the macOS Keychain
+//! prompt it can trigger — never happens before the reader asks for it. See
 //! [`sources`] for what is registered and why.
 //!
 //! # Fail closed, everywhere
@@ -76,7 +76,8 @@ use crate::dto::{
 /// Implementations either read a local artefact another application wrote, or
 /// per feature and gated on
 /// [`crate::store::AppSettings::live_usage_active`] (an opt-out switch, on
-/// by default, and onboarding having finished) — call a provider endpoint
+/// by default, and the reader's own click to start live usage) — call a
+/// provider endpoint
 /// directly with a credential the reader's own tooling already stored, or
 /// spawn the reader's own installed CLI and ask it over its own protocol.
 /// Never a private-app endpoint, and never a credential written anywhere new.
@@ -114,7 +115,7 @@ pub trait LiveUsageSource: Send + Sync {
 
     /// Say whether this tool's login carrier is here, without reading a secret.
     ///
-    /// With `online` false — before onboarding finishes, or with live usage
+    /// With `online` false — before the first run finishes, or with live usage
     /// switched off — this reads metadata only: no credential file is opened
     /// and no Keychain prompt can appear. With `online` true a source may go
     /// one step further and ask the owning tool through its own CLI (Pi's
@@ -135,6 +136,13 @@ pub trait LiveUsageSource: Send + Sync {
     /// than a network endpoint is free to ignore it: there is no round trip
     /// there for a cooldown to gate.
     fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome;
+
+    /// The plan the provider's own tools wrote to a local file, for a failure
+    /// with no reading to carry it. Asked only after a `DesktopOnly` failure,
+    /// when no other login can own a different plan. Never reads a secret.
+    fn local_plan(&self) -> Option<crate::dto::LiveProviderPlan> {
+        None
+    }
 
     /// Collect a provider-specific diagnostic for anonymised analytics.
     ///
@@ -232,9 +240,9 @@ pub fn summarize(
 ) -> LiveUsageSummary {
     // Read fresh, and default to *not* acting: an unreadable preference is not
     // permission, the same rule every notifier in this app follows. Both
-    // gates — the reader's switch and onboarding having finished — are folded
-    // into `live_usage_active` so this can never fetch pre-onboarding even
-    // though the switch itself now defaults on.
+    // gates — the reader's switch and the reader's own start click — are
+    // folded into `live_usage_active` so this can never fetch before that
+    // click even though the switch itself now defaults on.
     let settings = store.and_then(|store| store.settings().ok());
     let online = settings
         .as_ref()
@@ -300,6 +308,9 @@ pub fn roster(
                 carrier_label: presence
                     .carrier
                     .map(|carrier| carrier.display_name().to_string()),
+                desktop_app_label: presence
+                    .desktop_app
+                    .map(|app| app.display_name().to_string()),
             }
         })
         .collect();
@@ -392,9 +403,7 @@ pub fn summarize_collected(
         if let Some(app) = storage_app {
             match crate::storage_health::checked(app, "provider usage history", result) {
                 Ok(_) => {
-                    let (learned, touched) = crate::provider_usage::factor::learn(store, now);
-                    crate::analytics::record_limit_factor_observed(app, &learned);
-                    crate::analytics::record_quota_window_closed(app, store, &touched, now);
+                    crate::usage_alerts::learn_limit_factors(app, store);
                 }
                 Err(_) => {
                     ::tracing::warn!(event = "provider_usage_history_write_failed");
@@ -488,6 +497,7 @@ pub fn summarize_collected(
                 display_name: super::providers::display_name(failure.provider).to_string(),
                 category: failure.error.category().to_string(),
                 detail: failure.detail,
+                plan: failure.plan,
             })
             .collect(),
         meters,

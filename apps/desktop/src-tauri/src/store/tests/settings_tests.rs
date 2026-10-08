@@ -140,6 +140,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             milestones_5h: Milestones::selected([75, 90]),
             milestones_weekly: Milestones::none(),
             live_usage_enabled: true,
+            live_usage_started: true,
             live_usage_hidden_providers: HiddenMeters::default(),
             disabled_agents: DisabledAgents::parse("windsurf,kiro"),
             analytics_enabled: false,
@@ -350,6 +351,28 @@ fn settings_repair_malformed_stored_presence_values() {
 }
 
 #[test]
+fn live_usage_started_falls_back_to_onboarding_completed_for_older_installs() {
+    // A fresh install with no stored rows at all defaults to not started.
+    let fresh = store();
+    assert!(!fresh.settings().unwrap().live_usage_started);
+
+    // An install that finished setup before `internal:liveUsageStarted`
+    // existed wrote only `onboardingCompleted`. Nothing should change for it:
+    // live usage stays exactly as active as it already was.
+    let older_install = store();
+    {
+        let connection = older_install.lock();
+        connection
+            .execute(
+                "INSERT INTO setting (key, value) VALUES (?1, ?2)",
+                params!["onboardingCompleted", "true"],
+            )
+            .unwrap();
+    }
+    assert!(older_install.settings().unwrap().live_usage_started);
+}
+
+#[test]
 fn updating_settings_merges_against_the_latest_stored_value() {
     let store = store();
     store
@@ -378,53 +401,57 @@ fn updating_settings_merges_against_the_latest_stored_value() {
     assert_eq!(store.settings().unwrap(), saved);
 }
 
+/// Open a store at v71, run `seed` on its connection, and migrate to the latest version.
+fn migrate_to_v72(seed: &str) -> Store {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..71] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection.pragma_update(None, "user_version", 71).unwrap();
+    connection.execute_batch(seed).unwrap();
+    Store::from_connection(
+        connection,
+        std::path::Path::new("/tmp/antiburn-v72-disabled-agents").to_path_buf(),
+    )
+    .unwrap()
+}
+
+const V72_SESSIONS: &str = "INSERT INTO session (environment_key, agent, session_id, source_kind,
+        source_label, first_seen_at, last_seen_at, incarnation)
+    VALUES ('native', 'codex', 'a', 'file', 'a', 'now', 'now', 1),
+           ('native', 'cursor', 'b', 'file', 'b', 'now', 'now', 1);";
+
 #[test]
-fn restarting_onboarding_preserves_local_state_and_is_idempotent() {
-    let store = store();
-    let before = store
-        .save_settings(&AppSettings {
-            theme: ThemePreference::Dark,
-            activity_window_days: 14,
-            onboarding_completed: true,
-            launch_at_login: false,
-            analytics_enabled: false,
-            ..AppSettings::default()
-        })
-        .unwrap();
-    store
-        .upsert_sessions(&[session("abc", 2_000)], &crate::agents::evidence_cohort())
-        .unwrap();
-    store.add_scan_root("/home/avery/work").unwrap();
-    store.queue_analytics_event("app_launched", "{}").unwrap();
+fn v72_keeps_only_disabled_agents_that_have_sessions() {
+    let store = migrate_to_v72(&format!(
+        "{V72_SESSIONS}
+         INSERT INTO setting (key, value)
+         VALUES ('disabledAgents', 'amp-code, Cursor,,codex,pi,cursor');"
+    ));
 
-    let (previous, restarted) = store.restart_onboarding().unwrap();
-
-    let mut expected = before.clone();
-    expected.onboarding_completed = false;
-    assert_eq!(previous, before);
-    assert_eq!(restarted, expected);
-    assert_eq!(store.settings().unwrap(), expected);
-    assert_eq!(store.session_count().unwrap(), 1);
-    assert_eq!(store.scan_roots().unwrap(), vec!["/home/avery/work"]);
-    assert_eq!(store.pending_analytics_events(10).unwrap().len(), 1);
-    assert!(store.onboarding_flow_is_restart());
-
-    let (previous_again, restarted_again) = store.restart_onboarding().unwrap();
-    assert_eq!(previous_again, expected);
-    assert_eq!(restarted_again, expected);
+    assert_eq!(store.schema_version().unwrap(), 73);
+    assert_eq!(
+        store.settings().unwrap().disabled_agents.as_str(),
+        "codex,cursor"
+    );
 }
 
 #[test]
-fn a_restarted_onboarding_flow_keeps_its_classification_after_relaunch() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = Store::open(directory.path()).unwrap();
-    store
-        .update_settings(|settings| settings.onboarding_completed = true)
-        .unwrap();
-    store.restart_onboarding().unwrap();
-    drop(store);
+fn v72_clears_a_disabled_list_with_no_session_agents() {
+    let store = migrate_to_v72(
+        "INSERT INTO setting (key, value) VALUES ('disabledAgents', 'amp-code,pi');",
+    );
 
-    let reopened = Store::open(directory.path()).unwrap();
-    assert!(!reopened.settings().unwrap().onboarding_completed);
-    assert!(reopened.onboarding_flow_is_restart());
+    assert_eq!(store.schema_version().unwrap(), 73);
+    assert!(!store.settings().unwrap().disabled_agents.any());
+}
+
+#[test]
+fn v72_leaves_an_empty_or_missing_disabled_list_alone() {
+    let empty = migrate_to_v72("INSERT INTO setting (key, value) VALUES ('disabledAgents', '');");
+    assert!(!empty.settings().unwrap().disabled_agents.any());
+
+    let missing = migrate_to_v72(V72_SESSIONS);
+    assert_eq!(missing.internal_value("disabledAgents"), None);
+    assert!(!missing.settings().unwrap().disabled_agents.any());
 }

@@ -1,12 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "checks-settings",
-  "description": "Only Settings may change the TypeSafe credential.",
-  "windows": ["settings"],
+  "description": "Only Settings and the main window's Checks step may change the TypeSafe credential.",
+  "windows": ["main", "settings"],
   "permissions": [
     "allow-set-typesafe-api-key",
     "allow-remove-typesafe-api-key",
     "allow-set-check-history-days",
+    "allow-set-check-enabled",
     "allow-set-smart-burn-checks-enabled",
     "allow-run-check-backfill"
   ]

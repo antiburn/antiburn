@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { SessionListEntry } from "../../../components/session/SessionList"
 import * as SnoozedBurnChecks from "../../../lib/snoozedBurnChecks"
+import { OVERVIEW_RECENT_SESSION_COUNT } from "../MainOverviewSession"
 import { OverviewRecentSessions } from "./OverviewRecentSessions"
 
 function entry(sessionId: string, title: string): SessionListEntry {
@@ -77,6 +78,47 @@ describe("OverviewRecentSessions", () => {
     expect(onOpenAll).toHaveBeenCalledOnce()
   })
 
+  it("leaves out the check status when showChecks is false", () => {
+    const props = {
+      entries: [entry("s1", "Refine keyboard navigation")],
+      onSelect: vi.fn(),
+      onOpenAll: vi.fn(),
+      metric: "cost" as const,
+    }
+    const { container, rerender } = render(<OverviewRecentSessions {...props} />)
+    expect(container.querySelector("[data-burn-check-indicator-wrap]")).not.toBeNull()
+    rerender(<OverviewRecentSessions {...props} showChecks={false} />)
+    expect(container.querySelector("[data-burn-check-indicator-wrap]")).toBeNull()
+  })
+
+  it("shows no limit share for a session with no usage, and unknown for one with usage", () => {
+    const props = { onSelect: vi.fn(), onOpenAll: vi.fn(), metric: "allowance" as const }
+    const { rerender } = render(
+      <OverviewRecentSessions {...props} entries={[entry("s1", "Never answered")]} />,
+    )
+    expect(screen.queryByText("unknown")).toBeNull()
+    rerender(
+      <OverviewRecentSessions
+        {...props}
+        entries={[{ ...entry("s1", "Did some work"), totalTokens: 1_200 }]}
+      />,
+    )
+    expect(screen.getByText("unknown")).toBeInTheDocument()
+  })
+
+  it("leaves out All sessions when showOpenAll is false", () => {
+    const props = {
+      entries: [entry("s1", "Refine keyboard navigation")],
+      onSelect: vi.fn(),
+      onOpenAll: vi.fn(),
+      metric: "cost" as const,
+    }
+    const { rerender } = render(<OverviewRecentSessions {...props} />)
+    expect(screen.getByRole("button", { name: "All sessions" })).toBeInTheDocument()
+    rerender(<OverviewRecentSessions {...props} showOpenAll={false} />)
+    expect(screen.queryByRole("button", { name: "All sessions" })).toBeNull()
+  })
+
   it("explains an empty list and marks the panel busy while it loads", () => {
     const { rerender } = render(
       <OverviewRecentSessions
@@ -131,9 +173,9 @@ describe("OverviewRecentSessions", () => {
       />,
     )
     const skeleton = container.querySelector(".overview-recent-rows")
-    expect(skeleton?.children).toHaveLength(6)
+    expect(skeleton?.children).toHaveLength(OVERVIEW_RECENT_SESSION_COUNT)
 
-    const entries = Array.from({ length: 6 }, (_, index) =>
+    const entries = Array.from({ length: OVERVIEW_RECENT_SESSION_COUNT }, (_, index) =>
       entry(`s${index}`, `Session ${index}`),
     )
     rerender(
@@ -145,6 +187,6 @@ describe("OverviewRecentSessions", () => {
       />,
     )
     const list = container.querySelector(".overview-recent-rows")
-    expect(list?.children).toHaveLength(6)
+    expect(list?.children).toHaveLength(OVERVIEW_RECENT_SESSION_COUNT)
   })
 })

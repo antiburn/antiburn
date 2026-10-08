@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import type {
@@ -9,6 +9,9 @@ import type {
 } from "../../lib/ipc"
 
 import { UsageLimitsBar } from "./UsageLimitsBar"
+
+const invoke = vi.hoisted(() => vi.fn())
+vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
 
 const FORECAST = {
   unavailableReason: "sparseHistory",
@@ -707,16 +710,45 @@ describe("UsageLimitsBar — degraded state", () => {
     expect(screen.queryByTestId("usage-limits-bar")).not.toBeInTheDocument()
   })
 
+  it("shows the Claude Desktop-only note with a docs link and no disclosure", async () => {
+    const live = liveSummary({
+      providers: [],
+      errors: [sourceError({ category: "authentication", detail: "desktopOnly" })],
+    })
+    // Collapsed or not, the note shows: there is no meter to collapse to.
+    bar({ live })
+    expect(screen.queryByRole("button", { name: /usage limits/ })).not.toBeInTheDocument()
+    const group = screen.getByRole("group", { name: "Claude" })
+    expect(group).toHaveTextContent("Usage limits not available for Claude Desktop.")
+    fireEvent.click(within(group).getByRole("button", { name: "Learn more" }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_claude_desktop_limits_docs"))
+  })
+
   it("keeps a failed provider on the bar instead of dropping it", () => {
     // The cold-start failure: the first fetch 429s with nothing cached, so
     // the error is the provider's only trace. The bar must not read as "your
     // Claude usage vanished".
+    // With no reading anywhere there is nothing to collapse to, so the note
+    // shows even when the meters are collapsed, with no disclosure.
     bar({ live: liveSummary({ providers: [], errors: [sourceError()] }) })
+    expect(screen.getByRole("group", { name: "Claude" })).toHaveTextContent(
+      "Claude rate limited usage checks.",
+    )
+    expect(screen.queryByTestId("usage-limits-unavailable")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /usage limits/ })).not.toBeInTheDocument()
+  })
+
+  it("keeps the unavailable seat beside a provider that has a reading", () => {
+    bar({
+      live: liveSummary({
+        providers: [liveProvider()],
+        errors: [sourceError({ provider: "openai", displayName: "Codex" })],
+      }),
+    })
     const seat = screen.getByTestId("usage-limits-unavailable")
-    expect(seat).toHaveAccessibleName("Claude, usage unavailable (rate limited)")
-    // The row states no words any more, so the failure has to survive on
-    // hover. It is also spelled out in full in the expanded listing.
-    expect(seat).toHaveAttribute("title", "Claude — rate limited")
+    expect(seat).toHaveAccessibleName("Codex, usage unavailable (rate limited)")
+    expect(seat).toHaveAttribute("title", "Codex — rate limited")
+    expect(screen.getByRole("button", { name: "Expand usage limits" })).toBeInTheDocument()
   })
 
   it.each<{ error: LiveUsageSourceErrorPayload; note: string }>([
@@ -747,8 +779,26 @@ describe("UsageLimitsBar — degraded state", () => {
     expect(
       within(failure).getByText("Claude rate limited usage checks. Wait, then retry."),
     ).toBeInTheDocument()
-    expect(within(failure).queryByRole("heading")).not.toBeInTheDocument()
-    expect(within(failure).getAllByText(/./)).toHaveLength(1)
+    // The provider keeps its eyebrow, as it does when it has meters.
+    expect(within(failure).getByRole("heading")).toHaveTextContent("Claude")
+  })
+
+  it("names the plan above a failure when a local file states it", () => {
+    bar({
+      live: liveSummary({
+        providers: [],
+        errors: [
+          sourceError({
+            category: "authentication",
+            detail: "desktopOnly",
+            plan: { name: "max", tier: "default_claude_max_20x" },
+          }),
+        ],
+      }),
+    })
+    const group = screen.getByRole("group", { name: "Claude, Max 20x plan" })
+    expect(within(group).getByRole("heading")).toHaveTextContent("Claude · Max 20x")
+    expect(group).toHaveTextContent("Usage limits not available for Claude Desktop.")
   })
 
   it("tells Google users to update after a usage schema change", () => {
@@ -823,8 +873,9 @@ describe("UsageLimitsBar — grace period", () => {
       }),
     })
     expect(screen.queryByRole("img", { name: /Claude at 42 percent/ })).not.toBeInTheDocument()
-    const seat = screen.getByTestId("usage-limits-unavailable")
-    expect(seat).toHaveAccessibleName("Claude, usage unavailable (rate limited)")
+    expect(screen.getByRole("group", { name: "Claude" })).toHaveTextContent(
+      "Claude rate limited usage checks.",
+    )
   })
 
   it("adds a muted grace line under the provider name in the expanded meters", () => {
