@@ -481,7 +481,7 @@ function CheckTrigger({
       onFocus={onFocus}
       onClick={onClick}
       onKeyDown={onKeyDown}
-      className="burn-check-row-trigger overflow-hidden grid w-full grid-cols-[32px_minmax(0,1fr)] items-center gap-x-3 rounded-[var(--radius-popover)] px-3 py-3 text-left active:transform-none active:opacity-100"
+      className="burn-check-row-trigger overflow-hidden grid w-full grid-cols-[32px_minmax(0,1fr)] items-center gap-x-3 rounded-[var(--radius-popover)] px-3 py-3 text-left active:opacity-100"
     >
       {agents.length > 0 && (
         <span

@@ -112,7 +112,7 @@ function AgentRow({
             aria-expanded={open}
             aria-controls={listId}
             onClick={() => setOpen((value) => !value)}
-            className="inline-flex items-center gap-1 type-footnote text-label-secondary hover:text-label-tertiary active:transform-none active:opacity-100"
+            className="inline-flex items-center gap-1 type-footnote text-label-secondary hover:text-label-tertiary active:opacity-100"
           >
             Searched {locations.length} {locations.length === 1 ? "location" : "locations"}
             <ChevronDown

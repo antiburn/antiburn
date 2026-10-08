@@ -237,6 +237,23 @@ target remains blocked and cannot start a second write.
 Repeated confirmation returns the saved result only for the same completed
 prepared operation. Expired, evicted, or failed operations cannot be reused.
 
+## Memory archive
+
+The Memories view edits Claude Code auto-memory under
+`~/.claude/projects/<slug>/memory/`, which is user-written content, not
+settings. The trusted root is the canonical memory folder. A request names a
+slug and a file name, each one plain path component. The file name ends in
+`.md` and is neither `MEMORY.md` nor a backup. Delete requires the file's size
+and modification time to match the listed values and requires a regular,
+non-symlink file under 256 KiB. Delete copies the bytes and a JSON record into
+`<app data>/memory-archive/<slug>/` before it changes anything else. It then
+writes the previous `MEMORY.md` to `MEMORY.md.antiburn-bak`, replaces `MEMORY.md`
+without the file's lines through the same temp-file, identity, rename and readback
+sequence as Auto Fix, and removes the file. A changed file reports
+`ChangedOnDisk` and nothing is touched. Undo writes the archived bytes back
+only if the target does not exist, and re-inserts the index line. The archive is
+permanent. Windows reports every memory edit as unavailable.
+
 ## Support Matrix
 
 The check codes are D session overdepth, T model overthinking, S overpowered

@@ -3184,5 +3184,158 @@ pub struct LiveUsageSummary {
     pub generated_at: String,
 }
 
+/// Every Claude Code auto-memory project, for the Memories view.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMemoriesReport {
+    pub generated_at_ms: i64,
+    /// False where the memory editor cannot write (Windows).
+    pub writes_supported: bool,
+    pub projects: Vec<MemoryProjectDto>,
+}
+
+/// Request for `get_session_memories`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMemoriesRequest {
+    pub agent: String,
+    pub session_id: String,
+    pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
+}
+
+/// The memories that one session read or wrote.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMemoriesPayload {
+    pub entries: Vec<SessionMemoryTouchDto>,
+}
+
+/// One memory file and one way a session touched it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMemoryTouchDto {
+    pub slug: String,
+    pub path: String,
+    pub file_name: String,
+    pub title: String,
+    /// `referenced` or `written`.
+    pub action: String,
+    pub count: u32,
+    pub last_ms: Option<i64>,
+    /// The file is still on disk.
+    pub exists: bool,
+}
+
+/// The result of one memory edit. `Archived`, `Restored` and `IndexLineRemoved`
+/// are the only outcomes that changed a file. Every other outcome left the
+/// memory directory untouched. Only `Unavailable` exists where memory edits
+/// are not supported.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "outcome",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum MemoryEditOutcome {
+    #[cfg(not(windows))]
+    Archived {
+        archive_id: String,
+        index_line_removed: bool,
+    },
+    #[cfg(not(windows))]
+    Restored {
+        index_line_restored: bool,
+    },
+    #[cfg(not(windows))]
+    IndexLineRemoved,
+    /// A precondition failed.
+    #[cfg(not(windows))]
+    ChangedOnDisk,
+    /// The file or the index line is already gone.
+    #[cfg(not(windows))]
+    Missing,
+    /// The restore target exists.
+    #[cfg(not(windows))]
+    AlreadyExists,
+    Unavailable {
+        reason: String,
+    },
+}
+
+/// One project folder with a memory directory.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryProjectDto {
+    /// The agent that owns the memory folder (`claude-code` today).
+    pub agent: String,
+    pub slug: String,
+    pub display_path: String,
+    /// The project folder exists on disk now.
+    pub folder_exists: bool,
+    pub memory_dir: String,
+    pub index_path: Option<String>,
+    pub session_count: u32,
+    pub last_session_ms: Option<i64>,
+    pub dangling: Vec<DanglingIndexEntryDto>,
+    pub memories: Vec<MemoryEntryDto>,
+}
+
+/// An index line whose target file is missing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DanglingIndexEntryDto {
+    pub title: String,
+    pub target: String,
+    pub line_number: u32,
+}
+
+/// One memory file with its usage facts.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEntryDto {
+    pub path: String,
+    pub file_name: String,
+    pub title: String,
+    pub kind: Option<String>,
+    pub hook: Option<String>,
+    /// `index`, `frontmatter`, or `body`.
+    pub hook_source: String,
+    /// The `MEMORY.md` line that names this file. `None` for an orphan.
+    pub index_entry: Option<MemoryIndexEntryDto>,
+    /// The raw text between the frontmatter fences. `None` without closed
+    /// frontmatter.
+    pub frontmatter: Option<String>,
+    /// The text after the frontmatter, or the whole text without frontmatter.
+    pub body: String,
+    pub truncated: bool,
+    pub size_bytes: u64,
+    pub modified_ms: Option<i64>,
+    pub in_index: bool,
+    pub facts: MemoryFactsDto,
+}
+
+/// The `MEMORY.md` line that names one memory file.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryIndexEntryDto {
+    pub title: String,
+    pub hook: Option<String>,
+    pub line_number: u32,
+}
+
+/// What the stored tool calls say about one memory file. No history means
+/// unknown, not never.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryFactsDto {
+    pub last_referenced_ms: Option<i64>,
+    pub last_written_ms: Option<i64>,
+    pub reference_count: u32,
+    pub write_count: u32,
+    pub sessions_since_written: Option<u32>,
+    pub has_history: bool,
+}
+
 #[cfg(test)]
 mod tests;

@@ -1041,3 +1041,169 @@ fn burn_check_sample_payload_exposes_no_session_identity() {
     assert!(!encoded.contains("environmentKey"));
     assert!(!encoded.contains("wslDistro"));
 }
+
+#[test]
+fn agent_memories_report_serializes_camel_case_fields() {
+    let report = AgentMemoriesReport {
+        generated_at_ms: 9,
+        writes_supported: true,
+        projects: vec![MemoryProjectDto {
+            agent: "claude-code".to_string(),
+            slug: "-work-app".to_string(),
+            display_path: "/work/app".to_string(),
+            folder_exists: true,
+            memory_dir: "/h/.claude/projects/-work-app/memory".to_string(),
+            index_path: None,
+            session_count: 2,
+            last_session_ms: Some(5),
+            dangling: vec![DanglingIndexEntryDto {
+                title: "Gone".to_string(),
+                target: "gone.md".to_string(),
+                line_number: 4,
+            }],
+            memories: vec![MemoryEntryDto {
+                path: "/h/a.md".to_string(),
+                file_name: "a.md".to_string(),
+                title: "A".to_string(),
+                kind: Some("user".to_string()),
+                hook: None,
+                hook_source: "body".to_string(),
+                index_entry: Some(MemoryIndexEntryDto {
+                    title: "A".to_string(),
+                    hook: None,
+                    line_number: 3,
+                }),
+                frontmatter: Some("name: A".to_string()),
+                body: "text".to_string(),
+                truncated: false,
+                size_bytes: 4,
+                modified_ms: Some(3),
+                in_index: true,
+                facts: MemoryFactsDto {
+                    last_referenced_ms: None,
+                    last_written_ms: Some(1),
+                    reference_count: 0,
+                    write_count: 1,
+                    sessions_since_written: Some(2),
+                    has_history: true,
+                },
+            }],
+        }],
+    };
+    assert_eq!(
+        serde_json::to_value(&report).unwrap(),
+        serde_json::json!({
+            "generatedAtMs": 9,
+            "writesSupported": true,
+            "projects": [{
+                "agent": "claude-code",
+                "slug": "-work-app",
+                "displayPath": "/work/app",
+                "folderExists": true,
+                "memoryDir": "/h/.claude/projects/-work-app/memory",
+                "indexPath": null,
+                "sessionCount": 2,
+                "lastSessionMs": 5,
+                "dangling": [{"title": "Gone", "target": "gone.md", "lineNumber": 4}],
+                "memories": [{
+                    "path": "/h/a.md",
+                    "fileName": "a.md",
+                    "title": "A",
+                    "kind": "user",
+                    "hook": null,
+                    "hookSource": "body",
+                    "indexEntry": {"title": "A", "hook": null, "lineNumber": 3},
+                    "frontmatter": "name: A",
+                    "body": "text",
+                    "truncated": false,
+                    "sizeBytes": 4,
+                    "modifiedMs": 3,
+                    "inIndex": true,
+                    "facts": {
+                        "lastReferencedMs": null,
+                        "lastWrittenMs": 1,
+                        "referenceCount": 0,
+                        "writeCount": 1,
+                        "sessionsSinceWritten": 2,
+                        "hasHistory": true
+                    }
+                }]
+            }]
+        })
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn memory_edit_outcomes_serialize_as_tagged_camel_case() {
+    let cases = [
+        (
+            MemoryEditOutcome::Archived {
+                archive_id: "1-a.md".to_string(),
+                index_line_removed: true,
+            },
+            serde_json::json!({"outcome": "archived", "archiveId": "1-a.md", "indexLineRemoved": true}),
+        ),
+        (
+            MemoryEditOutcome::Restored {
+                index_line_restored: false,
+            },
+            serde_json::json!({"outcome": "restored", "indexLineRestored": false}),
+        ),
+        (
+            MemoryEditOutcome::IndexLineRemoved,
+            serde_json::json!({"outcome": "indexLineRemoved"}),
+        ),
+        (
+            MemoryEditOutcome::ChangedOnDisk,
+            serde_json::json!({"outcome": "changedOnDisk"}),
+        ),
+        (
+            MemoryEditOutcome::Missing,
+            serde_json::json!({"outcome": "missing"}),
+        ),
+        (
+            MemoryEditOutcome::AlreadyExists,
+            serde_json::json!({"outcome": "alreadyExists"}),
+        ),
+        (
+            MemoryEditOutcome::Unavailable {
+                reason: "unsafepath".to_string(),
+            },
+            serde_json::json!({"outcome": "unavailable", "reason": "unsafepath"}),
+        ),
+    ];
+    for (outcome, expected) in cases {
+        assert_eq!(serde_json::to_value(&outcome).unwrap(), expected);
+    }
+}
+
+#[test]
+fn session_memories_dtos_use_camel_case() {
+    let request: SessionMemoriesRequest = serde_json::from_value(serde_json::json!({
+        "agent": "claude-code",
+        "sessionId": "s1",
+        "wslDistro": null,
+        "remoteHostId": "h",
+    }))
+    .unwrap();
+    assert_eq!(request.session_id, "s1");
+    assert_eq!(request.remote_host_id.as_deref(), Some("h"));
+    let payload = SessionMemoriesPayload {
+        entries: vec![SessionMemoryTouchDto {
+            slug: "-work-app".to_string(),
+            path: "/h/.claude/projects/-work-app/memory/a.md".to_string(),
+            file_name: "a.md".to_string(),
+            title: "A".to_string(),
+            action: "written".to_string(),
+            count: 2,
+            last_ms: None,
+            exists: false,
+        }],
+    };
+    let json = serde_json::to_value(&payload).unwrap();
+    assert_eq!(json["entries"][0]["fileName"], "a.md");
+    assert_eq!(json["entries"][0]["action"], "written");
+    assert_eq!(json["entries"][0]["lastMs"], serde_json::Value::Null);
+    assert_eq!(json["entries"][0]["exists"], false);
+}

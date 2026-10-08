@@ -105,6 +105,9 @@ pub enum EventName {
     /// An explicit project folder action completed.
     #[cfg(feature = "analytics")]
     ProjectFolderAction,
+    /// A memory action in the Memories view settled.
+    #[cfg(feature = "analytics")]
+    MemoryAction,
     /// An assessed cohort's quota-pressure section has assessed incidents,
     /// with a bucketed hit count per limit kind.
     QuotaIncidentsObserved,
@@ -188,6 +191,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::RemoteHostChanged,
     EventName::RemoteSyncCompleted,
     EventName::ProjectFolderAction,
+    EventName::MemoryAction,
     EventName::QuotaIncidentsObserved,
     EventName::ProviderIncidentsObserved,
     EventName::ProviderIncidentsIngested,
@@ -231,6 +235,7 @@ impl EventName {
             EventName::BurnCheckPromptCopied => "antiburn.burn_check_prompt_copied",
             EventName::BurnCheckOutcomeObserved => "antiburn.burn_check_outcome_observed",
             EventName::ProjectFolderAction => "antiburn.project_folder_action",
+            EventName::MemoryAction => "antiburn.memory_action",
             EventName::SessionFilterSelected => "antiburn.session_filter_selected",
             EventName::SessionFiltersChanged => "antiburn.session_filters_changed",
             EventName::RemoteHostConnectionChecked => "antiburn.remote_host_connection_checked",
@@ -473,6 +478,12 @@ pub enum Interaction {
         action: ProjectFolderAction,
         outcome: ProjectFolderOutcome,
     },
+    /// A memory action settled. The event carries no path, name, content or
+    /// error text.
+    MemoryAction {
+        action: MemoryActionKind,
+        outcome: MemoryActionOutcome,
+    },
     /// A session was opened from the activity list. `agent` deserializes into
     /// the engine's own closed enum, so an unrecognised slug is a rejected
     /// command rather than a new value appearing in the data.
@@ -672,6 +683,25 @@ pub enum ProjectFolderOutcome {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryActionKind {
+    Reveal,
+    Archive,
+    Restore,
+    RemoveIndexLine,
+    OpenFromSession,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryActionOutcome {
+    Succeeded,
+    Failed,
+    ChangedOnDisk,
+    Unsupported,
+}
+
 /// A product surface whose visibility is measured.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -685,6 +715,7 @@ pub enum Surface {
     Settings,
     BurnChecks,
     Quota,
+    Memories,
 }
 
 /// A surface that can present a measured data state.
@@ -700,6 +731,7 @@ pub enum StateSurface {
     Settings,
     BurnChecks,
     Quota,
+    Memories,
 }
 
 /// A closed Auto Fix review preparation result.
@@ -1061,6 +1093,25 @@ impl Interaction {
                     ..Facts::default()
                 },
             ),
+            Interaction::MemoryAction { action, outcome } => (
+                EventName::MemoryAction,
+                Facts {
+                    label: Some(match action {
+                        MemoryActionKind::Reveal => "reveal",
+                        MemoryActionKind::Archive => "archive",
+                        MemoryActionKind::Restore => "restore",
+                        MemoryActionKind::RemoveIndexLine => "remove_index_line",
+                        MemoryActionKind::OpenFromSession => "open_from_session",
+                    }),
+                    detail: Some(match outcome {
+                        MemoryActionOutcome::Succeeded => "succeeded",
+                        MemoryActionOutcome::Failed => "failed",
+                        MemoryActionOutcome::ChangedOnDisk => "changed_on_disk",
+                        MemoryActionOutcome::Unsupported => "unsupported",
+                    }),
+                    ..Facts::default()
+                },
+            ),
             Interaction::SessionFilterSelected { filter, agent } => (
                 EventName::SessionFilterSelected,
                 Facts {
@@ -1162,6 +1213,7 @@ wire_values!(Surface, {
     Surface::Settings => "settings",
     Surface::BurnChecks => "burn_checks",
     Surface::Quota => "quota",
+    Surface::Memories => "memories",
 });
 
 #[cfg(feature = "analytics")]
@@ -1175,6 +1227,7 @@ wire_values!(StateSurface, {
     StateSurface::Settings => "settings",
     StateSurface::BurnChecks => "burn_checks",
     StateSurface::Quota => "quota",
+    StateSurface::Memories => "memories",
 });
 
 #[cfg(feature = "analytics")]
@@ -1623,6 +1676,56 @@ mod tests {
         .is_err());
     }
 
+    #[test]
+    fn memory_action_resolves_to_closed_wire_labels() {
+        let cases = [
+            ("reveal", "succeeded"),
+            ("archive", "changed_on_disk"),
+            ("restore", "failed"),
+            ("remove_index_line", "unsupported"),
+            ("open_from_session", "succeeded"),
+        ];
+        for (action, outcome) in cases {
+            let interaction: Interaction = serde_json::from_value(serde_json::json!({
+                "kind": "memoryAction",
+                "action": action,
+                "outcome": outcome,
+            }))
+            .unwrap();
+            let (name, facts) = interaction.resolve();
+            assert_eq!(name.as_str(), "antiburn.memory_action");
+            assert_eq!(facts.label, Some(action));
+            assert_eq!(facts.detail, Some(outcome));
+        }
+        for bad in [
+            serde_json::json!({"kind":"memoryAction","action":"delete","outcome":"succeeded"}),
+            serde_json::json!({"kind":"memoryAction","action":"archive","outcome":"ok"}),
+            serde_json::json!({"kind":"memoryAction","action":"archive","outcome":"failed","path":"/x"}),
+        ] {
+            assert!(serde_json::from_value::<Interaction>(bad).is_err());
+        }
+    }
+
+    #[test]
+    fn memories_surface_resolves_to_its_wire_label() {
+        let viewed: Interaction = serde_json::from_str(
+            r#"{"kind":"surfaceViewed","surface":"memories","origin":"user"}"#,
+        )
+        .unwrap();
+        let (name, facts) = viewed.resolve();
+        assert_eq!(name.as_str(), "antiburn.surface_viewed");
+        assert_eq!(facts.label, Some("memories"));
+        assert_eq!(facts.detail, Some("user"));
+
+        let observed: Interaction = serde_json::from_str(
+            r#"{"kind":"surfaceStateObserved","surface":"memories","state":"empty","origin":"user"}"#,
+        )
+        .unwrap();
+        let (name, facts) = observed.resolve();
+        assert_eq!(name.as_str(), "antiburn.surface_state_observed");
+        assert_eq!(facts.label, Some("memories"));
+    }
+
     fn resource_summary() -> ResourceUsageSummary {
         ResourceUsageSummary {
             memory_mean: MemoryBand::From100ToUnder250Mib,
@@ -2068,6 +2171,7 @@ mod tests {
                 | EventName::BurnCheckPromptCopied
                 | EventName::BurnCheckOutcomeObserved
                 | EventName::ProjectFolderAction
+                | EventName::MemoryAction
                 | EventName::SessionFilterSelected
                 | EventName::SessionFiltersChanged
                 | EventName::RemoteHostConnectionChecked
@@ -2093,7 +2197,7 @@ mod tests {
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            42,
+            43,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));

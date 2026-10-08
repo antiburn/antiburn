@@ -54,7 +54,6 @@
    global button press dimming so the two treatments do not stack. */
 .ui-menu-item:active {
   opacity: 1;
-  transform: none;
 }
 
 .ui-menu-shortcut {
