@@ -1,0 +1,4 @@
+{"role":"user","id":"user-1","content":"  Keep the change small.\n    Keep this indentation.\n"}
+{"role":"assistant","id":"proposal-1","content":[{"type":"text","text":"I propose a focused change."},{"type":"tool-call","toolCallId":"read-1","toolName":"Read","args":{"path":"/synthetic/project/task.plan.md"}}]}
+{"role":"tool","id":"result-1","content":[{"type":"tool-result","toolCallId":"read-1","toolName":"Read","result":[{"type":"text","text":"# Task\n"},{"type":"text","text":"Keep the change small."}]}],"providerOptions":{"cursor":{"highLevelToolCallResult":{"workspaceResults":[{"filePath":"/synthetic/project/task.plan.md","lines":["# Task","Keep the change small."]}]}}}}
+{"role":"user","id":"user-2","content":"  Keep the change small.\n    Keep this indentation.\n"}

@@ -70,16 +70,18 @@ mod insights_ipc;
 mod insights_report;
 mod insights_worker;
 mod interface_scale;
-mod jev_client;
-mod jev_config;
-mod jev_settings;
-mod jev_worker;
+mod jev;
+pub use jev::client::evaluate_custom as evaluate_custom_system_one;
+pub use jev::config as jev_config;
+pub mod jev_cloudflare;
+pub mod jev_ollama;
 mod launch_intent;
 mod main_window;
 #[cfg(feature = "memory-probe")]
 mod memory_probe;
 mod notifications;
 mod nudges;
+mod over_exploring_worker;
 mod popover;
 mod popover_peek;
 mod provider_accounts;
@@ -93,9 +95,13 @@ mod retention;
 mod runtime_pricing;
 mod runtime_pricing_config;
 mod scan;
+mod scope_creep_worker;
 mod session_lifecycle;
 mod session_projection;
+pub mod session_scope;
 mod settings;
+mod skill_opportunities_worker;
+pub mod smart_check_inputs;
 mod startup_registration;
 mod storage_health;
 mod store;
@@ -264,9 +270,9 @@ pub fn run() {
         app.manage(main_window_state);
         app.manage(runtime_pricing::PricingState::load(&data_dir));
         app.manage(insights_worker::WorkerHandle::default());
-        app.manage(jev_worker::WorkerHandle::default());
+        app.manage(jev::worker::WorkerHandle::default());
         app.manage(insights_ipc::InsightsController::default());
-        jev_settings::restore_at_launch(app.handle());
+        jev::settings::restore_at_launch(app.handle());
         let evidence_reconcile_started = std::time::Instant::now();
         match app.state::<store::Store>().reconcile_evidence_revisions(
             &agents::evidence_cohort(),
@@ -432,7 +438,7 @@ pub fn run() {
             schedulers.push(scan::live_poll::spawn_live_poll(app.handle()));
             schedulers.push(retention::spawn_scheduler(app.handle()));
             schedulers.push(insights_worker::spawn(app.handle()));
-            schedulers.push(jev_worker::spawn(app.handle()));
+            schedulers.push(jev::worker::spawn(app.handle()));
             schedulers.push(updates::spawn_scheduler(app.handle()));
             schedulers.push(usage_alerts::spawn_scheduler(app.handle()));
             schedulers.push(disk_monitor::spawn_disk_monitor(app.handle().clone()));

@@ -5,21 +5,45 @@ companion around the local [`antiburn-local`](../../crates/antiburn-local) engin
 
 The app finds coding-agent sessions on this machine, analyzes them with the
 local engine, and shows activity, session findings, and API-equivalent cost
-estimates. Settings → Sources can sync supported sessions from configured Linux
+estimates. The Sessions step settings can sync supported sessions from configured Linux
 SSH hosts to a private local cache; see [remote sessions](../../docs/remote-sessions.md).
 The session index stays on this device. The app needs no antiburn account,
 server, or backend.
 
 ## Data and network requests
 
-- **TypeSafe assessments:** Smart Burn Checks currently includes Ignored
-  Instructions. When enabled with a TypeSafe API key in Settings → Checks, it
+- **Smart assessments:** The Checks step settings configure Ignored Instructions, Scope
+  Creep, Over-exploring, and Skill Opportunities through Jev, Ollama, Cloudflare,
+  or Custom. Each check has an enabled preference; Smart Checks also require
+  the group control and a configured connection. Newly introduced checks start
+  off until enabled. Jev is the default; saved connections retain their settings when
+  switched. Credentials use native storage or memory. Ignored Instructions
   sends selected instruction text, assistant excerpts, Bash command input,
   file-edit and read paths, search queries with scope filters, and other-tool
   input. A valid OpenCode `apply_patch` request can expose its paths. Dedicated
-  edit-tool content, messages from the user, and tool output stay excluded.
+  edit-tool content, read/search output, other tool output, typed question/plan
+  fields, and thinking stay excluded. Selected human text and exactly bound Bash
+  results can supply bounded context. Unknown-origin text, skill documents, and
+  completion labels do not establish approval or passing tests.
   Inline scripts, heredocs, and patches recorded in Bash input can be sent.
-  Selected paths can leave the device. TypeSafe usage charges can apply.
+  Selected paths can leave the device. Provider usage charges can apply.
+- **Other smart assessments:** Pinned native Claude Code, Codex, OpenCode SQLite,
+  and Pi retained roots can use
+  Scope Creep, Over-exploring, and Skill Opportunities through the same master setting and
+  provider connection. These checks can send recorded user task context,
+  selected work, edit content and tool results, supported question/plan records,
+  current skill names, selected reference text, and use/time limits. Skill
+  Opportunities sends only a valid nonempty description as reference text.
+  Missing, null, or blank descriptions and plain Markdown use bounded chunks
+  of the full Markdown, including frontmatter and body, with byte ranges and
+  a partial flag. Invalid YAML and non-string descriptions remain unsupported.
+  Known used skills follow the same rule. Private thinking stays excluded.
+  Results are source-limited;
+  Skill Opportunities does not prove past skill visibility or execution. Each
+  request sends bounded selected fields, not all transcripts. All four checks
+  offer prompt-only guidance, with no Auto Fix, verification watch, or savings
+  estimate. A remote Ollama or Custom endpoint is a remote destination. Hosted
+  charges can apply.
 - **Model prices:** The app downloads public prices from models.dev at startup
   and once an hour while it runs. The request contains no session data or
   credentials.
@@ -27,7 +51,7 @@ server, or backend.
   version. Development builds do not register it.
 - **Analytics:** Official release builds send closed product events through the
   [analytics channel](src-tauri/src/analytics). Events contain no session or
-  instruction content. The Ready screen explains analytics, and Settings →
+  instruction content. The first-run Overview explains analytics, and Settings →
   Privacy provides the opt-out. Default source and development builds exclude
   the analytics client.
 
@@ -103,7 +127,7 @@ And for the shell:
 cd apps/desktop/src-tauri
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo nextest run
 ```
 
 To inspect analytics requests locally, start the print-only loopback collector
@@ -138,6 +162,21 @@ a system SQLite.
 
 ## Debugging
 
+### Smart Check diagnostics
+
+The [Rust eval guide](src-tauri/eval/README.md) documents one ignored `live`
+entry point per check and shared environment-only provider selection. Use
+`ANTIBURN_EVAL_SUITE`, exact `ANTIBURN_EVAL_CASES`, and a positive
+`ANTIBURN_EVAL_LIMIT` to select bounded work. Timestamped captures include
+per-case outcomes, citation diagnostics, errors, abstentions, accuracy, usage,
+and latency. Scores do not gate delivery; no strict thresholds, frozen hashes,
+previous passing captures, recipes, or Python tool are required. Production
+protocol and authority validation still apply. Do not select every ignored test.
+
+```sh
+ANTIBURN_EVAL_PROVIDER=ollama-nimble ANTIBURN_EVAL_LIMIT=3 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --offline --test over_exploring live -- --ignored --exact --nocapture --test-threads=1
+```
+
 See [`docs/debugging.md`](../../docs/debugging.md) for development modes,
 debug-profile isolation, developer tools, logs, first-run tests, sample
 notifications, and the updater simulator.
@@ -149,8 +188,9 @@ and IPC. The Rust analytics module tests consent, endpoint injection, and the
 payload schema. `cargo-deny` rejects known telemetry dependencies in the local
 engine. Release and dependency checks run through the required CI gate.
 
-Ignored Instructions uses separate paid TypeSafe requests, not the analytics
-channel. Its default sample is 256 high-priority rule/action pairs per review;
+Ignored Instructions uses the configured Jev, Ollama, Cloudflare, or Custom
+connection, separate from analytics. Hosted requests can incur charges. Its
+default turn selects up to eight high-priority rule/action pairs;
 it is not exhaustive or a spending cap.
 Meaningful word overlap, tool names, literal paths, risk, and recency help rank
 pairs; rule and source diversity and low-overlap probes keep the sample from
@@ -165,11 +205,10 @@ without an authoritative snapshot. Clean means no finding among sampled
 comparisons, not that all content is safe. Evidence gaps and provider errors
 have separate outcomes and do not count as Clean. About 60 seconds after worker
 start for an ordinary session is a goal, not a guarantee. Each pass may use
-several paid requests; 256 pairs is not a cost cap. A dispatched request with
-an unknown outcome can trigger up to three total dispatch attempts while Antiburn
-tries to recover the result. An earlier attempt may already have incurred a
-charge. If the result remains unknown after those attempts, Antiburn blocks
-further dispatch of that work.
+at most two dispatch attempts per turn; the target limit is not a cost cap.
+Retryable transport failures have at most three persisted attempts total.
+An unknown-delivery outcome blocks automatic redispatch when safe reconciliation
+is unavailable. An earlier attempt may already have incurred a charge.
 The source and finding limits are in
 [`session-coverage.md`](../../docs/session-coverage.md) and
 [`check-coverage.md`](../../docs/check-coverage.md). The

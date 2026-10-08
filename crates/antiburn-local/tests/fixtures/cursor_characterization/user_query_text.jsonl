@@ -1,0 +1,5 @@
+{"role":"user","id":"prefix","content":"Only if tests pass: <user_query>Implement it.</user_query>"}
+{"role":"user","id":"suffix","content":"<user_query>Implement it.</user_query> Do not change the API."}
+{"role":"user","id":"multiple","content":[{"type":"text","text":"<user_query>Add tests.</user_query>\nCorrection: <user_query>Do not implement it.</user_query>"}]}
+{"role":"user","id":"literal","content":"Document the literal example `<user_query>yes</user_query>`. This is not approval."}
+{"role":"user","id":"unfinished","content":"Do not remove this condition. <user_query>Only add tests."}

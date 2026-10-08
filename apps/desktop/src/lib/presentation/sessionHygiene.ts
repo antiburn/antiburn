@@ -6,6 +6,7 @@ import type {
   SessionHygienePayload,
 } from "../insightsIpc"
 import { modelShortName } from "./models"
+import { overExploringDetail } from "./checkDefinitions"
 
 type SessionHygieneInk = "system-green" | "system-red-text" | "label-tertiary"
 
@@ -32,6 +33,7 @@ export interface SessionHygieneCheck {
 
 interface HygieneCheckDefinition {
   id: SessionHygieneBadgeId
+  serverOnly?: boolean
   /** The check name alone, with no verdict. Feeds `SessionHygieneCheck.name`. */
   name: string
   cleanTitle: string
@@ -47,97 +49,145 @@ interface HygieneCheckDefinition {
   explainer: string
 }
 
+function defineHygieneCheck(
+  id: SessionHygieneBadgeId,
+  name: string,
+  cleanTitle: string,
+  findingTitle: string,
+  notAssessedTitle: string,
+  summary: string,
+  guidance: readonly string[],
+  explainer: string,
+  serverOnly = false,
+): HygieneCheckDefinition {
+  return {
+    id,
+    name,
+    cleanTitle,
+    findingTitle,
+    notAssessedTitle,
+    summary,
+    guidance,
+    explainer,
+    ...(serverOnly ? { serverOnly } : {}),
+  }
+}
+
 const CHECKS: readonly HygieneCheckDefinition[] = [
-  {
-    id: "sessionOverdepth",
-    name: "Session overdepth",
-    cleanTitle: "Session didn't get too deep",
-    findingTitle: "Session went too deep",
-    notAssessedTitle: "Session depth not assessed",
-    summary:
-      "Deep context burns more tokens with each request, directly affecting cost and quality.",
-    guidance: [
+  defineHygieneCheck(
+    "scopeCreep",
+    "Scope creep",
+    "No scope creep in assessed work",
+    "Scope creep found",
+    "Scope creep not assessed",
+    "Some assessed work went outside the agreed task.",
+    ["Keep future work within the agreed task. Ask for approval before adding work."],
+    "Finds extra work outside the agreed task using recorded scope and approval evidence from accepted OpenCode, Codex, Claude Code, and Pi sessions. Incomplete or unproven scope cannot establish approval.",
+    true,
+  ),
+  defineHygieneCheck(
+    "sessionOverdepth",
+    "Session overdepth",
+    "Session didn't get too deep",
+    "Session went too deep",
+    "Session depth not assessed",
+    "Deep context burns more tokens with each request, directly affecting cost and quality.",
+    [
       "Compaction works now, use it over about 200k tokens.",
       "Use subagents to preserve parent context.",
     ],
-    explainer:
-      "Past about 200k tokens, every turn resends the whole history as cache reads. Deep sessions cost more per message than fresh ones.",
-  },
-  {
-    id: "modelOverthinking",
-    name: "Model overthinking",
-    cleanTitle: "Thinking/reasoning modes ok",
-    findingTitle: "Thinking/reasoning modes too high",
-    notAssessedTitle: "Thinking/reasoning modes not assessed",
-    summary: "Higher thinking modes burn more tokens without giving better quality.",
-    guidance: [
-      "Keep thinking/reasoning/effort below xhigh.",
-      "Default to high for most tasks.",
-    ],
-    explainer:
-      "High reasoning effort spends extra output tokens on every reply. Most tasks do fine on a lower setting.",
-  },
-  {
-    id: "overpoweredSubagents",
-    name: "Overpowered subagents",
-    cleanTitle: "Subagent models ok",
-    findingTitle: "Subagent models too powerful",
-    notAssessedTitle: "Subagent models not assessed",
-    summary:
-      "Subagents have to reorient themselves. Using premium subagents gets expensive fast.",
-    guidance: ["Get your premium main agent to delegate to cheaper subagents."],
-    explainer:
-      "Subagents inherit the big model for fetch-and-carry work. Routine lookups on a smaller model cost a fraction.",
-  },
-  {
-    id: "obsoleteModel",
-    name: "Obsolete model",
-    cleanTitle: "All models up to date",
-    findingTitle: "Old model usage detected",
-    notAssessedTitle: "Model obsolescence not assessed",
-    summary: "Newer models usually give better output at the same or cheaper cost.",
-    guidance: [
+    "Past about 200k tokens, every turn resends the whole history as cache reads. Deep sessions cost more per message than fresh ones.",
+  ),
+  defineHygieneCheck(
+    "modelOverthinking",
+    "Model overthinking",
+    "Thinking/reasoning modes ok",
+    "Thinking/reasoning modes too high",
+    "Thinking/reasoning modes not assessed",
+    "Higher thinking modes burn more tokens without giving better quality.",
+    ["Keep thinking/reasoning/effort below xhigh.", "Default to high for most tasks."],
+    "High reasoning effort spends extra output tokens on every reply. Most tasks do fine on a lower setting.",
+  ),
+  defineHygieneCheck(
+    "overpoweredSubagents",
+    "Overpowered subagents",
+    "Subagent models ok",
+    "Subagent models too powerful",
+    "Subagent models not assessed",
+    "Subagents have to reorient themselves. Using premium subagents gets expensive fast.",
+    ["Get your premium main agent to delegate to cheaper subagents."],
+    "Subagents inherit the big model for fetch-and-carry work. Routine lookups on a smaller model cost a fraction.",
+  ),
+  defineHygieneCheck(
+    "obsoleteModel",
+    "Obsolete model",
+    "All models up to date",
+    "Old model usage detected",
+    "Model obsolescence not assessed",
+    "Newer models usually give better output at the same or cheaper cost.",
+    [
       "Manually switch to the current replacement.",
       "Update the agent's default model in config.",
     ],
-    explainer: "Newer models do the same work better, usually at the same or lower price.",
-  },
-  {
-    id: "fastModeOveruse",
-    name: "Fast mode overuse",
-    cleanTitle: "Fast mode not overused",
-    findingTitle: "Fast mode overused",
-    notAssessedTitle: "Fast mode not assessed",
-    summary: "Fast mode costs a lot more for a little extra speed.",
-    guidance: ["Use standard speed by default.", "Rarely use fast mode for subagents."],
-    explainer:
-      "Fast mode trades a higher token rate for speed. Keep it for bursts, not as the default.",
-  },
-  {
-    id: "excessCacheRehydration",
-    name: "Excess cache rehydration",
-    cleanTitle: "Cache rehydration under control",
-    findingTitle: "Cache rehydration out of control",
-    notAssessedTitle: "Cache rehydration not assessed",
-    summary: "Repeated full-price context processing can increase cost and limit use.",
-    guidance: [
+    "Newer models do the same work better, usually at the same or lower price.",
+  ),
+  defineHygieneCheck(
+    "fastModeOveruse",
+    "Fast mode overuse",
+    "Fast mode not overused",
+    "Fast mode overused",
+    "Fast mode not assessed",
+    "Fast mode costs a lot more for a little extra speed.",
+    ["Use standard speed by default.", "Rarely use fast mode for subagents."],
+    "Fast mode trades a higher token rate for speed. Keep it for bursts, not as the default.",
+  ),
+  defineHygieneCheck(
+    "excessCacheRehydration",
+    "Excess cache rehydration",
+    "Cache rehydration under control",
+    "Cache rehydration out of control",
+    "Cache rehydration not assessed",
+    "Repeated full-price context processing can increase cost and limit use.",
+    [
       "Avoid long breaks in sessions.",
       "If you have a long break, compact before or even after it.",
       "Avoid switching models with a large context accumulated.",
     ],
-    explainer:
-      "This estimates paid context beyond context growth. Cache expiry, context changes, and provider evictions can contribute; the estimate does not establish the cause.",
-  },
-  {
-    id: "ignoredInstructions",
-    name: "Ignored Instructions",
-    cleanTitle: "Instructions followed",
-    findingTitle: "Instructions ignored",
-    notAssessedTitle: "Instructions not assessed",
-    summary: "Instructions were ignored in this session.",
-    guidance: ["Follow the cited instruction and correct the affected work."],
-    explainer: "Some sessions didn't follow your agent instruction files properly.",
-  },
+    "This estimates paid context beyond context growth. Cache expiry, context changes, and provider evictions can contribute; the estimate does not establish the cause.",
+  ),
+  defineHygieneCheck(
+    "ignoredInstructions",
+    "Ignored instructions",
+    "Instructions followed",
+    "Instructions ignored",
+    "Instructions not assessed",
+    "Instructions were ignored in this session.",
+    ["Follow the cited instruction and correct the affected work."],
+    "Some sessions didn't follow your agent instruction files properly.",
+    true,
+  ),
+  defineHygieneCheck(
+    "skillOpportunities",
+    "Skill opportunities",
+    "No skill opportunity in assessed work",
+    "Skill opportunity found",
+    "Skill opportunities not assessed",
+    "Assessed work matches a skill in your current inventory.",
+    ["Use this current skill for similar future work."],
+    "Compares selected work with current skills. Current inventory does not prove past availability.",
+    true,
+  ),
+  defineHygieneCheck(
+    "overExploring",
+    "Over-exploring",
+    "No over-exploring in assessed work",
+    "Over-exploring found",
+    "Over-exploring not assessed",
+    "Some assessed reads went beyond what the work needed.",
+    ["Read only the files and sections needed for future work."],
+    "Checks selected reads for unrelated files, excess file breadth, and excess reading within a file.",
+    true,
+  ),
 ]
 
 export interface SessionHygieneDocumentation {
@@ -163,7 +213,7 @@ const ACCOUNTING_DETAIL: Record<
 }
 
 export const INITIAL_SESSION_HYGIENE: SessionHygienePayload = {
-  badges: CHECKS.filter((check) => check.id !== "ignoredInstructions").map((check) => ({
+  badges: CHECKS.filter((check) => !check.serverOnly).map((check) => ({
     ...NOT_ASSESSED,
     id: check.id,
   })),
@@ -184,8 +234,7 @@ export function sessionHygieneExplainers(): Array<{
 export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHygieneCheck[] {
   return CHECKS.filter(
     (definition) =>
-      definition.id !== "ignoredInstructions" ||
-      payload.badges.some((badge) => badge.id === definition.id),
+      !definition.serverOnly || payload.badges.some((badge) => badge.id === definition.id),
   ).map((definition) => {
     const badge = payload.badges.find((candidate) => candidate.id === definition.id) ?? {
       ...NOT_ASSESSED,
@@ -217,7 +266,15 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
       return {
         ...badge,
         title:
-          badge.status === "checking" ? "Checking instructions" : "Couldn't check instructions",
+          badge.status === "checking"
+            ? definition.id === "ignoredInstructions"
+              ? "Checking instructions"
+              : `Checking ${definition.name.toLowerCase()}`
+            : definition.id === "scopeCreep" && badge.checkReason === "scope_context_too_large"
+              ? "Scope creep · Task context exceeds the model limit."
+              : definition.id === "ignoredInstructions"
+                ? "Couldn't check instructions"
+                : `Couldn't check ${definition.name.toLowerCase()}`,
         name: definition.name,
         detail,
         ink: "label-tertiary" as const,
@@ -225,7 +282,10 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
     }
     return {
       ...badge,
-      title: definition.notAssessedTitle,
+      title:
+        definition.id === "scopeCreep" && badge.checkReason === "scope_context_too_large"
+          ? "Scope creep · Task context exceeds the model limit."
+          : definition.notAssessedTitle,
       name: definition.name,
       detail,
       ink: "label-tertiary" as const,
@@ -259,6 +319,10 @@ function readableModels(models: readonly string[]): string {
 
 /** Describe the stored facts that caused one finding. */
 function sessionHygieneFindingDetails(check: SessionHygieneCheck): string[] {
+  if (check.status === "finding" && check.id === "overExploring") {
+    const detail = overExploringDetail(check.checkReason)
+    return detail ? [detail] : []
+  }
   const evidence = check.findingEvidence
   if (check.status !== "finding" || !evidence) return []
 

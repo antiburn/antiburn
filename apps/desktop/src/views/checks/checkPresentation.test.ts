@@ -26,12 +26,73 @@ function target(
 }
 
 describe("check row presentation", () => {
+  it("uses only category activity and preserves verification", () => {
+    const check = category({ finding: 0, clean: 0, checking: true })
+    expect(checkRowPresentation(check)).toMatchObject({
+      summary: "No issues found yet",
+      provisional: true,
+      checking: true,
+      metric: null,
+      iconTone: "bg-system-green/10 text-system-green",
+    })
+    expect(checkRowPresentation({ ...check, checking: false })).toMatchObject({
+      summary: "Not assessed",
+      provisional: false,
+      checking: false,
+    })
+    expect(checkRowPresentation({ ...check, unavailable: 1 })).toMatchObject({
+      summary: "No issues found yet",
+      provisional: true,
+    })
+    expect(checkRowPresentation({ ...check, lifecycle: "awaitingVerification" })).toMatchObject(
+      {
+        summary: "Awaiting verification",
+        provisional: false,
+        checking: false,
+      },
+    )
+  })
+
+  it("shows supplied coverage counts and limits continuation to active work", () => {
+    const check = category({
+      sampled: true,
+      partialContext: true,
+      reviewCoverage: { reviewed: 4, total: 8, uncertain: 1, pending: 3, continuing: true },
+    })
+    expect(checkRowPresentation(check).coverage).toBe(
+      "4 of 8 reviewed · 1 uncertain · 3 pending",
+    )
+    expect(checkRowPresentation(check).evidenceLimits).toHaveLength(2)
+    expect(checkRowPresentation(check).evidenceLimits[0]!.details).not.toContain(
+      "Review is continuing.",
+    )
+    expect(
+      checkRowPresentation({ ...check, checking: true }).evidenceLimits[0]!.details,
+    ).toContain("Review is continuing.")
+    expect(checkRowPresentation(category()).coverage).toBeNull()
+  })
+  it("presents Scope Creep with future guidance and no inferred estimate", () => {
+    expect(
+      checkRowPresentation(category({ id: "scopeCreep", estimatedTokenBurnBasisPoints: null })),
+    ).toMatchObject({
+      label: "Scope creep",
+      summary: "2/5 sessions failed",
+      metric: null,
+      costLine: null,
+    })
+    expect(CHECK_UI.scopeCreep.recommendation).toBe(
+      "Keep future work within the agreed task. Ask for approval before adding work.",
+    )
+  })
   it("provides one short recommendation with its reason", () => {
     expect(CHECK_UI.oldModelUsage).toMatchObject({
       recommendation:
         "Use the reviewed replacement for new sessions to support the same work at a lower API-equivalent cost.",
     })
     expect(CHECK_UI.oldModelUsage).not.toHaveProperty("why")
+    expect(CHECK_UI.skillOpportunities.recommendation).toBe(
+      "Use this current skill for similar future work.",
+    )
   })
 
   it("provides the shared failed row content and status colors", () => {
@@ -44,17 +105,64 @@ describe("check row presentation", () => {
     })
   })
 
+  it("presents Skill Opportunities through the shared check row", () => {
+    expect(
+      checkRowPresentation(category({ id: "skillOpportunities", finding: 2, clean: 1 })),
+    ).toMatchObject({ label: "Skill opportunities", summary: "2/3 sessions failed" })
+  })
+
+  it("presents Over-exploring without inventing an estimate", () => {
+    expect(
+      checkRowPresentation(
+        category({ id: "overExploring", estimatedTokenBurnBasisPoints: null }),
+      ),
+    ).toMatchObject({
+      label: "Over-exploring",
+      summary: "2/5 sessions failed",
+      metric: null,
+      costLine: null,
+    })
+  })
+
+  it.each([
+    {
+      finding: 1,
+      clean: 0,
+      unavailable: 0,
+      lifecycle: "failing" as const,
+      summary: "1/1 session failed",
+    },
+    { finding: 0, clean: 1, unavailable: 2, lifecycle: "passing" as const, summary: "Passed" },
+    { finding: 0, clean: 0, unavailable: 2, lifecycle: null, summary: "Not assessed" },
+  ])("keeps skill evidence state separate from savings: $summary", ({ summary, ...state }) => {
+    expect(
+      checkRowPresentation(
+        category({
+          id: "skillOpportunities",
+          estimatedTokenBurnBasisPoints: null,
+          ...state,
+        }),
+        [target(null)],
+      ),
+    ).toMatchObject({
+      label: "Skill opportunities",
+      summary,
+      metric: null,
+      costLine: null,
+    })
+  })
+
   it("uses the ordinary failed-session wording for ignored instructions", () => {
     expect(
       checkRowPresentation(category({ id: "ignoredInstructions", finding: 2, clean: 0 })),
     ).toMatchObject({
-      label: "Ignored Instructions",
+      label: "Ignored instructions",
       summary: "2/2 sessions failed",
       metric: null,
     })
   })
 
-  it("provides the shared passed row content and status colors", () => {
+  it("provides the shared passed row content without a burn estimate", () => {
     expect(
       checkRowPresentation(
         category({ finding: 0, clean: 5, estimatedTokenBurnBasisPoints: 0 }),
@@ -62,9 +170,9 @@ describe("check row presentation", () => {
     ).toMatchObject({
       label: "Old model usage",
       summary: "Passed",
-      metric: "0% estimated burn",
+      metric: null,
       iconTone: "bg-system-green/10 text-system-green",
-      metricTone: "text-system-green",
+      metricTone: null,
     })
   })
 

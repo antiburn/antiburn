@@ -258,7 +258,7 @@ skipped rather than asking the system for access on its own. The permission dial
 see is one antiburn asked for because you pressed a button, and what it wants is
 narrow — the git repositories your coding agents worked in, read for their names and
 locations. If you decline, the folder is simply left alone; you can change your mind
-in Settings → Sources, or revoke access in System Settings, and antiburn will notice
+in the Sessions step settings, or revoke access in System Settings, and antiburn will notice
 the next time it looks.
 
 ## Network

@@ -25,6 +25,9 @@ use serde_json::{Value, json};
 #[path = "support/pricing.rs"]
 mod pricing;
 
+#[path = "support/codex_scope.rs"]
+mod codex_scope;
+
 fn fixture(name: &str) -> &'static str {
     pricing::install();
     match name {
@@ -779,7 +782,38 @@ fn check_golden(name: &str) {
     // same value re-parsed from disk. Re-parsing `rendered` keeps the two
     // sides on equal footing.
     let actual: Value = serde_json::from_str(&rendered).unwrap();
-    assert_eq!(actual, expected, "golden differs for {name}");
+    assert_eq!(
+        golden_difference(&actual, &expected, ""),
+        None,
+        "golden differs for {name}"
+    );
+}
+
+fn golden_difference(actual: &Value, expected: &Value, path: &str) -> Option<String> {
+    match (actual, expected) {
+        (Value::Object(actual), Value::Object(expected)) => {
+            for key in actual.keys().chain(expected.keys()) {
+                if !actual.contains_key(key) || !expected.contains_key(key) {
+                    return Some(format!("{path}/{key}: missing field"));
+                }
+                let difference =
+                    golden_difference(&actual[key], &expected[key], &format!("{path}/{key}"));
+                if difference.is_some() {
+                    return difference;
+                }
+            }
+            None
+        }
+        (Value::Array(actual), Value::Array(expected)) if actual.len() == expected.len() => actual
+            .iter()
+            .zip(expected)
+            .enumerate()
+            .find_map(|(index, (actual, expected))| {
+                golden_difference(actual, expected, &format!("{path}/{index}"))
+            }),
+        _ if actual == expected => None,
+        _ => Some(format!("{path}: actual={actual}, expected={expected}")),
+    }
 }
 
 fn is_supported<T>(value: &EvidenceValue<T>) -> bool {

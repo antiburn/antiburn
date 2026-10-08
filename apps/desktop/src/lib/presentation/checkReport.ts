@@ -3,7 +3,11 @@ import type {
   ChecksCategoryPayload,
   ChecksReportPayload,
 } from "../insightsIpc"
-import { aggregateBurnCheckPresentation, type BurnCheckPresentation } from "./checkStatus"
+import {
+  aggregateBurnCheckPresentation,
+  checkHasProvisionalResult,
+  type BurnCheckPresentation,
+} from "./checkStatus"
 import { activeChecksReport } from "../snoozedBurnChecks"
 
 export { CHECK_LABELS } from "./checkDefinitions"
@@ -48,7 +52,7 @@ export function checksPresentation(
     (category) => category.lifecycle != null,
   )
   const activeUnavailable = activeReport.categories.filter(
-    (category) => category.lifecycle == null,
+    (category) => category.lifecycle == null && !checkHasProvisionalResult(category),
   )
   const snoozedCategories = report.categories.filter((category) => snoozed.has(category.id))
   const noEnabledChecks = report.evidenceSettled && report.categories.length === 0
@@ -64,7 +68,9 @@ export function checksPresentation(
     awaiting: activeAssessed.filter(
       (category) => category.lifecycle === "awaitingVerification",
     ),
-    wins: activeAssessed.filter((category) => category.lifecycle === "passing"),
+    wins: activeReport.categories.filter(
+      (category) => category.lifecycle === "passing" || checkHasProvisionalResult(category),
+    ),
     unavailable: activeUnavailable,
     refreshUnavailable,
     noActiveChecks,
@@ -118,11 +124,14 @@ export function checksHeroPresentation(
     }
   }
 
-  const completePass = presentation.wins.some((category) => category.clean > 0)
+  const passed = presentation.wins.filter(
+    (category) => category.lifecycle === "passing" && category.clean > 0,
+  )
+  const completePass = passed.length > 0
   return {
     result: completePass ? "No issues found" : "No checks assessed",
     summary: completePass
-      ? `${presentation.wins.length} check${presentation.wins.length === 1 ? "" : "s"} passed`
+      ? `${passed.length} check${passed.length === 1 ? "" : "s"} passed`
       : null,
     state: completePass ? "passed" : "pending",
     tone: "text-label",

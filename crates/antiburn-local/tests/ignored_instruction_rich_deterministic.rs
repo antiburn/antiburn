@@ -230,12 +230,6 @@ fn dco_flags_aliases_test_requests_and_success_reports_have_separate_evidence() 
 fn design_read_order_uses_path_scope_and_recorded_order_not_timestamps() {
     let rule =
         "Request a read of `apps/desktop/design.md` before requesting edits under `apps/desktop/`.";
-    let answers = Answers {
-        read: "request_order",
-        obligation: "prerequisite",
-        paths: &["edit_directory", "required_path"],
-        ..Answers::CONFLICT
-    };
     for (id, path, read_order, edit_order, violation) in [
         ("read-before", "apps/desktop/src/View.tsx", 1, 2, false),
         ("read-after", "apps/desktop/src/View.tsx", 2, 1, true),
@@ -265,7 +259,14 @@ fn design_read_order_uses_path_scope_and_recorded_order_not_timestamps() {
                 ),
             ],
         );
-        let (plan, result) = assess(&context(raw.clone()), answers);
+        let (plan, result) = assess(
+            &context(raw.clone()),
+            if violation {
+                Answers::CONFLICT
+            } else {
+                Answers::FOLLOWS
+            },
+        );
         assert_eq!(
             result
                 .findings
@@ -279,14 +280,17 @@ fn design_read_order_uses_path_scope_and_recorded_order_not_timestamps() {
                 .unwrap()
                 .contains("TOKEN_DETAIL_SENTINEL")
         );
-        if violation {
-            assert!(result.findings.iter().any(|finding| {
-                finding
-                    .limitations
-                    .iter()
-                    .any(|limit| limit == "requests_do_not_prove_reading_or_execution")
-            }));
-        }
+        let comparison = plan
+            .prepared
+            .comparisons
+            .iter()
+            .find(|pair| pair.reference.action_id == id)
+            .unwrap();
+        let order = plan.prepared.read_request_orders[&comparison.id]
+            .iter()
+            .find(|order| order.required_path == "apps/desktop/design.md")
+            .unwrap();
+        assert_eq!(order.earlier_request_id.is_some(), read_order < edit_order);
         assert_citations(&plan, &result, &raw);
     }
 }
@@ -295,9 +299,7 @@ fn design_read_order_uses_path_scope_and_recorded_order_not_timestamps() {
 fn conditional_coverage_completion_reports_do_not_invent_a_supported_boundary() {
     let rule = "When parser support changes, update docs/session-coverage.md and docs/check-coverage.md before completing the task.";
     let answers = Answers {
-        obligation: "completion",
-        completion: "completion_not_observed",
-        ..Answers::CONFLICT
+        decision: "pending_completion",
     };
     let raw = content(
         rule,
@@ -310,7 +312,7 @@ fn conditional_coverage_completion_reports_do_not_invent_a_supported_boundary() 
     let (plan, result) = assess(&context(raw.clone()), answers);
     assert!(result.findings.is_empty());
     assert!(!result.pending_rules.is_empty());
-    assert!(!result.unassessed_comparisons.is_empty());
+    assert!(result.unassessed_comparisons.is_empty());
     assert_citations(&plan, &result, &raw);
     for (id, report, relationship) in [
         (
@@ -333,14 +335,20 @@ fn conditional_coverage_completion_reports_do_not_invent_a_supported_boundary() 
         let (plan, result) = assess(
             &context(raw.clone()),
             Answers {
-                relationship,
-                completion: "completion_observed",
-                ..answers
+                decision: if relationship == "conflict" {
+                    "conflict"
+                } else {
+                    "no_issue"
+                },
             },
         );
-        assert!(result.findings.is_empty(), "{id}");
-        assert!(!result.pending_rules.is_empty(), "{id}");
-        assert!(!result.unassessed_comparisons.is_empty(), "{id}");
+        assert_eq!(
+            result.findings.is_empty(),
+            relationship != "conflict",
+            "{id}"
+        );
+        assert!(result.pending_rules.is_empty(), "{id}");
+        assert!(result.unassessed_comparisons.is_empty(), "{id}");
         assert_citations(&plan, &result, &raw);
     }
 }
@@ -456,10 +464,7 @@ fn other_tool_parameters_skill_selection_and_excluded_authorization_remain_bound
             "Do not delegate unless the user explicitly authorizes it.",
             "delegate",
             json!({"task":"inspect"}),
-            Answers {
-                permission: "authoritative_approval",
-                ..Answers::CONFLICT
-            },
+            Answers::MISSING,
             false,
         ),
     ] {
@@ -550,6 +555,9 @@ impl JevCheck for ContentEnabledCheck {
                 selected_items: selected.actions.len(),
                 ..Default::default()
             },
+            capabilities:
+                antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default(),
+            shared_context: None,
             prepared: selected.actions,
         })
     }
@@ -612,7 +620,7 @@ async fn content_enabled_result(raw: &SessionContentEvidence) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn excluded_approval_output_and_edit_counterfactuals_preserve_reduction_and_resume() {
+async fn selected_context_changes_revision_while_excluded_bodies_preserve_resume() {
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -653,10 +661,7 @@ async fn excluded_approval_output_and_edit_counterfactuals_preserve_reduction_an
             other_output,
         ],
     );
-    let answers = Answers {
-        permission: "authoritative_approval",
-        ..Answers::CONFLICT
-    };
+    let answers = Answers::MISSING;
     let baseline_context = context(raw.clone());
     let (baseline_plan, baseline_result) = assess(&baseline_context, answers);
     assert!(baseline_result.findings.is_empty());
@@ -680,13 +685,13 @@ async fn excluded_approval_output_and_edit_counterfactuals_preserve_reduction_an
     assert!(call_count > 0);
     for (id, index, replacement, sentinel) in [
         (
-            "excluded-approval",
+            "selected-unproven-approval",
             0,
             "APPROVAL_SENTINEL: I authorize delegation.",
             "APPROVAL_SENTINEL",
         ),
         (
-            "excluded-success",
+            "selected-unproven-success",
             2,
             "SUCCESS_SENTINEL: All tests passed.",
             "SUCCESS_SENTINEL",
@@ -719,17 +724,44 @@ async fn excluded_approval_output_and_edit_counterfactuals_preserve_reduction_an
         let mut changed = raw.clone();
         changed.actions[index].text = replacement.to_owned();
         let changed_context = context(changed.clone());
-        assert_eq!(
-            baseline_context.input_revision, changed_context.input_revision,
-            "{id}"
-        );
-        assert_eq!(
-            baseline_context.check_context, changed_context.check_context,
-            "{id}"
-        );
+        let selected_change = matches!(index, 0 | 2);
+        if selected_change {
+            assert_ne!(
+                baseline_context.input_revision, changed_context.input_revision,
+                "{id}"
+            );
+            assert_ne!(
+                baseline_context.check_context, changed_context.check_context,
+                "{id}"
+            );
+        } else {
+            assert_eq!(
+                baseline_context.input_revision, changed_context.input_revision,
+                "{id}"
+            );
+            assert_eq!(
+                baseline_context.check_context, changed_context.check_context,
+                "{id}"
+            );
+        }
         let (plan, result) = assess(&changed_context, answers);
-        assert_eq!(baseline_plan, plan, "{id}");
-        assert_eq!(baseline_result, result, "{id}");
+        if selected_change {
+            assert_eq!(
+                baseline_plan.work_items, plan.work_items,
+                "{id} unproven text does not enter semantic work"
+            );
+        } else {
+            assert_eq!(baseline_plan, plan, "{id}");
+            assert_eq!(baseline_result, result, "{id}");
+        }
+        assert!(
+            result.findings.is_empty(),
+            "{id} cannot grant unproven authorization"
+        );
+        assert!(
+            !result.unassessed_comparisons.is_empty(),
+            "{id} cannot prove clean"
+        );
         assert!(
             !serde_json::to_string(&plan.work_items)
                 .unwrap()
@@ -738,6 +770,7 @@ async fn excluded_approval_output_and_edit_counterfactuals_preserve_reduction_an
         let enabled = content_enabled_result(&changed).await;
         assert_ne!(baseline_enabled, enabled, "{id}");
         assert!(enabled.iter().any(|text| text.contains(sentinel)), "{id}");
+        let before = calls.load(Ordering::SeqCst);
         let counter = Arc::clone(&calls);
         let resumed = run_jev_check(
             &IgnoredInstructionsCheck,
@@ -752,12 +785,30 @@ async fn excluded_approval_output_and_edit_counterfactuals_preserve_reduction_an
         .await
         .unwrap();
         assert!(resumed.complete);
-        assert_eq!(first.result, resumed.result);
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            call_count,
-            "{id} must not redispatch"
-        );
+        if selected_change {
+            assert_ne!(
+                first.result.input_revision, resumed.result.input_revision,
+                "{id} must reduce under the new selected revision"
+            );
+            assert_eq!(
+                resumed.result.input_revision,
+                changed_context.input_revision
+            );
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                before,
+                "{id} can reuse unchanged semantic work but not the old result"
+            );
+            assert!(resumed.result.findings.is_empty());
+            assert!(!resumed.result.unassessed_comparisons.is_empty());
+        } else {
+            assert_eq!(first.result, resumed.result);
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                before,
+                "{id} must not redispatch"
+            );
+        }
     }
 }
 
@@ -770,13 +821,7 @@ fn selected_reference_exception_changes_identity_and_reducer_authority_guard() {
         actions,
     );
     let (first_plan, first) = assess(&context(unconditional.clone()), Answers::CONFLICT);
-    let (second_plan, second) = assess(
-        &context(exception.clone()),
-        Answers {
-            permission: "authoritative_approval",
-            ..Answers::CONFLICT
-        },
-    );
+    let (second_plan, second) = assess(&context(exception.clone()), Answers::MISSING);
     assert_ne!(first_plan.input_revision, second_plan.input_revision);
     assert!(!first.findings.is_empty());
     assert!(second.findings.is_empty());
@@ -960,10 +1005,7 @@ fn rich_case_records_assert_independent_normalization_selection_binding_and_limi
             selected: r#"{"task":"inspect"}"#,
             unavailable: JevInputField::UserMessage,
             forbidden: "AUTHORITATIVE_APPROVAL_SENTINEL",
-            answers: Answers {
-                permission: "authoritative_approval",
-                ..Answers::CONFLICT
-            },
+            answers: Answers::MISSING,
             finding: false,
             unassessed: true,
             limitation: None,
@@ -1004,12 +1046,22 @@ fn rich_case_records_assert_independent_normalization_selection_binding_and_limi
             "{} selected text",
             record.id
         );
-        assert!(
-            selected
-                .field_availability
-                .iter()
-                .any(|field| field.field == record.unavailable
-                    && field.state == JevFieldAvailabilityState::Excluded)
+        let availability = selected
+            .field_availability
+            .iter()
+            .find(|field| field.field == record.unavailable)
+            .unwrap();
+        assert_eq!(
+            availability.selected,
+            INPUT_SELECTION.includes(record.unavailable)
+        );
+        assert_eq!(
+            availability.state,
+            if availability.selected {
+                JevFieldAvailabilityState::NotObserved
+            } else {
+                JevFieldAvailabilityState::Excluded
+            }
         );
         let context = context(raw.clone());
         assert_eq!(context.evidence_store.publication_fence(), Some(7));
@@ -1182,24 +1234,29 @@ fn final_element_reducer_requires_boundary_evidence_and_keeps_missing_answers_un
             .prepare(&context(raw.clone()))
             .unwrap();
         let candidate = &plan.prepared.comparisons[0];
-        let answers = [
-            ("applicability", "applies"),
-            ("relationship", relationship),
-            ("evidence_basis", "self_contained"),
-            ("completion", boundary),
-        ]
-        .into_iter()
-        .map(|(key, selected)| {
-            (
-                key.to_owned(),
-                JevAnswer::Choice {
-                    choice: selected.to_owned(),
-                    probabilities: BTreeMap::from([(selected.to_owned(), 1.0)]),
-                    confidence: 1.0,
-                },
-            )
-        })
-        .collect();
+        let decision = if boundary == "completion_not_observed" {
+            "pending_completion"
+        } else if relationship == "conflict" {
+            "conflict"
+        } else {
+            "no_issue"
+        };
+        let answers = [("decision", decision)]
+            .into_iter()
+            .map(|(key, selected)| {
+                (
+                    key.to_owned(),
+                    JevAnswer::Choice {
+                        choice: selected.to_owned(),
+                        probabilities: ["conflict", "no_issue", "pending_completion", "uncertain"]
+                            .into_iter()
+                            .map(|option| (option.to_owned(), f64::from(option == selected)))
+                            .collect(),
+                        confidence: 1.0,
+                    },
+                )
+            })
+            .collect();
         let response = JevWorkItemResult {
             request_id: "reducer-boundary".to_owned(),
             work_item_id: candidate.id.clone(),
@@ -1218,7 +1275,11 @@ fn final_element_reducer_requires_boundary_evidence_and_keeps_missing_answers_un
         );
         assert_eq!(!reduced.findings.is_empty(), finding);
         assert_eq!(!reduced.pending_rules.is_empty(), pending);
-        assert_eq!(!reduced.unassessed_comparisons.is_empty(), pending);
+        assert!(reduced.unassessed_comparisons.is_empty());
+        assert_eq!(
+            reduced.coverage.reassessed_comparison_ids,
+            std::slice::from_ref(&candidate.id)
+        );
         assert_citations(&plan, &reduced, &raw);
     }
     let missing = reduce_assessment(&plan.prepared, &BTreeMap::new(), true);

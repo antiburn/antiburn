@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import type { ChecksReportPayload } from "../insightsIpc"
 import {
   aggregateBurnCheckPresentation,
+  checkHasProvisionalResult,
   emptyBurnCheckPresentation,
   sessionBurnCheckPresentation,
 } from "./checkStatus"
@@ -40,6 +41,26 @@ function category(
     lifecycle,
   }
 }
+
+describe("provisional category results", () => {
+  it("does not turn activity into clean evidence or an assessed pass", () => {
+    const check = { ...category(0, 0, 3), checking: true }
+    expect(checkHasProvisionalResult(check)).toBe(true)
+    expect(aggregateBurnCheckPresentation(report([check], false))).toMatchObject({
+      counts: { failed: 0, passed: 0, unassessed: 1 },
+      lifecycle: "processing",
+      evidenceComplete: false,
+    })
+    expect(check.clean).toBe(0)
+    expect(check.lifecycle).toBeNull()
+    expect(checkHasProvisionalResult({ ...check, checking: false })).toBe(false)
+    expect(checkHasProvisionalResult({ ...check, finding: 1 })).toBe(false)
+    expect(checkHasProvisionalResult({ ...check, lifecycle: "awaitingVerification" })).toBe(
+      false,
+    )
+    expect(checkHasProvisionalResult({ ...check, lifecycle: "failing" })).toBe(false)
+  })
+})
 
 describe("sessionBurnCheckPresentation", () => {
   it("uses terminal language only for complete nonempty results", () => {

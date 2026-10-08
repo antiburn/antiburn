@@ -152,6 +152,26 @@ impl ContentPart {
         self
     }
 
+    /// Attach evidence only after the adapter validates its native producer contract.
+    /// Reject oversized metadata instead of deleting words from an answer or plan.
+    pub fn with_scope_evidence(
+        mut self,
+        user_answers: Vec<crate::analysis::jev_evidence::JevUserAnswer>,
+        plan_references: Vec<crate::analysis::jev_evidence::JevPlanReference>,
+    ) -> Result<Self, crate::analysis::jev::JevError> {
+        if self.kind == ContentKind::Thinking {
+            return Err(crate::analysis::jev::JevError::InvalidCheckContext);
+        }
+        self.metadata.user_answers = user_answers;
+        self.metadata.plan_references = plan_references;
+        let bytes = serde_json::to_vec(&self.metadata)
+            .map_err(|_| crate::analysis::jev::JevError::InvalidCheckContext)?;
+        if bytes.len() > MAX_CONTENT_PART_BYTES {
+            return Err(crate::analysis::jev::JevError::InvalidCheckContext);
+        }
+        Ok(self)
+    }
+
     pub(crate) fn with_native_input_fields(
         mut self,
         input: &serde_json::Value,

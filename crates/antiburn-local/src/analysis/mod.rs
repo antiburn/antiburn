@@ -50,6 +50,7 @@ pub(crate) mod records;
 mod replay;
 mod resume;
 mod rows;
+pub mod session_scope;
 mod source_validity;
 pub(crate) mod threads;
 pub mod tool_catalog;
@@ -79,8 +80,12 @@ pub use evidence_query::{
     PublishedContent, PublishedContentPart, PublishedScope, SelectedContentCursor,
     SelectedContentPage, SelectedContentQueryError, SelectedContentRequest, TurnFacts,
     query_model_breakdown, query_model_runs, query_pricing_breakdown, query_turn_content,
-    query_turn_content_after, query_turn_content_keyset_selected, query_turn_content_offset,
+    query_turn_content_after, query_turn_content_exact_selected, query_turn_content_keyset_scoped,
+    query_turn_content_keyset_selected, query_turn_content_offset,
     query_turn_content_offset_selected, query_turn_content_page, query_turn_facts, query_turn_rows,
+};
+pub use evidence_query::{
+    PublishedContentBoundary, ScopedSelectedContentPage, SelectedContentScope,
 };
 pub use evidence_replay::evidence_from_facts;
 pub use evidence_sink::{
@@ -100,17 +105,23 @@ pub use interface::{
     SessionCollector, SessionInput, SessionReader, SessionSummary, SourceChangedReason,
     TurnContent, VisitOutcome,
 };
+pub use jev::capabilities::{
+    CapabilityLimit, CapabilitySource, ModelCapabilities, ModelLimitOverride, TokenizerIdentity,
+};
 pub use jev::{
     JevAnswer, JevCheck, JevCheckPlan, JevCheckRevisions, JevCoverage, JevError,
     JevEvidenceReference, JevEvidenceRequirements, JevEvidenceRole, JevEvidenceStore,
     JevExecutionOutcome, JevFieldAvailability, JevFieldAvailabilityState, JevFieldCapability,
     JevInputField, JevInputSelection, JevInputWindow, JevNormalizedCategory, JevNormalizedFields,
     JevOrchestrationPermit, JevQuestion, JevReferenceSnapshot, JevRequest, JevRequestBatch,
-    JevResponse, JevRunProgress, JevSessionContext, JevUsage, JevWorkItem, JevWorkItemResult,
-    MAX_QUESTIONS_PER_REQUEST, MAX_REQUEST_BYTES, MAX_REQUEST_TOKENS, MAX_RESPONSE_BYTES,
-    MAX_STATE_AND_LONGEST_QUESTION_BYTES, PINNED_MODEL, admit_jev_orchestration, pack_work_items,
-    run_jev_check, run_jev_check_prepared, unpack_jev_response, validate_jev_request,
-    validate_jev_response,
+    JevResponse, JevRunProgress, JevSessionContext, JevSharedRequestContext, JevUsage, JevWorkItem,
+    JevWorkItemResult, MAX_QUESTIONS_PER_REQUEST, MAX_REQUEST_BYTES, MAX_REQUEST_TOKENS,
+    MAX_RESPONSE_BYTES, MAX_STATE_AND_LONGEST_QUESTION_BYTES, PINNED_MODEL,
+    admit_jev_orchestration, pack_work_items, pack_work_items_with_capabilities,
+    pack_work_items_with_shared_context, run_jev_check, run_jev_check_prepared,
+    run_jev_check_with_capabilities, unpack_jev_response, unpack_jev_response_with_capabilities,
+    validate_jev_request, validate_jev_request_with_capabilities, validate_jev_response,
+    validate_jev_response_with_capabilities,
 };
 pub use merge::merge_subagent_events;
 pub use metrics_sink::{RETAINED_METRICS_BYTES_BOUND, SessionMetricsAccumulator, merge_metrics};
@@ -227,7 +238,26 @@ pub use vendors::{has_dedicated_reader, reader_for, reader_for_input};
 // Devin Local migration-17 reader. Existing sessions must reparse these inputs.
 // +1 for request envelopes and patch renames; +1 for exact Claude result joins
 // and empty/non-text content handling. Refresh stored normalized fields.
-pub const PARSER_REVISION: i64 = 46;
+// +1 for OpenCode question answers and plan workflow provenance in private content.
+// +1 for wrapped plan results and fail-closed provider and synthetic provenance.
+// +1 for source-bound Claude, Codex, and Pi question and plan metadata, including
+// display context, retained acceptance order, and skipped batch questions.
+// +1 for recorded read ranges in private normalized read_file_request fields.
+// Reparse stored requests; legacy path-only rows cannot recover a requested range.
+// +1 for retained root user-text proof and bounded native OpenCode skill results.
+// Reparse native retained roots, selected skills, and observed result bindings.
+pub const PARSER_REVISION: i64 = 52;
+
+/// Source admission still requires a validated retained-root snapshot.
+pub fn smart_check_source_supported(agent: &str, format: SourceFormat) -> bool {
+    matches!(
+        (agent, format),
+        ("opencode", SourceFormat::OpenCodeSqliteV2)
+            | ("codex", SourceFormat::CodexRolloutJsonl)
+            | ("claude" | "claude-code", SourceFormat::ClaudeJsonl)
+            | ("pi", SourceFormat::PiV3Jsonl)
+    )
+}
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
@@ -345,7 +375,8 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 6;
 // +1 because the evidence sink now carries Codex quota and provider incidents.
 // +1 because SlotAggregate gained priced tokens for per-bucket cost.
 // +1 because a merged slot keeps one priced entry per pricing key.
-pub const RESUME_SNAPSHOT_REVISION: i64 = 11;
+// +1 for bounded Claude, Codex, and Pi scope state and cross-record native bindings.
+pub const RESUME_SNAPSHOT_REVISION: i64 = 13;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

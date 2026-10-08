@@ -58,7 +58,135 @@ The checked-in goldens serialize `NormalizedSession` and the complete `SessionMe
 
 The large-source tests generate their JSONL in memory. They do not commit a large transcript-shaped blob.
 
-## Claude capability and coverage matrix
+## Optional question and plan contracts
+
+`scope_records.jsonl` is synthetic native JSONL. `support/claude_scope.rs` tests
+it through the Claude reader. It retains question prompts, full descriptions,
+single exact answer strings, multi-select flags, and exact plan text versions.
+Negative controls cover missing/malformed answers, interruption, synthetic
+records, conflicting calls/questions, ambiguous result envelopes, incomplete
+reads, mismatched writes, rejection followed by ordinary user free text, and
+automatic plan permission. None of these records proves human scope approval.
+
+Scope result joins also require a complete recorded native parent chain. Sharing
+`event.thread_id` proves only a common root, not descent from the tool call.
+The parser checks `uuid` and `parentUuid`, with explicit `logicalParentUuid`
+fallback at a null primary parent, before it consumes pending call metadata.
+Same-root sibling results and their descendants cannot consume question,
+ExitPlanMode, Read, or Write calls. Missing identities, missing/unresolved links,
+conflicting record identities, and cycles do not resolve results. True
+descendants can still resolve the pending call after a rejected sibling result.
+The native ancestry map persists in the Claude adapter snapshot. Characterization
+tests compare full reads with resumed reads after the call, sibling results, and
+an intermediate descendant. The map retains at most 16,384 records and 4 MiB of
+identity text, with 512-byte identities and a 4,096-record traversal limit.
+Limit loss does not fall back to thread-root or arrival-order matching.
+
+Accepted public contract pins:
+
+- `futpib/claudex@0ad5073179efbfcc9dd9d6a9c19cca4575431653`,
+  `src/transcript/parser.ts` and `parser.test.ts`: assistant tool-use ID/name/input,
+  user result ID/content, and top-level string-valued `toolUseResult.answers`.
+  Its answer-only fixture has empty input; options need the separate input shape.
+- `TrafficGuard/typedai@34139aec65bb70f7062cf7f92667c11ffde4fcb1`,
+  `.claude/hooks/extract-qa.py`: native `input.questions`, labels/descriptions,
+  and question-text answer mapping. Recorded `multiSelect` preserves its boolean;
+  SDK callback return values do not define CLI persistence.
+- Published `vct-core 2.7.1`, archive SHA-256
+  `fc41d67b80db72fc9e13cd6a71e76846cc20a399fb8c9d3592849a42f58c2f82`,
+  `src/session/claude.rs`: `update_write_results_recover_details_without_double_counting`
+  and `exit_plan_mode_file_path_is_not_a_file_operation`. The archive's VCS
+  metadata reports dirty state, so its Git SHA is not a substitute for this pin.
+- `folke/zaly@5a113518e6b0790fa0a63d058c3b5e76f8858e55`,
+  `packages/agent/test/claude.test.ts`: Read result `file.content`, path,
+  `startLine`, `numLines`, and `totalLines`.
+- `anthropics/claude-code#81223`, comments `5080551532` and `5127759342`:
+  rejection/interruption ambiguity and later ordinary single-select free text.
+- `anthropics/claude-code#24302`, updated `2026-03-19T14:31:09Z`, reported
+  CLI 2.1.37: `planContent` user-record text can be synthetic and stale.
+
+These are decoder/accepted-log contracts, not a public Claude CLI producer pin
+or a historical release range. The old cclens `8246ffa3` source is unavailable
+(URL 404; commit API 422) and is not evidence. Structured answers have unknown
+origin. Plan completion, permission changes, and approval wording never produce
+approved revisions. Exact recorded text has SHA-256 identity; mutable references
+remain unresolved. No companion file is read. Custom plan directories and Edit
+reconstruction are outside this accepted subset.
+
+## Retained CLI root and native results
+
+`retained_native_results.jsonl` is synthetic. Its envelopes, origin markers,
+Read payload, Bash payload, and failed Skill result follow local CLI 2.1.278
+records inspected on 2026-10-07. The local root Read records were in the
+`antiburn-cloud` project, not the `antiburn` project named in the research lead.
+No private transcript text, paths, IDs, or command output is copied here.
+The private producer has no public schema pin. This is an accepted-log shape,
+not a supported historical release range.
+
+The root contract requires `version:2.1.278`, `entrypoint:cli`, a bounded
+`sessionId`, `isSidechain:false`, no `agentId`, and an explicit null root parent.
+Every subsequent identity must link directly to the previous retained identity.
+The root can be human text or the observed `system/informational` prelude with
+`level:notice`, `isMeta:false`, and string `content`. Human messages must carry
+`origin.kind:human`, `promptSource:typed`, and `turnOrigin:human`. Human text-only
+messages receive `UserTextHistoryProof` revision 1 and exact `UserMessage`
+bindings to `/message/content` or `/message/content/{index}/text`. Ranges use
+decoded UTF-8 byte offsets and the containing record UUID. No subset proof is
+issued when a text block is missing, mismatched, or clipped.
+The adapter retains at most 16,384 record fingerprints, with
+512-byte native identities. Exact replays do not add scope. Conflicting replays,
+missing parents, branches, compaction, malformed records, and fork/child inputs
+deny later history proofs. A characterized root with detected loss reports
+`AttributionIncomplete`; consumers must reject the entire publication, including
+earlier per-message proofs. The proofs alone are not a session-wide admission gate.
+
+The human markers above are present together in the local 2.1.278 CLI capture.
+Its first human message has a non-null parent that resolves to an earlier
+informational system record. The original human-only null-parent requirement
+rejected this real prefix. `retained_informational_root.jsonl` characterizes the
+corrected prelude without copying private text or identities. Later ambiguous
+links still reject the source; this correction does not admit arbitrary system,
+meta, or SDK roots. Local SDK roots have `promptSource:sdk`, `turnOrigin:sdk`,
+and no human-origin marker, so they do not receive human history proof.
+
+Native non-human origins, system prompt sources, meta messages, synthetic
+messages, and `planContent` do not become human authority. Unknown origin in the
+accepted producer remains unknown. The textual content of a human message does
+not determine its origin. Question submission, tool permission, skill selection,
+and assistant reports do not establish human approval.
+
+Native Read results require a unique earlier call and a complete same-source
+descendant chain. Optional `sourceToolUseID` and `sourceToolAssistantUUID` must
+match. The accepted text payload uses `filePath`, `content`, `startLine`,
+`numLines`, and `totalLines`. Returned extent is recorded only when every tab-
+numbered output line matches that payload. It reports observed lines, not the
+requested limit or a whole-file read. `is_error` supplies completion/error.
+The observed Read producer omits that flag on successful text results. An
+exactly matched text payload and numbered output also establish Read completion.
+Status stays unknown without either accepted status path. Interruption,
+background work, and clipped output also keep status unknown.
+Partial-view and persisted-output notices deny returned extent. No external
+output file is read. Image/PDF/directory output and alternate renderers have no
+accepted text extent. No content digest is presented as a file version.
+
+Bash test output and Skill failure text retain exact result bindings and native
+completion/error status. Completion does not mean tests passed. The inspected
+root Skill call failed with an unknown-skill string result and `is_error:true`.
+This does not prove a successful skill launch or document delivery. Older
+conditional launch fixtures keep their separate decoder contract. Injected
+skill bodies do not acquire human approval or prove that their instructions ran.
+
+The tests cover successful bounded Read, mismatched extent/path/content, failed
+Read, missing status, interruption, output persistence, partial-view notices,
+synthetic results, sibling/duplicate/mismatched joins, native human withdrawal,
+injected messages, changed producer versions, and full/resumed equivalence.
+
+The claim is about currently retained source records. Documented v2.1.287+
+headless/SDK local GC can remove pre-compaction history. No universal native GC
+marker is established. This contract does not admit that producer, reconstruct
+deleted history, or prove that external deletion never occurred.
+
+## Core capability and coverage matrix
 
 An empty supported collection means that the session had no matching record. `Unsupported` means that the Claude format represented by these fixtures cannot state the fact. Unknown variants degrade supported groups only when they are evidence-bearing or their discriminator bounds are exceeded. Structurally inert unknowns keep complete coverage.
 

@@ -63,45 +63,52 @@ afterEach(() => {
 // one test can take five times its local run time. 15 s is the bound, not a
 // target.
 describe("BurnChecksView search", { timeout: 15_000 }, () => {
-  it("explains priority sampling on hover and keyboard focus only for sampled Ignored Instructions", async () => {
-    const check = {
-      ...report.categories[0]!,
-      id: "ignoredInstructions" as const,
-      sampled: true,
-    }
-    const first = setup(null, false, aggregate, { ...report, categories: [check] })
-    const info = await screen.findByRole("button", { name: "About priority sampling" })
-    expect(info).toBeVisible()
-    fireEvent.pointerMove(info, { pointerType: "mouse" })
-    expect(
-      await screen.findByText(/Priority sampling checks likely instruction conflicts first/),
-    ).toBeVisible()
-    fireEvent.pointerLeave(info)
-    fireEvent.focus(info)
-    expect(
-      await screen.findByText(/Later checks can reduce the remaining unassessed gap/),
-    ).toBeVisible()
-    first.view.unmount()
+  it.each([
+    "ignoredInstructions",
+    "scopeCreep",
+    "overExploring",
+    "skillOpportunities",
+  ] as const)(
+    "explains sampling on hover and keyboard focus only for sampled %s",
+    async (id) => {
+      const check = {
+        ...report.categories[0]!,
+        id,
+        sampled: true,
+      }
+      const first = setup(null, false, aggregate, { ...report, categories: [check] })
+      const info = await screen.findByLabelText("This check has been sampled")
+      expect(info).toBeVisible()
+      expect(info.tagName).toBe("SPAN")
+      fireEvent.click(info)
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
+      fireEvent.pointerMove(info, { pointerType: "mouse" })
+      expect(await screen.findByText(/This check assesses selected evidence/)).toBeVisible()
+      expect(screen.getByText(/The review percentage is unknown/)).toBeVisible()
+      expect(screen.getByText(/The review target is 50%/)).toBeVisible()
+      fireEvent.pointerLeave(info)
+      fireEvent.focus(info)
+      expect(
+        await screen.findByText(/does not establish that all work has been assessed/),
+      ).toBeVisible()
+      first.view.unmount()
 
-    const second = setup(null, false, aggregate, {
-      ...report,
-      categories: [{ ...check, sampled: false }],
-    })
-    await screen.findByRole("heading", { name: "Ignored Instructions" })
-    expect(
-      screen.queryByRole("button", { name: "About priority sampling" }),
-    ).not.toBeInTheDocument()
-    second.view.unmount()
+      const second = setup(null, false, aggregate, {
+        ...report,
+        categories: [{ ...check, sampled: false }],
+      })
+      await screen.findByRole("heading", { level: 2 })
+      expect(screen.queryByLabelText("This check has been sampled")).not.toBeInTheDocument()
+      second.view.unmount()
 
-    setup(null, false, aggregate, {
-      ...report,
-      categories: [{ ...report.categories[0]!, id: "ignoredInstructions" }],
-    })
-    await screen.findByRole("heading", { name: "Ignored Instructions" })
-    expect(
-      screen.queryByRole("button", { name: "About priority sampling" }),
-    ).not.toBeInTheDocument()
-  })
+      setup(null, false, aggregate, {
+        ...report,
+        categories: [{ ...report.categories[0]!, id }],
+      })
+      await screen.findByRole("heading", { level: 2 })
+      expect(screen.queryByLabelText("This check has been sampled")).not.toBeInTheDocument()
+    },
+  )
 
   it("opens ignored instruction evidence through the report and keeps the ordinary prompt action", async () => {
     commands.evidence.mockResolvedValue({
@@ -149,7 +156,7 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
       aggregate,
       { ...report, categories: [check] },
     )
-    const row = await screen.findByRole("button", { name: /Ignored Instructions, 1 failed/ })
+    const row = await screen.findByRole("button", { name: /Ignored instructions, 1 failed/ })
     fireEvent.click(row)
     expect(
       screen.getByText("Some sessions didn't follow your agent instruction files properly."),
@@ -176,7 +183,6 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
     const row = screen.getByRole("button", { name: /Unused MCP servers/ })
     expect(row).toHaveAttribute("aria-pressed", "true")
     expect(row).toHaveFocus()
-    fireEvent.click(screen.getByRole("button", { name: "Passed checks 1" }))
     fireEvent.click(screen.getByRole("button", { name: /Unused skills, / }))
     expect(row).toHaveAttribute("aria-pressed", "false")
     view.rerender(

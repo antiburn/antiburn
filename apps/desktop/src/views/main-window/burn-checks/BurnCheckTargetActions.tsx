@@ -4,6 +4,7 @@ import { flushSync } from "react-dom"
 
 import {
   noteInteraction,
+  smartCheckForDetector,
   type AutoFixAnalyticsOutcome,
   type AutoFixReviewAnalyticsOutcome,
   type PromptPreparationAnalyticsOutcome,
@@ -97,6 +98,8 @@ export function BurnCheckTargetActions({
   compact?: boolean
 }) {
   const key = attemptKey(target)
+  const check = smartCheckForDetector(target.finding.detector)
+  const copyReported = useRef(false)
   const [action, setAction] = useState(() => initialAction(key))
   const trigger = useRef<HTMLButtonElement>(null)
   const currentAttemptKey = useRef(key)
@@ -266,10 +269,15 @@ export function BurnCheckTargetActions({
     let acceptedWatchId = action.acceptedWatchId
     try {
       if (prompt === null) {
+        copyReported.current = false
         const outcome = await copyPromptFixBurnCheckTarget(target.actionId)
         const completedWatchId =
           outcome?.outcome === "promptReady" ? (outcome.watch?.watchId ?? null) : null
-        noteInteraction({ kind: "burnCheckPromptPrepared", outcome: promptAnalytics(outcome) })
+        noteInteraction({
+          kind: "burnCheckPromptPrepared",
+          outcome: promptAnalytics(outcome),
+          ...(check ? { check } : {}),
+        })
         if (completionIsStale(startedAttemptKey, completedWatchId)) return
         if (!outcome || outcome.outcome !== "promptReady") {
           setAction((value) => ({
@@ -293,7 +301,10 @@ export function BurnCheckTargetActions({
         )
       }
       if (completionIsStale(startedAttemptKey, acceptedWatchId)) return
-      noteInteraction({ kind: "burnCheckPromptCopied" })
+      if (!copyReported.current) {
+        noteInteraction({ kind: "burnCheckPromptCopied", ...(check ? { check } : {}) })
+        copyReported.current = true
+      }
       setAction((value) => ({
         ...value,
         acceptedWatchId,
@@ -307,7 +318,11 @@ export function BurnCheckTargetActions({
     } catch {
       const preparationFailed = prompt === null
       if (preparationFailed)
-        noteInteraction({ kind: "burnCheckPromptPrepared", outcome: "failed" })
+        noteInteraction({
+          kind: "burnCheckPromptPrepared",
+          outcome: "failed",
+          ...(check ? { check } : {}),
+        })
       if (completionIsStale(startedAttemptKey, acceptedWatchId)) return
       setAction((value) => ({
         ...value,

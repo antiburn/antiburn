@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-system-one-connection"
+description = "Enables the save_system_one_connection command without any pre-configured scope."
+commands.allow = ["save_system_one_connection"]
+
+[[permission]]
+identifier = "deny-save-system-one-connection"
+description = "Denies the save_system_one_connection command without any pre-configured scope."
+commands.deny = ["save_system_one_connection"]
