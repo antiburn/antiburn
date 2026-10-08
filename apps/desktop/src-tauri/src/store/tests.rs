@@ -713,6 +713,7 @@ fn the_session_table_shape_is_stable() {
             "source_generation",
             "started_at_epoch",
             "incarnation",
+            "client",
         ]
     );
 }
