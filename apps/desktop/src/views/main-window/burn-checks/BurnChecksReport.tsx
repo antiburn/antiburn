@@ -28,7 +28,7 @@ import {
   useSnoozedBurnChecks,
   type SnoozedBurnCheck,
 } from "../../../lib/snoozedBurnChecks"
-import { checkRowPresentation } from "../../checks/checkPresentation"
+import { checkRowPresentation as baseCheckRowPresentation } from "../../checks/checkPresentation"
 import type { BurnChecksController, BurnChecksControllerSnapshot } from "./BurnChecksController"
 import { BurnCheckCategoryIcon } from "./BurnCheckCategoryIcon"
 import { BurnCheckDetail, CheckDetailActions, CHECK_SENTENCES } from "./BurnCheckDetail"
@@ -48,6 +48,56 @@ type ReportUiState = {
   selectedId: ChecksCategoryPayload["id"] | null
   deliberateIds: ReadonlySet<ChecksCategoryPayload["id"]>
   passedPreference: boolean | null
+}
+
+function checkRowPresentation(
+  check: ChecksCategoryPayload,
+  targets?: readonly BurnCheckTargetPayload[],
+) {
+  const presentation = baseCheckRowPresentation(check, targets)
+  const coverage = check.reviewCoverage
+  const percent =
+    coverage?.total != null && coverage.total > 0
+      ? Math.round((coverage.reviewed / coverage.total) * 100)
+      : null
+  const reviewDetails = [
+    coverage?.total === 0
+      ? "No eligible review targets."
+      : percent == null
+        ? "The review percentage is unknown because the full target count is unavailable."
+        : `${percent}% of review targets have been reviewed.`,
+    "The review target is 50% of eligible targets. This is a sampling goal, not a confidence score or a guarantee that no issues remain.",
+    "Reviewed targets have a terminal review answer, including uncertain answers. Unanswered targets have no terminal review answer. Pending completion is a reviewed answer that waits for task completion.",
+  ]
+  const coverageLabel = coverage
+    ? [
+        coverage.total == null
+          ? `${coverage.reviewed} reviewed`
+          : `${coverage.reviewed} of ${coverage.total} reviewed`,
+        coverage.uncertain == null
+          ? "uncertain count unknown"
+          : `${coverage.uncertain} uncertain`,
+        coverage.pending == null
+          ? "unanswered count unknown"
+          : `${coverage.pending} unanswered`,
+        ...(coverage.pendingCompletion == null
+          ? check.id === "ignoredInstructions"
+            ? ["pending completion count unknown"]
+            : []
+          : coverage.pendingCompletion > 0
+            ? [`${coverage.pendingCompletion} pending completion`]
+            : []),
+        ...(percent == null ? [] : [`${percent}% reviewed`]),
+      ].join(" · ")
+    : null
+  return {
+    ...presentation,
+    coverage: coverageLabel,
+    evidenceLimits: presentation.evidenceLimits.map((limit) => ({
+      ...limit,
+      details: [...limit.details, ...reviewDetails],
+    })),
+  }
 }
 
 function isUnusedResourceDetector(id: ChecksCategoryPayload["id"]) {

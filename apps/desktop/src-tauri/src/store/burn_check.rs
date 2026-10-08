@@ -74,6 +74,13 @@ pub struct BurnCheckAssessment {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BurnCheckReviewCounts {
+    pub eligible: Option<usize>,
+    pub reviewed: usize,
+    pub runnable: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BurnCheckSampledPair {
     pub comparison_id: String,
     pub dependency_digest: String,
@@ -828,6 +835,26 @@ impl Store {
         idle_secs: i64,
         limit: usize,
     ) -> anyhow::Result<Vec<BurnCheckCandidate>> {
+        self.burn_check_candidates_in_lane(
+            check_id,
+            evaluator_revision,
+            now_epoch,
+            idle_secs,
+            limit,
+            None,
+        )
+    }
+
+    /// None selects both lanes. Unknown or changed inventories use priority.
+    pub(crate) fn burn_check_candidates_in_lane(
+        &self,
+        check_id: &str,
+        evaluator_revision: &str,
+        now_epoch: i64,
+        idle_secs: i64,
+        limit: usize,
+        continuation: Option<bool>,
+    ) -> anyhow::Result<Vec<BurnCheckCandidate>> {
         let connection = self.lock();
         if !check_id_enabled_in(&connection, check_id)? {
             return Ok(Vec::new());
@@ -934,12 +961,24 @@ impl Store {
                             AND (assessment.evaluator_revision IS NOT :evaluator_revision
                                 OR assessment.last_error_category IN
                                    ('usage_limit', 'request_limit', 'assessment_page_limit'))))
-              ORDER BY row_number() OVER (
-                  PARTITION BY COALESCE(assessment.boundary_generation = -2, 0)
-                   ORDER BY s.updated_at_epoch DESC, COALESCE(assessment.updated_at_epoch, 0),
-                           s.environment_key, s.agent, s.session_id),
-                  COALESCE(assessment.boundary_generation = -2, 0),
-                  s.environment_key, s.agent, s.session_id
+                 AND (assessment.scheduling_revision IS NOT assessment.input_revision
+                      OR assessment.evaluator_revision IS NOT :evaluator_revision
+                      OR assessment.source_fingerprint IS NOT s.source_fingerprint
+                      OR assessment.source_generation IS NOT s.source_generation
+                      OR assessment.incarnation IS NOT s.incarnation
+                      OR assessment.published_fence IS NOT evidence.published_fence
+                      OR assessment.runnable_targets > 0)
+                 AND (:lane IS NULL OR :lane = COALESCE(
+                     assessment.scheduling_revision = assessment.input_revision
+                     AND assessment.evaluator_revision = :evaluator_revision
+                     AND assessment.source_fingerprint IS s.source_fingerprint
+                     AND assessment.source_generation IS s.source_generation
+                     AND assessment.incarnation IS s.incarnation
+                     AND assessment.published_fence IS evidence.published_fence
+                     AND assessment.eligible_targets > 0
+                     AND assessment.reviewed_targets >= (assessment.eligible_targets + 1) / 2, 0))
+               ORDER BY COALESCE(assessment.last_served_turn, 0),
+                   s.environment_key, s.agent, s.session_id
                LIMIT :limit");
         let mut statement = connection.prepare(&sql)?;
         let candidates = statement
@@ -954,6 +993,7 @@ impl Store {
                     ":enabled_at": enabled_at,
                     ":limit": i64::try_from(limit.min(256)).unwrap_or(256),
                     ":evaluator_revision": evaluator_revision,
+                    ":lane": continuation,
                 ],
                 |row| {
                     let session = session_from_row(row)?;
@@ -984,6 +1024,144 @@ impl Store {
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(candidates)
+    }
+
+    /// Counts include unavailable targets. Only accepted decisions are reviewed.
+    pub fn save_burn_check_scheduling(
+        &self,
+        input: &BurnCheckInput,
+        eligible: Option<usize>,
+        reviewed: usize,
+        runnable: usize,
+    ) -> anyhow::Result<bool> {
+        if eligible
+            .is_some_and(|total| reviewed > total || runnable > total.saturating_sub(reviewed))
+        {
+            anyhow::bail!("Burn Check scheduling counts are invalid");
+        }
+        Ok(self.lock().execute(
+            "UPDATE burn_check_assessment SET eligible_targets = ?6, reviewed_targets = ?7,
+                 runnable_targets = ?8, scheduling_revision = ?5
+             WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+               AND check_id = ?4 AND input_revision = ?5
+               AND incarnation = ?9 AND source_generation = ?10
+               AND source_fingerprint IS ?11 AND published_fence = ?12
+               AND evaluator_revision = ?13",
+            rusqlite::params![
+                input.key.environment_key,
+                input.key.agent,
+                input.key.session_id,
+                input.check_id,
+                input.input_revision,
+                eligible.map(i64::try_from).transpose()?,
+                i64::try_from(reviewed)?,
+                i64::try_from(runnable)?,
+                input.incarnation,
+                input.source_generation,
+                input.source_fingerprint,
+                input.published_fence,
+                input.evaluator_revision
+            ],
+        )? == 1)
+    }
+
+    /// Read current counters through a report's read-only connection. Do not
+    /// load source bodies, result JSON, or serialized selection progress.
+    pub fn current_burn_check_review_counts(
+        connection: &rusqlite::Connection,
+        key: &SessionKey,
+        check_id: &str,
+        evaluator_revision: &str,
+    ) -> anyhow::Result<Option<BurnCheckReviewCounts>> {
+        let current_evidence = super::revision_sql::current_evidence("e", "s");
+        let counts: Option<BurnCheckReviewCounts> = connection
+            .query_row(
+                &format!(
+                    "SELECT a.eligible_targets, a.reviewed_targets, a.runnable_targets
+             FROM burn_check_assessment a
+             JOIN session s ON s.environment_key = a.environment_key AND s.agent = a.agent
+                  AND s.session_id = a.session_id AND s.incarnation = a.incarnation
+                  AND s.source_generation = a.source_generation
+                  AND s.source_fingerprint IS a.source_fingerprint
+             JOIN session_evidence e ON e.environment_key = s.environment_key AND e.agent = s.agent
+                  AND e.session_id = s.session_id AND e.status = 'ready'
+                  AND e.processed_fingerprint IS s.source_fingerprint
+                  AND e.published_fence = a.published_fence AND {current_evidence}
+             WHERE a.environment_key = :environment_key AND a.agent = :agent
+               AND a.session_id = :session_id AND a.check_id = :check_id
+               AND a.evaluator_revision = :evaluator_revision AND a.input_revision IS NOT NULL
+               AND a.scheduling_revision = a.input_revision
+               AND a.status IN ('queued', 'running', 'completed', 'failed')"
+                ),
+                rusqlite::named_params![
+                    ":environment_key": key.environment_key,
+                    ":agent": key.agent,
+                    ":session_id": key.session_id,
+                    ":check_id": check_id,
+                    ":evaluator_revision": evaluator_revision,
+                    ":parser_revision": antiburn_local::analysis::PARSER_REVISION,
+                    ":analyzer_revision": antiburn_local::analysis::ANALYZER_REVISION,
+                    ":evidence_schema_revision": antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+                ],
+                |row| {
+                    Ok(BurnCheckReviewCounts {
+                        eligible: row.get(0)?,
+                        reviewed: row.get(1)?,
+                        runnable: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?;
+        if counts.as_ref().is_some_and(|counts| {
+            counts.eligible.is_some_and(|total| {
+                counts.reviewed > total || counts.runnable > total.saturating_sub(counts.reviewed)
+            })
+        }) {
+            anyhow::bail!("Burn Check scheduling counts are invalid");
+        }
+        Ok(counts)
+    }
+
+    pub(crate) fn serve_burn_check_candidate(
+        &self,
+        candidate: &BurnCheckCandidate,
+        check_id: &str,
+        turn: u64,
+        cursor_json: &str,
+    ) -> anyhow::Result<()> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE burn_check_assessment SET last_served_turn = ?5
+             WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND check_id = ?4",
+            rusqlite::params![
+                candidate.session.key.environment_key,
+                candidate.session.key.agent,
+                candidate.session.key.session_id,
+                check_id,
+                i64::try_from(turn)?
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO setting(key, value) VALUES ('internal:burnCheckSchedulerV1', ?1)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [cursor_json],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn burn_check_scheduler_cursor(&self) -> anyhow::Result<Option<String>> {
+        internal_value_in(&self.lock(), "internal:burnCheckSchedulerV1")
+    }
+
+    pub(crate) fn next_burn_check_retry_at(&self, now: i64) -> anyhow::Result<Option<i64>> {
+        Ok(self.lock().query_row(
+            "SELECT MIN(next_attempt_at_epoch) FROM burn_check_assessment
+             WHERE status = 'failed' AND next_attempt_at_epoch > ?1",
+            [now],
+            |row| row.get(0),
+        )?)
     }
 
     pub(crate) fn skill_observation_candidates(
@@ -1732,7 +1910,7 @@ impl Store {
         let updated = self.lock().execute(
             "UPDATE burn_check_assessment
                 SET status = 'failed', lease_expires_at_epoch = NULL,
-                    next_attempt_at_epoch = ?6, last_error_category = ?7
+                    next_attempt_at_epoch = MAX(COALESCE(next_attempt_at_epoch, 0), ?6), last_error_category = ?7
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
                 AND check_id = ?4 AND input_revision = ?5 AND status = 'running'",
             rusqlite::params![
@@ -1746,6 +1924,29 @@ impl Store {
             ],
         )?;
         Ok(updated == 1)
+    }
+
+    pub fn burn_check_next_attempt_at(
+        &self,
+        input: &BurnCheckInput,
+    ) -> anyhow::Result<Option<i64>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT next_attempt_at_epoch FROM burn_check_assessment
+             WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+               AND check_id = ?4 AND input_revision = ?5",
+                rusqlite::params![
+                    input.key.environment_key,
+                    input.key.agent,
+                    input.key.session_id,
+                    input.check_id,
+                    input.input_revision
+                ],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten())
     }
 
     /// Read one check's durable progress/result without reading private source content.
@@ -2021,9 +2222,10 @@ pub(super) fn clear_local_burn_check_state(
     connection.execute("DELETE FROM burn_check_work_answer", [])?;
     connection.execute("DELETE FROM burn_check_response_cache", [])?;
     connection.execute("DELETE FROM burn_check_request_outcome", [])?;
+    connection.execute("DELETE FROM burn_check_dispatch_attempt", [])?;
     connection.execute("DELETE FROM burn_check_usage_reservation", [])?;
     connection.execute(
-        "DELETE FROM setting WHERE key IN (?1, ?2, ?3)",
+        "DELETE FROM setting WHERE key IN (?1, ?2, ?3, 'internal:burnCheckSchedulerV1')",
         rusqlite::params![USAGE_LEDGER_KEY, RESPONSE_CACHE_KEY, HISTORY_BATCH_KEY],
     )?;
     if enabled {

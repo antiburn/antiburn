@@ -28,6 +28,8 @@ const RETRY_ATTEMPTS: usize = 3;
 const IDLE_SECS: i64 = 180;
 const POLL_SECS: u64 = 60;
 const CANDIDATES_PER_WAKE: usize = 16;
+const DISPATCHES_PER_TURN: u64 = 2;
+const REQUEST_DEADLINE: Duration = Duration::from_secs(60);
 const GLOBAL_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 
 fn request_bytes() -> &'static tokio::sync::Semaphore {
@@ -167,9 +169,9 @@ pub(crate) trait JevCheckDescriptor: Send + Sync {
 pub(crate) fn registered_checks() -> &'static [&'static dyn JevCheckDescriptor] {
     &[
         &crate::ignored_instructions_worker::CHECK,
-        &crate::skill_opportunities_worker::CHECK,
-        &crate::over_exploring_worker::CHECK,
         &crate::scope_creep_worker::CHECK,
+        &crate::over_exploring_worker::CHECK,
+        &crate::skill_opportunities_worker::CHECK,
     ]
 }
 
@@ -190,6 +192,7 @@ pub(crate) struct WorkerHandle {
     runtime_enabled: AtomicBool,
     authentication_rejected: AtomicBool,
     discovery: tokio::sync::Mutex<Option<CapabilityDiscovery>>,
+    turn_dispatches: AtomicU64,
 }
 
 struct CapabilityDiscovery {
@@ -199,6 +202,24 @@ struct CapabilityDiscovery {
 }
 
 impl WorkerHandle {
+    pub(crate) fn turn_exhausted(&self) -> bool {
+        self.turn_dispatches.load(Ordering::Acquire) >= DISPATCHES_PER_TURN
+    }
+
+    fn admit_turn_dispatch(
+        &self,
+        admit: impl FnOnce() -> anyhow::Result<BurnCheckRequestAdmission>,
+    ) -> anyhow::Result<BurnCheckRequestAdmission> {
+        if self.turn_exhausted() {
+            return Ok(BurnCheckRequestAdmission::Deferred);
+        }
+        let admission = admit()?;
+        if admission == BurnCheckRequestAdmission::Admitted {
+            self.turn_dispatches.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(admission)
+    }
+
     pub(crate) async fn resolve_capabilities(
         &self,
         generation: u64,
@@ -310,8 +331,7 @@ impl WorkerHandle {
     }
 
     /// Return the active connection without exposing the resolved credential.
-    #[cfg(test)]
-    pub fn system_one_connection(&self) -> SystemOneConnection {
+    pub(crate) fn system_one_connection(&self) -> SystemOneConnection {
         self.system_one
             .read()
             .unwrap_or_else(|error| error.into_inner())
@@ -478,6 +498,7 @@ impl Default for WorkerHandle {
             runtime_enabled: AtomicBool::new(false),
             authentication_rejected: AtomicBool::new(false),
             discovery: tokio::sync::Mutex::new(None),
+            turn_dispatches: AtomicU64::new(0),
         }
     }
 }
@@ -511,9 +532,24 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
         let mut skill_observation_after: Option<(String, String)> = None;
         loop {
             let handle = app.state::<WorkerHandle>();
+            let store = (*app.state::<Store>()).clone();
+            let now = unix_now();
+            let retry_at = match store.next_burn_check_retry_at(now) {
+                Ok(retry_at) => retry_at,
+                Err(error) => {
+                    ::tracing::warn!(event = "burn_check_retry_schedule_failed", error = %error);
+                    None
+                }
+            };
+            let retry_delay = retry_at.map(|retry_at| {
+                Duration::from_secs(
+                    u64::try_from(retry_at.saturating_sub(now)).unwrap_or(POLL_SECS),
+                )
+            });
             tokio::select! {
                 () = handle.wake.notified() => {},
                 _ = poll.tick() => {},
+                () = tokio::time::sleep(retry_delay.unwrap_or(Duration::from_secs(POLL_SECS))), if retry_at.is_some() => {},
                 event = lifecycle.recv() => {
                     match event {
                         Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {},
@@ -524,7 +560,6 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
             let Some((client, key_generation)) = handle.execution_client() else {
                 continue;
             };
-            let store = (*app.state::<Store>()).clone();
             let events = app.state::<SessionEvents>();
             match store.skill_observation_candidates(
                 skill_observation_after
@@ -551,44 +586,50 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                     ::tracing::warn!(event = "skill_input_observation_failed", error = %error)
                 }
             }
-            let mut scheduled = Vec::new();
-            for &check in checks {
+            let mut cursor = match scheduler_cursor(&store) {
+                Ok(cursor) => cursor,
+                Err(error) => {
+                    ::tracing::warn!(event = "burn_check_scheduler_load_failed", error = %error);
+                    continue;
+                }
+            };
+            for _ in 0..CANDIDATES_PER_WAKE {
                 if !handle.key_is_current(key_generation) {
                     break;
                 }
-                let generation = handle.check_generation(check.id());
-                let candidates = match store.burn_check_candidates_for_revision(
-                    check.id(),
-                    &check.evaluator_revision(),
-                    unix_now(),
-                    check.policy().idle_secs,
-                    CANDIDATES_PER_WAKE,
-                ) {
-                    Ok(candidates) => candidates,
+                let selected = match select_turn(&store, checks, &cursor, unix_now()) {
+                    Ok(selected) => selected,
                     Err(error) => {
                         ::tracing::warn!(
                             event = "burn_check_candidates_failed",
-                            check_id = check.id(),
                             error = %error
                         );
-                        continue;
+                        break;
                     }
                 };
-                scheduled.push((
-                    (check, generation),
-                    std::collections::VecDeque::from(candidates),
-                ));
-            }
-            let mut next_check = 0;
-            while let Some(((check, check_generation), candidate)) =
-                next_candidate(&mut scheduled, &mut next_check)
-            {
-                if !handle.key_is_current(key_generation) {
+                let Some((index, candidate)) = selected else {
                     break;
-                }
+                };
+                let check = checks[index];
+                let check_generation = handle.check_generation(check.id());
                 if !handle.check_is_current(check.id(), check_generation) {
                     continue;
                 }
+                cursor.turn = match cursor.turn.checked_add(1) {
+                    Some(turn) => turn,
+                    None => break,
+                };
+                cursor.next_check = (index + 1) % checks.len();
+                if let Err(error) = store.serve_burn_check_candidate(
+                    &candidate,
+                    check.id(),
+                    cursor.turn,
+                    &serde_json::to_string(&cursor).expect("scheduler cursor serializes"),
+                ) {
+                    ::tracing::warn!(event = "burn_check_scheduler_save_failed", error = %error);
+                    break;
+                }
+                handle.turn_dispatches.store(0, Ordering::Release);
                 let future = check.run_candidate(CandidateExecution {
                     app: &app,
                     store: &store,
@@ -627,9 +668,58 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                         error = %error,
                     );
                 }
+                if let Err(error) = store.serve_burn_check_candidate(
+                    &candidate,
+                    check.id(),
+                    cursor.turn,
+                    &serde_json::to_string(&cursor).expect("scheduler cursor serializes"),
+                ) {
+                    ::tracing::warn!(event = "burn_check_scheduler_save_failed", error = %error);
+                    break;
+                }
             }
         }
     })
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct SchedulerCursor {
+    turn: u64,
+    next_check: usize,
+}
+
+fn scheduler_cursor(store: &Store) -> anyhow::Result<SchedulerCursor> {
+    store
+        .burn_check_scheduler_cursor()?
+        .map(|json| serde_json::from_str(&json).map_err(Into::into))
+        .unwrap_or_else(|| Ok(SchedulerCursor::default()))
+}
+
+fn select_turn(
+    store: &Store,
+    checks: &[&dyn JevCheckDescriptor],
+    cursor: &SchedulerCursor,
+    now: i64,
+) -> anyhow::Result<Option<(usize, BurnCheckCandidate)>> {
+    let continuation = cursor.turn % 5 == 4;
+    for lane in [continuation, !continuation] {
+        for offset in 0..checks.len() {
+            let index = (cursor.next_check + offset) % checks.len();
+            let check = checks[index];
+            let mut candidates = store.burn_check_candidates_in_lane(
+                check.id(),
+                &check.evaluator_revision(),
+                now,
+                check.policy().idle_secs,
+                1,
+                Some(lane),
+            )?;
+            if let Some(candidate) = candidates.pop() {
+                return Ok(Some((index, candidate)));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn reconcile_skill_candidate(
@@ -651,6 +741,7 @@ fn reconcile_skill_candidate(
     }
 }
 
+#[cfg(test)]
 fn next_candidate<T: Copy, C>(
     scheduled: &mut [(T, std::collections::VecDeque<C>)],
     next: &mut usize,
@@ -722,12 +813,30 @@ where
     )
     .await;
     if let Err(error) = &outcome {
+        let yielded = matches!(error, JevError::Cancelled) && execution.handle.turn_exhausted();
+        let delay = if yielded {
+            1
+        } else {
+            retry_delay(error, 0)
+                .map(|delay| i64::try_from(delay.as_secs()).unwrap_or(i64::MAX))
+                .unwrap_or(execution.policy.retry_delay_secs)
+        };
+        let retry_at = execution
+            .store
+            .burn_check_next_attempt_at(execution.input)
+            .map_err(|_| JevError::ProgressStorageFailure)?
+            .filter(|retry_at| *retry_at > unix_now())
+            .unwrap_or_else(|| unix_now().saturating_add(delay));
         execution
             .store
             .release_failed_burn_check_lease(
                 execution.input,
-                error_category(error),
-                unix_now().saturating_add(execution.policy.retry_delay_secs),
+                if yielded {
+                    "continuing"
+                } else {
+                    error_category(error)
+                },
+                retry_at,
             )
             .map_err(|_| JevError::ProgressStorageFailure)?;
     }
@@ -946,29 +1055,21 @@ async fn execute_batch_inner(
         notify();
         return Ok(response);
     }
-    for attempt in 0..RETRY_ATTEMPTS {
-        let request_identities = batch
-            .work_item_digests
-            .values()
-            .map(|digest| {
-                hash_identity([
-                    input.key.environment_key.as_str(),
-                    input.key.agent.as_str(),
-                    input.key.session_id.as_str(),
-                    &input.incarnation.to_string(),
-                    input.check_id.as_str(),
-                    &compatible_request_identity(&connection, input, digest),
-                ])
-            })
-            .collect::<Vec<_>>();
-        if store
-            .burn_check_requests_are_unresolved(&request_identities)
-            .map_err(|_| JevError::ProviderUnavailable)?
+    let request_identities = batch_request_identities(&connection, input, &batch);
+    let attempt = store
+        .burn_check_dispatch_attempts(&request_identities)
+        .map_err(|_| JevError::ProgressStorageFailure)?;
+    {
+        match store
+            .burn_check_dispatch_readiness(&request_identities, unix_now())
+            .map_err(|_| JevError::ProgressStorageFailure)?
         {
-            if !handle.key_is_current(key_generation) {
+            BurnCheckRequestAdmission::Admitted => {}
+            BurnCheckRequestAdmission::Unresolved => return Err(JevError::RequestOutcomeUnknown),
+            BurnCheckRequestAdmission::Exhausted => return Err(JevError::ProviderUnavailable),
+            BurnCheckRequestAdmission::Deferred | BurnCheckRequestAdmission::Stale => {
                 return Err(JevError::Cancelled);
             }
-            return Err(JevError::RequestOutcomeUnknown);
         }
         let _slot = acquire_budget(
             request_slots().acquire(),
@@ -1042,12 +1143,14 @@ async fn execute_batch_inner(
         }
         let Some(admission) = handle
             .admit_if_current(key_generation, &input.check_id, check_generation, || {
-                store.admit_burn_check_requests(
-                    input,
-                    &request_identities,
-                    &reservation_id,
-                    unix_now(),
-                )
+                handle.admit_turn_dispatch(|| {
+                    store.admit_burn_check_requests(
+                        input,
+                        &request_identities,
+                        &reservation_id,
+                        unix_now(),
+                    )
+                })
             })
             .map_err(|_| JevError::ProviderUnavailable)?
         else {
@@ -1057,6 +1160,8 @@ async fn execute_batch_inner(
             BurnCheckRequestAdmission::Admitted => {}
             BurnCheckRequestAdmission::Stale => return Err(JevError::Cancelled),
             BurnCheckRequestAdmission::Unresolved => return Err(JevError::RequestOutcomeUnknown),
+            BurnCheckRequestAdmission::Deferred => return Err(JevError::Cancelled),
+            BurnCheckRequestAdmission::Exhausted => return Err(JevError::ProviderUnavailable),
         }
         dispatch.rejected = false;
         let (connection, credential) = handle.active_system_one();
@@ -1133,6 +1238,7 @@ async fn execute_batch_inner(
                 }
             }
         };
+        let call = request_with_deadline(call);
         tokio::pin!(call);
         let response = loop {
             tokio::select! {
@@ -1151,14 +1257,6 @@ async fn execute_batch_inner(
             }
         };
         dispatch.rejected = response.as_ref().err().is_some_and(request_was_rejected);
-        if let Err(error) = &response
-            && let Some(delay) = retry_delay(error, attempt)
-        {
-            let mut pacing = provider_pacing(provider)
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            pacing.next_start = pacing.next_start.max(tokio::time::Instant::now() + delay);
-        }
         match response {
             Ok(response) => {
                 let Some(recorded) = record_response_if_current(
@@ -1206,58 +1304,15 @@ async fn execute_batch_inner(
                 }
                 dispatch.settled = true;
                 notify();
-                return Ok(response);
-            }
-            Err(error)
-                if attempt + 1 < RETRY_ATTEMPTS && retry_delay(&error, attempt).is_some() =>
-            {
-                drop(_bytes);
-                drop(_slot);
-                ::tracing::debug!(
-                    event = "typesafe_request_failed",
-                    model = %batch.request.model,
-                    attempt = attempt + 1,
-                    request_bytes = batch.serialized_bytes,
-                    question_count = batch.request.questions.len(),
-                    work_item_count = batch.work_item_ids.len(),
-                    failure_category = error_category(&error),
-                    error_detail = ?error,
-                    retry_delay_ms = retry_delay(&error, attempt).unwrap_or_default().as_millis(),
-                    elapsed_ms = started.elapsed().as_millis(),
-                );
-                if request_was_rejected(&error) {
-                    store
-                        .release_rejected_burn_check_usage(&reservation_id)
-                        .map_err(|_| JevError::ProviderUnavailable)?;
-                    provider_pacing(provider)
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .settle(&reservation_id, 0);
-                } else {
-                    store
-                        .settle_burn_check_usage(&reservation_id, None, unix_now())
-                        .map_err(|_| JevError::ProviderUnavailable)?;
-                    if matches!(error, JevError::RequestOutcomeUnknown) {
-                        store
-                            .clear_burn_check_request_outcomes(&request_identities)
-                            .map_err(|_| JevError::ProviderUnavailable)?;
-                    }
-                }
-                dispatch.settled = true;
-                notify();
-                if !wait_for_retry(
-                    retry_delay(&error, attempt).unwrap_or_default(),
-                    handle,
-                    key_generation,
-                    events,
-                    &input.key,
-                )
-                .await
-                {
-                    return Err(JevError::Cancelled);
-                }
+                Ok(response)
             }
             Err(error) => {
+                let retry_at = retry_delay(&error, attempt).map(|delay| {
+                    unix_now().saturating_add(i64::try_from(delay.as_secs()).unwrap_or(i64::MAX))
+                });
+                store
+                    .defer_burn_check_dispatch(input, &request_identities, retry_at)
+                    .map_err(|_| JevError::ProgressStorageFailure)?;
                 if request_was_rejected(&error) {
                     provider_pacing(provider)
                         .lock()
@@ -1280,36 +1335,22 @@ async fn execute_batch_inner(
                     question_count = batch.request.questions.len(),
                     work_item_count = batch.work_item_ids.len(),
                     failure_category = error_category(&error),
-                    error_detail = ?error,
                     retry_delay_ms = 0,
                     elapsed_ms = started.elapsed().as_millis(),
                 );
                 notify();
-                return Err(error);
+                Err(error)
             }
         }
     }
-    Err(JevError::ProviderUnavailable)
 }
 
-async fn wait_for_retry(
-    delay: Duration,
-    handle: &WorkerHandle,
-    key_generation: u64,
-    events: &SessionEvents,
-    key: &SessionKey,
-) -> bool {
-    let deadline = tokio::time::Instant::now() + delay;
-    loop {
-        if !handle.key_is_current(key_generation) || session_is_active(events, key) {
-            return false;
-        }
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return true;
-        }
-        tokio::time::sleep(remaining.min(Duration::from_millis(250))).await;
-    }
+async fn request_with_deadline(
+    call: impl Future<Output = Result<JevResponse, JevError>>,
+) -> Result<JevResponse, JevError> {
+    tokio::time::timeout(REQUEST_DEADLINE, call)
+        .await
+        .unwrap_or(Err(JevError::RequestOutcomeUnknown))
 }
 
 async fn wait_for_provider(
@@ -1432,17 +1473,15 @@ fn decode_cached_response(
 }
 
 pub(crate) fn retry_delay(error: &JevError, attempt: usize) -> Option<Duration> {
+    if attempt >= RETRY_ATTEMPTS - 1 {
+        return None;
+    }
+    let backoff = Duration::from_secs(if attempt == 0 { 5 } else { 30 });
     match error {
         JevError::RateLimited { retry_after } | JevError::ProviderOverloaded { retry_after } => {
-            match retry_after {
-                Some(delay) if *delay <= Duration::from_secs(240) => Some(*delay),
-                Some(_) => None,
-                None => Some(Duration::from_secs(1_u64 << attempt.min(3))),
-            }
+            Some(retry_after.unwrap_or_default().max(backoff))
         }
-        JevError::RequestOutcomeUnknown if attempt < RETRY_ATTEMPTS - 1 => {
-            Some(Duration::from_secs(1_u64 << attempt.min(3)))
-        }
+        JevError::ProviderUnavailable => Some(backoff),
         _ => None,
     }
 }
@@ -1552,8 +1591,8 @@ fn compatible_request_identity(
         &mode,
         &format!("{revision}:{credential_binding}"),
         &format!(
-            "{}:{}:{}:{}",
-            input.check_id, input.input_revision, input.evaluator_revision, context
+            "{}:{}:{}",
+            input.check_id, input.evaluator_revision, context
         ),
     ]);
     hash_identity([
@@ -1564,6 +1603,27 @@ fn compatible_request_identity(
         "",
         "",
     ])
+}
+
+pub(crate) fn batch_request_identities(
+    connection: &SystemOneConnection,
+    input: &BurnCheckInput,
+    batch: &JevRequestBatch,
+) -> Vec<String> {
+    batch
+        .work_item_digests
+        .values()
+        .map(|digest| {
+            hash_identity([
+                &input.key.environment_key,
+                &input.key.agent,
+                &input.key.session_id,
+                &input.incarnation.to_string(),
+                &input.check_id,
+                &compatible_request_identity(connection, input, digest),
+            ])
+        })
+        .collect()
 }
 
 fn hash_identity(parts: [&str; 6]) -> String {
@@ -1589,6 +1649,10 @@ mod tests {
 
     fn checkpoint_fixture() -> (Store, BurnCheckInput, WorkerHandle, u64) {
         let store = Store::open_in_memory(std::path::Path::new("synthetic-state")).unwrap();
+        checkpoint_fixture_in(store)
+    }
+
+    fn checkpoint_fixture_in(store: Store) -> (Store, BurnCheckInput, WorkerHandle, u64) {
         let now = unix_now();
         let record = crate::store::SessionRecord {
             key: SessionKey::new("native", "claude-code", "checkpoint"),
@@ -1656,6 +1720,472 @@ mod tests {
             .unwrap();
         let generation = handle.key_generation.load(Ordering::Acquire);
         (store, input, handle, generation)
+    }
+
+    fn scheduler_fixture() -> (Store, Vec<BurnCheckInput>) {
+        let (store, base, _, _) = checkpoint_fixture();
+        let mut inputs = Vec::new();
+        for session in ["checkpoint", "second"] {
+            if session != "checkpoint" {
+                let mut record = store.session(&base.key).unwrap().unwrap();
+                record.key.session_id = session.into();
+                store
+                    .upsert_sessions(&[record], &crate::agents::evidence_cohort())
+                    .unwrap();
+                store
+                    .lock()
+                    .execute(
+                        "UPDATE session_evidence SET status = 'ready', analyzed_generation = 0,
+                        parser_revision = ?1, analyzer_revision = ?2, evidence_schema_revision = ?3,
+                        evidence_json = '{}', claim_fence = 1, published_fence = 1",
+                        rusqlite::params![
+                            antiburn_local::analysis::PARSER_REVISION,
+                            antiburn_local::analysis::ANALYZER_REVISION,
+                            antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION
+                        ],
+                    )
+                    .unwrap();
+            }
+            let key = SessionKey::new("native", "claude-code", session);
+            let connection = store.lock();
+            connection
+                .execute(
+                    "INSERT INTO turn (environment_key, agent, session_id, claim_fence, source_key,
+                    thread_id, turn_index, scope, role, input_tokens, cache_read_tokens,
+                    cache_write_tokens, output_tokens, is_compaction_boundary)
+                 VALUES (?1, ?2, ?3, 1, 'source', 'thread', 0, 'main', 'assistant', 0, 0, 0, 0, 0)",
+                    rusqlite::params![key.environment_key, key.agent, key.session_id],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO turn_content (turn_rowid, part_index, kind, content, truncated)
+                     VALUES (?1, 0, 'text', ?2, 0)",
+                    rusqlite::params![
+                        connection.last_insert_rowid(),
+                        b"synthetic activity".as_slice()
+                    ],
+                )
+                .unwrap();
+            drop(connection);
+            let incarnation = store.lock().query_row(
+                "SELECT incarnation FROM session WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                rusqlite::params![key.environment_key, key.agent, key.session_id], |row| row.get(0),
+            ).unwrap();
+            for check in registered_checks() {
+                store
+                    .set_check_enabled(DetectorId::from_key(check.id()).unwrap(), true)
+                    .unwrap();
+                let input = BurnCheckInput {
+                    key: key.clone(),
+                    incarnation,
+                    check_id: check.id().into(),
+                    evaluator_revision: check.evaluator_revision(),
+                    ..base.clone()
+                };
+                // Replace the checkpoint fixture's active lease with a queued row.
+                store
+                    .lock()
+                    .execute(
+                        "DELETE FROM burn_check_assessment WHERE environment_key = ?1
+                    AND agent = ?2 AND session_id = ?3 AND check_id = ?4",
+                        rusqlite::params![
+                            key.environment_key,
+                            key.agent,
+                            key.session_id,
+                            check.id()
+                        ],
+                    )
+                    .unwrap();
+                assert!(
+                    store
+                        .queue_burn_check_assessment(&input, unix_now(), 180)
+                        .unwrap()
+                );
+                inputs.push(input);
+            }
+        }
+        (store, inputs)
+    }
+
+    #[test]
+    fn scheduler_rotates_checks_and_least_served_sessions_across_restarts() {
+        let (store, _) = scheduler_fixture();
+        let mut cursor = SchedulerCursor::default();
+        let mut selected = Vec::new();
+        for _ in 0..8 {
+            let (index, candidate) = select_turn(&store, registered_checks(), &cursor, unix_now())
+                .unwrap()
+                .unwrap();
+            selected.push((
+                registered_checks()[index].id(),
+                candidate.session.key.session_id.clone(),
+            ));
+            cursor.turn += 1;
+            cursor.next_check = (index + 1) % 4;
+            store
+                .serve_burn_check_candidate(
+                    &candidate,
+                    registered_checks()[index].id(),
+                    cursor.turn,
+                    &serde_json::to_string(&cursor).unwrap(),
+                )
+                .unwrap();
+            cursor = scheduler_cursor(&store).unwrap();
+        }
+        assert_eq!(
+            selected.iter().map(|(check, _)| *check).collect::<Vec<_>>(),
+            [
+                "ignored_instructions",
+                "scope_creep",
+                "over_exploring",
+                "skill_opportunities"
+            ]
+            .repeat(2)
+        );
+        assert!(
+            selected[..4]
+                .iter()
+                .all(|(_, session)| session == "checkpoint")
+        );
+        assert!(selected[4..].iter().all(|(_, session)| session == "second"));
+    }
+
+    #[test]
+    fn current_review_counts_use_only_fresh_persisted_counters() {
+        let (store, input, _, _) = checkpoint_fixture();
+        let read = |connection: &rusqlite::Connection| {
+            Store::current_burn_check_review_counts(
+                connection,
+                &input.key,
+                &input.check_id,
+                &input.evaluator_revision,
+            )
+        };
+        assert!(read(&store.lock()).unwrap().is_none());
+        assert!(
+            store
+                .save_burn_check_scheduling(&input, Some(5), 3, 2)
+                .unwrap()
+        );
+        let connection = store.lock();
+        let counts = read(&connection).unwrap().unwrap();
+        assert_eq!(
+            (counts.eligible, counts.reviewed, counts.runnable),
+            (Some(5), 3, 2)
+        );
+        // These fields have no report schema. Counter reads do not parse them.
+        connection
+            .execute(
+                "UPDATE burn_check_assessment SET result_json = '{\"private\":true}',
+            progress_json = '{\"private\":true}'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(read(&connection).unwrap(), Some(counts.clone()));
+        for change in [
+            "UPDATE burn_check_assessment SET scheduling_revision = 'old'",
+            "UPDATE burn_check_assessment SET input_revision = 'old'",
+            "UPDATE burn_check_assessment SET evaluator_revision = 'old'",
+            "UPDATE burn_check_assessment SET source_fingerprint = 'other-fingerprint'",
+            "UPDATE session SET source_fingerprint = 'other-fingerprint'",
+            "UPDATE session SET source_generation = source_generation + 1",
+            "UPDATE session SET incarnation = incarnation + 1",
+            "UPDATE session_evidence SET published_fence = published_fence + 1",
+            "UPDATE session_evidence SET processed_fingerprint = 'other-fingerprint'",
+            "UPDATE session_evidence SET parser_revision = parser_revision - 1",
+            "UPDATE session_evidence SET analyzer_revision = analyzer_revision - 1",
+            "UPDATE session_evidence SET evidence_schema_revision = evidence_schema_revision - 1",
+            "UPDATE session_evidence SET status = 'failed'",
+            "UPDATE burn_check_assessment SET status = 'superseded'",
+        ] {
+            connection.execute_batch("SAVEPOINT stale_counts").unwrap();
+            connection.execute(change, []).unwrap();
+            assert!(read(&connection).unwrap().is_none(), "{change}");
+            connection
+                .execute_batch("ROLLBACK TO stale_counts; RELEASE stale_counts")
+                .unwrap();
+        }
+        drop(connection);
+        let stale = BurnCheckInput {
+            source_fingerprint: Some("other-fingerprint".into()),
+            ..input.clone()
+        };
+        assert!(
+            !store
+                .save_burn_check_scheduling(&stale, Some(100), 99, 1)
+                .unwrap()
+        );
+        assert_eq!(read(&store.lock()).unwrap(), Some(counts));
+        assert!(
+            store
+                .save_burn_check_scheduling(&input, None, 3, 2)
+                .unwrap()
+        );
+        let unknown = read(&store.lock()).unwrap().unwrap();
+        assert_eq!(
+            (unknown.eligible, unknown.reviewed, unknown.runnable),
+            (None, 3, 2)
+        );
+        assert!(
+            store
+                .save_burn_check_scheduling(&input, Some(0), 0, 0)
+                .unwrap()
+        );
+        assert_eq!(read(&store.lock()).unwrap().unwrap().eligible, Some(0));
+    }
+
+    #[test]
+    fn fifth_turn_reserves_continuation_and_exhausted_work_leaves_both_lanes() {
+        let (store, inputs) = scheduler_fixture();
+        for input in &inputs {
+            assert!(
+                store
+                    .save_burn_check_scheduling(input, Some(5), 0, 5)
+                    .unwrap()
+            );
+        }
+        let continuation = &inputs[3];
+        assert!(
+            store
+                .save_burn_check_scheduling(continuation, Some(5), 3, 2)
+                .unwrap()
+        );
+        let cursor = SchedulerCursor {
+            turn: 4,
+            next_check: 0,
+        };
+        let (index, candidate) = select_turn(&store, registered_checks(), &cursor, unix_now())
+            .unwrap()
+            .unwrap();
+        assert_eq!(index, 3);
+        assert_eq!(candidate.session.key, continuation.key);
+        let priority = select_turn(
+            &store,
+            registered_checks(),
+            &SchedulerCursor::default(),
+            unix_now(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(priority.0, 0);
+        assert!(
+            store
+                .save_burn_check_scheduling(continuation, Some(5), 3, 0)
+                .unwrap()
+        );
+        assert_eq!(
+            select_turn(&store, registered_checks(), &cursor, unix_now())
+                .unwrap()
+                .unwrap()
+                .0,
+            0
+        );
+        for input in &inputs {
+            store
+                .save_burn_check_scheduling(input, Some(5), 0, 0)
+                .unwrap();
+        }
+        assert!(
+            select_turn(&store, registered_checks(), &cursor, unix_now())
+                .unwrap()
+                .is_none()
+        );
+        // A changed evaluator invalidates the inventory lane and terminal state.
+        store
+            .lock()
+            .execute(
+                "UPDATE burn_check_assessment SET evaluator_revision = 'old'",
+                [],
+            )
+            .unwrap();
+        assert!(
+            select_turn(&store, registered_checks(), &cursor, unix_now())
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn transport_attempts_and_backoff_survive_reenrollment_and_store_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, input, _, _) =
+            checkpoint_fixture_in(Store::open(directory.path()).unwrap());
+        let identities = ["semantic-target".to_owned()];
+        let now = unix_now();
+        for (attempt, time, delay) in [(1, now, 5), (2, now + 5, 30), (3, now + 35, 0)] {
+            assert_eq!(
+                store
+                    .admit_burn_check_requests(&input, &identities, "reservation", time)
+                    .unwrap(),
+                BurnCheckRequestAdmission::Admitted
+            );
+            assert_eq!(
+                store.burn_check_dispatch_attempts(&identities).unwrap(),
+                attempt
+            );
+            store
+                .clear_burn_check_request_outcomes(&identities)
+                .unwrap();
+            store
+                .defer_burn_check_dispatch(&input, &identities, (delay > 0).then_some(time + delay))
+                .unwrap();
+            drop(store);
+            store = Store::open(directory.path()).unwrap();
+            if delay > 0 {
+                assert_eq!(
+                    store
+                        .admit_burn_check_requests(&input, &identities, "other", time)
+                        .unwrap(),
+                    BurnCheckRequestAdmission::Deferred
+                );
+            }
+        }
+        assert_eq!(
+            store
+                .admit_burn_check_requests(&input, &identities, "fourth", now + 100)
+                .unwrap(),
+            BurnCheckRequestAdmission::Exhausted
+        );
+        assert!(
+            !store
+                .burn_check_requests_are_unresolved(&identities)
+                .unwrap()
+        );
+        assert_eq!(store.burn_check_dispatch_attempts(&identities).unwrap(), 3);
+        store
+            .release_failed_burn_check_lease(&input, "provider_unavailable", now + 200)
+            .unwrap();
+        assert_eq!(
+            store.next_burn_check_retry_at(now).unwrap(),
+            Some(now + 200)
+        );
+        assert_eq!(store.next_burn_check_retry_at(now + 200).unwrap(), None);
+        assert!(
+            store
+                .queue_burn_check_assessment(&input, now + 200, 180)
+                .unwrap()
+        );
+        assert!(
+            store
+                .claim_burn_check_assessment(&input, now + 200, 300, 180)
+                .unwrap()
+        );
+        assert_eq!(
+            store
+                .admit_burn_check_requests(&input, &identities, "reenrolled", now + 200)
+                .unwrap(),
+            BurnCheckRequestAdmission::Exhausted
+        );
+        store
+            .set_internal_value_checked(
+                "internal:burnCheckSchedulerV1",
+                "{\"turn\":7,\"next_check\":2}",
+            )
+            .unwrap();
+        store.clear_local_session_data().unwrap();
+        assert_eq!(store.burn_check_dispatch_attempts(&identities).unwrap(), 0);
+        assert!(store.burn_check_scheduler_cursor().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_turn_counts_only_admitted_dispatches_and_yields_before_a_third_attempt() {
+        let (store, input, handle, generation) = checkpoint_fixture();
+        for index in 0..3 {
+            let identity = [format!("semantic-target-{index}")];
+            let admission = handle
+                .admit_if_current(generation, &input.check_id, 0, || {
+                    handle.admit_turn_dispatch(|| {
+                        store.admit_burn_check_requests(
+                            &input,
+                            &identity,
+                            "reservation",
+                            unix_now(),
+                        )
+                    })
+                })
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                admission,
+                if index < 2 {
+                    BurnCheckRequestAdmission::Admitted
+                } else {
+                    BurnCheckRequestAdmission::Deferred
+                }
+            );
+            assert_eq!(
+                store.burn_check_dispatch_attempts(&identity).unwrap(),
+                usize::from(index < 2)
+            );
+        }
+        assert!(handle.turn_exhausted());
+        handle.turn_dispatches.store(0, Ordering::Release);
+        let unresolved = handle
+            .admit_turn_dispatch(|| {
+                store.admit_burn_check_requests(
+                    &input,
+                    &["semantic-target-0".into()],
+                    "another",
+                    unix_now(),
+                )
+            })
+            .unwrap();
+        assert_eq!(unresolved, BurnCheckRequestAdmission::Unresolved);
+        assert!(!handle.turn_exhausted());
+        assert_eq!(handle.turn_dispatches.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn request_deadline_releases_capacity_and_keeps_unknown_delivery_blocked() {
+        let (store, input, _, _) = checkpoint_fixture();
+        let BurnCheckReservation::Reserved(reservation_id) = store
+            .reserve_burn_check_usage(
+                &input,
+                "typesafe-systemone",
+                "jev-1.13.0",
+                MAX_REQUEST_TOKENS,
+                unix_now(),
+                180,
+            )
+            .unwrap()
+        else {
+            panic!("synthetic reservation")
+        };
+        let identities = ["timed-out-target".to_owned()];
+        assert_eq!(
+            store
+                .admit_burn_check_requests(&input, &identities, &reservation_id, unix_now())
+                .unwrap(),
+            BurnCheckRequestAdmission::Admitted
+        );
+        let slots = tokio::sync::Semaphore::new(1);
+        let notify = || {};
+        let outcome = request_with_deadline(async {
+            let _slot = slots.acquire().await.unwrap();
+            let _dispatch = DispatchGuard {
+                store: &store,
+                notify: &notify,
+                reservation_id,
+                provider: SystemOneProvider::Jev,
+                settled: false,
+                rejected: false,
+            };
+            std::future::pending().await
+        })
+        .await;
+        assert_eq!(outcome, Err(JevError::RequestOutcomeUnknown));
+        assert_eq!(slots.available_permits(), 1);
+        assert!(
+            store
+                .burn_check_requests_are_unresolved(&identities)
+                .unwrap()
+        );
+        assert_eq!(store.burn_check_dispatch_attempts(&identities).unwrap(), 1);
+        assert_eq!(
+            store.burn_check_usage_summary().unwrap().unknown_outcomes,
+            1
+        );
     }
 
     #[test]
@@ -2914,16 +3444,38 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_request_gets_two_bounded_retries() {
+    fn unknown_delivery_never_gets_an_automatic_retry() {
+        for attempt in 0..4 {
+            assert_eq!(retry_delay(&JevError::RequestOutcomeUnknown, attempt), None);
+        }
+    }
+
+    #[test]
+    fn append_revision_keeps_transport_identity_but_changed_context_reopens_it() {
+        let (_, input, _, _) = checkpoint_fixture();
+        let connection = SystemOneConnection::jev_default();
+        let original = compatible_request_identity(&connection, &input, "context-digest");
+        let appended = BurnCheckInput {
+            input_revision: "appended-source".into(),
+            source_fingerprint: Some("changed-source-fingerprint".into()),
+            ..input.clone()
+        };
         assert_eq!(
-            retry_delay(&JevError::RequestOutcomeUnknown, 0),
-            Some(Duration::from_secs(1))
+            original,
+            compatible_request_identity(&connection, &appended, "context-digest")
         );
-        assert_eq!(
-            retry_delay(&JevError::RequestOutcomeUnknown, 1),
-            Some(Duration::from_secs(2))
+        assert_ne!(
+            original,
+            compatible_request_identity(&connection, &appended, "changed-context-digest")
         );
-        assert_eq!(retry_delay(&JevError::RequestOutcomeUnknown, 2), None);
+        let evaluator = BurnCheckInput {
+            evaluator_revision: "new-evaluator".into(),
+            ..appended
+        };
+        assert_ne!(
+            original,
+            compatible_request_identity(&connection, &evaluator, "context-digest")
+        );
     }
 
     #[test]
@@ -3066,31 +3618,6 @@ mod tests {
         assert_eq!(semaphore.available_permits(), 512);
     }
 
-    #[tokio::test]
-    async fn retry_wait_stops_when_credentials_change() {
-        let handle = WorkerHandle::default();
-        handle
-            .set_system_one_connection(
-                SystemOneConnection::jev_default(),
-                Some("synthetic-key".to_owned()),
-            )
-            .unwrap();
-        let generation = handle.key_generation.load(Ordering::Acquire);
-        handle.suspend_system_one();
-        let events = SessionEvents::default();
-
-        assert!(
-            !wait_for_retry(
-                Duration::from_secs(30),
-                &handle,
-                generation,
-                &events,
-                &SessionKey::new("native", "claude", "synthetic-session"),
-            )
-            .await
-        );
-    }
-
     #[test]
     fn provider_retry_delay_uses_retry_after_and_bounded_backoff() {
         assert_eq!(
@@ -3104,7 +3631,7 @@ mod tests {
         );
         assert_eq!(
             retry_delay(&JevError::ProviderOverloaded { retry_after: None }, 1),
-            Some(Duration::from_secs(2))
+            Some(Duration::from_secs(30))
         );
         assert_eq!(
             retry_delay(
@@ -3113,8 +3640,13 @@ mod tests {
                 },
                 0,
             ),
-            None
+            Some(Duration::from_secs(300))
         );
+        assert_eq!(
+            retry_delay(&JevError::ProviderUnavailable, 0),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(retry_delay(&JevError::ProviderUnavailable, 2), None);
     }
 
     #[test]

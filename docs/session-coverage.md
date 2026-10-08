@@ -85,6 +85,17 @@ content, omitted events, and unfinished investigation context as limitations.
 Private thinking stays excluded. These limits do not supply missing approval,
 successful execution, or observed file extent.
 
+Scope Creep and Skill Opportunities preserve full immutable selected-work source
+bindings and digests. Only selected targets are prepared for provider requests.
+Large work values use at most four structural child fragments with explicit
+partial coverage; Scope Creep also samples large supporting activity. Each child
+has exact UTF-8 byte offsets and the observed total byte length. Coordinates refer
+to check-selected action text or the named normalized field, not bytes in native
+transcript JSON. Skill work citations bind the selected ranges to the full
+selected-action digest, so changes outside those ranges invalidate old citations.
+This provider-window sampling does not widen the accepted parser shapes or
+native source-format support listed above. It does not restore omitted records.
+
 This source contract covers the current recorded root snapshot. Complete inputs
 preserve every retained authoritative user message. Partial inputs preserve only
 intact, accepted context and carry the missing-history limits. Root identity and
@@ -475,14 +486,14 @@ actions only. The first observation cannot prove when it became active.
 The optional Ignored Instructions worker uses these bounded local inputs to
 prepare requests after the user enables Smart Burn Checks and configures a
 provider connection. It splits long rule text and non-command action text into overlapping
-byte ranges, then samples up to 1,024
-high-priority rule/action pairs per review. Selection can omit lower-priority
+byte ranges, then samples up to 8
+high-priority rule/action pairs per turn. Selection can omit lower-priority
 work, including range combinations. Word rarity, tool names, literal paths,
 prohibition/tool-input risk, and recency rank candidates. Choices spread across
 rules and sources and include low-overlap probes; none of these signals prove
-irrelevance. On later reviews new activity leads, then older pairs not yet
-sampled. The remaining gap decreases without new work and can grow after an
-append. Its input projection selects user and assistant text, Bash command
+irrelevance. Later turns alternate risk-ranked new activity with older unchecked
+work across source chronology. The remaining gap decreases without new work and
+can grow after an append. Its input projection selects user and assistant text, Bash command
 input/output, file-edit paths, read-file paths, search queries with scope, and
 other tool inputs. Accepted human text and exact bound Bash results supply
 bounded context only. Human text needs normalized history proof and native
@@ -498,8 +509,10 @@ other results, typed question/plan fields, and thinking stay excluded.
 The provider receives bounded sampled ranges; durable pair
 identities and typed answers allow compatible work to survive completed
 reviews, appends, and restarts. Reuse checks selected input, source binding,
-context, model, and revision. Selected paths can leave the machine
-through those requests. Store page caps run before field projection, so
+exact decision context, reference inputs, model/provider configuration, and check
+revisions. Transport repacking alone does not invalidate compatible answers;
+changed scope or skill references invalidate affected work. Selected paths can
+leave the machine through those requests. Store page caps run before field projection, so
 output-heavy truncation can still conservatively prevent a clean result when the
 omitted field is unknown. The instruction files are current snapshots; the
 worker does not reconstruct recorded historical injection from session fields,
@@ -517,6 +530,19 @@ path. Ignored Instructions supports `ClaudeJsonl`, `CodexRolloutJsonl`,
 are unavailable. Cursor store/composer sources retain normalized user and
 assistant text but may omit native tool inputs. Antigravity SQLite needs
 assessable companion transcript content.
+
+All four Smart Check descriptors initially target 50% of eligible targets, then
+continue remaining work. This is a target fraction, not model confidence or
+finding probability. The shared scheduler rotates across the four descriptors;
+four turns prefer initial review and the fifth prefers continuation. An empty
+preferred lane allows the other lane to run. Target limits per turn are 8 for
+Ignored Instructions, 4 for Scope Creep, 3 for Over-exploring, and 4 for Skill
+Opportunities, with at most two provider dispatch attempts per turn including
+retries. The Store persists finite attempt limits across turns and restarts.
+Only fully answered and successfully reduced targets count as reviewed. Private
+thinking remains excluded. Missing, unsupported, uncertain, exhausted, and
+failed evidence cannot establish Clean when the initial fraction is reached.
+These limits do not add accepted source formats or native evidence claims.
 
 The twelve-field source capability and Ignored Instructions selection matrix is
 maintained in [Smart Burn Checks selected-input coverage](smart-burn-checks.md#ignored-instructions-selected-input-coverage).

@@ -1238,7 +1238,7 @@ fn scheduler_revision_belongs_to_each_registered_check() {
 }
 
 #[test]
-fn history_and_recent_candidates_share_a_bounded_scheduler_batch() {
+fn history_and_recent_candidates_share_a_bounded_least_served_queue() {
     let store = store();
     let records = (0..4)
         .map(|index| session(&format!("history-{index}"), 10_000))
@@ -1270,18 +1270,30 @@ fn history_and_recent_candidates_share_a_bounded_scheduler_batch() {
             .iter()
             .map(|candidate| candidate.historical)
             .collect::<Vec<_>>(),
-        [false, true, false, true]
+        [true, true, true, true]
     );
     let future = store
         .burn_check_candidates("cache_churn", 40_000, 180, 4)
         .unwrap();
     assert_eq!(future.len(), 2);
     assert!(future.iter().all(|candidate| !candidate.historical));
-    store.lock().execute("UPDATE burn_check_assessment SET updated_at_epoch = 39000 WHERE session_id = 'history-0'", []).unwrap();
+    store
+        .lock()
+        .execute(
+            "UPDATE burn_check_assessment SET last_served_turn = 1 WHERE session_id LIKE 'history-%'",
+            [],
+        )
+        .unwrap();
     let next = store
         .burn_check_candidates("ignored_instructions", 40_000, 180, 4)
         .unwrap();
-    assert_eq!(next[1].session.key.session_id, "history-1");
+    assert_eq!(
+        next.iter()
+            .map(|candidate| candidate.historical)
+            .collect::<Vec<_>>(),
+        [false, false, true, true]
+    );
+    assert_eq!(next[2].session.key.session_id, "history-0");
 }
 
 #[test]
@@ -1475,7 +1487,7 @@ fn completed_pass_moves_the_turn_boundary_to_new_activity() {
 }
 
 #[test]
-fn recent_appended_activity_precedes_an_older_backlog() {
+fn recent_appended_activity_does_not_bypass_a_less_served_backlog() {
     let store = store();
     let mut records = [session("backlog", 10_000), session("new-action", 10_000)];
     for record in &mut records {
@@ -1504,7 +1516,18 @@ fn recent_appended_activity_precedes_an_older_backlog() {
     let candidates = store
         .burn_check_candidates("ignored_instructions", 40_000, 180, 1)
         .unwrap();
-    assert_eq!(candidates[0].session.key.session_id, "new-action");
+    assert_eq!(candidates[0].session.key.session_id, "backlog");
+    store
+        .lock()
+        .execute(
+            "UPDATE burn_check_assessment SET last_served_turn = 1 WHERE session_id = 'backlog'",
+            [],
+        )
+        .unwrap();
+    let next = store
+        .burn_check_candidates("ignored_instructions", 40_000, 180, 1)
+        .unwrap();
+    assert_eq!(next[0].session.key.session_id, "new-action");
 }
 
 #[test]

@@ -51,9 +51,15 @@ fn check_report_progress_with_home(
                   AND t.agent = s.agent AND t.session_id = s.session_id
                   AND t.claim_fence = e.published_fence AND t.scope = 'main'
                    ORDER BY turn_index LIMIT 1),
-                 s.agent, s.cwd, e.evidence_json, s.session_id
+                  s.agent, s.cwd, e.evidence_json, s.session_id,
+                  e.status = 'ready' AND e.processed_fingerprint IS s.source_fingerprint
+                    AND {current_evidence},
+                  CASE WHEN :check_id = 'ignored_instructions' AND json_valid(a.progress_json)
+                    THEN json_object('input_revision', json_extract(a.progress_json, '$.progress.input_revision'),
+                      'version', json_extract(a.progress_json, '$.progress.version'),
+                      'answers', json_extract(a.progress_json, '$.progress.answers')) END
           FROM session s
-         JOIN session_evidence e ON e.environment_key = s.environment_key AND e.agent = s.agent
+         LEFT JOIN session_evidence e ON e.environment_key = s.environment_key AND e.agent = s.agent
            AND e.session_id = s.session_id
          LEFT JOIN session_coverage c ON c.environment_key = s.environment_key AND c.agent = s.agent
             AND c.session_id = s.session_id AND c.claim_fence = e.published_fence
@@ -64,8 +70,7 @@ fn check_report_progress_with_home(
             AND a.evaluator_revision = :evaluator_revision
           WHERE s.environment_key = :environment_key
            AND COALESCE(s.updated_at_epoch, s.started_at_epoch) >= :window_start
-           AND COALESCE(s.updated_at_epoch, s.started_at_epoch) < :window_end
-            AND e.status = 'ready' AND e.processed_fingerprint IS s.source_fingerprint AND {current_evidence}"
+            AND COALESCE(s.updated_at_epoch, s.started_at_epoch) < :window_end"
     );
     let mut statement = connection.prepare(&sql)?;
     let mut rows = statement.query(named_params![
@@ -86,6 +91,13 @@ fn check_report_progress_with_home(
     let mut missing_denominator = false;
     while let Some(row) = rows.next()? {
         let agent: String = row.get(9)?;
+        let current: Option<bool> = row.get(13)?;
+        if current != Some(true) {
+            missing_denominator |=
+                matches!(agent.as_str(), "claude-code" | "codex" | "opencode" | "pi")
+                    && (check_id == "ignored_instructions" || request.environment_key == "native");
+            continue;
+        }
         let cwd: Option<String> = row.get(10)?;
         let evidence: SessionEvidence = serde_json::from_str(&row.get::<_, String>(11)?)
             .context("stored session evidence is invalid")?;
@@ -120,22 +132,18 @@ fn check_report_progress_with_home(
                     None => true,
                 });
         progress.partial_context |= partial_source;
-        let continuing =
-            status.as_deref() == Some("failed") && error.as_deref() == Some("continuing");
         let input: Option<String> = row.get(2)?;
         let revision: Option<String> = row.get(3)?;
         let json: Option<String> = row.get(4)?;
-        if !matches!(status.as_deref(), Some("completed" | "failed"))
-            || input.is_none()
-            || input != revision
+        if check_id == "ignored_instructions"
+            && input.is_some()
+            && input == revision
+            && let Some(json) = &json
+            && let Ok(saved) = serde_json::from_str::<IgnoredInstructionCoverageNotice>(json)
+            && Some(saved.input_revision.as_str()) == input.as_deref()
         {
-            missing_denominator = true;
-            continue;
+            progress.partial_context |= ignored_instruction_partial_context(&saved.coverage);
         }
-        let (Some(json), Some(input)) = (json, input) else {
-            missing_denominator = true;
-            continue;
-        };
         let inventory_revision = if check_id == "skill_opportunities" {
             home.and_then(|home| {
                 skill_opportunities::current_skill_snapshot(&agent, cwd.map(PathBuf::from), home)
@@ -144,32 +152,100 @@ fn check_report_progress_with_home(
         } else {
             None
         };
-        let Some((mut coverage, partial)) =
-            published_coverage(check_id, &input, &json, inventory_revision.as_deref())
-        else {
-            missing_denominator = true;
-            continue;
-        };
-        if status.as_deref() == Some("failed")
-            && check_id != "over_exploring"
-            && !matches!(error.as_deref(), Some("sampling_incomplete" | "continuing"))
+        let publication = if matches!(status.as_deref(), Some("completed" | "failed"))
+            && input.is_some()
+            && input == revision
+            && (status.as_deref() != Some("failed")
+                || check_id == "over_exploring"
+                || matches!(error.as_deref(), Some("sampling_incomplete" | "continuing")))
         {
-            missing_denominator = true;
-            continue;
+            input
+                .as_deref()
+                .zip(json.as_deref())
+                .and_then(|(input, json)| {
+                    published_coverage(check_id, input, json, inventory_revision.as_deref())
+                })
+        } else {
+            None
+        };
+        if let Some((_, partial)) = &publication {
+            progress.partial_context |= partial;
         }
-        coverage.continuing = continuing;
-        if partial_source {
-            coverage.total = None;
+        let counts = crate::store::Store::current_burn_check_review_counts(
+            &connection,
+            &crate::store::SessionKey {
+                environment_key: request.environment_key.clone(),
+                agent,
+                session_id,
+            },
+            check_id,
+            &evaluator_revision,
+        )?;
+        let mut coverage = match counts {
+            Some(counts) => {
+                let outcomes = publication
+                    .as_ref()
+                    .map(|(coverage, _)| coverage)
+                    .filter(|coverage| coverage.reviewed == counts.reviewed as u64);
+                ChecksReviewCoveragePayload {
+                    reviewed: counts.reviewed as u64,
+                    total: counts.eligible.map(|total| total as u64),
+                    uncertain: if counts.reviewed == 0 {
+                        Some(0)
+                    } else {
+                        outcomes.map(|coverage| coverage.uncertain)
+                    },
+                    pending: counts
+                        .eligible
+                        .map(|total| (total - counts.reviewed) as u64),
+                    pending_completion: if counts.reviewed == 0 {
+                        Some(0)
+                    } else {
+                        outcomes.and_then(|coverage| coverage.pending_completion)
+                    },
+                    continuing: matches!(status.as_deref(), Some("queued" | "running"))
+                        && counts.runnable > 0,
+                }
+            }
+            None => match publication {
+                Some((coverage, _)) => coverage.into(),
+                None => {
+                    missing_denominator = true;
+                    continue;
+                }
+            },
+        };
+        if check_id == "ignored_instructions" {
+            let compact: Option<String> = row.get(14)?;
+            if let Some((uncertain, pending_completion)) = compact
+                .as_deref()
+                .zip(input.as_deref())
+                .and_then(|(json, input)| {
+                    ignored_instruction_outcomes(json, input, coverage.reviewed)
+                })
+            {
+                coverage.uncertain = Some(uncertain);
+                coverage.pending_completion = Some(pending_completion);
+            }
         }
-        progress.partial_context |= partial;
         if let Some(total) = &mut progress.coverage {
             total.reviewed += coverage.reviewed;
             total.total = total
                 .total
                 .zip(coverage.total)
                 .map(|(left, right)| left + right);
-            total.uncertain += coverage.uncertain;
-            total.pending += coverage.pending;
+            total.uncertain = total
+                .uncertain
+                .zip(coverage.uncertain)
+                .map(|(left, right)| left + right);
+            total.pending = total
+                .pending
+                .zip(coverage.pending)
+                .map(|(left, right)| left + right);
+            total.pending_completion = total
+                .pending_completion
+                .zip(coverage.pending_completion)
+                .map(|(left, right)| left + right);
             total.continuing |= coverage.continuing;
         } else {
             progress.coverage = Some(coverage);
@@ -177,6 +253,7 @@ fn check_report_progress_with_home(
     }
     if missing_denominator && let Some(coverage) = &mut progress.coverage {
         coverage.total = None;
+        coverage.pending = None;
     }
     Ok(progress)
 }
@@ -191,6 +268,79 @@ struct ScopePublication {
 struct SkillPublication {
     #[serde(flatten)]
     result: antiburn_local::checks::skill_opportunities::SkillOpportunitiesResult,
+}
+
+#[derive(Deserialize)]
+struct IgnoredInstructionCoverageNotice {
+    input_revision: String,
+    coverage: antiburn_local::analysis::ignored_instructions::AssessmentCoverage,
+}
+
+fn ignored_instruction_partial_context(
+    coverage: &antiburn_local::analysis::ignored_instructions::AssessmentCoverage,
+) -> bool {
+    !coverage.skipped_rules.is_empty()
+        || !coverage.skipped_actions.is_empty()
+        || coverage.limitations.iter().any(|limit| {
+            !matches!(
+                limit.as_str(),
+                "sampled_candidate_selection"
+                    | "sampled_content_selection"
+                    | "semantic_decision_uncertain"
+                    | "some_comparisons_unassessed"
+                    | "assessment_processing_incomplete"
+            )
+        })
+}
+
+#[derive(Deserialize)]
+struct IgnoredInstructionCompactOutcomes {
+    version: u8,
+    input_revision: String,
+    answers: Vec<Option<Vec<antiburn_local::analysis::jev::JevAnswer>>>,
+}
+
+fn ignored_instruction_outcomes(
+    json: &str,
+    input_revision: &str,
+    reviewed: u64,
+) -> Option<(u64, u64)> {
+    use antiburn_local::analysis::jev::{JevAnswer, highest_probability_choice};
+    let saved: IgnoredInstructionCompactOutcomes = serde_json::from_str(json).ok()?;
+    if saved.version != 3 || saved.input_revision != input_revision {
+        return None;
+    }
+    let mut terminal = 0;
+    let mut uncertain = 0;
+    let mut pending_completion = 0;
+    for answers in saved.answers.into_iter().flatten() {
+        let [
+            JevAnswer::Choice {
+                choice,
+                probabilities,
+                ..
+            },
+        ] = answers.as_slice()
+        else {
+            return None;
+        };
+        if highest_probability_choice(choice, probabilities) != Some(choice.as_str()) {
+            return None;
+        }
+        match choice.as_str() {
+            "uncertain" => uncertain += 1,
+            "pending_completion" => pending_completion += 1,
+            "no_issue" => {}
+            // Low-probability conflicts do not have a definitive publication outcome.
+            "conflict"
+                if probabilities
+                    .get(choice)
+                    .is_some_and(|value| *value >= 0.75) => {}
+            _ => return None,
+        }
+        terminal += 1;
+    }
+    (terminal == reviewed).then_some((uncertain, pending_completion))
 }
 
 fn source_is_partial(json: &str, retained_records: u64, first_role: Option<&str>) -> Result<bool> {
@@ -215,40 +365,63 @@ fn source_is_partial(json: &str, retained_records: u64, first_role: Option<&str>
         || !source.diagnostics.capped_collections.is_empty())
 }
 
+pub(super) struct PublishedReviewCoverage {
+    pub reviewed: u64,
+    pub total: Option<u64>,
+    pub uncertain: u64,
+    pub pending: u64,
+    pub pending_completion: Option<u64>,
+    pub continuing: bool,
+}
+
+impl From<PublishedReviewCoverage> for ChecksReviewCoveragePayload {
+    fn from(coverage: PublishedReviewCoverage) -> Self {
+        Self {
+            reviewed: coverage.reviewed,
+            total: coverage.total,
+            uncertain: Some(coverage.uncertain),
+            pending: Some(coverage.pending),
+            pending_completion: coverage.pending_completion,
+            continuing: coverage.continuing,
+        }
+    }
+}
+
 pub(super) fn published_coverage(
     check_id: &str,
     input_revision: &str,
     json: &str,
     inventory_revision: Option<&str>,
-) -> Option<(ChecksReviewCoveragePayload, bool)> {
+) -> Option<(PublishedReviewCoverage, bool)> {
     if check_id == "ignored_instructions" {
         let result: antiburn_local::analysis::ignored_instructions::AssessmentResult =
             serde_json::from_str(json).ok()?;
         if result.input_revision != input_revision {
             return None;
         }
-        let partial = result.coverage.limitations.iter().any(|limit| {
-            !matches!(
-                limit.as_str(),
-                "sampled_candidate_selection" | "sampled_content_selection"
-            )
-        });
+        // The publication does not separate missing answers from uncertain answers.
+        if !result.unassessed_comparisons.is_empty() {
+            return None;
+        }
+        let partial = ignored_instruction_partial_context(&result.coverage);
         return Some((
-            ChecksReviewCoveragePayload {
-                reviewed: result
-                    .coverage
-                    .selected_comparisons
-                    .saturating_sub(result.unassessed_comparisons.len())
-                    as u64,
-                total: (!partial).then_some(result.coverage.candidate_pairs as u64),
-                uncertain: result.unassessed_comparisons.len() as u64,
+            PublishedReviewCoverage {
+                reviewed: result.coverage.selected_comparisons as u64,
+                total: (!result.coverage.processing_limit_reached
+                    && result.coverage.skipped_rules.is_empty()
+                    && result.coverage.skipped_actions.is_empty())
+                .then_some(result.coverage.candidate_pairs as u64),
+                uncertain: 0,
                 pending: result.coverage.unselected_pairs as u64,
+                pending_completion: result.pending_rules.is_empty().then_some(0),
                 continuing: false,
             },
             partial,
         ));
     }
-    let (coverage, uncertain, scope_partial) = if check_id == "skill_opportunities" {
+    let (coverage, reviewed, uncertain, pending, scope_partial) = if check_id
+        == "skill_opportunities"
+    {
         use antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome;
         let saved: SkillPublication = serde_json::from_str(json).ok()?;
         if !skill_opportunities::publication_revisions_match(
@@ -259,18 +432,30 @@ pub(super) fn published_coverage(
         ) {
             return None;
         }
-        let uncertain = saved
+        let reviewed = saved
             .result
             .decisions
             .iter()
             .filter(|decision| {
                 matches!(
                     decision.outcome,
-                    SkillOpportunityOutcome::Unassessed | SkillOpportunityOutcome::Uncertain
+                    SkillOpportunityOutcome::Advisory
+                        | SkillOpportunityOutcome::NoOpportunity
+                        | SkillOpportunityOutcome::Uncertain
                 )
             })
             .count();
-        (saved.result.coverage, uncertain, false)
+        let pending = (saved.result.coverage.selected_items
+            + saved.result.coverage.not_selected_items
+            + saved.result.coverage.skipped_items)
+            .saturating_sub(reviewed);
+        let uncertain = saved
+            .result
+            .decisions
+            .iter()
+            .filter(|decision| decision.outcome == SkillOpportunityOutcome::Uncertain)
+            .count();
+        (saved.result.coverage, reviewed, uncertain, pending, false)
     } else if check_id == "scope_creep" {
         use antiburn_local::checks::scope_creep::ScopeCreepStatus;
         let saved: ScopePublication = serde_json::from_str(json).ok()?;
@@ -281,19 +466,34 @@ pub(super) fn published_coverage(
             .assessment
             .decisions
             .iter()
+            .filter(|decision| matches!(decision.status, ScopeCreepStatus::Uncertain))
+            .count();
+        let reviewed = saved
+            .assessment
+            .decisions
+            .iter()
             .filter(|decision| {
                 matches!(
                     decision.status,
-                    ScopeCreepStatus::Unassessed | ScopeCreepStatus::Uncertain
+                    ScopeCreepStatus::Finding
+                        | ScopeCreepStatus::Clean
+                        | ScopeCreepStatus::Uncertain
                 )
             })
             .count();
+        let pending = (saved.assessment.coverage.selected_items
+            + saved.assessment.coverage.not_selected_items
+            + saved.assessment.coverage.skipped_items)
+            .saturating_sub(reviewed);
         (
             saved.assessment.coverage,
+            reviewed,
             uncertain,
+            pending,
             saved.assessment.session_limitation.is_some(),
         )
     } else {
+        use antiburn_local::checks::over_exploring::Abstention;
         let saved: crate::over_exploring_worker::Publication = serde_json::from_str(json).ok()?;
         if saved.input_revision != input_revision {
             return None;
@@ -302,38 +502,61 @@ pub(super) fn published_coverage(
             .assessment
             .unassessed
             .iter()
+            .filter(|item| item.limitation == Abstention::UncertainDecision)
             .filter_map(|item| item.work_item_id.as_deref())
             .collect::<BTreeSet<_>>()
             .len();
         let coverage = saved.assessment.coverage;
-        let partial = !coverage.limitations.is_empty();
+        let partial = coverage.limitations.iter().any(|limit| {
+            !matches!(
+                limit.as_str(),
+                "SampledEvidence" | "PartialAssessment" | "UncertainDecision"
+            )
+        });
+        let reviewed = saved
+            .assessment
+            .completed_work_item_ids
+            .iter()
+            .collect::<BTreeSet<_>>()
+            .len();
         return Some((
-            ChecksReviewCoveragePayload {
-                reviewed: saved
-                    .assessment
-                    .completed_work_item_ids
+            PublishedReviewCoverage {
+                reviewed: reviewed as u64,
+                total: (!coverage
+                    .limitations
                     .iter()
-                    .collect::<BTreeSet<_>>()
-                    .len() as u64,
-                total: (!partial)
-                    .then_some((coverage.selected_items + coverage.not_selected_items) as u64),
+                    .any(|limit| limit == "sampling_inventory_limit"))
+                .then_some((coverage.selected_items + coverage.not_selected_items) as u64),
                 uncertain: uncertain as u64,
-                pending: coverage.not_selected_items as u64,
+                pending: (coverage.selected_items + coverage.not_selected_items)
+                    .saturating_sub(reviewed) as u64,
+                pending_completion: Some(0),
                 continuing: false,
             },
             partial,
         ));
     };
-    let partial = scope_partial || !coverage.limitations.is_empty();
+    let partial = scope_partial
+        || coverage.limitations.iter().any(|limit| {
+            !matches!(
+                limit.as_str(),
+                "uncertain_decision" | "assessment_incomplete"
+            )
+        });
     Some((
-        ChecksReviewCoveragePayload {
-            reviewed: coverage.selected_items as u64,
-            total: (!partial).then_some(
+        PublishedReviewCoverage {
+            reviewed: reviewed as u64,
+            total: (!coverage
+                .limitations
+                .iter()
+                .any(|limit| limit == "sampling_inventory_limit"))
+            .then_some(
                 (coverage.selected_items + coverage.skipped_items + coverage.not_selected_items)
                     as u64,
             ),
             uncertain: uncertain as u64,
-            pending: coverage.not_selected_items as u64,
+            pending: pending as u64,
+            pending_completion: Some(0),
             continuing: false,
         },
         partial,
@@ -347,6 +570,135 @@ mod tests {
     use crate::smart_check_inputs::DetectorInput;
     use antiburn_local::analysis::jev::{JevCheck, capabilities::ModelCapabilities};
     use antiburn_local::checks::over_exploring::OverExploringCheck;
+
+    #[test]
+    fn current_scheduling_counts_keep_known_targets_separate_from_partial_context() {
+        for check_id in [
+            "ignored_instructions",
+            "scope_creep",
+            "over_exploring",
+            "skill_opportunities",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let (store, candidate) = fixture(Some(directory.path()), "user");
+            let input = prepare(
+                &candidate,
+                store
+                    .load_smart_check_inputs(
+                        &candidate.session.key,
+                        candidate.published_fence,
+                        candidate.source_generation,
+                        DetectorInput::OverExploring,
+                    )
+                    .unwrap(),
+                &ModelCapabilities::jev_default(),
+            )
+            .unwrap();
+            let mut durable = input.durable;
+            durable.check_id = check_id.into();
+            durable.evaluator_revision = match check_id {
+                "scope_creep" => crate::scope_creep_worker::CHECK.evaluator_revision(),
+                "over_exploring" => crate::over_exploring_worker::CHECK.evaluator_revision(),
+                "skill_opportunities" => {
+                    crate::skill_opportunities_worker::CHECK.evaluator_revision()
+                }
+                _ => antiburn_local::analysis::ignored_instructions::evaluator_revision(),
+            };
+            store
+                .set_check_enabled(DetectorId::from_key(check_id).unwrap(), true)
+                .unwrap();
+            store.capture_burn_check_boundaries(&[check_id], 0).unwrap();
+            assert!(
+                store
+                    .queue_burn_check_assessment(&durable, 1000, 180)
+                    .unwrap()
+            );
+            assert!(
+                store
+                    .save_burn_check_scheduling(&durable, Some(4), 2, 2)
+                    .unwrap()
+            );
+            store
+                .lock()
+                .execute(
+                    "UPDATE turn SET is_compaction_boundary = 1 WHERE turn_index = 0",
+                    [],
+                )
+                .unwrap();
+            let request = ReportRequest {
+                environment_key: "native".into(),
+                window: ReportWindow {
+                    start_epoch: 0,
+                    end_epoch: i64::MAX,
+                },
+                computed_at_epoch: 1001,
+            };
+            let read = || check_report_progress(directory.path(), &request, check_id).unwrap();
+            let progress = read();
+            assert!(progress.checking, "{check_id}");
+            if check_id != "ignored_instructions" {
+                assert!(progress.partial_context, "{check_id}");
+            }
+            let coverage = progress.coverage.unwrap();
+            assert_eq!(coverage.reviewed, 2, "{check_id}");
+            assert_eq!(coverage.total, Some(4), "{check_id}");
+            assert_eq!(coverage.pending, Some(2), "{check_id}");
+            assert_eq!(coverage.uncertain, None, "{check_id}");
+            assert!(coverage.continuing, "{check_id}");
+            if check_id == "ignored_instructions" {
+                let answers = serde_json::json!({"progress": {
+                    "version": 3, "input_revision": durable.input_revision,
+                    "answers": [
+                        [{"type": "choice", "choice": "uncertain", "probabilities": {"uncertain": 1.0}, "confidence": 1.0}],
+                        [{"type": "choice", "choice": "pending_completion", "probabilities": {"pending_completion": 1.0}, "confidence": 1.0}],
+                    ],
+                }});
+                store
+                    .lock()
+                    .execute(
+                        "UPDATE burn_check_assessment SET progress_json = ?1 WHERE check_id = ?2",
+                        params![answers.to_string(), check_id],
+                    )
+                    .unwrap();
+                let coverage = read().coverage.unwrap();
+                assert_eq!(coverage.uncertain, Some(1));
+                assert_eq!(coverage.pending_completion, Some(1));
+                assert_eq!(coverage.pending, Some(2));
+            }
+            store
+                .lock()
+                .execute(
+                    "UPDATE burn_check_assessment SET status = 'completed' WHERE check_id = ?1",
+                    [check_id],
+                )
+                .unwrap();
+            let terminal = read();
+            assert!(!terminal.checking);
+            assert!(!terminal.coverage.unwrap().continuing);
+            assert!(
+                store
+                    .save_burn_check_scheduling(&durable, None, 2, 0)
+                    .unwrap()
+            );
+            let unknown = read().coverage.unwrap();
+            assert_eq!(unknown.total, None);
+            assert_eq!(unknown.pending, None);
+        }
+    }
+
+    #[test]
+    fn compact_outcomes_do_not_claim_counts_for_other_pages_or_revisions() {
+        let saved = serde_json::json!({
+            "version": 3, "input_revision": "input",
+            "answers": [[{"type": "choice", "choice": "uncertain", "probabilities": {"uncertain": 1.0}, "confidence": 1.0}]],
+        }).to_string();
+        assert_eq!(
+            ignored_instruction_outcomes(&saved, "input", 1),
+            Some((1, 0))
+        );
+        assert_eq!(ignored_instruction_outcomes(&saved, "input", 2), None);
+        assert_eq!(ignored_instruction_outcomes(&saved, "old", 1), None);
+    }
 
     #[test]
     fn incomplete_session_denominators_keep_the_aggregate_total_unknown() {
@@ -464,6 +816,67 @@ mod tests {
             )
             .unwrap();
         assert_unknown(false);
+        store
+            .lock()
+            .execute(
+                "UPDATE session_evidence SET status = 'pending' WHERE session_id = ?1",
+                [&second.session.key.session_id],
+            )
+            .unwrap();
+        assert_unknown(false);
+    }
+
+    #[test]
+    fn ignored_instruction_counts_require_distinct_terminal_evidence() {
+        use antiburn_local::analysis::ignored_instructions::{
+            AssessmentCoverage, AssessmentResult,
+        };
+        let mut result = AssessmentResult {
+            input_revision: "input".into(),
+            model_version: "test".into(),
+            findings: Vec::new(),
+            pending_rules: Vec::new(),
+            unassessed_comparisons: Vec::new(),
+            coverage: AssessmentCoverage {
+                eligible_rules: 1,
+                candidate_pairs: 4,
+                selected_comparisons: 2,
+                unselected_pairs: 2,
+                skipped_rules: Vec::new(),
+                skipped_actions: Vec::new(),
+                processing_limit_reached: false,
+                sampled_pass: true,
+                selector_revision: 0,
+                limitations: vec!["sampled_candidate_selection".into()],
+                reassessed_comparison_ids: Vec::new(),
+                reassessed_rule_ids: Vec::new(),
+                reassessed_finding_ids: Vec::new(),
+                instruction_sources: Vec::new(),
+            },
+            request_count: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+        };
+        let read = |result: &AssessmentResult| {
+            published_coverage(
+                "ignored_instructions",
+                "input",
+                &serde_json::to_string(result).unwrap(),
+                None,
+            )
+        };
+        let (coverage, partial) = read(&result).unwrap();
+        assert!(!partial);
+        assert_eq!(coverage.reviewed, 2);
+        assert_eq!(coverage.total, Some(4));
+        assert_eq!(coverage.pending, 2);
+        result.coverage.processing_limit_reached = true;
+        assert_eq!(read(&result).unwrap().0.total, None);
+        result.coverage.processing_limit_reached = false;
+        result
+            .unassessed_comparisons
+            .push("ambiguous-answer".into());
+        assert!(read(&result).is_none());
     }
 
     #[test]
@@ -489,6 +902,14 @@ mod tests {
         for (index, item) in result.unassessed.iter_mut().enumerate() {
             item.work_item_id = Some(format!("reason-{index}"));
         }
+        for item in &mut result.unassessed {
+            item.limitation = antiburn_local::checks::over_exploring::Abstention::UncertainDecision;
+        }
+        result.completed_work_item_ids = result
+            .unassessed
+            .iter()
+            .filter_map(|item| item.work_item_id.clone())
+            .collect();
         result.coverage.selected_items = 3;
         result.coverage.not_selected_items = 0;
         result.coverage.skipped_items = 0;
@@ -497,7 +918,7 @@ mod tests {
         let (coverage, _) =
             published_coverage("over_exploring", &input.durable.input_revision, &json, None)
                 .unwrap();
-        assert_eq!(coverage.reviewed, 0);
+        assert_eq!(coverage.reviewed, 3);
         assert_eq!(coverage.total, Some(3));
         assert_eq!(coverage.uncertain, 3);
     }
@@ -584,7 +1005,7 @@ mod tests {
             )
             .unwrap()
         };
-        assert_eq!(read().coverage.unwrap().reviewed, 2);
+        assert_eq!(read().coverage.unwrap().reviewed, 0);
         assert!(
             check_report_progress_with_home(
                 directory.path(),
@@ -634,9 +1055,9 @@ mod tests {
         let (coverage, partial) =
             published_coverage("scope_creep", &input.durable.input_revision, &json, None).unwrap();
         assert!(partial);
-        assert_eq!(coverage.total, None);
-        assert_eq!(coverage.pending, 2);
-        assert!(coverage.uncertain > 0);
+        assert_eq!(coverage.total, Some(3));
+        assert_eq!(coverage.pending, 3);
+        assert_eq!(coverage.uncertain, 0);
         assert!(published_coverage("scope_creep", "old-input", &json, None).is_none());
         let mut outcomes: serde_json::Value = serde_json::from_str(&json).unwrap();
         outcomes["assessment"]["decisions"][0]["status"] = serde_json::json!("uncertain");
@@ -647,7 +1068,8 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(uncertain.uncertain, coverage.uncertain);
+        assert_eq!(uncertain.uncertain, coverage.uncertain + 1);
+        assert_eq!(uncertain.reviewed, coverage.reviewed + 1);
         outcomes["assessment"]["decisions"][0]["status"] = serde_json::json!("clean");
         let (clean, _) = published_coverage(
             "scope_creep",
@@ -682,9 +1104,9 @@ mod tests {
         )
         .unwrap();
         assert!(partial);
-        assert_eq!(coverage.reviewed, 4);
-        assert_eq!(coverage.total, None);
-        assert_eq!(coverage.pending, 3);
+        assert_eq!(coverage.reviewed, 0);
+        assert_eq!(coverage.total, Some(7));
+        assert_eq!(coverage.pending, 7);
         assert!(
             published_coverage("skill_opportunities", "old-input", &json, Some("inventory"))
                 .is_none()
@@ -787,12 +1209,12 @@ mod tests {
         assert!(progress.partial_context);
         let coverage = progress.coverage.unwrap();
         assert_eq!(coverage.reviewed, 0);
-        assert_eq!(coverage.total, None);
-        assert_eq!(coverage.pending, 3);
-        assert!(coverage.uncertain > 0);
+        assert_eq!(coverage.total, Some(5));
+        assert_eq!(coverage.pending, Some(5));
+        assert_eq!(coverage.uncertain, Some(0));
         store.lock().execute("UPDATE burn_check_assessment SET status = 'failed', last_error_category = 'continuing'", []).unwrap();
         assert!(!read().checking);
-        assert!(read().coverage.unwrap().continuing);
+        assert!(!read().coverage.unwrap().continuing);
         for mutation in [
             "evaluator_revision = 'old'",
             "source_generation = 999",

@@ -494,7 +494,7 @@ mod tests {
             antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome::Unassessed;
         outcomes.decisions[0].judgments = None;
         let (counts, _) = review(&saved_json(&outcomes)).unwrap();
-        assert_eq!(counts.uncertain, 1);
+        assert_eq!(counts.uncertain, 0);
         let mut mismatched_use: serde_json::Value =
             serde_json::from_str(&saved_json(&result)).unwrap();
         mismatched_use["use_revision"] = serde_json::json!("different-use");

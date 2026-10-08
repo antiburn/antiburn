@@ -329,8 +329,22 @@ async fn selected_worker_input_uses_active_capabilities_and_fences_saved_progres
     assert_eq!(plan.capabilities, capabilities);
     assert_eq!(plan.prepared.model_version, capabilities.model);
     let packed = pack_work_items_with_capabilities(&plan.work_items, &capabilities);
-    assert!(packed.skipped_item_ids.is_empty());
-    assert!(!packed.batches.is_empty());
+    let admitted = packed
+        .batches
+        .iter()
+        .flat_map(|batch| batch.work_item_ids.iter())
+        .collect::<std::collections::BTreeSet<_>>();
+    let skipped = packed
+        .skipped_item_ids
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(admitted.is_disjoint(&skipped));
+    assert_eq!(admitted.union(&skipped).count(), plan.work_items.len());
+    assert!(
+        plan.work_items
+            .iter()
+            .all(|item| admitted.contains(&item.id) || skipped.contains(&item.id))
+    );
     for batch in packed.batches {
         assert_eq!(batch.request.model, capabilities.model);
         validate_jev_request_with_capabilities(&batch.request, &capabilities).unwrap();
@@ -658,6 +672,7 @@ async fn persisted_opencode_pages_preserve_order_and_expose_projection_limits() 
         prior_findings: Vec::new(),
         validated_prior_findings: Default::default(),
         carried_comparisons: Vec::new(),
+        ..Default::default()
     };
     advance_assessment_page(
         &mut cursor,

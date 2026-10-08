@@ -264,11 +264,10 @@ fn native_same_turn_read_order_retains_exact_long_action_ranges() {
         .iter()
         .filter(|comparison| comparison.reference.action_id == action.reference.id)
         .collect::<Vec<_>>();
-    assert!(
-        comparisons
-            .iter()
-            .any(|comparison| comparison.action_text_start > 0)
-    );
+    assert_eq!(comparisons.len(), 1);
+    assert_eq!(comparisons[0].action_text_start, 0);
+    assert_eq!(comparisons[0].action_text_end, action.text.len());
+    assert_eq!(comparisons[0].action.text, command);
     for comparison in comparisons {
         let excerpt = comparison
             .source_binding

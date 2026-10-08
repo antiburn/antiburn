@@ -1013,10 +1013,17 @@ pub struct ChecksCategoryPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChecksReviewCoveragePayload {
+    /// Terminal review targets, including uncertain answers.
     pub reviewed: u64,
+    /// All review targets. Unknown when any applicable session has a missing or capped inventory.
     pub total: Option<u64>,
-    pub uncertain: u64,
-    pub pending: u64,
+    /// Reviewed targets with an uncertain answer. This count is a subset of `reviewed`.
+    pub uncertain: Option<u64>,
+    /// Targets without a terminal answer. This count does not promise another review.
+    pub pending: Option<u64>,
+    /// Reviewed targets that wait for task completion, not for a review answer.
+    pub pending_completion: Option<u64>,
+    /// True only when work can continue and the check is queued or running.
     pub continuing: bool,
 }
 

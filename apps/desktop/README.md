@@ -127,7 +127,7 @@ And for the shell:
 cd apps/desktop/src-tauri
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo nextest run
 ```
 
 To inspect analytics requests locally, start the print-only loopback collector
@@ -190,7 +190,7 @@ engine. Release and dependency checks run through the required CI gate.
 
 Ignored Instructions uses the configured Jev, Ollama, Cloudflare, or Custom
 connection, separate from analytics. Hosted requests can incur charges. Its
-default sample is 1,024 high-priority rule/action pairs per review;
+default turn selects up to eight high-priority rule/action pairs;
 it is not exhaustive or a spending cap.
 Meaningful word overlap, tool names, literal paths, risk, and recency help rank
 pairs; rule and source diversity and low-overlap probes keep the sample from
@@ -205,11 +205,10 @@ without an authoritative snapshot. Clean means no finding among sampled
 comparisons, not that all content is safe. Evidence gaps and provider errors
 have separate outcomes and do not count as Clean. About 60 seconds after worker
 start for an ordinary session is a goal, not a guarantee. Each pass may use
-several paid requests; 1,024 pairs is not a cost cap. A dispatched request with
-an unknown outcome can trigger up to three total dispatch attempts while Antiburn
-tries to recover the result. An earlier attempt may already have incurred a
-charge. If the result remains unknown after those attempts, Antiburn blocks
-further dispatch of that work.
+at most two dispatch attempts per turn; the target limit is not a cost cap.
+Retryable transport failures have at most three persisted attempts total.
+An unknown-delivery outcome blocks automatic redispatch when safe reconciliation
+is unavailable. An earlier attempt may already have incurred a charge.
 The source and finding limits are in
 [`session-coverage.md`](../../docs/session-coverage.md) and
 [`check-coverage.md`](../../docs/check-coverage.md). The

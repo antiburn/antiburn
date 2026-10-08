@@ -5,6 +5,425 @@ use antiburn_local::analysis::jev::JevCheck;
 use antiburn_local::checks::sampling::{Candidate, SamplingLimits, SamplingProgress, StableId};
 use antiburn_local::checks::skill_opportunities::SkillUseLifecycle;
 
+fn native_skill_fixture(
+    groups: usize,
+    skills_count: usize,
+) -> (
+    crate::scope_creep_worker::tests::NativeFixture,
+    super::PreparedSkillOpportunityInput,
+) {
+    let fixture = crate::scope_creep_worker::tests::NativeFixture::paged_groups(groups);
+    fixture
+        .store
+        .set_check_enabled(antiburn_local::checks::DetectorId::SkillOpportunities, true)
+        .unwrap();
+    fixture
+        .store
+        .capture_burn_check_boundaries(&[super::SKILL_OPPORTUNITIES_CHECK_ID], 0)
+        .unwrap();
+    let home = fixture.directory.path().join("home");
+    let workspace = fixture.directory.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    for index in 0..skills_count {
+        let path = home.join(format!(".opencode/skills/review-{index}/SKILL.md"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            format!("---\nname: review-{index}\ndescription: Review code and tests.\n---\n"),
+        )
+        .unwrap();
+    }
+    let mut candidate = fixture.publish();
+    candidate.session.cwd = Some(workspace.to_str().unwrap().to_owned());
+    fixture
+        .store
+        .lock()
+        .execute(
+            "UPDATE session SET cwd = ?1 WHERE session_id = ?2",
+            rusqlite::params![candidate.session.cwd, candidate.session.key.session_id],
+        )
+        .unwrap();
+    let config = crate::agent_config::ConfigContext::native(
+        antiburn_local::model::AgentKind::OpenCode,
+        &home,
+        Some(workspace),
+    );
+    let snapshot = fixture
+        .store
+        .load_smart_check_inputs(
+            &candidate.session.key,
+            candidate.published_fence,
+            candidate.source_generation,
+            crate::smart_check_inputs::DetectorInput::SkillOpportunities,
+        )
+        .unwrap();
+    let skills = fixture
+        .store
+        .load_smart_check_skill_inputs(snapshot, &config)
+        .unwrap();
+    let input = super::prepare(&candidate, skills, super::CHECK.evaluator_revision()).unwrap();
+    (fixture, input)
+}
+
+#[test]
+fn skill_descriptor_pages_persist_chronology_and_terminal_jobs_without_review() {
+    let (fixture, input) = native_skill_fixture(20, 16);
+    assert!(input.check.descriptor_count() > 256);
+    let mut cursor = super::restore_cursor(None, &input.durable.input_revision, 7);
+    cursor.sampling = Some(super::new_sampling_progress().unwrap());
+    super::enumerate_skill_turn(&input, &mut cursor).unwrap();
+    assert!(!cursor.inventory.complete);
+    assert!(!cursor.inventory.descriptors.is_empty());
+    assert!(cursor.inventory.descriptors.len() <= 256);
+    let chronology = input
+        .check
+        .descriptor_chronology(&cursor.inventory)
+        .unwrap();
+    assert_eq!(chronology.len(), cursor.inventory.descriptors.len());
+    cursor.sampling.as_mut().unwrap().begin_run();
+    let jobs: Vec<_> =
+        std::iter::from_fn(|| cursor.sampling.as_mut().unwrap().choose_job()).collect();
+    assert_eq!(jobs.len(), 4);
+    let mut capabilities =
+        antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default();
+    capabilities.request_body_bytes.value = Some(1);
+    let selected = input
+        .check
+        .prepare_inventory_sampled(
+            &cursor.inventory,
+            &input.check.session_context(),
+            &capabilities,
+            &jobs,
+        )
+        .unwrap();
+    assert_eq!(selected.prepared.comparisons.len(), 4);
+    assert!(selected.work_items.is_empty());
+    let gap = input.check.reduce(&selected, &[], false).unwrap();
+    assert!(
+        gap.decisions
+            .iter()
+            .all(|decision| decision.judgments.is_none())
+    );
+    cursor.result = Some(gap);
+    for job in &jobs {
+        cursor
+            .sampling
+            .as_mut()
+            .unwrap()
+            .terminate_candidate(job)
+            .unwrap();
+    }
+    let now = crate::jev::worker::unix_now();
+    fixture
+        .store
+        .queue_burn_check_assessment(&input.durable, now, super::POLICY.idle_secs)
+        .unwrap();
+    fixture
+        .store
+        .claim_burn_check_assessment(
+            &input.durable,
+            now,
+            super::POLICY.lease_secs,
+            super::POLICY.idle_secs,
+        )
+        .unwrap();
+    super::save_scheduling(&fixture.store, &input, &cursor).unwrap();
+    fixture
+        .store
+        .save_burn_check_checkpoint(
+            &input.durable,
+            &serde_json::to_string(&cursor).unwrap(),
+            None,
+            now,
+            super::POLICY.lease_secs,
+            super::POLICY.idle_secs,
+        )
+        .unwrap();
+    fixture
+        .store
+        .release_failed_burn_check_lease(&input.durable, "continuing", now + 1)
+        .unwrap();
+    let reopened = crate::store::Store::open(fixture.directory.path()).unwrap();
+    let counts: (Option<usize>, usize, usize) = reopened.lock().query_row(
+        "SELECT eligible_targets, reviewed_targets, runnable_targets FROM burn_check_assessment WHERE check_id = ?1",
+        [super::SKILL_OPPORTUNITIES_CHECK_ID], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+    assert_eq!(counts, (None, 0, cursor.inventory.descriptors.len() - 4));
+    let saved = reopened
+        .burn_check_assessment(&input.durable.key, super::SKILL_OPPORTUNITIES_CHECK_ID)
+        .unwrap()
+        .unwrap();
+    let mut restored = super::restore_cursor(Some(&saved), &input.durable.input_revision, 99);
+    assert_eq!(restored.inventory, cursor.inventory);
+    let first_descriptors = restored.inventory.descriptors.clone();
+    super::enumerate_skill_turn(&input, &mut restored).unwrap();
+    assert!(
+        restored
+            .inventory
+            .descriptors
+            .starts_with(&first_descriptors)
+    );
+    assert!(restored.inventory.descriptors.len() - first_descriptors.len() <= 256);
+    while !restored.inventory.complete {
+        super::enumerate_skill_turn(&input, &mut restored).unwrap();
+    }
+    assert_eq!(
+        restored.inventory.descriptors.len(),
+        input.check.descriptor_count()
+    );
+    assert_eq!(
+        restored
+            .sampling
+            .as_ref()
+            .unwrap()
+            .coverage(input.check.sampling_identity())
+            .unwrap()
+            .completed,
+        0
+    );
+    assert_eq!(
+        restored
+            .sampling
+            .as_ref()
+            .unwrap()
+            .runnable_count(input.check.sampling_identity()),
+        input.check.descriptor_count() - 4
+    );
+    super::save_scheduling(&reopened, &input, &restored).unwrap();
+    let counts: (Option<usize>, usize, usize) = reopened.lock().query_row(
+        "SELECT eligible_targets, reviewed_targets, runnable_targets FROM burn_check_assessment WHERE check_id = ?1",
+        [super::SKILL_OPPORTUNITIES_CHECK_ID], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+    assert_eq!(
+        counts,
+        (
+            Some(input.check.descriptor_count()),
+            0,
+            input.check.descriptor_count() - 4
+        )
+    );
+    let mut empty_partial = super::SkillCursor {
+        input_revision: input.durable.input_revision.clone(),
+        sampling: Some(super::new_sampling_progress().unwrap()),
+        ..Default::default()
+    };
+    empty_partial
+        .sampling
+        .as_mut()
+        .unwrap()
+        .synchronize_ordered(
+            input.check.sampling_identity(),
+            input.check.sampling_epoch(),
+            &[],
+            &[],
+        )
+        .unwrap();
+    super::save_scheduling(&reopened, &input, &empty_partial).unwrap();
+    let counts: (Option<usize>, usize, usize) = reopened.lock().query_row(
+        "SELECT eligible_targets, reviewed_targets, runnable_targets FROM burn_check_assessment WHERE check_id = ?1",
+        [super::SKILL_OPPORTUNITIES_CHECK_ID], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+    assert_eq!(counts, (None, 0, 1));
+}
+
+#[test]
+fn mocked_authentication_rejection_preserves_skill_batch_and_replacement_generation() {
+    use antiburn_local::analysis::jev::{
+        JevError, JevRunProgress, admit_jev_orchestration, run_jev_check_prepared,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for replace_generation in [false, true] {
+        let (fixture, input) = native_skill_fixture(2, 3);
+        let capabilities =
+            antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default();
+        let (handle, generation) = active_handle();
+        let mut cursor = super::restore_cursor(None, &input.durable.input_revision, generation);
+        cursor.sampling = Some(super::new_sampling_progress().unwrap());
+        super::enumerate_skill_turn(&input, &mut cursor).unwrap();
+        assert!(cursor.inventory.complete);
+        assert!(cursor.inventory.descriptors.len() > 4);
+        cursor.sampling.as_mut().unwrap().begin_run();
+        let jobs: Vec<_> =
+            std::iter::from_fn(|| cursor.sampling.as_mut().unwrap().choose_job()).collect();
+        assert_eq!(jobs.len(), 4);
+        cursor.active_job = jobs.first().cloned();
+        cursor.batch_jobs = jobs.iter().skip(1).cloned().collect();
+        let mut plan = input
+            .check
+            .prepare_inventory_sampled(
+                &cursor.inventory,
+                &input.check.session_context(),
+                &capabilities,
+                &jobs,
+            )
+            .unwrap();
+        assert_eq!(plan.work_items.len(), 4);
+        cursor.active_plan = Some(plan.clone());
+        let now = crate::jev::worker::unix_now();
+        fixture
+            .store
+            .queue_burn_check_assessment(&input.durable, now, super::POLICY.idle_secs)
+            .unwrap();
+        fixture
+            .store
+            .claim_burn_check_assessment(
+                &input.durable,
+                now,
+                super::POLICY.lease_secs,
+                super::POLICY.idle_secs,
+            )
+            .unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dispatches = AtomicUsize::new(0);
+        let terminal_probes = AtomicUsize::new(0);
+        let mut connection = handle.system_one_connection();
+        connection
+            .model_revision
+            .clone_from(&capabilities.model_revision);
+        let outcome = runtime.block_on(async {
+            run_jev_check_prepared(
+                input.check.as_ref(),
+                &input.check.session_context(),
+                &mut plan,
+                JevRunProgress::default(),
+                admit_jev_orchestration().await.unwrap(),
+                |batch| {
+                    dispatches.fetch_add(1, Ordering::SeqCst);
+                    crate::scope_creep_worker::tests::mark_authentication_rejected_batch(
+                        &fixture.store,
+                        &input.durable,
+                        &connection,
+                        &batch,
+                    );
+                    async { Err(JevError::AuthenticationRejected) }
+                },
+                |_| Ok(()),
+            )
+            .await
+            .unwrap()
+        });
+        assert_eq!(outcome.failure, Some(JevError::AuthenticationRejected));
+        cursor.run_progress = outcome.progress;
+        cursor.result = Some(outcome.result);
+        super::save_scheduling(&fixture.store, &input, &cursor).unwrap();
+        fixture
+            .store
+            .save_burn_check_checkpoint(
+                &input.durable,
+                &serde_json::to_string(&cursor).unwrap(),
+                Some(&cursor.run_progress),
+                now,
+                super::POLICY.lease_secs,
+                super::POLICY.idle_secs,
+            )
+            .unwrap();
+        for job in &jobs {
+            let mut target = plan.clone();
+            target.work_items.retain(|item| {
+                StableId::new("skill-opportunities", &[item.id.as_bytes()]) == job.candidate
+            });
+            assert_eq!(
+                crate::scope_creep_worker::dispatch_readiness(
+                    &fixture.store,
+                    &handle,
+                    &input.durable,
+                    &capabilities,
+                    &target,
+                    &cursor.run_progress
+                )
+                .unwrap(),
+                crate::store::BurnCheckRequestAdmission::Exhausted
+            );
+            assert!(
+                !crate::scope_creep_worker::target_failure_is_terminal(
+                    outcome.failure.as_ref().unwrap(),
+                    || {
+                        terminal_probes.fetch_add(1, Ordering::SeqCst);
+                        crate::scope_creep_worker::dispatch_readiness(
+                            &fixture.store,
+                            &handle,
+                            &input.durable,
+                            &capabilities,
+                            &target,
+                            &cursor.run_progress,
+                        )
+                    }
+                )
+                .unwrap()
+            );
+        }
+        if replace_generation {
+            handle
+                .set_system_one_connection(
+                    crate::jev::config::SystemOneConnection::jev_default(),
+                    Some("replacement-key".into()),
+                )
+                .unwrap();
+        }
+        let result_json = super::publication_json(&input, cursor.result.as_ref().unwrap()).unwrap();
+        handle
+            .with_current_generation(generation, || {
+                fixture.store.fail_burn_check_assessment_with_result(
+                    &input.durable,
+                    &crate::store::BurnCheckFailure {
+                        error_category: "authentication_rejected",
+                        result_json: &result_json,
+                        progress_json: &serde_json::to_string(&cursor).unwrap(),
+                        retry_at_epoch: None,
+                    },
+                    now,
+                    super::POLICY.idle_secs,
+                )
+            })
+            .transpose()
+            .unwrap();
+        assert_eq!(
+            handle
+                .reject_authentication(&fixture.store, generation)
+                .unwrap(),
+            !replace_generation
+        );
+        assert_eq!(dispatches.load(Ordering::SeqCst), 1);
+        assert_eq!(terminal_probes.load(Ordering::SeqCst), 0);
+        assert_eq!(handle.authentication_rejected(), !replace_generation);
+        assert!(!handle.key_is_current(generation));
+        assert_eq!(handle.is_available(), replace_generation);
+        assert_eq!(
+            fixture
+                .store
+                .internal_value("internal:typesafeAuthRejectedV1")
+                .as_deref(),
+            (!replace_generation).then_some("true")
+        );
+        let reopened = crate::store::Store::open(fixture.directory.path()).unwrap();
+        let saved = reopened
+            .burn_check_assessment(&input.durable.key, super::SKILL_OPPORTUNITIES_CHECK_ID)
+            .unwrap()
+            .unwrap();
+        let restored =
+            super::restore_cursor(Some(&saved), &input.durable.input_revision, generation + 1);
+        assert_eq!(restored.active_job, cursor.active_job);
+        assert_eq!(restored.batch_jobs, cursor.batch_jobs);
+        assert_eq!(restored.active_plan, cursor.active_plan);
+        assert_eq!(restored.run_progress, cursor.run_progress);
+        assert_eq!(
+            restored
+                .sampling
+                .as_ref()
+                .unwrap()
+                .runnable_count(input.check.sampling_identity()),
+            input.check.descriptor_count()
+        );
+        assert_eq!(
+            restored
+                .sampling
+                .as_ref()
+                .unwrap()
+                .coverage(input.check.sampling_identity())
+                .unwrap()
+                .completed,
+            0
+        );
+    }
+}
+
 #[test]
 fn native_skill_requests_and_document_selections_prepare_without_asserting_success() {
     use crate::scope_creep_worker::tests::native_sources;
@@ -298,6 +717,113 @@ fn native_skill_requests_and_document_selections_prepare_without_asserting_succe
                 .claim_burn_check_assessment(&first.durable, 1000, 300, 180)
                 .unwrap()
         );
+        let mut interrupted_sampling = super::new_sampling_progress().unwrap();
+        super::synchronize_sampling(&first, &mut interrupted_sampling).unwrap();
+        interrupted_sampling.begin_run();
+        let interrupted_jobs: Vec<_> =
+            std::iter::from_fn(|| interrupted_sampling.choose_job()).collect();
+        let interrupted_plan =
+            super::prepare_sampled(&first, &plan.capabilities, &interrupted_jobs).unwrap();
+        let selected_answer = partial_answers
+            .iter()
+            .find(|answer| {
+                StableId::new("skill-opportunities", &[answer.work_item_id.as_bytes()])
+                    == interrupted_jobs[0].candidate
+            })
+            .unwrap()
+            .clone();
+        let accepted = first
+            .check
+            .reduce(
+                &interrupted_plan,
+                std::slice::from_ref(&selected_answer),
+                false,
+            )
+            .unwrap();
+        first
+            .check
+            .record_sampling_result(&mut interrupted_sampling, &interrupted_jobs[0], &accepted)
+            .unwrap();
+        let mut inventory =
+            antiburn_local::checks::skill_opportunities::SkillDescriptorInventory::default();
+        first.check.enumerate_descriptors(&mut inventory).unwrap();
+        assert!(inventory.complete);
+        let cursor = super::SkillCursor {
+            input_revision: first.durable.input_revision.clone(),
+            provider_generation: 7,
+            sampling: Some(interrupted_sampling),
+            active_job: interrupted_jobs.first().cloned(),
+            batch_jobs: interrupted_jobs.iter().skip(1).cloned().collect(),
+            active_plan: Some(interrupted_plan.clone()),
+            result: Some(accepted),
+            inventory,
+            run_progress: antiburn_local::analysis::jev::JevRunProgress {
+                results: std::collections::BTreeMap::from([(
+                    selected_answer.work_item_id.clone(),
+                    selected_answer,
+                )]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(super::save_scheduling(&store, &first, &cursor).unwrap());
+        assert!(
+            store
+                .save_burn_check_checkpoint(
+                    &first.durable,
+                    &serde_json::to_string(&cursor).unwrap(),
+                    Some(&cursor.run_progress),
+                    1001,
+                    300,
+                    180
+                )
+                .unwrap()
+        );
+        store
+            .release_failed_burn_check_lease(&first.durable, "continuing", 1002)
+            .unwrap();
+        let reopened = crate::store::Store::open(directory.path()).unwrap();
+        let saved = reopened
+            .burn_check_assessment(&first.durable.key, super::SKILL_OPPORTUNITIES_CHECK_ID)
+            .unwrap()
+            .unwrap();
+        let restored = super::restore_cursor(Some(&saved), &first.durable.input_revision, 99);
+        assert_eq!(restored.active_job, cursor.active_job);
+        assert_eq!(restored.batch_jobs, cursor.batch_jobs);
+        assert_eq!(restored.active_plan, Some(interrupted_plan));
+        assert_eq!(restored.run_progress, cursor.run_progress);
+        assert_eq!(
+            restored
+                .sampling
+                .as_ref()
+                .unwrap()
+                .coverage(first.check.sampling_identity())
+                .unwrap()
+                .completed,
+            1
+        );
+        assert_eq!(
+            restored
+                .sampling
+                .as_ref()
+                .unwrap()
+                .runnable_count(first.check.sampling_identity()),
+            jobs.len() - 1
+        );
+        let counts = reopened.lock().query_row(
+            "SELECT eligible_targets, reviewed_targets, runnable_targets FROM burn_check_assessment WHERE check_id = ?1",
+            [super::SKILL_OPPORTUNITIES_CHECK_ID], |row| Ok((row.get::<_, usize>(0)?, row.get::<_, usize>(1)?, row.get::<_, usize>(2)?))).unwrap();
+        assert_eq!(counts, (jobs.len(), 1, jobs.len() - 1));
+        assert!(
+            store
+                .queue_burn_check_assessment(&first.durable, 1002, 180)
+                .unwrap()
+        );
+        assert!(
+            store
+                .claim_burn_check_assessment(&first.durable, 1002, 300, 180)
+                .unwrap()
+        );
         assert!(
             store
                 .complete_burn_check_assessment(
@@ -568,8 +1094,8 @@ fn evaluator_and_restored_cursor_bind_every_engine_revision() {
     };
     assert!(
         super::restore_cursor(Some(&saved), "input", 1)
-            .input_revision
-            .is_empty()
+            .sampling
+            .is_none()
     );
 }
 
@@ -900,7 +1426,7 @@ fn checkpoint_commit_holds_provider_then_inventory_guards_through_store_write() 
 }
 
 #[test]
-fn durable_cursor_survives_reopen_and_rejects_provider_or_semantic_changes() {
+fn durable_cursor_survives_process_generation_and_reopens_changed_inputs() {
     let directory = tempfile::tempdir().unwrap();
     let store = crate::store::Store::open(directory.path()).unwrap();
     let input = durable_input(&store);
@@ -964,10 +1490,9 @@ fn durable_cursor_survives_reopen_and_rejects_provider_or_semantic_changes() {
             .completed,
         0
     );
-    assert!(
-        super::restore_cursor(Some(&saved), &input.input_revision, 8)
-            .active_job
-            .is_none()
+    assert_eq!(
+        super::restore_cursor(Some(&saved), &input.input_revision, 8).active_job,
+        Some(job.clone())
     );
     for changed in ["inventory-changed", "use-changed", "context-changed"] {
         assert!(

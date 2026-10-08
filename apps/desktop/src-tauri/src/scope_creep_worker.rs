@@ -2,6 +2,7 @@
 //! OpenCode SQLite v2 proves current retained root content, not original retention.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use antiburn_local::analysis::SourceFormat;
 use antiburn_local::analysis::jev::capabilities::ModelCapabilities;
@@ -9,9 +10,11 @@ use antiburn_local::analysis::jev::{
     JevCheck, JevCheckPlan, JevError, JevRunProgress, JevUsage, admit_jev_orchestration,
 };
 use antiburn_local::checks::sampling::{SamplingJob, SamplingLimits, SamplingProgress, StableId};
+#[cfg(test)]
+use antiburn_local::checks::scope_creep::ScopeQuestion;
 use antiburn_local::checks::scope_creep::{
     DECISION_THRESHOLD, REVISIONS, ScopeAnswer, ScopeCreepCheck, ScopeCreepFinding,
-    ScopeCreepPrepared, ScopeCreepResult, ScopeCreepStatus, ScopeQuestion,
+    ScopeCreepPrepared, ScopeCreepResult, ScopeCreepStatus, ScopeDescriptorInventory,
 };
 use rusqlite::{OptionalExtension, params};
 use tauri::Emitter;
@@ -28,7 +31,7 @@ use crate::store::{
 };
 
 pub(crate) const CHECK_ID: &str = "scope_creep";
-const CURSOR_REVISION: u32 = 2;
+const CURSOR_REVISION: u32 = 4;
 const POLICY: CheckPolicy = CheckPolicy {
     idle_secs: 180,
     lease_secs: 300,
@@ -37,6 +40,13 @@ const POLICY: CheckPolicy = CheckPolicy {
 
 pub(crate) struct ScopeCreepDescriptor;
 pub(crate) const CHECK: ScopeCreepDescriptor = ScopeCreepDescriptor;
+
+struct CachedScopeCheck {
+    key: String,
+    check: Arc<ScopeCreepCheck>,
+}
+
+static SOURCE_CHECK: LazyLock<Mutex<Option<CachedScopeCheck>>> = LazyLock::new(|| Mutex::new(None));
 
 impl JevCheckDescriptor for ScopeCreepDescriptor {
     fn id(&self) -> &'static str {
@@ -69,11 +79,14 @@ struct AssessmentCursor {
     run_started: bool,
     blocked_fit_key: Option<String>,
     accepted_request_usage: BTreeMap<String, JevUsage>,
+    inventory: ScopeDescriptorInventory,
+    prepared: Option<ScopeCreepPrepared>,
+    context_epoch: Option<StableId>,
 }
 
 pub(crate) struct PreparedInput {
     pub(crate) durable: BurnCheckInput,
-    pub(crate) check: ScopeCreepCheck,
+    pub(crate) check: Arc<ScopeCreepCheck>,
     pub(crate) plan: JevCheckPlan<ScopeCreepPrepared>,
     snapshot_revision: String,
     configuration_fence: String,
@@ -214,7 +227,7 @@ fn ignored_instruction_work_ids(
         .collect())
 }
 
-pub(crate) fn prepare(
+fn prepare_descriptor_input(
     candidate: &BurnCheckCandidate,
     snapshot: SmartCheckInputSnapshot,
     capabilities: &ModelCapabilities,
@@ -232,11 +245,66 @@ pub(crate) fn prepare(
             InputUnavailable::IncompleteEvidence,
         ));
     }
-    let check = ScopeCreepCheck::new(snapshot.scope_creep_input(ignored_work.clone())?)
-        .map_err(InputLoadError::Preparation)?;
-    let plan = check
-        .prepare_with_capabilities(check.context(), capabilities)
-        .map_err(InputLoadError::Preparation)?;
+    let cache_key = identity(
+        "scope-source-check-v1",
+        &(
+            snapshot.input_revision(),
+            (
+                &candidate.session.key.environment_key,
+                &candidate.session.key.agent,
+                &candidate.session.key.session_id,
+            ),
+            candidate.incarnation,
+            candidate.source_generation,
+            candidate.published_fence,
+            &candidate.source_fingerprint,
+            &ignored_work,
+        ),
+    )
+    .map_err(InputLoadError::Serialization)?;
+    let check = {
+        let mut cache = SOURCE_CHECK
+            .lock()
+            .map_err(|_| InputLoadError::Preparation(JevError::InvalidCheckContext))?;
+        if let Some(cached) = cache.as_ref().filter(|cached| cached.key == cache_key) {
+            Arc::clone(&cached.check)
+        } else {
+            let check = Arc::new(
+                ScopeCreepCheck::new(snapshot.scope_creep_input(ignored_work.clone())?)
+                    .map_err(InputLoadError::Preparation)?,
+            );
+            *cache = Some(CachedScopeCheck {
+                key: cache_key,
+                check: Arc::clone(&check),
+            });
+            check
+        }
+    };
+    let scope_digest = check.context().check_context["scope_digest"]
+        .as_str()
+        .ok_or(InputLoadError::Preparation(JevError::InvalidCheckContext))?
+        .to_owned();
+    let plan = JevCheckPlan {
+        check_id: CHECK_ID.into(),
+        input_revision: check.context().input_revision.clone(),
+        revisions: REVISIONS,
+        work_items: Vec::new(),
+        skipped_item_ids: Vec::new(),
+        coverage: Default::default(),
+        capabilities: capabilities.clone(),
+        shared_context: None,
+        prepared: ScopeCreepPrepared {
+            scope_digest,
+            semantic_epoch: check
+                .semantic_epoch(capabilities)
+                .map_err(InputLoadError::Preparation)?,
+            source_generation: candidate.source_generation,
+            publication_fence: candidate.published_fence,
+            groups: Vec::new(),
+            scope_bindings: snapshot.scope().user_context().evidence,
+            session_limitation: None,
+        },
+    };
     let evaluator_revision = CHECK.evaluator_revision();
     let fit_key = identity(
         "scope-fit-v1",
@@ -294,7 +362,7 @@ pub(crate) fn prepare(
     })
 }
 
-pub(crate) fn load_input(
+fn load_descriptor_input(
     store: &Store,
     candidate: &BurnCheckCandidate,
     capabilities: &ModelCapabilities,
@@ -316,7 +384,43 @@ pub(crate) fn load_input(
             configuration_fence(&connection).map_err(InputLoadError::Storage)?,
         )
     };
-    prepare(&candidate, snapshot, capabilities, ignored, configuration)
+    prepare_descriptor_input(&candidate, snapshot, capabilities, ignored, configuration)
+}
+
+#[cfg(test)]
+pub(crate) fn prepare(
+    candidate: &BurnCheckCandidate,
+    snapshot: SmartCheckInputSnapshot,
+    capabilities: &ModelCapabilities,
+    ignored_work: BTreeSet<String>,
+    configuration_fence: String,
+) -> Result<PreparedInput, InputLoadError> {
+    let mut input = prepare_descriptor_input(
+        candidate,
+        snapshot,
+        capabilities,
+        ignored_work,
+        configuration_fence,
+    )?;
+    input.plan = input
+        .check
+        .prepare_with_capabilities(input.check.context(), capabilities)
+        .map_err(InputLoadError::Preparation)?;
+    Ok(input)
+}
+
+#[cfg(test)]
+pub(crate) fn load_input(
+    store: &Store,
+    candidate: &BurnCheckCandidate,
+    capabilities: &ModelCapabilities,
+) -> Result<PreparedInput, InputLoadError> {
+    let mut input = load_descriptor_input(store, candidate, capabilities)?;
+    input.plan = input
+        .check
+        .prepare_with_capabilities(input.check.context(), capabilities)
+        .map_err(InputLoadError::Preparation)?;
+    Ok(input)
 }
 
 fn new_sampling() -> anyhow::Result<SamplingProgress> {
@@ -338,17 +442,24 @@ fn restore_cursor(
         .and_then(|saved| serde_json::from_str::<AssessmentCursor>(&saved.progress_json).ok())
         .filter(|cursor| cursor.revision == CURSOR_REVISION);
     match previous {
-        Some(cursor)
-            if cursor.input_revision == input.input_revision
-                && cursor.provider_generation == generation =>
-        {
+        Some(mut cursor) if cursor.input_revision == input.input_revision => {
+            cursor.provider_generation = generation;
             cursor
         }
-        previous => AssessmentCursor {
+        Some(mut cursor) => {
+            cursor.input_revision = input.input_revision.clone();
+            cursor.provider_generation = generation;
+            cursor.active_job = None;
+            cursor.run_progress = JevRunProgress::default();
+            cursor.run_started = false;
+            cursor.run_finished = false;
+            cursor.blocked_fit_key = None;
+            cursor
+        }
+        None => AssessmentCursor {
             revision: CURSOR_REVISION,
             input_revision: input.input_revision.clone(),
             provider_generation: generation,
-            sampling: previous.and_then(|cursor| cursor.sampling),
             ..Default::default()
         },
     }
@@ -413,7 +524,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         events,
     } = execution;
     let capabilities = handle.resolve_capabilities(key_generation).await?;
-    let input = match load_input(store, candidate, &capabilities) {
+    let mut input = match load_descriptor_input(store, candidate, &capabilities) {
         Ok(input) => input,
         Err(error) => {
             tracing::debug!(event = "scope_creep_input_unavailable", error = ?error);
@@ -439,22 +550,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     if cursor.sampling.is_none() {
         cursor.sampling = Some(new_sampling()?);
     }
-    cursor
-        .sampling
-        .as_mut()
-        .expect("initialized")
-        .synchronize(
-            ScopeCreepCheck::check_identity(),
-            StableId::new(
-                "scope-shell-epoch",
-                &[
-                    input.durable.input_revision.as_bytes(),
-                    &key_generation.to_be_bytes(),
-                ],
-            ),
-            &ScopeCreepCheck::sampling_candidates(&input.plan),
-        )
-        .map_err(|error| anyhow::anyhow!("scope sampling inventory rejected: {error:?}"))?;
+    enumerate_scope_turn(&mut input, &mut cursor)?;
     if !store.queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)?
         || !store.claim_burn_check_assessment(
             &input.durable,
@@ -465,31 +561,8 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     {
         return Ok(());
     }
-    if cursor.result.is_none() {
-        cursor.result = Some(input.check.reduce(&input.plan, &[], false)?);
-    }
-    if !input.plan.prepared.groups.is_empty()
-        && input
-            .plan
-            .prepared
-            .groups
-            .iter()
-            .all(|group| group.limitation.as_deref() == Some("work_context_too_large"))
-    {
-        cursor.blocked_fit_key = Some(input.fit_key.clone());
-        handle
-            .with_current_generation(key_generation, || {
-                if save_failure(store, &input, &cursor, "work_context_too_large", None)? {
-                    let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
-                    record_assessment(
-                        app,
-                        candidate.historical,
-                        crate::analytics::event::SmartCheckAssessmentOutcome::Abstained,
-                    );
-                }
-                Ok::<_, anyhow::Error>(())
-            })
-            .transpose()?;
+    save_scheduling(store, &input, &cursor)?;
+    if !save_cursor(store, &input.durable, &cursor)? {
         return Ok(());
     }
     if !cursor.run_started || cursor.run_finished {
@@ -512,8 +585,98 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         {
             return Ok(());
         }
-        let mut plan =
-            ScopeCreepCheck::select_candidates(&input.plan, &BTreeSet::from([job.candidate]));
+        let mut plan = input.check.prepare_descriptors(
+            &cursor.inventory,
+            &capabilities,
+            &BTreeSet::from([job.candidate]),
+        )?;
+        for group in &plan.prepared.groups {
+            if let Some(current) = input
+                .plan
+                .prepared
+                .groups
+                .iter_mut()
+                .find(|current| current.id == group.id)
+            {
+                *current = group.clone();
+            }
+        }
+        let prepared = cursor
+            .prepared
+            .get_or_insert_with(|| input.plan.prepared.clone());
+        for group in &plan.prepared.groups {
+            if let Some(current) = prepared
+                .groups
+                .iter_mut()
+                .find(|current| current.id == group.id)
+            {
+                *current = group.clone();
+            }
+        }
+        if plan.work_items.is_empty() {
+            let gap = input.check.reduce(&plan, &[], false)?;
+            merge_result(cursor.result.as_mut().expect("initialized"), gap, &plan);
+            update_result_counts(&mut cursor, &input);
+        }
+        if cursor
+            .result
+            .as_ref()
+            .expect("initialized")
+            .decisions
+            .iter()
+            .any(|decision| {
+                StableId::new("scope_work", &[decision.group_id.as_bytes()]) == job.candidate
+                    && decision.outcome.is_some()
+            })
+        {
+            record_completion(
+                cursor.sampling.as_mut().expect("initialized"),
+                &job,
+                cursor.result.as_ref().expect("initialized"),
+                &plan,
+            )?;
+            cursor.active_job = None;
+            cursor.run_progress = JevRunProgress::default();
+            save_cursor(store, &input.durable, &cursor)?;
+            save_scheduling(store, &input, &cursor)?;
+            continue;
+        }
+        match dispatch_readiness(
+            store,
+            handle,
+            &input.durable,
+            &capabilities,
+            &plan,
+            &cursor.run_progress,
+        )? {
+            crate::store::BurnCheckRequestAdmission::Exhausted
+            | crate::store::BurnCheckRequestAdmission::Unresolved => {
+                cursor
+                    .sampling
+                    .as_mut()
+                    .expect("initialized")
+                    .terminate_candidate(&job)
+                    .map_err(|error| anyhow::anyhow!("scope termination rejected: {error:?}"))?;
+                cursor.active_job = None;
+                cursor.run_progress = JevRunProgress::default();
+                save_cursor(store, &input.durable, &cursor)?;
+                save_scheduling(store, &input, &cursor)?;
+                continue;
+            }
+            crate::store::BurnCheckRequestAdmission::Deferred => {
+                save_cursor(store, &input.durable, &cursor)?;
+                store.release_failed_burn_check_lease(
+                    &input.durable,
+                    "continuing",
+                    store
+                        .burn_check_next_attempt_at(&input.durable)?
+                        .unwrap_or(unix_now() + 1),
+                )?;
+                return Ok(());
+            }
+            crate::store::BurnCheckRequestAdmission::Stale => return Ok(()),
+            crate::store::BurnCheckRequestAdmission::Admitted => {}
+        }
         let progress = std::mem::take(&mut cursor.run_progress);
         let orchestration = admit_jev_orchestration().await?;
         let outcome = run_prepared_check(
@@ -528,7 +691,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 policy: POLICY,
                 capabilities: &capabilities,
             },
-            &input.check,
+            input.check.as_ref(),
             input.check.context(),
             &mut plan,
             progress,
@@ -538,7 +701,12 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 serde_json::to_string(&cursor).map_err(|_| JevError::ProgressStorageFailure)
             },
         )
-        .await?;
+        .await;
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(JevError::Cancelled) if handle.turn_exhausted() => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
         if !handle.key_is_current(key_generation) {
             store.supersede_burn_check_assessment(&input.durable, unix_now())?;
             return Ok(());
@@ -557,6 +725,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             cursor.sampling.as_mut().expect("initialized"),
             &job,
             &outcome.result,
+            &plan,
         )?;
         merge_result(
             cursor.result.as_mut().expect("initialized"),
@@ -564,7 +733,45 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             &plan,
         );
         update_result_counts(&mut cursor, &input);
+        save_cursor(store, &input.durable, &cursor)?;
+        save_scheduling(store, &input, &cursor)?;
         if let Some(error) = outcome.failure {
+            if matches!(error, JevError::Cancelled) && handle.turn_exhausted() {
+                store.release_failed_burn_check_lease(
+                    &input.durable,
+                    "continuing",
+                    unix_now() + 1,
+                )?;
+                return Ok(());
+            }
+            if target_failure_is_terminal(&error, || {
+                dispatch_readiness(
+                    store,
+                    handle,
+                    &input.durable,
+                    &capabilities,
+                    &plan,
+                    &cursor.run_progress,
+                )
+            })? && !cursor
+                .sampling
+                .as_ref()
+                .expect("initialized")
+                .completed_ids(ScopeCreepCheck::check_identity())
+                .contains(&job.candidate)
+            {
+                cursor
+                    .sampling
+                    .as_mut()
+                    .expect("initialized")
+                    .terminate_candidate(&job)
+                    .map_err(|error| anyhow::anyhow!("scope termination rejected: {error:?}"))?;
+                cursor.active_job = None;
+                cursor.run_progress = JevRunProgress::default();
+                save_cursor(store, &input.durable, &cursor)?;
+                save_scheduling(store, &input, &cursor)?;
+                continue;
+            }
             let rejected = matches!(error, JevError::AuthenticationRejected);
             let saved = handle
                 .with_current_generation(key_generation, || {
@@ -573,7 +780,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                         &input,
                         &cursor,
                         error_category(&error),
-                        Some(unix_now().saturating_add(POLICY.retry_delay_secs)),
+                        store.burn_check_next_attempt_at(&input.durable)?,
                     )?;
                     if published && !matches!(error, JevError::Cancelled) {
                         let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
@@ -621,14 +828,23 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
 }
 
 fn update_result_counts(cursor: &mut AssessmentCursor, input: &PreparedInput) {
-    let coverage = cursor
-        .sampling
-        .as_ref()
-        .expect("initialized")
-        .coverage(ScopeCreepCheck::check_identity())
-        .expect("synchronized");
     let result = cursor.result.as_mut().expect("initialized");
     result.coverage = input.plan.coverage.clone();
+    result.coverage.skipped_items = input
+        .plan
+        .prepared
+        .groups
+        .iter()
+        .filter(|group| group.window_ids.is_empty() && group.limitation.is_some())
+        .count();
+    result.coverage.limitations.extend(
+        input
+            .plan
+            .prepared
+            .groups
+            .iter()
+            .filter_map(|group| group.limitation.clone()),
+    );
     if result
         .decisions
         .iter()
@@ -639,15 +855,34 @@ fn update_result_counts(cursor: &mut AssessmentCursor, input: &PreparedInput) {
             .limitations
             .push("uncertain_decision".into());
     }
-    result.assessed_candidates = coverage.completed;
+    result.assessed_candidates = result
+        .decisions
+        .iter()
+        .filter(|decision| {
+            decision.outcome.is_some()
+                && input
+                    .plan
+                    .prepared
+                    .groups
+                    .iter()
+                    .any(|group| group.id == decision.group_id)
+        })
+        .count();
     result.remaining_candidates = input
         .plan
         .prepared
         .groups
         .len()
-        .saturating_sub(coverage.completed);
-    result.coverage.selected_items = coverage.completed;
-    result.coverage.not_selected_items = coverage.remaining;
+        .saturating_sub(result.assessed_candidates);
+    result.coverage.selected_items = result.assessed_candidates;
+    result.coverage.not_selected_items = result.remaining_candidates;
+    result.coverage.processing_limit_reached |= !cursor.inventory.complete;
+    if !cursor.inventory.complete {
+        result
+            .coverage
+            .limitations
+            .push("descriptor_enumeration_incomplete".into());
+    }
     if result.remaining_candidates > 0 {
         result
             .coverage
@@ -665,6 +900,370 @@ fn update_result_counts(cursor: &mut AssessmentCursor, input: &PreparedInput) {
         .values()
         .map(|usage| usage.output_tokens)
         .sum();
+}
+
+fn save_scheduling(
+    store: &Store,
+    input: &PreparedInput,
+    cursor: &AssessmentCursor,
+) -> anyhow::Result<bool> {
+    let (eligible, reviewed, runnable) = scope_scheduling_counts(input, cursor);
+    store.save_burn_check_scheduling(&input.durable, eligible, reviewed, runnable)
+}
+
+fn scope_scheduling_counts(
+    input: &PreparedInput,
+    cursor: &AssessmentCursor,
+) -> (Option<usize>, usize, usize) {
+    let sampling = cursor.sampling.as_ref().expect("initialized");
+    let coverage = sampling
+        .coverage(ScopeCreepCheck::check_identity())
+        .expect("synchronized");
+    let reviewed = cursor.result.as_ref().map_or(coverage.completed, |result| {
+        result
+            .decisions
+            .iter()
+            .filter(|decision| {
+                decision.outcome.is_some()
+                    && input
+                        .plan
+                        .prepared
+                        .groups
+                        .iter()
+                        .any(|group| group.id == decision.group_id)
+            })
+            .count()
+    });
+    (
+        cursor.inventory.complete.then_some(coverage.eligible),
+        reviewed,
+        sampling
+            .runnable_count(ScopeCreepCheck::check_identity())
+            .saturating_sub(reviewed.saturating_sub(coverage.completed))
+            .max(usize::from(!cursor.inventory.complete)),
+    )
+}
+
+fn enumerate_scope_turn(
+    input: &mut PreparedInput,
+    cursor: &mut AssessmentCursor,
+) -> anyhow::Result<()> {
+    input.check.enumerate_descriptors(&mut cursor.inventory)?;
+    let candidates = input
+        .check
+        .descriptor_candidates(&cursor.inventory, &input.plan.capabilities)?;
+    let engine_epoch = input.check.semantic_epoch(&input.plan.capabilities)?;
+    let epoch = StableId::new(
+        "scope-context-v2",
+        &[
+            String::from(engine_epoch).as_bytes(),
+            input.configuration_fence.as_bytes(),
+        ],
+    );
+    if cursor
+        .context_epoch
+        .is_some_and(|previous| previous != epoch)
+    {
+        cursor.result = None;
+        cursor.prepared = None;
+        cursor.active_job = None;
+        cursor.run_progress = JevRunProgress::default();
+        cursor.run_started = false;
+    }
+    cursor.context_epoch = Some(epoch);
+    cursor
+        .sampling
+        .as_mut()
+        .expect("initialized")
+        .synchronize_ordered(
+            ScopeCreepCheck::check_identity(),
+            epoch,
+            &candidates,
+            &ScopeCreepCheck::descriptor_chronology(&cursor.inventory),
+        )
+        .map_err(|error| anyhow::anyhow!("scope sampling inventory rejected: {error:?}"))?;
+    let baseline = input.check.prepare_descriptors(
+        &cursor.inventory,
+        &input.plan.capabilities,
+        &BTreeSet::new(),
+    )?;
+    let initial = input.check.reduce(&baseline, &[], false)?;
+    let result = cursor.result.get_or_insert(initial.clone());
+    if result.revisions != REVISIONS || result.model != initial.model {
+        *result = initial.clone();
+        cursor.prepared = None;
+    }
+    result.input_revision = initial.input_revision;
+    result.scope_digest = initial.scope_digest;
+    result.session_limitation = initial.session_limitation;
+    input.plan = baseline;
+    input.plan.prepared.groups = cursor.inventory.groups.clone();
+    for (group, candidate) in input.plan.prepared.groups.iter_mut().zip(&candidates) {
+        let previous = cursor.prepared.as_ref().and_then(|prepared| {
+            prepared.groups.iter().find(|previous| {
+                previous.id == group.id
+                    && previous.semantic_digest == group.semantic_digest
+                    && previous.context == group.context
+                    && previous.work == group.work
+            })
+        });
+        let accepted = result.decisions.iter().any(|decision| {
+            decision.group_id == group.id
+                && decision.outcome.is_some()
+                && decision.reduced_answer_ids == candidate.required_answers
+        });
+        if accepted {
+            if let Some(previous) = previous {
+                *group = previous.clone();
+            }
+            for finding in result
+                .findings
+                .iter_mut()
+                .filter(|finding| finding.group_id == group.id)
+            {
+                finding.source_generation = input.durable.source_generation;
+                finding.publication_fence = input.durable.published_fence;
+                finding.scope_digest = input.plan.prepared.scope_digest.clone();
+                finding.id = antiburn_local::analysis::ignored_instructions::sha256_hex(
+                    &serde_json::to_vec(&(
+                        &group.id,
+                        &finding.scope_digest,
+                        &finding.model,
+                        &finding.model_revision,
+                        REVISIONS,
+                    ))?,
+                );
+            }
+        } else {
+            if let Some(previous) = previous {
+                *group = previous.clone();
+                if result
+                    .decisions
+                    .iter()
+                    .any(|decision| decision.group_id == group.id && decision.outcome.is_none())
+                {
+                    continue;
+                }
+            }
+            result
+                .decisions
+                .retain(|decision| decision.group_id != group.id);
+            result
+                .findings
+                .retain(|finding| finding.group_id != group.id);
+            result
+                .decisions
+                .push(antiburn_local::checks::scope_creep::ScopeCreepDecision {
+                    group_id: group.id.clone(),
+                    status: ScopeCreepStatus::Unassessed,
+                    outcome: None,
+                    decision_probability: None,
+                    limitation: group.limitation.clone(),
+                    reduced_answer_ids: Vec::new(),
+                });
+        }
+    }
+    if cursor.inventory.complete {
+        result.decisions.retain(|decision| {
+            input
+                .plan
+                .prepared
+                .groups
+                .iter()
+                .any(|group| group.id == decision.group_id)
+        });
+        result.findings.retain(|finding| {
+            input
+                .plan
+                .prepared
+                .groups
+                .iter()
+                .any(|group| group.id == finding.group_id)
+        });
+    }
+    let mut prepared = input.plan.prepared.clone();
+    if !cursor.inventory.complete
+        && let Some(previous) = &cursor.prepared
+    {
+        prepared.groups.extend(
+            previous
+                .groups
+                .iter()
+                .filter(|previous| {
+                    !cursor
+                        .inventory
+                        .groups
+                        .iter()
+                        .any(|group| group.id == previous.id)
+                })
+                .cloned(),
+        );
+    }
+    cursor.prepared = Some(prepared);
+    update_result_counts(cursor, input);
+    Ok(())
+}
+
+#[cfg(test)]
+fn synchronize_sampling(
+    input: &PreparedInput,
+    sampling: &mut SamplingProgress,
+) -> anyhow::Result<()> {
+    let inventory = ScopeCreepCheck::sampling_candidates(&input.plan);
+    let chronology: Vec<_> = input
+        .plan
+        .prepared
+        .groups
+        .iter()
+        .map(|group| StableId::new("scope_work", &[group.id.as_bytes()]))
+        .collect();
+    let epoch = StableId::new(
+        "scope-context-v1",
+        &[
+            serde_json::to_string(&(&input.plan.capabilities, REVISIONS))?.as_bytes(),
+            input.configuration_fence.as_bytes(),
+        ],
+    );
+    sampling
+        .synchronize_ordered(
+            ScopeCreepCheck::check_identity(),
+            epoch,
+            &inventory,
+            &chronology,
+        )
+        .map_err(|error| anyhow::anyhow!("scope sampling inventory rejected: {error:?}"))
+}
+
+pub(crate) fn dispatch_readiness<P>(
+    store: &Store,
+    handle: &crate::jev::worker::WorkerHandle,
+    input: &BurnCheckInput,
+    capabilities: &ModelCapabilities,
+    plan: &JevCheckPlan<P>,
+    progress: &JevRunProgress,
+) -> anyhow::Result<crate::store::BurnCheckRequestAdmission> {
+    use crate::store::BurnCheckRequestAdmission;
+    let mut connection = handle.system_one_connection();
+    connection
+        .model_revision
+        .clone_from(&capabilities.model_revision);
+    let mut readiness = BurnCheckRequestAdmission::Admitted;
+    for item in &plan.work_items {
+        if progress.results.contains_key(&item.id) {
+            continue;
+        }
+        let packed = match &plan.shared_context {
+            Some(shared) => antiburn_local::analysis::jev::pack_work_items_with_shared_context(
+                std::slice::from_ref(item),
+                capabilities,
+                shared,
+            ),
+            None => antiburn_local::analysis::jev::pack_work_items_with_capabilities(
+                std::slice::from_ref(item),
+                capabilities,
+            ),
+        };
+        if packed.batches.is_empty() {
+            return Ok(BurnCheckRequestAdmission::Exhausted);
+        }
+        for batch in &packed.batches {
+            let identities =
+                crate::jev::worker::batch_request_identities(&connection, input, batch);
+            match store.burn_check_dispatch_readiness(&identities, unix_now())? {
+                BurnCheckRequestAdmission::Admitted => {}
+                BurnCheckRequestAdmission::Deferred => {
+                    readiness = BurnCheckRequestAdmission::Deferred
+                }
+                blocked => return Ok(blocked),
+            }
+        }
+    }
+    if plan.work_items.is_empty() {
+        return Ok(BurnCheckRequestAdmission::Exhausted);
+    }
+    Ok(readiness)
+}
+
+pub(crate) fn target_failure_is_terminal(
+    error: &JevError,
+    readiness: impl FnOnce() -> anyhow::Result<crate::store::BurnCheckRequestAdmission>,
+) -> anyhow::Result<bool> {
+    if matches!(error, JevError::AuthenticationRejected) {
+        return Ok(false);
+    }
+    Ok(matches!(
+        readiness()?,
+        crate::store::BurnCheckRequestAdmission::Exhausted
+            | crate::store::BurnCheckRequestAdmission::Unresolved
+    ))
+}
+
+#[cfg(test)]
+fn reuse_accepted_result(
+    stored: Option<&BurnCheckAssessment>,
+    input: &PreparedInput,
+    cursor: &mut AssessmentCursor,
+) -> anyhow::Result<()> {
+    let Some(previous) = stored
+        .and_then(|saved| saved.result_json.as_deref())
+        .and_then(|json| serde_json::from_str::<Publication>(json).ok())
+    else {
+        return Ok(());
+    };
+    if previous.configuration_fence != input.configuration_fence
+        || previous.capabilities != input.plan.capabilities
+    {
+        return Ok(());
+    }
+    let target = cursor.result.as_mut().expect("initialized");
+    for group in &input.plan.prepared.groups {
+        if !previous.prepared.groups.contains(group) {
+            continue;
+        }
+        let Some(decision) = previous.assessment.decisions.iter().find(|decision| {
+            decision.group_id == group.id
+                && valid_decision(decision, group, &previous.prepared)
+                && decision.outcome.is_some()
+        }) else {
+            continue;
+        };
+        if let Some(current) = target
+            .decisions
+            .iter_mut()
+            .find(|current| current.group_id == group.id)
+        {
+            *current = decision.clone();
+            current.reduced_answer_ids = group
+                .window_ids
+                .iter()
+                .map(|window| {
+                    ScopeCreepCheck::answer_identity(&input.plan, window, ScopeQuestion::Decision)
+                })
+                .collect();
+        }
+        for finding in previous
+            .assessment
+            .findings
+            .iter()
+            .filter(|finding| finding.group_id == group.id)
+        {
+            let mut finding = finding.clone();
+            finding.source_generation = input.durable.source_generation;
+            finding.publication_fence = input.durable.published_fence;
+            finding.scope_digest = input.plan.prepared.scope_digest.clone();
+            finding.id = antiburn_local::analysis::ignored_instructions::sha256_hex(
+                &serde_json::to_vec(&(
+                    &group.id,
+                    &finding.scope_digest,
+                    &finding.model,
+                    &finding.model_revision,
+                    REVISIONS,
+                ))?,
+            );
+            target.findings.push(finding);
+        }
+    }
+    Ok(())
 }
 
 fn record_assessment(
@@ -686,7 +1285,11 @@ fn record_completion(
     sampling: &mut SamplingProgress,
     job: &SamplingJob,
     result: &ScopeCreepResult,
+    _plan: &JevCheckPlan<ScopeCreepPrepared>,
 ) -> anyhow::Result<()> {
+    if sampling.completed_ids(job.check).contains(&job.candidate) {
+        return Ok(());
+    }
     if let Some(decision) = result.decisions.iter().find(|decision| {
         StableId::new("scope_work", &[decision.group_id.as_bytes()]) == job.candidate
             && decision.outcome.is_some()
@@ -725,7 +1328,7 @@ fn input_is_current(
     capabilities: &ModelCapabilities,
     input: &PreparedInput,
 ) -> anyhow::Result<bool> {
-    if load_input(store, candidate, capabilities)
+    if load_descriptor_input(store, candidate, capabilities)
         .as_ref()
         .is_ok_and(|current| current.durable.input_revision == input.durable.input_revision)
     {
@@ -766,7 +1369,18 @@ fn publish_current(
             POLICY.idle_secs,
         )?
     } else {
-        save_failure(store, input, cursor, "sampling_incomplete", None)?
+        let (_, _, runnable) = scope_scheduling_counts(input, cursor);
+        save_failure(
+            store,
+            input,
+            cursor,
+            if runnable > 0 || !cursor.inventory.complete {
+                "continuing"
+            } else {
+                "sampling_incomplete"
+            },
+            (runnable > 0 || !cursor.inventory.complete).then(|| unix_now() + 1),
+        )?
     };
     Ok(published.then(|| {
         crate::analytics::event::SmartCheckAssessmentOutcome::from_evidence(has_finding, clean)
@@ -774,6 +1388,23 @@ fn publish_current(
 }
 
 pub(crate) fn publication(input: &PreparedInput, assessment: ScopeCreepResult) -> Publication {
+    let mut assessment = assessment;
+    assessment.decisions.retain(|decision| {
+        input
+            .plan
+            .prepared
+            .groups
+            .iter()
+            .any(|group| group.id == decision.group_id)
+    });
+    assessment.findings.retain(|finding| {
+        input
+            .plan
+            .prepared
+            .groups
+            .iter()
+            .any(|group| group.id == finding.group_id)
+    });
     let ids: BTreeSet<_> = assessment
         .findings
         .iter()
@@ -922,17 +1553,28 @@ fn valid_decision(
         ScopeAnswer::NoIssue => ScopeCreepStatus::Clean,
         _ => return false,
     };
-    let epoch = String::from(prepared.semantic_epoch);
+    let answer_plan = JevCheckPlan {
+        check_id: CHECK_ID.into(),
+        input_revision: String::new(),
+        revisions: REVISIONS,
+        work_items: Vec::new(),
+        skipped_item_ids: Vec::new(),
+        coverage: Default::default(),
+        capabilities: ModelCapabilities::jev_default(),
+        shared_context: None,
+        prepared: ScopeCreepPrepared {
+            scope_digest: String::new(),
+            semantic_epoch: prepared.semantic_epoch,
+            source_generation: prepared.source_generation,
+            publication_fence: prepared.publication_fence,
+            groups: vec![group.clone()],
+            scope_bindings: Vec::new(),
+            session_limitation: None,
+        },
+    };
     decision.status == expected
         && decision.reduced_answer_ids
-            == [StableId::new(
-                "scope_answer",
-                &[
-                    epoch.as_bytes(),
-                    group.window_ids[0].as_bytes(),
-                    ScopeQuestion::Decision.key().as_bytes(),
-                ],
-            )]
+            == ScopeCreepCheck::sampling_candidates(&answer_plan)[0].required_answers
 }
 
 pub(crate) fn publishable_finding(finding: &ScopeCreepFinding, publication: &Publication) -> bool {

@@ -1,6 +1,9 @@
 //! Current skill recommendations for selected observed work.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Index;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -13,7 +16,8 @@ use crate::analysis::jev::{
     JevWorkItem, JevWorkItemResult, pack_work_items_with_shared_context, validate_jev_response,
 };
 use crate::analysis::jev_evidence::{
-    ContentAction, ContentEventReference, SessionContentEvidence, select_session_content,
+    ContentAction, ContentEventReference, SessionContentEvidence, content_action_digest,
+    select_session_content,
 };
 use crate::analysis::session_scope::{ScopeAuthority, SessionScopeSnapshot};
 use crate::checks::sampling::{Candidate, SamplingError, SamplingJob, SamplingProgress, StableId};
@@ -46,13 +50,56 @@ pub const SKILL_OPPORTUNITIES_INPUT_SELECTION: JevInputSelection =
     ]);
 pub const SKILL_OPPORTUNITIES_REVISIONS: JevCheckRevisions = JevCheckRevisions {
     projection: 5,
-    chunking: 5,
+    chunking: 6,
     questions: 4,
-    reducer: 5,
+    reducer: 6,
 };
 const MAX_EPISODE_BYTES: usize = 32 * 1024;
 const MAX_EPISODE_PARTS: usize = 32;
 type WorkEpisodeKey = (Option<(u64, u32)>, String);
+
+pub type SkillComparisonDescriptor = (String, usize, usize);
+
+/// Persist the accumulated lightweight inventory, not just its latest page.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillDescriptorInventory {
+    pub source_revision: String,
+    pub next_comparison: usize,
+    pub descriptors: Vec<SkillComparisonDescriptor>,
+    pub complete: bool,
+}
+
+struct SkillDescriptors {
+    episode_ids: Vec<String>,
+    skill_ids: Vec<String>,
+    entries: Vec<OnceLock<SkillComparisonDescriptor>>,
+}
+
+impl SkillDescriptors {
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn initialized(&self) -> impl Iterator<Item = &SkillComparisonDescriptor> {
+        self.entries.iter().filter_map(OnceLock::get)
+    }
+}
+
+impl Index<usize> for SkillDescriptors {
+    type Output = SkillComparisonDescriptor;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.entries[index].get_or_init(|| {
+            let episode = index / self.skill_ids.len();
+            let skill = index % self.skill_ids.len();
+            (
+                hash(&json!((&self.episode_ids[episode], &self.skill_ids[skill]))),
+                episode,
+                skill,
+            )
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillWorkCitation {
@@ -60,6 +107,40 @@ pub struct SkillWorkCitation {
     pub text: String,
     pub timestamp_ms: Option<i64>,
     pub kind: String,
+    pub ranges: Vec<(usize, usize)>,
+    pub total_bytes: usize,
+    pub source_digest: String,
+    pub partial: bool,
+}
+
+impl SkillWorkCitation {
+    /// Bind ranges to the check-selected projection, not native record bytes.
+    pub fn matches_action(&self, action: &ContentAction) -> bool {
+        if self.reference != action.reference
+            || self.timestamp_ms != action.timestamp_ms
+            || self.kind != action.kind
+            || self.total_bytes != action.text.len()
+            || self.source_digest != content_action_digest(action)
+            || self.ranges.is_empty()
+            || self.ranges.len() > 4
+        {
+            return false;
+        }
+        let mut selected = String::new();
+        let mut previous_end = 0;
+        for &(start, end) in &self.ranges {
+            if start < previous_end || end <= start {
+                return false;
+            }
+            let Some(text) = action.text.get(start..end) else {
+                return false;
+            };
+            selected.push_str(text);
+            previous_end = end;
+        }
+        self.text == selected
+            && self.partial == (action.truncated || selected.len() < self.total_bytes)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,7 +297,7 @@ pub struct SkillOpportunitiesCheck {
     limitations: Vec<String>,
     input_revision: String,
     episodes: Vec<Vec<SkillWorkCitation>>,
-    descriptors: Vec<(String, usize, usize)>,
+    descriptors: SkillDescriptors,
     use_context: Vec<SkillUseContextEvent>,
     use_coverage: Value,
     use_citations: Vec<ContentEventReference>,
@@ -387,14 +468,15 @@ impl SkillOpportunitiesCheck {
         if descriptor_count > SKILL_OPPORTUNITIES_MAX_COMPARISONS {
             return Err(JevError::InvalidCheckContext);
         }
-        let mut descriptors = Vec::with_capacity(descriptor_count);
-        for (episode, work) in episodes.iter().enumerate() {
-            let episode_id = hash(&json!((&content.session_identity_digest, work)));
-            for (skill, comparison) in comparisons.iter().enumerate() {
-                descriptors.push((hash(&json!((&episode_id, &comparison.id))), episode, skill));
-            }
-        }
-        let input_revision = hash(&json!((&semantic_revision, &descriptors, &limitations)));
+        let episode_ids = episodes
+            .iter()
+            .map(|work| hash(&json!((&content.session_identity_digest, work))))
+            .collect::<Vec<_>>();
+        let input_revision = hash(&json!((&semantic_revision, &episode_ids, &limitations)));
+        let skill_ids = comparisons
+            .iter()
+            .map(|comparison| comparison.id.clone())
+            .collect();
         Ok(Self {
             prepared: PreparedSkillOpportunities {
                 comparisons,
@@ -406,7 +488,11 @@ impl SkillOpportunitiesCheck {
             limitations,
             input_revision,
             episodes,
-            descriptors,
+            descriptors: SkillDescriptors {
+                episode_ids,
+                skill_ids,
+                entries: (0..descriptor_count).map(|_| OnceLock::new()).collect(),
+            },
             use_context,
             use_coverage: json!(usage.coverage()),
             use_citations,
@@ -415,11 +501,174 @@ impl SkillOpportunitiesCheck {
         })
     }
 
+    pub fn descriptor_count(&self) -> usize {
+        self.descriptors.len()
+    }
+
+    fn descriptor_at(&self, index: usize) -> SkillComparisonDescriptor {
+        self.descriptors[index].clone()
+    }
+
+    fn descriptors(&self) -> impl Iterator<Item = SkillComparisonDescriptor> + '_ {
+        (0..self.descriptor_count()).map(|index| self.descriptor_at(index))
+    }
+
+    pub fn enumerate_descriptors(
+        &self,
+        inventory: &mut SkillDescriptorInventory,
+    ) -> Result<(), JevError> {
+        if inventory.source_revision != self.input_revision {
+            *inventory = SkillDescriptorInventory {
+                source_revision: self.input_revision.clone(),
+                ..Default::default()
+            };
+        }
+        if inventory.next_comparison > self.descriptor_count() {
+            return Err(JevError::InvalidCheckContext);
+        }
+        let started = Instant::now();
+        let mut emitted = 0;
+        while inventory.next_comparison < self.descriptor_count()
+            && emitted < 256
+            && started.elapsed() < Duration::from_secs(1)
+        {
+            inventory
+                .descriptors
+                .push(self.descriptor_at(inventory.next_comparison));
+            inventory.next_comparison += 1;
+            emitted += 1;
+        }
+        inventory.complete = inventory.next_comparison == self.descriptor_count();
+        Ok(())
+    }
+
+    pub fn descriptor_candidates(
+        &self,
+        inventory: &SkillDescriptorInventory,
+    ) -> Result<Vec<Candidate>, JevError> {
+        self.validate_inventory(inventory)?;
+        Ok(inventory
+            .descriptors
+            .iter()
+            .map(|descriptor| sampling_candidate_id(&descriptor.0))
+            .collect())
+    }
+
+    /// Episodes follow source positions; every skill within an episode shares that position.
+    pub fn descriptor_chronology(
+        &self,
+        inventory: &SkillDescriptorInventory,
+    ) -> Result<Vec<StableId>, JevError> {
+        self.validate_inventory(inventory)?;
+        let mut descriptors = inventory.descriptors.iter().collect::<Vec<_>>();
+        descriptors.sort_by_key(|descriptor| {
+            let reference = &self.episodes[descriptor.1][0].reference;
+            (reference.turn_index, reference.part_index, descriptor.2)
+        });
+        Ok(descriptors
+            .into_iter()
+            .map(|descriptor| stable(&descriptor.0))
+            .collect())
+    }
+
+    pub fn sampling_epoch(&self) -> StableId {
+        stable(&self.prepared.semantic_revision)
+    }
+
+    fn validate_inventory(&self, inventory: &SkillDescriptorInventory) -> Result<(), JevError> {
+        let skill_count = self.prepared.comparisons.len();
+        if inventory.source_revision != self.input_revision
+            || inventory.next_comparison > self.descriptor_count()
+            || inventory.descriptors.len() != inventory.next_comparison
+            || inventory.complete != (inventory.next_comparison == self.descriptor_count())
+            || inventory
+                .descriptors
+                .iter()
+                .enumerate()
+                .any(|(index, descriptor)| {
+                    descriptor.1 >= self.episodes.len()
+                        || descriptor.2 >= skill_count
+                        || descriptor.1 * skill_count + descriptor.2 != index
+                })
+        {
+            return Err(JevError::InvalidCheckContext);
+        }
+        Ok(())
+    }
+
+    pub fn prepare_inventory_sampled(
+        &self,
+        inventory: &SkillDescriptorInventory,
+        context: &JevSessionContext,
+        capabilities: &ModelCapabilities,
+        jobs: &[SamplingJob],
+    ) -> Result<JevCheckPlan<PreparedSkillOpportunities>, JevError> {
+        self.validate_inventory(inventory)?;
+        let ids: BTreeSet<_> = jobs.iter().map(|job| job.candidate).collect();
+        let selected_descriptors: Vec<_> = inventory
+            .descriptors
+            .iter()
+            .filter(|descriptor| ids.contains(&stable(&descriptor.0)))
+            .collect();
+        if jobs.len() > SKILL_OPPORTUNITIES_PASS_BUDGET
+            || ids.len() != jobs.len()
+            || selected_descriptors.len() != jobs.len()
+            || jobs
+                .iter()
+                .any(|job| job.check != check_identity() || job.epoch != self.sampling_epoch())
+        {
+            return Err(JevError::InvalidCheckPlan);
+        }
+        let selected = selected_descriptors
+            .into_iter()
+            .map(|descriptor| {
+                let canonical = self
+                    .descriptor_at(descriptor.1 * self.prepared.comparisons.len() + descriptor.2);
+                if *descriptor != canonical {
+                    return Err(JevError::InvalidCheckPlan);
+                }
+                Ok(self.hydrate(descriptor).1)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut plan = self.build_plan(context, capabilities, &selected)?;
+        if !inventory.complete {
+            plan.coverage.processing_limit_reached = true;
+            plan.coverage
+                .limitations
+                .push("descriptor_enumeration_incomplete".into());
+        }
+        Ok(plan)
+    }
+
     fn hydrate(&self, descriptor: &(String, usize, usize)) -> (SkillComparison, JevWorkItem) {
         let (id, episode, skill) = descriptor;
         let mut comparison = self.prepared.comparisons[*skill].clone();
         comparison.id = id.clone();
         comparison.work = self.episodes[*episode].clone();
+        let terms = self.task_contexts[*episode].fields["chunks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|chunk| chunk["text"].as_str())
+            .flat_map(|text| text.split(|character: char| !character.is_alphanumeric()))
+            .filter(|word| word.len() >= 5)
+            .take(32)
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>();
+        let chunk_bytes = (4096 / comparison.work.len().max(1) / 4).clamp(32, 512);
+        for work in &mut comparison.work {
+            let ranges = work_ranges(&work.text, chunk_bytes, &terms);
+            work.partial |=
+                ranges.iter().map(|(start, end)| end - start).sum::<usize>() < work.total_bytes;
+            work.text = ranges
+                .iter()
+                .map(|&(start, end)| &work.text[start..end])
+                .collect();
+            work.ranges = ranges;
+        }
+        if comparison.work.iter().any(|work| work.partial) {
+            comparison.work_context_assessable = false;
+        }
         comparison.used_current_skills = relevant_used_skills(&comparison, &self.used_skills);
         let identities: BTreeSet<_> = comparison
             .used_current_skills
@@ -486,7 +735,7 @@ impl SkillOpportunitiesCheck {
                 .limitations
                 .retain(|limit| *limit != SkillOpportunityLimit::WorkTimeUnknown);
         }
-        comparison.episode_id = hash(&json!((&self.prepared.session_identity, &comparison.work)));
+        comparison.episode_id = self.descriptors.episode_ids[*episode].clone();
         let mut item = self.items[*skill].clone();
         item.window.fields["used_current_skill_ids"] = json!(
             comparison
@@ -511,10 +760,64 @@ impl SkillOpportunitiesCheck {
                 .any(|used| used.identity == comparison.skill.identity)
         );
         item.id = id.clone();
-        item.window.fields["work"] = json!(comparison.work.iter().map(|work| json!({"text":work.text,"kind":work.kind,"timestamp_ms":work.timestamp_ms})).collect::<Vec<_>>());
+        item.window.fields["work"] = json!(comparison.work.iter().map(|work| json!({"text": if work.partial { Value::Null } else { json!(work.text) }, "content": work_content(work), "kind":work.kind,"timestamp_ms":work.timestamp_ms})).collect::<Vec<_>>());
+        item.window.fields["work_content_partial"] =
+            json!(comparison.work.iter().any(|work| work.partial));
         item.window.evidence = comparison_evidence(&comparison);
         item.window.fields["limitations"] = json!(comparison.limitations);
         (comparison, item)
+    }
+
+    fn descriptor_for_comparison(
+        &self,
+        comparison: &SkillComparison,
+    ) -> Result<SkillComparisonDescriptor, JevError> {
+        let episode = self
+            .descriptors
+            .episode_ids
+            .iter()
+            .position(|id| id == &comparison.episode_id)
+            .ok_or(JevError::InvalidCheckPlan)?;
+        let skill = self
+            .prepared
+            .comparisons
+            .iter()
+            .position(|candidate| candidate.skill.identity == comparison.skill.identity)
+            .ok_or(JevError::InvalidCheckPlan)?;
+        let descriptor = self.descriptor_at(episode * self.prepared.comparisons.len() + skill);
+        if descriptor.0 != comparison.id {
+            return Err(JevError::InvalidCheckPlan);
+        }
+        Ok(descriptor)
+    }
+
+    fn descriptor_for_item(
+        &self,
+        item: &JevWorkItem,
+    ) -> Result<SkillComparisonDescriptor, JevError> {
+        let anchor = item
+            .window
+            .evidence
+            .first()
+            .ok_or(JevError::InvalidCheckPlan)?;
+        let episode = self
+            .episodes
+            .iter()
+            .position(|work| work[0].reference.id == anchor.source_id)
+            .ok_or(JevError::InvalidCheckPlan)?;
+        let skill = self
+            .items
+            .iter()
+            .position(|candidate| {
+                candidate.window.fields["eligibility_revision"]
+                    == item.window.fields["eligibility_revision"]
+            })
+            .ok_or(JevError::InvalidCheckPlan)?;
+        let descriptor = self.descriptor_at(episode * self.prepared.comparisons.len() + skill);
+        if descriptor.0 != item.id {
+            return Err(JevError::InvalidCheckPlan);
+        }
+        Ok(descriptor)
     }
 
     fn shared_context(&self, ids: &BTreeSet<&str>) -> JevSharedRequestContext {
@@ -525,7 +828,7 @@ impl SkillOpportunitiesCheck {
         let mut evidence = Vec::new();
         for descriptor in self
             .descriptors
-            .iter()
+            .initialized()
             .filter(|descriptor| ids.contains(descriptor.0.as_str()))
         {
             let comparison = self.hydrate(descriptor).0;
@@ -596,13 +899,22 @@ impl SkillOpportunitiesCheck {
         &self,
         progress: &mut SamplingProgress,
     ) -> Result<(), SamplingError> {
-        progress.synchronize(
+        let candidates = self
+            .descriptors()
+            .map(|descriptor| sampling_candidate_id(&descriptor.0))
+            .collect::<Vec<_>>();
+        let mut chronology = self.descriptors().collect::<Vec<_>>();
+        chronology.sort_by_key(|descriptor| {
+            let reference = &self.episodes[descriptor.1][0].reference;
+            (reference.turn_index, reference.part_index, descriptor.2)
+        });
+        progress.synchronize_ordered(
             check_identity(),
             stable(&self.prepared.semantic_revision),
-            &self
-                .descriptors
+            &candidates,
+            &chronology
                 .iter()
-                .map(|descriptor| sampling_candidate_id(&descriptor.0))
+                .map(|descriptor| stable(&descriptor.0))
                 .collect::<Vec<_>>(),
         )
     }
@@ -621,8 +933,7 @@ impl SkillOpportunitiesCheck {
                 job.check != check_identity()
                     || job.epoch != stable(&self.prepared.semantic_revision)
                     || !self
-                        .descriptors
-                        .iter()
+                        .descriptors()
                         .any(|item| stable(&item.0) == job.candidate)
             })
         {
@@ -632,10 +943,9 @@ impl SkillOpportunitiesCheck {
             context,
             capabilities,
             &self
-                .descriptors
-                .iter()
+                .descriptors()
                 .filter(|item| ids.contains(&stable(&item.0)))
-                .map(|descriptor| self.hydrate(descriptor).1)
+                .map(|descriptor| self.hydrate(&descriptor).1)
                 .collect::<Vec<_>>(),
         )
     }
@@ -646,14 +956,15 @@ impl SkillOpportunitiesCheck {
         job: &SamplingJob,
         result: &SkillOpportunitiesResult,
     ) -> Result<(), SamplingError> {
-        let item = self
-            .descriptors
+        let decision = result
+            .decisions
             .iter()
-            .find(|item| stable(&item.0) == job.candidate)
+            .find(|decision| stable(&decision.comparison.id) == job.candidate)
             .ok_or(SamplingError::StaleJob)?;
-        let accepted = result.decisions.iter().any(|decision| {
-            decision.comparison == self.hydrate(item).0 && decision.judgments.is_some()
-        });
+        let item = self
+            .descriptor_for_comparison(&decision.comparison)
+            .map_err(|_| SamplingError::StaleJob)?;
+        let accepted = decision.comparison == self.hydrate(&item).0 && decision.judgments.is_some();
         if !accepted {
             return progress.interrupt_candidate(job);
         }
@@ -681,8 +992,11 @@ impl SkillOpportunitiesCheck {
         {
             return Err(JevError::InvalidCheckContext);
         }
-        let ids = selected.iter().map(|item| item.id.as_str()).collect();
-        let shared = self.shared_context(&ids);
+        let descriptors = selected
+            .iter()
+            .map(|item| self.descriptor_for_item(item))
+            .collect::<Result<Vec<_>, _>>()?;
+        let shared = self.shared_context(&selected.iter().map(|item| item.id.as_str()).collect());
         let packing = pack_work_items_with_shared_context(selected, capabilities, &shared);
         let processing_limit_reached = !packing.skipped_item_ids.is_empty();
         let skipped: BTreeSet<_> = packing.skipped_item_ids.iter().cloned().collect();
@@ -691,13 +1005,7 @@ impl SkillOpportunitiesCheck {
             .filter(|item| !skipped.contains(&item.id))
             .cloned()
             .collect();
-        let selected_ids: BTreeSet<_> = selected.iter().map(|item| &item.id).collect();
-        let comparisons: Vec<_> = self
-            .descriptors
-            .iter()
-            .filter(|descriptor| selected_ids.contains(&descriptor.0))
-            .map(|descriptor| self.hydrate(descriptor).0)
-            .collect();
+        let comparisons: Vec<_> = self.hydrate_comparisons(&descriptors);
         let mut limitations = self.limitations.clone();
         if comparisons.iter().any(|comparison| {
             comparison
@@ -706,17 +1014,19 @@ impl SkillOpportunitiesCheck {
         }) {
             limitations.push("skill_reference_content_partial".into());
         }
+        if comparisons
+            .iter()
+            .any(|comparison| comparison.work.iter().any(|work| work.partial))
+        {
+            limitations.push("work_content_partial".into());
+        }
         if comparisons.iter().any(|comparison| {
             comparison.used_current_skills.len() < self.used_skills.len()
                 || comparison.use_citations.len() < self.use_citations.len()
         }) {
             limitations.push("selected_known_use_context_only".into());
         }
-        for descriptor in self
-            .descriptors
-            .iter()
-            .filter(|descriptor| ids.contains(descriptor.0.as_str()))
-        {
+        for descriptor in &descriptors {
             if self.task_contexts[descriptor.1].fields["partial"] == true {
                 limitations.push("selected_task_context_only".into());
             }
@@ -736,7 +1046,7 @@ impl SkillOpportunitiesCheck {
             coverage: JevCoverage {
                 selected_items: items.len(),
                 skipped_items: skipped.len(),
-                not_selected_items: self.descriptors.len() - selected.len(),
+                not_selected_items: self.descriptor_count() - selected.len(),
                 processing_limit_reached,
                 limitations,
             },
@@ -746,6 +1056,16 @@ impl SkillOpportunitiesCheck {
             shared_context: Some(shared),
             prepared,
         })
+    }
+
+    fn hydrate_comparisons(
+        &self,
+        descriptors: &[SkillComparisonDescriptor],
+    ) -> Vec<SkillComparison> {
+        descriptors
+            .iter()
+            .map(|descriptor| self.hydrate(descriptor).0)
+            .collect()
     }
 }
 
@@ -782,10 +1102,9 @@ impl JevCheck for SkillOpportunitiesCheck {
             context,
             capabilities,
             &self
-                .descriptors
-                .iter()
+                .descriptors()
                 .take(SKILL_OPPORTUNITIES_PASS_BUDGET)
-                .map(|descriptor| self.hydrate(descriptor).1)
+                .map(|descriptor| self.hydrate(&descriptor).1)
                 .collect::<Vec<_>>(),
         )
     }
@@ -795,6 +1114,12 @@ impl JevCheck for SkillOpportunitiesCheck {
         results: &[JevWorkItemResult],
         complete: bool,
     ) -> Result<Self::Result, JevError> {
+        let descriptors = plan
+            .prepared
+            .comparisons
+            .iter()
+            .map(|comparison| self.descriptor_for_comparison(comparison))
+            .collect::<Result<Vec<_>, _>>()?;
         if plan.input_revision != self.input_revision
             || plan.shared_context.as_ref()
                 != Some(
@@ -809,12 +1134,12 @@ impl JevCheck for SkillOpportunitiesCheck {
                 )
             || plan.prepared.semantic_revision != self.prepared.semantic_revision
             || plan.prepared.comparisons.iter().any(|comparison| {
-                !self.descriptors.iter().any(|descriptor| {
+                !descriptors.iter().any(|descriptor| {
                     descriptor.0 == comparison.id && self.hydrate(descriptor).0 == *comparison
                 })
             })
             || plan.work_items.iter().any(|item| {
-                !self.descriptors.iter().any(|descriptor| {
+                !descriptors.iter().any(|descriptor| {
                     descriptor.0 == item.id && self.hydrate(descriptor).1 == *item
                 })
             })
@@ -1016,28 +1341,29 @@ fn work_episodes(
         let mut selected = Vec::new();
         let mut bytes = 0;
         for action in group {
-            if !action.reference.stable
-                || action.text.trim().is_empty()
-                || action.text.len() > MAX_EPISODE_BYTES
-            {
-                limitations.push("work_part_unavailable_or_too_large".into());
+            if !action.reference.stable || action.text.trim().is_empty() {
+                limitations.push("work_part_unavailable".into());
                 continue;
             }
             if action.truncated {
                 limitations.push("work_part_truncated".into());
             }
-            if selected.len() == MAX_EPISODE_PARTS || bytes + action.text.len() > MAX_EPISODE_BYTES
-            {
+            let selected_bytes = action.text.len().min(2048);
+            if selected.len() == MAX_EPISODE_PARTS || bytes + selected_bytes > MAX_EPISODE_BYTES {
                 episodes.push(std::mem::take(&mut selected));
                 bytes = 0;
                 limitations.push("work_episode_split".into());
             }
-            bytes += action.text.len();
+            bytes += selected_bytes;
             selected.push(SkillWorkCitation {
                 reference: action.reference.clone(),
                 text: action.text.clone(),
                 timestamp_ms: action.timestamp_ms,
                 kind: action.kind.clone(),
+                ranges: vec![(0, action.text.len())],
+                total_bytes: action.text.len(),
+                source_digest: content_action_digest(action),
+                partial: action.truncated,
             });
         }
         if !selected.is_empty() {
@@ -1047,6 +1373,44 @@ fn work_episodes(
     limitations.sort();
     limitations.dedup();
     Ok(episodes)
+}
+
+fn work_ranges(text: &str, chunk_bytes: usize, terms: &[String]) -> Vec<(usize, usize)> {
+    if text.len() <= 4 * chunk_bytes {
+        return vec![(0, text.len())];
+    }
+    let ranges = crate::analysis::jev::text_ranges::text_ranges(text, chunk_bytes, 0);
+    let middle = (ranges.len() - 1) / 2;
+    let relevant = ranges
+        .iter()
+        .enumerate()
+        .find(|&(index, &(start, end))| {
+            if index == 0 || index == middle || index == ranges.len() - 1 {
+                return false;
+            }
+            let child = text[start..end].to_lowercase();
+            terms.iter().any(|term| child.contains(term))
+        })
+        .map(|(index, _)| index)
+        .unwrap_or((ranges.len() - 1) / 3);
+    BTreeSet::from([0, relevant, middle, ranges.len() - 1])
+        .into_iter()
+        .map(|index| ranges[index])
+        .collect()
+}
+
+fn work_content(work: &SkillWorkCitation) -> Value {
+    let mut offset = 0;
+    let chunks = work
+        .ranges
+        .iter()
+        .map(|&(start, end)| {
+            let text = &work.text[offset..offset + end - start];
+            offset += end - start;
+            json!({"start_byte": start, "end_byte": end, "text": text})
+        })
+        .collect::<Vec<_>>();
+    json!({"chunks": chunks, "total_bytes": work.total_bytes, "partial": work.partial, "range_source": "selected_action_text"})
 }
 
 fn position(action: &ContentAction) -> (u64, u32) {
@@ -1281,7 +1645,12 @@ pub fn reduce_skill_opportunities(
                 {
                     SkillOpportunityOutcome::Advisory
                 }
-                SkillOpportunityChoice::NoOpportunity => SkillOpportunityOutcome::NoOpportunity,
+                SkillOpportunityChoice::NoOpportunity
+                    if !comparison.work.iter().any(|work| work.partial) =>
+                {
+                    SkillOpportunityOutcome::NoOpportunity
+                }
+                SkillOpportunityChoice::NoOpportunity => SkillOpportunityOutcome::Uncertain,
                 SkillOpportunityChoice::UsefulOpportunity | SkillOpportunityChoice::Uncertain => {
                     SkillOpportunityOutcome::Uncertain
                 }
@@ -1303,6 +1672,9 @@ pub fn reduce_skill_opportunities(
                 {
                     absence_limit.push_str(" Task or known-use context is partial.");
                 }
+                if comparison.work.iter().any(|work| work.partial) {
+                    absence_limit.push_str(" Only selected work-content ranges are available.");
+                }
                 findings.push(SkillOpportunityFinding {
                     comparison: comparison.clone(),
                     message: "This current skill could help with the observed work.".into(),
@@ -1323,6 +1695,12 @@ pub fn reduce_skill_opportunities(
         )
     });
     let mut coverage = plan.coverage.clone();
+    if decisions
+        .iter()
+        .any(|decision| decision.comparison.work.iter().any(|work| work.partial))
+    {
+        coverage.limitations.push("work_content_partial".into());
+    }
     for (limit, name) in [
         (
             SkillOpportunityLimit::KnownUseContextPartial,

@@ -747,10 +747,15 @@ fn full_inventory_has_independent_native_projection_request_and_citation_records
             );
             let plan = IgnoredInstructionsCheck.prepare(&context).unwrap();
             request_assertions += request_citation_assertions(&plan, &context);
-            let packing = pack_work_items(&plan.work_items);
+            let capabilities = capabilities::ModelCapabilities::jev_default();
+            let packing = pack_work_items_with_capabilities(&plan.work_items, &capabilities);
             assert!(packing.skipped_item_ids.is_empty(), "{id}");
             for batch in &packing.batches {
-                assert!(batch.serialized_bytes <= MAX_REQUEST_BYTES);
+                assert!(
+                    u64::try_from(batch.serialized_bytes).unwrap()
+                        <= capabilities.request_body_bytes.value.unwrap(),
+                    "{id} request byte budget"
+                );
                 assert!(
                     batch
                         .work_item_ids

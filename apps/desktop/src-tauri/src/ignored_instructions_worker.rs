@@ -30,13 +30,17 @@ use crate::store::{
     BurnCheckSampleOrigin, BurnCheckSampledPair, SELECTED_CONTENT_PROGRESS_REVISION,
     SelectedContentProgress, Store,
 };
+use antiburn_local::checks::sampling::{
+    Candidate, SamplingJob, SamplingLimits, SamplingProgress, StableId,
+};
 use progress::{CompactCarriedComparisons, CompactProgress};
 
 const CHECK_ID: &str = "ignored_instructions";
 const IDLE_SECS: i64 = 180;
 const LEASE_SECS: i64 = 300;
 const RETRY_DELAY_SECS: i64 = 30 * 60;
-const SAMPLE_SIZE: usize = 256;
+const PAIRS_PER_TURN: usize = 8;
+const SAMPLING_REVISION: u32 = 1;
 const POLICY: CheckPolicy = CheckPolicy {
     idle_secs: IDLE_SECS,
     lease_secs: LEASE_SECS,
@@ -76,6 +80,14 @@ struct InstructionDiscoveryCache {
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct AssessmentCursor {
+    source_fingerprint: Option<String>,
+    sampling_revision: u32,
+    sampling: Option<SamplingProgress>,
+    active_jobs: Vec<SamplingJob>,
+    required_answers: BTreeMap<String, StableId>,
+    inventory_counts: BTreeMap<String, usize>,
+    reviewed_ids: std::collections::BTreeSet<String>,
+    terminal_ids: std::collections::BTreeSet<String>,
     input_revision: Option<String>,
     round: u32,
     backlog: bool,
@@ -109,6 +121,14 @@ enum StoredCarriedComparisons {
 #[derive(Default, serde::Deserialize)]
 #[serde(default)]
 struct StoredAssessmentCursor {
+    source_fingerprint: Option<String>,
+    sampling_revision: u32,
+    sampling: Option<SamplingProgress>,
+    active_jobs: Vec<SamplingJob>,
+    required_answers: BTreeMap<String, StableId>,
+    inventory_counts: BTreeMap<String, usize>,
+    reviewed_ids: std::collections::BTreeSet<String>,
+    terminal_ids: std::collections::BTreeSet<String>,
     input_revision: Option<String>,
     round: u32,
     backlog: bool,
@@ -154,6 +174,14 @@ fn parse_checkpoint(
     };
     Ok((
         AssessmentCursor {
+            source_fingerprint: stored.source_fingerprint,
+            sampling_revision: stored.sampling_revision,
+            sampling: stored.sampling,
+            active_jobs: stored.active_jobs,
+            required_answers: stored.required_answers,
+            inventory_counts: stored.inventory_counts,
+            reviewed_ids: stored.reviewed_ids,
+            terminal_ids: stored.terminal_ids,
             input_revision: stored.input_revision,
             round: stored.round,
             backlog: stored.backlog,
@@ -207,6 +235,14 @@ fn serialize_selected_cursor_progress(
 ) -> anyhow::Result<String> {
     #[derive(serde::Serialize)]
     struct Checkpoint<'a> {
+        source_fingerprint: &'a Option<String>,
+        sampling_revision: u32,
+        sampling: &'a Option<SamplingProgress>,
+        active_jobs: &'a [SamplingJob],
+        required_answers: &'a BTreeMap<String, StableId>,
+        inventory_counts: &'a BTreeMap<String, usize>,
+        reviewed_ids: &'a std::collections::BTreeSet<String>,
+        terminal_ids: &'a std::collections::BTreeSet<String>,
         input_revision: &'a Option<String>,
         round: u32,
         backlog: bool,
@@ -222,6 +258,14 @@ fn serialize_selected_cursor_progress(
         selected_content: Option<&'a SelectedContentProgress>,
     }
     Ok(serde_json::to_string(&Checkpoint {
+        source_fingerprint: &cursor.source_fingerprint,
+        sampling_revision: cursor.sampling_revision,
+        sampling: &cursor.sampling,
+        active_jobs: &cursor.active_jobs,
+        required_answers: &cursor.required_answers,
+        inventory_counts: &cursor.inventory_counts,
+        reviewed_ids: &cursor.reviewed_ids,
+        terminal_ids: &cursor.terminal_ids,
         input_revision: &cursor.input_revision,
         round: cursor.round,
         backlog: cursor.backlog,
@@ -363,7 +407,10 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     }
     let candidate_started = Instant::now();
     let input_preparation_started = Instant::now();
-    let capabilities = handle.resolve_capabilities(key_generation).await?;
+    let mut capabilities = handle.resolve_capabilities(key_generation).await?;
+    if let Some(limit) = capabilities.questions_per_request.value.as_mut() {
+        *limit = (*limit).min(4);
+    }
     let mut discovery_cache = InstructionDiscoveryCache::default();
     let stored_before_queue = store.burn_check_assessment(&candidate.session.key, CHECK_ID)?;
     let existing_pairs = store.burn_check_sampled_pairs(&candidate.session.key, CHECK_ID)?;
@@ -373,11 +420,12 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         .map(|pair| pair.round)
         .max()
         .unwrap_or(0)
-        .saturating_add(u32::from(
-            stored_before_queue
-                .as_ref()
-                .is_some_and(|old| old.status == "completed"),
-        ));
+        .saturating_add(u32::from(stored_before_queue.as_ref().is_some_and(|old| {
+            old.status == "completed"
+                || parse_cursor(&old.progress_json).is_ok_and(|(cursor, _)| {
+                    cursor.source_fingerprint != candidate.source_fingerprint
+                })
+        })));
     let saved_position = stored_before_queue
         .as_ref()
         .and_then(|assessment| {
@@ -527,6 +575,14 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     } else {
         (cursor, compact_progress, selected_progress)
     };
+    cursor
+        .source_fingerprint
+        .clone_from(&candidate.source_fingerprint);
+    if let Some(reviewed) = input.context.check_context.get("reviewed_comparison_ids") {
+        cursor.reviewed_ids.extend(
+            serde_json::from_value::<std::collections::BTreeSet<String>>(reviewed.clone())?,
+        );
+    }
     ignored_instructions::extend_jev_context_with_history_and_capabilities(
         &mut input.context,
         &mut cursor.carried_comparisons,
@@ -534,19 +590,14 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         input.prior_history_complete,
         &capabilities,
     )?;
-    let remaining = SAMPLE_SIZE.saturating_sub(
-        cursor
-            .result
-            .as_ref()
-            .map_or(0, |result| result.coverage.selected_comparisons),
-    );
-    limit_comparison_page(&mut input.context, remaining)?;
+    let incarnation = input.incarnation;
+    select_comparison_turn(&mut input.context, &mut cursor, incarnation, &capabilities)?;
     let orchestration = admit_jev_orchestration().await?;
     let mut prepared_plan = ignored_instructions::IgnoredInstructionsCheck
         .prepare_with_capabilities(&input.context, &capabilities)?;
     let plan = &prepared_plan.prepared;
-    let work_items = &prepared_plan.work_items;
     cursor.round = round;
+    let work_items = &prepared_plan.work_items;
     if let Some(compact) = compact_progress
         && !compact.is_empty()
     {
@@ -597,6 +648,103 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         ::tracing::debug!(event = "burn_check_claim_rejected", check_id = CHECK_ID);
         return Ok(());
     }
+    save_scheduling(
+        store,
+        &input,
+        &cursor,
+        &plan.coverage,
+        input.more_content,
+        false,
+    )?;
+    let mut connection = handle.system_one_connection();
+    connection
+        .model_revision
+        .clone_from(&capabilities.model_revision);
+    let mut blocked_items = std::collections::BTreeSet::new();
+    let mut deferred = false;
+    for item in work_items {
+        if cursor.progress.results.contains_key(&item.id) {
+            continue;
+        }
+        let packed = antiburn_local::analysis::jev::pack_work_items_with_capabilities(
+            std::slice::from_ref(item),
+            &capabilities,
+        );
+        let mut terminal = !packed.skipped_item_ids.is_empty();
+        for batch in packed.batches {
+            let identities =
+                crate::jev::worker::batch_request_identities(&connection, &input, &batch);
+            match store.burn_check_dispatch_readiness(&identities, unix_now())? {
+                crate::store::BurnCheckRequestAdmission::Admitted => {}
+                crate::store::BurnCheckRequestAdmission::Exhausted
+                | crate::store::BurnCheckRequestAdmission::Unresolved => terminal = true,
+                crate::store::BurnCheckRequestAdmission::Deferred => deferred = true,
+                crate::store::BurnCheckRequestAdmission::Stale => return Ok(()),
+            }
+        }
+        if terminal {
+            blocked_items.insert(item.id.clone());
+            for comparison in &plan.comparisons {
+                if item
+                    .questions
+                    .contains_key(&format!("target-{}::decision", comparison.id))
+                    && cursor.terminal_ids.insert(comparison.id.clone())
+                    && let Some(job) = cursor
+                        .active_jobs
+                        .iter()
+                        .find(|job| job.candidate == comparison_identity(&comparison.id))
+                {
+                    cursor
+                        .sampling
+                        .as_mut()
+                        .expect("initialized")
+                        .terminate_candidate(job)
+                        .map_err(|error| {
+                            anyhow::anyhow!("sampling termination rejected: {error:?}")
+                        })?;
+                }
+            }
+        }
+    }
+    save_scheduling(
+        store,
+        &input,
+        &cursor,
+        &plan.coverage,
+        input.more_content,
+        false,
+    )?;
+    if deferred {
+        let checkpoint = serialize_selected_cursor_progress(
+            &cursor,
+            &cursor.progress,
+            work_items,
+            &input.context,
+            &mut BTreeMap::new(),
+            Some(&selected_progress),
+        )?;
+        store.save_burn_check_checkpoint(
+            &input,
+            &checkpoint,
+            None,
+            unix_now(),
+            LEASE_SECS,
+            IDLE_SECS,
+        )?;
+        store.release_failed_burn_check_lease(
+            &input,
+            "continuing",
+            store
+                .burn_check_next_attempt_at(&input)?
+                .unwrap_or(unix_now().saturating_add(1)),
+        )?;
+        return Ok(());
+    }
+    let all_work_items = work_items.clone();
+    prepared_plan
+        .work_items
+        .retain(|item| !blocked_items.contains(&item.id));
+    let plan = &prepared_plan.prepared;
     if candidate.historical {
         crate::jev::settings::progress_changed(app);
     }
@@ -639,7 +787,8 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     );
     let more_content = input.more_content;
     let next_content_cursor = input.next_content_cursor.clone();
-    let checkpoint_work_items = work_items.clone();
+    let checkpoint_work_items = all_work_items.clone();
+    let checkpoint_plan = prepared_plan.clone();
     let context = input.context.clone();
     let check = ignored_instructions::IgnoredInstructionsCheck;
     let capabilities = &capabilities;
@@ -663,6 +812,22 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         cursor.progress.clone(),
         orchestration,
         |progress| {
+            let reviewed = check.reduce(
+                &checkpoint_plan,
+                &progress.results.values().cloned().collect::<Vec<_>>(),
+                false,
+            )?;
+            record_reviewed_pairs(&mut cursor, &reviewed)
+                .map_err(|_| JevError::ProgressStorageFailure)?;
+            save_scheduling(
+                store,
+                &input,
+                &cursor,
+                &checkpoint_plan.prepared.coverage,
+                more_content,
+                false,
+            )
+            .map_err(|_| JevError::ProgressStorageFailure)?;
             serialize_selected_cursor_progress(
                 &cursor,
                 progress,
@@ -676,7 +841,6 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     )
     .await?;
     let plan = &prepared_plan.prepared;
-    let work_items = &prepared_plan.work_items;
     ::tracing::debug!(
         event = "ignored_instruction_assessment_execution_timing",
         check_id = CHECK_ID,
@@ -694,8 +858,66 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         return Ok(());
     }
     let rejected = matches!(outcome.failure, Some(JevError::AuthenticationRejected));
+    let yielded = matches!(outcome.failure, Some(JevError::Cancelled)) && handle.turn_exhausted();
+    let permanent = outcome.failure.as_ref().is_some_and(|error| {
+        matches!(
+            error_category(error),
+            "outcome_unknown"
+                | "invalid_response"
+                | "response_too_large"
+                | "response_decode"
+                | "response_usage_exceeded"
+                | "invalid_request"
+        )
+    });
+    if permanent {
+        for item in all_work_items
+            .iter()
+            .filter(|item| outcome.progress.failed_item_ids.contains(&item.id))
+        {
+            let packed = antiburn_local::analysis::jev::pack_work_items_with_capabilities(
+                std::slice::from_ref(item),
+                capabilities,
+            );
+            let mut blocked = !packed.skipped_item_ids.is_empty();
+            for batch in packed.batches {
+                let identities =
+                    crate::jev::worker::batch_request_identities(&connection, &input, &batch);
+                blocked |= matches!(
+                    store.burn_check_dispatch_readiness(&identities, unix_now())?,
+                    crate::store::BurnCheckRequestAdmission::Unresolved
+                        | crate::store::BurnCheckRequestAdmission::Exhausted
+                );
+            }
+            if !blocked {
+                continue;
+            }
+            for comparison in &plan.comparisons {
+                if item
+                    .questions
+                    .contains_key(&format!("target-{}::decision", comparison.id))
+                    && !cursor.reviewed_ids.contains(&comparison.id)
+                    && cursor.terminal_ids.insert(comparison.id.clone())
+                    && let Some(job) = cursor
+                        .active_jobs
+                        .iter()
+                        .find(|job| job.candidate == comparison_identity(&comparison.id))
+                {
+                    cursor
+                        .sampling
+                        .as_mut()
+                        .expect("initialized")
+                        .terminate_candidate(job)
+                        .map_err(|error| {
+                            anyhow::anyhow!("sampling termination rejected: {error:?}")
+                        })?;
+                }
+            }
+        }
+    }
     let page_result = outcome.result;
-    let result_before_page = cursor.result.clone();
+    record_reviewed_pairs(&mut cursor, &page_result)?;
+    save_scheduling(store, &input, &cursor, &plan.coverage, more_content, false)?;
     let new_content_page = selected_progress.cursor.is_some() && cursor.comparison_after.is_none();
     if outcome.failure.is_none() && more_content {
         let mut carried = BTreeMap::new();
@@ -743,14 +965,22 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         merge_assessment_page(&mut result, previous, new_content_page);
     }
     result.input_revision = input.input_revision.clone();
-    let more_comparisons =
-        plan.next_comparison_cursor.is_some() && result.coverage.selected_comparisons < SAMPLE_SIZE;
+    let page_remaining = cursor
+        .sampling
+        .as_ref()
+        .expect("initialized")
+        .runnable_count(ignored_check_identity())
+        > 0;
+    let more_comparisons = plan.next_comparison_cursor.is_some();
     let start_backlog = outcome.failure.is_none()
         && !more_comparisons
         && !more_content
-        && !cursor.backlog
+        && (!cursor.backlog
+            || (!plan.comparisons.is_empty()
+                && cursor.inventory_counts.values().sum::<usize>()
+                    > cursor.reviewed_ids.len() + cursor.terminal_ids.len()))
         && !existing_pairs.is_empty()
-        && result.coverage.selected_comparisons < SAMPLE_SIZE;
+        && !page_remaining;
     let old_position: AssessmentPosition = (
         cursor.backlog,
         selected_progress.cursor.clone(),
@@ -772,11 +1002,15 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     let has_more_work = more_comparisons
         || start_backlog
         || continue_content_pass(more_content, result.coverage.selected_comparisons);
-    let decision = assessment_page_decision(
-        outcome.failure.is_none() && has_more_work,
-        &old_position,
-        &proposed_position,
-    );
+    let decision = if outcome.failure.is_none() && (page_remaining || start_backlog) {
+        AssessmentPageDecision::Continue
+    } else {
+        assessment_page_decision(
+            outcome.failure.is_none() && has_more_work,
+            &old_position,
+            &proposed_position,
+        )
+    };
     let advancing = decision == AssessmentPageDecision::Continue;
     let stalled = decision == AssessmentPageDecision::Incomplete;
     if stalled {
@@ -794,7 +1028,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             .limitations
             .push("sampled_content_selection".to_owned());
     }
-    if advancing {
+    if advancing && !page_remaining {
         for finding in &mut result.findings {
             finding.limitations.retain(|limit| {
                 !matches!(
@@ -808,12 +1042,8 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         }
     }
     cursor.input_revision = Some(input.input_revision.clone());
-    cursor.result = if outcome.failure.is_some() {
-        result_before_page
-    } else {
-        Some(result.clone())
-    };
-    if advancing {
+    cursor.result = Some(result.clone());
+    if advancing && !page_remaining {
         if start_backlog {
             cursor.backlog = true;
             selected_progress.cursor = None;
@@ -830,6 +1060,13 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         }
     } else {
         cursor.progress = outcome.progress;
+    }
+    if outcome.failure.is_none() || permanent {
+        cursor.active_jobs.clear();
+        cursor.progress = JevRunProgress::default();
+    }
+    if outcome.failure.is_none() && !has_more_work && !page_remaining {
+        save_scheduling(store, &input, &cursor, &result.coverage, more_content, true)?;
     }
     merge_prior_findings(&mut result, &cursor.prior_findings);
     result.coverage.limitations.sort();
@@ -860,11 +1097,12 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     let progress_json = serialize_selected_cursor_progress(
         &cursor,
         &cursor.progress,
-        if advancing { &[] } else { work_items },
+        if advancing { &[] } else { &all_work_items },
         &context,
         &mut checkpoint_followups,
         Some(&selected_progress),
     )?;
+    store.save_burn_check_sampled_pairs(&input, &sampled_pairs)?;
     ::tracing::debug!(
         event = "burn_check_assessment_state_sizes",
         result_bytes = serialized.len(),
@@ -879,7 +1117,9 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         store.supersede_burn_check_assessment(&input, unix_now())?;
         return Ok(());
     }
-    let published = if advancing {
+    let exhausted_retry = matches!(outcome.failure, Some(JevError::ProviderUnavailable))
+        && store.burn_check_next_attempt_at(&input)?.is_none();
+    let published = if advancing || yielded || permanent || exhausted_retry {
         let Some(published) = handle.with_current_generation(key_generation, || {
             store.fail_burn_check_assessment_with_result(
                 &input,
@@ -887,7 +1127,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                     error_category: "continuing",
                     result_json: &serialized,
                     progress_json: &progress_json,
-                    retry_at_epoch: None,
+                    retry_at_epoch: store.burn_check_next_attempt_at(&input)?,
                 },
                 unix_now(),
                 IDLE_SECS,
@@ -945,18 +1185,145 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
 }
 
 fn continue_content_pass(more_content: bool, selected_comparisons: usize) -> bool {
-    more_content && selected_comparisons < SAMPLE_SIZE
+    let _ = selected_comparisons;
+    more_content
 }
 
-fn limit_comparison_page(context: &mut JevSessionContext, remaining: usize) -> anyhow::Result<()> {
+fn ignored_check_identity() -> StableId {
+    StableId::new("smart-check", &[b"ignored_instructions"])
+}
+
+fn record_reviewed_pairs(
+    cursor: &mut AssessmentCursor,
+    result: &ignored_instructions::AssessmentResult,
+) -> anyhow::Result<()> {
+    for comparison in &result.coverage.reassessed_comparison_ids {
+        if !cursor.reviewed_ids.contains(comparison)
+            && let Some(job) = cursor
+                .active_jobs
+                .iter()
+                .find(|job| job.candidate == comparison_identity(comparison))
+        {
+            let sampling = cursor.sampling.as_mut().expect("initialized");
+            sampling
+                .record_reduced_answer(job, cursor.required_answers[comparison])
+                .and_then(|()| sampling.complete_candidate(job))
+                .map_err(|error| anyhow::anyhow!("sampling completion rejected: {error:?}"))?;
+            cursor.reviewed_ids.insert(comparison.clone());
+        }
+    }
+    Ok(())
+}
+
+fn comparison_identity(id: &str) -> StableId {
+    StableId::new("ignored-instructions-pair", &[id.as_bytes()])
+}
+
+fn select_comparison_turn(
+    context: &mut JevSessionContext,
+    cursor: &mut AssessmentCursor,
+    incarnation: u64,
+    capabilities: &antiburn_local::analysis::jev::capabilities::ModelCapabilities,
+) -> anyhow::Result<()> {
     let mut plan: ignored_instructions::AssessmentPlan =
         serde_json::from_value(context.check_context["assessment_plan"].clone())?;
-    if plan.comparisons.len() <= remaining {
-        return Ok(());
+    let inventory_id =
+        ignored_instructions::sha256_hex(&serde_json::to_vec(&plan.current_action_digests)?);
+    cursor
+        .inventory_counts
+        .insert(inventory_id, plan.coverage.candidate_pairs);
+    let actions: Vec<ignored_instructions::ContentAction> =
+        serde_json::from_value(context.check_context["episode_actions"].clone())?;
+    if cursor.sampling_revision != SAMPLING_REVISION {
+        cursor.sampling = None;
+        cursor.active_jobs.clear();
+        cursor.sampling_revision = SAMPLING_REVISION;
     }
-    plan.comparisons.truncate(remaining);
-    plan.coverage.selected_comparisons = remaining;
-    plan.coverage.unselected_pairs = plan.coverage.candidate_pairs.saturating_sub(remaining);
+    if cursor.sampling.is_none() {
+        cursor.sampling = Some(
+            SamplingProgress::new(SamplingLimits {
+                checks: 1,
+                candidates_per_check: ignored_instructions::MAX_ASSESSMENT_CANDIDATES * 2,
+                answers_per_candidate: 1,
+                judgments_per_run: PAIRS_PER_TURN,
+            })
+            .map_err(|error| anyhow::anyhow!("invalid sampling limits: {error:?}"))?,
+        );
+    }
+    let candidates = plan
+        .comparisons
+        .iter()
+        .map(|comparison| {
+            let digest = comparison_dependency(&plan, comparison, incarnation, capabilities)?;
+            let earlier = actions
+                .iter()
+                .filter(|action| {
+                    action.reference.thread_digest == comparison.source_thread_digest
+                        && action.turn_scope == comparison.source_turn_scope
+                        && action.reference.turn_index < comparison.source_turn_index
+                })
+                .map(ignored_instructions::content_action_digest)
+                .collect::<Vec<_>>();
+            let answer = StableId::new(
+                "ignored-instructions-answer",
+                &[digest.as_bytes(), &serde_json::to_vec(&earlier)?],
+            );
+            if cursor
+                .required_answers
+                .get(&comparison.id)
+                .is_some_and(|saved| *saved != answer)
+            {
+                cursor.reviewed_ids.remove(&comparison.id);
+                cursor.terminal_ids.remove(&comparison.id);
+            }
+            cursor
+                .required_answers
+                .insert(comparison.id.clone(), answer);
+            Ok(Candidate {
+                id: comparison_identity(&comparison.id),
+                required_answers: vec![answer],
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut chronology = plan.comparisons.iter().collect::<Vec<_>>();
+    chronology.sort_by_key(|comparison| {
+        (
+            comparison.source_turn_index,
+            comparison.action.source_order,
+            comparison_identity(&comparison.id),
+        )
+    });
+    let chronology = chronology
+        .iter()
+        .map(|comparison| comparison_identity(&comparison.id))
+        .collect::<Vec<_>>();
+    let sampling = cursor.sampling.as_mut().expect("initialized");
+    sampling
+        .synchronize_ordered(
+            ignored_check_identity(),
+            ignored_check_identity(),
+            &candidates,
+            &chronology,
+        )
+        .map_err(|error| anyhow::anyhow!("sampling inventory rejected: {error:?}"))?;
+    if cursor.active_jobs.is_empty() {
+        sampling.begin_run();
+        while let Some(job) = sampling.choose_job() {
+            cursor.active_jobs.push(job);
+        }
+    }
+    let selected = cursor
+        .active_jobs
+        .iter()
+        .map(|job| job.candidate)
+        .collect::<std::collections::BTreeSet<_>>();
+    plan.comparisons
+        .retain(|comparison| selected.contains(&comparison_identity(&comparison.id)));
+    plan.coverage.selected_comparisons = plan.comparisons.len();
+    plan.coverage.unselected_pairs = plan
+        .coverage
+        .candidate_pairs
+        .saturating_sub(plan.comparisons.len());
     for source in &mut plan.coverage.instruction_sources {
         source.selected_comparisons = plan
             .comparisons
@@ -964,20 +1331,49 @@ fn limit_comparison_page(context: &mut JevSessionContext, remaining: usize) -> a
             .filter(|comparison| comparison.reference.source == source.source)
             .count();
     }
-    plan.coverage.sampled_pass = true;
-    if !plan
-        .coverage
-        .limitations
-        .iter()
-        .any(|limit| limit == "sampled_candidate_selection")
-    {
-        plan.coverage
-            .limitations
-            .push("sampled_candidate_selection".into());
-    }
-    context.limitations = plan.coverage.limitations.clone();
+    plan.coverage.sampled_pass |= plan.coverage.unselected_pairs > 0;
     context.check_context["assessment_plan"] = serde_json::to_value(plan)?;
     Ok(())
+}
+
+fn save_scheduling(
+    store: &Store,
+    input: &BurnCheckInput,
+    cursor: &AssessmentCursor,
+    coverage: &ignored_instructions::AssessmentCoverage,
+    more_content: bool,
+    exhausted: bool,
+) -> anyhow::Result<bool> {
+    let total = cursor
+        .inventory_counts
+        .values()
+        .sum::<usize>()
+        .max(coverage.candidate_pairs);
+    let reviewed = cursor.reviewed_ids.len();
+    let runnable = if exhausted {
+        0
+    } else {
+        total
+            .saturating_sub(reviewed)
+            .saturating_sub(cursor.terminal_ids.len())
+    };
+    let enumerated = !more_content
+        && inventory_enumerated(coverage)
+        && cursor
+            .result
+            .as_ref()
+            .is_none_or(|result| inventory_enumerated(&result.coverage));
+    store.save_burn_check_scheduling(input, enumerated.then_some(total), reviewed, runnable)
+}
+
+fn inventory_enumerated(coverage: &ignored_instructions::AssessmentCoverage) -> bool {
+    coverage.skipped_rules.is_empty()
+        && coverage.skipped_actions.is_empty()
+        && !coverage.processing_limit_reached
+        && !coverage
+            .limitations
+            .iter()
+            .any(|limit| limit == "instruction_scan_incomplete")
 }
 
 fn sampled_pairs_for_page(
@@ -1052,12 +1448,15 @@ fn verify_sampling_ledger(
     let mut verified = std::collections::BTreeSet::new();
     let mut probe = input.clone();
     probe.comparison_after = None;
-    for _ in 0..SAMPLE_SIZE.div_ceil(ignored_instructions::MAX_ASSESSMENT_CANDIDATES) {
-        let plan = ignored_instructions::build_assessment_plan_with_capabilities(
-            probe.clone(),
+    loop {
+        let context = ignored_instructions::build_jev_context_with_capabilities(
+            &probe,
             &ignored_instructions::SamplingLedger::default(),
             capabilities,
-        );
+        )?;
+        let plan = ignored_instructions::IgnoredInstructionsCheck
+            .prepare_with_capabilities(&context, capabilities)?
+            .prepared;
         for comparison in &plan.comparisons {
             if let Some(digests) = expected.get(comparison.id.as_str()) {
                 let digest =
@@ -1702,11 +2101,18 @@ async fn prepare_selected_input_with_home(
         &mut ledger,
         pass.capabilities,
     )?;
-    let context = ignored_instructions::build_jev_context_with_capabilities(
+    let mut context = ignored_instructions::build_jev_context_with_capabilities(
         &assessment_input,
         &ledger,
         pass.capabilities,
     )?;
+    let reviewed = pass
+        .pairs
+        .iter()
+        .filter(|pair| pair.assessed && ledger.comparison_ids.contains(&pair.comparison_id))
+        .map(|pair| pair.comparison_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    context.check_context["reviewed_comparison_ids"] = serde_json::to_value(reviewed)?;
     #[cfg(test)]
     {
         preparation_timings.context_build_us = stage_started.elapsed().as_micros();
@@ -1934,22 +2340,7 @@ fn save_outcome(
     let _ = (historical, failed);
     let store_started = Instant::now();
     let published = if let Some(error) = outcome.failure {
-        let retry_at = match error {
-            JevError::RequestOutcomeUnknown => Some(unix_now().saturating_add(24 * 60 * 60)),
-            JevError::RateLimited { retry_after }
-            | JevError::ProviderOverloaded { retry_after } => {
-                let delay = retry_after
-                    .map(|delay| delay.as_secs().min(i64::MAX as u64) as i64)
-                    .unwrap_or(RETRY_DELAY_SECS);
-                Some(unix_now().saturating_add(delay))
-            }
-            JevError::ProviderUnavailable => Some(unix_now().saturating_add(RETRY_DELAY_SECS)),
-            JevError::AuthenticationRejected | JevError::InvalidRequestSchema => {
-                Some(unix_now().saturating_add(24 * 60 * 60))
-            }
-            JevError::Cancelled => None,
-            _ => Some(unix_now().saturating_add(24 * 60 * 60)),
-        };
+        let retry_at = store.burn_check_next_attempt_at(input)?;
         store.fail_burn_check_assessment_with_result(
             input,
             &BurnCheckFailure {
@@ -2026,6 +2417,133 @@ mod settings_tests {
                 "turn_rowid": turn_index + 1, "part_index": 0}
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn skipped_inventories_keep_scheduling_totals_unknown_and_exhaustion_stops_turns() {
+        for skipped in ["rule", "action", "prior_rule", "prior_action"] {
+            let (store, input) = scheduling_fixture();
+            let mut coverage = result(&[]).coverage;
+            coverage.candidate_pairs = 4;
+            let mut cursor = AssessmentCursor {
+                inventory_counts: BTreeMap::from([("page".into(), 4)]),
+                reviewed_ids: std::collections::BTreeSet::from(["reviewed".into()]),
+                ..Default::default()
+            };
+            let skipped_coverage = if skipped.starts_with("prior_") {
+                cursor.result = Some(result(&[]));
+                &mut cursor.result.as_mut().unwrap().coverage
+            } else {
+                &mut coverage
+            };
+            if skipped.ends_with("rule") {
+                skipped_coverage
+                    .skipped_rules
+                    .push("unavailable-rule".into());
+            } else {
+                skipped_coverage
+                    .skipped_actions
+                    .push("unavailable-action".into());
+            }
+            assert!(save_scheduling(&store, &input, &cursor, &coverage, false, false).unwrap());
+            assert_eq!(scheduling_counts(&store, &input), (None, 1, 3), "{skipped}");
+            store
+                .fail_burn_check_assessment_with_result(
+                    &input,
+                    &BurnCheckFailure {
+                        error_category: "continuing",
+                        result_json: "{}",
+                        progress_json: "{}",
+                        retry_at_epoch: None,
+                    },
+                    1_000,
+                    IDLE_SECS,
+                )
+                .unwrap();
+            assert!(scheduling_candidates(&store, &input));
+            assert!(save_scheduling(&store, &input, &cursor, &coverage, false, true).unwrap());
+            assert_eq!(scheduling_counts(&store, &input), (None, 1, 0), "{skipped}");
+            assert!(!scheduling_candidates(&store, &input), "{skipped}");
+        }
+    }
+
+    #[test]
+    fn fully_enumerated_inventory_persists_known_scheduling_counts() {
+        let (store, input) = scheduling_fixture();
+        let mut coverage = result(&[]).coverage;
+        coverage.candidate_pairs = 4;
+        let cursor = AssessmentCursor {
+            inventory_counts: BTreeMap::from([("page".into(), 4)]),
+            reviewed_ids: std::collections::BTreeSet::from(["reviewed".into()]),
+            terminal_ids: std::collections::BTreeSet::from(["terminal".into()]),
+            ..Default::default()
+        };
+        assert!(save_scheduling(&store, &input, &cursor, &coverage, true, false).unwrap());
+        assert_eq!(scheduling_counts(&store, &input), (None, 1, 2));
+        assert!(save_scheduling(&store, &input, &cursor, &coverage, false, false).unwrap());
+        assert_eq!(scheduling_counts(&store, &input), (Some(4), 1, 2));
+        assert!(save_scheduling(&store, &input, &cursor, &coverage, false, true).unwrap());
+        assert_eq!(scheduling_counts(&store, &input), (Some(4), 1, 0));
+    }
+
+    fn scheduling_fixture() -> (Store, BurnCheckInput) {
+        let (store, candidate) = crate::over_exploring_worker::tests::fixture(None, "user");
+        store
+            .set_check_enabled(
+                antiburn_local::checks::DetectorId::IgnoredInstructions,
+                true,
+            )
+            .unwrap();
+        store.capture_burn_check_boundaries(&[CHECK_ID], 0).unwrap();
+        let candidate = store
+            .enrolled_burn_check_candidate(&candidate, CHECK_ID)
+            .unwrap();
+        let input = BurnCheckInput {
+            key: candidate.session.key,
+            check_id: CHECK_ID.into(),
+            incarnation: candidate.incarnation,
+            source_generation: candidate.source_generation,
+            source_fingerprint: candidate.source_fingerprint,
+            activity_cursor: candidate.activity_cursor,
+            published_fence: candidate.published_fence,
+            input_revision: "scheduling-counts".into(),
+            evaluator_revision: CHECK.evaluator_revision(),
+            boundary_at_epoch: candidate.boundary_at_epoch,
+        };
+        assert!(
+            store
+                .queue_burn_check_assessment(&input, 1_000, IDLE_SECS)
+                .unwrap()
+        );
+        assert!(
+            store
+                .claim_burn_check_assessment(&input, 1_000, LEASE_SECS, IDLE_SECS)
+                .unwrap()
+        );
+        (store, input)
+    }
+
+    fn scheduling_counts(store: &Store, input: &BurnCheckInput) -> (Option<usize>, usize, usize) {
+        store.lock().query_row(
+            "SELECT eligible_targets, reviewed_targets, runnable_targets FROM burn_check_assessment
+                WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND check_id = ?4",
+            rusqlite::params![input.key.environment_key, input.key.agent, input.key.session_id, input.check_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap()
+    }
+
+    fn scheduling_candidates(store: &Store, input: &BurnCheckInput) -> bool {
+        store
+            .burn_check_candidates_for_revision(
+                CHECK_ID,
+                &input.evaluator_revision,
+                1_000,
+                IDLE_SECS,
+                16,
+            )
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate.session.key == input.key)
     }
 
     #[test]
@@ -2672,15 +3190,15 @@ mod settings_tests {
     }
 
     #[test]
-    fn bounded_pass_stops_after_its_selected_comparison_budget() {
+    fn content_enumeration_continues_after_each_turn_budget() {
         assert!(continue_content_pass(true, 255));
-        assert!(!continue_content_pass(true, 256));
-        assert!(!continue_content_pass(true, 1024));
+        assert!(continue_content_pass(true, 256));
+        assert!(continue_content_pass(true, 1024));
         assert!(!continue_content_pass(false, 0));
     }
 
     #[test]
-    fn final_comparison_page_uses_only_the_remaining_budget() {
+    fn comparison_turn_preserves_unselected_inventory_and_active_jobs() {
         let reference = result(&["action"]).findings.remove(0).reference;
         let mut assessment = plan(&reference);
         let template = assessment.comparisons[0].clone();
@@ -2696,18 +3214,74 @@ mod settings_tests {
         let mut context = JevSessionContext {
             input_revision: assessment.input_revision.clone(),
             session_identity: "session".into(),
-            check_context: serde_json::json!({"assessment_plan": assessment}),
+            check_context: serde_json::json!({"assessment_plan": assessment, "episode_actions": []}),
             limitations: Vec::new(),
             evidence_store: Default::default(),
             reference_snapshots: Vec::new(),
         };
-        limit_comparison_page(&mut context, 24).unwrap();
+        let inventory = context.clone();
+        let mut cursor = AssessmentCursor::default();
+        let capabilities =
+            antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default();
+        select_comparison_turn(&mut context, &mut cursor, 1, &capabilities).unwrap();
         let selected: AssessmentPlan =
             serde_json::from_value(context.check_context["assessment_plan"].clone()).unwrap();
-        assert_eq!(selected.comparisons.len(), 24);
-        assert_eq!(selected.coverage.selected_comparisons, 24);
-        assert_eq!(selected.coverage.unselected_pairs, 376);
+        assert_eq!(selected.comparisons.len(), PAIRS_PER_TURN);
+        assert_eq!(selected.coverage.selected_comparisons, PAIRS_PER_TURN);
+        assert_eq!(selected.coverage.unselected_pairs, 400 - PAIRS_PER_TURN);
         assert!(selected.coverage.sampled_pass);
+        assert_eq!(
+            cursor
+                .sampling
+                .as_ref()
+                .unwrap()
+                .coverage(ignored_check_identity())
+                .unwrap()
+                .eligible,
+            256
+        );
+        let jobs = serde_json::to_string(&cursor.active_jobs).unwrap();
+        let mut restored: AssessmentCursor =
+            serde_json::from_str(&serde_json::to_string(&cursor).unwrap()).unwrap();
+        let mut resumed = inventory.clone();
+        select_comparison_turn(&mut resumed, &mut restored, 1, &capabilities).unwrap();
+        assert_eq!(serde_json::to_string(&restored.active_jobs).unwrap(), jobs);
+        assert_eq!(resumed.check_context, context.check_context);
+        let jobs = restored.active_jobs.clone();
+        let sampling = restored.sampling.as_mut().unwrap();
+        sampling.terminate_candidate(&jobs[0]).unwrap();
+        for job in &jobs[1..] {
+            let comparison = selected
+                .comparisons
+                .iter()
+                .find(|comparison| comparison_identity(&comparison.id) == job.candidate)
+                .unwrap();
+            sampling
+                .record_reduced_answer(job, restored.required_answers[&comparison.id])
+                .unwrap();
+            sampling.complete_candidate(job).unwrap();
+        }
+        assert_eq!(
+            sampling
+                .coverage(ignored_check_identity())
+                .unwrap()
+                .completed,
+            PAIRS_PER_TURN - 1
+        );
+        assert_eq!(
+            sampling.runnable_count(ignored_check_identity()),
+            256 - PAIRS_PER_TURN
+        );
+        restored.active_jobs.clear();
+        let mut next = inventory;
+        select_comparison_turn(&mut next, &mut restored, 1, &capabilities).unwrap();
+        assert_eq!(restored.active_jobs.len(), PAIRS_PER_TURN);
+        assert!(
+            restored
+                .active_jobs
+                .iter()
+                .all(|job| jobs.iter().all(|old| old.candidate != job.candidate))
+        );
     }
 
     #[test]
@@ -2906,6 +3480,7 @@ mod settings_tests {
             prior_findings: Vec::new(),
             validated_prior_findings: Default::default(),
             carried_comparisons: Vec::new(),
+            ..Default::default()
         };
         let restored: AssessmentCursor =
             serde_json::from_str(&serde_json::to_string(&cursor).unwrap()).unwrap();

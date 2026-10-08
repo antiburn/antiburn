@@ -58,20 +58,34 @@ Instruction-file discovery compares supported files in their current state.
 It does not prove historical contents or activation. Recover historical
 instruction text only from an authoritative session record; do not infer it
 from a matching current path or a read request. Keep unavailable evidence
-unavailable. Ignored Instructions samples 1,024 high-priority rule/action pairs
-per review by default. This sample is not exhaustive or a spending cap. Clean
+unavailable. Ignored Instructions samples up to 8 high-priority rule/action pairs
+per turn by default. This sample is not exhaustive or a spending cap. Clean
 means no finding among sampled comparisons, not that all content is safe. Keep
 provider and evidence errors separate from the remaining sampling gap. Reuse a
 result only when the same instruction rule and action can be identified across
-an append or restart. Review new activity first, then older pairs not yet
-sampled. Instruction changes govern future actions only; the first observed
-version cannot establish historical activation. The roughly 60-second
+an append or restart. Alternate risk-ranked new activity with older unchecked
+work across source chronology. Instruction changes govern future actions only;
+the first observed version cannot establish historical activation. The roughly 60-second
 ordinary-session goal after worker start is not a cutoff or guarantee. An
-unknown outcome can trigger up to three total dispatch attempts while the worker
-tries to recover it. An earlier attempt may already have incurred a charge. If
-the result remains unknown, further dispatch of that work is blocked. Describe
+retryable transport failure can trigger up to three persisted dispatch attempts
+total. Unknown delivery blocks automatic redispatch when safe reconciliation is
+unavailable. An earlier attempt may already have incurred a charge. Describe
 incremental paid requests and compatible answer
 reuse without promising a per-session cost cap.
+
+Each production check descriptor initially targets 50% of eligible targets,
+then continues remaining work. State this as a target fraction, not confidence
+or finding probability. The shared scheduler rotates across all four descriptors,
+prefers initial review for four turns, and prefers continuation on the fifth.
+The other lane can run when the preferred lane is empty. Per-turn target limits
+are 8/4/3/4 for Ignored Instructions, Scope Creep, Over-exploring, and Skill
+Opportunities, respectively. Admit at most two provider dispatch attempts per
+turn, including retries. Persist finite attempt limits in the Store across
+turns and restarts; yielding must not reset them. Reuse typed answers only for
+the exact evidence and decision context, references, model/provider configuration,
+and revisions. Keep private thinking excluded. Count review only after all
+required answers and successful reduction; never use the initial fraction to
+convert incomplete, uncertain, unsupported, exhausted, or failed work into Clean.
 
 Follow [the reusable Jev check contract](docs/smart-burn-checks.md#reusable-jev-check-contract) when adding a
 check-owned projection, input window, question set, or reducer. See
@@ -115,7 +129,7 @@ checks when a change crosses workspace boundaries or changes a public interface.
 cd crates/antiburn-local
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo nextest run
 ```
 
 ### Desktop checks
@@ -142,7 +156,8 @@ ignored test; imported production transport probes can incur charges.
 After coverage edits, run from the repository root:
 
 ```sh
-cargo test --manifest-path crates/antiburn-local/Cargo.toml --test check_coverage_contract
+cargo nextest run --manifest-path crates/antiburn-local/Cargo.toml --test check_coverage_contract
+cargo nextest run --manifest-path crates/antiburn-local/Cargo.toml --test source_contracts
 ```
 
 When source claims or formats change, also run `source_contracts` and the
@@ -153,7 +168,7 @@ tests for the changed contract; live eval scores remain diagnostics, not gates.
 
 The Linux remote helper is another standalone workspace. When its protocol or
 engine inputs change, run `cargo fmt --check`, `cargo clippy --all-targets --locked
--- -D warnings`, and `cargo test --locked` from `crates/antiburn-remote` as well.
+-- -D warnings`, and `cargo nextest run --locked` from `crates/antiburn-remote` as well.
 CI also builds its static Linux x64 and ARM64 archives. See
 [remote sessions](docs/remote-sessions.md) for manual setup and evidence limits.
 
@@ -161,7 +176,7 @@ CI also builds its static Linux x64 and ARM64 archives. See
 cd apps/desktop/src-tauri
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo nextest run
 ```
 
 For analytics changes, also run these shell checks with the feature enabled:
@@ -171,7 +186,7 @@ cd apps/desktop/src-tauri
 cargo clippy --all-targets --features analytics -- -D warnings
 ANTIBURN_ANALYTICS_URL=http://127.0.0.1:8787 \
 ANTIBURN_ANALYTICS_OPERATOR="Local development" \
-cargo test --features analytics
+cargo nextest run --features analytics
 ```
 
 The endpoint and operator are build-time inputs. Use the loopback collector in

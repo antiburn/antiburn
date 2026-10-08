@@ -72,18 +72,24 @@ pub(super) fn reduce(
     {
         return Err(JevError::InvalidCheckPlan);
     }
-    let expected = check.prepare_with_capabilities(check.context(), &plan.capabilities)?;
-    let selected = plan
-        .prepared
-        .groups
+    let mut groups = Vec::new();
+    for group in &plan.prepared.groups {
+        groups.push(check.canonical_group(group)?);
+    }
+    let mut canonical = check.prepare_groups(check.context(), &plan.capabilities, groups)?;
+    canonical.coverage.not_selected_items = plan.coverage.not_selected_items;
+    if plan
+        .coverage
+        .limitations
         .iter()
-        .map(|group| StableId::new("scope_work", &[group.id.as_bytes()]))
-        .collect();
-    let canonical = if plan.prepared.groups == expected.prepared.groups {
-        expected
-    } else {
-        ScopeCreepCheck::select_candidates(&expected, &selected)
-    };
+        .any(|limit| limit == "descriptor_enumeration_incomplete")
+    {
+        canonical.coverage.processing_limit_reached = true;
+        canonical
+            .coverage
+            .limitations
+            .push("descriptor_enumeration_incomplete".into());
+    }
     if plan.prepared != canonical.prepared
         || plan.work_items != canonical.work_items
         || plan.shared_context != canonical.shared_context
@@ -157,7 +163,7 @@ pub(super) fn reduce(
                 ScopeAnswer::LikelyScopeExpansion if probability >= DECISION_THRESHOLD => {
                     ScopeCreepStatus::Finding
                 }
-                ScopeAnswer::NoIssue => ScopeCreepStatus::Clean,
+                ScopeAnswer::NoIssue if group.limitation.is_none() => ScopeCreepStatus::Clean,
                 _ => ScopeCreepStatus::Uncertain,
             };
             decision.reduced_answer_ids = vec![ScopeCreepCheck::answer_identity(

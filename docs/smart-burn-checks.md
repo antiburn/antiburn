@@ -73,6 +73,17 @@ includes the complete compact scope. Later recorded approval withdraws stale
 findings and prompt actions. Task context that exceeds the model limit remains
 unassessed; the check does not split, summarize, or silently truncate approvals.
 
+Large selected work and supporting activity stay eligible through bounded sampled
+excerpts. A sampled work entry carries child chunks instead of a complete text
+body. Each large value supplies at most four structural fragments: early,
+task-relevant, middle, and late. When no interior child matches task terms, the
+relevant slot uses the first third. Exact UTF-8 byte offsets, total bytes, and
+partial flags identify the gaps. These offsets refer to check-selected action
+text or the named normalized field, not native transcript JSON. Large Bash input
+can retain an exact first line of at most 1,024 bytes, but sampled input cannot
+prove complete command options. A negative decision with partial activity is
+Uncertain, not Clean. Useful positive decisions retain their evidence limits.
+
 Over-exploring reviews read targets against recorded task context. Its three
 reasons are unrelated files, excessive file breadth, and excessive within-file
 reading. Counts and requested ranges rank targets; they do not prove waste.
@@ -110,11 +121,59 @@ It does not prove past visibility or whole-session absence. Reliable birth time
 records creation after the relevant work as an advisory limit, not a candidate
 exclusion; missing time stays explicit.
 
+Skill Opportunities uses the same four-fragment sampling for large selected work,
+including edit inputs, commands, and tool results. Preparation samples only the
+selected episode. Work citations preserve ordered ranges, total bytes, partial
+status, and the digest of the full check-selected action. Changing an omitted
+range invalidates the saved binding even when the source length stays the same.
+The evidence view shows partial-work and selected-window limits. A sampled
+negative is Uncertain, not a complete no-opportunity result; a validated positive
+can still support a bounded recommendation. An accepted semantic answer completes
+the selected sampling job without claiming review of every source byte. There is
+no exhaustive subrange scheduler.
+
 All four checks preserve exact source citations and exclude private thinking.
 Prompts suggest better instructions for future work. They do not repair the
 reviewed session, offer Auto Fix, create verification watches, or estimate savings.
 Changed source evidence, provider configuration, or skill inputs invalidate stale work.
 History progress counts check-session jobs, not distinct sessions.
+
+### Incremental review and scheduling
+
+The shared scheduler sets an initial review target of **50% of eligible targets**
+for each check descriptor, rounded up to a whole target.
+This percentage is a target fraction, not model confidence, finding
+probability, or a claim that half the session text was reviewed. A target counts
+as reviewed only after all required window answers pass validation and the
+check's reducer accepts them. Dispatch, partial answers, private thinking, and
+unavailable evidence do not count as completed review.
+
+The shared scheduler serves the four descriptors in round-robin order. Four
+turns prefer initial-review work, then the fifth prefers continuation work;
+either lane can serve work when the preferred lane is empty. Remaining targets
+continue after the initial fraction is reached. Each turn selects at most:
+
+| Check                | Targets per turn |
+| -------------------- | ---------------- |
+| Ignored Instructions | 8                |
+| Scope Creep          | 4                |
+| Over-exploring       | 3                |
+| Skill Opportunities  | 4                |
+
+Each scheduler turn admits at most two provider dispatch attempts, including
+retries. Packing can combine several answers in one request; a target limit is
+not a request count. The Store persists a limit of three total dispatch attempts
+for exact semantic work across turns and restarts. Yielding to another descriptor does not
+reset those limits. Exhausted or unknown work remains unassessed and cannot
+produce Clean. Earlier dispatched attempts can already have incurred charges.
+
+Saved typed answers are reusable only for the exact decision context: selected
+evidence, source bindings, reference inputs, model/provider configuration, and
+check revisions must remain compatible. Transport repacking alone does not
+create new work. Changed task scope or skill references invalidate affected
+answers. Private thinking stays excluded from requests and review counts.
+Unsupported, incomplete, uncertain, and failed work cannot become a clean result
+merely because the initial fraction was reached.
 
 ## Ignored Instructions
 
@@ -211,8 +270,8 @@ apart.
 ### How sampling works
 
 One rule-text range and one action-text range form a possible comparison. The
-default sample is **1,024 high-priority rule/action pairs per review**. This is
-not exhaustive coverage or a cap on possible comparisons, TypeSafe requests,
+default turn sample is **8 high-priority rule/action pairs**. This is
+not exhaustive coverage or a per-session cap on comparisons, TypeSafe requests,
 tokens, elapsed time, or cost. A large session can have many more possible
 pairs. The check records possible, sampled, and remaining pair counts. Remaining
 pairs are a sampling gap, not known violations.
@@ -227,10 +286,10 @@ of the budget in stable score order. Diversity and exploration reduce, but do
 not remove, the chance of missing a conflict. Jev still decides applicability
 using the rule and recorded context. Keyword matches alone never publish findings.
 
-On subsequent reviews, new activity receives attention first, then older
-eligible pairs not yet sampled. The worker saves sampled pair identities and
+On subsequent turns, risk-ranked new activity alternates with older unchecked
+work spread across source chronology. The worker saves sampled pair identities and
 compatible typed answers across completed reviews, appends, and restarts.
-Unchanged sampled pairs do not consume the next pass because content pages or
+Unchanged sampled pairs do not consume the next turn because content pages or
 request packing changed. With no new work, the remaining gap decreases over
 successive reviews; new actions or rules can increase it. Reuse requires the
 same identifiable instruction rule and action, selected text, relevant context,
@@ -341,7 +400,7 @@ back to its local window, saves generic progress, resumes unfinished requests,
 and calls the check's reducer. Its mechanics do not depend on Ignored
 Instructions.
 
-The desktop `JevCheckWorker` trait connects a check to product work. It supplies
+The desktop `JevCheckDescriptor` trait connects a check to product work. It supplies
 the check ID and processes one stored session candidate. The shared
 `crate::jev::worker` scheduler finds candidates, and `execute_jev_batch` handles
 transport, cache, reservations, retries, cancellation, and safe error reporting.
@@ -466,7 +525,7 @@ Checks own projection, windows, questions, follow-up policy, deterministic
 reduction, and clean-result eligibility. Checks do not decode native source
 formats, call TypeSafe, reserve usage, or access the desktop Store.
 
-`JevCheckWorker` is a thin desktop adapter. It enrolls and pages product
+`JevCheckDescriptor` is a thin desktop adapter. It enrolls and pages product
 candidates, obtains source-fenced check input and reference snapshots, restores
 check progress, calls `run_jev_check`, and publishes results. A new check reuses
 the shared scheduler, executor, cache, and usage reservation.
@@ -488,7 +547,7 @@ source field matrix and the check's product enrollment.
 2. Implement `JevCheck`. Select only the normalized facts the check needs,
    group them into bounded windows, bind local evidence IDs, write typed
    questions, and reduce the answers deterministically.
-3. Implement `JevCheckWorker` for candidate selection, source preparation,
+3. Implement `JevCheckDescriptor` for candidate selection, source preparation,
    check-specific paging, resume state, and result combination. Load only
    supported source evidence and check-owned references. Preserve availability
    and source-fence limits.
@@ -540,7 +599,7 @@ preparation, transport, or reduction changes.
 An ordinary assessment in about 60 seconds after worker start is a performance
 goal, not a deadline or guarantee. Preparation, provider admission, request
 packing, model latency, checkpoints, and publication all
-add time. A pass can use several paid requests; the 1,024-pair budget does not
+add time. A review can use several paid requests; the 8-pair turn budget does not
 cap spending. Large inputs, rate limits, retries, and missing history can take
 longer. Measure worker-start-to-result time, sampled coverage, requests and
 tokens, reuse, missed findings, and cost on representative sessions before

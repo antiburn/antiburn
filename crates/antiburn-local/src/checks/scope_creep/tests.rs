@@ -456,29 +456,65 @@ fn independent_operations_keep_stable_inventory_and_publish_with_unanswered_sibl
 }
 
 #[test]
-fn oversized_atomic_work_is_terminal_but_does_not_erase_other_targets() {
+fn oversized_atomic_work_retains_sampled_content_and_other_targets() {
     let mut parts = vec![part(0, ContentKind::UserText, "Fix login only.")];
     let mut large = work(2);
     large[0].part = ContentPart::new(ContentKind::ToolInput, "x".repeat(100_000))
         .with_tool_identity(Some("Write".into()), Some("write-2".into()));
     parts.extend(large);
     parts.extend(work(4));
-    let check = ScopeCreepCheck::new(input(parts)).unwrap();
+    let input = input(parts);
+    let selected = select_session_content(&input.content, INPUT_SELECTION);
+    let source = &selected
+        .actions
+        .iter()
+        .find(|action| {
+            action.kind == "tool_input" && action.tool_call_id.as_deref() == Some("write-2")
+        })
+        .unwrap()
+        .text;
+    let check = ScopeCreepCheck::new(input).unwrap();
     let mut capabilities = ModelCapabilities::jev_default();
     capabilities.request_body_bytes.value = Some(20_000);
     let plan = check
         .prepare_with_capabilities(check.context(), &capabilities)
         .unwrap();
     assert_eq!(plan.prepared.groups.len(), 2);
-    assert_eq!(plan.work_items.len(), 1);
-    assert_eq!(plan.skipped_item_ids.len(), 1);
+    assert_eq!(plan.work_items.len(), 2);
+    assert!(plan.skipped_item_ids.is_empty());
+    let large = plan
+        .work_items
+        .iter()
+        .flat_map(|item| item.window.fields["bound_work"].as_array().unwrap())
+        .find(|work| work["content"]["total_bytes"] == source.len())
+        .unwrap();
+    assert!(large["text"].is_null());
+    let content = &large["content"];
+    assert_eq!(content["partial"], true);
+    assert_eq!(content["range_source"], "selected_action_text");
+    let chunks = content["chunks"].as_array().unwrap();
+    assert!(!chunks.is_empty());
+    assert!(chunks.len() <= 4);
+    assert_eq!(chunks[0]["start_byte"], 0);
+    assert_eq!(chunks.last().unwrap()["end_byte"], source.len());
+    let mut previous_end = 0;
+    let mut selected_bytes = 0;
+    for chunk in chunks {
+        let start = chunk["start_byte"].as_u64().unwrap() as usize;
+        let end = chunk["end_byte"].as_u64().unwrap() as usize;
+        assert!(start >= previous_end && start < end && end <= source.len());
+        assert_eq!(chunk["text"], &source[start..end]);
+        selected_bytes += end - start;
+        previous_end = end;
+    }
+    assert!(selected_bytes < source.len());
     assert_eq!(
         check
             .reduce(&plan, &results(&plan, "likely_scope_expansion", 0.80), true)
             .unwrap()
             .findings
             .len(),
-        1
+        2
     );
 }
 

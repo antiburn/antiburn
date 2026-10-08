@@ -27,7 +27,7 @@ use crate::store::{
 };
 
 pub(crate) const CHECK_ID: &str = "over_exploring";
-const CURSOR_REVISION: u32 = 4;
+const CURSOR_REVISION: u32 = 5;
 // Accepted input has at most 4096 events and 256 disjoint episodes.
 const MAX_SAMPLING_CANDIDATES: usize = 2 * 4096 + 256;
 const POLICY: CheckPolicy = CheckPolicy {
@@ -66,6 +66,8 @@ struct AssessmentCursor {
     revision: u32,
     input_revision: String,
     provider_generation: u64,
+    inventory_count: usize,
+    inventory_total: usize,
     sampling: Option<SamplingProgress>,
     active_job: Option<SamplingJob>,
     run_progress: JevRunProgress,
@@ -267,11 +269,18 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     if cursor.sampling.is_none() {
         cursor.sampling = Some(new_sampling()?);
     }
-    over_exploring::synchronize_sampling(
-        &input.plan,
-        cursor.sampling.as_mut().expect("initialized"),
-    )
-    .map_err(|error| anyhow::anyhow!("sampling inventory rejected: {error:?}"))?;
+    cursor.inventory_total = input.plan.prepared.candidates.len();
+    cursor.inventory_count = cursor
+        .inventory_count
+        .saturating_add(256)
+        .min(cursor.inventory_total);
+    let mut inventory = input.plan.clone();
+    inventory
+        .prepared
+        .candidates
+        .truncate(cursor.inventory_count);
+    synchronize_sampling(&inventory, cursor.sampling.as_mut().expect("initialized"))
+        .map_err(|error| anyhow::anyhow!("sampling inventory rejected: {error:?}"))?;
     if !store.queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)?
         || !store.claim_burn_check_assessment(
             &input.durable,
@@ -310,7 +319,62 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         }
         let mut plan = input.plan.clone();
         PreparedAssessment::select_jobs(&mut plan, std::slice::from_ref(&job))?;
+        let mut connection = handle.system_one_connection();
+        connection
+            .model_revision
+            .clone_from(&capabilities.model_revision);
+        let mut terminal = plan.work_items.is_empty();
+        let mut deferred = false;
+        for item in &plan.work_items {
+            if cursor.run_progress.results.contains_key(&item.id) {
+                continue;
+            }
+            let packed = antiburn_local::analysis::jev::pack_work_items_with_shared_context(
+                std::slice::from_ref(item),
+                &capabilities,
+                plan.shared_context.as_ref().expect("prepared task context"),
+            );
+            for batch in packed.batches {
+                let identities = crate::jev::worker::batch_request_identities(
+                    &connection,
+                    &input.durable,
+                    &batch,
+                );
+                match store.burn_check_dispatch_readiness(&identities, unix_now())? {
+                    crate::store::BurnCheckRequestAdmission::Admitted => {}
+                    crate::store::BurnCheckRequestAdmission::Exhausted
+                    | crate::store::BurnCheckRequestAdmission::Unresolved => terminal = true,
+                    crate::store::BurnCheckRequestAdmission::Deferred => deferred = true,
+                    crate::store::BurnCheckRequestAdmission::Stale => return Ok(()),
+                }
+            }
+        }
+        if terminal {
+            cursor
+                .sampling
+                .as_mut()
+                .expect("initialized")
+                .terminate_candidate(&job)
+                .map_err(|error| anyhow::anyhow!("sampling termination rejected: {error:?}"))?;
+            cursor.active_job = None;
+            cursor.run_progress = JevRunProgress::default();
+            if !save_cursor(store, &input.durable, &cursor)? {
+                return Ok(());
+            }
+            continue;
+        }
+        if deferred {
+            save_failure(
+                store,
+                &input,
+                &cursor,
+                "continuing",
+                store.burn_check_next_attempt_at(&input.durable)?,
+            )?;
+            return Ok(());
+        }
         let progress = std::mem::take(&mut cursor.run_progress);
+        let checkpoint_plan = plan.clone();
         let orchestration = admit_jev_orchestration().await?;
         let outcome = run_prepared_check(
             BatchExecution {
@@ -331,6 +395,38 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             orchestration,
             |progress| {
                 cursor.run_progress = progress.clone();
+                let reviewed = OverExploringCheck.reduce(
+                    &checkpoint_plan,
+                    &progress.results.values().cloned().collect::<Vec<_>>(),
+                    false,
+                )?;
+                if checkpoint_plan
+                    .work_items
+                    .iter()
+                    .all(|item| reviewed.completed_work_item_ids.contains(&item.id))
+                    && !cursor
+                        .sampling
+                        .as_ref()
+                        .expect("initialized")
+                        .completed_ids(check_identity())
+                        .contains(&job.candidate)
+                {
+                    checkpoint_plan
+                        .prepared
+                        .record_completion(
+                            &reviewed,
+                            &job,
+                            cursor.sampling.as_mut().expect("initialized"),
+                        )
+                        .map_err(|_| JevError::ProgressStorageFailure)?;
+                }
+                merge_result(
+                    cursor.result.as_mut().expect("initialized"),
+                    reviewed,
+                    &checkpoint_plan,
+                );
+                save_scheduling(store, &input.durable, &cursor)
+                    .map_err(|_| JevError::ProgressStorageFailure)?;
                 serde_json::to_string(&cursor).map_err(|_| JevError::ProgressStorageFailure)
             },
         )
@@ -346,6 +442,35 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             &plan,
         );
         if let Some(error) = outcome.failure {
+            if matches!(error, JevError::Cancelled) && handle.turn_exhausted() {
+                save_failure(store, &input, &cursor, "continuing", None)?;
+                return Ok(());
+            }
+            if matches!(
+                error_category(&error),
+                "outcome_unknown"
+                    | "invalid_response"
+                    | "response_too_large"
+                    | "response_decode"
+                    | "response_usage_exceeded"
+                    | "invalid_request"
+            ) {
+                let sampling = cursor.sampling.as_mut().expect("initialized");
+                if !sampling
+                    .completed_ids(check_identity())
+                    .contains(&job.candidate)
+                {
+                    sampling.terminate_candidate(&job).map_err(|error| {
+                        anyhow::anyhow!("sampling termination rejected: {error:?}")
+                    })?;
+                }
+                cursor.active_job = None;
+                cursor.run_progress = JevRunProgress::default();
+                if !save_cursor(store, &input.durable, &cursor)? {
+                    return Ok(());
+                }
+                continue;
+            }
             let rejected = matches!(error, JevError::AuthenticationRejected);
             let saved = handle
                 .with_current_generation(key_generation, || {
@@ -353,8 +478,14 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                         store,
                         &input,
                         &cursor,
-                        error_category(&error),
-                        Some(unix_now().saturating_add(POLICY.retry_delay_secs)),
+                        if matches!(error, JevError::ProviderUnavailable)
+                            && store.burn_check_next_attempt_at(&input.durable)?.is_none()
+                        {
+                            "continuing"
+                        } else {
+                            error_category(&error)
+                        },
+                        store.burn_check_next_attempt_at(&input.durable)?,
                     )?;
                     if published && !matches!(error, JevError::Cancelled) {
                         let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
@@ -379,6 +510,12 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             return Ok(());
         }
         if !plan.work_items.is_empty()
+            && !cursor
+                .sampling
+                .as_ref()
+                .expect("initialized")
+                .completed_ids(check_identity())
+                .contains(&job.candidate)
             && plan
                 .work_items
                 .iter()
@@ -406,7 +543,10 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         .expect("synchronized");
     let result = cursor.result.as_mut().expect("initialized");
     result.coverage.selected_items = coverage.completed;
-    result.coverage.not_selected_items = coverage.remaining;
+    result.coverage.not_selected_items = coverage.remaining
+        + cursor
+            .inventory_total
+            .saturating_sub(cursor.inventory_count);
     result.coverage.skipped_items = result
         .unassessed
         .iter()
@@ -474,26 +614,34 @@ fn publish_current(
         .findings
         .iter()
         .any(|finding| publishable_finding(finding, &publication));
-    let published = if clean {
-        store.complete_burn_check_assessment(
-            &input.durable,
-            &serde_json::to_string(&publication)?,
-            unix_now(),
-            POLICY.idle_secs,
-        )?
-    } else {
-        store.fail_burn_check_assessment_with_result(
-            &input.durable,
-            &BurnCheckFailure {
-                error_category: "sampling_incomplete",
-                result_json: &serde_json::to_string(&publication)?,
-                progress_json: &serde_json::to_string(&cursor)?,
-                retry_at_epoch: None,
-            },
-            unix_now(),
-            POLICY.idle_secs,
-        )?
-    };
+    let published =
+        if clean {
+            store.complete_burn_check_assessment(
+                &input.durable,
+                &serde_json::to_string(&publication)?,
+                unix_now(),
+                POLICY.idle_secs,
+            )?
+        } else {
+            store.fail_burn_check_assessment_with_result(
+                &input.durable,
+                &BurnCheckFailure {
+                    error_category: if cursor.inventory_count < cursor.inventory_total
+                        || cursor.sampling.as_ref().is_some_and(|sampling| {
+                            sampling.has_runnable_candidates(check_identity())
+                        }) {
+                        "continuing"
+                    } else {
+                        "sampling_incomplete"
+                    },
+                    result_json: &serde_json::to_string(&publication)?,
+                    progress_json: &serde_json::to_string(&cursor)?,
+                    retry_at_epoch: None,
+                },
+                unix_now(),
+                POLICY.idle_secs,
+            )?
+        };
     Ok(published.then(|| {
         crate::analytics::event::SmartCheckAssessmentOutcome::from_evidence(has_finding, clean)
     }))
@@ -503,11 +651,49 @@ fn check_identity() -> StableId {
     StableId::new("smart-check", &[b"over_exploring"])
 }
 
+fn synchronize_sampling(
+    plan: &JevCheckPlan<PreparedAssessment>,
+    sampling: &mut SamplingProgress,
+) -> Result<(), antiburn_local::checks::sampling::SamplingError> {
+    let candidates = plan
+        .prepared
+        .candidates
+        .iter()
+        .map(|candidate| antiburn_local::checks::sampling::Candidate {
+            id: candidate.candidate_id,
+            required_answers: candidate.required_answers.clone(),
+        })
+        .collect::<Vec<_>>();
+    let mut chronological = plan.prepared.candidates.iter().collect::<Vec<_>>();
+    chronological.sort_by_key(|candidate| {
+        let source_index = candidate
+            .work_item_ids
+            .iter()
+            .filter_map(|id| plan.prepared.targets.get(id))
+            .flat_map(|target| target.read_indexes.iter().copied())
+            .min()
+            .unwrap_or(usize::MAX);
+        (source_index, candidate.candidate_id)
+    });
+    sampling.synchronize_ordered(
+        check_identity(),
+        plan.prepared.epoch,
+        &candidates,
+        &chronological
+            .iter()
+            .map(|candidate| candidate.candidate_id)
+            .collect::<Vec<_>>(),
+    )
+}
+
 fn save_cursor(
     store: &Store,
     input: &BurnCheckInput,
     cursor: &AssessmentCursor,
 ) -> anyhow::Result<bool> {
+    if !save_scheduling(store, input, cursor)? {
+        return Ok(false);
+    }
     store.save_burn_check_checkpoint(
         input,
         &serde_json::to_string(cursor)?,
@@ -516,6 +702,35 @@ fn save_cursor(
         POLICY.lease_secs,
         POLICY.idle_secs,
     )
+}
+
+fn save_scheduling(
+    store: &Store,
+    input: &BurnCheckInput,
+    cursor: &AssessmentCursor,
+) -> anyhow::Result<bool> {
+    if let Some(sampling) = &cursor.sampling {
+        let coverage = sampling.coverage(check_identity()).expect("synchronized");
+        let missing = cursor.result.as_ref().map_or(0, |result| {
+            result
+                .unassessed
+                .iter()
+                .filter(|item| item.work_item_id.is_none())
+                .count()
+        });
+        let unenumerated = cursor
+            .inventory_total
+            .saturating_sub(cursor.inventory_count);
+        if !store.save_burn_check_scheduling(
+            input,
+            (unenumerated == 0).then_some(coverage.eligible + missing),
+            coverage.completed,
+            sampling.runnable_count(check_identity()) + unenumerated,
+        )? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn save_failure(

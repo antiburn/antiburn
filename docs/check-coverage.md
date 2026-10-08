@@ -39,6 +39,10 @@ or uncertain assessments cannot produce Clean.
 Incomplete current inventory retains valid definitions with an explicit limit.
 Report and evaluation matching validate selected reference text, source, byte
 ranges, partial coverage, and definition revision against the current definition.
+Work citations retain ordered UTF-8 byte ranges, total selected-action bytes,
+partial status, and the full selected-action digest. The desktop evidence view
+validates these bindings against the current check-selected projection. A
+same-length change in an omitted range invalidates the saved citation.
 
 Scope Creep uses one choice per selected work group. Findings require a finite
 decision probability from 0.75 through 1.0 and distinguish recorded attempts
@@ -46,6 +50,23 @@ from proposals. Retained task context can be empty; it does not prove complete
 approval history. Findings do not prove completed execution. Recorded approvals
 still constrain the decision. Uncertain and unassessed groups count separately
 from reviewed clean outcomes.
+
+Scope Creep and Skill Opportunities retain large selected work, including edit
+inputs, commands, and tool results, as bounded sampled content. Each large value
+uses at most four structural fragments: early, task-relevant, middle, and late.
+The relevant slot uses the first third when no interior child matches task terms.
+Scope Creep also retains large supporting activity this way. Provider content
+carries exact UTF-8 start/end byte offsets, total bytes, and partial flags. Offsets
+refer to check-selected action text or the named normalized field, not native
+transcript JSON. Sampled entries do not claim a complete text body. A retained
+exact Bash first line does not prove complete command options.
+
+Sampled negative decisions are Uncertain, not Clean or complete no-opportunity
+results. Accepted semantic answers still complete their selected sampling jobs;
+review completion does not mean all source bytes were reviewed. Validated positive
+decisions can support bounded findings and recommendations with the content and
+selected-window limits. No exhaustive subrange review is implemented. These
+limits do not change parser or native source-format support.
 
 The native skill-use adapter is fixture-characterized for `ClaudeJsonl`,
 `OpenCodeSqliteV2`, `CodexRolloutJsonl`, and `PiV3Jsonl` under the
@@ -302,6 +323,30 @@ in this matrix.
 | `DevinLocalSqlite` | Unsupported | Unsupported | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
 | `Uncharacterized` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unsupported | Unsupported | Unsupported |
 
+## Smart Check Review Coverage
+
+All four production descriptors target an initial review of 50% of eligible
+targets, then continue remaining work. The percentage measures the target
+fraction, not model confidence or finding probability. Review counts require all
+required answers and successful check reduction. Partial answers, dispatches,
+private thinking, and unavailable evidence cannot count as reviewed targets.
+
+One shared scheduler rotates across the four descriptors. Four turns prefer
+initial review and the fifth prefers continuation, with the other lane available
+when the preferred lane is empty. Per-turn target limits are 8 for Ignored
+Instructions, 4 for Scope Creep, 3 for Over-exploring, and 4 for Skill
+Opportunities. Each turn admits at most two provider dispatch attempts, including
+retries. The Store retains finite attempt limits across turns and restarts;
+continuation does not reset exhausted work.
+
+Answer reuse requires the exact selected evidence, decision context, source
+bindings, reference inputs, model/provider configuration, and check revisions.
+Repacking alone does not invalidate a compatible answer. A changed scope or
+skill reference invalidates affected answers. Reaching the initial fraction
+does not turn incomplete, unsupported, uncertain, exhausted, or failed work into
+Clean. These scheduling rules do not expand source or remediation support in
+the matrices below. See [incremental review](smart-burn-checks.md#incremental-review-and-scheduling).
+
 ## Ignored Instructions Evidence
 
 The first-tier product matrix is the source of truth for reachable check
@@ -376,12 +421,12 @@ origin, synthetic text, skill documents, unmatched/conflicting joins, and clippi
 cannot establish permission or successful tests. Edit content, read/search output,
 other results, typed question/plan fields, and thinking remain excluded.
 Selected paths can leave the machine. Sampling selects
-up to 1,024 high-priority rule/action pairs per review by word rarity, tool
+up to 8 high-priority rule/action pairs per turn by word rarity, tool
 name, literal path, prohibition/tool-input risk, and recency. It spreads choices
 across rules and sources and probes low-overlap pairs. These signals cannot
-prove that omitted pairs are irrelevant. New activity leads later reviews;
-then older pairs not yet sampled reduce the remaining gap, unless new work
-adds pairs. Compatible typed answers persist across append, completion, and
+prove that omitted pairs are irrelevant. Risk-ranked new activity alternates with
+older unchecked work across source chronology to reduce the remaining gap,
+unless new work adds pairs. Compatible typed answers persist across append, completion, and
 restart with source-bound identities and input/revision checks. Long non-command text is
 split into overlapping byte ranges; not every range must be sent. Bash commands
 stay atomic and remain unassessed when they exceed the request limit. Rule

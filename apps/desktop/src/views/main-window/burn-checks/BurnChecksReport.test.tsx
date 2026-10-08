@@ -6,6 +6,113 @@ import { BurnChecksView } from "../BurnChecksView"
 import { aggregate, deferred, report, setup } from "./tests/burnChecksTestSupport"
 
 describe("smart check report integration", () => {
+  it("keeps terminal uncertainty and pending completion separate from unanswered targets", async () => {
+    setup(null, false, aggregate, {
+      ...report,
+      categories: [
+        {
+          ...report.categories[2]!,
+          id: "ignoredInstructions",
+          checking: false,
+          sampled: true,
+          partialContext: true,
+          reviewCoverage: {
+            reviewed: 2,
+            total: 4,
+            uncertain: 1,
+            pending: 2,
+            pendingCompletion: 1,
+            continuing: false,
+          },
+        },
+      ],
+    })
+    fireEvent.click(await screen.findByRole("button", { name: "Not assessed (1)" }))
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Ignored instructions, Not assessed" }),
+    )
+    await screen.findAllByText(
+      "2 of 4 reviewed · 1 uncertain · 2 unanswered · 1 pending completion · 50% reviewed",
+    )
+    expect(screen.queryByText("Checking…")).not.toBeInTheDocument()
+    fireEvent.focus(screen.getByLabelText("This check has been sampled"))
+    const tooltip = await screen.findByRole("tooltip")
+    expect(within(tooltip).getByText(/Pending completion is a reviewed answer/)).toBeVisible()
+    expect(within(tooltip).queryByText("Review is continuing.")).not.toBeInTheDocument()
+  })
+
+  it("shows known review percentages without inventing an outcome breakdown", async () => {
+    setup(null, false, aggregate, {
+      ...report,
+      categories: [
+        {
+          ...report.categories[2]!,
+          id: "ignoredInstructions",
+          checking: true,
+          sampled: true,
+          reviewCoverage: {
+            reviewed: 2,
+            total: 3,
+            uncertain: null,
+            pending: 1,
+            pendingCompletion: null,
+            continuing: false,
+          },
+        },
+      ],
+    })
+    const row = await screen.findByRole("button", { name: /No issues found yet, Checking…/ })
+    expect(
+      within(row).getByText(
+        "2 of 3 reviewed · uncertain count unknown · 1 unanswered · pending completion count unknown · 67% reviewed",
+      ),
+    ).toBeVisible()
+    expect(screen.queryByText(/0 uncertain/)).not.toBeInTheDocument()
+  })
+  it.each([
+    "ignoredInstructions",
+    "scopeCreep",
+    "overExploring",
+    "skillOpportunities",
+  ] as const)("explains the rounded review percentage for %s in both notices", async (id) => {
+    setup(null, false, aggregate, {
+      ...report,
+      categories: [
+        {
+          ...report.categories[2]!,
+          id,
+          checking: true,
+          sampled: true,
+          partialContext: true,
+          reviewCoverage: {
+            reviewed: 2,
+            total: 3,
+            uncertain: 1,
+            pending: 1,
+            pendingCompletion: 0,
+            continuing: false,
+          },
+        },
+      ],
+    })
+    const row = await screen.findByRole("button", { name: /No issues found yet, Checking…/ })
+    expect(
+      within(row).getByText("2 of 3 reviewed · 1 uncertain · 1 unanswered · 67% reviewed"),
+    ).toBeVisible()
+    for (const label of ["This check has been sampled", "This check used partial context"]) {
+      const notice = screen.getByLabelText(label)
+      fireEvent.focus(notice)
+      const tooltip = await screen.findByRole("tooltip")
+      expect(
+        within(tooltip).getByText("67% of review targets have been reviewed."),
+      ).toBeVisible()
+      expect(
+        within(tooltip).getByText(/The review target is 50% of eligible targets/),
+      ).toHaveTextContent("not a confidence score or a guarantee that no issues remain")
+      fireEvent.blur(notice)
+      await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument())
+    }
+  })
   it.each([
     "ignoredInstructions",
     "scopeCreep",
@@ -19,7 +126,14 @@ describe("smart check report integration", () => {
       checking: true,
       sampled: true,
       partialContext: true,
-      reviewCoverage: { reviewed: 2, total: null, uncertain: 1, pending: 3, continuing: true },
+      reviewCoverage: {
+        reviewed: 2,
+        total: null,
+        uncertain: 1,
+        pending: 3,
+        pendingCompletion: 0,
+        continuing: true,
+      },
     }
     const { adapter, session } = setup(null, false, aggregate, {
       ...report,
@@ -27,13 +141,14 @@ describe("smart check report integration", () => {
     })
     const row = await screen.findByRole("button", { name: /No issues found yet, Checking…/ })
     expect(within(row).getByText("No issues found yet")).toHaveClass("text-system-green")
-    expect(within(row).getByText("2 reviewed · 1 uncertain · 3 pending")).toBeVisible()
+    expect(within(row).getByText("2 reviewed · 1 uncertain · 3 unanswered")).toBeVisible()
     expect(screen.queryByRole("button", { name: /Not assessed/ })).not.toBeInTheDocument()
     expect(adapter.getTargets).not.toHaveBeenCalled()
     const partial = screen.getByLabelText("This check used partial context")
     expect(partial).toHaveAttribute("tabindex", "0")
     fireEvent.focus(partial)
     expect(await screen.findByText(/Missing context can limit the assessment/)).toBeVisible()
+    expect(screen.getByText(/The review percentage is unknown/)).toBeVisible()
     fireEvent.blur(partial)
     vi.mocked(adapter.getReport).mockResolvedValue({
       ...report,

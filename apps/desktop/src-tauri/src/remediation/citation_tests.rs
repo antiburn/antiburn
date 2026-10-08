@@ -603,6 +603,7 @@ fn scope_citations_cover_the_complete_latest_scope_and_bound_work() {
 #[test]
 fn skill_citations_include_work_current_descriptions_and_exact_recorded_use() {
     use antiburn_local::analysis::jev::{JevEvidenceReference, JevEvidenceRole};
+    use antiburn_local::analysis::jev_evidence::content_action_digest;
     use antiburn_local::checks::skill_opportunities::*;
     let work = super::tests::context_action("work", 1, "Add parser boundary tests.");
     let usage = super::tests::context_action("use", 2, "Request the format skill.");
@@ -641,6 +642,10 @@ fn skill_citations_include_work_current_descriptions_and_exact_recorded_use() {
                 text: work.text.clone(),
                 timestamp_ms: work.timestamp_ms,
                 kind: work.kind.clone(),
+                ranges: vec![(0, work.text.len())],
+                total_bytes: work.text.len(),
+                source_digest: content_action_digest(&work),
+                partial: work.truncated,
             }],
             skill,
             limitations: vec![],
@@ -674,13 +679,16 @@ fn skill_citations_include_work_current_descriptions_and_exact_recorded_use() {
         evidence: Some(Box::new(finding.clone())),
         skill_name: "Parser review".into(),
         skill_description: "Review parser boundaries.".into(),
-        cited_work_context: work.text,
+        cited_work_context: work.text.clone(),
         work_provenance: "recorded".into(),
         selected_window_limit: finding.absence_limit.clone(),
     };
     let saved = stored_skill_opportunity_evidence(&cause).unwrap();
-    let complete =
-        complete_skill_opportunity_evidence(saved.clone(), &finding, std::slice::from_ref(&usage));
+    let complete = complete_skill_opportunity_evidence(
+        saved.clone(),
+        &finding,
+        &[work.clone(), usage.clone()],
+    );
     assert_eq!(complete.status, BurnCheckEvidenceStatus::Available);
     let actual: BTreeSet<_> = complete
         .items
@@ -730,10 +738,76 @@ fn skill_citations_include_work_current_descriptions_and_exact_recorded_use() {
             .unwrap()
             .contains("Only selected byte ranges")
     );
+    let mut sampled = cause.clone();
+    let FindingCause::SkillOpportunity {
+        evidence: Some(sampled_finding),
+        ..
+    } = &mut sampled
+    else {
+        unreachable!()
+    };
+    let citation = &mut sampled_finding.comparison.work[0];
+    citation.ranges = vec![(0, 3), (11, work.text.len())];
+    citation.text = format!("{}{}", &work.text[..3], &work.text[11..]);
+    citation.partial = true;
+    assert!(citation.matches_action(&work));
+    let sampled_saved = stored_skill_opportunity_evidence(&sampled).unwrap();
+    let sampled_finding = match &sampled {
+        FindingCause::SkillOpportunity {
+            evidence: Some(finding),
+            ..
+        } => finding,
+        _ => unreachable!(),
+    };
+    let sampled_complete = complete_skill_opportunity_evidence(
+        sampled_saved.clone(),
+        sampled_finding,
+        &[work.clone(), usage.clone()],
+    );
+    assert_eq!(sampled_complete.status, BurnCheckEvidenceStatus::Available);
+    let work_item = sampled_complete
+        .items
+        .iter()
+        .find(|item| item.reference == "work")
+        .unwrap();
+    let limit = work_item.limitation.as_deref().unwrap();
+    assert!(limit.contains("0..3, 11..26"));
+    assert!(limit.contains(&sampled_finding.absence_limit));
+    assert!(limit.contains("full work was not reviewed"));
+    let mut changed_work = work.clone();
+    changed_work.text.replace_range(4..10, "change");
+    assert_eq!(changed_work.text.len(), work.text.len());
+    assert_eq!(
+        complete_skill_opportunity_evidence(
+            sampled_saved.clone(),
+            sampled_finding,
+            &[changed_work, usage.clone()]
+        )
+        .status,
+        BurnCheckEvidenceStatus::Unavailable
+    );
+    for invalid in 0..3 {
+        let mut finding = sampled_finding.as_ref().clone();
+        let citation = &mut finding.comparison.work[0];
+        match invalid {
+            0 => citation.partial = false,
+            1 => citation.ranges[0].1 += 1,
+            _ => citation.source_digest = "changed".into(),
+        }
+        assert_eq!(
+            complete_skill_opportunity_evidence(
+                sampled_saved.clone(),
+                &finding,
+                &[work.clone(), usage.clone()]
+            )
+            .status,
+            BurnCheckEvidenceStatus::Unavailable
+        );
+    }
     let mut changed = usage;
     changed.reference.thread_digest = "other-thread".into();
     assert_eq!(
-        complete_skill_opportunity_evidence(saved, &finding, &[changed]).status,
+        complete_skill_opportunity_evidence(saved, &finding, &[work, changed]).status,
         BurnCheckEvidenceStatus::Unavailable
     );
 }

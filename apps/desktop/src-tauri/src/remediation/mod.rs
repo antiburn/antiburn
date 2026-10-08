@@ -188,7 +188,12 @@ fn stored_skill_opportunity_evidence(cause: &FindingCause) -> Option<BurnCheckTa
             explanation:
                 "This observed work could benefit from the selected current skill reference."
                     .to_owned(),
-            limitation: Some(evidence.absence_limit.clone()),
+            limitation: Some(if work.partial {
+                let ranges = work.ranges.iter().map(|(start, end)| format!("{start}..{end}")).collect::<Vec<_>>().join(", ");
+                format!("{} Only selected work byte ranges ({ranges} of {} bytes) support this recommendation. Offsets refer to check-selected action text. Excerpts omit gaps between ranges; the full work was not reviewed.", evidence.absence_limit, work.total_bytes)
+            } else {
+                evidence.absence_limit.clone()
+            }),
         }),
     );
     items.extend(
@@ -229,6 +234,14 @@ fn complete_skill_opportunity_evidence(
     skill: &antiburn_local::checks::skill_opportunities::SkillOpportunityFinding,
     actions: &[antiburn_local::analysis::jev_evidence::ContentAction],
 ) -> BurnCheckTargetEvidence {
+    if skill
+        .comparison
+        .work
+        .iter()
+        .any(|citation| !actions.iter().any(|action| citation.matches_action(action)))
+    {
+        return unavailable_instruction_evidence();
+    }
     for reference in &skill.comparison.use_citations {
         let Some(action) = actions.iter().find(|action| &action.reference == reference) else {
             return unavailable_instruction_evidence();
@@ -1384,7 +1397,7 @@ impl RemediationController {
                 }
                 let evidence = stored_skill_opportunity_evidence(current.finding.cause())
                     .ok_or(ControllerError::TargetChanged)?;
-                let snapshot = if !skill.comparison.use_citations.is_empty() {
+                let snapshot = {
                     let key = SessionKey::new(
                         &current.environment_key,
                         &current.agent,
@@ -1398,16 +1411,12 @@ impl RemediationController {
                     ) else {
                         return Ok(unavailable_instruction_evidence());
                     };
-                    Some(snapshot)
-                } else {
-                    None
+                    snapshot
                 };
                 let evidence = complete_skill_opportunity_evidence(
                     evidence,
                     skill,
-                    snapshot
-                        .as_ref()
-                        .map_or(&[], |snapshot| snapshot.content().actions.as_slice()),
+                    snapshot.content().actions.as_slice(),
                 );
                 if result.occurrences.is_empty() {
                     result.status = evidence.status;

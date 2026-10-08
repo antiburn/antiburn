@@ -39,10 +39,17 @@ export interface ChecksCategoryPayload {
   /** True when the assessment uses incomplete context. */
   partialContext?: boolean
   reviewCoverage?: {
+    /** Terminal review targets, including uncertain answers. */
     reviewed: number
+    /** Null when any applicable session has a missing or capped target inventory. */
     total: number | null
-    uncertain: number
-    pending: number
+    /** Reviewed targets with an uncertain answer; a subset of reviewed. */
+    uncertain: number | null
+    /** Targets without a terminal answer; does not promise another review. */
+    pending: number | null
+    /** Reviewed targets that wait for task completion, not for a review answer. */
+    pendingCompletion?: number | null
+    /** True only when work can continue and the check is queued or running. */
     continuing: boolean
   }
   /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 10000. */

@@ -637,7 +637,7 @@ fn production_loader_binds_all_reasons_to_observed_reads_and_full_task() {
     assert_eq!(
         CHECK.evaluator_revision(),
         format!(
-            "over-exploring-adapter-v4:{}:{}:{}:{}",
+            "over-exploring-adapter-v5:{}:{}:{}:{}",
             revisions.projection, revisions.chunking, revisions.questions, revisions.reducer
         )
     );
@@ -890,7 +890,7 @@ fn a_sampling_run_selects_at_most_three_single_answer_targets() {
         candidate.work_item_ids.len() == 1 && candidate.required_answers.len() == 1
     }));
     let mut sampling = new_sampling().unwrap();
-    over_exploring::synchronize_sampling(&input.plan, &mut sampling).unwrap();
+    synchronize_sampling(&input.plan, &mut sampling).unwrap();
     sampling.begin_run();
     for _ in 0..MAX_TARGETS_PER_TURN {
         let job = sampling.choose_job().unwrap();
@@ -911,6 +911,53 @@ fn a_sampling_run_selects_at_most_three_single_answer_targets() {
     }
     assert!(sampling.choose_job().is_none());
     assert!(sampling.coverage(check_identity()).unwrap().remaining > 0);
+}
+
+#[test]
+fn terminal_targets_leave_persisted_runnable_counts_and_preserve_siblings() {
+    let (store, candidate) = fixture(None, "user");
+    let input = load_input(&store, &candidate, &ModelCapabilities::jev_default()).unwrap();
+    store
+        .queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)
+        .unwrap();
+    store
+        .claim_burn_check_assessment(
+            &input.durable,
+            unix_now(),
+            POLICY.lease_secs,
+            POLICY.idle_secs,
+        )
+        .unwrap();
+    let mut sampling = new_sampling().unwrap();
+    synchronize_sampling(&input.plan, &mut sampling).unwrap();
+    sampling.begin_run();
+    let terminal = sampling.choose_job().unwrap();
+    sampling.terminate_candidate(&terminal).unwrap();
+    let sibling = sampling.choose_job().unwrap();
+    assert_ne!(terminal.candidate, sibling.candidate);
+    let mut cursor = restore_cursor(None, &input.durable, 1);
+    cursor.sampling = Some(sampling);
+    cursor.active_job = Some(sibling.clone());
+    cursor.run_started = true;
+    assert!(save_cursor(&store, &input.durable, &cursor).unwrap());
+    let stored = store
+        .burn_check_assessment(&input.durable.key, CHECK_ID)
+        .unwrap()
+        .unwrap();
+    let restored = restore_cursor(Some(&stored), &input.durable, 1);
+    assert_eq!(restored.active_job.unwrap(), sibling);
+    let sampling = restored.sampling.unwrap();
+    let coverage = sampling.coverage(check_identity()).unwrap();
+    assert_eq!(coverage.completed, 0);
+    assert_eq!(
+        sampling.runnable_count(check_identity()),
+        coverage.eligible - 1
+    );
+    let counts = store.lock().query_row(
+        "SELECT eligible_targets, reviewed_targets, runnable_targets FROM burn_check_assessment WHERE check_id = ?1",
+        [CHECK_ID], |row| Ok((row.get::<_, usize>(0)?, row.get::<_, usize>(1)?, row.get::<_, usize>(2)?)),
+    ).unwrap();
+    assert_eq!(counts, (coverage.eligible, 0, coverage.eligible - 1));
 }
 
 #[test]

@@ -97,23 +97,11 @@ async fn evaluate_native(
                         panic!("expected choice")
                     };
                     let local_key = &batch.answer_owners[key].1;
-                    let name = local_key.rsplit("::").next().unwrap();
-                    let selected = match name {
-                        "condition_evidence" => "selected",
-                        "permission" => permission.as_str(),
-                        "action_family" => "bash",
-                        "obligation" => "action",
-                        "read_prerequisite" => "not_read_order",
-                        "read_trigger" => "not_read_rule",
-                        "path_change_policy" => "other_path",
-                        "applicability" => "applies",
-                        "relationship" => "conflict",
-                        "evidence_basis" => "self_contained",
-                        "completion" => "not_completion_obligation",
-                        _ if name.starts_with("literal_policy_") => "literal_other",
-                        _ if name.starts_with("literal_qualification_") => "qualified",
-                        _ if name.starts_with("read_path_") => "other_path",
-                        _ => panic!("unexpected production question {local_key}"),
+                    assert!(local_key.ends_with("::decision"), "{local_key}");
+                    let selected = if permission == "authoritative_approval" {
+                        "uncertain"
+                    } else {
+                        "conflict"
                     };
                     assert!(criteria.contains_key(selected), "{key}: {selected}");
                     (

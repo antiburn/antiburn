@@ -20,9 +20,21 @@ pub enum BurnCheckRequestAdmission {
     Admitted,
     Stale,
     Unresolved,
+    Deferred,
+    Exhausted,
 }
 
 impl Store {
+    /// Check each unanswered target before packing. A blocked sibling must not
+    /// prevent other targets from receiving their own dispatch.
+    pub fn burn_check_dispatch_readiness(
+        &self,
+        identities: &[String],
+        now: i64,
+    ) -> anyhow::Result<BurnCheckRequestAdmission> {
+        dispatch_readiness_in(&self.lock(), identities, now)
+    }
+
     pub fn burn_check_requests_are_unresolved(
         &self,
         identities: &[String],
@@ -94,7 +106,42 @@ impl Store {
             transaction.commit()?;
             return Ok(BurnCheckRequestAdmission::Stale);
         }
+        let readiness = dispatch_readiness_in(&transaction, identities, now)?;
+        if readiness != BurnCheckRequestAdmission::Admitted {
+            return Ok(readiness);
+        }
+        let retained: usize = transaction.query_row(
+            "SELECT count(*) FROM burn_check_dispatch_attempt",
+            [],
+            |row| row.get(0),
+        )?;
+        let new: usize = transaction.query_row(
+            "SELECT count(*) FROM json_each(?1) AS ids WHERE NOT EXISTS
+                (SELECT 1 FROM burn_check_dispatch_attempt WHERE request_identity = ids.value)",
+            [serde_json::to_string(identities)?],
+            |row| row.get(0),
+        )?;
+        if retained.saturating_add(new) > 32768 {
+            return Ok(BurnCheckRequestAdmission::Exhausted);
+        }
         let tracked = track_burn_check_requests_in(&transaction, identities, reservation_id, now)?;
+        if tracked {
+            for identity in identities {
+                transaction.execute(
+                    "INSERT INTO burn_check_dispatch_attempt
+                       (request_identity, environment_key, agent, session_id, attempts)
+                     VALUES (?1, ?2, ?3, ?4, 1)
+                     ON CONFLICT(request_identity) DO UPDATE SET attempts = attempts + 1,
+                         next_attempt_at_epoch = NULL",
+                    rusqlite::params![
+                        identity,
+                        input.key.environment_key,
+                        input.key.agent,
+                        input.key.session_id
+                    ],
+                )?;
+            }
+        }
         transaction.commit()?;
         Ok(if tracked {
             BurnCheckRequestAdmission::Admitted
@@ -102,6 +149,78 @@ impl Store {
             BurnCheckRequestAdmission::Unresolved
         })
     }
+
+    pub(crate) fn burn_check_dispatch_attempts(
+        &self,
+        identities: &[String],
+    ) -> anyhow::Result<usize> {
+        Ok(self.lock().query_row(
+            "SELECT COALESCE(MAX(attempts), 0) FROM burn_check_dispatch_attempt
+             WHERE request_identity IN (SELECT value FROM json_each(?1))",
+            [serde_json::to_string(identities)?],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// A rejected dispatch can retry later. Unknown delivery retains its block.
+    pub(crate) fn defer_burn_check_dispatch(
+        &self,
+        input: &BurnCheckInput,
+        identities: &[String],
+        retry_at: Option<i64>,
+    ) -> anyhow::Result<()> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE burn_check_dispatch_attempt SET next_attempt_at_epoch = ?2,
+                 terminal = (?2 IS NULL OR attempts >= 3)
+             WHERE request_identity IN (SELECT value FROM json_each(?1))",
+            rusqlite::params![serde_json::to_string(identities)?, retry_at],
+        )?;
+        if let Some(retry_at) = retry_at {
+            transaction.execute(
+                "UPDATE burn_check_assessment SET next_attempt_at_epoch = ?6
+                 WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                   AND check_id = ?4 AND input_revision = ?5",
+                rusqlite::params![
+                    input.key.environment_key,
+                    input.key.agent,
+                    input.key.session_id,
+                    input.check_id,
+                    input.input_revision,
+                    retry_at
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+}
+
+fn dispatch_readiness_in(
+    connection: &rusqlite::Connection,
+    identities: &[String],
+    now: i64,
+) -> anyhow::Result<BurnCheckRequestAdmission> {
+    let blocked: (bool, bool, bool) = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM burn_check_request_outcome
+                     WHERE request_identity IN (SELECT value FROM json_each(?1))),
+                COALESCE(MAX(terminal = 1 OR attempts >= 3), 0),
+                COALESCE(MAX(next_attempt_at_epoch > ?2), 0)
+         FROM burn_check_dispatch_attempt
+         WHERE request_identity IN (SELECT value FROM json_each(?1))",
+        rusqlite::params![serde_json::to_string(identities)?, now],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    Ok(if blocked.0 {
+        BurnCheckRequestAdmission::Unresolved
+    } else if blocked.1 {
+        BurnCheckRequestAdmission::Exhausted
+    } else if blocked.2 {
+        BurnCheckRequestAdmission::Deferred
+    } else {
+        BurnCheckRequestAdmission::Admitted
+    })
 }
 
 fn validate_request_tracking(identities: &[String], reservation_id: &str) -> anyhow::Result<()> {

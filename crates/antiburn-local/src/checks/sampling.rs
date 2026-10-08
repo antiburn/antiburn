@@ -89,16 +89,19 @@ struct CandidateProgress {
     introduced_run: u64,
     active_attempt: Option<u64>,
     complete: bool,
+    terminal: bool,
+    last_service: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct CheckProgress {
     epoch: StableId,
     order: Vec<StableId>,
+    chronology: Vec<StableId>,
     candidates: BTreeMap<StableId, CandidateProgress>,
     served: BTreeSet<StableId>,
-    unchecked_after: Option<StableId>,
     prefer_unchecked: bool,
+    diverse_stratum: usize,
 }
 
 /// Persist this value with the existing engine progress record. It contains
@@ -160,6 +163,19 @@ impl SamplingProgress {
         epoch: StableId,
         candidates: &[Candidate],
     ) -> Result<(), SamplingError> {
+        let chronology: Vec<_> = candidates.iter().map(|candidate| candidate.id).collect();
+        self.synchronize_ordered(check, epoch, candidates, &chronology)
+    }
+
+    /// Supply risk order separately from source chronology. Both lists contain
+    /// the same inventory. Stable answer IDs bind the supplied decision context.
+    pub fn synchronize_ordered(
+        &mut self,
+        check: StableId,
+        epoch: StableId,
+        candidates: &[Candidate],
+        chronology: &[StableId],
+    ) -> Result<(), SamplingError> {
         if candidates.len() > self.limits.candidates_per_check
             || (!self.checks.contains_key(&check) && self.checks.len() >= self.limits.checks)
         {
@@ -187,6 +203,8 @@ impl SamplingProgress {
                         introduced_run: self.run.saturating_add(1),
                         active_attempt: None,
                         complete: false,
+                        terminal: false,
+                        last_service: 0,
                     },
                 )
                 .is_some()
@@ -194,21 +212,30 @@ impl SamplingProgress {
                 return Err(SamplingError::DuplicateIdentity);
             }
         }
+        if chronology.len() != inventory.len()
+            || chronology.iter().copied().collect::<BTreeSet<_>>()
+                != inventory.keys().copied().collect()
+        {
+            return Err(SamplingError::DuplicateIdentity);
+        }
         let progress = self.checks.entry(check).or_insert_with(|| CheckProgress {
             epoch,
             order: Vec::new(),
+            chronology: Vec::new(),
             candidates: BTreeMap::new(),
             served: BTreeSet::new(),
-            unchecked_after: None,
             prefer_unchecked: false,
+            diverse_stratum: 0,
         });
         for (id, candidate) in &mut inventory {
             if let Some(previous) = progress.candidates.get(id) {
                 candidate.attempted = previous.attempted;
                 candidate.introduced_run = previous.introduced_run;
+                candidate.last_service = previous.last_service;
                 if progress.epoch == epoch && previous.required == candidate.required {
                     candidate.reduced.clone_from(&previous.reduced);
                     candidate.complete = previous.complete;
+                    candidate.terminal = previous.terminal;
                     candidate.active_attempt = previous.active_attempt;
                 }
             }
@@ -217,6 +244,7 @@ impl SamplingProgress {
         progress.epoch = epoch;
         progress.served.retain(|id| inventory.contains_key(id));
         progress.order = candidates.iter().map(|candidate| candidate.id).collect();
+        progress.chronology = chronology.to_vec();
         progress.candidates = inventory;
         Ok(())
     }
@@ -234,8 +262,8 @@ impl SamplingProgress {
         }
     }
 
-    /// Round-robin checks, prioritize new candidates, and reserve alternating
-    /// slots for older unchecked work. A canceled job still consumes its slot.
+    /// Round-robin checks and alternate risk order with temporal diversity.
+    /// A canceled job still consumes its slot.
     /// None means the main worker must wait for the next scheduler event.
     /// Counter exhaustion stops selection permanently; attempt IDs never wrap.
     pub fn choose_job(&mut self) -> Option<SamplingJob> {
@@ -299,6 +327,28 @@ impl SamplingProgress {
     pub fn interrupt_candidate(&mut self, job: &SamplingJob) -> Result<(), SamplingError> {
         self.job_candidate(job)?.active_attempt = None;
         Ok(())
+    }
+
+    /// Stop unavailable work for this context without counting a model review.
+    pub fn terminate_candidate(&mut self, job: &SamplingJob) -> Result<(), SamplingError> {
+        let candidate = self.job_candidate(job)?;
+        candidate.terminal = true;
+        candidate.active_attempt = None;
+        Ok(())
+    }
+
+    pub fn has_runnable_candidates(&self, check: StableId) -> bool {
+        self.runnable_count(check) > 0
+    }
+
+    pub fn runnable_count(&self, check: StableId) -> usize {
+        self.checks.get(&check).map_or(0, |progress| {
+            progress
+                .candidates
+                .values()
+                .filter(|candidate| !candidate.complete && !candidate.terminal)
+                .count()
+        })
     }
 
     /// Reuse only these semantic answers when constructing transport batches.
@@ -366,36 +416,66 @@ impl SamplingProgress {
 
 impl CheckProgress {
     fn choose_candidate(&mut self, run: u64, attempt: u64) -> Option<StableId> {
-        let eligible = |id: &&StableId| !self.served.contains(id) && !self.candidates[*id].complete;
+        let eligible = |id: &&StableId| {
+            !self.served.contains(id)
+                && !self.candidates[*id].complete
+                && !self.candidates[*id].terminal
+        };
         let new = self
             .order
             .iter()
             .filter(eligible)
             .find(|id| self.candidates[id].is_new(run))
             .copied();
-        let start = self
-            .unchecked_after
-            .and_then(|id| self.order.iter().position(|candidate| *candidate == id))
-            .map_or(0, |position| (position + 1) % self.order.len());
-        let unchecked = self
-            .order
-            .iter()
-            .cycle()
-            .skip(start)
-            .take(self.order.len())
-            .filter(eligible)
-            .find(|id| !self.candidates[id].is_new(run))
-            .copied();
+        let risk = new
+            .or_else(|| {
+                self.order
+                    .iter()
+                    .filter(eligible)
+                    .find(|id| !self.candidates[id].attempted)
+                    .copied()
+            })
+            .or_else(|| self.order.iter().find(eligible).copied());
+        let diverse = (0..4)
+            .filter_map(|stratum| {
+                let items: Vec<_> = self
+                    .chronology
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| index * 4 / self.chronology.len() == stratum)
+                    .map(|(_, id)| id)
+                    .collect();
+                let reviewed = items
+                    .iter()
+                    .filter(|id| self.candidates[id].complete)
+                    .count();
+                let candidate = items
+                    .into_iter()
+                    .filter(eligible)
+                    .min_by_key(|id| (self.candidates[id].last_service, **id))
+                    .copied()?;
+                Some((
+                    reviewed,
+                    (stratum + 4 - self.diverse_stratum) % 4,
+                    stratum,
+                    candidate,
+                ))
+            })
+            .min()
+            .map(|(_, _, stratum, id)| (stratum, id));
         let selected = if self.prefer_unchecked {
-            unchecked.or(new)
+            if let Some((stratum, id)) = diverse {
+                self.diverse_stratum = (stratum + 1) % 4;
+                Some(id)
+            } else {
+                risk
+            }
         } else {
-            new.or(unchecked)
+            risk.or(diverse.map(|(_, id)| id))
         }?;
-        if !self.candidates[&selected].is_new(run) {
-            self.unchecked_after = Some(selected);
-        }
         self.prefer_unchecked = !self.prefer_unchecked;
         self.candidates.get_mut(&selected)?.attempted = true;
+        self.candidates.get_mut(&selected)?.last_service = attempt;
         self.candidates.get_mut(&selected)?.active_attempt = Some(attempt);
         self.served.insert(selected);
         Some(selected)
@@ -800,14 +880,75 @@ mod tests {
     }
 
     #[test]
-    fn domain_order_is_preserved_for_new_candidates() {
+    fn risk_order_alternates_with_time_strata() {
         let mut progress = progress(3);
-        let ranked = [candidate("rank3"), candidate("rank1"), candidate("rank2")];
-        synchronize(&mut progress, &ranked);
+        let chronological: Vec<_> = (0..8)
+            .map(|index| candidate(&format!("time-{index}")))
+            .collect();
+        let ranked: Vec<_> = chronological.iter().rev().cloned().collect();
+        progress
+            .synchronize_ordered(
+                id("check"),
+                id("epoch"),
+                &ranked,
+                &chronological
+                    .iter()
+                    .map(|candidate| candidate.id)
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
         progress.begin_run();
-        for candidate in ranked {
-            assert_eq!(progress.choose_job().unwrap().candidate, candidate.id);
-        }
+        let first = progress.choose_job().unwrap();
+        assert_eq!(first.candidate, ranked[0].id);
+        finish(&mut progress, &first, &ranked[0]);
+        let diverse = progress.choose_job().unwrap();
+        assert!(
+            !chronological[6..]
+                .iter()
+                .any(|candidate| candidate.id == diverse.candidate)
+        );
+        assert_eq!(progress.choose_job().unwrap().candidate, ranked[1].id);
+    }
+
+    #[test]
+    fn terminal_unavailable_is_not_reviewed_and_reopens_only_on_context_change() {
+        let mut progress = progress(2);
+        let candidate = candidate("one");
+        synchronize(&mut progress, std::slice::from_ref(&candidate));
+        progress.begin_run();
+        let job = progress.choose_job().unwrap();
+        progress.terminate_candidate(&job).unwrap();
+        let encoded = postcard::to_stdvec(&progress).unwrap();
+        let mut progress: SamplingProgress = postcard::from_bytes(&encoded).unwrap();
+        synchronize(&mut progress, std::slice::from_ref(&candidate));
+        progress.begin_run();
+        assert!(progress.choose_job().is_none());
+        assert!(!progress.has_runnable_candidates(job.check));
+        assert_eq!(progress.coverage(job.check).unwrap().completed, 0);
+        assert_eq!(progress.coverage(job.check).unwrap().remaining, 1);
+        progress
+            .synchronize(job.check, id("changed-context"), &[candidate])
+            .unwrap();
+        assert!(progress.has_runnable_candidates(job.check));
+        assert!(progress.choose_job().is_some());
+    }
+
+    #[test]
+    fn invalid_chronology_does_not_replace_inventory() {
+        let mut progress = progress(2);
+        let inventory = [candidate("one"), candidate("two")];
+        synchronize(&mut progress, &inventory);
+        let before = progress.clone();
+        assert_eq!(
+            progress.synchronize_ordered(
+                id("check"),
+                id("epoch"),
+                &inventory,
+                &[inventory[0].id, inventory[0].id]
+            ),
+            Err(SamplingError::DuplicateIdentity)
+        );
+        assert_eq!(progress, before);
     }
 
     #[test]
@@ -843,7 +984,7 @@ mod tests {
         progress.begin_run();
         progress.choose_job().unwrap();
         let mut selected_old = BTreeSet::new();
-        for run in 0..6 {
+        for run in 0..8 {
             let mut inventory = vec![candidate(&format!("new-{run}"))];
             inventory.extend(old.clone());
             synchronize(&mut progress, &inventory);

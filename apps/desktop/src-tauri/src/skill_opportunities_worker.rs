@@ -1,8 +1,9 @@
 //! Feature-owned preparation and publication checks for skill opportunities.
 
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use antiburn_local::analysis::SourceFormat;
+#[cfg(test)]
 use antiburn_local::analysis::jev::capabilities::ModelCapabilities;
 use antiburn_local::analysis::jev::{
     JevCheck, JevCheckPlan, JevError, JevExecutionOutcome, JevOrchestrationPermit, JevRunProgress,
@@ -10,8 +11,8 @@ use antiburn_local::analysis::jev::{
 };
 use antiburn_local::checks::sampling::{SamplingJob, SamplingLimits, SamplingProgress};
 use antiburn_local::checks::skill_opportunities::{
-    SKILL_OPPORTUNITIES_CHECK_ID, SKILL_OPPORTUNITIES_REVISIONS, SkillOpportunitiesCheck,
-    SkillOpportunitiesResult, SkillOpportunityFinding,
+    SKILL_OPPORTUNITIES_CHECK_ID, SKILL_OPPORTUNITIES_REVISIONS, SkillDescriptorInventory,
+    SkillOpportunitiesCheck, SkillOpportunitiesResult, SkillOpportunityFinding,
 };
 use antiburn_local::model::AgentKind;
 use tauri::Emitter;
@@ -34,10 +35,17 @@ const MAX_SAMPLE_JUDGMENTS: usize = 4;
 const MAX_SAMPLE_CANDIDATES: usize = 4096;
 const MAX_SAMPLE_ANSWERS: usize = 1;
 const MAX_SAMPLE_CHECKS: usize = 1;
-const CURSOR_REVISION: u32 = 5;
+const CURSOR_REVISION: u32 = 7;
 
 static INPUT_OBSERVATIONS: LazyLock<Mutex<InventoryRevisionObserver>> =
     LazyLock::new(|| Mutex::new(InventoryRevisionObserver::default()));
+
+struct CachedSkillCheck {
+    key: String,
+    check: Arc<SkillOpportunitiesCheck>,
+}
+
+static SOURCE_CHECK: LazyLock<Mutex<Option<CachedSkillCheck>>> = LazyLock::new(|| Mutex::new(None));
 
 pub(crate) struct SkillOpportunitiesDescriptor;
 pub(crate) const CHECK: SkillOpportunitiesDescriptor = SkillOpportunitiesDescriptor;
@@ -71,11 +79,16 @@ struct SkillCursor {
     engine_revisions: antiburn_local::analysis::jev::JevCheckRevisions,
     input_revision: String,
     provider_generation: u64,
+    connection_context: String,
     sampling: Option<SamplingProgress>,
     active_job: Option<SamplingJob>,
     batch_jobs: Vec<SamplingJob>,
+    active_plan: Option<
+        JevCheckPlan<antiburn_local::checks::skill_opportunities::PreparedSkillOpportunities>,
+    >,
     run_progress: JevRunProgress,
     result: Option<SkillOpportunitiesResult>,
+    inventory: SkillDescriptorInventory,
 }
 
 impl Default for SkillCursor {
@@ -85,11 +98,14 @@ impl Default for SkillCursor {
             engine_revisions: SKILL_OPPORTUNITIES_REVISIONS,
             input_revision: String::new(),
             provider_generation: 0,
+            connection_context: String::new(),
             sampling: None,
             active_job: None,
             batch_jobs: Vec::new(),
+            active_plan: None,
             run_progress: JevRunProgress::default(),
             result: None,
+            inventory: SkillDescriptorInventory::default(),
         }
     }
 }
@@ -202,6 +218,17 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         &input.durable.input_revision,
         key_generation,
     );
+    let capabilities = handle.resolve_capabilities(key_generation).await?;
+    let connection_context =
+        serde_json::to_string(&(handle.system_one_connection(), &capabilities))?;
+    if !cursor.connection_context.is_empty() && cursor.connection_context != connection_context {
+        cursor = SkillCursor {
+            input_revision: input.durable.input_revision.clone(),
+            provider_generation: key_generation,
+            ..Default::default()
+        };
+    }
+    cursor.connection_context = connection_context;
     if cursor.input_revision != input.durable.input_revision {
         cursor = SkillCursor {
             revision: CURSOR_REVISION,
@@ -212,21 +239,17 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         };
     }
     cursor.sampling.get_or_insert(new_sampling_progress()?);
-    synchronize_sampling(
-        &input,
-        cursor.sampling.as_mut().expect("sampling was initialized"),
-    )
-    .map_err(|error| anyhow::anyhow!("sampling inventory rejected: {error:?}"))?;
-    if !cursor
-        .sampling
-        .as_ref()
-        .and_then(|sampling| sampling.coverage(input.check.sampling_identity()))
-        .is_some_and(|coverage| coverage.eligible > 0)
+    enumerate_skill_turn(&input, &mut cursor)?;
+    if cursor.inventory.complete
+        && !cursor
+            .sampling
+            .as_ref()
+            .and_then(|sampling| sampling.coverage(input.check.sampling_identity()))
+            .is_some_and(|coverage| coverage.eligible > 0)
     {
         unavailable(store, candidate, false, handle, key_generation)?;
         return Ok(());
     }
-    let capabilities = handle.resolve_capabilities(key_generation).await?;
     if !write_fence
         .commit(|| {
             if !store.queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)? {
@@ -243,6 +266,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     {
         return Ok(());
     }
+    save_scheduling(store, &input, &cursor)?;
     if cursor.active_job.is_none() {
         cursor
             .sampling
@@ -284,8 +308,113 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             cursor.batch_jobs = jobs.iter().skip(1).cloned().collect();
         }
         let orchestration = admit_jev_orchestration().await?;
-        let mut plan = prepare_sampled(&input, &capabilities, &jobs)?;
-        let mut outcome = run_prepared(
+        let mut plan = match cursor.active_plan.clone() {
+            Some(plan) => plan,
+            None => input.check.prepare_inventory_sampled(
+                &cursor.inventory,
+                &input.check.session_context(),
+                &capabilities,
+                &jobs,
+            )?,
+        };
+        let mut blocked = Vec::new();
+        let mut deferred = false;
+        for job in &jobs {
+            if let Some(result) = &cursor.result
+                && plan.prepared.comparisons.iter().any(|comparison| {
+                    antiburn_local::checks::sampling::StableId::new(
+                        "skill-opportunities",
+                        &[comparison.id.as_bytes()],
+                    ) == job.candidate
+                        && result.decisions.iter().any(|decision| {
+                            decision.comparison == *comparison
+                                && decision.judgments.is_some()
+                                && decision.model.as_deref() == Some(capabilities.model.as_str())
+                        })
+                })
+            {
+                input
+                    .check
+                    .record_sampling_result(
+                        cursor.sampling.as_mut().expect("sampling was initialized"),
+                        job,
+                        result,
+                    )
+                    .map_err(|error| anyhow::anyhow!("sampling reuse rejected: {error:?}"))?;
+                blocked.push(job.candidate);
+                continue;
+            }
+            let mut target = plan.clone();
+            target.work_items.retain(|item| {
+                antiburn_local::checks::sampling::StableId::new(
+                    "skill-opportunities",
+                    &[item.id.as_bytes()],
+                ) == job.candidate
+            });
+            match crate::scope_creep_worker::dispatch_readiness(
+                store,
+                handle,
+                &input.durable,
+                &capabilities,
+                &target,
+                &cursor.run_progress,
+            )? {
+                crate::store::BurnCheckRequestAdmission::Exhausted
+                | crate::store::BurnCheckRequestAdmission::Unresolved => {
+                    cursor
+                        .sampling
+                        .as_mut()
+                        .expect("sampling was initialized")
+                        .terminate_candidate(job)
+                        .map_err(|error| {
+                            anyhow::anyhow!("skill termination rejected: {error:?}")
+                        })?;
+                    blocked.push(job.candidate);
+                }
+                crate::store::BurnCheckRequestAdmission::Deferred => deferred = true,
+                crate::store::BurnCheckRequestAdmission::Stale => return Ok(()),
+                crate::store::BurnCheckRequestAdmission::Admitted => {}
+            }
+        }
+        jobs.retain(|job| !blocked.contains(&job.candidate));
+        cursor.active_job = jobs.first().cloned();
+        cursor.batch_jobs = jobs.iter().skip(1).cloned().collect();
+        plan.work_items.retain(|item| {
+            !blocked.contains(&antiburn_local::checks::sampling::StableId::new(
+                "skill-opportunities",
+                &[item.id.as_bytes()],
+            ))
+        });
+        cursor.active_plan = Some(plan.clone());
+        write_fence.commit(|| {
+            save_scheduling(store, &input, &cursor)?;
+            store.save_burn_check_checkpoint(
+                &input.durable,
+                &serde_json::to_string(&cursor)?,
+                Some(&cursor.run_progress),
+                unix_now(),
+                POLICY.lease_secs,
+                POLICY.idle_secs,
+            )
+        })?;
+        if deferred {
+            write_fence.commit(|| {
+                store.release_failed_burn_check_lease(
+                    &input.durable,
+                    "continuing",
+                    store
+                        .burn_check_next_attempt_at(&input.durable)?
+                        .unwrap_or(unix_now() + 1),
+                )
+            })?;
+            return Ok(());
+        }
+        if jobs.is_empty() {
+            cursor.run_progress = JevRunProgress::default();
+            cursor.active_plan = None;
+            continue;
+        }
+        let outcome = run_prepared(
             BatchExecution {
                 app,
                 store,
@@ -306,7 +435,12 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 serde_json::to_string(&cursor).map_err(|_| JevError::ProgressStorageFailure)
             },
         )
-        .await?;
+        .await;
+        let mut outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(JevError::Cancelled) if handle.turn_exhausted() => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
         if !handle.key_is_current(key_generation) {
             return Ok(());
         }
@@ -335,6 +469,93 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 outcome.result,
             );
             cursor.run_progress = outcome.progress;
+            write_fence.commit(|| {
+                save_scheduling(store, &input, &cursor)?;
+                store.save_burn_check_checkpoint(
+                    &input.durable,
+                    &serde_json::to_string(&cursor)?,
+                    Some(&cursor.run_progress),
+                    unix_now(),
+                    POLICY.lease_secs,
+                    POLICY.idle_secs,
+                )
+            })?;
+            if matches!(error, JevError::Cancelled) && handle.turn_exhausted() {
+                write_fence.commit(|| {
+                    store.release_failed_burn_check_lease(
+                        &input.durable,
+                        "continuing",
+                        unix_now() + 1,
+                    )
+                })?;
+                return Ok(());
+            }
+            let mut terminal = Vec::new();
+            for job in &jobs {
+                if cursor
+                    .sampling
+                    .as_ref()
+                    .expect("sampling was initialized")
+                    .completed_ids(input.check.sampling_identity())
+                    .contains(&job.candidate)
+                {
+                    continue;
+                }
+                let mut target = plan.clone();
+                target.work_items.retain(|item| {
+                    antiburn_local::checks::sampling::StableId::new(
+                        "skill-opportunities",
+                        &[item.id.as_bytes()],
+                    ) == job.candidate
+                });
+                if crate::scope_creep_worker::target_failure_is_terminal(&error, || {
+                    crate::scope_creep_worker::dispatch_readiness(
+                        store,
+                        handle,
+                        &input.durable,
+                        &capabilities,
+                        &target,
+                        &cursor.run_progress,
+                    )
+                })? {
+                    cursor
+                        .sampling
+                        .as_mut()
+                        .expect("sampling was initialized")
+                        .terminate_candidate(job)
+                        .map_err(|error| {
+                            anyhow::anyhow!("skill termination rejected: {error:?}")
+                        })?;
+                    terminal.push(job.candidate);
+                }
+            }
+            if !terminal.is_empty() {
+                jobs.retain(|job| !terminal.contains(&job.candidate));
+                cursor.active_job = jobs.first().cloned();
+                cursor.batch_jobs = jobs.iter().skip(1).cloned().collect();
+                plan.work_items.retain(|item| {
+                    !terminal.contains(&antiburn_local::checks::sampling::StableId::new(
+                        "skill-opportunities",
+                        &[item.id.as_bytes()],
+                    ))
+                });
+                cursor.active_plan = (!jobs.is_empty()).then_some(plan);
+                if jobs.is_empty() {
+                    cursor.run_progress = JevRunProgress::default();
+                }
+                write_fence.commit(|| {
+                    save_scheduling(store, &input, &cursor)?;
+                    store.save_burn_check_checkpoint(
+                        &input.durable,
+                        &serde_json::to_string(&cursor)?,
+                        Some(&cursor.run_progress),
+                        unix_now(),
+                        POLICY.lease_secs,
+                        POLICY.idle_secs,
+                    )
+                })?;
+                continue;
+            }
             let result_json = publication_json(
                 &input,
                 cursor.result.as_ref().expect("result was initialized"),
@@ -347,11 +568,20 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                         error_category: error_category(&error),
                         result_json: &result_json,
                         progress_json: &progress_json,
-                        retry_at_epoch: Some(unix_now().saturating_add(POLICY.retry_delay_secs)),
+                        retry_at_epoch: store.burn_check_next_attempt_at(&input.durable)?,
                     },
                     unix_now(),
                     POLICY.idle_secs,
                 )?;
+                if published {
+                    store.save_burn_check_sampled_pairs(
+                        &input.durable,
+                        &accepted_pairs(
+                            &input,
+                            cursor.result.as_ref().expect("result was initialized"),
+                        ),
+                    )?;
+                }
                 if published && !matches!(error, JevError::Cancelled) {
                     let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
                     record_assessment(
@@ -374,14 +604,29 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             return Ok(());
         }
         for job in &jobs {
-            input
-                .check
-                .record_sampling_result(
-                    cursor.sampling.as_mut().expect("sampling was initialized"),
-                    job,
-                    &outcome.result,
-                )
-                .map_err(|error| anyhow::anyhow!("sampling outcome rejected: {error:?}"))?;
+            if outcome.result.decisions.iter().any(|decision| {
+                antiburn_local::checks::sampling::StableId::new(
+                    "skill-opportunities",
+                    &[decision.comparison.id.as_bytes()],
+                ) == job.candidate
+                    && decision.judgments.is_some()
+            }) {
+                input
+                    .check
+                    .record_sampling_result(
+                        cursor.sampling.as_mut().expect("sampling was initialized"),
+                        job,
+                        &outcome.result,
+                    )
+                    .map_err(|error| anyhow::anyhow!("sampling outcome rejected: {error:?}"))?;
+            } else {
+                cursor
+                    .sampling
+                    .as_mut()
+                    .expect("sampling was initialized")
+                    .terminate_candidate(job)
+                    .map_err(|error| anyhow::anyhow!("skill termination rejected: {error:?}"))?;
+            }
             sampled_pairs.extend(sampled_pairs_for_job(
                 &plan,
                 &outcome.result,
@@ -396,10 +641,12 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         );
         cursor.active_job = None;
         cursor.batch_jobs.clear();
+        cursor.active_plan = None;
         cursor.run_progress = JevRunProgress::default();
         let progress_json = serde_json::to_string(&cursor)?;
         if !write_fence
             .commit(|| {
+                save_scheduling(store, &input, &cursor)?;
                 store.save_burn_check_checkpoint(
                     &input.durable,
                     &progress_json,
@@ -417,11 +664,12 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             return Ok(());
         }
     }
-    let complete = cursor
-        .sampling
-        .as_ref()
-        .and_then(|sampling| sampling.coverage(input.check.sampling_identity()))
-        .is_some_and(|coverage| coverage.remaining == 0);
+    let complete = cursor.inventory.complete
+        && cursor
+            .sampling
+            .as_ref()
+            .and_then(|sampling| sampling.coverage(input.check.sampling_identity()))
+            .is_some_and(|coverage| coverage.remaining == 0);
     let mut result = cursor
         .result
         .clone()
@@ -431,6 +679,19 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             coverage: antiburn_local::analysis::jev::JevCoverage::default(),
             complete: false,
         });
+    retain_skill_inventory(&mut result, &cursor.inventory);
+    result
+        .coverage
+        .limitations
+        .retain(|limit| limit != "descriptor_enumeration_incomplete");
+    result.coverage.processing_limit_reached =
+        !cursor.inventory.complete || !result.coverage.limitations.is_empty();
+    if !cursor.inventory.complete {
+        result
+            .coverage
+            .limitations
+            .push("descriptor_enumeration_incomplete".into());
+    }
     result.complete = complete && result.coverage.limitations.is_empty() && result.decisions.iter().all(|decision| matches!(decision.outcome, antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome::Advisory | antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome::NoOpportunity));
     if let Some(coverage) = cursor
         .sampling
@@ -444,7 +705,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             .saturating_sub(coverage.completed + coverage.remaining);
     }
     // No completion claim is made for an empty or interrupted sampled run.
-    if sampled_pairs.is_empty() && !complete {
+    if sampled_pairs.is_empty() && !complete && cursor.active_job.is_some() {
         let progress_json = serde_json::to_string(&cursor)?;
         write_fence.commit(|| {
             store.save_burn_check_checkpoint(
@@ -458,20 +719,10 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         })?;
         return Ok(());
     }
-    result.findings = cursor.result.as_ref().map_or_else(Vec::new, |saved| {
-        saved
-            .findings
-            .iter()
-            .filter(|finding| publishable_finding(finding))
-            .cloned()
-            .collect()
-    });
+    result.findings.retain(publishable_finding);
     let result_json = publication_json(&input, &result)?;
     let progress_json = serde_json::to_string(&cursor)?;
-    let pairs = sampled_pairs
-        .into_iter()
-        .map(|pair| pair.pair)
-        .collect::<Vec<_>>();
+    let pairs = accepted_pairs(&input, &result);
     let published = write_fence
         .commit(|| {
             let published = if complete {
@@ -485,10 +736,28 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 store.fail_burn_check_assessment_with_result(
                     &input.durable,
                     &BurnCheckFailure {
-                        error_category: "sampling_incomplete",
+                        error_category: if cursor
+                            .sampling
+                            .as_ref()
+                            .expect("sampling was initialized")
+                            .runnable_count(input.check.sampling_identity())
+                            > 0
+                            || !cursor.inventory.complete
+                        {
+                            "continuing"
+                        } else {
+                            "sampling_incomplete"
+                        },
                         result_json: &result_json,
                         progress_json: &progress_json,
-                        retry_at_epoch: None,
+                        retry_at_epoch: (cursor
+                            .sampling
+                            .as_ref()
+                            .expect("sampling was initialized")
+                            .runnable_count(input.check.sampling_identity())
+                            > 0
+                            || !cursor.inventory.complete)
+                            .then(|| unix_now() + 1),
                     },
                     unix_now(),
                     POLICY.idle_secs,
@@ -755,16 +1024,82 @@ fn restore_cursor(
     input_revision: &str,
     provider_generation: u64,
 ) -> SkillCursor {
-    stored
-        .filter(|assessment| assessment.input_revision.as_deref() == Some(input_revision))
+    let mut cursor = stored
         .and_then(|assessment| serde_json::from_str::<SkillCursor>(&assessment.progress_json).ok())
         .filter(|cursor| {
             cursor.revision == CURSOR_REVISION
                 && cursor.engine_revisions == SKILL_OPPORTUNITIES_REVISIONS
-                && cursor.input_revision == input_revision
-                && cursor.provider_generation == provider_generation
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    cursor.provider_generation = provider_generation;
+    if cursor.input_revision != input_revision {
+        cursor.input_revision = input_revision.to_owned();
+        cursor.active_job = None;
+        cursor.batch_jobs.clear();
+        cursor.active_plan = None;
+        cursor.run_progress = JevRunProgress::default();
+    }
+    cursor
+}
+
+fn save_scheduling(
+    store: &Store,
+    input: &PreparedSkillOpportunityInput,
+    cursor: &SkillCursor,
+) -> anyhow::Result<bool> {
+    let sampling = cursor.sampling.as_ref().expect("sampling was initialized");
+    let coverage = sampling
+        .coverage(input.check.sampling_identity())
+        .expect("synchronized");
+    store.save_burn_check_scheduling(
+        &input.durable,
+        cursor.inventory.complete.then_some(coverage.eligible),
+        coverage.completed,
+        sampling
+            .runnable_count(input.check.sampling_identity())
+            .max(usize::from(!cursor.inventory.complete)),
+    )
+}
+
+fn enumerate_skill_turn(
+    input: &PreparedSkillOpportunityInput,
+    cursor: &mut SkillCursor,
+) -> anyhow::Result<()> {
+    input.check.enumerate_descriptors(&mut cursor.inventory)?;
+    cursor
+        .sampling
+        .as_mut()
+        .expect("sampling was initialized")
+        .synchronize_ordered(
+            input.check.sampling_identity(),
+            input.check.sampling_epoch(),
+            &input.check.descriptor_candidates(&cursor.inventory)?,
+            &input.check.descriptor_chronology(&cursor.inventory)?,
+        )
+        .map_err(|error| anyhow::anyhow!("sampling inventory rejected: {error:?}"))?;
+    if cursor.inventory.complete
+        && let Some(result) = &mut cursor.result
+    {
+        retain_skill_inventory(result, &cursor.inventory);
+    }
+    Ok(())
+}
+
+fn retain_skill_inventory(
+    result: &mut SkillOpportunitiesResult,
+    inventory: &SkillDescriptorInventory,
+) {
+    let ids: std::collections::BTreeSet<_> = inventory
+        .descriptors
+        .iter()
+        .map(|descriptor| descriptor.0.as_str())
+        .collect();
+    result
+        .decisions
+        .retain(|decision| ids.contains(decision.comparison.id.as_str()));
+    result
+        .findings
+        .retain(|finding| ids.contains(finding.comparison.id.as_str()));
 }
 
 fn current_revisions_match(
@@ -830,6 +1165,32 @@ fn unavailable(
 
 struct SampledSkillPair {
     pair: BurnCheckSampledPair,
+}
+
+fn accepted_pairs(
+    input: &PreparedSkillOpportunityInput,
+    result: &SkillOpportunitiesResult,
+) -> Vec<BurnCheckSampledPair> {
+    result
+        .decisions
+        .iter()
+        .filter(|decision| decision.judgments.is_some())
+        .map(|decision| BurnCheckSampledPair {
+            comparison_id: antiburn_local::checks::sampling::StableId::new(
+                "skill-opportunities",
+                &[decision.comparison.id.as_bytes()],
+            )
+            .into(),
+            dependency_digest: input.durable.input_revision.clone(),
+            incarnation: input.durable.incarnation,
+            action_id: decision.comparison.id.clone(),
+            action_digest: input.durable.input_revision.clone(),
+            instruction_digest: String::new(),
+            selector_revision: CURSOR_REVISION,
+            round: 0,
+            assessed: true,
+        })
+        .collect()
 }
 
 fn sampled_pairs_for_job(
@@ -932,7 +1293,7 @@ fn current_input_revisions(
 
 /// Prepared production input. The revision binds activity, scope, skill use, and inventory.
 pub(crate) struct PreparedSkillOpportunityInput {
-    pub(crate) check: SkillOpportunitiesCheck,
+    pub(crate) check: Arc<SkillOpportunitiesCheck>,
     pub(crate) durable: BurnCheckInput,
     pub(crate) inventory_revision: String,
     pub(crate) use_revision: String,
@@ -973,7 +1334,34 @@ pub(crate) fn prepare(
     }
 
     let revision = inputs.input_revision().to_owned();
-    let check = inputs.check()?;
+    let cache_key = serde_json::to_string(&(
+        inputs.input_revision(),
+        (
+            &candidate.session.key.environment_key,
+            &candidate.session.key.agent,
+            &candidate.session.key.session_id,
+        ),
+        candidate.incarnation,
+        candidate.source_generation,
+        candidate.published_fence,
+        &candidate.source_fingerprint,
+    ))
+    .map_err(InputLoadError::Serialization)?;
+    let check = {
+        let mut cache = SOURCE_CHECK
+            .lock()
+            .map_err(|_| InputLoadError::Preparation(JevError::InvalidCheckContext))?;
+        if let Some(cached) = cache.as_ref().filter(|cached| cached.key == cache_key) {
+            Arc::clone(&cached.check)
+        } else {
+            let check = Arc::new(inputs.check()?);
+            *cache = Some(CachedSkillCheck {
+                key: cache_key,
+                check: Arc::clone(&check),
+            });
+            check
+        }
+    };
     let durable = BurnCheckInput {
         key: candidate.session.key.clone(),
         check_id: SKILL_OPPORTUNITIES_CHECK_ID.to_owned(),
@@ -997,6 +1385,7 @@ pub(crate) fn prepare(
 /// Synchronize the semantic inventory before choosing bounded fair jobs.
 /// Persist `SamplingProgress` with the feature cursor; do not call `begin_run`
 /// when restoring an interrupted assessment.
+#[cfg(test)]
 pub(crate) fn synchronize_sampling(
     input: &PreparedSkillOpportunityInput,
     progress: &mut SamplingProgress,
@@ -1005,6 +1394,7 @@ pub(crate) fn synchronize_sampling(
 }
 
 /// Build a plan only for jobs chosen by the shared durable sampling ledger.
+#[cfg(test)]
 pub(crate) fn prepare_sampled(
     input: &PreparedSkillOpportunityInput,
     capabilities: &ModelCapabilities,
@@ -1034,7 +1424,7 @@ where
 {
     run_prepared_check(
         execution,
-        &input.check,
+        input.check.as_ref(),
         &input.check.session_context(),
         plan,
         progress,
