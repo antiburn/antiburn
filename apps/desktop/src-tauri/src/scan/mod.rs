@@ -1001,6 +1001,9 @@ pub(crate) async fn try_run_pass(
         outcome.as_ref().ok().map(|summary| summary.sessions as u64),
     ) {
         crate::analytics::record_scan(app, report);
+        if outcome.is_ok() {
+            crate::analytics::record_claude_client_mix_observed(app, unix_now());
+        }
     }
     crate::notifications::note_scan_outcome(app, &finished);
     Some(finished)

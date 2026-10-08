@@ -22,6 +22,8 @@
 //! any copy this repository ships.
 
 #[cfg(feature = "analytics")]
+mod claude_client_mix;
+#[cfg(feature = "analytics")]
 pub mod config;
 #[cfg(feature = "analytics")]
 mod delivery;
@@ -255,6 +257,9 @@ pub fn record_quota_window_closed(
     _now: i64,
 ) {
 }
+
+#[cfg(not(feature = "analytics"))]
+pub fn record_claude_client_mix_observed(_app: &tauri::AppHandle, _now: i64) {}
 
 #[cfg(not(feature = "analytics"))]
 pub fn handle_settings_transition(
@@ -1065,6 +1070,24 @@ mod enabled {
             )),
             ..Facts::default()
         })
+    }
+
+    /// Record `antiburn.claude_client_mix_observed`, at most once a day.
+    ///
+    /// [`super::claude_client_mix::reports`] does the store work and writes
+    /// the durable marker. This function gates consent and records each
+    /// event.
+    pub fn record_claude_client_mix_observed(app: &tauri::AppHandle, now: i64) {
+        let Some(store) = app.try_state::<Store>() else {
+            return;
+        };
+        let _lifecycle = lock_settings_transition();
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (name, facts) in super::claude_client_mix::reports(&store, now, allowed(app)) {
+            record_event_locked(app, name, facts);
+        }
     }
 
     /// Record an interaction reported by the renderer.

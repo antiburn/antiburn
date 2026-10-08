@@ -149,6 +149,9 @@ pub enum EventName {
     /// first run.
     #[cfg(feature = "analytics")]
     StepSettingsViewed,
+    /// A once-a-day count of local Claude sessions by client.
+    #[cfg(feature = "analytics")]
+    ClaudeClientMixObserved,
 }
 
 /// Every event this application may send.
@@ -203,6 +206,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::IgnoredInstructionLifecycle,
     EventName::CheckEnablementSaved,
     EventName::StepSettingsViewed,
+    EventName::ClaudeClientMixObserved,
 ];
 
 #[cfg(feature = "analytics")]
@@ -251,6 +255,7 @@ impl EventName {
             EventName::IgnoredInstructionLifecycle => "antiburn.ignored_instruction_lifecycle",
             EventName::CheckEnablementSaved => "antiburn.check_enablement_saved",
             EventName::StepSettingsViewed => "antiburn.step_settings_viewed",
+            EventName::ClaudeClientMixObserved => "antiburn.claude_client_mix_observed",
         }
     }
 }
@@ -2085,7 +2090,8 @@ mod tests {
                 | EventName::FirstRunAction
                 | EventName::FirstRunFinished
                 | EventName::CheckEnablementSaved
-                | EventName::StepSettingsViewed => true,
+                | EventName::StepSettingsViewed
+                | EventName::ClaudeClientMixObserved => true,
                 EventName::IgnoredInstructionObserved | EventName::IgnoredInstructionLifecycle => {
                     true
                 }
@@ -2093,7 +2099,7 @@ mod tests {
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            42,
+            43,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
