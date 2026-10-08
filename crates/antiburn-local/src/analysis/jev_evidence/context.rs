@@ -2,8 +2,8 @@
 
 use super::{ContentAction, ContentEventReference, JevNativeFieldRange, JevOperationState};
 use crate::analysis::{SourceFormat, jev::JevInputField};
+use crate::checks::ignored_instructions::sha256_hex;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JevHumanText {
@@ -218,7 +218,7 @@ fn position(action: &ContentAction) -> (u64, u32) {
 }
 
 fn text_digest(text: &str) -> String {
-    format!("{:x}", Sha256::digest(text.as_bytes()))
+    sha256_hex(text.as_bytes())
 }
 
 #[cfg(test)]

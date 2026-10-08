@@ -56,6 +56,7 @@ pub use discovery::{
     InstructionAdapter, InstructionDiscovery, MAX_INSTRUCTION_FILES, MAX_INSTRUCTION_TOTAL_BYTES,
     discover_current_instructions,
 };
+pub(crate) use instructions::digest_hex;
 pub use instructions::{
     InstructionContentClass, InstructionContextRange, InstructionProvenance,
     InstructionRuleSection, InstructionScope, InstructionSnapshot, MAX_INSTRUCTION_BYTES,

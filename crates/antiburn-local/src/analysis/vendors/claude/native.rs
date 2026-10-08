@@ -1,7 +1,7 @@
 //! Native results retain observed output and completion status, not test-pass or approval claims.
 
+use crate::checks::ignored_instructions::sha256_hex;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::analysis::interface::{ContentKind, ContentPart};
 use crate::analysis::jev::JevInputField;
@@ -94,7 +94,7 @@ pub(super) fn capture_result(
         },
         kind: JevReadResultKind::Unknown,
         recorded_output_bytes: part.text.len() as u64,
-        recorded_output_digest: format!("{:x}", Sha256::digest(part.text.as_bytes())),
+        recorded_output_digest: sha256_hex(part.text.as_bytes()),
         returned_extent: None,
         truncated: clipped,
         recorded_file_version: None,

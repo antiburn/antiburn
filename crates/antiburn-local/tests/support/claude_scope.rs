@@ -1240,10 +1240,10 @@ fn native_content_cap_denies_extent_and_digests_only_retained_output() {
     assert_eq!(result.status, JevReadStatus::Unknown);
     assert!(result.returned_extent.is_none());
     assert_eq!(result.recorded_output_bytes, part.text.len() as u64);
-    use sha2::{Digest, Sha256};
+    use antiburn_local::checks::ignored_instructions::sha256_hex;
     assert_eq!(
         result.recorded_output_digest,
-        format!("{:x}", Sha256::digest(part.text.as_bytes()))
+        sha256_hex(part.text.as_bytes())
     );
     assert!(part.metadata.bindings.is_empty());
 }

@@ -5,9 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::analysis::SourceFormat;
 use crate::analysis::jev::{JevInputField, JevInputSelection};
 use crate::analysis::jev_evidence::{ContentAction, ContentEventReference, SessionContentEvidence};
+use crate::checks::ignored_instructions::sha256_hex;
 use serde::Serialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use super::{
     MAX_SKILL_USE_EVENTS, SkillInputError, SkillScope, SkillUseEvent, SkillUseEvidence,
@@ -715,5 +715,5 @@ fn ordering(events: &[RecordedSkillUse], limits: &mut BTreeSet<SkillUseLimit>) -
 }
 
 pub(super) fn hash(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    sha256_hex(bytes)
 }

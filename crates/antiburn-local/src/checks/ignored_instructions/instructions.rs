@@ -114,7 +114,10 @@ pub enum MarkdownLimit {
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
+    digest_hex(Sha256::digest(bytes).as_slice())
+}
+
+pub(crate) fn digest_hex(digest: &[u8]) -> String {
     let mut output = String::with_capacity(digest.len() * 2);
     for byte in digest {
         use std::fmt::Write as _;

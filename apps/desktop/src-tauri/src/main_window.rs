@@ -1601,7 +1601,6 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
             window_lifecycle::trace_page_load::<MainWindowState>(window, payload, LABEL);
         },
     )?;
-    crate::wayland_titlebar::repair(&built.window);
     crate::interface_scale::apply_window(&built.window, interface_scale)?;
     let applied = built
         .placement

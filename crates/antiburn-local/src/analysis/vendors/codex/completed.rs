@@ -2,9 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::checks::ignored_instructions::sha256_hex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::analysis::SourceFormat;
 use crate::analysis::framing::PartialReason;
@@ -126,7 +126,7 @@ impl CompletedState {
                             .map(|part| part["text"].as_str())
                             .collect::<Option<Vec<_>>>()
                     })
-                    .is_some_and(|text| format!("{:x}", Sha256::digest(text.join(""))) == digest);
+                    .is_some_and(|text| sha256_hex(text.join("").as_bytes()) == digest);
             if !matches {
                 self.root = false;
                 sink.record(NormalizedRecord::Unusable(
@@ -148,16 +148,17 @@ impl CompletedState {
                         .map(|part| part["text"].as_str())
                         .collect::<Option<Vec<_>>>()?
                         .join("");
-                    Some((turn.into(), format!("{:x}", Sha256::digest(text))))
+                    Some((turn.into(), sha256_hex(text.as_bytes())))
                 });
         }
         if record["type"] == "response_item"
             && record["payload"]["type"] == "message"
             && let Some(id) = record["payload"]["id"].as_str().filter(|id| valid_id(id))
         {
-            let digest = format!(
-                "{:x}",
-                Sha256::digest(json!([record["payload"], record["metadata"]]).to_string())
+            let digest = sha256_hex(
+                json!([record["payload"], record["metadata"]])
+                    .to_string()
+                    .as_bytes(),
             );
             if let Some(previous) = self.messages.get(id) {
                 if previous != &digest {
@@ -214,11 +215,7 @@ impl CompletedState {
                         .map(|part| part["text"].as_str())
                         .collect::<Option<Vec<_>>>()?
                         .join("");
-                    Some((
-                        id.into(),
-                        turn.into(),
-                        format!("{:x}", Sha256::digest(text)),
-                    ))
+                    Some((id.into(), turn.into(), sha256_hex(text.as_bytes())))
                 });
             if self.agent_projection.is_none()
                 || !owned
@@ -263,10 +260,7 @@ impl CompletedState {
             ));
             return true;
         }
-        let digest = format!(
-            "{:x}",
-            Sha256::digest(json!([payload["turn_id"], item]).to_string())
-        );
+        let digest = sha256_hex(json!([payload["turn_id"], item]).to_string().as_bytes());
         if let Some(previous) = self.items.get(id) {
             if previous != &digest {
                 sink.record(NormalizedRecord::Unusable(
@@ -365,8 +359,7 @@ impl CompletedState {
             .collect::<Option<Vec<_>>>();
         let matching = text.is_some_and(|text| {
             self.user_projection.take().is_some_and(|(turn, digest)| {
-                payload["turn_id"] == turn
-                    && format!("{:x}", Sha256::digest(text.join(""))) == digest
+                payload["turn_id"] == turn && sha256_hex(text.join("").as_bytes()) == digest
             })
         });
         if !item["id"].as_str().is_some_and(valid_id) {
@@ -729,7 +722,7 @@ fn attach_read(
         status,
         kind: JevReadResultKind::File,
         recorded_output_bytes: output.len() as u64,
-        recorded_output_digest: format!("{:x}", Sha256::digest(output)),
+        recorded_output_digest: sha256_hex(output.as_bytes()),
         returned_extent: (numbered
             && count > 0
             && !result.truncated

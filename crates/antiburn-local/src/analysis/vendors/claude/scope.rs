@@ -2,9 +2,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::checks::ignored_instructions::sha256_hex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::analysis::SourceFormat;
 use crate::analysis::framing::PartialReason;
@@ -507,7 +507,7 @@ fn plan_reference(
     path: Option<&str>,
     text: Option<&str>,
 ) -> JevPlanReference {
-    let digest = text.map(|t| format!("{:x}", Sha256::digest(t.as_bytes())));
+    let digest = text.map(|t| sha256_hex(t.as_bytes()));
     JevPlanReference {
         source,
         plan_id: None,

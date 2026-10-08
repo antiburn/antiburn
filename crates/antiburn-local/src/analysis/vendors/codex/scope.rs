@@ -2,9 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::checks::ignored_instructions::sha256_hex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 
 use crate::analysis::SourceFormat;
 use crate::analysis::framing::PartialReason;
@@ -452,7 +452,7 @@ fn source(record: &Value, role: JevScopeEvidenceRole, order: u32) -> JevScopeEvi
 
 fn plan(mut source: JevScopeEvidenceSource, text: &str) -> JevPlanReference {
     source.provenance = JevScopeEvidenceProvenance::RecordedAssistant;
-    let digest = format!("{:x}", Sha256::digest(text.as_bytes()));
+    let digest = sha256_hex(text.as_bytes());
     JevPlanReference {
         source,
         plan_id: None,

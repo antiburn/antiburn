@@ -269,7 +269,6 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
             return Err(error);
         }
     };
-    crate::wayland_titlebar::repair(&window);
     crate::interface_scale::apply_window(&window, interface_scale)?;
     center_on_active_monitor(&window, width, height);
     reconcile_interface_scale(app, interface_scale)?;

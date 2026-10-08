@@ -2,9 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::checks::ignored_instructions::sha256_hex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::analysis::SourceFormat;
 use crate::analysis::framing::PartialReason;
@@ -837,9 +837,7 @@ fn plan(
     text: Option<String>,
     status: JevPlanStatus,
 ) -> JevPlanReference {
-    let digest = text
-        .as_ref()
-        .map(|t| format!("{:x}", Sha256::digest(t.as_bytes())));
+    let digest = text.as_ref().map(|t| sha256_hex(t.as_bytes()));
     JevPlanReference {
         source: source(value, OFFICIAL),
         plan_id: Some("plan-mode".into()),

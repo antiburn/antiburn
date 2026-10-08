@@ -1,7 +1,7 @@
 //! Source-qualified generated context cannot supply human authorization.
 
+use crate::checks::ignored_instructions::sha256_hex;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::analysis::SourceFormat;
 use crate::analysis::jev::JevInputField;
@@ -51,7 +51,7 @@ pub struct JevNonAuthorizingContext {
 }
 
 pub fn non_authorizing_context_digest(text: &str) -> String {
-    format!("{:x}", Sha256::digest(text.as_bytes()))
+    sha256_hex(text.as_bytes())
 }
 
 impl JevNonAuthorizingContextProof {

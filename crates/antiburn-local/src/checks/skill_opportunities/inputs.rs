@@ -1,9 +1,9 @@
 use crate::analysis::{
     EvidenceValue, JevReferenceSnapshot, OrderingObservation, SessionEvidence, SourceAcceptance,
 };
+use crate::checks::ignored_instructions::sha256_hex;
 use crate::model::{AgentKind, SkillUse};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 pub const MAX_SKILL_CANDIDATES: usize = 512;
 pub const MAX_SKILL_DESCRIPTION_BYTES: usize = 16 * 1024;
@@ -525,7 +525,7 @@ impl SkillOpportunitySnapshot {
 }
 
 fn digest(value: &serde_json::Value) -> String {
-    format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
+    sha256_hex(value.to_string().as_bytes())
 }
 
 #[cfg(test)]

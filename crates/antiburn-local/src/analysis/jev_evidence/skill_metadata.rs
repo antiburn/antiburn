@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{JevInputSelection, JevNativeFieldContainer, JevNativeFieldRange};
 use crate::analysis::SourceFormat;
-use sha2::{Digest, Sha256};
+use crate::checks::ignored_instructions::sha256_hex;
 
 /// Adapter-validated skill evidence. Completion does not mean task success.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,7 +45,7 @@ pub enum JevRecordedSkillStatus {
 }
 
 pub fn skill_text_digest(text: &str) -> String {
-    format!("{:x}", Sha256::digest(text.as_bytes()))
+    sha256_hex(text.as_bytes())
 }
 
 pub fn is_recorded_skill_selection(action: &super::ContentAction) -> bool {

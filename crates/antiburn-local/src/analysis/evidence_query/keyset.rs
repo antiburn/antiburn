@@ -1,8 +1,8 @@
 use super::content::query_content_range_keyset_scoped;
 use super::content::{ContentQueryRange, content_query_sql, fence_predicate, order_fragment};
 use super::*;
+use crate::checks::ignored_instructions::sha256_hex;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 const CURSOR_REVISION: u32 = 1;
 
@@ -170,7 +170,7 @@ fn query_selected_page(
                 .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
         );
     }
-    let input_identity = format!("{:x}", Sha256::digest(identity));
+    let input_identity = sha256_hex(&identity);
     if request.cursor.is_some_and(|cursor| {
         cursor.revision != CURSOR_REVISION || cursor.input_identity != input_identity
     }) {
@@ -967,7 +967,7 @@ mod tests {
                     JevInputSelection::from_fields(&[JevInputField::AssistantMessage]),
                 ))
                 .unwrap();
-                changed.input_identity = format!("{:x}", Sha256::digest(prior_identity));
+                changed.input_identity = sha256_hex(&prior_identity);
             }
             let sources = vec!["source".to_owned()];
             let scope = FenceScope {
