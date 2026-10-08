@@ -10,7 +10,7 @@ use antiburn_local::analysis::jev::{
 use serde::Deserialize;
 
 pub const MAX_REQUEST_BODY_BYTES: usize = crate::jev::config::OLLAMA_MAX_REQUEST_BODY_BYTES;
-pub const DEFAULT_LOCAL_CONCURRENCY: usize = 1;
+pub const DEFAULT_LOCAL_CONCURRENCY: usize = 4;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_DISCOVERY_BODY_BYTES: usize = 2 * 1024 * 1024;
@@ -75,14 +75,30 @@ pub struct DiscoveredModel {
 
 impl OllamaClient {
     pub fn new(base_url: &str, api_key: Option<String>) -> Result<Self, OllamaError> {
-        Self::with_timeouts(base_url, api_key, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
+        Self::with_http(base_url, api_key, shared_http_client().clone())
     }
 
+    #[cfg(test)]
     fn with_timeouts(
         base_url: &str,
         api_key: Option<String>,
         connect_timeout: Duration,
         request_timeout: Duration,
+    ) -> Result<Self, OllamaError> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let http = reqwest::Client::builder()
+            .connect_timeout(connect_timeout)
+            .timeout(request_timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| OllamaError::ProviderUnavailable)?;
+        Self::with_http(base_url, api_key, http)
+    }
+
+    fn with_http(
+        base_url: &str,
+        api_key: Option<String>,
+        http: reqwest::Client,
     ) -> Result<Self, OllamaError> {
         let parsed = url::Url::parse(base_url).map_err(|_| OllamaError::InvalidBaseUrl)?;
         if !matches!(parsed.scheme(), "http" | "https")
@@ -95,13 +111,6 @@ impl OllamaClient {
             return Err(OllamaError::InvalidBaseUrl);
         }
         let base_url = base_url.trim_end_matches('/').to_owned();
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let http = reqwest::Client::builder()
-            .connect_timeout(connect_timeout)
-            .timeout(request_timeout)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| OllamaError::ProviderUnavailable)?;
         Ok(Self {
             base_url,
             api_key: api_key.filter(|key| !key.trim().is_empty()).map(Into::into),
@@ -288,6 +297,19 @@ impl OllamaClient {
         )
         .await
     }
+}
+
+fn shared_http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("a client with no custom TLS material always builds")
+    })
 }
 
 async fn decode_json<T: for<'de> Deserialize<'de>>(
@@ -722,10 +744,13 @@ mod tests {
 
     #[tokio::test]
     async fn local_inference_uses_one_shared_slot() {
-        assert_eq!(DEFAULT_LOCAL_CONCURRENCY, 1);
+        assert_eq!(DEFAULT_LOCAL_CONCURRENCY, 4);
         assert!(std::ptr::eq(inference_slots(), inference_slots()));
         let held = inference_slots().acquire().await.unwrap();
+        let remaining = (DEFAULT_LOCAL_CONCURRENCY - 1) as u32;
+        let rest = inference_slots().acquire_many(remaining).await.unwrap();
         assert!(inference_slots().try_acquire().is_err());
+        drop(rest);
         drop(held);
         let _reacquired = inference_slots().acquire().await.unwrap();
     }

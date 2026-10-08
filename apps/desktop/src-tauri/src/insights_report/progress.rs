@@ -144,25 +144,32 @@ fn check_report_progress_with_home(
         {
             progress.partial_context |= ignored_instruction_partial_context(&saved.coverage);
         }
-        let inventory_revision = if check_id == "skill_opportunities" {
-            home.and_then(|home| {
-                skill_opportunities::current_skill_snapshot(&agent, cwd.map(PathBuf::from), home)
-            })
-            .map(|snapshot| snapshot.revision())
-        } else {
-            None
-        };
-        let publication = if matches!(status.as_deref(), Some("completed" | "failed"))
+        let publication_eligible = matches!(status.as_deref(), Some("completed" | "failed"))
             && input.is_some()
             && input == revision
             && (status.as_deref() != Some("failed")
                 || check_id == "over_exploring"
-                || matches!(error.as_deref(), Some("sampling_incomplete" | "continuing")))
-        {
+                || matches!(error.as_deref(), Some("sampling_incomplete" | "continuing")));
+        let publication = if publication_eligible {
             input
                 .as_deref()
                 .zip(json.as_deref())
                 .and_then(|(input, json)| {
+                    let inventory_revision = if check_id == "skill_opportunities" {
+                        let saved: serde_json::Value = serde_json::from_str(json).ok()?;
+                        let saved_revision = saved.get("inventory_revision")?.as_str()?;
+                        published_coverage(check_id, input, json, Some(saved_revision))?;
+                        home.and_then(|home| {
+                            skill_opportunities::current_skill_snapshot(
+                                &agent,
+                                cwd.map(PathBuf::from),
+                                home,
+                            )
+                        })
+                        .map(|snapshot| snapshot.revision())
+                    } else {
+                        None
+                    };
                     published_coverage(check_id, input, json, inventory_revision.as_deref())
                 })
         } else {

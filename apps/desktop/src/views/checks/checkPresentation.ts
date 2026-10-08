@@ -148,12 +148,7 @@ export function checkRowPresentation(
   const failed = category.lifecycle === "failing"
   const provisional = checkHasProvisionalResult(category)
   const metric =
-    !provisional &&
-    category.id !== "ignoredInstructions" &&
-    (failed ||
-      (category.lifecycle === "passing" && category.estimatedTokenBurnBasisPoints === 0))
-      ? tokenBurnLabel(category)
-      : null
+    failed && category.id !== "ignoredInstructions" ? tokenBurnLabel(category) : null
   return {
     Icon: CHECK_ICONS[category.id],
     label: CHECK_LABELS[category.id],

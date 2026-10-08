@@ -704,7 +704,9 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         .await;
         let outcome = match outcome {
             Ok(outcome) => outcome,
-            Err(JevError::Cancelled) if handle.turn_exhausted() => return Ok(()),
+            Err(JevError::Cancelled) if handle.turn_exhausted(CHECK_ID, &candidate.session.key) => {
+                return Ok(());
+            }
             Err(error) => return Err(error.into()),
         };
         if !handle.key_is_current(key_generation) {
@@ -736,7 +738,9 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         save_cursor(store, &input.durable, &cursor)?;
         save_scheduling(store, &input, &cursor)?;
         if let Some(error) = outcome.failure {
-            if matches!(error, JevError::Cancelled) && handle.turn_exhausted() {
+            if matches!(error, JevError::Cancelled)
+                && handle.turn_exhausted(CHECK_ID, &candidate.session.key)
+            {
                 store.release_failed_burn_check_lease(
                     &input.durable,
                     "continuing",

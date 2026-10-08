@@ -858,7 +858,8 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         return Ok(());
     }
     let rejected = matches!(outcome.failure, Some(JevError::AuthenticationRejected));
-    let yielded = matches!(outcome.failure, Some(JevError::Cancelled)) && handle.turn_exhausted();
+    let yielded = matches!(outcome.failure, Some(JevError::Cancelled))
+        && handle.turn_exhausted(CHECK_ID, &candidate.session.key);
     let permanent = outcome.failure.as_ref().is_some_and(|error| {
         matches!(
             error_category(error),
@@ -2088,31 +2089,39 @@ async fn prepare_selected_input_with_home(
     let prior_history_complete = assessment_input.prior_history_complete;
     #[cfg(test)]
     let stage_started = Instant::now();
-    let mut ledger = sampling_ledger(
-        &assessment_input.content,
-        pass.pairs,
-        pass.round,
-        candidate.incarnation,
-        pass.backlog,
-    );
-    verify_sampling_ledger(
-        &assessment_input,
-        pass.pairs,
-        &mut ledger,
-        pass.capabilities,
-    )?;
-    let mut context = ignored_instructions::build_jev_context_with_capabilities(
-        &assessment_input,
-        &ledger,
-        pass.capabilities,
-    )?;
-    let reviewed = pass
-        .pairs
-        .iter()
-        .filter(|pair| pair.assessed && ledger.comparison_ids.contains(&pair.comparison_id))
-        .map(|pair| pair.comparison_id.clone())
-        .collect::<std::collections::BTreeSet<_>>();
-    context.check_context["reviewed_comparison_ids"] = serde_json::to_value(reviewed)?;
+    let blocking_input = assessment_input.clone();
+    let blocking_pairs = pass.pairs.to_vec();
+    let blocking_capabilities = pass.capabilities.clone();
+    let sampling_round = pass.round;
+    let sampling_backlog = pass.backlog;
+    let context = tauri::async_runtime::spawn_blocking(move || {
+        let mut ledger = sampling_ledger(
+            &blocking_input.content,
+            &blocking_pairs,
+            sampling_round,
+            blocking_input.incarnation,
+            sampling_backlog,
+        );
+        verify_sampling_ledger(
+            &blocking_input,
+            &blocking_pairs,
+            &mut ledger,
+            &blocking_capabilities,
+        )?;
+        let mut context = ignored_instructions::build_jev_context_with_capabilities(
+            &blocking_input,
+            &ledger,
+            &blocking_capabilities,
+        )?;
+        let reviewed = blocking_pairs
+            .iter()
+            .filter(|pair| pair.assessed && ledger.comparison_ids.contains(&pair.comparison_id))
+            .map(|pair| pair.comparison_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        context.check_context["reviewed_comparison_ids"] = serde_json::to_value(reviewed)?;
+        anyhow::Ok(context)
+    })
+    .await??;
     #[cfg(test)]
     {
         preparation_timings.context_build_us = stage_started.elapsed().as_micros();

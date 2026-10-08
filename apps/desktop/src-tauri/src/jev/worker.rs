@@ -28,7 +28,8 @@ const RETRY_ATTEMPTS: usize = 3;
 const IDLE_SECS: i64 = 180;
 const POLL_SECS: u64 = 60;
 const CANDIDATES_PER_WAKE: usize = 16;
-const DISPATCHES_PER_TURN: u64 = 2;
+const CANDIDATE_WORKERS: usize = 4;
+const DISPATCHES_PER_TURN: u64 = 8;
 const REQUEST_DEADLINE: Duration = Duration::from_secs(60);
 const GLOBAL_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 
@@ -192,7 +193,7 @@ pub(crate) struct WorkerHandle {
     runtime_enabled: AtomicBool,
     authentication_rejected: AtomicBool,
     discovery: tokio::sync::Mutex<Option<CapabilityDiscovery>>,
-    turn_dispatches: AtomicU64,
+    turn_dispatches: Mutex<std::collections::BTreeMap<(String, SessionKey), u64>>,
 }
 
 struct CapabilityDiscovery {
@@ -202,20 +203,47 @@ struct CapabilityDiscovery {
 }
 
 impl WorkerHandle {
-    pub(crate) fn turn_exhausted(&self) -> bool {
-        self.turn_dispatches.load(Ordering::Acquire) >= DISPATCHES_PER_TURN
+    pub(crate) fn start_candidate_turn(&self, check_id: &str, key: &SessionKey) {
+        self.turn_dispatches
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert((check_id.to_owned(), key.clone()), 0);
+    }
+
+    pub(crate) fn end_candidate_turn(&self, check_id: &str, key: &SessionKey) {
+        self.turn_dispatches
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&(check_id.to_owned(), key.clone()));
+    }
+
+    pub(crate) fn turn_exhausted(&self, check_id: &str, key: &SessionKey) -> bool {
+        self.turn_dispatches
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&(check_id.to_owned(), key.clone()))
+            .copied()
+            .unwrap_or_default()
+            >= DISPATCHES_PER_TURN
     }
 
     fn admit_turn_dispatch(
         &self,
+        check_id: &str,
+        key: &SessionKey,
         admit: impl FnOnce() -> anyhow::Result<BurnCheckRequestAdmission>,
     ) -> anyhow::Result<BurnCheckRequestAdmission> {
-        if self.turn_exhausted() {
+        let mut turns = self
+            .turn_dispatches
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let count = turns.entry((check_id.to_owned(), key.clone())).or_default();
+        if *count >= DISPATCHES_PER_TURN {
             return Ok(BurnCheckRequestAdmission::Deferred);
         }
         let admission = admit()?;
         if admission == BurnCheckRequestAdmission::Admitted {
-            self.turn_dispatches.fetch_add(1, Ordering::AcqRel);
+            *count = count.saturating_add(1);
         }
         Ok(admission)
     }
@@ -487,6 +515,18 @@ impl WorkerHandle {
     }
 }
 
+struct CandidateTurnGuard<'a> {
+    handle: &'a WorkerHandle,
+    check_id: &'static str,
+    key: SessionKey,
+}
+
+impl Drop for CandidateTurnGuard<'_> {
+    fn drop(&mut self) {
+        self.handle.end_candidate_turn(self.check_id, &self.key);
+    }
+}
+
 impl Default for WorkerHandle {
     fn default() -> Self {
         Self {
@@ -498,7 +538,7 @@ impl Default for WorkerHandle {
             runtime_enabled: AtomicBool::new(false),
             authentication_rejected: AtomicBool::new(false),
             discovery: tokio::sync::Mutex::new(None),
-            turn_dispatches: AtomicU64::new(0),
+            turn_dispatches: Mutex::new(std::collections::BTreeMap::new()),
         }
     }
 }
@@ -560,7 +600,6 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
             let Some((client, key_generation)) = handle.execution_client() else {
                 continue;
             };
-            let events = app.state::<SessionEvents>();
             match store.skill_observation_candidates(
                 skill_observation_after
                     .as_ref()
@@ -593,69 +632,98 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                     continue;
                 }
             };
-            for _ in 0..CANDIDATES_PER_WAKE {
-                if !handle.key_is_current(key_generation) {
-                    break;
-                }
-                let selected = match select_turn(&store, checks, &cursor, unix_now()) {
-                    Ok(selected) => selected,
-                    Err(error) => {
-                        ::tracing::warn!(
-                            event = "burn_check_candidates_failed",
-                            error = %error
-                        );
+            let mut jobs = tokio::task::JoinSet::new();
+            let mut scheduled = 0;
+            loop {
+                while scheduled < CANDIDATES_PER_WAKE && jobs.len() < CANDIDATE_WORKERS {
+                    if !handle.key_is_current(key_generation) {
                         break;
                     }
-                };
-                let Some((index, candidate)) = selected else {
-                    break;
-                };
-                let check = checks[index];
-                let check_generation = handle.check_generation(check.id());
-                if !handle.check_is_current(check.id(), check_generation) {
-                    continue;
-                }
-                cursor.turn = match cursor.turn.checked_add(1) {
-                    Some(turn) => turn,
-                    None => break,
-                };
-                cursor.next_check = (index + 1) % checks.len();
-                if let Err(error) = store.serve_burn_check_candidate(
-                    &candidate,
-                    check.id(),
-                    cursor.turn,
-                    &serde_json::to_string(&cursor).expect("scheduler cursor serializes"),
-                ) {
-                    ::tracing::warn!(event = "burn_check_scheduler_save_failed", error = %error);
-                    break;
-                }
-                handle.turn_dispatches.store(0, Ordering::Release);
-                let future = check.run_candidate(CandidateExecution {
-                    app: &app,
-                    store: &store,
-                    candidate: &candidate,
-                    client: client.clone(),
-                    handle: &handle,
-                    key_generation,
-                    events: &events,
-                });
-                tokio::pin!(future);
-                let mut cancellation = tokio::time::interval(Duration::from_millis(250));
-                let mut observation = tokio::time::interval(Duration::from_secs(5));
-                observation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                let result = loop {
-                    tokio::select! {
-                        result = &mut future => break result,
-                        _ = cancellation.tick() => {
-                            if !handle.key_is_current(key_generation)
-                                || !handle.check_is_current(check.id(), check_generation) {
-                                break Ok(());
+                    let selected = match select_turn(&store, checks, &cursor, unix_now()) {
+                        Ok(selected) => selected,
+                        Err(error) => {
+                            ::tracing::warn!(
+                                event = "burn_check_candidates_failed",
+                                error = %error
+                            );
+                            break;
+                        }
+                    };
+                    let Some((index, candidate)) = selected else {
+                        break;
+                    };
+                    let check = checks[index];
+                    let check_generation = handle.check_generation(check.id());
+                    if !handle.check_is_current(check.id(), check_generation) {
+                        continue;
+                    }
+                    cursor.turn = match cursor.turn.checked_add(1) {
+                        Some(turn) => turn,
+                        None => break,
+                    };
+                    cursor.next_check = (index + 1) % checks.len();
+                    if let Err(error) = store.serve_burn_check_candidate(
+                        &candidate,
+                        check.id(),
+                        cursor.turn,
+                        &serde_json::to_string(&cursor).expect("scheduler cursor serializes"),
+                    ) {
+                        ::tracing::warn!(event = "burn_check_scheduler_save_failed", error = %error);
+                        break;
+                    }
+                    handle.start_candidate_turn(check.id(), &candidate.session.key);
+                    let app = app.clone();
+                    let store = store.clone();
+                    let client = client.clone();
+                    let task_candidate = candidate.clone();
+                    let candidate_turn = cursor.turn;
+                    let check_id = check.id();
+                    jobs.spawn(async move {
+                    let handle = app.state::<WorkerHandle>();
+                    let events = app.state::<SessionEvents>();
+                    let _turn = CandidateTurnGuard {
+                        handle: &handle,
+                        check_id,
+                        key: task_candidate.session.key.clone(),
+                    };
+                    let future = check.run_candidate(CandidateExecution {
+                        app: &app,
+                        store: &store,
+                        candidate: &task_candidate,
+                        client,
+                        handle: &handle,
+                        key_generation,
+                        events: &events,
+                    });
+                    tokio::pin!(future);
+                    let mut cancellation = tokio::time::interval(Duration::from_millis(250));
+                    let mut observation = tokio::time::interval(Duration::from_secs(5));
+                    observation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    let result = loop {
+                        tokio::select! {
+                            result = &mut future => break result,
+                            _ = cancellation.tick() => {
+                                if !handle.key_is_current(key_generation)
+                                    || !handle.check_is_current(check_id, check_generation) {
+                                    break Ok(());
+                                }
+                            }
+                            _ = observation.tick(), if check_id == "skill_opportunities" => {
+                                reconcile_skill_candidate(&app, &store, &handle, key_generation, &task_candidate);
                             }
                         }
-                        _ = observation.tick(), if check.id() == "skill_opportunities" => {
-                            reconcile_skill_candidate(&app, &store, &handle, key_generation, &candidate);
-                        }
-                    }
+                    };
+                    (candidate, check_id, candidate_turn, result)
+                });
+                    scheduled += 1;
+                }
+                if jobs.is_empty() {
+                    break;
+                }
+                let Some(Ok((candidate, check_id, candidate_turn, result))) =
+                    jobs.join_next().await
+                else {
+                    continue;
                 };
                 if candidate.historical {
                     crate::jev::settings::progress_changed(&app);
@@ -663,15 +731,15 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                 if let Err(error) = result {
                     ::tracing::warn!(
                         event = "burn_check_assessment_failed",
-                        check_id = check.id(),
+                        check_id,
                         agent = %candidate.session.key.agent,
                         error = %error,
                     );
                 }
                 if let Err(error) = store.serve_burn_check_candidate(
                     &candidate,
-                    check.id(),
-                    cursor.turn,
+                    check_id,
+                    candidate_turn,
                     &serde_json::to_string(&cursor).expect("scheduler cursor serializes"),
                 ) {
                     ::tracing::warn!(event = "burn_check_scheduler_save_failed", error = %error);
@@ -813,7 +881,10 @@ where
     )
     .await;
     if let Err(error) = &outcome {
-        let yielded = matches!(error, JevError::Cancelled) && execution.handle.turn_exhausted();
+        let yielded = matches!(error, JevError::Cancelled)
+            && execution
+                .handle
+                .turn_exhausted(&execution.input.check_id, &execution.input.key);
         let delay = if yielded {
             1
         } else {
@@ -1143,7 +1214,7 @@ async fn execute_batch_inner(
         }
         let Some(admission) = handle
             .admit_if_current(key_generation, &input.check_id, check_generation, || {
-                handle.admit_turn_dispatch(|| {
+                handle.admit_turn_dispatch(&input.check_id, &input.key, || {
                     store.admit_burn_check_requests(
                         input,
                         &request_identities,
@@ -2089,13 +2160,14 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_counts_only_admitted_dispatches_and_yields_before_a_third_attempt() {
+    fn a_turn_counts_only_admitted_dispatches_and_yields_at_its_limit() {
         let (store, input, handle, generation) = checkpoint_fixture();
-        for index in 0..3 {
+        handle.start_candidate_turn(&input.check_id, &input.key);
+        for index in 0..9 {
             let identity = [format!("semantic-target-{index}")];
             let admission = handle
                 .admit_if_current(generation, &input.check_id, 0, || {
-                    handle.admit_turn_dispatch(|| {
+                    handle.admit_turn_dispatch(&input.check_id, &input.key, || {
                         store.admit_burn_check_requests(
                             &input,
                             &identity,
@@ -2108,7 +2180,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 admission,
-                if index < 2 {
+                if index < DISPATCHES_PER_TURN as usize {
                     BurnCheckRequestAdmission::Admitted
                 } else {
                     BurnCheckRequestAdmission::Deferred
@@ -2116,13 +2188,19 @@ mod tests {
             );
             assert_eq!(
                 store.burn_check_dispatch_attempts(&identity).unwrap(),
-                usize::from(index < 2)
+                usize::from(index < DISPATCHES_PER_TURN as usize)
             );
         }
-        assert!(handle.turn_exhausted());
-        handle.turn_dispatches.store(0, Ordering::Release);
+        assert!(handle.turn_exhausted(&input.check_id, &input.key));
+        let mut other_key = input.key.clone();
+        other_key.session_id.push_str("-parallel");
+        handle.start_candidate_turn(&input.check_id, &other_key);
+        assert!(!handle.turn_exhausted(&input.check_id, &other_key));
+        handle.end_candidate_turn(&input.check_id, &other_key);
+        handle.end_candidate_turn(&input.check_id, &input.key);
+        handle.start_candidate_turn(&input.check_id, &input.key);
         let unresolved = handle
-            .admit_turn_dispatch(|| {
+            .admit_turn_dispatch(&input.check_id, &input.key, || {
                 store.admit_burn_check_requests(
                     &input,
                     &["semantic-target-0".into()],
@@ -2132,8 +2210,8 @@ mod tests {
             })
             .unwrap();
         assert_eq!(unresolved, BurnCheckRequestAdmission::Unresolved);
-        assert!(!handle.turn_exhausted());
-        assert_eq!(handle.turn_dispatches.load(Ordering::Acquire), 0);
+        assert!(!handle.turn_exhausted(&input.check_id, &input.key));
+        handle.end_candidate_turn(&input.check_id, &input.key);
     }
 
     #[tokio::test(start_paused = true)]

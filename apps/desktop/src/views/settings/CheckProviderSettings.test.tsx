@@ -615,15 +615,20 @@ it("keeps provider fields visible while model limits use a keyboard-focusable di
 })
 
 it.each(["jev", "ollama", "cloudflare", "custom"] as const)(
-  "explains %s model bounds without implying a spending cap or making calls",
+  "shows %s model limits without a subtitle or making calls",
   async (provider) => {
     await setup(provider)
-    fireEvent.click(screen.getByRole("button", { name: "Model limits" }))
     expect(
-      screen.getByText(
+      screen.queryByText(
         "Context window, token, and request size bounds. These are not spending limits.",
       ),
-    ).toBeVisible()
+    ).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Model limits" }))
+    expect(
+      screen.queryByText(
+        "Context window, token, and request size bounds. These are not spending limits.",
+      ),
+    ).not.toBeInTheDocument()
     if (provider === "jev") {
       expect(
         screen.getByText(

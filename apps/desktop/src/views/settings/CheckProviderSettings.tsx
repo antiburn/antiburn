@@ -1,5 +1,4 @@
 import { useState, useSyncExternalStore } from "react"
-import { ChevronDown } from "lucide-react"
 import { Card } from "../../components/ui/Card"
 import { Disclosure } from "../../components/ui/Disclosure"
 import { PushButton } from "../../components/ui/PushButton"
@@ -12,7 +11,10 @@ import {
 } from "../../lib/smartCheckProviders"
 import { ProviderSettingsSession } from "./ProviderSettingsSession"
 import type { CheckAvailability } from "../../lib/checkAvailability"
-import { StepSettingsRow as SettingsRow } from "../main-window/overview/stepSettings/StepSettingsSearchRows"
+import {
+  StepSettingsDisclosure,
+  StepSettingsRow as SettingsRow,
+} from "../main-window/overview/stepSettings/StepSettingsSearchRows"
 
 const inputClass =
   "mt-2 min-h-[var(--control-height-regular)] w-full rounded-control border border-separator bg-input-fill px-3 type-body text-label"
@@ -337,80 +339,65 @@ export function CheckProviderSettings({
             </p>
           )}
         </SettingsRow>
-        <SettingsRow
+        <StepSettingsDisclosure
           searchId="smartCheckLimits"
-          description="Context window, token, and request size bounds. These are not spending limits."
-          trailing={
-            <button
-              type="button"
-              aria-label="Model limits"
-              aria-expanded={open}
-              aria-controls="check-model-limits"
-              className="flex h-6 w-6 items-center justify-center rounded-control text-label-secondary"
-              onClick={() => setDisclosure({ open: !open, dismissedRevision: targetRevision })}
-            >
-              <ChevronDown size={14} aria-hidden className={open ? "rotate-180" : undefined} />
-            </button>
-          }
+          open={open}
+          onOpenChange={(open) => setDisclosure({ open, dismissedRevision: targetRevision })}
         >
-          {open && (
-            <div id="check-model-limits">
-              <p className="mt-2 type-footnote text-label-secondary">
-                Refresh to read available model limits. Each value shows its source; unknown
-                values are not discovered limits.
-              </p>
-              <p className="mt-2 type-footnote text-label-secondary">
-                {provider === "jev"
-                  ? "Jev uses documented model limits. Manual overrides are not available."
-                  : "Leave manual limits empty to use discovered values or documented defaults. Manual values can lower known bounds or supply missing token limits."}
-              </p>
-              <PushButton
-                className="mt-2"
-                disabled={disabled}
-                onClick={() => void session.run("refresh")}
-              >
-                Refresh model limits
-              </PushButton>
-              {connection && provider !== "jev" && (
-                <div className="mt-3 space-y-2">
-                  {(
+          <div>
+            <p className="mt-2 type-footnote text-label-secondary">
+              Refresh to read available model limits. Each value shows its source; unknown
+              values are not discovered limits.
+            </p>
+            <p className="mt-2 type-footnote text-label-secondary">
+              {provider === "jev"
+                ? "Jev uses documented model limits. Manual overrides are not available."
+                : "Leave manual limits empty to use discovered values or documented defaults. Manual values can lower known bounds or supply missing token limits."}
+            </p>
+            <PushButton
+              className="mt-2"
+              disabled={disabled}
+              onClick={() => void session.run("refresh")}
+            >
+              Refresh model limits
+            </PushButton>
+            {connection && provider !== "jev" && (
+              <div className="mt-3 space-y-2">
+                {(
+                  [
+                    ["totalInputTokens", "Manual total input tokens"],
                     [
-                      ["totalInputTokens", "Manual total input tokens"],
-                      [
-                        "stateAndLongestQuestionTokens",
-                        "Manual state plus longest question tokens",
-                      ],
-                      ["runtimeContextTokens", "Manual loaded context tokens"],
-                    ] as const
-                  ).map(([field, label]) => (
-                    <label key={field} className="block type-body text-label">
-                      {label}
-                      <input
-                        aria-label={label}
-                        type="number"
-                        min={1}
-                        max={65536}
-                        step={1}
-                        disabled={state.busy}
-                        value={connection.contextOverride?.[field] ?? ""}
-                        onChange={(event) => limits(field, event.target.value)}
-                        className={inputClass}
-                      />
-                    </label>
-                  ))}
-                  {manualInvalid && (
-                    <p role="alert" className="type-footnote text-system-red-text">
-                      Use whole token limits from 1 to 65,536, or leave them empty.
-                    </p>
-                  )}
-                </div>
-              )}
-              {current?.capabilities && (
-                <CapabilityDetails capabilities={current.capabilities} />
-              )}
-            </div>
-          )}
-        </SettingsRow>
+                      "stateAndLongestQuestionTokens",
+                      "Manual state plus longest question tokens",
+                    ],
+                    ["runtimeContextTokens", "Manual loaded context tokens"],
+                  ] as const
+                ).map(([field, label]) => (
+                  <label key={field} className="block type-body text-label">
+                    {label}
+                    <input
+                      aria-label={label}
+                      type="number"
+                      min={1}
+                      max={65536}
+                      step={1}
+                      disabled={state.busy}
+                      value={connection.contextOverride?.[field] ?? ""}
+                      onChange={(event) => limits(field, event.target.value)}
+                      className={inputClass}
+                    />
+                  </label>
+                ))}
+                {manualInvalid && (
+                  <p role="alert" className="type-footnote text-system-red-text">
+                    Use whole token limits from 1 to 65,536, or leave them empty.
+                  </p>
+                )}
+              </div>
+            )}
+            {current?.capabilities && <CapabilityDetails capabilities={current.capabilities} />}
+          </div>
+        </StepSettingsDisclosure>
         {usage && (
           <div className="px-3">
             <Disclosure label="Model usage">

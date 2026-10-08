@@ -6,6 +6,23 @@ import { BurnChecksView } from "../BurnChecksView"
 import { aggregate, deferred, report, setup } from "./tests/burnChecksTestSupport"
 
 describe("smart check report integration", () => {
+  it("keeps passed checks visible when a new finding arrives", async () => {
+    const passed = { ...report.categories[1]! }
+    const { adapter, session } = setup(null, false, aggregate, {
+      ...report,
+      categories: [passed],
+    })
+    expect(await screen.findByRole("button", { name: /Unused skills, Passed/ })).toBeVisible()
+    vi.mocked(adapter.getReport).mockResolvedValue({
+      ...report,
+      evidenceSettled: true,
+      categories: [passed, { ...report.categories[0]!, id: "modelOverthinking" }],
+    })
+
+    await act(async () => session.refresh())
+    expect(screen.getByRole("button", { name: /Unused skills, Passed/ })).toBeVisible()
+  })
+
   it("keeps terminal uncertainty and pending completion separate from unanswered targets", async () => {
     setup(null, false, aggregate, {
       ...report,
@@ -31,10 +48,11 @@ describe("smart check report integration", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "Ignored instructions, Not assessed" }),
     )
-    await screen.findAllByText(
-      "2 of 4 reviewed · 1 uncertain · 2 unanswered · 1 pending completion · 50% reviewed",
-    )
-    expect(screen.queryByText("Checking…")).not.toBeInTheDocument()
+    const row = await screen.findByRole("button", {
+      name: /Ignored instructions, Not assessed/,
+    })
+    expect(within(row).queryByText(/reviewed/)).not.toBeInTheDocument()
+    expect(screen.queryByText("Checking")).not.toBeInTheDocument()
     fireEvent.focus(screen.getByLabelText("This check has been sampled"))
     const tooltip = await screen.findByRole("tooltip")
     expect(within(tooltip).getByText(/Pending completion is a reviewed answer/)).toBeVisible()
@@ -61,12 +79,9 @@ describe("smart check report integration", () => {
         },
       ],
     })
-    const row = await screen.findByRole("button", { name: /No issues found yet, Checking…/ })
-    expect(
-      within(row).getByText(
-        "2 of 3 reviewed · uncertain count unknown · 1 unanswered · pending completion count unknown · 67% reviewed",
-      ),
-    ).toBeVisible()
+    const row = await screen.findByRole("button", { name: /No issues found yet, Checking/ })
+    expect(within(row).getByText("Checking")).toBeVisible()
+    expect(within(row).queryByText(/reviewed/)).not.toBeInTheDocument()
     expect(screen.queryByText(/0 uncertain/)).not.toBeInTheDocument()
   })
   it.each([
@@ -95,10 +110,9 @@ describe("smart check report integration", () => {
         },
       ],
     })
-    const row = await screen.findByRole("button", { name: /No issues found yet, Checking…/ })
-    expect(
-      within(row).getByText("2 of 3 reviewed · 1 uncertain · 1 unanswered · 67% reviewed"),
-    ).toBeVisible()
+    const row = await screen.findByRole("button", { name: /No issues found yet, Checking/ })
+    expect(within(row).getByText("Checking")).toBeVisible()
+    expect(within(row).queryByText(/reviewed/)).not.toBeInTheDocument()
     for (const label of ["This check has been sampled", "This check used partial context"]) {
       const notice = screen.getByLabelText(label)
       fireEvent.focus(notice)
@@ -139,9 +153,9 @@ describe("smart check report integration", () => {
       ...report,
       categories: [check],
     })
-    const row = await screen.findByRole("button", { name: /No issues found yet, Checking…/ })
+    const row = await screen.findByRole("button", { name: /No issues found yet, Checking/ })
     expect(within(row).getByText("No issues found yet")).toHaveClass("text-system-green")
-    expect(within(row).getByText("2 reviewed · 1 uncertain · 3 unanswered")).toBeVisible()
+    expect(within(row).getByText("Checking")).toBeVisible()
     expect(screen.queryByRole("button", { name: /Not assessed/ })).not.toBeInTheDocument()
     expect(adapter.getTargets).not.toHaveBeenCalled()
     const partial = screen.getByLabelText("This check used partial context")
@@ -157,7 +171,7 @@ describe("smart check report integration", () => {
     })
     await act(async () => session.refresh())
     await screen.findByRole("button", { name: /, Passed/ })
-    expect(screen.queryByText("Checking…")).not.toBeInTheDocument()
+    expect(screen.queryByText("Checking")).not.toBeInTheDocument()
     expect(screen.queryByText("No issues found yet")).not.toBeInTheDocument()
     fireEvent.focus(screen.getByLabelText("This check has been sampled"))
     await screen.findByRole("tooltip")
@@ -167,7 +181,7 @@ describe("smart check report integration", () => {
       categories: [{ ...check, finding: 1, lifecycle: "failing" }],
     })
     await act(async () => session.refresh())
-    await screen.findByRole("button", { name: /1 failed · 0 passed, Checking…/ })
+    await screen.findByRole("button", { name: /1 failed · 0 passed, Checking/ })
     expect(screen.queryByText("No issues found yet")).not.toBeInTheDocument()
   })
   it.each([

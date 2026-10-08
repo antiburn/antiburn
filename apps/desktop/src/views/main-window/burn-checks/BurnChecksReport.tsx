@@ -1,6 +1,6 @@
 import "../../../styles/burn-checks-report.css"
 
-import { ChevronRight, Clock, Hourglass } from "lucide-react"
+import { ChevronRight, Clock, Hourglass, LoaderCircle } from "lucide-react"
 import { useCallback, useRef, useState, type KeyboardEvent, type MouseEvent } from "react"
 
 import { BurnCheckFlame } from "../../../components/burn-checks/BurnCheckFlames"
@@ -437,21 +437,6 @@ function CheckMetadata({
   inline?: boolean
   className?: string
 }) {
-  if (check.lifecycle == null || presentation.provisional) {
-    return (
-      <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 type-footnote">
-        <span
-          className={presentation.provisional ? "text-system-green" : "text-label-secondary"}
-        >
-          {presentation.summary}
-        </span>
-        {presentation.checking && <span className="text-label-secondary">Checking…</span>}
-        {presentation.coverage && (
-          <span className="text-label-tertiary">{presentation.coverage}</span>
-        )}
-      </span>
-    )
-  }
   return (
     <span
       className={cn(
@@ -460,7 +445,9 @@ function CheckMetadata({
       )}
     >
       <span className="mt-0.5 block font-mono type-footnote tabular-nums">
-        {check.lifecycle === "passing" ? (
+        {presentation.provisional ? (
+          <span className="text-system-green">{presentation.summary}</span>
+        ) : check.lifecycle === "passing" ? (
           <span className="text-burn-check-pass-fill">Passed</span>
         ) : (
           <>
@@ -494,17 +481,21 @@ function CheckMetadata({
           </>
         )}
       </span>
-      {presentation.checking && (
-        <span className="type-footnote text-label-secondary">Checking…</span>
-      )}
-      {presentation.coverage && (
-        <span className="type-footnote text-label-tertiary">{presentation.coverage}</span>
-      )}
-      {(check.estimatedTokenBurnBasisPoints != null || presentation.costLine) && (
+      {(presentation.checking ||
+        (check.lifecycle === "failing" &&
+          check.finding > 0 &&
+          check.estimatedTokenBurnBasisPoints != null) ||
+        presentation.costLine) && (
         <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-          {check.estimatedTokenBurnBasisPoints != null &&
-            (check.finding > 0 ||
-              (check.lifecycle === "passing" && check.estimatedTokenBurnBasisPoints === 0)) && (
+          {presentation.checking && (
+            <span className="inline-flex items-center gap-1 type-footnote text-label-tertiary">
+              <LoaderCircle size={13} className="shrink-0 animate-spin" aria-hidden="true" />
+              <span>Checking</span>
+            </span>
+          )}
+          {check.lifecycle === "failing" &&
+            check.finding > 0 &&
+            check.estimatedTokenBurnBasisPoints != null && (
               <span className="inline-flex items-center gap-1 type-footnote tabular-nums text-label-tertiary">
                 <BurnCheckFlame basisPoints={check.estimatedTokenBurnBasisPoints} />
                 {formatTokenBurnPercent(check.estimatedTokenBurnBasisPoints)} estimated burn
@@ -568,7 +559,7 @@ function CheckTrigger({
       type="button"
       aria-pressed={selected}
       aria-controls={`burn-check-${check.id}-detail`}
-      aria-label={`${presentation.label}, ${summary}${presentation.checking ? ", Checking…" : ""}${metric ? `, ${metric}` : ""}`}
+      aria-label={`${presentation.label}, ${summary}${presentation.checking ? ", Checking" : ""}${metric ? `, ${metric}` : ""}`}
       data-outcome={
         check.lifecycle === "awaitingVerification"
           ? "awaiting"
@@ -659,7 +650,10 @@ export function BurnChecksReport({
     ...unassessed,
     ...snoozedChecks,
   ]
-  const reportKey = checks.map((check) => check.id).join(":")
+  const reportKey = checks
+    .map((check) => check.id)
+    .sort()
+    .join(":")
   const initialId =
     activeFailures[0]?.id ??
     activeAwaiting[0]?.id ??
@@ -711,7 +705,7 @@ export function BurnChecksReport({
     if (unassessed.some((check) => check.id === focusedCheck)) setUnassessedOpen(true)
   }
   const lastFocus = useRef<string | null>(null)
-  const passedOpen = ui.passedPreference ?? activeFailures.length === 0
+  const passedOpen = ui.passedPreference ?? true
   const selectedId = checks.some((check) => check.id === ui.selectedId)
     ? ui.selectedId
     : initialId
@@ -915,9 +909,11 @@ export function BurnChecksReport({
                 </section>
               )}
               {checking.length > 0 && (
-                <div className="burn-checks-group-body">
-                  {checking.map((check) => renderCheck(check))}
-                </div>
+                <section className="burn-checks-group" aria-label="Checks in progress">
+                  <div className="burn-checks-group-body">
+                    {checking.map((check) => renderCheck(check))}
+                  </div>
+                </section>
               )}
               {activeWins.length > 0 && (
                 <section className="burn-checks-group" aria-labelledby="burn-checks-passed">

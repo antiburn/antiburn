@@ -162,7 +162,7 @@ describe("check row presentation", () => {
     })
   })
 
-  it("provides the shared passed row content and status colors", () => {
+  it("provides the shared passed row content without a burn estimate", () => {
     expect(
       checkRowPresentation(
         category({ finding: 0, clean: 5, estimatedTokenBurnBasisPoints: 0 }),
@@ -170,9 +170,9 @@ describe("check row presentation", () => {
     ).toMatchObject({
       label: "Old model usage",
       summary: "Passed",
-      metric: "0% estimated burn",
+      metric: null,
       iconTone: "bg-system-green/10 text-system-green",
-      metricTone: "text-system-green",
+      metricTone: null,
     })
   })
 

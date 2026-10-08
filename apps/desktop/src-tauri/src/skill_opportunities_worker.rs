@@ -438,7 +438,11 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         .await;
         let mut outcome = match outcome {
             Ok(outcome) => outcome,
-            Err(JevError::Cancelled) if handle.turn_exhausted() => return Ok(()),
+            Err(JevError::Cancelled)
+                if handle.turn_exhausted("skill_opportunities", &candidate.session.key) =>
+            {
+                return Ok(());
+            }
             Err(error) => return Err(error.into()),
         };
         if !handle.key_is_current(key_generation) {
@@ -480,7 +484,9 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                     POLICY.idle_secs,
                 )
             })?;
-            if matches!(error, JevError::Cancelled) && handle.turn_exhausted() {
+            if matches!(error, JevError::Cancelled)
+                && handle.turn_exhausted("skill_opportunities", &candidate.session.key)
+            {
                 write_fence.commit(|| {
                     store.release_failed_burn_check_lease(
                         &input.durable,

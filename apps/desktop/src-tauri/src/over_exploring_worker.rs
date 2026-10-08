@@ -442,7 +442,9 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             &plan,
         );
         if let Some(error) = outcome.failure {
-            if matches!(error, JevError::Cancelled) && handle.turn_exhausted() {
+            if matches!(error, JevError::Cancelled)
+                && handle.turn_exhausted(CHECK_ID, &candidate.session.key)
+            {
                 save_failure(store, &input, &cursor, "continuing", None)?;
                 return Ok(());
             }

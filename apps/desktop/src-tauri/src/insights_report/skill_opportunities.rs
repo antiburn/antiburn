@@ -61,10 +61,6 @@ fn skill_opportunity_findings_with_home(
         return Ok(None);
     }
 
-    let Some(snapshot) = current_skill_snapshot(session.agent, workspace_candidate, home) else {
-        return Ok(None);
-    };
-
     let stored = connection
         .query_row(
             "SELECT incarnation, source_generation, source_fingerprint, published_fence,
@@ -131,9 +127,6 @@ fn skill_opportunity_findings_with_home(
     let Ok(result) = serde_json::from_str::<SkillOpportunitiesResult>(&result_json) else {
         return Ok(None);
     };
-    if !publication_revisions_match(&result_json, &input_revision, &snapshot.revision(), &result) {
-        return Ok(None);
-    }
     let complete = status == "completed" && result.complete;
     let partial_findings = matches!(status.as_str(), "completed" | "failed")
         && !result.complete
@@ -141,6 +134,13 @@ fn skill_opportunity_findings_with_home(
     if (!complete && !partial_findings)
         || !crate::skill_opportunities_worker::publication_has_assessed_coverage(&result)
     {
+        return Ok(None);
+    }
+
+    let Some(snapshot) = current_skill_snapshot(session.agent, workspace_candidate, home) else {
+        return Ok(None);
+    };
+    if !publication_revisions_match(&result_json, &input_revision, &snapshot.revision(), &result) {
         return Ok(None);
     }
 
