@@ -99,6 +99,7 @@ use antiburn_local::discovery::{
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::{home_dir, ignored_paths};
+use antiburn_local::platform::environment::{self, DiscoveryEnvironment};
 use antiburn_local::platform::git;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
@@ -2189,7 +2190,7 @@ async fn repo_admission(
         // Only a CWD that Git reports as outside every repository can move
         // to a repository below it or stay as a folder.
         Ok(None) => {}
-        Err(error) => return git_error_admission(&error, git_runs().await),
+        Err(error) => return git_error_admission(&error, git_runs(cwd).await),
     }
     if record.source_kind == "file"
         && let Some(root) =
@@ -2264,9 +2265,16 @@ fn git_error_admission(error: &anyhow::Error, git_runs: bool) -> RepoAdmission {
     }
 }
 
-/// True when `git --version` runs and succeeds.
-async fn git_runs() -> bool {
-    git::run_git_output_at(None, &["--version"], &[])
+/// The environment that runs Git for `cwd`. This is the same selection that
+/// `git::repo_root_if_any_at` uses, so the probe tests the Git that failed.
+fn git_probe_environment(cwd: &std::path::Path) -> DiscoveryEnvironment {
+    environment::environment_from_mounted_path(cwd).unwrap_or_default()
+}
+
+/// True when `git --version` runs and succeeds in the environment for `cwd`.
+/// The probe does not pass `cwd` to Git, so a missing CWD cannot fail it.
+async fn git_runs(cwd: &std::path::Path) -> bool {
+    git::run_git_output_in_environment(&git_probe_environment(cwd), None, &["--version"], &[])
         .await
         .is_ok_and(|output| output.status.success())
 }

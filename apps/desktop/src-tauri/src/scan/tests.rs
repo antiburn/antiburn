@@ -2741,6 +2741,22 @@ fn git_error_admission_holds_the_session_when_git_cannot_run() {
 }
 
 #[test]
+fn git_probe_uses_the_environment_of_the_cwd() {
+    // A WSL CWD probes WSL Git, so a working WSL Git with no native Git does
+    // not turn a repository error into a Git outage.
+    let wsl = git_probe_environment(std::path::Path::new(
+        r"\\wsl.localhost\Ubuntu\home\avery\app",
+    ));
+    assert!(matches!(
+        wsl,
+        DiscoveryEnvironment::Wsl { ref distribution, .. } if distribution == "Ubuntu"
+    ));
+
+    let native = git_probe_environment(std::path::Path::new("/home/avery/app"));
+    assert!(matches!(native, DiscoveryEnvironment::Native));
+}
+
+#[test]
 fn a_git_outage_holds_a_stored_session_instead_of_rejecting_it() {
     let mut stored = record("claude", "stored-session", Some(1_000));
     let mut fresh = record("claude", "fresh-session", Some(2_000));
