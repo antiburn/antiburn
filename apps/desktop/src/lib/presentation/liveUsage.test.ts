@@ -858,11 +858,9 @@ describe("the failure surface", () => {
     expect(liveErrorNote("rateLimited", provider)).toBe(
       `Couldn't get ${name} usage yet. antiburn checks again shortly.`,
     )
-    expect(liveErrorNote("schema", provider)).toBe(
-      `${name} usage changed. Update antiburn, then retry.`,
-    )
+    expect(liveErrorNote("schema", provider)).toBe(`${name} usage changed. Update antiburn.`)
     expect(liveErrorNote("unavailable", provider)).toBe(
-      `${name} usage is unavailable. Check your connection, then retry.`,
+      `${name} usage is unavailable. Check your connection.`,
     )
   })
 
@@ -871,9 +869,9 @@ describe("the failure surface", () => {
     expect(liveErrorNote("rateLimited")).toBe(
       "Couldn't get provider usage yet. antiburn checks again shortly.",
     )
-    expect(liveErrorNote("schema")).toBe("Provider usage changed. Update antiburn, then retry.")
+    expect(liveErrorNote("schema")).toBe("Provider usage changed. Update antiburn.")
     expect(liveErrorNote("unavailable")).toBe(
-      "Provider usage is unavailable. Check your connection, then retry.",
+      "Provider usage is unavailable. Check your connection.",
     )
   })
 
@@ -884,11 +882,9 @@ describe("the failure surface", () => {
     expect(liveErrorNote("rateLimited", "google")).toBe(
       "Couldn't get Google usage yet. antiburn checks again shortly.",
     )
-    expect(liveErrorNote("schema", "google")).toBe(
-      "Google usage changed. Update antiburn, then retry.",
-    )
+    expect(liveErrorNote("schema", "google")).toBe("Google usage changed. Update antiburn.")
     expect(liveErrorNote("unavailable", "google")).toBe(
-      "Google usage is unavailable. Check your connection, then retry.",
+      "Google usage is unavailable. Check your connection.",
     )
   })
 })

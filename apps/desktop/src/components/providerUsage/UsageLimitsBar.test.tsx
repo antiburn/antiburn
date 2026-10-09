@@ -833,9 +833,7 @@ describe("UsageLimitsBar — degraded state", () => {
       expanded: true,
     })
 
-    expect(
-      screen.getByText("Google usage changed. Update antiburn, then retry."),
-    ).toBeInTheDocument()
+    expect(screen.getByText("Google usage changed. Update antiburn.")).toBeInTheDocument()
   })
 
   it("shows no degraded pill while the provider still shows cached windows", () => {

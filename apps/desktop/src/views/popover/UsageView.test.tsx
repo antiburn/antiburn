@@ -1098,11 +1098,9 @@ describe("UsageView — plan limits layered over local estimates", () => {
     expect(
       screen.getByText("Couldn't get Google usage yet. antiburn checks again shortly."),
     ).toBeInTheDocument()
+    expect(screen.getByText("Claude usage changed. Update antiburn.")).toBeInTheDocument()
     expect(
-      screen.getByText("Claude usage changed. Update antiburn, then retry."),
-    ).toBeInTheDocument()
-    expect(
-      screen.getByText("Codex usage is unavailable. Check your connection, then retry."),
+      screen.getByText("Codex usage is unavailable. Check your connection."),
     ).toBeInTheDocument()
   })
 })

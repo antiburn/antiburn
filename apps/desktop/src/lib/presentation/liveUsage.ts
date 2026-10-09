@@ -815,9 +815,9 @@ export function liveErrorNote(
       // retries by itself, so there is nothing for the reader to do.
       return `Couldn't get ${providerName ?? "provider"} usage yet. antiburn checks again shortly.`
     case "schema":
-      return `${providerName ?? "Provider"} usage changed. Update antiburn, then retry.`
+      return `${providerName ?? "Provider"} usage changed. Update antiburn.`
     default:
-      return `${providerName ?? "Provider"} usage is unavailable. Check your connection, then retry.`
+      return `${providerName ?? "Provider"} usage is unavailable. Check your connection.`
   }
 }
 
