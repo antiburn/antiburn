@@ -9,16 +9,16 @@ use antiburn_local::analysis::{
     PARSER_REVISION, SessionEvidence,
 };
 use antiburn_local::insights::{
-    CoverageBucket, CoverageCounts, DetectorFindings, DetectorId, DetectorStatus, EfficiencyReport,
-    EfficiencyReportAccumulator, NotAssessedReason, ReportCatalogs, ReportContext, ReportWindow,
-    SessionExample,
+    CoverageBucket, CoverageCounts, DetectorFindings, DetectorId, DetectorSelection,
+    DetectorStatus, EfficiencyReport, EfficiencyReportAccumulator, NotAssessedReason,
+    ReportCatalogs, ReportContext, ReportWindow, SessionExample,
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::model_catalog::ModelCatalog;
 use antiburn_local::pricing::ModelTokens;
 use antiburn_local::remediation::{Finding, FindingAssessment, ModelVerificationObservation};
 use anyhow::{Context, Result, ensure};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, named_params, params};
 
 use crate::remediation::WatchDefinition;
 use crate::store::{RemediationRecord, open_read_only};
@@ -27,8 +27,12 @@ use antiburn_local::remediation::SAVINGS_METHOD_REVISION;
 
 mod findings;
 mod ignored_instructions;
+mod over_exploring;
+mod progress;
 mod queries;
 mod resources;
+mod scope_creep;
+mod skill_opportunities;
 mod token_burn;
 mod verification;
 
@@ -38,8 +42,10 @@ use antiburn_local::analysis::SourceOrigin;
 use antiburn_local::insights::TokenBurnSourceEvidence;
 use ignored_instructions::{
     IgnoredInstructionReportCounts, IgnoredInstructionSessionIdentity,
-    apply_ignored_instruction_counts, ignored_instruction_findings_for_evidence,
-    ignored_instruction_result_for, ignored_result_has_scoped_no_issues,
+    apply_ignored_instruction_counts, ignored_instruction_result_for,
+};
+pub(crate) use ignored_instructions::{
+    ignored_instruction_findings_for_evidence, ignored_result_has_scoped_no_issues,
 };
 use queries::*;
 #[cfg(test)]
@@ -56,14 +62,15 @@ pub(crate) use resources::{ResourceAssessment, ResourceAssessmentScope, UnusedRe
 
 #[cfg(test)]
 pub(crate) use findings::reduce_report_blocking_with_home;
-#[allow(unused_imports)]
-pub use findings::{ReportCancelled, is_cancelled, reduce_report, reduce_report_blocking};
-pub(crate) use findings::{ensure_not_cancelled, publication_findings_in};
+#[cfg(test)]
+pub use findings::{ReportCancelled, reduce_report};
+pub(crate) use findings::{ensure_not_cancelled, publication_findings_in, smart_session_statuses};
 #[cfg(test)]
 use findings::{
     fair_bounded_selection, list_current_findings_on_snapshot,
     revalidate_current_finding_on_snapshot,
 };
+pub use findings::{is_cancelled, reduce_report_blocking, reduce_report_with_selection};
 pub use findings::{list_current_findings, revalidate_current_finding};
 pub(crate) use verification::{
     CurrentDetectorAssessment, RemediationAssessments, has_current_evidence_after,
@@ -78,7 +85,6 @@ const CURRENT_FINDING_LIMIT: usize = 512;
 const MAX_RESOURCE_REPOSITORIES: usize = 256;
 const MAX_RESOURCE_INVENTORY_CONTEXTS: usize = 256;
 
-pub(crate) use ignored_instructions::has_published_sampled_instruction_assessment;
 pub(crate) use ignored_instructions::ignored_instruction_session_statuses;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,7 +99,13 @@ pub struct ReducedReport {
     pub report: EfficiencyReport,
     pub evidence_settled: bool,
     pub pending_evidence: u64,
+    /// The subset of `pending_evidence` that waits for a retry backoff.
+    /// The worker cannot claim these rows before their next attempt time.
+    pub deferred_evidence: u64,
     pub(crate) resources: ResourceAssessment,
+    pub enabled_detectors: DetectorSelection,
+    pub(crate) check_progress: std::collections::BTreeMap<String, progress::CheckReportProgress>,
+    pub(crate) sampled_instructions: bool,
 }
 
 /// Selects one detector's current findings in a bounded report window.
@@ -172,21 +184,43 @@ fn reduce_with_state_on_snapshot(
     turn_probe: &mut dyn FnMut(),
     resource_home: Option<&Path>,
 ) -> Result<ReducedReport> {
+    reduce_with_selection_on_snapshot(
+        data_dir,
+        request,
+        after_denominator,
+        cancel,
+        turn_probe,
+        resource_home,
+        DetectorSelection::all(),
+    )
+}
+
+fn reduce_with_selection_on_snapshot(
+    data_dir: &Path,
+    request: ReportRequest,
+    after_denominator: &mut dyn FnMut(),
+    cancel: &AtomicBool,
+    turn_probe: &mut dyn FnMut(),
+    resource_home: Option<&Path>,
+    enabled_detectors: DetectorSelection,
+) -> Result<ReducedReport> {
     ensure_not_cancelled(cancel)?;
     let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
     let transaction = connection.unchecked_transaction()?;
     let mut coverage = CoverageCounts::default();
     let mut pending_evidence = 0_u64;
-    let denominator_sql = DENOMINATOR_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
+    let mut deferred_evidence = 0_u64;
+    let denominator_sql = DENOMINATOR_SQL;
     {
-        let mut statement = transaction.prepare(&denominator_sql)?;
-        let mut rows = statement.query(params![
-            request.environment_key,
-            request.window.start_epoch,
-            request.window.end_epoch,
-            PARSER_REVISION,
-            ANALYZER_REVISION,
-            EVIDENCE_SCHEMA_REVISION,
+        let mut statement = transaction.prepare(denominator_sql)?;
+        let mut rows = statement.query(named_params![
+            ":environment_key": request.environment_key,
+            ":window_start": request.window.start_epoch,
+            ":window_end": request.window.end_epoch,
+            ":parser_revision": PARSER_REVISION,
+            ":analyzer_revision": ANALYZER_REVISION,
+            ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
+            "?7": request.computed_at_epoch,
         ])?;
         while let Some(row) = rows.next()? {
             let bucket = coverage_bucket(row.get::<_, String>(0)?.as_str())?;
@@ -195,6 +229,7 @@ fn reduce_with_state_on_snapshot(
             coverage.observe(bucket, count);
             coverage.awaiting_provider_support += awaiting_provider_support;
             pending_evidence += u64::try_from(row.get::<_, i64>(3)?)?;
+            deferred_evidence += u64::try_from(row.get::<_, i64>(4)?)?;
         }
     }
     ensure!(
@@ -205,7 +240,10 @@ fn reduce_with_state_on_snapshot(
     after_denominator();
     ensure_not_cancelled(cancel)?;
 
-    let mut accumulator = EfficiencyReportAccumulator::new();
+    let mut accumulator = EfficiencyReportAccumulator::with_catalogs_and_selection(
+        ReportCatalogs::default(),
+        enabled_detectors.clone(),
+    );
     let mut resource_builder = resources::ResourceAssessmentBuilder::default();
     if coverage.discovered != coverage.ready {
         resource_builder.mark_window_incomplete();
@@ -221,18 +259,21 @@ fn reduce_with_state_on_snapshot(
     let mut ignored_unavailable = 0_u64;
     let mut ignored_not_applicable = 0_u64;
     let mut ignored_examples = Vec::new();
+    let mut skill_counts = IgnoredInstructionReportCounts::default();
+    let mut over_counts = IgnoredInstructionReportCounts::default();
+    let mut scope_counts = IgnoredInstructionReportCounts::default();
     let depth_cap = u128::from(accumulator.catalogs().depth_cap_tokens);
-    let cohort_sql = COHORT_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
+    let cohort_sql = COHORT_SQL;
     {
-        let mut statement = transaction.prepare(&cohort_sql)?;
-        let mut rows = statement.query(params![
-            request.environment_key,
-            request.window.start_epoch,
-            request.window.end_epoch,
-            PARSER_REVISION,
-            ANALYZER_REVISION,
-            EVIDENCE_SCHEMA_REVISION,
-            METRICS_SCHEMA_REVISION,
+        let mut statement = transaction.prepare(cohort_sql)?;
+        let mut rows = statement.query(named_params![
+            ":environment_key": request.environment_key,
+            ":window_start": request.window.start_epoch,
+            ":window_end": request.window.end_epoch,
+            ":parser_revision": PARSER_REVISION,
+            ":analyzer_revision": ANALYZER_REVISION,
+            ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
+            ":metrics_schema_revision": METRICS_SCHEMA_REVISION,
         ])?;
         let mut resource_session_index = 0_usize;
         while let Some(row) = rows.next()? {
@@ -248,9 +289,85 @@ fn reduce_with_state_on_snapshot(
             let incarnation: u64 = row.get(6)?;
             let source_generation: i64 = row.get(7)?;
             let source_fingerprint: Option<String> = row.get(8)?;
-            if antiburn_local::analysis::ignored_instructions::source_supported(
-                evidence.capabilities.source_format,
-            ) {
+            if request.environment_key == "native"
+                && antiburn_local::analysis::smart_check_source_supported(
+                    &agent,
+                    evidence.capabilities.source_format,
+                )
+            {
+                let identity = || IgnoredInstructionSessionIdentity {
+                    environment_key: &request.environment_key,
+                    agent: &agent,
+                    session_id: &session_id,
+                    incarnation,
+                    source_generation,
+                    source_fingerprint: source_fingerprint.as_deref(),
+                    published_fence,
+                };
+                for (detector, counts) in [
+                    (DetectorId::OverExploring, &mut over_counts),
+                    (DetectorId::SkillOpportunities, &mut skill_counts),
+                    (DetectorId::ScopeCreep, &mut scope_counts),
+                ] {
+                    if !enabled_detectors.contains(detector) {
+                        continue;
+                    }
+                    let findings = match detector {
+                        DetectorId::OverExploring => {
+                            over_exploring::over_exploring_findings_for_session(
+                                &transaction,
+                                &evidence,
+                                identity(),
+                            )?
+                        }
+                        DetectorId::SkillOpportunities => {
+                            skill_opportunities::skill_opportunity_findings_for_session(
+                                &transaction,
+                                &evidence,
+                                identity(),
+                                cwd.as_ref().map(PathBuf::from),
+                            )?
+                        }
+                        DetectorId::ScopeCreep => scope_creep::scope_creep_findings_for_session(
+                            &transaction,
+                            &evidence,
+                            identity(),
+                        )?,
+                        _ => unreachable!("only persisted smart checks enter this loop"),
+                    };
+                    counts.eligible += 1;
+                    match findings {
+                        Some(findings) => {
+                            counts.assessed += 1;
+                            if findings.is_empty() {
+                                counts.clean += 1;
+                                counts.clean_agents.insert(agent.clone());
+                            } else {
+                                counts.finding_sessions += 1;
+                                counts.finding_agents.insert(agent.clone());
+                                if counts.examples.len()
+                                    < antiburn_local::insights::MAX_EXAMPLES_PER_DETECTOR
+                                {
+                                    counts.examples.push(SessionExample {
+                                        agent: agent.clone(),
+                                        session_id: session_id.clone(),
+                                    });
+                                }
+                            }
+                        }
+                        None => counts.unavailable += 1,
+                    }
+                }
+            } else {
+                over_counts.not_applicable += 1;
+                skill_counts.not_applicable += 1;
+                scope_counts.not_applicable += 1;
+            }
+            if enabled_detectors.contains(DetectorId::IgnoredInstructions)
+                && antiburn_local::analysis::ignored_instructions::source_supported(
+                    evidence.capabilities.source_format,
+                )
+            {
                 ignored_eligible += 1;
                 let result = ignored_instruction_result_for(
                     &transaction,
@@ -292,7 +409,7 @@ fn reduce_with_state_on_snapshot(
                     }
                     _ => ignored_unavailable += 1,
                 }
-            } else {
+            } else if enabled_detectors.contains(DetectorId::IgnoredInstructions) {
                 ignored_not_applicable += 1;
             }
             let agent_kind = crate::agents::kind_from_slug(&agent);
@@ -379,14 +496,14 @@ fn reduce_with_state_on_snapshot(
     // Their direct positive uses can prevent a false current-inventory target.
     {
         let mut statement = transaction.prepare(RESOURCE_USE_SQL)?;
-        let mut rows = statement.query(params![
-            request.environment_key,
-            request.window.start_epoch,
-            request.window.end_epoch,
-            PARSER_REVISION,
-            ANALYZER_REVISION,
-            EVIDENCE_SCHEMA_REVISION,
-            METRICS_SCHEMA_REVISION,
+        let mut rows = statement.query(named_params![
+            ":environment_key": request.environment_key,
+            ":window_start": request.window.start_epoch,
+            ":window_end": request.window.end_epoch,
+            ":parser_revision": PARSER_REVISION,
+            ":analyzer_revision": ANALYZER_REVISION,
+            ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
+            ":metrics_schema_revision": METRICS_SCHEMA_REVISION,
         ])?;
         while let Some(row) = rows.next()? {
             ensure_not_cancelled(cancel)?;
@@ -425,7 +542,7 @@ fn reduce_with_state_on_snapshot(
 
     ensure_not_cancelled(cancel)?;
     let mut report = accumulator.finish(ReportContext {
-        environment_key: request.environment_key,
+        environment_key: request.environment_key.clone(),
         window: request.window,
         computed_at_epoch: request.computed_at_epoch,
         parser_revision: PARSER_REVISION,
@@ -433,26 +550,44 @@ fn reduce_with_state_on_snapshot(
         evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
         coverage,
     });
-    apply_ignored_instruction_counts(
-        &mut report,
-        IgnoredInstructionReportCounts {
-            eligible: ignored_eligible,
-            assessed: ignored_assessed,
-            clean: ignored_clean,
-            clean_agents: ignored_clean_agents,
-            finding_agents: ignored_finding_agents,
-            unavailable: ignored_unavailable,
-            not_applicable: ignored_not_applicable,
-            finding_sessions: ignored_finding_sessions,
-            examples: ignored_examples,
-        },
-    );
+    for (detector, counts) in [
+        (DetectorId::ScopeCreep, scope_counts),
+        (DetectorId::OverExploring, over_counts),
+        (DetectorId::SkillOpportunities, skill_counts),
+    ] {
+        if enabled_detectors.contains(detector) {
+            ignored_instructions::apply_persisted_check_counts(&mut report, detector, counts);
+        }
+    }
+    if enabled_detectors.contains(DetectorId::IgnoredInstructions) {
+        apply_ignored_instruction_counts(
+            &mut report,
+            IgnoredInstructionReportCounts {
+                eligible: ignored_eligible,
+                assessed: ignored_assessed,
+                clean: ignored_clean,
+                clean_agents: ignored_clean_agents,
+                finding_agents: ignored_finding_agents,
+                unavailable: ignored_unavailable,
+                not_applicable: ignored_not_applicable,
+                finding_sessions: ignored_finding_sessions,
+                examples: ignored_examples,
+            },
+        );
+    }
     turn_probe();
     ensure_not_cancelled(cancel)?;
     ensure!(
         report.context.coverage.actively_growing <= report.context.coverage.ready,
         "actively growing coverage exceeds ready coverage"
     );
+    let check_progress = progress::check_report_progress_in(&transaction, &request, resource_home)?;
+    let sampled_instructions =
+        ignored_instructions::has_published_sampled_instruction_assessment_in(
+            &transaction,
+            &request,
+        )?;
+    ensure_not_cancelled(cancel)?;
     drop(transaction);
     drop(connection);
     if let Some(home) = resource_home {
@@ -462,7 +597,7 @@ fn reduce_with_state_on_snapshot(
             resource_builder.mark_scan_failed(agent);
         }
     }
-    let resources = resource_builder.finish(&report);
+    let resources = resource_builder.finish_with_selection(&report, &enabled_detectors);
     debug_assert!(
         [
             DetectorId::UnusedMcpServers,
@@ -470,13 +605,19 @@ fn reduce_with_state_on_snapshot(
             DetectorId::UnusedSkills,
         ]
         .into_iter()
-        .all(|detector| resources.detector(detector).is_some())
+        .all(|detector| {
+            !enabled_detectors.contains(detector) || resources.detector(detector).is_some()
+        })
     );
     Ok(ReducedReport {
         report,
         evidence_settled: pending_evidence == 0,
         pending_evidence,
+        deferred_evidence,
         resources,
+        enabled_detectors,
+        check_progress,
+        sampled_instructions,
     })
 }
 
@@ -624,7 +765,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn publication_cap_gives_all_ten_detectors_an_opportunity() {
+    fn publication_cap_gives_all_detectors_an_opportunity() {
         let buckets = DetectorId::ALL
             .into_iter()
             .map(|detector| (0..150).map(move |index| (detector, index)).collect())
@@ -634,12 +775,13 @@ pub(crate) mod tests {
 
         assert_eq!(selected.len(), 100);
         for detector in DetectorId::ALL {
-            assert_eq!(
-                selected
-                    .iter()
-                    .filter(|(found, _)| *found == detector)
-                    .count(),
-                10,
+            let count = selected
+                .iter()
+                .filter(|(found, _)| *found == detector)
+                .count();
+            assert!(
+                count >= 100 / DetectorId::COUNT,
+                "{detector:?} received only {count} slots"
             );
         }
         assert_eq!(selected[0], (DetectorId::SessionsOverDepth, 0));
@@ -3202,21 +3344,18 @@ pub(crate) mod tests {
         let data_dir = TempDir::new().unwrap();
         let _store = Store::open(data_dir.path()).unwrap();
         let connection = open_read_only(data_dir.path(), REPORT_BUSY_TIMEOUT).unwrap();
-        let sql = format!(
-            "EXPLAIN QUERY PLAN {}",
-            COHORT_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE)
-        );
+        let sql = format!("EXPLAIN QUERY PLAN {COHORT_SQL}");
         let mut statement = connection.prepare(&sql).unwrap();
         let details = statement
             .query_map(
-                params![
-                    "native",
-                    100,
-                    200,
-                    PARSER_REVISION,
-                    ANALYZER_REVISION,
-                    EVIDENCE_SCHEMA_REVISION,
-                    METRICS_SCHEMA_REVISION,
+                named_params![
+                    ":environment_key": "native",
+                    ":window_start": 100,
+                    ":window_end": 200,
+                    ":parser_revision": PARSER_REVISION,
+                    ":analyzer_revision": ANALYZER_REVISION,
+                    ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
+                    ":metrics_schema_revision": METRICS_SCHEMA_REVISION,
                 ],
                 |row| row.get::<_, String>(3),
             )
@@ -3362,6 +3501,57 @@ pub(crate) mod tests {
             assert_eq!(report.report.context.coverage.unknown_start, 1);
             assert!(!report.evidence_settled);
         }
+
+        #[tokio::test]
+        async fn a_backed_off_session_counts_as_deferred_until_its_next_attempt() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_ready(&store, "ready", 120);
+            store
+                .upsert_sessions(&[session("live", 130, "sv1:live")], &["claude-code"])
+                .unwrap();
+            let claim = store
+                .claim_next_evidence(&["claude-code"], 10, 60)
+                .unwrap()
+                .unwrap();
+            assert_eq!(claim.key.session_id, "live");
+            assert!(
+                store
+                    .fail_evidence(
+                        &claim,
+                        EvidenceFailure::Retry {
+                            next_attempt_at_epoch: 230,
+                            counts_as_attempt: true,
+                        },
+                        "source_changed",
+                    )
+                    .unwrap()
+            );
+
+            let backed_off = reduce_report(
+                data_dir.path().to_path_buf(),
+                request(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await
+            .unwrap();
+            assert_eq!(backed_off.pending_evidence, 1);
+            assert_eq!(backed_off.deferred_evidence, 1);
+            assert!(!backed_off.evidence_settled);
+
+            let due = reduce_report(
+                data_dir.path().to_path_buf(),
+                ReportRequest {
+                    computed_at_epoch: 230,
+                    ..request()
+                },
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await
+            .unwrap();
+            assert_eq!(due.pending_evidence, 1);
+            assert_eq!(due.deferred_evidence, 0);
+        }
     }
 
     mod resource_assessment_integration {
@@ -3404,6 +3594,75 @@ pub(crate) mod tests {
             assert_eq!(category.unavailable, 0);
             assert_eq!(category.agents, vec!["claude-code"]);
             assert_eq!(category.estimated_token_burn_basis_points, Some(500));
+        }
+
+        #[test]
+        fn a_disabled_resource_check_does_not_assess_or_publish_its_candidates() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_ready(&store, "ready", 120);
+            let home = data_dir.path().join("home");
+            std::fs::create_dir(&home).unwrap();
+            std::fs::write(
+                home.join(".claude.json"),
+                r#"{"mcpServers":{"docs":{"command":"docs"}}}"#,
+            )
+            .unwrap();
+            let selection = DetectorSelection::from_enabled([DetectorId::SessionsOverDepth]);
+
+            let reduced = reduce_with_selection_on_snapshot(
+                data_dir.path(),
+                request(),
+                &mut || {},
+                &AtomicBool::new(false),
+                &mut || {},
+                Some(&home),
+                selection,
+            )
+            .unwrap();
+
+            assert!(
+                reduced
+                    .resources
+                    .detector(DetectorId::UnusedMcpServers)
+                    .is_none()
+            );
+            let payload = crate::dto::ChecksReportPayload::from_reduced_report(&reduced);
+            assert_eq!(payload.categories.len(), 1);
+            assert_eq!(
+                payload.categories[0].id,
+                crate::dto::BurnCheckDetectorId::SessionsOverDepth
+            );
+        }
+
+        #[test]
+        fn an_empty_selection_keeps_coverage_without_claiming_any_check_result() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_ready(&store, "ready", 120);
+
+            let reduced = reduce_with_selection_on_snapshot(
+                data_dir.path(),
+                request(),
+                &mut || {},
+                &AtomicBool::new(false),
+                &mut || {},
+                None,
+                DetectorSelection::none(),
+            )
+            .unwrap();
+
+            assert_eq!(reduced.report.context.coverage.discovered, 1);
+            assert!(
+                reduced
+                    .report
+                    .detectors
+                    .iter()
+                    .all(|counts| *counts == Default::default())
+            );
+            let payload = crate::dto::ChecksReportPayload::from_reduced_report(&reduced);
+            assert!(payload.categories.is_empty());
+            assert_eq!(payload.estimated_token_burn_basis_points, None);
         }
     }
 

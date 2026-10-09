@@ -1,0 +1,6 @@
+[
+  {"type":1,"bubbleId":"user-1","text":"  No extra work.\n    Keep this condition.\n"},
+  {"type":1,"bubbleId":"user-2","richText":"{\"children\":[{\"type\":\"paragraph\",\"children\":[{\"text\":\"No.\"}]},{\"type\":\"paragraph\",\"children\":[{\"text\":\"Do not build it.\"}]}]}"},
+  {"type":1,"bubbleId":"missing-user","toolFormerData":{"result":"approved"}},
+  {"type":2,"bubbleId":"assistant-result","toolFormerData":{"result":"approved"}}
+]

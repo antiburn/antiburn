@@ -17,7 +17,6 @@ import type {
 } from "../../lib/presentation/liveUsage"
 import {
   liveDisplayableProviders,
-  liveErrorNote,
   livePlanAccountLabel,
   liveProviderStatus,
   liveStatusNote,
@@ -30,12 +29,14 @@ import {
   liveWindows,
   orderedLiveAccounts,
   maxLiveUsedPercent,
+  providerGroupLabel,
 } from "../../lib/presentation/liveUsage"
 import { providerInitial } from "../../lib/presentation/providerUsage"
 import { SegmentedMeter } from "../ui/SegmentedMeter"
 import { SegmentFigure } from "../ui/SegmentFigure"
 import { Tooltip } from "../presentation/Tooltip"
 import { providerMark } from "./ProviderUsagePrimitives"
+import { UnavailableNote } from "./UnavailableNote"
 import { UsageRing } from "./UsageRing"
 import { useStableAccountNumbers } from "./useStableAccountNumbers"
 
@@ -129,6 +130,10 @@ export function UsageLimitsBar({
   const at = Date.parse(live.generatedAt) || 0
 
   if (limited.length === 0 && unavailable.length === 0) return null
+  // With no reading to show, the notes are all there is: show them, and no
+  // disclosure, because there is nothing to collapse to.
+  const notesOnly = limited.length === 0
+  const open = expanded || notesOnly
 
   const disclosure = (compact: boolean) => (
     <LimitsDisclosure
@@ -147,7 +152,7 @@ export function UsageLimitsBar({
       data-testid="usage-limits-bar"
       className={cn("relative shrink-0", hasVisibleSweep && "led-clock")}
     >
-      {!expanded && (
+      {!open && (
         <div className="flex min-w-0 items-center gap-[var(--space-md)] pt-2.5 pr-3 pb-1.5 pl-[var(--space-lg)]">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             {limited.map(({ reading, key }) => (
@@ -173,7 +178,7 @@ export function UsageLimitsBar({
         </div>
       )}
 
-      {expanded && (
+      {open && (
         <div
           id={regionId}
           role="region"
@@ -203,7 +208,9 @@ export function UsageLimitsBar({
             <UnavailableGroup
               key={entry.provider}
               entry={entry}
-              action={limited.length === 0 && index === 0 ? disclosure(true) : undefined}
+              action={
+                notesOnly && index === 0 && refreshing ? <RefreshingIndicator /> : undefined
+              }
             />
           ))}
         </div>
@@ -251,12 +258,7 @@ function LimitsDisclosure({
 }) {
   return (
     <span className={cn("inline-flex h-5 items-center gap-1", compact && "relative -right-1")}>
-      {refreshing && (
-        <span role="status" className="inline-flex shrink-0 items-center text-label-tertiary">
-          <LoaderCircle size={12} strokeWidth={2} aria-hidden="true" className="animate-spin" />
-          <span className="sr-only">Refreshing usage limits</span>
-        </span>
-      )}
+      {refreshing && <RefreshingIndicator />}
       {/* Three text lines rather than a rotating chevron: the control shows
           what it reveals — the list of meter rows. */}
       <button
@@ -274,6 +276,16 @@ function LimitsDisclosure({
       >
         <Text size={14} strokeWidth={1.75} aria-hidden="true" />
       </button>
+    </span>
+  )
+}
+
+/** The spinner beside the disclosure while a usage refresh runs. */
+function RefreshingIndicator() {
+  return (
+    <span role="status" className="inline-flex shrink-0 items-center text-label-tertiary">
+      <LoaderCircle size={12} strokeWidth={2} aria-hidden="true" className="animate-spin" />
+      <span className="sr-only">Refreshing usage limits</span>
     </span>
   )
 }
@@ -321,7 +333,7 @@ function ProviderGroup({
   return (
     <div
       role="group"
-      aria-label={plan ? `${displayName}, ${plan} plan` : displayName}
+      aria-label={providerGroupLabel(displayName, plan)}
       {...(staleNote ? { title: staleNote } : {})}
       data-state={activation ?? "idle"}
       className="rounded-md px-2 py-2 transition-colors duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
@@ -503,16 +515,23 @@ function UnavailableGroup({
   /** The disclosure, when no provider above this one can carry it. */
   action?: ReactNode
 }) {
+  const plan = entry.planLabel
   return (
     <div
       role="group"
-      aria-label={entry.displayName}
-      className="flex items-center justify-between gap-2 rounded-md px-2 py-2"
+      aria-label={providerGroupLabel(entry.displayName, plan)}
+      className="rounded-md px-2 py-2"
     >
-      <p className="type-footnote text-label-secondary">
-        {liveErrorNote(entry.category, entry.provider, entry.detail)}
-      </p>
-      {action}
+      {/* The same eyebrow as a provider with meters, so the provider keeps
+          its name and plan when its limits cannot be read. */}
+      <div className="flex items-center justify-between gap-2 pb-1.5">
+        <h3 className="min-w-0 truncate type-footnote font-medium tracking-wide text-label">
+          <span className="uppercase">{entry.displayName}</span>
+          {plan && <span className="text-label-secondary"> · {plan}</span>}
+        </h3>
+        {action}
+      </div>
+      <UnavailableNote entry={entry} />
     </div>
   )
 }

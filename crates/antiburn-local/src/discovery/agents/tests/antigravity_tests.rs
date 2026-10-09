@@ -769,7 +769,7 @@ async fn test_native_database_replaces_matching_brain_transcript() {
     let connection = Connection::open(&db_path).unwrap();
     connection
         .execute_batch(
-            "CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB);
+            "PRAGMA user_version = 1; CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB);
              CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB);",
         )
         .unwrap();
@@ -911,6 +911,59 @@ fn test_session_ids_cannot_escape_the_conversations_directory() {
     }
 }
 
+#[test]
+fn companion_requires_the_exact_database_owner_and_layout() {
+    let database = Path::new("/synthetic/antigravity-cli/conversations/owner.db");
+    assert_eq!(
+        sibling_brain_transcript(database, "owner"),
+        Some(PathBuf::from(
+            "/synthetic/antigravity-cli/brain/owner/.system_generated/logs/transcript.jsonl"
+        ))
+    );
+    for id in ["other", "../other", "", ".", ".."] {
+        assert!(sibling_brain_transcript(database, id).is_none());
+    }
+    assert!(sibling_brain_transcript(Path::new("/synthetic/other/owner.db"), "owner").is_none());
+}
+
+#[test]
+fn discovery_rejects_unknown_database_versions() {
+    let directory = TempDir::new().unwrap();
+    let path = directory.path().join("owner.db");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("CREATE TABLE steps (idx INTEGER, metadata BLOB);")
+        .unwrap();
+    for version in [0, 1, 2] {
+        connection
+            .pragma_update(None, "user_version", version)
+            .unwrap();
+        assert_eq!(database_has_usage_tables(&path), version == 1);
+    }
+}
+
+#[test]
+fn review_artifacts_and_full_transcript_are_not_sessions() {
+    for root in GEMINI_BRAIN_SUBROOTS {
+        let brain = PathBuf::from("/synthetic").join(root).join("brain/owner");
+        for relative in [
+            "implementation_plan.md",
+            "implementation_plan.md.metadata.json",
+            "task.md.metadata.json",
+            ".system_generated/logs/transcript_full.jsonl",
+        ] {
+            assert!(matches!(
+                classify_session_file(&brain.join(relative)),
+                SessionFileDecision::Skip
+            ));
+        }
+        assert!(matches!(
+            classify_session_file(&brain.join(".system_generated/logs/transcript.jsonl")),
+            SessionFileDecision::File
+        ));
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 #[serial]
 async fn test_invalid_database_keeps_the_matching_brain_transcript() {
@@ -1025,7 +1078,7 @@ async fn test_conversation_database_scan_covers_all_native_roots() {
         let path = conversations.join(format!("{subroot}.db"));
         Connection::open(&path)
             .unwrap()
-            .execute_batch("CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB);")
+            .execute_batch("PRAGMA user_version = 1; CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB);")
             .unwrap();
         expected.push(path);
     }
@@ -1058,7 +1111,9 @@ async fn an_old_database_with_a_recent_sibling_transcript_is_still_discovered() 
     let db_path = conversations.join(format!("{session_id}.db"));
     Connection::open(&db_path)
         .unwrap()
-        .execute_batch("CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB);")
+        .execute_batch(
+            "PRAGMA user_version = 1; CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB);",
+        )
         .unwrap();
     let transcript = home
         .path()
@@ -1102,7 +1157,9 @@ async fn an_old_quiet_database_is_never_opened() {
     let db_path = conversations.join(format!("{session_id}.db"));
     Connection::open(&db_path)
         .unwrap()
-        .execute_batch("CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB);")
+        .execute_batch(
+            "PRAGMA user_version = 1; CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB);",
+        )
         .unwrap();
 
     let now = 1_800_000_000;

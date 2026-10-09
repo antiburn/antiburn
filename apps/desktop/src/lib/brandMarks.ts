@@ -107,3 +107,27 @@ export const ANTIGRAVITY_MARK: BrandMark = {
     assetSha256: "37bf1d6e27179dcf8b0e46b18bd65a38ff555e58cd6a6156902784a92a905628",
   },
 }
+
+/**
+ * Oh My Pi's mark, used nominatively on `omp` rows.
+ *
+ * `simple-icons@16` carries no Oh My Pi icon, and Pi's mark is a different
+ * product's brand. The path is the glyph from the omp.sh favicon, which the
+ * MIT-licensed oh-my-pi repository also ships as
+ * `packages/collab-web/public/favicon.svg`. The mark drops the favicon's dark
+ * tile and gradient so the glyph takes the theme ink.
+ *
+ * The favicon draws the glyph in a 64×64 tile. The `viewBox` is the square
+ * around the glyph, so the mark fills its box like the other marks.
+ */
+export const OMP_MARK: BrandMark = {
+  path: "M14 16h36v8H40v32h-8V24h-6v22h-8V24h-4z",
+  viewBox: "12 16 40 40",
+  provenance: {
+    package: "src/lib/fixtures/omp-mark.svg",
+    icon: "Oh My Pi",
+    license: "MIT",
+    source: "https://omp.sh/favicon.svg",
+    assetSha256: "9419975a0c24961341221c4cec18703db26a989fa037768f92cda74e3769fe05",
+  },
+}

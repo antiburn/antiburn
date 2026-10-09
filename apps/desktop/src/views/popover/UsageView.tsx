@@ -22,6 +22,7 @@ import type {
 import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
 import {
   liveAuthNote,
+  liveErrorHasDocs,
   liveErrorNote,
   livePlanAccountLabel,
   livePlanLabel,
@@ -557,7 +558,14 @@ function ProviderCard({
               <p
                 key={`${error.source}:${index}`}
                 role="status"
-                className="rounded-control bg-system-orange/10 px-2 py-1.5 type-caption text-system-orange"
+                // A note antiburn cannot act on reads as information, not a
+                // warning. The peek is passive, so its docs link is elsewhere.
+                className={cn(
+                  "rounded-control px-2 py-1.5 type-caption",
+                  liveErrorHasDocs(error.detail)
+                    ? "bg-surface-secondary text-label-secondary"
+                    : "bg-system-orange/10 text-system-orange",
+                )}
               >
                 {liveErrorNote(error.category, error.provider, error.detail)}
               </p>

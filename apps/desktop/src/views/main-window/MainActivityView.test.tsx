@@ -22,8 +22,9 @@ const mocks = vi.hoisted(() => ({
   getSessionLimitAllocations: vi.fn(),
   loadSessionAnalysis: vi.fn(),
   noteInteraction: vi.fn(),
-  openSettingsWindow: vi.fn(),
 }))
+
+const onOpenRangeSettings = vi.fn()
 
 /** Every push channel `MainActivitySession` listens on, as a no-op unlisten. */
 async function noListener(): Promise<() => void> {
@@ -106,7 +107,7 @@ beforeEach(() => {
   mocks.loadSessionAnalysis.mockResolvedValue(null)
   mocks.getLiveUsage.mockResolvedValue(null)
   mocks.getSessionLimitAllocations.mockResolvedValue(null)
-  mocks.openSettingsWindow.mockResolvedValue(undefined)
+  onOpenRangeSettings.mockClear()
 })
 
 afterEach(() => sessions.forEach((session) => session.dispose()))
@@ -115,7 +116,12 @@ function renderActivity(hygieneBySession: SessionHygieneSnapshot = new Map()) {
   const session = new MainActivitySession()
   sessions.push(session)
   const utils = render(
-    <MainActivityView active session={session} hygieneBySession={hygieneBySession} />,
+    <MainActivityView
+      active
+      session={session}
+      hygieneBySession={hygieneBySession}
+      onOpenRangeSettings={onOpenRangeSettings}
+    />,
   )
   return { session, ...utils }
 }
@@ -186,7 +192,7 @@ describe("MainActivityView", () => {
     )
     expect(screen.queryByRole("button", { name: "Clear filters" })).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "Change time range" }))
-    expect(mocks.openSettingsWindow).toHaveBeenCalledWith("general", "recentDays")
+    expect(onOpenRangeSettings).toHaveBeenCalledOnce()
   })
 
   it("does not show an empty filtered result before snoozes are ready", async () => {
@@ -260,21 +266,13 @@ describe("MainActivityView", () => {
     expect(screen.getByText("Detail: open-session")).toBeVisible()
   })
 
-  it("opens the shared time range from the header and reports navigation failures", async () => {
+  it("opens the shared time range from the header", async () => {
     const { session } = renderActivity()
     await ready(session)
-    mocks.openSettingsWindow.mockRejectedValueOnce(new Error("unavailable"))
     fireEvent.click(
-      screen.getByRole("button", { name: "Last 7 days, change time range in Settings" }),
+      screen.getByRole("button", { name: "Last 7 days, change time range in Overview" }),
     )
-    expect(
-      await screen.findByText("Could not open time-range settings. Try again."),
-    ).toBeVisible()
-    fireEvent.click(screen.getByRole("button", { name: "Change time range" }))
-    await vi.waitFor(() =>
-      expect(screen.queryByText("Could not open time-range settings. Try again.")).toBeNull(),
-    )
-    expect(mocks.openSettingsWindow).toHaveBeenLastCalledWith("general", "recentDays")
+    expect(onOpenRangeSettings).toHaveBeenCalledOnce()
   })
 })
 

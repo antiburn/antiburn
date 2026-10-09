@@ -25,6 +25,39 @@ CI changes, and documentation that no user acts on stay out — see
 - Native Windows 11 ARM64 builds. The PowerShell installer selects the ARM64
   package, including when PowerShell runs under emulation, and the app receives
   native ARM64 updates.
+- The Overview is the first-run experience. It finds your coding agents,
+  reads the last 30 days of sessions, and runs Burn Checks, with real
+  progress at each step, then shows the fixes it found. The separate setup
+  window is gone.
+- After the first run, antiburn reads your older sessions in the
+  background, as far back as Keep session data allows. The Sessions count
+  on the Overview climbs as it reads them.
+
+### Changed
+
+- Settings for agents, sessions, and Burn Checks now live in the Overview's
+  progress steps: open Agents, Sessions, or Checks to change them. Settings
+  no longer has Sources or Checks panes, and Settings search still finds
+  every moved control.
+- The Agents list shows how many places antiburn looked for each agent's
+  sessions, and lists them on demand.
+- Scanning is split into Recent sessions (the last 30 days, checked every
+  5 minutes) and Older sessions (read once after setup), each with its own
+  status.
+
+### Fixed
+
+- The Agents list shows "Not found" instead of a switch for an agent antiburn
+  has not detected. Every agent is on by default. Agents that an older setup
+  switched off because they had no sessions, and that still have none, are on
+  again.
+- Clear local index no longer corrupts sessions that were being checked when
+  you cleared it. A check that started before the clear could count a
+  session's turns twice, or leave it with no turns at all.
+- Codex sessions on retired models, such as `gpt-5-codex` and
+  `gpt-5.1-codex-max`, now show a cost. The price catalog no longer lists them
+  under OpenAI, so antiburn uses the price that most resellers agree on. Those
+  sessions also count toward learning your plan limits.
 
 ## [0.9.0] - 2026-09-29
 

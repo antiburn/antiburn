@@ -81,7 +81,37 @@ pub const MIGRATIONS: &[&str] = &[
     V68,
     V69,
     V70,
+    V71,
+    V72,
+    V73,
+    V74,
+    V75,
 ];
+
+const V73: &str = r#"
+ALTER TABLE burn_check_assessment ADD COLUMN eligible_targets INTEGER;
+ALTER TABLE burn_check_assessment ADD COLUMN reviewed_targets INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE burn_check_assessment ADD COLUMN runnable_targets INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE burn_check_assessment ADD COLUMN scheduling_revision TEXT;
+ALTER TABLE burn_check_assessment ADD COLUMN last_served_turn INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE burn_check_dispatch_attempt (
+    request_identity TEXT PRIMARY KEY NOT NULL,
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    attempts INTEGER NOT NULL CHECK(attempts BETWEEN 1 AND 3),
+    next_attempt_at_epoch INTEGER,
+    terminal INTEGER NOT NULL DEFAULT 0 CHECK(terminal IN (0, 1)),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+"#;
+
+const V74: &str = r#"
+ALTER TABLE burn_check_dispatch_attempt
+    ADD COLUMN last_attempt_at_epoch INTEGER NOT NULL DEFAULT 0;
+UPDATE burn_check_dispatch_attempt SET last_attempt_at_epoch = unixepoch();
+"#;
 
 const V69: &str = r#"
 CREATE TABLE burn_check_sampled_pair (
@@ -1542,4 +1572,80 @@ DROP INDEX session_insights_window;
 CREATE INDEX session_insights_window_activity
     ON session (environment_key, COALESCE(updated_at_epoch, started_at_epoch) DESC,
                 session_id DESC);
+"#;
+
+/// v71 gives every evidence claim a fence from one shared counter.
+///
+/// A claim used to add one to its own row's `claim_fence`. A session that
+/// is deleted or cleared and then discovered again gets a new evidence row
+/// that starts at `0`, so its first claim repeated the fence of a pass that
+/// started before the delete. That pass could then write turn rows into the
+/// new claim's fence, renew the new claim's lease, and delete the new
+/// claim's rows when it lost the publish race.
+///
+/// `evidence_claim_fence_seq` only increases. Deletes and
+/// `clear_local_session_data` never touch it. It starts above every fence
+/// stored today, so a fence a claim takes from it never matches an earlier
+/// pass for any session.
+const V71: &str = r#"
+CREATE TABLE evidence_claim_fence_seq (
+    id    INTEGER PRIMARY KEY CHECK (id = 1),
+    value INTEGER NOT NULL CHECK (value >= 0)
+) STRICT;
+INSERT INTO evidence_claim_fence_seq (id, value)
+SELECT 1, MAX(
+    COALESCE((SELECT MAX(claim_fence) FROM session_evidence), 0),
+    COALESCE((SELECT MAX(published_fence) FROM session_evidence), 0),
+    COALESCE((SELECT MAX(claim_fence) FROM turn), 0),
+    COALESCE((SELECT MAX(claim_fence) FROM session_coverage), 0),
+    COALESCE((SELECT MAX(published_fence) FROM burn_check_assessment), 0)
+);
+"#;
+
+/// v72 removes the `disabledAgents` entries that the retired first-run
+/// onboarding seeded.
+///
+/// That onboarding switched off every agent with no sessions when it
+/// finished. A disabled agent with no stored session hides nothing, so such
+/// an entry has no visible effect and no user can have chosen it on purpose.
+/// The Agents list now shows "Not found" in place of a switch for an agent
+/// with no sessions, so a stale entry would also leave that agent off when
+/// it appears later. An entry for an agent that has sessions can be a user's
+/// choice, so it stays. The stored value is a comma-separated slug list.
+const V72: &str = r#"
+WITH RECURSIVE split(slug, rest) AS (
+    SELECT '', value || ',' FROM setting WHERE key = 'disabledAgents'
+    UNION ALL
+    SELECT lower(trim(substr(rest, 1, instr(rest, ',') - 1))),
+           substr(rest, instr(rest, ',') + 1)
+      FROM split
+     WHERE rest <> ''
+)
+UPDATE setting
+   SET value = COALESCE((
+        SELECT group_concat(slug, ',')
+          FROM (SELECT DISTINCT slug
+                  FROM split
+                 WHERE slug <> ''
+                   AND EXISTS (SELECT 1 FROM session WHERE session.agent = split.slug)
+                 ORDER BY slug)
+       ), '')
+ WHERE key = 'disabledAgents';
+"#;
+
+/// v75 makes the next scan describe Claude sessions labelled `cli` again.
+/// Earlier scans labelled every session under `~/.claude/projects` as `cli`,
+/// including Claude Desktop and VS Code sessions. An empty activity cursor
+/// stops the scan from reusing the old record, so the scan reads the
+/// transcript head and stores the correct surface.
+///
+/// Routine scans read only the current window. Older rows change only in the
+/// historical pass, so v75 also clears the historical pass's completion
+/// marker, as `scan::history::reset_done` does. The automatic historical pass
+/// then runs again once.
+const V75: &str = r#"
+UPDATE session SET activity_cursor = ''
+WHERE agent = 'claude-code' AND surface = 'cli';
+UPDATE setting SET value = ''
+WHERE key = 'internal:historyDoneForRetentionDays';
 "#;

@@ -53,7 +53,10 @@ function signalChild(signal) {
   try {
     process.kill(-child.pid, signal)
   } catch (error) {
-    if (error?.code !== "ESRCH") throw error
+    // macOS answers EPERM when no member of the group can take the signal,
+    // such as a crashed app that the crash reporter still holds. Throwing
+    // here hides the app's own exit, so skip the signal instead.
+    if (error?.code !== "ESRCH" && error?.code !== "EPERM") throw error
   }
 }
 

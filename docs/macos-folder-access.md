@@ -190,8 +190,7 @@ pnpm exec tauri build --debug --bundles app \
 ```
 
 Seed a git repository under `~/Documents` and an agent session whose working
-directory points at it, mark onboarding complete in the app's database (the launch
-pass is gated on it), then:
+directory points at it, then:
 
 1. **No unannounced dialog.** Reset the folder permissions and launch. Expect no
    dialog, the repository absent, and the folder listed in

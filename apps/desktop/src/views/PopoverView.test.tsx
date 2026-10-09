@@ -1243,9 +1243,9 @@ describe("PopoverView", () => {
   })
 
   it("never renders the first-run flow, whatever the flag says", async () => {
-    // The flow has its own window now (`views/OnboardingView.tsx`), and
-    // the shell sends the tray click there instead of here. A popover that
-    // could still draw it would be a second, unreachable copy.
+    // The first-run welcome card lives in the main window's Overview, and the
+    // shell hides the menu-bar icon until the first run finishes. A popover
+    // that could still draw it would be a second, unreachable copy.
     mockCommands({ get_settings: { ...SETTINGS, onboardingCompleted: false } })
     render(<PopoverView />)
 
@@ -1282,7 +1282,7 @@ describe("PopoverView — attention banners", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument()
   })
 
-  it("surfaces a blocked repository, and Review opens Settings at Sources", async () => {
+  it("surfaces a blocked repository, and Review opens the Overview Sessions step", async () => {
     mockCommands({
       list_repositories: [repositoryPayload({ status: "permission_denied" })],
     })
@@ -1293,10 +1293,13 @@ describe("PopoverView — attention banners", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Review" }))
 
-    // Not just "open Settings": the banner lands the reader on the pane that
-    // can do something about what it reported.
+    // Not just "open Settings": the banner lands the reader, in the main
+    // window, on the step that can do something about what it reported.
     await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("open_settings_window", { pane: "sources" }),
+      expect(invoke).toHaveBeenCalledWith("open_main_window_section", {
+        section: "overview",
+        overviewStep: "sessions",
+      }),
     )
   })
 

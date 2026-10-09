@@ -2,35 +2,183 @@
 
 Smart Burn Checks are like deterministic Burn Checks: both look for signs of
 known issues in coding sessions. Smart Burn Checks send selected parts
-of a session to Jev for an assessment. Antiburn then combines those assessments
+of a session to the configured provider for an assessment. Antiburn combines those assessments
 with its local rules. The result describes evidence of an issue; it does not
 judge a person's intent.
 
-Smart Burn Checks means all Jev-powered Burn Checks. Each check declares its
-own evidence selection, questions, and result policy. Ignored Instructions is
-the first implementation, not the definition of the shared framework.
+Smart Burn Checks means all provider-powered Burn Checks. Each check declares its
+own evidence selection, questions, and result policy. All four use the shared
+framework; Ignored Instructions does not define the other checks' selection.
 
-Ignored Instructions needs a TypeSafe API key. Jev requests can use paid API
-credits. Antiburn shows local usage estimates in Settings.
+The four checks are Ignored Instructions, Scope Creep, Over-exploring, and Skill
+Opportunities. Jev uses a TypeSafe API key. Ollama, Cloudflare, and Custom
+connections use the same check flow. Hosted requests can incur charges; local
+usage estimates are not a spending cap or provider invoice.
 
 ## Setup, controls, and local data
 
-Open **Settings → Checks**, enable Smart Burn Checks, and add a TypeSafe API key.
-The setting controls automatic checks. You can choose future sessions or start a
-7- or 30-day history review there. The history window applies to the requested
-review; it does not prove which instructions were active during older actions.
+Open the **Checks** step settings to choose checks. Each local and Smart Burn
+Check has an app-wide enabled preference. Existing local checks retain their
+enabled behavior when this control is introduced; Ignored Instructions retains
+the consent already saved for its group. Newly introduced checks start off
+until the reader opts in.
 
-Pause checks to stop new assessments while keeping the saved key. Remove the key
-to stop new TypeSafe requests. Remove a session to delete that session's local
-check state; already-incurred usage remains in the local totals. **Clear Local
+Smart Burn Checks also require the Smart Checks group to be active and a
+configured provider connection. The group control and provider setup do not
+replace or reset the individual choices.
+Jev is the default. **Use Ollama or another provider** opens Ollama, Cloudflare,
+and Custom setup. Saved connections retain their settings when switched. Model
+capabilities govern preparation, packing, transport, validation, and reduction.
+A connection test proves protocol acceptance, not check accuracy. Ollama can use
+a local or remote base URL serving `/v1/systemone`; an ordinary chat endpoint
+does not establish this protocol. Cloudflare accepts Clef or Clef Flash with an
+account ID and credential. Custom uses the exact endpoint with direct System One
+or Cloudflare-envelope response decoding.
+You can choose future sessions or start a 7- or 30-day
+history review there. A history request includes only enabled eligible Smart
+Checks. Enabling a check does not silently add the disabled interval to a
+history run. The history window applies to the requested review; it does not
+prove which instructions were active during older actions.
+
+Pause checks to stop new assessments while keeping saved connections. Credentials
+use native credential storage or memory, not the session database. Removing a
+required credential prevents new requests through that connection. Remove a
+session to delete its local check state; already-incurred usage remains in the
+local totals. **Clear Local
 Data** also removes local sessions, check state, unresolved requests, and usage
 totals. See the [privacy policy](privacy-policy.md) for retention and data
 handling details.
 
+Disabling one check stops its check-specific work and hides its active findings,
+counts, and actions. Antiburn retains completed results, compatible cached
+answers, remediation history, and incurred usage. Re-enabling can make retained
+compatible results eligible again; local checks can recompute from retained
+evidence. If every check is off, the product reports that no checks are enabled
+and does not describe the sessions as Clean or Passed.
+
+## Registered checks
+
+The shared worker runs all four checks. Scope Creep, Over-exploring, and Skill
+Opportunities accept native Claude Code, Codex, OpenCode SQLite v2, and Pi
+sources under the pinned retained-root contracts in
+[session coverage](session-coverage.md#retained-root-smart-check-inputs).
+They use individual enabled preferences, the same master setting, provider
+connection, history controls, and Checks views. Four descriptors use
+one worker, including Ignored Instructions.
+
+Scope Creep compares substantial optional performed work with the full latest
+recorded scope. It includes recorded user messages, supported answers and plan
+evidence, and required proposal context. Every initial and follow-up request
+includes the complete compact scope. Later recorded approval withdraws stale
+findings and prompt actions. Task context that exceeds the model limit remains
+unassessed; the check does not split, summarize, or silently truncate approvals.
+
+Large selected work and supporting activity stay eligible through bounded sampled
+excerpts. A sampled work entry carries child chunks instead of a complete text
+body. Each large value supplies at most four structural fragments: early,
+task-relevant, middle, and late. When no interior child matches task terms, the
+relevant slot uses the first third. Exact UTF-8 byte offsets, total bytes, and
+partial flags identify the gaps. These offsets refer to check-selected action
+text or the named normalized field, not native transcript JSON. Large Bash input
+can retain an exact first line of at most 1,024 bytes, but sampled input cannot
+prove complete command options. A negative decision with partial activity is
+Uncertain, not Clean. Useful positive decisions retain their evidence limits.
+
+Over-exploring reviews read targets against recorded task context. Its three
+reasons are unrelated files, excessive file breadth, and excessive within-file
+reading. Counts and requested ranges rank targets; they do not prove waste.
+Each target receives one choice: `likely_excess`, `justified_or_minor`, or
+`uncertain`. A finding requires the actual `likely_excess` choice with finite
+probability of at least 0.75. A valid uncertain answer completes that target's
+review but never establishes Clean.
+The provider receives recorded task context, read requests, available matched
+results, and earlier and later retained activity. No later edit is required for
+a useful read. Requests alone can support unrelated-file or file-breadth findings;
+within-file findings require supported observed extents. A request alone does not
+prove returned content. Each event supplies at most three representative 4 KiB
+UTF-8 byte ranges within a 48 KiB target text budget. Range boundaries and partial
+flags identify omitted text; the provider does not receive complete large outputs.
+Source gaps, unfinished sibling operations, and provider failures do not erase
+independent positive targets. They cannot establish a complete clean result.
+Review counts use targets, not episodes. Observed lines do not prove whole-file
+access, file versions, or wasted tokens.
+
+Skill Opportunities compares recorded work with current installed skill
+descriptions and typed selected skill-use evidence. It sends selected task/work
+context, matching skill names, selected reference text, and use/time limits to
+the configured provider. A valid nonempty description is the only skill
+reference text sent. Missing, null, or blank descriptions and plain Markdown
+use the full Markdown as the fallback source, including frontmatter and body.
+Fallback requests select at most four structural 4 KiB chunks with byte ranges,
+total source bytes, and an explicit partial flag. Invalid YAML and non-string
+descriptions remain unsupported. Known used skills follow the same rule and
+share their reference text across comparisons in a request.
+OpenCode result proof needs selected
+`OtherToolOutput`; input-only projections cannot carry result text. Codex and Pi
+document selections and Claude requests/failures remain distinct facts, not
+execution proof.
+It does not prove past visibility or whole-session absence. Reliable birth time
+records creation after the relevant work as an advisory limit, not a candidate
+exclusion; missing time stays explicit.
+
+Skill Opportunities uses the same four-fragment sampling for large selected work,
+including edit inputs, commands, and tool results. Preparation samples only the
+selected episode. Work citations preserve ordered ranges, total bytes, partial
+status, and the digest of the full check-selected action. Changing an omitted
+range invalidates the saved binding even when the source length stays the same.
+The evidence view shows partial-work and selected-window limits. A sampled
+negative is Uncertain, not a complete no-opportunity result; a validated positive
+can still support a bounded recommendation. An accepted semantic answer completes
+the selected sampling job without claiming review of every source byte. There is
+no exhaustive subrange scheduler.
+
+All four checks preserve exact source citations and exclude private thinking.
+Prompts suggest better instructions for future work. They do not repair the
+reviewed session, offer Auto Fix, create verification watches, or estimate savings.
+Changed source evidence, provider configuration, or skill inputs invalidate stale work.
+History progress counts check-session jobs, not distinct sessions.
+
+### Incremental review and scheduling
+
+The shared scheduler sets an initial review target of **50% of eligible targets**
+for each check descriptor, rounded up to a whole target.
+This percentage is a target fraction, not model confidence, finding
+probability, or a claim that half the session text was reviewed. A target counts
+as reviewed only after all required window answers pass validation and the
+check's reducer accepts them. Dispatch, partial answers, private thinking, and
+unavailable evidence do not count as completed review.
+
+The shared scheduler serves the four descriptors in round-robin order. Four
+turns prefer initial-review work, then the fifth prefers continuation work;
+either lane can serve work when the preferred lane is empty. Remaining targets
+continue after the initial fraction is reached. Each turn selects at most:
+
+| Check                | Targets per turn |
+| -------------------- | ---------------- |
+| Ignored Instructions | 8                |
+| Scope Creep          | 4                |
+| Over-exploring       | 3                |
+| Skill Opportunities  | 4                |
+
+Each scheduler turn admits at most two provider dispatch attempts, including
+retries. Packing can combine several answers in one request; a target limit is
+not a request count. The Store persists a limit of three total dispatch attempts
+for exact semantic work across turns and restarts. Yielding to another descriptor does not
+reset those limits. Exhausted or unknown work remains unassessed and cannot
+produce Clean. Earlier dispatched attempts can already have incurred charges.
+
+Saved typed answers are reusable only for the exact decision context: selected
+evidence, source bindings, reference inputs, model/provider configuration, and
+check revisions must remain compatible. Transport repacking alone does not
+create new work. Changed task scope or skill references invalidate affected
+answers. Private thinking stays excluded from requests and review counts.
+Unsupported, incomplete, uncertain, and failed work cannot become a clean result
+merely because the initial fraction was reached.
+
 ## Ignored Instructions
 
 The following product flow describes Ignored Instructions. Its instruction
-rules, six selected fields, analysis passes, and confidence gates are specific
+rules, selected fields, analysis passes, and confidence gates are specific
 to this check.
 
 ### What the check reads
@@ -53,17 +201,23 @@ The check selects:
 - Inputs for other tools that are not recognized as Bash, edit, read, or search
   tools.
 
-The check excludes user messages, command and search results, read output, edit
-content, other tool output, and private thinking. Dedicated edit-tool content
+- Selected recorded user text and Bash results for bounded context. Human text
+  requires a normalized source-bound history proof and exact native text range.
+  Bash output requires a unique earlier request in the same source, thread, and
+  scope, exact call/name/range/digest bindings, and completed or error status.
+  The earlier request must be present in the selected evidence.
+
+The check excludes search results, read output, edit content, other tool output,
+typed question/plan fields, and private thinking. Dedicated edit-tool content
 stays excluded even though inline Bash content is selected. Selected file paths
-can appear in TypeSafe requests. Event IDs, line numbers, and citation links
-stay on the computer. Jev gets temporary labels; Antiburn uses a private map to
+can appear in provider requests. Event IDs, line numbers, and citation links
+stay on the computer. The provider gets temporary labels; Antiburn uses a private map to
 connect its answers to the original session events. Missing historical evidence
 stays unavailable and cannot prove historical activation, even if a selected
 review shows Clean. A recorded command request
 does not establish that the command ran or succeeded.
 
-The selected query excludes thinking and non-authoritative message text before
+The selected query excludes thinking and unqualified non-authoritative text before
 loading rows. It selects normalized tool fields by the check's field mask and
 applies byte limits to selected values. It can still read metadata for excluded
 tool categories. Source-wide truncation flags can keep a result unassessed when
@@ -102,7 +256,11 @@ file location so a finding points to the instruction it used.
 The check starts at the saved enablement boundary, or at the selected history
 window for a history run. It includes supported content after that boundary.
 Assistant text and tool input can be actions to check. A candidate action means
-one such event that may match an instruction. Tool-result text is not sent.
+one such event that may match an instruction. Accepted user text and bound Bash
+results supply context, not candidate work. Completion/error labels do not prove
+tests passed; result text must support the exact obligation. Unknown-origin,
+synthetic, skill-document, unmatched, conflicting, and truncated context cannot
+restore missing human authority or result proof.
 
 Antiburn reads a large session in pages. Each page holds a fixed amount of
 content. The first page can have newer events than the second page. The reader
@@ -112,8 +270,8 @@ apart.
 ### How sampling works
 
 One rule-text range and one action-text range form a possible comparison. The
-default sample is **256 high-priority rule/action pairs per review**. This is
-not exhaustive coverage or a cap on possible comparisons, TypeSafe requests,
+default turn sample is **8 high-priority rule/action pairs**. This is
+not exhaustive coverage or a per-session cap on comparisons, TypeSafe requests,
 tokens, elapsed time, or cost. A large session can have many more possible
 pairs. The check records possible, sampled, and remaining pair counts. Remaining
 pairs are a sampling gap, not known violations.
@@ -128,10 +286,10 @@ of the budget in stable score order. Diversity and exploration reduce, but do
 not remove, the chance of missing a conflict. Jev still decides applicability
 using the rule and recorded context. Keyword matches alone never publish findings.
 
-On subsequent reviews, new activity receives attention first, then older
-eligible pairs not yet sampled. The worker saves sampled pair identities and
+On subsequent turns, risk-ranked new activity alternates with older unchecked
+work spread across source chronology. The worker saves sampled pair identities and
 compatible typed answers across completed reviews, appends, and restarts.
-Unchanged sampled pairs do not consume the next pass because content pages or
+Unchanged sampled pairs do not consume the next turn because content pages or
 request packing changed. With no new work, the remaining gap decreases over
 successive reviews; new actions or rules can increase it. Reuse requires the
 same identifiable instruction rule and action, selected text, relevant context,
@@ -141,10 +299,11 @@ make up to three total dispatch attempts. An earlier dispatched attempt may
 already have incurred a charge. If the result is still unknown after those
 attempts, Antiburn blocks further dispatch of that work.
 
-An **event window** contains one action and up to two sampled rules. This sends
+An **event window** contains one action and up to eight sampled rules. This sends
 the action once for those rules instead of copying it into a separate window
-each time. One rule/action comparison is a **target**. Long actions or rules
-can need several windows with overlapping text. Sampling does not promise
+each time. One rule/action comparison is a **target**. Long non-command actions or rules
+can need several windows with overlapping text. Bash commands stay atomic;
+commands that exceed the request limit remain unassessed. Sampling does not promise
 every possible range or window is sent.
 
 For example, the instructions might say “Run tests before publishing” and “Get
@@ -157,27 +316,24 @@ keeps only comparisons whose prior history is incomplete, up to the candidate
 limit. It adds matching earlier events in source order and checks each candidate
 again. Completed comparisons do not carry forward. The carried comparison state
 is separate from the content cursor and page result. Missing history never proves
-that a prerequisite did not happen. User approval text is excluded and cannot
-resolve a permission-dependent conclusion. If the needed interval remains
+that a prerequisite did not happen. Accepted human text can inform a bounded
+permission-dependent comparison. Unknown-origin answers, assistant approval
+reports, skill selections, and tool permission do not establish human approval.
+If the needed interval remains
 missing or cut short, that comparison stays unassessed.
 
 ### What Jev receives and returns
 
-Each event window contains the selected rule text, the action, and a few
-nearby events. The check uses two analysis passes. The first pass asks one
-applicability question for each target:
+Each event window contains the selected rule text, bounded enclosing-section
+and ancestor context, the action, and selected same-branch events. Instruction
+context carries exact source byte and line ranges and explicit clipping limits.
+Large supporting text selects first, relevant, and last structural ranges within
+the context budget. Command context remains atomic or unavailable.
 
-1. Does this instruction apply to the action?
-
-The check skips follow-up questions for a confident “not applicable” answer
-(at least 0.90 probability). For other valid applicability answers, it asks
-relationship and evidence questions, plus a completion question when relevant:
-
-1. Does the action conflict with or follow the instruction after conditions and
-   exceptions are considered?
-2. Could missing or truncated evidence change that conclusion?
-3. Does the instruction have a completion-bound obligation whose completion
-   boundary is not shown?
+The check asks one joint Choice question per target. It returns `conflict`,
+`no_issue`, `pending_completion`, or `uncertain`, with an actual probability
+distribution. The decision considers applicability, conditions, exceptions,
+prerequisites, missing evidence, and completion boundaries together.
 
 Weak or uncertain answers do not prove a clean comparison. Source completeness
 and unresolved obligations limit conclusions about the reviewed comparisons.
@@ -186,8 +342,8 @@ The shared request code combines windows until the request reaches its size or
 question limit. Jev returns a choice and probability for each answer. The
 temporary labels let the shared worker connect answers to their windows, while
 the private map connects those windows back to the original rule and event.
-The follow-up also checks excluded-field limits and keeps context
-violations separate from the candidate's local citation. The first pass evaluates
+The joint decision also checks excluded-field limits and keeps context
+violations separate from the candidate's local citation. Each review evaluates
 chosen targets, not every possible rule/action pair.
 
 ### How results become findings
@@ -196,12 +352,12 @@ Jev does not decide the session result by itself. Antiburn checks the answers
 available for each selected target, then combines those decisions into one
 review result.
 
-The local decision rules apply confidence limits. A possible finding needs at
-least 0.85 probability that the rule applies and the action conflicts. A likely
-finding needs 0.90 plus stronger evidence about the instruction source and the
-action.
-When evidence is incomplete, Jev must also judge that the supplied evidence is
-enough to prove the result. A direct conflict can still qualify when omitted
+The local decision rules require at least 0.75 actual probability for `conflict`.
+The finding retains this value as `composite_probability`; separate applicability
+and evidence probabilities are not multiplied or reconstructed. Current-file
+comparisons and truncated actions remain possible findings. Stronger evidence
+about the instruction source and action permits a likely finding under the same
+threshold. A direct conflict can still qualify when omitted
 history cannot change it. A conclusion that depends on missing history stays
 unassessed.
 
@@ -212,7 +368,7 @@ completion point. A completed sampled review with no findings can show the
 ordinary **Clean** label. Clean means **no finding among sampled comparisons**.
 It does not mean that all session content is safe or that every instruction
 was active at the time. Unsampled pairs remain a coverage gap. Missing
-prerequisites, excluded approvals, incomplete source evidence, pending
+prerequisites, unavailable approval evidence, incomplete source evidence, pending
 obligations, and unresolved sampled comparisons cannot prove those comparisons
 clean. A provider or response error means the review did not finish; an
 evidence error means required source material is unavailable. Neither is a
@@ -244,9 +400,9 @@ back to its local window, saves generic progress, resumes unfinished requests,
 and calls the check's reducer. Its mechanics do not depend on Ignored
 Instructions.
 
-The desktop `JevCheckWorker` trait connects a check to product work. It supplies
+The desktop `JevCheckDescriptor` trait connects a check to product work. It supplies
 the check ID and processes one stored session candidate. The shared
-`jev_worker` scheduler finds candidates, and `execute_jev_batch` handles
+`crate::jev::worker` scheduler finds candidates, and `execute_jev_batch` handles
 transport, cache, reservations, retries, cancellation, and safe error reporting.
 The scheduler does not inspect instruction rules or define findings.
 
@@ -264,7 +420,7 @@ reduction live beside its assessment under `checks/ignored_instructions/`.
 Each check declares a `JevInputSelection` and matching
 `JevEvidenceRequirements`. The default selection is empty. The source boundary
 applies selection before a check receives evidence. Its page query excludes
-thinking and non-authoritative message text, selects normalized tool fields by
+thinking and unqualified non-authoritative text, selects normalized tool fields by
 mask, and retains row metadata. The check receives only permitted text fields.
 
 `JevFieldAvailability` reports `excluded`, `unsupported`, `not_observed`, or
@@ -286,6 +442,56 @@ unselected field or another publication.
 references bind request-local context to local source IDs. Packing sends the
 context and questions, not those IDs. Unpacking restores the local bindings and
 the runner verifies them before reduction.
+
+### Private question and plan records
+
+`ContentPart::with_scope_evidence` accepts adapter-normalized `JevUserAnswer`
+and `JevPlanReference` records. The types live in
+`analysis/jev_evidence/scope_metadata.rs`. They retain source format, native
+role and record identity, call/question IDs, record-local order, optional producer
+acceptance order, provenance,
+producer and normalization revisions, source ranges, and truncation. Content
+rows supply the session, branch, turn order, and publication binding.
+
+Answer lifecycle and origin are separate. Submitted, skipped, cancelled, timed-out,
+pending, and unknown statuses retain selections and free text. User, synthetic,
+automatic, and unknown origins remain distinct. Each question retains its full
+prompt, optional header, context and comment, ordered options, descriptions, and
+multi-select metadata. Pi questionnaire display labels use `header`. Native ranges
+carry their own optional record IDs for cross-record call/result bindings. The adapter
+must validate the native producer shape before it attaches these records.
+A tool name or result string alone cannot create a typed user answer.
+
+Plan records retain proposed/approved/rejected/feedback status, recorded text,
+feedback, path, identity, revision, and current and approved content digests.
+Recorded, version-matched, mutable, missing, and unresolved content remain
+distinct. A plan status is source evidence, not a check's approval decision.
+Current mutable bytes do not prove the version that received approval.
+
+These records stay in private `JevOperationMetadata`. Engine row insertion stores
+them under `metadata` in `turn_content.normalized_fields_json`, including parts
+without normalized tool input. The selected query reads only the arrays requested
+by `JevInputField::UserAnswer` and `JevInputField::PlanReference`. Each field is
+retrievable as an exact JSON array through `JevCheck::retrieve_evidence`.
+Selected records and their revisions contribute to the selected-input digest.
+Queries retain the existing session/publication fences, paging, and byte limits.
+Oversized metadata is rejected or reported as omitted; it is not summarized.
+Thinking cannot supply these records.
+
+Both fields require explicit opt-in. `JevInputSelection::ALL` retains its legacy
+text-only mask. Ignored Instructions excludes these typed scope fields; changes
+to excluded fields do not change its selected digest at the same publication.
+The fields are conditional for `OpenCodeSqliteV2`, `ClaudeJsonl`,
+`CodexRolloutJsonl`, and `PiV3Jsonl` under the fixture-backed contracts in
+`session-coverage.md`. Other sources remain
+unavailable. Claude retains structured answer strings with unknown human origin
+and exact recorded plan versions without approved-version bindings. SDK callback
+input, plan-mode exit, permission changes, and approval wording do not establish
+Claude scope approval. Missing and mutable plan content stays unresolved.
+The pinned local OpenCode plan completion retains build-switch approval, but
+not the approved plan path, content, or version. Provider-executed results and
+synthetic attachment text do not establish approval. Companion-plan retrieval
+remains unavailable.
 
 ### Reference sources
 
@@ -319,7 +525,7 @@ Checks own projection, windows, questions, follow-up policy, deterministic
 reduction, and clean-result eligibility. Checks do not decode native source
 formats, call TypeSafe, reserve usage, or access the desktop Store.
 
-`JevCheckWorker` is a thin desktop adapter. It enrolls and pages product
+`JevCheckDescriptor` is a thin desktop adapter. It enrolls and pages product
 candidates, obtains source-fenced check input and reference snapshots, restores
 check progress, calls `run_jev_check`, and publishes results. A new check reuses
 the shared scheduler, executor, cache, and usage reservation.
@@ -341,7 +547,7 @@ source field matrix and the check's product enrollment.
 2. Implement `JevCheck`. Select only the normalized facts the check needs,
    group them into bounded windows, bind local evidence IDs, write typed
    questions, and reduce the answers deterministically.
-3. Implement `JevCheckWorker` for candidate selection, source preparation,
+3. Implement `JevCheckDescriptor` for candidate selection, source preparation,
    check-specific paging, resume state, and result combination. Load only
    supported source evidence and check-owned references. Preserve availability
    and source-fence limits.
@@ -359,17 +565,41 @@ owns how requests run and how progress resumes.
 
 ## Evaluation scope
 
-The synthetic Ignored Instructions evaluation inputs and Rust harness are under
-`apps/desktop/src-tauri/eval/ignored_instructions/`. Development and regression
-cases, exact binding sidecars, and the current live-evaluation policy live under
-its `data/` directory. Offline characterization and harness tests check bounded
-behavior; they do not establish live Jev accuracy. Live tests are ignored by
-default and can incur TypeSafe charges when explicitly run.
+The Rust diagnostics are under `apps/desktop/src-tauri/eval/`. Each check target
+has one ignored `live` entry point. Shared support owns environment-only provider
+selection, suites, exact case IDs, a positive case limit, usage/latency, and
+timestamped JSON capture. Use `ANTIBURN_EVAL_PROVIDER`, `ANTIBURN_EVAL_SUITE`,
+`ANTIBURN_EVAL_CASES`, `ANTIBURN_EVAL_LIMIT`, and optionally
+`ANTIBURN_EVAL_OUTPUT_DIR` or `ANTIBURN_EVAL_RAW`.
+
+```sh
+ANTIBURN_EVAL_PROVIDER=ollama-nimble ANTIBURN_EVAL_LIMIT=3 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --offline --test over_exploring live -- --ignored --exact --nocapture --test-threads=1
+```
+
+Ignored Instructions maps `development` to `core`; it also accepts `context`,
+`limits`, and `all`, with `controls` as an alias for `limits`. The other checks
+accept `development` and `controls`. Reports retain weak scores, errors,
+abstentions, missing outcomes, citation diagnostics, usage, and latency.
+Synthetic-case accuracy is diagnostic, not a population estimate or delivery
+gate. No frozen hashes, binding sidecars, previous passing capture, strict
+accuracy threshold, or Python tool is required. Production authority and protocol
+validators still apply. Live calls are explicit and can incur charges. Do not
+run every ignored test. See the [eval guide](../apps/desktop/src-tauri/eval/README.md)
+and [provider presets](../apps/desktop/src-tauri/eval/support/README.md).
+
+Bounded diagnostics on 2026-10-07 completed selected cases for all four checks
+with Jev and representative Ignored Instructions cases through Ollama,
+Cloudflare, and Custom direct/envelope routes. Some expected findings or clean
+results abstained. Nimble retained an incomplete Ignored Instructions execution
+and a Skill Opportunities advisory false positive. These results do not
+establish broad model quality, native parser reachability, or every provider/check
+combination. Retain weak scores and failures; rerun affected cases when request
+preparation, transport, or reduction changes.
 
 An ordinary assessment in about 60 seconds after worker start is a performance
 goal, not a deadline or guarantee. Preparation, provider admission, request
-packing, model latency, follow-up questions, checkpoints, and publication all
-add time. A pass can use several paid requests; the 256-pair budget does not
+packing, model latency, checkpoints, and publication all
+add time. A review can use several paid requests; the 8-pair turn budget does not
 cap spending. Large inputs, rate limits, retries, and missing history can take
 longer. Measure worker-start-to-result time, sampled coverage, requests and
 tokens, reuse, missed findings, and cost on representative sessions before
@@ -387,10 +617,13 @@ and a measured shortlist. They do not validate Ignored Instructions accuracy.
 
 ## Ignored Instructions selected-input coverage
 
-Audit date: 2026-10-02.
+Audit date: 2026-10-07.
 
 This matrix records the twelve normalized session fields and their current
-availability to Ignored Instructions. Other Smart Burn Checks can select a
+field capability and selection for Ignored Instructions. User text and Bash
+output are selected, but accepted context needs the exact normalized proofs
+above. Field capability alone does not prove context eligibility.
+Other Smart Burn Checks can select a
 different subset. It complements the exact native-source inventory in
 [`session-coverage.md`](session-coverage.md) and the reachable finding contract
 in [`check-coverage.md`](check-coverage.md).
@@ -411,16 +644,16 @@ so they cannot produce a clean result from incomplete tool evidence.
 
 | `SourceFormat`                 | UserMessage | AssistantMessage | BashCommandInput | BashCommandOutput | FileEditPath | FileEditContent | ReadFilePath | ReadFileOutput | SearchFilesQuery | SearchFilesOutput | OtherToolInput | OtherToolOutput |
 | ------------------------------ | ----------- | ---------------- | ---------------- | ----------------- | ------------ | --------------- | ------------ | -------------- | ---------------- | ----------------- | -------------- | --------------- |
-| `ClaudeJsonl`                  | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
-| `CodexRolloutJsonl`            | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
-| `PiV3Jsonl`                    | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
-| `OpenCodeSqliteV2`             | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
-| `CursorCliAgentJsonl`          | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
-| `CursorCliStoreDb`             | N           | S                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
-| `CursorChatStoreDb`            | N           | S                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
-| `CursorIdeComposer`            | N           | S                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
-| `AntigravityBrainJsonl`        | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
-| `AntigravitySqlite`            | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
+| `ClaudeJsonl` | S | S | C | C | S | N | S | N | C | N | C | N |
+| `CodexRolloutJsonl` | S | S | C | C | S | N | S | N | C | N | C | N |
+| `PiV3Jsonl` | S | S | C | C | S | N | S | N | C | N | C | N |
+| `OpenCodeSqliteV2` | S | S | C | C | S | N | S | N | C | N | C | N |
+| `CursorCliAgentJsonl` | S | S | C | C | S | N | S | N | C | N | C | N |
+| `CursorCliStoreDb` | S | S | U | U | U | U | U | U | U | U | U | U |
+| `CursorChatStoreDb` | S | S | U | U | U | U | U | U | U | U | U | U |
+| `CursorIdeComposer` | S | S | U | U | U | U | U | U | U | U | U | U |
+| `AntigravityBrainJsonl` | S | S | C | C | S | N | S | N | C | N | C | N |
+| `AntigravitySqlite` | S | S | C | C | S | N | S | N | C | N | C | N |
 | `OpenCodeJsonl`                | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `OmpV3Jsonl`                   | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `CursorJsonl`                  | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
@@ -445,7 +678,7 @@ so they cannot produce a clean result from incomplete tool evidence.
 | `DevinLocalSqlite`             | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `Uncharacterized`              | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 
-The query excludes thinking and non-authoritative message text before loading
+The query excludes thinking and unqualified non-authoritative text before loading
 rows. It applies part and byte limits to selected fields. SQLite extracts only
 selected normalized tool fields but can read excluded row metadata. Each tool
 request is normalized once when its source adapter writes the fenced content
@@ -459,6 +692,16 @@ truncated-request isolation and exact result joins. Metadata uses the existing
 private normalized JSON column.
 
 ## Shared normalization contract
+
+Native adapters validate source shapes before shared normalization. Checks
+consume generic source-bound facts instead of parsing producer markup. Normalized
+skill facts retain request, document-selection, failure, and unknown status,
+selected ranges, digests, native identity, and available chronology. A selected
+document is not execution proof. Normalized human text and command results retain
+exact action/request references, scope, digests, ranges, and lifecycle. A copied
+pointer, tool name, result phrase, or current filesystem value cannot supply
+missing provenance. Read facts preserve observed extent and unavailable file
+versions. Selection removes excluded facts and bindings before check preparation.
 
 Normalization is a reusable source-boundary abstraction. Each Smart Burn Check
 selects from its normalized fields; Ignored Instructions does not define which
@@ -507,8 +750,9 @@ invalidates that digest. Unsupported formats supply no projected actions.
 `JevOperationMetadata` retains a typed native lifecycle state and selected
 `JevNativeFieldRange` bindings. OpenCode native `state.status` maps pending,
 running, completed, and error exactly. Missing or unknown labels remain unknown.
-Other adapters do not infer lifecycle state from request presence, result text,
-adjacency, or assistant reports. Completed is a recorded lifecycle label; it
+Pinned Claude, Codex, and Pi adapters also retain characterized native result
+status and exact joins. Uncharacterized shapes do not infer lifecycle from
+request presence, adjacency, or assistant reports. Completed is a recorded label; it
 does not establish a passing command or a resulting file state.
 
 Field bindings identify a typed native container, JSON pointer, and UTF-8 offsets within its
@@ -582,18 +826,19 @@ ownership, not successful execution or an authoritative completion boundary.
 
 OpenCode's native SQLite lifecycle fixture covers pending, running, completed,
 and error requests. Only completed output and error text supply result bodies
-in that fixture. The typed lifecycle label survives selected storage, but the
-current Ignored Instructions selection excludes result text. A completed label
+in that fixture. Ignored Instructions can use exactly bound selected Bash
+results as context. A completed label
 does not prove command success or a resulting file state. Exact recorded call
 IDs remain local. Native patch parts remain separate metric evidence and do not
 supply a second selected edit action.
 
 Historical instruction snapshots, missing call identities, ambiguous output
 joins, relative-path resolution, and producer completion boundaries are not
-fabricated. Cursor store/composer synthesis and Antigravity Cascade/SQLite
-remain outside the Ignored Instructions six-format admission gate. Unsupported
-fields on those surfaces stay unsupported; these tests do not establish a new
-native schema or release range.
+fabricated. The six-format equivalent-event test is narrower than the product
+admission list. Cursor store/composer routes retain normalized messages but lack
+native tool proof; Antigravity SQLite needs its assessable companion transcript.
+Antigravity Cascade is not admitted. These tests do not establish new native
+schemas, human authority, or release ranges.
 
 ## Shared execution and storage limits
 

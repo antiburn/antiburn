@@ -137,5 +137,14 @@ the measurement definitions and event review contract in
 Run the relevant formatter, linter, type checks, and tests for every change. Use
 the commands in `CONTRIBUTING.md` and `apps/desktop/README.md`.
 
+Use `cargo nextest run` for Rust test execution. Select the changed package,
+test target, or test-name filter during implementation. Run the full affected
+workspace suite at final integration instead of repeating it after every edit.
+Use `cargo test --doc` for doctests, which nextest does not run. Run named
+ignored live-model tests separately with the eval guide's `cargo test` commands
+when their capture workflow requires that runner. Do not enable all ignored
+tests. If nextest is unavailable, install the supported runner or report the
+environment blocker before using a slower fallback.
+
 Every commit must include a DCO sign-off. Use `git commit -s`. CI rejects a pull
 request if any authored commit lacks it.

@@ -68,9 +68,9 @@ describe("App", () => {
 
   it("renders the popover for an unknown fragment, not the first-run flow", async () => {
     // The default route is the popover on purpose, so a fragment nothing
-    // recognizes lands somewhere real. Since onboarding has its own window,
-    // that fallback must not draw the flow, whatever the
-    // onboarding flag says.
+    // recognizes lands somewhere real. The first-run welcome card belongs to
+    // the main window's Overview, so that fallback must not draw it, whatever
+    // the onboarding-completed flag says.
     window.location.hash = "#/not-a-window"
 
     render(<App />)

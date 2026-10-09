@@ -2,9 +2,153 @@
 
 These fixtures are synthetic. They follow the public `openai/codex` rollout types at commit `e9a446d` and contain no captured session data.
 
+## Persisted question and plan contract
+
+`scope_records.jsonl` uses public producer commit
+`e7637306bc9246a3e42e407cb94f96b7ed345e3e`. Its workspace version is `0.0.0`.
+This pin defines an accepted shape, not a released version range. All values in
+the fixture are synthetic. The following pinned public files define the contract:
+
+- [Rollout persistence policy](https://github.com/openai/codex/blob/e7637306bc9246a3e42e407cb94f96b7ed345e3e/codex-rs/rollout/src/policy.rs)
+- [Rollout serialization](https://github.com/openai/codex/blob/e7637306bc9246a3e42e407cb94f96b7ed345e3e/codex-rs/history/src/rollout_payload.rs)
+- [Question argument specification](https://github.com/openai/codex/blob/e7637306bc9246a3e42e407cb94f96b7ed345e3e/codex-rs/core/src/tools/handlers/request_user_input_spec.rs)
+- [Question response types](https://github.com/openai/codex/blob/e7637306bc9246a3e42e407cb94f96b7ed345e3e/codex-rs/protocol/src/request_user_input.rs)
+- [Question handler and cancellation](https://github.com/openai/codex/blob/e7637306bc9246a3e42e407cb94f96b7ed345e3e/codex-rs/core/src/tools/handlers/request_user_input.rs)
+- [Retained answers and bounds](https://github.com/openai/codex/blob/e7637306bc9246a3e42e407cb94f96b7ed345e3e/codex-rs/history/src/retained_context.rs)
+- [Plan progress handler](https://github.com/openai/codex/blob/e7637306bc9246a3e42e407cb94f96b7ed345e3e/codex-rs/core/src/tools/handlers/plan.rs)
+- [Native completed Plan item](https://github.com/openai/codex/blob/e7637306bc9246a3e42e407cb94f96b7ed345e3e/codex-rs/protocol/src/items.rs)
+- [Proposed-plan delimiters](https://github.com/openai/codex/blob/e7637306bc9246a3e42e407cb94f96b7ed345e3e/codex-rs/utils/stream-parser/src/proposed_plan.rs)
+
+The accepted question call is `response_item.function_call` with the exact plain
+name `request_user_input`, `call_id`, and JSON-string `arguments`. Each question
+has `id`, `header`, `question`, and nonempty options with `label` and `description`.
+The result is `response_item.function_call_output` with the same `call_id` and a
+JSON-string `output` containing `{answers:{qid:{answers:[strings]}}}`. The parser
+preserves multiple strings, custom text, option descriptions, and question order.
+It preserves the header in typed selected records. Matched results retain native
+argument and output ranges with optional record IDs. A list of answers does not
+prove a multi-select UI.
+
+The exact cancellation error is
+`request_user_input was cancelled before receiving a response`. It supplies no
+answer. Other errors and malformed results have unknown status. Missing results
+remain pending. Duplicate call IDs, unknown tools, namespaced calls, missing calls,
+and malformed source gaps cannot supply submitted answers.
+
+`retained_context.verified_answer` carries `turn_id`, `call_id`,
+`questions:[{question,answer}]`, and optional `acceptance_order`. It is gated by
+Guardian Approval and thread-owned context in this producer. Its question text
+appends the selected option descriptions, and its answer joins nonempty responses
+with newlines. Exact turn/call/content joins can suppress a later duplicate tool
+answer. A later retained record with acceptance order keeps its typed answer and
+order even when it matches an earlier tool result. Both original records retain
+their private payload. Changed contents and unresolved identities remain separate evidence.
+Retained records can arrive before the tool result. Empty bounded payloads mark
+incomplete evidence. Compaction checkpoints retain bounded answer excerpts;
+incomplete checkpoints degrade coverage and never reconstruct user messages or
+replace the complete recorded scope. Checkpoint entries keep their native source
+bindings and typed acceptance order.
+
+Persisted answer records do not record human, automatic, or synthetic origin.
+The parser sets `unknown_origin` for all of them, including retained answers.
+It never treats these records as authoritative human approval.
+
+`update_plan` arguments retain exact proposal/progress text. Completed steps and
+`Plan updated` are not approval. Assistant `<proposed_plan>` text and native
+`event_msg.item_completed` with `item.type: Plan`, `id`, and `text` retain recorded
+plan versions as proposals. Actual ordinary user implementation requests retain
+their original text and chronology. The parser does not infer a semantic approval
+relationship. Live `RequestUserInput` and `PlanUpdate` events and app-server
+schemas are not accepted substitutes for persisted rollout records.
+
 Codex writes `{timestamp,type,payload}` JSONL under `~/.codex/sessions/YYYY/MM/DD/`. The rollout policy persists session metadata, turn context, selected response items, token counts, and compaction records. The writer opens a rollout and appends lines. The public rollout code exposes no compaction or in-place rewrite path for these JSONL files. Antiburn still uses a full source recheck because repository fixtures cannot prove external writer behavior. `state_5.sqlite` is a separate state store and is not a rollout source.
 
-## Capability matrix
+## Paginated completed-work contract
+
+`paginated_completed.jsonl` is independently authored synthetic data. The accepted
+producer is Codex 0.160.1 at `d27764b82f7118f674371e6d6e76271d9d606edb`.
+The native VS Code capture establishes this recorded shape. The producer sources
+define [typed items](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/protocol/src/items.rs),
+[persistence policy](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/rollout/src/policy.rs),
+and [recording](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/rollout/src/recorder.rs).
+This is an accepted shape, not a historical release range.
+
+- The header selects `history_mode=paginated`, `cli_version=0.160.1`, and a native
+  session ID. Consecutive ordinals start at zero. Fork, parent-thread, history-base,
+  rollback, and compaction shapes cannot establish the retained-root scope.
+- The same pinned retained-message shape can establish a legacy retained root
+  with `history_mode=legacy`. This mode does not require paginated ordinals.
+  Its support comes from the pinned shared recorder and synthetic characterization;
+  it is not a claim that the inspected VS Code capture used legacy history.
+  Older messages without exact native identity and retained metadata cannot supply
+  this proof. Legacy completed variants outside the characterized Plan contract
+  remain unavailable for full-source admission.
+- Only complete retained original messages with exact message/turn IDs,
+  `content_item_kinds=[user.text]`, text-only content, and native retained revision
+  supply `UserTextHistoryProof`. The proof concerns the current retained source.
+  It does not prove that external deletion never occurred. Shared full-source
+  admission must reject framing, loss, branch, and unknown-authority gaps.
+- Typed UserMessage text must match the preceding raw projection within the same
+  thread and turn. Picker name/path remains validated selection metadata; the
+  parser does not publish a second user-text action for it. The selected document
+  uses `skills.selected_skill_instructions` and carries `JevSelectedSkillProof`
+  with source/session/message identity, name/location, normalization revision 1,
+  and an exact full-text `UserMessage` range in its bindings. Its status is
+  `DocumentSelected`, its authority remains unknown, and it has no human-history
+  proof. Neither selection record is human authorization or successful skill
+  execution. Assistant completed-message projections must match
+  the next raw response by exact ID, turn, and text.
+- CommandExecution and FileChange retain separate work/result parts with the same
+  native item ID. An outer exec script can contain several operations. Its call ID
+  cannot identify any individual nested item, so the parser makes no positional
+  join. Outer exec content and nested output echoes do not duplicate performed work.
+- Commands accept the captured three-element shell argv shape. Success requires
+  `status=completed` and `exit_code=0`; failure requires `status=failed` and a
+  nonzero code. Missing or conflicting fields remain unknown. Output remains
+  recorded text. Duplicate item IDs with changed turn or contents degrade coverage.
+- FileChange accepts native add/content, update/unified_diff/optional move_path,
+  and delete shapes. Its status is operation status, not human approval.
+- Observed reads accept only the characterized single-file
+  `nl -ba PATH | sed -n 'START,ENDp'` shell slice with matching native parsed-command
+  path. Returned consecutive numbered stdout lines prove only the observed range.
+  Requested end, pipeline success, and producer parsed-command classification do
+  not prove whole-file access. Missing, failed, clipped, empty, noncontiguous, and
+  mismatched stdout do not prove an extent. File version remains unavailable.
+- Output at the 64 KiB persistence bound or with conservative clipping markers
+  remains truncated. Other shell read forms, attachments, native completed item
+  variants outside this contract, and command argv forms remain unsupported.
+  Each native identity map retains at most 4,096 identities. Overflow degrades
+  coverage. Replayed raw message IDs do not repeat human authority; changed
+  payloads under the same ID remain ambiguous and degrade coverage.
+
+These are parser contracts. Desktop scope, result projection, and skill-use
+admission need the shared integration gates before they become product support.
+
+### Non-authorizing environment context
+
+`environment_context.jsonl` is synthetic. The observed native capture and the
+pinned [environment fragment producer](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/core/src/context/world_state/environment.rs)
+and [filesystem renderer](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/core/src/context/environment_context.rs)
+establish this contract. The producer emits the user-role fragment with native
+`content_item_kinds=[environments.environment_context]`, not `user.text`.
+
+The adapter accepts the characterized single-local-environment snapshot: one
+`input_text` block, exact native message/turn identities and recorded creation
+time, full environment markers, ordered cwd/shell/date/timezone lines, and a
+managed restricted filesystem with bounded read/write path or special entries.
+XML text uses the producer's five named escapes. The adapter keeps the text at
+unknown authority and attaches a full native byte range, text digest, producer
+pin, source/session/message identity, completeness, and normalization revision 1.
+It adds no human-history proof, approval, or skill-use claim.
+
+The shared normalizer binds this proof to the published action reference, source
+key, thread, scope, and exact text. The factory must match the normalized fact to
+its session key. It does not parse native markup. Unqualified lookalikes,
+inherited or clipped content, unsupported producer versions, multi-environment
+and delta shapes, other permission profiles, injected markup, and changed
+bindings or bytes cannot justify omission from human authorization history.
+
+## Legacy capability matrix
 
 | Capability | State | Extracted source fact |
 | --- | --- | --- |

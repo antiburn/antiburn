@@ -1,7 +1,10 @@
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listen } from "./tauriEvents"
 
+import { createExternalStore } from "./externalStore"
 import { hasShell } from "./ipc"
+import type { BurnCheckDetectorId } from "./insightsIpc"
+import { CHECK_DEFINITIONS } from "./presentation/checkDefinitions"
 
 type CheckUsageSummary = {
   inputTokens: number
@@ -14,6 +17,8 @@ type CheckUsageSummary = {
 }
 
 export type CheckAvailability = {
+  revision: number
+  checks: Array<{ id: BurnCheckDetectorId; enabled: boolean }>
   configured: boolean
   savedKey: boolean
   error: string | null
@@ -46,6 +51,11 @@ const emptyUsage: CheckUsageSummary = {
 }
 
 export const emptyCheckAvailability: CheckAvailability = {
+  revision: 0,
+  checks: Object.keys(CHECK_DEFINITIONS).map((id) => ({
+    id: id as BurnCheckDetectorId,
+    enabled: false,
+  })),
   configured: false,
   savedKey: false,
   error: null,
@@ -67,18 +77,26 @@ export const emptyCheckAvailability: CheckAvailability = {
 export async function getCheckAvailability(): Promise<CheckAvailability> {
   if (!hasShell()) return emptyCheckAvailability
   const value = await invoke<CheckAvailability | null>("get_check_availability")
-  if (!value || typeof value.configured !== "boolean") {
+  if (
+    !value ||
+    typeof value.configured !== "boolean" ||
+    typeof value.revision !== "number" ||
+    !Array.isArray(value.checks)
+  ) {
     throw new Error("Could not read check status.")
   }
   return value
 }
 
-export async function setTypeSafeApiKey(key?: string): Promise<CheckAvailability> {
-  return invoke<CheckAvailability>("set_typesafe_api_key", { key: key || null })
-}
-
 export async function setSmartBurnChecksEnabled(enabled: boolean): Promise<CheckAvailability> {
   return invoke<CheckAvailability>("set_smart_burn_checks_enabled", { enabled })
+}
+
+export async function setCheckEnabled(
+  detector: BurnCheckDetectorId,
+  enabled: boolean,
+): Promise<CheckAvailability> {
+  return invoke<CheckAvailability>("set_check_enabled", { detector, enabled })
 }
 
 export async function removeTypeSafeApiKey(): Promise<CheckAvailability> {
@@ -95,6 +113,23 @@ export async function runCheckBackfill(): Promise<{
 }> {
   return invoke<{ queued: number; availability: CheckAvailability }>("run_check_backfill")
 }
+
+/** The complete availability snapshot for consumers such as Overview counts.
+ * Events and mutation responses carry a backend revision so older snapshots
+ * cannot undo a newer preference on screen. */
+export const checkAvailabilityStore = createExternalStore<CheckAvailability>({
+  initial: emptyCheckAvailability,
+  load: getCheckAvailability,
+  subscribe: (set) =>
+    onCheckAvailabilityChanged((event) => {
+      if (
+        event.status === "updated" &&
+        event.snapshot.revision >= checkAvailabilityStore.getSnapshot().revision
+      ) {
+        set(event.snapshot)
+      }
+    }),
+})
 
 export function onCheckAvailabilityChanged(
   callback: (event: CheckAvailabilityEvent) => void,

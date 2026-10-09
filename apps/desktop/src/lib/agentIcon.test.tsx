@@ -127,12 +127,23 @@ describe("BRAND_MARKS", () => {
   })
 
   it("records provenance for every mark", () => {
+    const licenseExceptions: Record<string, string> = {
+      antigravity: "LicenseRef-Trademark",
+      omp: "MIT",
+    }
     for (const [name, mark] of Object.entries(BRAND_MARKS)) {
       expect(mark.provenance.package, `${name} has no package`).toBeTruthy()
-      const expectedLicense = name === "antigravity" ? "LicenseRef-Trademark" : "CC0-1.0"
+      const expectedLicense = licenseExceptions[name] ?? "CC0-1.0"
       expect(mark.provenance.license, `${name} has no licence`).toBe(expectedLicense)
       expect(mark.provenance.source, `${name} has no source`).toMatch(/^https:\/\//)
-      expect(mark.viewBox, `${name} has no viewBox`).toMatch(/^0 0 \d+ \d+$/)
+      expect(mark.viewBox, `${name} has no viewBox`).toMatch(/^\d+ \d+ \d+ \d+$/)
     }
+  })
+
+  it("gives Oh My Pi its own mark, not Pi's", () => {
+    // Oh My Pi is a separate product with its own brand.
+    expect(BRAND_MARKS.omp).not.toBe(BRAND_MARKS.pi)
+    expect(BRAND_MARKS.omp?.path).not.toBe(BRAND_MARKS.pi?.path)
+    expect(renderIcon("omp").querySelector("path")).toHaveAttribute("d", markOf("omp").path)
   })
 })

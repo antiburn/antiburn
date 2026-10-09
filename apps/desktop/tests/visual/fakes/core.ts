@@ -1,8 +1,8 @@
-import type { HygieneSummary } from "../../../src/lib/insightsIpc"
 import type { AllowanceUsageSummaryPayload } from "../../../src/lib/providerUsageIpc"
 import { emitFixtureEvent } from "./event"
 import { fixtureDetailMap, fixtureIsland, fixtureTokenMap } from "./hud"
 import { hasRemoteFixture, remoteFixtureCommand, remoteFixtureIds } from "./remote"
+import { fixtureCheckAvailability, fixtureChecksReport, setFixtureCheckEnabled } from "./checks"
 
 declare global {
   interface Window {
@@ -14,7 +14,7 @@ declare global {
 }
 
 type FixtureState = "populated" | "empty" | "loading" | "error" | "long"
-type FixtureFault = "session-analysis" | "scale-save" | "onboarding-bootstrap" | "peek-data"
+type FixtureFault = "session-analysis" | "scale-save" | "peek-data"
 
 const now = "2026-09-15T00:00:00.000Z"
 
@@ -29,10 +29,7 @@ function fixtureFault(): FixtureFault | null {
   const override = window.__ANTIBURN_VISUAL_FAULT__
   const value =
     override === undefined ? new URLSearchParams(window.location.search).get("fault") : override
-  return value === "session-analysis" ||
-    value === "scale-save" ||
-    value === "onboarding-bootstrap" ||
-    value === "peek-data"
+  return value === "session-analysis" || value === "scale-save" || value === "peek-data"
     ? value
     : null
 }
@@ -347,14 +344,14 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
     return Promise.reject(new Error("Fixture session analysis failure"))
   if (fault === "scale-save" && command === "set_interface_scale")
     return Promise.reject(new Error("Fixture interface scale save failure"))
-  if (fault === "onboarding-bootstrap" && command === "get_settings")
-    return Promise.reject(new Error("Fixture onboarding bootstrap failure"))
   if (fault === "peek-data" && command === "get_popover_peek_data")
     return Promise.reject(new Error("Fixture preview data failure"))
   switch (command) {
     case "get_settings":
       return {
         ...settings,
+        onboardingCompleted:
+          new URLSearchParams(window.location.search).get("onboarding") === "complete",
         interfaceScalePercent:
           Number(new URLSearchParams(window.location.search).get("scale")) || 100,
       }
@@ -455,21 +452,12 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
               enabled: true,
             },
           ]
-    case "get_hygiene_summary":
-      return {
-        totalSessions: 128,
-        settledSessions: 128,
-        analyzedSessions: 82,
-        failingSessions: 19,
-        mostCommonFinding: "sessionOverdepth",
-      } satisfies HygieneSummary
     case "get_checks_report":
-      return {
-        evidenceSettled: true,
-        pendingEvidence: 0,
-        estimatedTokenBurnBasisPoints: 1200,
-        categories: [],
-      }
+      return fixtureChecksReport()
+    case "get_check_availability":
+      return fixtureCheckAvailability()
+    case "set_check_enabled":
+      return setFixtureCheckEnabled(args)
     case "get_latest_session_activity":
       return Math.floor(Date.parse(now) / 1000)
     case "is_overlay_work_active":

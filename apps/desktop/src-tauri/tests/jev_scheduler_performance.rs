@@ -95,6 +95,9 @@ impl JevCheck for SyntheticCheck {
                 .collect(),
             skipped_item_ids: Vec::new(),
             coverage: JevCoverage::default(),
+            capabilities:
+                antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default(),
+            shared_context: None,
             prepared: (),
         })
     }

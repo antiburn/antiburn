@@ -21,7 +21,7 @@ sources:
   - src/components/burn-checks/burn-check-summary.css
   - src/views/main-window/overview/overview.css
   - src/views/main-window/quota/quota.css
-  - src/views/settings/remote-hosts.css
+  - src/views/main-window/overview/stepSettings/remote-hosts.css
 colors:
   # Concrete token colors use modern HSL function syntax.
   # Use the shortest value that keeps the same 8-bit RGB channels.
@@ -461,7 +461,7 @@ motion:
   --ease-out-quart: cubic-bezier(0.23, 1, 0.32, 1)
   # Recipes, for the timings the tokens above do not carry. Animation timings
   # stay with the keyframes that own them.
-  button: "transform 80ms / opacity 120ms ease-out; :active scale(0.98) opacity 0.85"
+  button: "opacity 120ms ease-out; :active opacity 0.85, no transform"
   menu-in: "120ms ease-out from trigger origin"
   tooltip-in: "100ms"
   switch: "180ms ease-out track + thumb"
@@ -612,36 +612,6 @@ Notes for what isn't expressible as a token:
   hairline, stacking when their container narrows. A figure's method goes in its tooltip.
   A new headline number joins this row rather than drawing its own.
 
-- **Limits page** — the scope picker is a pill that floats over the bottom centre of
-  the page, in the shape of the session detail's section picker and in its selected
-  chip colours for its whole length: `rounded-full`, `bg-selected-fill`,
-  `text-selected-ink`, `shadow-raised`, 2px track padding, and `type-callout` labels.
-  Account › lane › range are its segments, each a `rounded-full` menu button at least
-  24px tall with 12px inline padding, washed with `selected-ink` at 10% on hover and 15%
-  while its menu is open; a `›` at 50% opacity sits between segments. The chevron shows
-  only on hover, focus, or while the menu is open (`quota-jump-chevron`); a level with
-  one choice is plain text. The range menu lists every preset and greys one that ends
-  before the lane's first reading at 40% opacity, with "· no readings" after its label.
-  The range reads in the lane's own words ("Last 3 weeks" on a weekly lane, "Last 3
-  windows" on a 5-hour lane); the "last reading" note at the top right is
-  `type-footnote text-label-tertiary`. The chart always spans the whole window, start
-  to reset, with the open window's data ending at "now" and the pace line ending at the
-  same point; local midnights (or whole hours on a 5-hour lane) label the axis. The
-  pace-line toggle is a small `type-footnote` push button under the chart's right edge,
-  24px tall on `bg-surface-secondary` in secondary ink with `rounded-control` and 8px
-  inline padding, reading "Show pace" or "Hide pace" for what a press does. A range with nothing to show renders a centred `Gauge`
-  icon in tertiary ink over a `type-body` title and a `type-callout` caption that says
-  when readings began. Session rows follow the session-card recipe (`bg-session-card`,
-  `rounded-control`, 12px by 8px padding, 6px gaps, `hover:bg-surface-secondary/50`)
-  with the agent icon, a regular-weight `type-body` title, and at the right the colour
-  swatch beside the percent, then the dollars in secondary ink. The swatch sits with the
-  figure it explains, not at the row's edge, so the row starts with the agent icon like
-  a session card; the "other", "unattributed" and "unexplained" rows use `surface-card/50` and
-  secondary ink. The list sizes to its rows up to 45% of the column and the chart takes
-  the rest (`quota-session-list` in `quota.css`). Sessions above the percentage
-  threshold remain individually visible without a count limit. Hover identifies each
-  session across the chart and list, including sessions that reuse a shade.
-
 - **Popover spend summary** — one shared `surface-card` card uses `rounded-control`,
   a 12px top inset, 8px side insets, 12px horizontal and 8px vertical internal padding, and three equal columns with 8px gaps.
   The following component owns the gap below the card; the summary adds no bottom padding.
@@ -712,14 +682,34 @@ Notes for what isn't expressible as a token:
   leave an 8px gap without a divider or top inset.
   In the main report, show actual failures first. Keep awaiting, passed, and
   snoozed checks in their own groups. Show all active checks without a lifecycle
+  and without running work
   in a neutral `Not assessed (N)` disclosure only when N is at least one. Keep
   these rows hidden by default; the disclosure makes them reachable when needed.
   Start it collapsed; search opens and focuses its target. Collapsing a focused row
   returns focus to the disclosure. Never describe an unassessed row as failed.
+  Put running checks without failures in Passed checks. Keep their row order,
+  selection, and disclosure state stable during continuation. Show `Checking`
+  in monospace without a spinner or an extra status row. Running failures show
+  `43 failed · 0 passed · 2 checking` on one monospace line. When the report
+  does not supply a checking count, show `checking` without a number. Animate
+  only the checking text with the shared `activity-row-title-shimmer` recipe
+  and its existing shimmer token and reduced-motion rule. The Passed disclosure
+  counts its rows; assessed-result summaries count only confirmed passes.
   When Ignored Instructions reports priority sampling, place a small tertiary
   information icon next to its detail title. Its shared tooltip explains that
   likely conflicts are checked first and later checks can reduce the remaining
-  unassessed gap. The icon is a keyboard-focusable 24px target.
+  unassessed gap. Smart Check cards place evidence limits in the shared
+  `Tooltip`, immediately beside the actual card title, such as Git Style or
+  Quality Review. Do not add a separate Details heading. Use a lightweight 14px tertiary
+  info icon in a keyboard-focusable span. Open on hover or focus, with no button,
+  click toggle, control fill, or separate row. Keep source and historical-evidence
+  limits readable in the tooltip. Show instruction path and line metadata once.
+  Show the main occurrence inline without an occurrence picker or duplicate cards.
+  Initial evidence loads use the shared `Skeleton`: a 64px comparison block,
+  two compact metadata lines, a 64px instruction block, and an 80px action block.
+  The evidence body reserves a 288px minimum height while loading and after load.
+  Excerpts can grow beyond this minimum. Background refreshes keep the loaded
+  content and pause stale citation navigation instead of showing a skeleton.
   Session-card rows use a 2px interline gap inside unchanged 12px vertical card padding. A zero-failure result with at least one assessed check uses an outlined ring and tick, even
   when some checks are not assessed. Session cards keep the passing verdict visible above the title.
   Failed and non-result states keep their explicit verdict wording. Session cards use
@@ -968,7 +958,7 @@ The supported percentages live in `interface-scale.json`: 90, 100, 110, 125, 150
 type, spacing, radius, or icon tokens by that factor in CSS.
 
 All app-owned web surfaces follow the same saved preference: main window, Settings,
-onboarding, popover, previews, HUD, HUD detail, and nudges. Native menus, traffic lights,
+popover, previews, HUD, HUD detail, and nudges. Native menus, traffic lights,
 and operating-system notifications retain native sizing. Before revealing a new surface,
 the native window owner applies zoom and supplies its geometry. Existing main-window
 bounds remain under user control. Preferred utility-window bounds grow with interface
@@ -978,23 +968,20 @@ multiplied by the interface scale. The extra pixel protects its 720px navigation
 breakpoint from native rounding. The minimum updates when scale or monitor changes
 and is capped by the available work area after native chrome. Compact Settings
 navigation remains a fallback only when the display cannot fit the scaled minimum.
-Onboarding also resizes around its current center during live scale changes,
-clamps to its current monitor's work area, and preserves its renderer and step.
 
 Layout responds to the resulting **CSS viewport**, not physical pixels, screen labels,
 or `devicePixelRatio`. Below 720px, main and Settings navigation use a modal drawer with
 Escape dismissal and focus restoration. Arrow keys select tabs without closing the
 drawer; activation closes it. Settings rows stack controls at a 360px container width.
-Onboarding source columns stack below 720px and retain scrolling. Constrained surfaces
-must reflow or scroll; reducing the chosen zoom to fit is not allowed.
+Constrained surfaces must reflow or scroll; reducing the chosen zoom to fit is not allowed.
 Below 720px, Overview stacks usage and provider limits in one full-width column.
 Each pane retains its own bounded vertical scroll area; the wide layout stays unchanged.
 
 `styles/interface-scale.css` owns these adaptations. The shell supplies
 `--interface-scale` only to preserve native chrome geometry. On macOS,
 `--native-titlebar-clearance` is `40px / --interface-scale`, preserving a 40 native
-logical pixel band at every preset, including 90%. Settings and onboarding keep
-their content below it; the main toolbar shares it outside the traffic-light inset.
+logical pixel band at every preset, including 90%. Settings keeps its content below
+it; the main toolbar shares it outside the traffic-light inset.
 The main toolbar reserves 78 native logical pixels horizontally for traffic lights.
 Its web controls scale horizontally; hover fills stay inside the fixed native-height band.
 Windows and Linux have web-owned titlebars: their 40 CSS pixel height and caption controls

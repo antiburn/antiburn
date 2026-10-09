@@ -2,7 +2,7 @@
 
 mod config;
 mod editor;
-mod filesystem;
+pub(crate) mod filesystem;
 mod inventory;
 mod vendors;
 
@@ -14,8 +14,8 @@ pub use config::{
 pub use editor::AgentConfigEditor;
 pub use inventory::{
     AdvisoryResource, EnabledState, IndexedResourceEvidence, InventoryIssue, InventoryIssueReason,
-    ResourceInventory, ResourceKind, ResourceProvenance, ResourceScope,
-    advisory_resource_inventory,
+    ResourceInventory, ResourceKind, ResourceProvenance, ResourceScope, SkillSnapshotError,
+    advisory_resource_inventory, skill_opportunity_snapshot,
 };
 
 #[cfg(test)]

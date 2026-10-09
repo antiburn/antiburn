@@ -68,8 +68,7 @@ import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types
  * React reads immutable snapshots through `useSyncExternalStore`; IPC calls,
  * event subscriptions, and the window's own keyboard handling stay here,
  * where they belong to the external systems that created them rather than to
- * a component lifecycle. See `views/onboarding/OnboardingSession.ts` for the
- * same shape applied to the first-run window.
+ * a component lifecycle.
  */
 
 export interface PopoverSnapshot {
@@ -173,6 +172,7 @@ export class PopoverSession {
   private checksConsumerId: string | null = null
   private checksRefresh: Promise<void> | null = null
   private checksRefreshQueued = false
+  private checksRefreshDirty = false
   /**
    * How many `refreshUsage` calls are currently in flight.
    *
@@ -382,6 +382,7 @@ export class PopoverSession {
     this.stopUsagePolling()
     this.cancelSessionLimitAllocationRefresh()
     this.checksRefreshQueued = false
+    this.checksRefreshDirty = false
     const checksConsumerId = this.checksConsumerId
     this.checksConsumerId = null
     if (checksConsumerId) void cancelChecksReport(checksConsumerId)
@@ -639,6 +640,10 @@ export class PopoverSession {
       this.update({ now: Date.now() })
       this.syncNowTicking()
       this.startUsagePolling()
+      if (this.checksRefreshDirty) {
+        this.checksRefreshDirty = false
+        void this.refreshChecks()
+      }
       this.requestSessionLimitAllocationRefresh(true, true)
       if (this.initialContentReady) this.reportContentReady(true)
       void this.restoreFloatingHud(generation)
@@ -662,6 +667,10 @@ export class PopoverSession {
       this.analyticsVisible = false
       this.exposure.conceal()
       this.visible = false
+      if (this.checksRefreshQueued) {
+        this.checksRefreshQueued = false
+        this.checksRefreshDirty = true
+      }
       this.sessionLimitAllocationResultRevision += 1
       this.syncNowTicking()
       this.stopUsagePolling()
@@ -974,6 +983,10 @@ export class PopoverSession {
   }
 
   private refreshChecks = (): Promise<void> => {
+    if (!this.visible) {
+      this.checksRefreshDirty = true
+      return Promise.resolve()
+    }
     if (this.checksRefresh) {
       this.checksRefreshQueued = true
       return this.checksRefresh
@@ -982,7 +995,11 @@ export class PopoverSession {
       this.checksRefresh = null
       if (this.checksRefreshQueued) {
         this.checksRefreshQueued = false
-        void this.refreshChecks()
+        if (this.visible) {
+          void this.refreshChecks()
+        } else {
+          this.checksRefreshDirty = true
+        }
       }
     })
     return this.checksRefresh
@@ -1035,8 +1052,9 @@ export class PopoverSession {
     const hasLiveReading = liveDisplayableProviders(this.snapshot.liveUsage).some(
       (provider) => liveWindows(provider).length > 0,
     )
+    // A missing credential (Claude Desktop alone) is an empty state, not an error.
     const hasLiveError = liveUsageObservations(this.snapshot.liveUsage).some(
-      ({ state }) => state !== "fresh" && state !== "stale",
+      ({ state }) => state !== "fresh" && state !== "stale" && state !== "no_credentials",
     )
     const hasData = (this.snapshot.entries?.length ?? 0) > 0 || hasLocalUsage || hasLiveReading
     if (hasData) {

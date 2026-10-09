@@ -1,7 +1,12 @@
-import { getMainWindowVisible, onMainWindowVisibilityChanged } from "../../../lib/ipc"
+import {
+  getLiveUsage,
+  getMainWindowVisible,
+  onMainWindowVisibilityChanged,
+} from "../../../lib/ipc"
 import {
   getQuotaAccounts,
   getQuotaUsage,
+  type LiveUsageSummaryPayload,
   type QuotaAccountPayload,
   type QuotaAccountsPayload,
   type QuotaLanePayload,
@@ -41,6 +46,10 @@ export interface QuotaSnapshot {
   /** Every observed `(provider, account)`, or null until the first load. */
   accounts: QuotaAccountPayload[] | null
   accountsError: boolean
+  /** The cached live-usage snapshot, read only when no account has readings.
+   *  It tells the empty state why limits are missing, for example a
+   *  Claude Desktop-only install. Null otherwise, or when the read fails. */
+  liveUsage: LiveUsageSummaryPayload | null
   selection: QuotaSelection | null
   range: QuotaRangeSelection
   usage: QuotaUsagePayload | null
@@ -53,6 +62,7 @@ export interface QuotaSnapshot {
 export interface QuotaAdapter {
   getAccounts(): Promise<QuotaAccountsPayload>
   getUsage(request: QuotaUsageRequest): Promise<QuotaUsagePayload>
+  getLiveUsage(): Promise<LiveUsageSummaryPayload>
   getVisible(): Promise<boolean>
   onVisible(handler: (visible: boolean) => void): Promise<() => void>
   now(): number
@@ -61,6 +71,7 @@ export interface QuotaAdapter {
 const productionAdapter: QuotaAdapter = {
   getAccounts: () => getQuotaAccounts(),
   getUsage: (request) => getQuotaUsage(request),
+  getLiveUsage: () => getLiveUsage(),
   getVisible: () => getMainWindowVisible(),
   onVisible: (handler) => onMainWindowVisibilityChanged(handler),
   now: () => Math.floor(Date.now() / 1000),
@@ -86,14 +97,12 @@ function findLane(
   return account.lanes.find((lane) => lane.lane === laneId) ?? null
 }
 
-/** The account's own weekly lane, not a model-scoped one, for the five-hour range fallback. */
-function weeklyLaneOf(account: QuotaAccountPayload | null): QuotaLanePayload | null {
-  return account?.lanes.find((lane) => lane.lane === "weekly") ?? null
-}
-
 /** The lane a fresh selection defaults to: the weekly lane, else the account's first lane. */
 function defaultLane(account: QuotaAccountPayload): QuotaLanePayload | null {
-  return weeklyLaneOf(account) ?? account.lanes[0] ?? null
+  const weekly = findLane(account, "weekly")
+  if (weekly) return weekly
+  if (account.lanes.length === 0) return null
+  return account.lanes[0]!
 }
 
 function selectionEquals(left: QuotaSelection, right: QuotaSelection | null): boolean {
@@ -128,6 +137,7 @@ export class QuotaSession {
   private snapshot: QuotaSnapshot = {
     accounts: null,
     accountsError: false,
+    liveUsage: null,
     selection: null,
     range: "last3Windows",
     usage: null,
@@ -350,12 +360,14 @@ export class QuotaSession {
     const previousSelection = this.snapshot.selection
     try {
       const payload = await this.adapter.getAccounts()
+      const liveUsage = payload.accounts.length === 0 ? await this.adapter.getLiveUsage() : null
       if (work !== this.workVersion || version !== this.accountsVersion) return
       const selection = this.resolveSelection(payload.accounts)
       const unchanged = selection != null && selectionEquals(selection, previousSelection)
       this.update({
         accounts: payload.accounts,
         accountsError: false,
+        liveUsage,
         selection,
         // An unchanged selection leaves `loading` to whatever usage load is
         // already running for it (started here, or already in flight from

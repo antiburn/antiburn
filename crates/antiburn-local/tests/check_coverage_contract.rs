@@ -86,6 +86,9 @@ const ESTIMATE_METHODS: [Option<SavingsEstimateMethod>; DetectorId::COUNT] = [
     Some(SavingsEstimateMethod::FastTierPricePremium),
     Some(SavingsEstimateMethod::CacheRehydrationPriceDifference),
     None,
+    None,
+    None,
+    None,
 ];
 
 macro_rules! source_formats {
@@ -422,7 +425,11 @@ fn coverage_documents_list_every_source_format_once_with_valid_statuses() {
     );
     assert_table_source_formats(&check_matrix, &expected, "check coverage matrix");
     for row in check_matrix {
-        assert_eq!(row.len(), 10, "check coverage matrix has nine check cells");
+        assert_eq!(
+            row.len(),
+            13,
+            "check coverage matrix has twelve check cells"
+        );
         for status in &row[1..] {
             assert!(
                 CHECK_STATUSES.contains(&status.as_str()),
@@ -552,6 +559,9 @@ fn first_tier_matrix_matches_engine_gates_and_reachable_routes() {
                     DetectorId::UnusedMcpServers
                         | DetectorId::UnusedBuiltInTools
                         | DetectorId::UnusedSkills
+                        | DetectorId::SkillOpportunities
+                        | DetectorId::OverExploring
+                        | DetectorId::ScopeCreep
                 )
                 && !(agent_index == 3 && detector == DetectorId::OverpoweredSubagents)
             {
@@ -842,6 +852,9 @@ fn detector_from_code(value: &str) -> Option<DetectorId> {
         "F" => Some(DetectorId::OveruseOfFastMode),
         "C" => Some(DetectorId::CacheChurn),
         "I" => Some(DetectorId::IgnoredInstructions),
+        "SkillOpportunities" => Some(DetectorId::SkillOpportunities),
+        "OverExploring" => Some(DetectorId::OverExploring),
+        "ScopeCreep" => Some(DetectorId::ScopeCreep),
         _ => None,
     }
 }

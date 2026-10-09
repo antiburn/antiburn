@@ -23,8 +23,8 @@
 //! a running `agy` or Antigravity IDE language server. All are gated behind
 //! [`super::LiveUsageSource::requires_online_opt_in`]: [`collect`] never
 //! calls them unless its caller says live usage is active, which folds in
-//! Settings → Usage's switch (on by default) *and* onboarding having
-//! finished — see [`crate::store::AppSettings::live_usage_active`]. [`http`]
+//! Settings → Usage's switch (on by default) *and* the reader's own click to
+//! start live usage — see [`crate::store::AppSettings::live_usage_active`]. [`http`]
 //! is the plumbing they share — one client, one response cap, one mapping
 //! from an HTTP status to this module's error taxonomy — and [`cooldown`] is
 //! the retry-and-last-good-reading contract both sources are built on.
@@ -61,7 +61,7 @@ mod presence;
 use std::time::Duration;
 
 use super::LiveUsageSource;
-use super::model::{Freshness, ProviderUsageSnapshot};
+use super::model::{Freshness, ProviderUsageSnapshot, SourceErrorDetail};
 
 /// The stable id both [`codex_fetch`] and [`codex_app_server`] stamp their
 /// snapshots with. One registered source, two ways of answering for it — the
@@ -94,8 +94,8 @@ pub fn registered() -> Vec<Box<dyn LiveUsageSource>> {
 /// Collect from every permitted source and keep the best reading per account.
 ///
 /// `online` is whether live usage is active right now — the reader's switch
-/// *and* onboarding having finished, already folded together by the caller
-/// (see [`crate::store::AppSettings::live_usage_active`]). A source that
+/// *and* the reader's own click to start live usage, already folded together
+/// by the caller (see [`crate::store::AppSettings::live_usage_active`]). A source that
 /// declared [`LiveUsageSource::requires_online_opt_in`] is not merely ignored
 /// while it is false — it is never called, so nothing it would do can happen.
 ///
@@ -134,11 +134,21 @@ pub fn collect(
                 category = error.category(),
                 detail = ?outcome.detail
             );
+            // Only a Desktop-only failure proves that no other login is in
+            // play, so only then can the local file's plan name the account.
+            let plan = if outcome.snapshots.is_empty()
+                && outcome.detail == Some(SourceErrorDetail::DesktopOnly)
+            {
+                source.local_plan()
+            } else {
+                None
+            };
             collected.errors.push(SourceFailure {
                 source: source.id(),
                 provider: source.provider(),
                 error,
                 detail: outcome.detail,
+                plan,
             });
         }
         for snapshot in outcome.snapshots {
@@ -169,7 +179,9 @@ pub struct SourceFailure {
     /// The canonical provider id the source answers for.
     pub provider: &'static str,
     pub error: super::model::ProviderUsageError,
-    pub detail: Option<super::model::SourceErrorDetail>,
+    pub detail: Option<SourceErrorDetail>,
+    /// The plan named in a local file, when the failure has no reading.
+    pub plan: Option<crate::dto::LiveProviderPlan>,
 }
 
 impl Collected {

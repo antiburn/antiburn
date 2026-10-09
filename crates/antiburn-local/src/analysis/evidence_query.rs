@@ -31,10 +31,13 @@ pub use content::{
     query_turn_content_offset_selected, query_turn_content_page,
 };
 mod keyset;
+mod scope;
 pub use keyset::{
     SelectedContentCursor, SelectedContentPage, SelectedContentQueryError, SelectedContentRequest,
+    query_turn_content_exact_selected, query_turn_content_keyset_scoped,
     query_turn_content_keyset_selected,
 };
+pub use scope::{PublishedContentBoundary, ScopedSelectedContentPage, SelectedContentScope};
 
 pub const MAX_CONTENT_QUERY_PARTS: usize = 256;
 pub const MAX_CONTENT_QUERY_BYTES: usize = 1024 * 1024;
@@ -1753,9 +1756,7 @@ fn cache_rehydration_idle_secs(
 
 #[cfg(test)]
 mod tests {
-    use super::content::{
-        ContentQueryRange, content_query_sql, ordered_content_query_sql, query_content_range,
-    };
+    use super::content::{ContentQueryRange, content_query_sql, query_content_range};
     use super::*;
     use crate::analysis::EVIDENCE_STRING_CAP;
     use crate::analysis::rows::{TURN_MIGRATIONS, TurnRow, TurnScope, insert_turn_rows};
@@ -1824,50 +1825,53 @@ mod tests {
         conn.execute("INSERT INTO turn_content (turn_rowid, part_index, kind, content, truncated, authority)
             SELECT rowid, 0, 'assistant', CAST('synthetic selected evidence' AS BLOB), 0, 'assistant' FROM turn", []).unwrap();
         let plan = conn
-            .prepare(&format!("EXPLAIN QUERY PLAN {}", content_query_sql()))
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                content_query_sql(
+                    super::content::fence_predicate(true),
+                    false,
+                    super::scope::SCOPE_PREDICATE,
+                )
+            ))
             .unwrap()
             .query_map(
-                params![
-                    "native",
-                    "claude",
-                    "s1",
-                    1,
-                    1,
-                    "[]",
-                    257,
-                    262144,
-                    Option::<i64>::None,
-                    "{}",
-                    0,
-                    7936,
-                    2
-                ],
+                rusqlite::named_params! {
+                    ":environment_key": "native",
+                    ":agent": "claude",
+                    ":session_id": "s1",
+                    ":claim_fence": 1,
+                    ":max_part_bytes": 262144,
+                    ":after_ms": Option::<i64>::None,
+                    ":source_positions": "{}",
+                    ":before_watermark": 0,
+                    ":selection": 2,
+                    ":content_scope": Option::<String>::None,
+                },
                 |row| row.get::<_, String>(3),
             )
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
         println!("phase6 selected query plan: {}", plan.join("; "));
-        let optimized = ordered_content_query_sql(false, true);
+        let optimized = super::keyset::query_sql(false, true, false, true, false);
         let optimized_plan = conn
             .prepare(&format!("EXPLAIN QUERY PLAN {optimized}"))
             .unwrap()
             .query_map(
-                params![
-                    "native",
-                    "claude",
-                    "s1",
-                    1,
-                    1,
-                    "[]",
-                    257,
-                    262144,
-                    Option::<i64>::None,
-                    "{}",
-                    0,
-                    7936,
-                    2
-                ],
+                rusqlite::named_params! {
+                    ":environment_key": "native",
+                    ":agent": "claude",
+                    ":session_id": "s1",
+                    ":claim_fence": 1,
+                    ":limit": 257,
+                    ":max_part_bytes": 262144,
+                    ":after_ms": Option::<i64>::None,
+                    ":source_positions": "{}",
+                    ":before_watermark": 0,
+                    ":offset": 7936,
+                    ":selection": 2,
+                    ":content_scope": Option::<String>::None,
+                },
                 |row| row.get::<_, String>(3),
             )
             .unwrap()
@@ -1885,6 +1889,44 @@ mod tests {
                 .iter()
                 .any(|line| line == "USE TEMP B-TREE FOR ORDER BY")
         );
+        for (recent, index_name) in [
+            (false, "turn_content_source_page"),
+            (true, "turn_content_recent_page"),
+        ] {
+            let sql = super::keyset::query_sql(recent, true, false, false, true);
+            let plan = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map(
+                    rusqlite::named_params! {
+                        ":environment_key": "native",
+                        ":agent": "claude",
+                        ":session_id": "s1",
+                        ":claim_fence": 1,
+                        ":limit": 257,
+                        ":max_part_bytes": 262144,
+                        ":after_ms": Option::<i64>::None,
+                        ":source_positions": "{}",
+                        ":before_watermark": 0,
+                        ":selection": 2,
+                        ":content_scope": Option::<String>::None,
+                    },
+                    |row| row.get::<_, String>(3),
+                )
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert!(
+                plan.iter().any(|line| line.contains(index_name)),
+                "{plan:?}"
+            );
+            assert!(
+                !plan
+                    .iter()
+                    .any(|line| line == "USE TEMP B-TREE FOR ORDER BY"),
+                "{plan:?}"
+            );
+        }
         println!(
             "phase6 indexed selected query plan: {}",
             optimized_plan.join("; ")
@@ -1916,33 +1958,40 @@ mod tests {
                 "phase6 selected query rows=8192 offset={offset} runs=10 elapsed_us={}",
                 start.elapsed().as_micros()
             );
-            let keyset = optimized.replace(
-                "AND turn.claim_fence = ?4",
-                "AND turn.claim_fence = ?4 AND (turn.source_key, turn.turn_index) > (?14, ?15)",
-            );
+            let keyset = super::keyset::query_sql(false, true, true, false, true);
+            let cursor_rowid = if offset == 0 {
+                -1
+            } else {
+                conn.query_row(
+                    "SELECT rowid FROM turn WHERE turn_index = ?1 AND claim_fence = 1",
+                    [offset as i64 - 1],
+                    |row| row.get(0),
+                )
+                .unwrap()
+            };
             let start = std::time::Instant::now();
             for _ in 0..10 {
                 let values = conn
                     .prepare(&keyset)
                     .unwrap()
                     .query_map(
-                        params![
-                            "native",
-                            "claude",
-                            "s1",
-                            1,
-                            1,
-                            "[]",
-                            256,
-                            262144,
-                            Option::<i64>::None,
-                            "{}",
-                            0,
-                            0,
-                            2,
-                            if offset == 0 { "" } else { "source" },
-                            offset as i64 - 1
-                        ],
+                        rusqlite::named_params! {
+                            ":environment_key": "native",
+                            ":agent": "claude",
+                            ":session_id": "s1",
+                            ":claim_fence": 1,
+                            ":limit": 256,
+                            ":max_part_bytes": 262144,
+                            ":after_ms": Option::<i64>::None,
+                            ":source_positions": "{}",
+                            ":before_watermark": 0,
+                            ":selection": 2,
+                            ":seek_source_key": if offset == 0 { "" } else { "source" },
+                            ":seek_turn_index": offset as i64 - 1,
+                            ":seek_turn_rowid": cursor_rowid,
+                            ":seek_part_index": 0,
+                            ":content_scope": Option::<String>::None,
+                        },
                         |row| row.get::<_, u64>(2),
                     )
                     .unwrap()
@@ -2231,6 +2280,235 @@ mod tests {
         assert_eq!(next.parts.len(), 1);
         assert_eq!(next.parts[0].part.text.len(), 64 * 1024);
         assert!(!next.coverage.more_parts);
+    }
+
+    #[test]
+    fn scope_metadata_round_trip_is_private_ordered_and_explicitly_selected() {
+        use crate::analysis::SourceFormat;
+        use crate::analysis::jev_evidence::*;
+        let conn = test_connection();
+        let mut row = base_row("s1", 0);
+        let mut answers = Vec::new();
+        for (index, status) in [
+            JevUserAnswerStatus::Submitted,
+            JevUserAnswerStatus::Skipped,
+            JevUserAnswerStatus::Cancelled,
+            JevUserAnswerStatus::TimedOut,
+            JevUserAnswerStatus::Pending,
+            JevUserAnswerStatus::Unknown,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut answer = scope_answer_fixture();
+            answer.status = status;
+            answer.source.order = index as u32;
+            answers.push(answer);
+        }
+        for origin in [
+            JevUserAnswerOrigin::Synthetic,
+            JevUserAnswerOrigin::UnknownOrigin,
+        ] {
+            let mut answer = scope_answer_fixture();
+            answer.origin = origin;
+            answers.push(answer);
+        }
+        let plans = [
+            JevPlanContentStatus::Recorded,
+            JevPlanContentStatus::VersionMatchedCompanion,
+            JevPlanContentStatus::MutableCompanion,
+            JevPlanContentStatus::Missing,
+            JevPlanContentStatus::Unresolved,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, status)| {
+            let mut plan = scope_plan_fixture();
+            plan.content_status = status;
+            plan.source.order = index as u32;
+            plan.status = if index == 0 {
+                JevPlanStatus::Approved
+            } else if index == 1 {
+                JevPlanStatus::Rejected
+            } else {
+                JevPlanStatus::Feedback
+            };
+            if matches!(
+                status,
+                JevPlanContentStatus::Missing | JevPlanContentStatus::Unresolved
+            ) {
+                plan.text = None;
+            }
+            plan
+        })
+        .collect::<Vec<_>>();
+        row.content = vec![
+            ContentPart::new(ContentKind::ToolResult, "RAW_RESULT_SENTINEL")
+                .with_tool_identity(Some("recognized-workflow".into()), Some("call-1".into()))
+                .with_scope_evidence(answers.clone(), plans.clone())
+                .unwrap(),
+            ContentPart::new(ContentKind::ToolResult, "approved")
+                .with_tool_identity(Some("question".into()), Some("ordinary-call".into())),
+        ];
+        insert(&conn, &[row]);
+        let query = |selection| {
+            query_turn_content_keyset_selected(
+                &conn,
+                &KEY,
+                &FenceScope::single(1),
+                SelectedContentRequest {
+                    source_generation: 1,
+                    after_ms: None,
+                    source_positions: &BTreeMap::new(),
+                    selection,
+                    cursor: None,
+                },
+            )
+            .unwrap()
+            .content
+        };
+        let selection = JevInputSelection::from_fields(&[
+            JevInputField::UserAnswer,
+            JevInputField::PlanReference,
+        ]);
+        let content = query(selection);
+        assert_eq!(content.parts.len(), 1);
+        assert!(content.parts[0].part.text.is_empty());
+        assert_eq!(content.parts[0].part.metadata.user_answers, answers);
+        assert_eq!(content.parts[0].part.metadata.plan_references, plans);
+        let answer_only = query(JevInputSelection::from_fields(&[JevInputField::UserAnswer]));
+        assert!(
+            answer_only.parts[0]
+                .part
+                .metadata
+                .plan_references
+                .is_empty()
+        );
+        let plan_only = query(JevInputSelection::from_fields(&[
+            JevInputField::PlanReference,
+        ]));
+        assert!(plan_only.parts[0].part.metadata.user_answers.is_empty());
+        let legacy = query(JevInputSelection::ALL);
+        assert!(
+            legacy
+                .parts
+                .iter()
+                .all(|part| part.part.metadata.user_answers.is_empty()
+                    && part.part.metadata.plan_references.is_empty())
+        );
+        let evidence =
+            prepare_session_content("s1", SourceFormat::ClaudeJsonl, content, Vec::new());
+        let selected = select_session_content(&evidence, selection);
+        let store = selected_evidence_store(&selected.actions, selection, 1).unwrap();
+        let id = &selected.actions[0].reference.id;
+        assert_eq!(
+            serde_json::from_str::<Vec<JevUserAnswer>>(
+                store.get(id, JevInputField::UserAnswer).unwrap()
+            )
+            .unwrap(),
+            answers
+        );
+        assert_eq!(
+            serde_json::from_str::<Vec<JevPlanReference>>(
+                store.get(id, JevInputField::PlanReference).unwrap()
+            )
+            .unwrap(),
+            plans
+        );
+        assert!(store.get(id, JevInputField::OtherToolOutput).is_none());
+        let wrong_fence = query_turn_content_offset_selected(
+            &conn,
+            &KEY,
+            &FenceScope::single(2),
+            None,
+            &BTreeMap::new(),
+            0,
+            selection,
+        )
+        .unwrap();
+        assert!(wrong_fence.parts.is_empty());
+
+        let mixed = query(JevInputSelection::from_fields(&[
+            JevInputField::UserAnswer,
+            JevInputField::BashCommandOutput,
+        ]));
+        assert_eq!(mixed.parts.len(), 1);
+        assert!(mixed.parts[0].part.text.is_empty());
+        let with_output = query(JevInputSelection::from_fields(&[
+            JevInputField::UserAnswer,
+            JevInputField::OtherToolOutput,
+        ]));
+        assert_eq!(with_output.parts[0].part.text, "RAW_RESULT_SENTINEL");
+    }
+
+    #[test]
+    fn scope_metadata_utf8_budget_and_keyset_preserve_every_record() {
+        use crate::analysis::jev_evidence::*;
+        let conn = test_connection();
+        let mut answer = scope_answer_fixture();
+        answer.free_text = Some("字".repeat(32_000));
+        let mut plan = scope_plan_fixture();
+        plan.text = Some("界".repeat(32_000));
+        let expected_bytes = serde_json::to_vec(&vec![answer.clone()]).unwrap().len();
+        let mut row = base_row("s1", 0);
+        row.content = (0..12)
+            .map(|_| {
+                ContentPart::new(ContentKind::ToolResult, "excluded output")
+                    .with_tool_identity(Some("workflow".into()), Some("call-1".into()))
+                    .with_scope_evidence(vec![answer.clone()], vec![plan.clone()])
+                    .unwrap()
+            })
+            .collect();
+        insert(&conn, &[row]);
+        let selection = JevInputSelection::from_fields(&[JevInputField::UserAnswer]);
+        let positions = BTreeMap::new();
+        let read = |cursor| {
+            query_turn_content_keyset_selected(
+                &conn,
+                &KEY,
+                &FenceScope::single(1),
+                SelectedContentRequest {
+                    source_generation: 1,
+                    after_ms: None,
+                    source_positions: &positions,
+                    selection,
+                    cursor,
+                },
+            )
+            .unwrap()
+        };
+        let first = read(None);
+        assert!(first.content.coverage.bytes_capped);
+        assert_eq!(
+            first.content.parts.len(),
+            MAX_CONTENT_QUERY_BYTES / expected_bytes
+        );
+        assert!(
+            first
+                .content
+                .parts
+                .iter()
+                .all(|part| part.part.metadata.plan_references.is_empty()
+                    && part.part.text.is_empty())
+        );
+        let second = read(first.next_cursor.as_ref());
+        assert!(second.next_cursor.is_none());
+        let indices: Vec<_> = first
+            .content
+            .parts
+            .iter()
+            .chain(&second.content.parts)
+            .map(|part| part.part_index)
+            .collect();
+        assert_eq!(indices, (0..12).collect::<Vec<_>>());
+        assert!(
+            first
+                .content
+                .parts
+                .iter()
+                .chain(&second.content.parts)
+                .all(|part| part.part.metadata.user_answers == vec![answer.clone()])
+        );
     }
 
     #[test]

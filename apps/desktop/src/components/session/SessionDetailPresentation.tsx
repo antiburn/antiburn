@@ -75,7 +75,9 @@ import { CostBurnupChart, type CostSeries } from "./analysis/CostBurnupChart"
 import { ContextTokensChart, type ChartSeries } from "./analysis/ContextTokensChart"
 import { EfficiencyBreakdown } from "./analysis/EfficiencyBreakdown"
 import { HygieneBreakdown } from "./analysis/HygieneBreakdown"
+import { SessionMemories } from "./analysis/SessionMemories"
 import { SkillsMcpChart } from "./analysis/SkillsMcpChart"
+import type { SessionMemoriesPayload } from "../../lib/memoriesIpc"
 import { UnusedContext } from "./analysis/UnusedContext"
 import { SessionCostBadge } from "./metrics/SessionCostBadge"
 import type { AgentIconRenderer } from "./orchestration/SubagentRosterRow"
@@ -156,6 +158,11 @@ export interface SessionDetailPresentationProps {
   /** Open one quota window on the Quota screen. Omitted where there is no
    *  Quota screen to open, such as the popover. */
   onOpenQuota?: (target: SessionQuotaOpenTarget) => void
+  /** The memories this session read or wrote, for the Tools tab. */
+  sessionMemories?: SessionMemoriesPayload | null
+  /** Open one memory in the Memories view. Omitted where there is none, such
+   *  as the popover. */
+  onOpenMemory?: (target: { slug: string; path: string }) => void
   /** Return to the previous session when navigation history exists. */
   onBack?: (() => void) | undefined
   /** Navigate to the newer adjacent session; omit when none exists. */
@@ -692,6 +699,8 @@ export function SessionDetailPresentation({
   relations,
   sessionQuota = null,
   onOpenQuota,
+  sessionMemories = null,
+  onOpenMemory,
   onBack,
   onPrev,
   onNext,
@@ -1232,38 +1241,45 @@ export function SessionDetailPresentation({
                 </div>
               )}
 
-              {tab === "tools" &&
-                (firstSession?.initialContext ? (
-                  <div className="flex flex-col gap-y-4">
-                    {/* The wasted tokens are the finding of this tab, so they
-                        head the table they summarize. The figure has no
-                        ceiling, so it is a headline and not a meter. */}
-                    {toolsUsage != null && toolsUsage.wastedTokens > 0 && (
-                      <p className="flex items-center gap-x-4 my-2 py-3">
-                        <span
-                          data-testid="tools-wasted-figure"
-                          className={cn(
-                            "font-semibold! tabular-nums type-display",
-                            wastedTokensInk(toolsUsage),
-                          )}
-                        >
-                          {formatCompact(toolsUsage.wastedTokens)}
-                        </span>
-                        <span className="flex flex-col type-callout leading-tight">
-                          <span className="font-semibold text-label">tokens burned</span>
-                          <span className="text-label-secondary">
-                            by items loaded but never called in this session
+              {tab === "tools" && (
+                <div className="flex flex-col gap-y-4">
+                  {firstSession?.initialContext ? (
+                    <>
+                      {/* The wasted tokens are the finding of this tab, so they
+                          head the table they summarize. The figure has no
+                          ceiling, so it is a headline and not a meter. */}
+                      {toolsUsage != null && toolsUsage.wastedTokens > 0 && (
+                        <p className="flex items-center gap-x-4 my-2 py-3">
+                          <span
+                            data-testid="tools-wasted-figure"
+                            className={cn(
+                              "font-semibold! tabular-nums type-display",
+                              wastedTokensInk(toolsUsage),
+                            )}
+                          >
+                            {formatCompact(toolsUsage.wastedTokens)}
                           </span>
-                        </span>
-                      </p>
-                    )}
-                    <SkillsMcpChart breakdown={firstSession.initialContext} columns={2} />
-                  </div>
-                ) : (
-                  <p className="type-callout text-label-tertiary">
-                    No startup context has been recorded for this session.
-                  </p>
-                ))}
+                          <span className="flex flex-col type-callout leading-tight">
+                            <span className="font-semibold text-label">tokens burned</span>
+                            <span className="text-label-secondary">
+                              by items loaded but never called in this session
+                            </span>
+                          </span>
+                        </p>
+                      )}
+                      <SkillsMcpChart breakdown={firstSession.initialContext} columns={2} />
+                    </>
+                  ) : (
+                    <p className="type-callout text-label-tertiary">
+                      No startup context has been recorded for this session.
+                    </p>
+                  )}
+                  <SessionMemories
+                    sessionMemories={sessionMemories}
+                    onOpenMemory={onOpenMemory}
+                  />
+                </div>
+              )}
             </div>
 
             {/* The wide pane floats its section picker over the bottom of the

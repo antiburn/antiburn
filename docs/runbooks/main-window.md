@@ -45,8 +45,8 @@ position and focus. Test an installed build for taskbar icon grouping.
 
 | Scenario                                     | Expected result                                                                                    |
 | -------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Explicit launch after onboarding             | One main window opens with an opaque themed canvas                                                 |
-| First launch                                 | Onboarding appears; completing it opens the main window                                            |
+| Explicit launch                              | One main window opens with an opaque themed canvas                                                 |
+| First launch                                 | The main window opens directly; its Overview shows the first-run setup steps                       |
 | Background/login launch                      | Monitoring and tray start without creating the main webview or taking focus                        |
 | Launch again                                 | The existing process opens or restores its main window; no second scan scheduler                   |
 | Close then Open antiburn                     | The same renderer reappears; navigation state will remain when views exist                         |
@@ -97,7 +97,7 @@ Check the 1100×600 default and 1000×560 minimum with light and dark themes.
 
 - The sidebar stays visible and 220px wide throughout resizing on all platforms. Saved collapse preferences are ignored.
 - Overview opens by default. Overview, Limits, Sessions, and Checks share history; Settings appears at the bottom.
-- The Settings sidebar action opens the existing Settings window. Command+, (Control+, on Windows/Linux) opens it from the main window, onboarding, and popover.
+- The Settings sidebar action opens the existing Settings window. Command+, (Control+, on Windows/Linux) opens it from the main window and popover.
 - Check readable 28px rows and independent vertical content scrolling without horizontal overflow.
 - Restore an older saved 560×420 window; it expands to at least 1000×560 when the display allows.
 - Close and reopen the main window; the selected section persists.
@@ -120,7 +120,7 @@ Check the 1100×600 default and 1000×560 minimum with light and dark themes.
 
 Measure three separate paths:
 
-1. **Cold launch:** quit the app, then explicitly launch it with onboarding done.
+1. **Cold launch:** quit the app, then explicitly launch it with the first run done.
 2. **First open:** launch in the background, then select **Open antiburn** once.
 3. **Warm reopen:** close the main window, then select **Open antiburn** at least
    30 times. Wait for each reveal before closing it again.

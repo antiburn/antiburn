@@ -1,0 +1,3 @@
+{"type":"session","version":3,"id":"root","timestamp":"2026-01-01T00:00:00Z","cwd":"/synthetic/project"}
+{"type":"message","id":"pi-request","parentId":null,"timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","model":"synthetic-model","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0},"content":[{"type":"toolCall","id":"skill-call","name":"Skill","arguments":{"skill":"review"}}]}}
+{"type":"message","id":"pi-result","parentId":"pi-request","timestamp":"2026-01-01T00:00:02Z","message":{"role":"toolResult","toolCallId":"skill-call","toolName":"Skill","isError":false,"content":[{"type":"text","text":"Loaded review successfully."}]}}

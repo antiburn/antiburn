@@ -632,6 +632,17 @@ fn surface_label_claude_entrypoint_marker_overrides_path() {
 
     let sdk_content = r#"{"type":"user","entrypoint":"sdk-ts","sessionId":"s"}"#;
     assert_eq!(log.surface_label_with_content(sdk_content, &home), "cli");
+
+    // Claude Desktop's Cowork agent mode.
+    for cowork_entrypoint in ["local-agent", "local-agent-mode"] {
+        let cowork_content =
+            format!(r#"{{"type":"user","entrypoint":"{cowork_entrypoint}","sessionId":"s"}}"#);
+        assert_eq!(
+            log.surface_label_with_content(&cowork_content, &home),
+            "ide_desktop",
+            "{cowork_entrypoint}"
+        );
+    }
 }
 
 #[test]
@@ -955,8 +966,10 @@ fn surface_paths_route_through_platform_helpers() {
     let home = PathBuf::from("/home/tester");
 
     let claude = Explorers::DISK.surface_paths_for(&AgentKind::Claude, &home);
-    let expected_claude_ide = app_config_dir_in("Claude", &home).join("claude-code-sessions");
-    assert!(claude.ide_desktop.contains(&expected_claude_ide));
+    for tree in ["claude-code-sessions", "local-agent-mode-sessions"] {
+        let expected_claude_ide = app_config_dir_in("Claude", &home).join(tree);
+        assert!(claude.ide_desktop.contains(&expected_claude_ide));
+    }
 
     let copilot = Explorers::DISK.surface_paths_for(&AgentKind::Copilot, &home);
     let expected_copilot_ide = app_config_dir_in("Code", &home)
@@ -1007,13 +1020,14 @@ fn watch_roots_match_each_agents_surface_paths() {
 }
 
 #[test]
-fn claude_watch_roots_add_the_desktop_manifest_dir_and_jobs() {
+fn claude_watch_roots_add_the_desktop_session_trees_and_jobs() {
     let home = PathBuf::from("/home/tester");
     let roots = Explorers::DISK.watch_roots_for(&AgentKind::Claude, &home);
     let paths: Vec<PathBuf> = roots.iter().map(|root| root.path.clone()).collect();
     assert!(roots.iter().all(|root| root.recursive));
     assert!(paths.contains(&home.join(".claude").join("projects")));
     assert!(paths.contains(&app_config_dir_in("Claude", &home).join("claude-code-sessions")));
+    assert!(paths.contains(&app_config_dir_in("Claude", &home).join("local-agent-mode-sessions")));
     assert!(paths.contains(&home.join(".claude").join("jobs")));
 }
 

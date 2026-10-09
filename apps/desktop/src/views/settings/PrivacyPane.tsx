@@ -8,7 +8,6 @@ import { Disclosure, DisclosureGroup } from "../../components/ui/Disclosure"
 import { Pane } from "../../components/ui/Pane"
 import { PushButton } from "../../components/ui/PushButton"
 import { SectionGroup } from "../../components/ui/SectionGroup"
-import { SegmentedControl } from "../../components/ui/SegmentedControl"
 import { StatusText } from "../../components/ui/StatusText"
 import { exportDiagnostics } from "../../lib/diagnosticsIpc"
 import {
@@ -43,18 +42,6 @@ type ClearState =
 /** What the diagnostics export action is currently doing. */
 type DiagnosticsExportState = "idle" | "exporting" | "exported" | "failed"
 
-type RetentionValue = "30" | "90" | "-1"
-
-const RETENTION_OPTIONS: ReadonlyArray<{ value: RetentionValue; label: string }> = [
-  { value: "30", label: "30 days" },
-  { value: "90", label: "90 days" },
-  { value: "-1", label: "Forever" },
-]
-
-function retentionLength(days: number): number {
-  return days === -1 ? Number.POSITIVE_INFINITY : days
-}
-
 export type PrivacyPaneProps = AppSettingsController & { info: AppInfo | null }
 
 export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps) {
@@ -67,23 +54,6 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
   const analyticsSupported = info?.analyticsSupported ?? false
   const analyticsEnvironmentDisabled = info?.analyticsEnvironmentDisabled ?? false
   const operator = info?.analyticsOperator ?? null
-
-  async function handleRetentionChange(value: RetentionValue) {
-    const days = Number(value)
-    if (retentionLength(days) < retentionLength(settings.sessionDataRetentionDays)) {
-      const period = days === 30 ? "30 days" : "90 days"
-      const proceed = await confirm(
-        `This immediately removes antiburn’s local data for sessions whose last activity is older than ${period}. Providers retain session history for only 30 days, so antiburn may hold the only remaining history. Your coding agents’ transcript files are not touched.`,
-        {
-          title: `Keep session data for ${period}?`,
-          kind: "warning",
-          okLabel: "Change retention",
-        },
-      )
-      if (!proceed) return
-    }
-    await update({ sessionDataRetentionDays: days })
-  }
 
   /**
    * Clearing the index is confirmed first, and the confirmation says the two
@@ -141,7 +111,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             4px to the left of everything it introduces. */}
         <p className="type-body px-1 text-pretty text-label-secondary">
           antiburn reads the session files your coding agents already keep on this machine and
-          keeps its index locally. The optional Ignored Instructions check sends selected
+          keeps its index locally. The optional Ignored instructions check sends selected
           instruction text, assistant text excerpts, Bash command input, file-edit and read-file
           paths, search queries with scope filters, and other-tool inputs to TypeSafe when
           enabled in Settings → Checks. Bash input can include inline scripts, heredocs, and
@@ -167,7 +137,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             antiburn may keep session content and derived analysis in its own local store when
             they are needed for visibility or analysis. That can include messages, tool
             activity, file content recorded in a transcript, identities, paths, counts,
-            durations, token totals, and cost estimates. Only the optional Ignored Instructions
+            durations, token totals, and cost estimates. Only the optional Ignored instructions
             assessment sends selected instruction text, assistant text excerpts, Bash command
             input, file-edit and read-file paths, search queries with scope filters, and
             other-tool inputs to TypeSafe. Bash input can include inline scripts, heredocs, and
@@ -190,12 +160,12 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             credentials your own tools already stored; and, in a released build with the switch
             below on, it sends the anonymised product analytics listed below. Handing a provider
             back a credential it issued you is not a disclosure — it already has it. Enabling
-            Ignored Instructions in Settings → Checks sends selected instruction text, assistant
+            Ignored instructions in Settings → Checks sends selected instruction text, assistant
             text excerpts, Bash command input, file-edit and read-file paths, search queries
             with scope filters, and other-tool inputs to TypeSafe using your API key. Bash input
             can include inline scripts, heredocs, and patches recorded inside the command.
             Dedicated edit-tool content and tool-result text are excluded. Selected paths can
-            leave this machine. TypeSafe usage charges can apply. Pausing Smart Burn Checks
+            leave this machine. TypeSafe usage charges can apply. Pausing Smart burn checks
             keeps the saved key but stops new checks; remove the key separately in Settings →
             Checks. That pane shows bounded local token totals and estimated spend by model
             price version, without session identifiers or request content. Session deletion
@@ -235,7 +205,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   ? "Off for this launch because ANTIBURN_ANALYTICS_ENABLED=false. Remove it to use this setting."
                   : loaded && !settings.analyticsEnabled
                     ? "Off. Antiburn deleted its analytics identifier and anything waiting to be sent."
-                    : `Sends app launches, onboarding progress, feature use, error categories, coarse Claude reset status, and hourly bands for antiburn's own resource use${
+                    : `Sends app launches, first-run progress, feature use, error categories, coarse Claude reset status, and hourly bands for antiburn's own resource use${
                         operator ? ` to ${operator}` : ""
                       }. Never prompts, sessions, source code, filenames, or paths.`
               }
@@ -406,19 +376,6 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
 
       <SectionGroup title="Local data">
         <Card>
-          <SettingsRow
-            searchId="retention"
-            description="antiburn’s session index stays on this machine. Keeping it longer preserves history after providers’ 30-day retention window; a shorter period keeps antiburn’s local index lighter."
-            trailing={
-              <SegmentedControl
-                options={RETENTION_OPTIONS}
-                value={String(settings.sessionDataRetentionDays) as RetentionValue}
-                ariaLabel="Session data retention"
-                onChange={(value) => void handleRetentionChange(value)}
-                disabled={!loaded}
-              />
-            }
-          />
           <SettingsRow
             searchId="clearIndex"
             description="Forget every session, analysis, evidence, and scan record antiburn has stored. Your agents’ transcripts are untouched, so a later scan finds them again. Your preferences, scan folders, and repository choices are kept."

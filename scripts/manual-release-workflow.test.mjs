@@ -34,6 +34,7 @@ test("manual builds use the complete desktop matrix and remote helpers", () => {
     );
     assert.ok(preparation);
     assert.equal(preparation.if, "github.event_name == 'workflow_dispatch'");
+    assert.equal(preparation.shell, "bash");
   }
 });
 

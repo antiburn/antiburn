@@ -276,7 +276,7 @@ export function SessionQuotaSection({
         type="button"
         onClick={toggleLimitsExpanded}
         aria-expanded={expanded}
-        className="flex w-full items-center justify-between gap-x-3 rounded-control px-1 py-1 text-left type-body cursor-pointer! transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
+        className="flex w-full items-center justify-between gap-x-3 rounded-control px-1 py-1 text-left type-body cursor-pointer! transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover active:opacity-100"
       >
         <span className="flex min-w-0 items-center gap-x-1.5">
           <ChevronRight

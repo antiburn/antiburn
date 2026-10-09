@@ -3,7 +3,7 @@
 //! This is the one place antiburn sends anything of its own beyond the update
 //! check. The properties below define its privacy boundary.
 //!
-//! - **Official builds start enabled.** App launch and fixed onboarding-step
+//! - **Official builds start enabled.** App launch and fixed first-run-step
 //!   events can be sent before setup finishes. Settings and
 //!   `ANTIBURN_ANALYTICS_ENABLED=false` provide independent opt-outs.
 //! - **A build with no endpoint sends nothing.** See [`config`]; every build
@@ -80,9 +80,6 @@ pub fn record(_app: &tauri::AppHandle, _name: event::EventName, facts: event::Fa
 #[cfg(not(feature = "analytics"))]
 pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interaction) {
     match interaction {
-        event::Interaction::OnboardingStepViewed { step } => {
-            let _ = step;
-        }
         event::Interaction::SessionOpened { agent, environment } => {
             let _ = (agent, environment);
         }
@@ -113,14 +110,19 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::BurnCheckAutoFixCompleted { outcome } => {
             let _ = outcome;
         }
-        event::Interaction::BurnCheckPromptPrepared { outcome } => {
-            let _ = outcome;
+        event::Interaction::BurnCheckPromptPrepared { outcome, check } => {
+            let _ = (outcome, check);
         }
-        event::Interaction::BurnCheckPromptCopied => {}
+        event::Interaction::BurnCheckPromptCopied { check } => {
+            let _ = check;
+        }
         event::Interaction::BurnCheckOutcomeObserved { outcome, origin } => {
             let _ = (outcome, origin);
         }
         event::Interaction::ProjectFolderAction { action, outcome } => {
+            let _ = (action, outcome);
+        }
+        event::Interaction::MemoryAction { action, outcome } => {
             let _ = (action, outcome);
         }
         event::Interaction::SessionFilterSelected { filter, agent } => {
@@ -136,10 +138,66 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::IgnoredInstructionObserved { stage, outcome } => {
             let _ = (stage, outcome);
         }
+        event::Interaction::SmartCheckObserved { check, observation } => {
+            let _ = (check, observation);
+        }
         event::Interaction::SessionFiltersChanged { action, agent } => {
             let _ = (action, agent);
         }
+        event::Interaction::FirstRunStepReached {
+            step,
+            sessions,
+            result,
+        } => {
+            let _ = (step, sessions, result);
+        }
+        event::Interaction::FirstRunAction { action } => {
+            let _ = action;
+        }
+        event::Interaction::FirstRunFinished {} => {}
+        event::Interaction::StepSettingsViewed { label, detail } => {
+            let _ = (label, detail);
+        }
     }
+}
+
+pub fn record_smart_check_lifecycle(app: &tauri::AppHandle, lifecycle: event::SmartCheckLifecycle) {
+    #[cfg(feature = "analytics")]
+    {
+        let (name, facts) = lifecycle.resolve();
+        record(app, name, facts);
+    }
+    #[cfg(not(feature = "analytics"))]
+    {
+        let _ = app;
+        match lifecycle {
+            event::SmartCheckLifecycle::Enablement { enabled } => {
+                let _ = enabled;
+            }
+            event::SmartCheckLifecycle::ProviderSetup { provider, outcome } => {
+                let _ = (provider, outcome);
+            }
+            event::SmartCheckLifecycle::ProviderTest { provider, outcome } => {
+                let _ = (provider, outcome);
+            }
+            event::SmartCheckLifecycle::Assessment {
+                check,
+                outcome,
+                historical,
+            } => {
+                let _ = (check, outcome, historical);
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "analytics"))]
+pub(crate) fn record_check_enablement_saved(
+    _app: &tauri::AppHandle,
+    detector: antiburn_local::checks::DetectorId,
+    _enabled: bool,
+) {
+    let _ = event::CheckEnablementId::from(detector);
 }
 
 #[cfg(not(feature = "analytics"))]
@@ -165,15 +223,6 @@ pub fn record_remote_sync_completed(
     _cached_sessions: usize,
 ) {
 }
-
-#[cfg(not(feature = "analytics"))]
-pub fn prepare_onboarding_restart() {}
-
-#[cfg(not(feature = "analytics"))]
-pub fn record_onboarding_started(_app: &tauri::AppHandle) {}
-
-#[cfg(not(feature = "analytics"))]
-pub fn record_onboarding_finished(_app: &tauri::AppHandle) {}
 
 #[cfg(not(feature = "analytics"))]
 pub fn prepare_hud_exposure(_origin: event::Origin) {}
@@ -292,8 +341,7 @@ mod enabled {
 
     use super::delivery::{DeliverySchedule, FlushOutcome};
     use super::event::{
-        Event, EventName, Facts, Interaction, LiveUsageProvider, LiveUsageState, OnboardingFlow,
-        Origin, Surface,
+        Event, EventName, Facts, Interaction, LiveUsageProvider, LiveUsageState, Origin, Surface,
     };
     use super::{config, delivery, event, resources};
     use crate::store::{AppSettings, Store};
@@ -301,11 +349,9 @@ mod enabled {
     /// How long an installation identifier lives before it is replaced.
     pub const IDENTITY_LIFETIME_DAYS: i64 = 30;
 
-    /// How long a run identifier survives without an analytics event.
+    /// How long a run identifier survives without a user-oriented event.
     ///
-    /// The collector's contract specifies this window, and matching it is the
-    /// point — a client that invented its own would make its rows incomparable
-    /// with every other surface reporting to the same place.
+    /// Background telemetry does not refresh this timeout.
     pub const SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
     /// How many failures a queued event survives before it is given up on.
@@ -386,7 +432,7 @@ mod enabled {
             platform: event::PLATFORM,
             message_id: random_identifier(),
             anonymous_id,
-            session_id: current_session_id(),
+            session_id: current_session_id(true),
             event: EventName::AnalyticsOptedOut.as_str().to_string(),
             original_timestamp: crate::store::now_rfc3339(),
             properties: event::Properties {
@@ -549,7 +595,8 @@ mod enabled {
         let Some(store) = app.try_state::<Store>() else {
             return false;
         };
-        let Some((install_id, session_id)) = current_identity_pair(&store) else {
+        let user_oriented = name.is_user_oriented(&facts);
+        let Some((install_id, session_id)) = current_identity_pair(&store, user_oriented) else {
             return false;
         };
         let payload = Event {
@@ -1062,7 +1109,10 @@ mod enabled {
     /// The renderer names a shape, not an event. See [`Interaction`] for why.
     pub fn record_interaction(app: &tauri::AppHandle, interaction: Interaction) {
         #[cfg(debug_assertions)]
-        if matches!(interaction, Interaction::IgnoredInstructionObserved { .. }) {
+        if matches!(
+            interaction,
+            Interaction::IgnoredInstructionObserved { .. } | Interaction::SmartCheckObserved { .. }
+        ) {
             return;
         }
         if let Some((provider, state)) = deliberate_live_usage_observation(interaction) {
@@ -1083,6 +1133,19 @@ mod enabled {
             } if surface != Surface::Settings => note_deliberate_activity(Instant::now()),
             _ => {}
         }
+    }
+
+    /// Record one successfully persisted change to a check's enabled state.
+    pub fn record_check_enablement_saved(
+        app: &tauri::AppHandle,
+        detector: antiburn_local::checks::DetectorId,
+        enabled: bool,
+    ) {
+        record_event(
+            app,
+            EventName::CheckEnablementSaved,
+            event::check_enablement_facts(detector, enabled),
+        );
     }
 
     fn deliberate_live_usage_observation(
@@ -1217,107 +1280,7 @@ mod enabled {
     static LAST_LIMIT_FACTOR_OBSERVED: std::sync::Mutex<LastLimitFactorObserved> =
         std::sync::Mutex::new(BTreeMap::new());
 
-    #[derive(Debug, Clone, Copy, Default)]
-    struct OnboardingCapture {
-        flow: Option<OnboardingFlow>,
-        started: bool,
-        finished: bool,
-    }
-
-    static ONBOARDING_CAPTURE: std::sync::Mutex<OnboardingCapture> =
-        std::sync::Mutex::new(OnboardingCapture {
-            flow: None,
-            started: false,
-            finished: false,
-        });
-
     static HUD_EXPOSURE_ORIGIN: std::sync::Mutex<Option<Origin>> = std::sync::Mutex::new(None);
-
-    /// Begin a distinct restart flow after its pending state persists.
-    pub fn prepare_onboarding_restart() {
-        *ONBOARDING_CAPTURE
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = OnboardingCapture {
-            flow: Some(OnboardingFlow::Restart),
-            started: false,
-            finished: false,
-        };
-    }
-
-    fn onboarding_flow(app: &tauri::AppHandle) -> OnboardingFlow {
-        if app
-            .try_state::<Store>()
-            .is_some_and(|store| store.onboarding_flow_is_restart())
-        {
-            OnboardingFlow::Restart
-        } else {
-            OnboardingFlow::New
-        }
-    }
-
-    /// Record the first successful reveal of the active setup flow.
-    pub fn record_onboarding_started(app: &tauri::AppHandle) {
-        let _lifecycle = lock_settings_transition();
-        let flow = onboarding_flow(app);
-        let mut capture = ONBOARDING_CAPTURE
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if capture.flow != Some(flow) {
-            *capture = OnboardingCapture {
-                flow: Some(flow),
-                started: false,
-                finished: false,
-            };
-        }
-        if capture.started {
-            return;
-        }
-        let _capture = CAPTURE_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if record_event_locked(
-            app,
-            EventName::OnboardingStarted,
-            Facts {
-                label: Some(flow.as_str()),
-                ..Facts::default()
-            },
-        ) {
-            capture.started = true;
-        }
-    }
-
-    /// Record the committed completion of the active setup flow once.
-    pub fn record_onboarding_finished(app: &tauri::AppHandle) {
-        let _lifecycle = lock_settings_transition();
-        let flow = onboarding_flow(app);
-        let mut capture = ONBOARDING_CAPTURE
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if capture.flow != Some(flow) {
-            *capture = OnboardingCapture {
-                flow: Some(flow),
-                started: false,
-                finished: false,
-            };
-        }
-        if capture.finished {
-            return;
-        }
-        let _capture = CAPTURE_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if record_event_locked(
-            app,
-            EventName::OnboardingFinished,
-            Facts {
-                label: Some(flow.as_str()),
-                ..Facts::default()
-            },
-        ) {
-            capture.finished = true;
-        }
-    }
 
     /// Hold the origin until the HUD confirms an actual reveal.
     pub fn prepare_hud_exposure(origin: Origin) {
@@ -1440,7 +1403,7 @@ mod enabled {
     /// pass of each run, every crossing of a bucket boundary, and every transition
     /// into or out of failure.
     pub fn record_scan(app: &tauri::AppHandle, sessions: Option<u64>) {
-        // Ahead of the suppression check, not after it. A pass during onboarding,
+        // Ahead of the suppression check, not after it. A pass during first run,
         // or while the switch is off, must not leave a mark that then suppresses
         // the first pass the reader actually consented to.
         if !allowed(app) {
@@ -1740,11 +1703,14 @@ mod enabled {
     }
 
     /// Serialize the two identifiers so rotation cannot produce a mixed pair.
-    fn current_identity_pair(store: &Store) -> Option<(String, String)> {
+    fn current_identity_pair(store: &Store, user_oriented: bool) -> Option<(String, String)> {
         let _guard = IDENTITY_SESSION_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Some((current_install_id(store)?, current_session_id()))
+        Some((
+            current_install_id(store)?,
+            current_session_id(user_oriented),
+        ))
     }
 
     /// Whether a mint stamp is old enough that the identifier should roll over.
@@ -1761,12 +1727,17 @@ mod enabled {
         (time::OffsetDateTime::now_utc() - minted).whole_days() >= IDENTITY_LIFETIME_DAYS
     }
 
-    /// The current run identifier, and when it was last touched.
+    /// The current run identifier and the last user-oriented event time.
     ///
-    /// The generator state stays in memory. A restart mints a new value even
-    /// inside the window. Queued event payloads keep their captured value.
-    static SESSION: std::sync::Mutex<Option<(String, std::time::Instant)>> =
-        std::sync::Mutex::new(None);
+    /// Background-only events can have an identifier, but they never refresh a
+    /// user-oriented session. A restart mints new state.
+    #[derive(Clone)]
+    struct SessionState {
+        id: String,
+        last_user_activity: Option<std::time::Instant>,
+    }
+
+    static SESSION: std::sync::Mutex<Option<SessionState>> = std::sync::Mutex::new(None);
 
     static IDENTITY_SESSION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1777,8 +1748,11 @@ mod enabled {
     static FLUSH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// The run identifier to stamp on an event, minting or rolling it as needed.
-    fn current_session_id() -> String {
-        let now = std::time::Instant::now();
+    fn current_session_id(user_oriented: bool) -> String {
+        current_session_id_at(user_oriented, std::time::Instant::now())
+    }
+
+    fn current_session_id_at(user_oriented: bool, now: std::time::Instant) -> String {
         let mut guard = match SESSION.lock() {
             Ok(guard) => guard,
             // A poisoned lock means some earlier holder panicked. Taking the
@@ -1787,15 +1761,25 @@ mod enabled {
             // is strictly less harmful than dropping the event.
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some((id, last_activity)) = guard.as_ref()
-            && now.duration_since(*last_activity) < SESSION_TIMEOUT
-        {
-            let id = id.clone();
-            *guard = Some((id.clone(), now));
-            return id;
+        if let Some(session) = guard.as_mut() {
+            match session.last_user_activity {
+                Some(last_user_activity)
+                    if now.duration_since(last_user_activity) < SESSION_TIMEOUT =>
+                {
+                    if user_oriented {
+                        session.last_user_activity = Some(now);
+                    }
+                    return session.id.clone();
+                }
+                None if !user_oriented => return session.id.clone(),
+                _ => {}
+            }
         }
         let fresh = random_identifier();
-        *guard = Some((fresh.clone(), now));
+        *guard = Some(SessionState {
+            id: fresh.clone(),
+            last_user_activity: user_oriented.then_some(now),
+        });
         fresh
     }
 
@@ -2950,13 +2934,59 @@ mod enabled {
         fn a_run_identifier_is_stable_within_a_run_and_dropped_on_opt_out() {
             let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
             reset_session();
-            let first = current_session_id();
-            assert_eq!(first, current_session_id(), "stable inside one run");
+            let first = current_session_id(true);
+            assert_eq!(first, current_session_id(false), "stable inside one run");
             assert_eq!(first.len(), 36);
             assert_eq!(&first[14..15], "4");
 
             reset_session();
-            assert_ne!(first, current_session_id(), "withdrawn, not resumed");
+            assert_ne!(first, current_session_id(true), "withdrawn, not resumed");
+            reset_session();
+        }
+
+        #[test]
+        fn background_events_do_not_extend_the_user_session_timeout() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            reset_session();
+            let start = std::time::Instant::now();
+            let first = current_session_id_at(true, start);
+            let background = current_session_id_at(false, start + Duration::from_secs(25 * 60));
+            assert_eq!(
+                first, background,
+                "background event stays in active session"
+            );
+
+            let after_timeout = current_session_id_at(true, start + Duration::from_secs(31 * 60));
+            assert_ne!(
+                first, after_timeout,
+                "background event did not refresh timeout"
+            );
+            reset_session();
+        }
+
+        #[test]
+        fn user_events_refresh_the_timeout_but_background_events_do_not() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            reset_session();
+            let start = std::time::Instant::now();
+            let first = current_session_id_at(true, start);
+            let refreshed = current_session_id_at(true, start + Duration::from_secs(25 * 60));
+            assert_eq!(first, refreshed);
+            let still_active = current_session_id_at(false, start + Duration::from_secs(50 * 60));
+            assert_eq!(first, still_active, "user event refreshed the timeout");
+            let expired = current_session_id_at(false, start + Duration::from_secs(56 * 60));
+            assert_ne!(first, expired, "background event does not refresh timeout");
+            reset_session();
+        }
+
+        #[test]
+        fn background_only_session_is_not_adopted_by_a_later_user_event() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            reset_session();
+            let start = std::time::Instant::now();
+            let background = current_session_id_at(false, start);
+            let user = current_session_id_at(true, start + Duration::from_secs(5 * 60));
+            assert_ne!(background, user);
             reset_session();
         }
 
@@ -2974,7 +3004,7 @@ mod enabled {
                 .queue_analytics_event("antiburn.app_launched", old_payload)
                 .unwrap();
             reset_session();
-            let old_session = current_session_id();
+            let old_session = current_session_id(true);
 
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
             let workers: Vec<_> = (0..2)
@@ -2983,7 +3013,7 @@ mod enabled {
                     let barrier = barrier.clone();
                     std::thread::spawn(move || {
                         barrier.wait();
-                        current_identity_pair(&store).unwrap()
+                        current_identity_pair(&store, true).unwrap()
                     })
                 })
                 .collect();

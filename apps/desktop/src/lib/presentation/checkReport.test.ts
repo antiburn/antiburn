@@ -25,13 +25,38 @@ function category(overrides: Partial<ChecksCategoryPayload> = {}): ChecksCategor
 function report(categories: ChecksCategoryPayload[]): ChecksReportPayload {
   return {
     evidenceSettled: true,
+    windowSessions: 0,
     pendingEvidence: 0,
+    deferredEvidence: 0,
     estimatedTokenBurnBasisPoints: 1_625,
     categories,
   }
 }
 
 describe("Checks presentation", () => {
+  it("keeps provisional checks outside durable pass counts and excludes snoozed checks", () => {
+    const check = category({ finding: 0, clean: 0, checking: true })
+    const source = report([check])
+    const before = structuredClone(source)
+    const presented = checksPresentation(source)
+    expect(presented.wins).toEqual([check])
+    expect(presented.activeUnavailable).toEqual([])
+    expect(presented.burnChecks.counts).toEqual({ failed: 0, passed: 0, unassessed: 1 })
+    expect(checksHeroPresentation(presented).summary).toBeNull()
+    expect(checksPresentation(source, false, new Set([check.id])).wins).toEqual([])
+    expect(source).toEqual(before)
+  })
+  it("counts confirmed passes without counting checking rows as passed results", () => {
+    const presentation = checksPresentation(
+      report([
+        category({ id: "ignoredInstructions", finding: 0, clean: 0, checking: true }),
+        category({ id: "oldModelUsage", finding: 0, clean: 2 }),
+      ]),
+    )
+    expect(presentation.wins).toHaveLength(2)
+    expect(checksHeroPresentation(presentation).summary).toBe("1 check passed")
+    expect(presentation.burnChecks.counts).toEqual({ failed: 0, passed: 1, unassessed: 1 })
+  })
   it("uses the report-owned cohort token estimate", () => {
     const presentation = checksPresentation(report([category()]))
     expect(presentation.estimate.tokenBurnBasisPoints).toBe(1_625)
@@ -205,6 +230,10 @@ describe("Checks presentation", () => {
     expect(presentation.noActiveChecks).toBe(false)
     expect(checksHeroPresentation(presentation).result).toBe("No checks assessed")
     expect(checksPresentation(report([])).noActiveChecks).toBe(true)
+    expect(checksPresentation(report([])).noEnabledChecks).toBe(true)
+    expect(checksHeroPresentation(checksPresentation(report([]))).result).toBe(
+      "No checks enabled",
+    )
   })
 
   it("keeps the running presentation while evidence is unsettled", () => {
@@ -219,6 +248,7 @@ describe("Checks presentation", () => {
       ]),
       evidenceSettled: false,
       pendingEvidence: 1,
+      deferredEvidence: 0,
     })
 
     expect(presentation.noActiveChecks).toBe(false)

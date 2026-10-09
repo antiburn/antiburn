@@ -5,7 +5,7 @@ import { settingsSearchRequest, type SettingsControlId } from "./settingsSearchT
  */
 
 import { invoke, isTauri } from "@tauri-apps/api/core"
-import { listen, type UnlistenFn } from "@tauri-apps/api/event"
+import { listen, type UnlistenFn } from "./tauriEvents"
 
 import { nativePeekBridge } from "./nativePeekBridge"
 import {
@@ -16,6 +16,7 @@ import {
 import type { SettingsPane } from "./settingsPanes"
 import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
 import type {
+  AgentSessionLocations,
   AppInfo,
   AppSettings,
   InsightsBacklog,
@@ -74,6 +75,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   milestones5h: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   milestonesWeekly: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   liveUsageEnabled: true,
+  liveUsageStarted: false,
   liveUsageHiddenProviders: [],
   disabledAgents: [],
   analyticsEnabled: true,
@@ -221,6 +223,12 @@ export async function appInfo(): Promise<AppInfo | null> {
   return invoke<AppInfo>("app_info")
 }
 
+/** The folders antiburn watches for each agent's sessions. */
+export async function agentSessionLocations(): Promise<AgentSessionLocations[]> {
+  if (!hasShell()) return []
+  return invoke<AgentSessionLocations[]>("agent_session_locations")
+}
+
 /** Ask the shell to check the signed release feed. */
 export async function checkForUpdates(): Promise<UpdateStatusPayload> {
   if (!hasShell()) return unsupportedUpdateStatus()
@@ -286,10 +294,10 @@ export async function setInterfaceScale(
   return invoke<AppSettings>("set_interface_scale", { change, source })
 }
 
-/** Make setup pending and open it at Welcome without clearing local data. */
-export async function restartOnboarding(): Promise<void> {
+/** Open the docs page on why Claude Desktop alone shows no usage limits. */
+export async function openClaudeDesktopLimitsDocs(): Promise<void> {
   if (!hasShell()) return
-  await invoke("restart_onboarding")
+  await invoke("open_claude_desktop_limits_docs")
 }
 
 /** Open the public analytics documentation in the system browser. */
@@ -317,12 +325,13 @@ export async function openPrivacyPolicy(): Promise<void> {
 export type Interaction =
   | { kind: "navigationHistoryMoved"; direction: "back" | "forward" }
   | { kind: "appSearchOpened" }
-  | { kind: "appSearchResultOpened"; category: "view" | "setting" | "check" }
-  | {
-      kind: "onboardingStepViewed"
-      step: "welcome" | "agents_detected" | "sources_and_repos" | "ready"
-    }
+  | { kind: "appSearchResultOpened"; category: "view" | "setting" | "stepSetting" | "check" }
   | { kind: "projectFolderAction"; action: "open" | "copy"; outcome: "succeeded" | "failed" }
+  | {
+      kind: "memoryAction"
+      action: "reveal" | "archive" | "restore" | "remove_index_line" | "open_from_session"
+      outcome: "succeeded" | "failed" | "changed_on_disk" | "unsupported"
+    }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" | "remote" }
   | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
   | {
@@ -341,8 +350,18 @@ export type Interaction =
   | { kind: "burnCheckAutoFixReviewed"; outcome: AutoFixReviewAnalyticsOutcome }
   | { kind: "burnCheckAutoFixConfirmed" }
   | { kind: "burnCheckAutoFixCompleted"; outcome: AutoFixAnalyticsOutcome }
-  | { kind: "burnCheckPromptPrepared"; outcome: PromptPreparationAnalyticsOutcome }
-  | { kind: "burnCheckPromptCopied" }
+  | {
+      kind: "burnCheckPromptPrepared"
+      outcome: PromptPreparationAnalyticsOutcome
+      check?: SmartCheck
+    }
+  | { kind: "burnCheckPromptCopied"; check?: SmartCheck }
+  | {
+      kind: "smartCheckObserved"
+      check: SmartCheck
+      observation:
+        "finding_visible" | "evidence_available" | "evidence_unavailable" | "evidence_failed"
+    }
   | {
       kind: "ignoredInstructionObserved"
       stage: "finding" | "evidence" | "prompt"
@@ -370,6 +389,38 @@ export type Interaction =
        */
       agent?: string
     }
+  | {
+      kind: "firstRunStepReached"
+      step: FirstRunStep
+      /** The discovery pass's total session count. Only with `step: "found"`. */
+      sessions?: number
+      /** Which result first showed. Only with `step: "result"`. */
+      result?: FirstRunResult
+    }
+  | { kind: "firstRunAction"; action: FirstRunActionKind }
+  | {
+      kind: "stepSettingsViewed"
+      label: StepSettingsAnalyticsLabel
+      detail: StepSettingsDetail
+    }
+
+export type SmartCheck =
+  "ignored_instructions" | "scope_creep" | "over_exploring" | "skill_opportunities"
+
+export function smartCheckForDetector(detector: string): SmartCheck | undefined {
+  switch (detector) {
+    case "ignoredInstructions":
+      return "ignored_instructions"
+    case "scopeCreep":
+      return "scope_creep"
+    case "overExploring":
+      return "over_exploring"
+    case "skillOpportunities":
+      return "skill_opportunities"
+    default:
+      return undefined
+  }
+}
 
 export type Surface =
   | "activity"
@@ -381,6 +432,7 @@ export type Surface =
   | "settings"
   | "burn_checks"
   | "quota"
+  | "memories"
 
 export type SurfaceOrigin = "user" | "automatic"
 export type SurfaceState = "ready" | "empty" | "error" | "loading_timeout"
@@ -423,6 +475,26 @@ export type SessionFilterAction =
   | "source_remote_host_removed"
   | "cleared_all"
 
+/** A fixed step in the first-run Overview's funnel. */
+type FirstRunStep = "started" | "found" | "read" | "checked" | "result"
+/** Which result the first-run Overview showed. Only with `FirstRunStep` `"result"`. */
+export type FirstRunResult = "empty" | "clean" | "fixes_found" | "checks_disabled"
+/** A deliberate action the first-run Overview can report. */
+type FirstRunActionKind =
+  | "folder_access_requested"
+  | "folder_access_granted"
+  | "include_non_repo_folders"
+  | "live_usage_started"
+  | "live_usage_skipped"
+  | "enhance_opened"
+
+/** A progress step whose settings became visible. Narrower than
+ *  `StepSettingsStep` (the Overview's own type): `"fixes"` has no settings
+ *  and never reaches this event. */
+type StepSettingsAnalyticsLabel = "agents" | "limits" | "sessions" | "checks"
+/** Which surface showed the step's settings. */
+type StepSettingsDetail = "first_run" | "modal"
+
 function isNativePeekInteraction(interaction: Interaction): boolean {
   switch (interaction.kind) {
     case "surfaceViewed":
@@ -461,29 +533,27 @@ export function noteInteraction(interaction: Interaction): void {
   })
 }
 
-/** Commit the first-run choices and finish onboarding in one shell transition. */
-export async function finishOnboarding(
-  activityWindowDays: number,
-  launchAtLogin: boolean,
-  disabledAgents: string[],
-  nudgesRespectDnd: boolean,
-): Promise<AppSettings> {
-  if (!hasShell()) {
-    return {
-      ...DEFAULT_SETTINGS,
-      activityWindowDays,
-      launchAtLogin,
-      disabledAgents,
-      nudgesRespectDnd,
-      onboardingCompleted: true,
-    }
-  }
-  return invoke<AppSettings>("finish_onboarding", {
-    activityWindowDays,
-    launchAtLogin,
-    disabledAgents,
-    nudgesRespectDnd,
-  })
+/** Mark the first run finished, as its result first shows in the Overview. */
+export async function finishFirstRun(): Promise<AppSettings> {
+  if (!hasShell()) return { ...DEFAULT_SETTINGS, onboardingCompleted: true }
+  return invoke<AppSettings>("finish_first_run")
+}
+
+/** A stage of the first-run takeover's backend gate that the renderer
+ *  opens. Rust `FirstRunStage` also has `Welcome`, where a first run starts,
+ *  and `Done`, which `finish_first_run` sets. */
+export type FirstRunStage = "agents" | "sessions" | "checks"
+
+/**
+ * Open the backend gate up to `stage`, so the scan pass and the evidence
+ * worker waiting at it can proceed.
+ *
+ * The gate only moves forward: an earlier stage than the one already open is
+ * a no-op on the backend, so a stray or repeated call is harmless.
+ */
+export async function advanceFirstRun(stage: FirstRunStage): Promise<void> {
+  if (!hasShell()) return
+  await invoke("advance_first_run", { stage })
 }
 
 /**
@@ -609,6 +679,18 @@ export async function refreshLiveUsage(): Promise<LiveUsageSummaryPayload> {
   )
 }
 
+/**
+ * Start live usage from a deliberate click in the Overview.
+ *
+ * Before this, `settings.liveUsageStarted` stays false, so the credential
+ * read it gates — and, on macOS, the Keychain prompt that read can
+ * trigger — cannot run.
+ */
+export async function startLiveUsage(): Promise<AppSettings> {
+  if (!hasShell()) return { ...DEFAULT_SETTINGS, liveUsageStarted: true }
+  return invoke<AppSettings>("start_live_usage")
+}
+
 /** What live usage looks like with no source able to say anything. */
 export const EMPTY_LIVE_USAGE: LiveUsageSummaryPayload = {
   providers: [],
@@ -684,8 +766,8 @@ export async function scanNow(activityWindowDays?: number): Promise<ScanStatus |
 }
 
 /**
- * Run the dedicated historical pass now (Settings > General > Historical
- * scan). Widens discovery past the current window, up to the retention
+ * Run the dedicated historical pass now (Sessions step > Scanning > Older
+ * sessions). Widens discovery past the current window, up to the retention
  * limit, instead of {@link scanNow}'s current-window-only rescan.
  */
 export async function scanHistory(): Promise<ScanStatus | null> {
@@ -767,12 +849,6 @@ export async function refreshRepositories(): Promise<RepositoryItemPayload[]> {
 export async function listScanRoots(): Promise<string[]> {
   if (!hasShell()) return []
   return invoke<string[]>("list_scan_roots")
-}
-
-/** The directories the engine already searches without being asked. */
-export async function defaultScanRoots(): Promise<string[]> {
-  if (!hasShell()) return []
-  return invoke<string[]>("default_scan_roots")
 }
 
 /** Add a directory to scan. */
@@ -902,6 +978,19 @@ export async function onPopoverHidden(handler: () => void): Promise<UnlistenFn> 
   return listen(POPOVER_HIDDEN_EVENT, () => handler())
 }
 
+/**
+ * Event the shell emits after the debug-only "Reset FTUE" tray item wipes the
+ * local index. Mirrors `commands::FTUE_RESET_EVENT` in
+ * `src-tauri/src/commands/mod.rs`.
+ */
+const FTUE_RESET_EVENT = "ftue:reset"
+
+/** Subscribe to a debug-only FTUE reset. The result unsubscribes. */
+export async function onFtueReset(handler: () => void): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen(FTUE_RESET_EVENT, () => handler())
+}
+
 /** Event the shell emits after it refreshes the cached live-usage snapshot. */
 const LIVE_USAGE_CHANGED_EVENT = "live-usage:changed"
 
@@ -913,6 +1002,16 @@ export async function onLiveUsageChanged(
   return listen<LiveUsageSummaryPayload>(LIVE_USAGE_CHANGED_EVENT, (event) =>
     handler(event.payload),
   )
+}
+
+/** Event the shell emits after limit factor learning changes the estimates.
+ *  Mirrors `LIMIT_ESTIMATES_CHANGED_EVENT` in `src-tauri/src/usage_alerts.rs`. */
+const LIMIT_ESTIMATES_CHANGED_EVENT = "limit-estimates:changed"
+
+/** Subscribe to changed limit estimates. The result unsubscribes. */
+export async function onLimitEstimatesChanged(handler: () => void): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen(LIMIT_ESTIMATES_CHANGED_EVENT, () => handler())
 }
 
 /** Event the insights worker emits when its pool-wide backlog starts or

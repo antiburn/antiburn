@@ -94,9 +94,9 @@ pub(super) fn burn_check_display_facts(
     let observed_at_ms = target.findings[0].observed_at_ms;
     let (resource_kind, resource_identity, current_value, replacement_value) = match finding.cause()
     {
-        FindingCause::SessionsOverDepth { .. } => {
-            (BurnCheckResourceKind::Session, None, None, None)
-        }
+        FindingCause::SessionsOverDepth { .. }
+        | FindingCause::OverExploring(_)
+        | FindingCause::ScopeCreep(_) => (BurnCheckResourceKind::Session, None, None, None),
         FindingCause::ModelOverthinking {
             model, reasoning, ..
         } => (
@@ -131,6 +131,12 @@ pub(super) fn burn_check_display_facts(
         FindingCause::UnusedSkill { skill, .. } => (
             BurnCheckResourceKind::Skill,
             safe_display_value(skill),
+            None,
+            None,
+        ),
+        FindingCause::SkillOpportunity { skill_name, .. } => (
+            BurnCheckResourceKind::Skill,
+            safe_display_value(skill_name),
             None,
             None,
         ),
@@ -315,9 +321,11 @@ pub(super) fn verification_limit(detector: DetectorId) -> BurnCheckVerificationL
         DetectorId::ModelOverthinking | DetectorId::OveruseOfFastMode => {
             BurnCheckVerificationLimit::ExactPositiveControlRequired
         }
-        DetectorId::OverpoweredSubagents | DetectorId::IgnoredInstructions => {
-            BurnCheckVerificationLimit::CurrentEvidenceCannotProveFix
-        }
+        DetectorId::OverpoweredSubagents
+        | DetectorId::IgnoredInstructions
+        | DetectorId::SkillOpportunities
+        | DetectorId::OverExploring
+        | DetectorId::ScopeCreep => BurnCheckVerificationLimit::CurrentEvidenceCannotProveFix,
         _ => BurnCheckVerificationLimit::FreshEvidenceFromSameSourceAndTarget,
     }
 }
@@ -409,7 +417,10 @@ pub(super) fn display_estimate_input(cause: &FindingCause) -> Option<SavingsEsti
             cache_read_rate: None,
             pricing_revision: None,
         }),
-        FindingCause::IgnoredInstructionConflict(_) => None,
+        FindingCause::IgnoredInstructionConflict(_)
+        | FindingCause::SkillOpportunity { .. }
+        | FindingCause::OverExploring(_)
+        | FindingCause::ScopeCreep(_) => None,
     }
 }
 
@@ -429,6 +440,7 @@ pub(super) fn finding_quantity(
         FindingCause::OverpoweredSubagents { .. }
         | FindingCause::UnusedMcpServer { .. }
         | FindingCause::UnusedSkill { .. } => (Some(1), Some(BurnCheckQuantityUnit::Resources)),
+        FindingCause::SkillOpportunity { .. } => (Some(1), Some(BurnCheckQuantityUnit::Resources)),
         FindingCause::UnusedBuiltInTool { tokens, .. } => (
             Some(match tokens {
                 BuiltInToolTokens::Definition(value) => *value,
@@ -442,7 +454,9 @@ pub(super) fn finding_quantity(
         FindingCause::CacheChurn {
             repeated_tokens, ..
         } => (Some(*repeated_tokens), Some(BurnCheckQuantityUnit::Tokens)),
-        FindingCause::IgnoredInstructionConflict(_) => (None, None),
+        FindingCause::IgnoredInstructionConflict(_)
+        | FindingCause::OverExploring(_)
+        | FindingCause::ScopeCreep(_) => (None, None),
     }
 }
 

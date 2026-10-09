@@ -40,9 +40,9 @@ pub(crate) fn has_current_evidence_after(
                 ON e.environment_key = s.environment_key
                AND e.agent = s.agent
                AND e.session_id = s.session_id
-             WHERE s.environment_key = ?1
-               AND s.agent = ?2
-               AND s.started_at_epoch > ?3
+              WHERE s.environment_key = :environment_key
+                AND s.agent = :agent
+                AND s.started_at_epoch > :boundary_epoch
                AND {CURRENT_EVIDENCE_PREDICATE}
              LIMIT 1
         )"
@@ -50,13 +50,13 @@ pub(crate) fn has_current_evidence_after(
     connection
         .query_row(
             &sql,
-            params![
-                environment_key,
-                agent,
-                boundary_ms.div_euclid(1_000),
-                PARSER_REVISION,
-                ANALYZER_REVISION,
-                EVIDENCE_SCHEMA_REVISION,
+            named_params![
+                ":environment_key": environment_key,
+                ":agent": agent,
+                ":boundary_epoch": boundary_ms.div_euclid(1_000),
+                ":parser_revision": PARSER_REVISION,
+                ":analyzer_revision": ANALYZER_REVISION,
+                ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
             ],
             |row| row.get(0),
         )
@@ -82,25 +82,19 @@ pub(crate) fn remediation_assessments(
     let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
     let transaction = connection.unchecked_transaction()?;
     let catalogs = ReportCatalogs::default();
-    let sql = CURRENT_FINDINGS_SQL
-        .replace("{current}", CURRENT_EVIDENCE_PREDICATE)
-        .replace(
-            "  ORDER BY",
-            "   AND s.agent = ?8\n   AND s.started_at_epoch > ?9\n  ORDER BY",
-        )
-        .replace("LIMIT ?8", "LIMIT ?10");
+    let sql = verification_findings_sql();
     let mut statement = transaction.prepare(&sql)?;
-    let mut rows = statement.query(params![
-        request.environment_key,
-        request.window.start_epoch,
-        request.window.end_epoch,
-        PARSER_REVISION,
-        ANALYZER_REVISION,
-        EVIDENCE_SCHEMA_REVISION,
-        METRICS_SCHEMA_REVISION,
-        agent,
-        boundary_ms.div_euclid(1_000),
-        CURRENT_FINDING_SESSION_SCAN_BUDGET + 1,
+    let mut rows = statement.query(named_params![
+        ":environment_key": request.environment_key,
+        ":window_start": request.window.start_epoch,
+        ":window_end": request.window.end_epoch,
+        ":parser_revision": PARSER_REVISION,
+        ":analyzer_revision": ANALYZER_REVISION,
+        ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
+        ":metrics_schema_revision": METRICS_SCHEMA_REVISION,
+        ":agent": agent,
+        ":boundary_epoch": boundary_ms.div_euclid(1_000),
+        ":limit": CURRENT_FINDING_SESSION_SCAN_BUDGET + 1,
     ])?;
     let cancel = AtomicBool::new(false);
     let mut result = Vec::new();
@@ -479,7 +473,8 @@ pub(crate) fn old_model_remediation_evidence(
     let mut recurrence_ms: Option<i64> = None;
     let mut token_overflow = false;
     let mut max_fence = 0_i64;
-    let mut turns = transaction.prepare(
+    let current_evidence = crate::store::revision_sql::current_evidence("e", "s");
+    let turn_sql = format!(
         "SELECT t.ts_ms, t.provider, t.api, t.model, t.effort, t.input_tokens,
                 t.output_tokens, t.cache_read_tokens, t.cache_write_tokens,
                 s.session_id, s.started_at_epoch, s.cwd, e.published_fence,
@@ -488,20 +483,20 @@ pub(crate) fn old_model_remediation_evidence(
            FROM turn t
            JOIN session s USING (environment_key, agent, session_id)
            JOIN session_evidence e USING (environment_key, agent, session_id)
-          WHERE t.environment_key = ?1 AND t.agent = ?2 AND t.role = 'assistant'
-            AND t.scope = 'main' AND t.ts_ms IS NOT NULL AND t.ts_ms > ?3
-            AND e.status = 'ready' AND e.analyzed_generation = s.source_generation
-            AND e.published_fence = t.claim_fence AND e.parser_revision = ?4
-            AND e.analyzer_revision = ?5 AND e.evidence_schema_revision = ?6
-          ORDER BY t.ts_ms, t.rowid",
-    )?;
-    let mut turn_rows = turns.query(params![
-        remediation.environment_key,
-        remediation.agent,
-        boundary_ms,
-        PARSER_REVISION,
-        ANALYZER_REVISION,
-        EVIDENCE_SCHEMA_REVISION,
+          WHERE t.environment_key = :environment_key AND t.agent = :agent AND t.role = 'assistant'
+            AND t.scope = 'main' AND t.ts_ms IS NOT NULL AND t.ts_ms > :boundary_ms
+            AND e.status = 'ready' AND e.published_fence = t.claim_fence
+            AND {current_evidence}
+          ORDER BY t.ts_ms, t.rowid"
+    );
+    let mut turns = transaction.prepare(&turn_sql)?;
+    let mut turn_rows = turns.query(named_params![
+        ":environment_key": remediation.environment_key,
+        ":agent": remediation.agent,
+        ":boundary_ms": boundary_ms,
+        ":parser_revision": PARSER_REVISION,
+        ":analyzer_revision": ANALYZER_REVISION,
+        ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
     ])?;
     while let Some(turn) = turn_rows.next()? {
         let timestamp_ms: i64 = turn.get(0)?;

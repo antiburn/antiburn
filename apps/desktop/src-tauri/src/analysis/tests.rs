@@ -2245,3 +2245,46 @@ fn an_unavailable_analysis_caches_nothing() {
             .is_none()
     );
 }
+
+#[test]
+fn source_change_telemetry_uses_bounded_reason_labels() {
+    use antiburn_local::analysis::SourceChangedReason;
+
+    assert_eq!(
+        super::source_changed_reason_label(SourceChangedReason::IdentityMismatch),
+        "identity-mismatch"
+    );
+    assert_eq!(
+        super::source_changed_reason_label(SourceChangedReason::ShortAtOpen {
+            size: 1,
+            boundary: 2,
+        }),
+        "short-at-open"
+    );
+    assert_eq!(
+        super::source_changed_reason_label(SourceChangedReason::HeadRegionMismatch),
+        "head-region-mismatch"
+    );
+    assert_eq!(
+        super::source_changed_reason_label(SourceChangedReason::ShortRead {
+            consumed: 1,
+            boundary: 2,
+        }),
+        "short-read"
+    );
+    assert_eq!(
+        super::source_changed_reason_label(SourceChangedReason::TruncatedAfterRead {
+            size: 1,
+            boundary: 2,
+        }),
+        "truncated-after-read"
+    );
+    assert_eq!(
+        super::source_changed_reason_label(SourceChangedReason::FingerprintMismatch),
+        "fingerprint-mismatch"
+    );
+    assert_eq!(
+        super::source_changed_reason_label(SourceChangedReason::ResumeTailMismatch),
+        "resume-tail-mismatch"
+    );
+}

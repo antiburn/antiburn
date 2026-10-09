@@ -1,5 +1,5 @@
 import { LogicalPosition } from "@tauri-apps/api/dpi"
-import { listen } from "@tauri-apps/api/event"
+import { listen } from "../../lib/tauriEvents"
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window"
 import type { MouseEvent as ReactMouseEvent } from "react"
 import { flushSync } from "react-dom"

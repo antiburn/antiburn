@@ -42,7 +42,10 @@ function supportedProvider(provider: string): provider is LiveUsageProvider {
   return provider === "anthropic" || provider === "openai" || provider === "google"
 }
 
-function failedState(category: string): LiveUsageState {
+function failedState(category: string, detail?: string): LiveUsageState {
+  // Claude Desktop alone has no login antiburn can read. That is a missing
+  // credential, not a failed sign-in.
+  if (detail === "desktopOnly") return "no_credentials"
   switch (category) {
     case "authentication":
       return "authentication"
@@ -87,7 +90,10 @@ export function liveUsageObservations(
       (entry) => entry.provider === meter.provider,
     )
     if (unavailable) {
-      observations.push({ provider: meter.provider, state: failedState(unavailable.category) })
+      observations.push({
+        provider: meter.provider,
+        state: failedState(unavailable.category, unavailable.detail),
+      })
     }
   }
   return observations.filter(

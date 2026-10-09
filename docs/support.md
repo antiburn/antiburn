@@ -162,6 +162,9 @@ the tokens a transcript recorded. They are **API-equivalent estimates**, not a b
 
 - prices refresh at startup and hourly while the app runs; the snapshot date is
   shown in Settings → About;
+- a model uses its creator's price; when the creator no longer lists it, as with a
+  retired model, it uses the price its resellers agree on: all of them, or more
+  than half and at least three, where prices within 5% count as the same;
 - a model with no price in the catalog produces no figure rather than a wrong zero,
   and the provider's total is then labelled as a floor;
 - work done on another machine is not counted, because antiburn cannot see it.
@@ -255,7 +258,7 @@ skipped rather than asking the system for access on its own. The permission dial
 see is one antiburn asked for because you pressed a button, and what it wants is
 narrow — the git repositories your coding agents worked in, read for their names and
 locations. If you decline, the folder is simply left alone; you can change your mind
-in Settings → Sources, or revoke access in System Settings, and antiburn will notice
+in the Sessions step settings, or revoke access in System Settings, and antiburn will notice
 the next time it looks.
 
 ## Network
@@ -282,8 +285,8 @@ signed bundle and restarts antiburn. The app never depends on either connection.
 - Linux AppImage releases update in the app. Debian packages remain install-only
   and require the next package to be installed manually.
 - **Anonymised product analytics** are the one thing antiburn reports to us.
-  Official release builds start with it on, including during onboarding. The Ready
-  screen explains it, and the switch is in Settings → Privacy. The event schema has thirty-one fields and
+  Official release builds start with it on, including during the first run. The switch
+  is in Settings → Privacy. The event schema has thirty-one fields and
   no others: the constant `desktop`; a random per-message id used to discard
   duplicate deliveries; a random installation identifier replaced every 30 days;
   a random analytics-session identifier; the event name; the time it happened and the time it was delivered; the
