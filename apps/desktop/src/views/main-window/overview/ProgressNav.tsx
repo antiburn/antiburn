@@ -210,7 +210,11 @@ function ProgressStepModal({
             }
             className="flex w-full flex-col gap-(--space-md)"
           >
-            <StepSettings step={step} />
+            <StepSettings
+              step={step}
+              control={progress.openStepControl}
+              targetRevision={progress.openStepControlRevision}
+            />
           </div>
         </div>
         <div className="flex shrink-0 items-center justify-center gap-(--space-sm) border-t border-separator p-3">

@@ -402,7 +402,7 @@ fn updating_settings_merges_against_the_latest_stored_value() {
 }
 
 /// Open a store at v71, run `seed` on its connection, and migrate to the latest version.
-fn migrate_to_v72(seed: &str) -> Store {
+fn migrate_to_latest(seed: &str) -> Store {
     let connection = rusqlite::Connection::open_in_memory().unwrap();
     for &sql in &super::schema::MIGRATIONS[..71] {
         connection.execute_batch(sql).unwrap();
@@ -423,13 +423,13 @@ const V72_SESSIONS: &str = "INSERT INTO session (environment_key, agent, session
 
 #[test]
 fn v72_keeps_only_disabled_agents_that_have_sessions() {
-    let store = migrate_to_v72(&format!(
+    let store = migrate_to_latest(&format!(
         "{V72_SESSIONS}
          INSERT INTO setting (key, value)
          VALUES ('disabledAgents', 'amp-code, Cursor,,codex,pi,cursor');"
     ));
 
-    assert_eq!(store.schema_version().unwrap(), 73);
+    assert_eq!(store.schema_version().unwrap(), 75);
     assert_eq!(
         store.settings().unwrap().disabled_agents.as_str(),
         "codex,cursor"
@@ -438,20 +438,21 @@ fn v72_keeps_only_disabled_agents_that_have_sessions() {
 
 #[test]
 fn v72_clears_a_disabled_list_with_no_session_agents() {
-    let store = migrate_to_v72(
+    let store = migrate_to_latest(
         "INSERT INTO setting (key, value) VALUES ('disabledAgents', 'amp-code,pi');",
     );
 
-    assert_eq!(store.schema_version().unwrap(), 73);
+    assert_eq!(store.schema_version().unwrap(), 75);
     assert!(!store.settings().unwrap().disabled_agents.any());
 }
 
 #[test]
 fn v72_leaves_an_empty_or_missing_disabled_list_alone() {
-    let empty = migrate_to_v72("INSERT INTO setting (key, value) VALUES ('disabledAgents', '');");
+    let empty =
+        migrate_to_latest("INSERT INTO setting (key, value) VALUES ('disabledAgents', '');");
     assert!(!empty.settings().unwrap().disabled_agents.any());
 
-    let missing = migrate_to_v72(V72_SESSIONS);
+    let missing = migrate_to_latest(V72_SESSIONS);
     assert_eq!(missing.internal_value("disabledAgents"), None);
     assert!(!missing.settings().unwrap().disabled_agents.any());
 }

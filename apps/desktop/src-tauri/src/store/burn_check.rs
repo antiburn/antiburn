@@ -1,6 +1,7 @@
 //! Shared durable state for session-scoped Burn Check assessments.
 
 mod cache;
+mod instruction_sampling;
 mod usage;
 
 use cache::RESPONSE_CACHE_KEY;
@@ -17,6 +18,7 @@ use sha2::{Digest, Sha256};
 use super::{SessionKey, SessionRecord, Store, enabled_checks_in, session_from_row};
 
 const ENABLED_AT_KEY: &str = "internal:burnChecksEnabledAtEpochV1";
+const CHECK_ENABLED_AT_PREFIX: &str = "internal:burnCheckEnabledAtEpochV1:";
 const HISTORY_BATCH_KEY: &str = "internal:jevBurnCheckHistoryBatchEpochV1";
 const USAGE_LEDGER_KEY: &str = "internal:burnCheckUsageLedgerV1";
 const USAGE_WINDOW_SECS: i64 = 24 * 60 * 60;
@@ -70,6 +72,13 @@ pub struct BurnCheckAssessment {
     pub result_json: Option<String>,
     pub result_revision: Option<String>,
     pub request_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BurnCheckReviewCounts {
+    pub eligible: Option<usize>,
+    pub reviewed: usize,
+    pub runnable: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,6 +210,20 @@ impl Store {
         drop(connection);
         self.burn_check_sample_origin(&candidate.session.key, check_id)?
             .ok_or_else(|| anyhow::anyhow!("sample origin is unavailable"))
+    }
+
+    pub(crate) fn enrolled_burn_check_candidate(
+        &self,
+        candidate: &BurnCheckCandidate,
+        check_id: &str,
+    ) -> anyhow::Result<BurnCheckCandidate> {
+        let origin = self.observe_burn_check_sample_origin(candidate, check_id)?;
+        let mut enrolled = candidate.clone();
+        if !candidate.historical {
+            enrolled.boundary_positions = origin.boundary_positions;
+            enrolled.boundary_at_epoch = origin.boundary_at_epoch;
+        }
+        Ok(enrolled)
     }
 
     pub fn burn_check_sampled_pairs(
@@ -363,53 +386,16 @@ impl Store {
         Ok((positions, observed_at_ms))
     }
 
+    #[cfg(test)]
     pub fn save_burn_check_work_answers(
         &self,
         input: &BurnCheckInput,
         progress: &antiburn_local::analysis::jev::JevRunProgress,
         now_epoch: i64,
     ) -> anyhow::Result<()> {
-        let Some(scope) = progress
-            .completed_batch_ids
-            .iter()
-            .find(|id| id.starts_with("reuse-scope:"))
-        else {
-            return Ok(());
-        };
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
-        let mut inserted = false;
-        for (id, result) in &progress.results {
-            let prefix = format!("reuse-item:{id}:");
-            let Some(marker) = progress
-                .completed_batch_ids
-                .iter()
-                .find(|marker| marker.starts_with(&prefix))
-            else {
-                continue;
-            };
-            inserted |= transaction.execute(
-                "INSERT OR IGNORE INTO burn_check_work_answer
-                    (environment_key, agent, session_id, check_id, reuse_scope, item_marker, result_json, updated_at_epoch)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                rusqlite::params![input.key.environment_key, input.key.agent, input.key.session_id,
-                    input.check_id, scope, marker, serde_json::to_string(result)?, now_epoch],
-            )? > 0;
-        }
-        if inserted {
-            transaction.execute(
-                "DELETE FROM burn_check_work_answer WHERE rowid IN (
-                SELECT rowid FROM burn_check_work_answer
-                WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND check_id = ?4
-                ORDER BY updated_at_epoch DESC, rowid DESC LIMIT -1 OFFSET 8192)",
-                rusqlite::params![
-                    input.key.environment_key,
-                    input.key.agent,
-                    input.key.session_id,
-                    input.check_id
-                ],
-            )?;
-        }
+        insert_work_answers(&transaction, input, progress, now_epoch)?;
         transaction.commit()?;
         Ok(())
     }
@@ -457,55 +443,80 @@ impl Store {
         days: u8,
         checks: &[BurnCheckHistoryCheck],
     ) -> anyhow::Result<usize> {
-        checks.iter().try_fold(0usize, |total, check| {
-            self.enqueue_burn_check(now, days, check)
-                .map(|queued| total.saturating_add(queued))
-        })
+        let revisions = checks
+            .iter()
+            .map(|check| (check.check_id.as_str(), check.evaluator_revision.clone()))
+            .collect::<Vec<_>>();
+        self.enqueue_burn_checks_for_revisions(&revisions, now, days)
     }
 
     #[cfg(test)]
     pub fn enqueue_burn_checks(&self, now: i64, days: u8) -> anyhow::Result<usize> {
-        self.enqueue_burn_checks_for(now, days, &[ignored_instructions_history_check()])
+        self.enqueue_burn_checks_for_revisions(
+            &[(
+                "ignored_instructions",
+                antiburn_local::analysis::ignored_instructions::evaluator_revision(),
+            )],
+            now,
+            days,
+        )
     }
 
-    fn enqueue_burn_check(
+    /// Count jobs by check and session, not by distinct session.
+    pub fn enqueue_burn_checks_for_revisions(
         &self,
+        checks: &[(&str, String)],
         now: i64,
         days: u8,
-        check: &BurnCheckHistoryCheck,
     ) -> anyhow::Result<usize> {
         if !matches!(days, 7 | 30) {
             anyhow::bail!("Burn Check history window must be 7 or 30 days");
+        }
+        if checks
+            .iter()
+            .any(|(id, revision)| id.is_empty() || id.len() > 256 || revision.is_empty())
+        {
+            anyhow::bail!("Burn Check history identity is invalid");
         }
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
         if internal_value_in(&transaction, ENABLED_AT_KEY)?.is_none() {
             anyhow::bail!("TypeSafe checks are not enabled");
         }
-        if !check_id_enabled_in(&transaction, &check.check_id)? {
-            anyhow::bail!("No Smart Burn Checks are enabled");
+        for (check_id, _) in checks {
+            if !check_id_enabled_in(&transaction, check_id)? {
+                anyhow::bail!("No Smart Burn Checks are enabled");
+            }
         }
+        let ids = serde_json::to_string(&checks.iter().map(|(id, _)| id).collect::<Vec<_>>())?;
         let active: bool = transaction.query_row(
             "SELECT EXISTS (
                 SELECT 1 FROM burn_check_assessment
-                 WHERE check_id = ?1
+                  WHERE check_id IN (SELECT value FROM json_each(?1))
                    AND boundary_generation = -2
-                   AND status IN ('queued', 'running'))",
-            [&check.check_id],
+                    AND (status IN ('queued', 'running')
+                         OR (status = 'failed' AND last_error_category = 'continuing')))",
+            [&ids],
             |row| row.get(0),
         )?;
         if active {
             transaction.commit()?;
             return Ok(0);
         }
+        let batch_epoch = internal_value_in(&transaction, HISTORY_BATCH_KEY)?
+            .map(|value| value.parse::<i64>())
+            .transpose()?
+            .map_or(now, |previous| now.max(previous.saturating_add(1)));
         transaction.execute(
             "INSERT INTO setting (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            rusqlite::params![HISTORY_BATCH_KEY, now.to_string()],
+            rusqlite::params![HISTORY_BATCH_KEY, batch_epoch.to_string()],
         )?;
-        transaction.execute(
-            "UPDATE burn_check_assessment
-                SET history_batch_epoch = ?1
+        let mut total = 0;
+        for (check_id, evaluator_revision) in checks {
+            transaction.execute(
+                "UPDATE burn_check_assessment
+                SET history_batch_epoch = ?4
               WHERE check_id = ?3
                 AND boundary_generation = -2
                 AND EXISTS (
@@ -520,26 +531,26 @@ impl Store {
                             WHERE t.environment_key = s.environment_key
                               AND t.agent = s.agent AND t.session_id = s.session_id
                               AND c.kind <> 'thinking' AND length(c.content) > 0))",
-            rusqlite::params![
-                now,
-                now.saturating_sub(i64::from(days) * 24 * 60 * 60),
-                check.check_id,
-            ],
-        )?;
-        let mut total = 0;
-        loop {
-            let count = transaction.execute(
+                rusqlite::params![
+                    now,
+                    now.saturating_sub(i64::from(days) * 24 * 60 * 60),
+                    check_id,
+                    batch_epoch
+                ],
+            )?;
+            loop {
+                let count = transaction.execute(
                 "INSERT INTO burn_check_assessment (
                  environment_key, agent, session_id, check_id, incarnation,
-                 boundary_generation, boundary_activity_cursor, boundary_at_epoch,
-                 status, created_at_epoch, updated_at_epoch, history_batch_epoch)
+                  boundary_generation, boundary_activity_cursor, boundary_at_epoch,
+                  boundary_positions_json, status, created_at_epoch, updated_at_epoch, history_batch_epoch)
              SELECT s.environment_key, s.agent, s.session_id, ?4,
                      s.incarnation, -2, '', ?1,
-                      'idle', ?2, ?2, ?2
+                       json_object('*', 0), 'idle', ?2, ?2, ?5
                FROM session s
                LEFT JOIN burn_check_assessment a
                  ON a.environment_key = s.environment_key AND a.agent = s.agent
-                AND a.session_id = s.session_id AND a.check_id = ?4
+                  AND a.session_id = s.session_id AND a.check_id = ?4
                WHERE s.updated_at_epoch >= ?1 AND s.updated_at_epoch <= ?2
                   AND EXISTS (
                       SELECT 1 FROM turn AS t
@@ -566,9 +577,12 @@ impl Store {
               LIMIT 256
               ON CONFLICT(environment_key, agent, session_id, check_id) DO UPDATE SET
                  incarnation = excluded.incarnation, boundary_generation = -2,
-                  boundary_activity_cursor = '',
-                   boundary_at_epoch = excluded.boundary_at_epoch,
-                   boundary_positions_json = json_object('*', 0),
+                  boundary_activity_cursor = CASE WHEN burn_check_assessment.boundary_generation = -2
+                      THEN burn_check_assessment.boundary_activity_cursor ELSE '' END,
+                    boundary_at_epoch = CASE WHEN burn_check_assessment.boundary_generation = -2
+                        THEN burn_check_assessment.boundary_at_epoch ELSE excluded.boundary_at_epoch END,
+                    boundary_positions_json = CASE WHEN burn_check_assessment.boundary_generation = -2
+                        THEN burn_check_assessment.boundary_positions_json ELSE json_object('*', 0) END,
                    status = excluded.status,
                    input_revision = CASE WHEN burn_check_assessment.status = 'failed'
                        THEN burn_check_assessment.input_revision ELSE NULL END,
@@ -579,13 +593,15 @@ impl Store {
                   rusqlite::params![
                       now.saturating_sub(i64::from(days) * 24 * 60 * 60),
                       now,
-                      check.evaluator_revision,
-                      check.check_id,
+                       evaluator_revision,
+                       check_id,
+                       batch_epoch,
                   ],
             )?;
-            total += count;
-            if count < 256 {
-                break;
+                total += count;
+                if count < 256 {
+                    break;
+                }
             }
         }
         transaction.commit()?;
@@ -598,25 +614,17 @@ impl Store {
         idle_secs: i64,
         checks: &[BurnCheckHistoryCheck],
     ) -> anyhow::Result<BurnCheckHistoryStatus> {
-        checks
+        let revisions = checks
             .iter()
-            .try_fold(BurnCheckHistoryStatus::default(), |mut total, check| {
-                let status = self.historical_burn_check_status_one(now_epoch, idle_secs, check)?;
-                total.total = total.total.saturating_add(status.total);
-                total.waiting_for_data = total
-                    .waiting_for_data
-                    .saturating_add(status.waiting_for_data);
-                total.waiting_for_idle = total
-                    .waiting_for_idle
-                    .saturating_add(status.waiting_for_idle);
-                total.ready = total.ready.saturating_add(status.ready);
-                total.queued = total.queued.saturating_add(status.queued);
-                total.running = total.running.saturating_add(status.running);
-                total.completed = total.completed.saturating_add(status.completed);
-                total.skipped = total.skipped.saturating_add(status.skipped);
-                total.failed = total.failed.saturating_add(status.failed);
-                Ok(total)
+            .map(|check| {
+                (
+                    check.check_id.as_str(),
+                    idle_secs,
+                    check.evaluator_revision.clone(),
+                )
             })
+            .collect::<Vec<_>>();
+        self.historical_burn_check_status_for_checks(&revisions, now_epoch)
     }
 
     #[cfg(test)]
@@ -625,70 +633,88 @@ impl Store {
         now_epoch: i64,
         idle_secs: i64,
     ) -> anyhow::Result<BurnCheckHistoryStatus> {
-        self.historical_burn_check_status_for(
+        self.historical_burn_check_status_for_checks(
+            &[(
+                "ignored_instructions",
+                idle_secs,
+                antiburn_local::analysis::ignored_instructions::evaluator_revision(),
+            )],
             now_epoch,
-            idle_secs,
-            &[ignored_instructions_history_check()],
         )
     }
 
-    fn historical_burn_check_status_one(
+    pub fn historical_burn_check_status_for_checks(
         &self,
+        checks: &[(&str, i64, String)],
         now_epoch: i64,
-        idle_secs: i64,
-        check: &BurnCheckHistoryCheck,
     ) -> anyhow::Result<BurnCheckHistoryStatus> {
         let connection = self.lock();
-        if !check_id_enabled_in(&connection, &check.check_id)? {
-            return Ok(BurnCheckHistoryStatus::default());
+        let mut enabled = Vec::new();
+        for check in checks {
+            if check_id_enabled_in(&connection, check.0)? {
+                enabled.push(check);
+            }
         }
+        let checks = serde_json::to_string(&enabled)?;
+        let evidence_current = super::revision_sql::current_evidence("evidence", "session");
+        let e_current = super::revision_sql::current_evidence("e", "s");
         connection
             .query_row(
-                "SELECT
-                    count(*) FILTER (WHERE a.status = 'idle' AND NOT (
+                &format!("WITH current_assessments AS (
+                    SELECT assessment.*, CASE WHEN assessment.status = 'completed' AND NOT COALESCE((
+                        assessment.evaluator_revision = json_extract(registered.value, '$[2]')
+                        AND assessment.incarnation = session.incarnation
+                        AND assessment.source_generation = session.source_generation
+                        AND assessment.source_fingerprint IS session.source_fingerprint
+                        AND assessment.published_fence = evidence.published_fence
+                        AND assessment.result_revision = assessment.input_revision
+                        AND evidence.status = 'ready'
+                        AND evidence.processed_fingerprint IS session.source_fingerprint
+                        AND {evidence_current}), 0)
+                        THEN 'idle' ELSE assessment.status END AS progress_status
+                    FROM burn_check_assessment assessment
+                     JOIN json_each(:checks) registered ON assessment.check_id = json_extract(registered.value, '$[0]')
+                    JOIN session USING (environment_key, agent, session_id)
+                    LEFT JOIN session_evidence evidence USING (environment_key, agent, session_id)
+                ) SELECT
+                    count(*) FILTER (WHERE a.progress_status = 'idle' AND NOT COALESCE((
                         e.status = 'ready'
-                        AND e.analyzed_generation = s.source_generation
                         AND e.processed_fingerprint IS s.source_fingerprint
-                        AND e.parser_revision = ?3
-                        AND e.analyzer_revision = ?4
-                        AND e.evidence_schema_revision = ?5
-                        AND e.published_fence IS NOT NULL)
+                        AND {e_current}
+                        AND e.published_fence IS NOT NULL), 0)
                         AND COALESCE(e.status, '') NOT IN ('failed', 'unsupported')),
-                    count(*) FILTER (WHERE a.status = 'idle'
+                    count(*) FILTER (WHERE a.progress_status = 'idle'
                         AND e.status = 'ready'
-                        AND e.analyzed_generation = s.source_generation
                         AND e.processed_fingerprint IS s.source_fingerprint
-                        AND e.parser_revision = ?3
-                        AND e.analyzer_revision = ?4
-                        AND e.evidence_schema_revision = ?5
+                        AND {e_current}
                         AND e.published_fence IS NOT NULL
-                        AND s.updated_at_epoch > ?1 - ?2),
-                    count(*) FILTER (WHERE a.status = 'idle'
+                         AND s.updated_at_epoch > :now_epoch - max(0, json_extract(registered.value, '$[1]'))),
+                    count(*) FILTER (WHERE a.progress_status = 'idle'
                         AND e.status = 'ready'
-                        AND e.analyzed_generation = s.source_generation
                         AND e.processed_fingerprint IS s.source_fingerprint
-                        AND e.parser_revision = ?3
-                        AND e.analyzer_revision = ?4
-                        AND e.evidence_schema_revision = ?5
+                        AND {e_current}
                         AND e.published_fence IS NOT NULL
-                        AND s.updated_at_epoch <= ?1 - ?2),
-                    count(*) FILTER (WHERE a.status = 'queued'
+                         AND s.updated_at_epoch <= :now_epoch - max(0, json_extract(registered.value, '$[1]'))),
+                    count(*) FILTER (WHERE a.progress_status = 'queued'
                         AND COALESCE(e.status, '') NOT IN ('failed', 'unsupported')),
-                    count(*) FILTER (WHERE (a.status = 'running'
-                        OR (a.status = 'failed' AND a.last_error_category = 'continuing'))
+                    count(*) FILTER (WHERE (a.progress_status = 'running'
+                        OR (a.progress_status = 'failed' AND a.last_error_category = 'continuing'))
                         AND COALESCE(e.status, '') NOT IN ('failed', 'unsupported')),
-                    count(*) FILTER (WHERE a.status = 'completed'),
-                    count(*) FILTER (WHERE a.status = 'superseded'
-                        OR (a.status <> 'completed' AND e.status = 'unsupported')),
-                    count(*) FILTER (WHERE (a.status = 'failed' AND a.last_error_category <> 'continuing')
-                        OR (a.status <> 'completed' AND e.status = 'failed')),
+                    count(*) FILTER (WHERE a.progress_status = 'completed'),
+                    count(*) FILTER (WHERE a.progress_status = 'superseded'
+                        OR (a.progress_status <> 'completed' AND e.status = 'unsupported')),
+                    count(*) FILTER (WHERE a.progress_status NOT IN ('completed', 'superseded')
+                        AND COALESCE(e.status, '') <> 'unsupported'
+                         AND ((a.progress_status = 'failed' AND a.last_error_category IS NOT 'continuing')
+                             OR e.status = 'failed')),
                     count(*)
-                FROM burn_check_assessment a
+                FROM current_assessments a
+                JOIN json_each(:checks) AS registered ON a.check_id = json_extract(registered.value, '$[0]')
                 JOIN session s USING (environment_key, agent, session_id)
                 LEFT JOIN session_evidence e USING (environment_key, agent, session_id)
-               WHERE a.check_id = ?7 AND a.boundary_generation = -2
+                WHERE a.boundary_generation = -2
                  AND a.history_batch_epoch = CAST((
-                      SELECT value FROM setting WHERE key = ?6) AS INTEGER)
+                       SELECT value FROM setting WHERE key = :history_batch_key) AS INTEGER)
                   AND EXISTS (
                      SELECT 1 FROM turn_content AS content
                      JOIN turn AS content_turn ON content_turn.rowid = content.turn_rowid
@@ -696,15 +722,14 @@ impl Store {
                        AND content_turn.agent = s.agent
                        AND content_turn.session_id = s.session_id
                        AND content.kind <> 'thinking' AND length(content.content) > 0
-                 )",
-                rusqlite::params![
-                    now_epoch,
-                    idle_secs.max(0),
-                    antiburn_local::analysis::PARSER_REVISION,
-                    antiburn_local::analysis::ANALYZER_REVISION,
-                    antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
-                    HISTORY_BATCH_KEY,
-                    check.check_id,
+                  )"),
+                rusqlite::named_params![
+                    ":now_epoch": now_epoch,
+                    ":checks": checks,
+                    ":parser_revision": antiburn_local::analysis::PARSER_REVISION,
+                    ":analyzer_revision": antiburn_local::analysis::ANALYZER_REVISION,
+                    ":evidence_schema_revision": antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+                    ":history_batch_key": HISTORY_BATCH_KEY,
                 ],
                 |row| {
                     Ok(BurnCheckHistoryStatus {
@@ -811,6 +836,26 @@ impl Store {
         idle_secs: i64,
         limit: usize,
     ) -> anyhow::Result<Vec<BurnCheckCandidate>> {
+        self.burn_check_candidates_in_lane(
+            check_id,
+            evaluator_revision,
+            now_epoch,
+            idle_secs,
+            limit,
+            None,
+        )
+    }
+
+    /// None selects both lanes. Unknown or changed inventories use priority.
+    pub(crate) fn burn_check_candidates_in_lane(
+        &self,
+        check_id: &str,
+        evaluator_revision: &str,
+        now_epoch: i64,
+        idle_secs: i64,
+        limit: usize,
+        continuation: Option<bool>,
+    ) -> anyhow::Result<Vec<BurnCheckCandidate>> {
         let connection = self.lock();
         if !check_id_enabled_in(&connection, check_id)? {
             return Ok(Vec::new());
@@ -820,7 +865,13 @@ impl Store {
         else {
             return Ok(Vec::new());
         };
-        let sql = "SELECT s.environment_key, s.agent, s.session_id, s.source_kind,
+        let enabled_at =
+            internal_value_in(&connection, &format!("{CHECK_ENABLED_AT_PREFIX}{check_id}"))?
+                .map(|value| value.parse::<i64>())
+                .transpose()?
+                .unwrap_or(enabled_at);
+        let current_evidence = super::revision_sql::current_evidence("evidence", "s");
+        let sql = format!("SELECT s.environment_key, s.agent, s.session_id, s.source_kind,
                     s.source_label, s.wsl_distro, s.title, s.title_source, s.cwd,
                     s.surface, s.updated_at_epoch, s.activity_cursor, s.activity_source,
                     s.subagent_count,
@@ -831,6 +882,7 @@ impl Store {
                     s.incarnation, s.source_generation, s.source_fingerprint,
                      s.activity_cursor, evidence.published_fence,
                       CASE WHEN assessment.boundary_generation = -2 AND assessment.status = 'completed'
+                                 AND assessment.evaluator_revision IS :evaluator_revision
                            THEN assessment.updated_at_epoch ELSE assessment.boundary_at_epoch END,
                       assessment.boundary_generation, assessment.boundary_positions_json
                FROM session s
@@ -838,20 +890,17 @@ impl Store {
                ON assessment.environment_key = s.environment_key
               AND assessment.agent = s.agent
               AND assessment.session_id = s.session_id
-              AND assessment.check_id = ?1
+                AND assessment.check_id = :check_id
              JOIN session_evidence AS evidence
                ON evidence.environment_key = s.environment_key
               AND evidence.agent = s.agent
               AND evidence.session_id = s.session_id
               AND evidence.status = 'ready'
-              AND evidence.analyzed_generation = s.source_generation
                AND evidence.processed_fingerprint IS s.source_fingerprint
-               AND evidence.parser_revision = ?2
-               AND evidence.analyzer_revision = ?3
-               AND evidence.evidence_schema_revision = ?4
+               AND {current_evidence}
                AND evidence.published_fence IS NOT NULL
                WHERE s.updated_at_epoch IS NOT NULL
-                 AND s.updated_at_epoch <= ?5 - ?6
+                  AND s.updated_at_epoch <= :now_epoch - :idle_secs
                 AND EXISTS (
                     SELECT 1 FROM turn_content AS content
                     JOIN turn AS content_turn ON content_turn.rowid = content.turn_rowid
@@ -868,10 +917,10 @@ impl Store {
                        AND s.updated_at_epoch >= assessment.boundary_at_epoch)
                        OR (assessment.status = 'failed'
                            AND (assessment.last_error_category = 'continuing'
-                                 OR assessment.next_attempt_at_epoch <= ?5))
+                                  OR assessment.next_attempt_at_epoch <= :now_epoch))
                      OR assessment.status = 'queued'
                      OR (assessment.status = 'running'
-                          AND assessment.lease_expires_at_epoch <= ?5)
+                           AND COALESCE(assessment.lease_expires_at_epoch, 0) <= :now_epoch)
                      OR (assessment.status = 'superseded'
                          AND assessment.last_error_category = 'cancelled')
                      OR (assessment.status = 'superseded'
@@ -881,13 +930,13 @@ impl Store {
                               OR assessment.published_fence IS NOT evidence.published_fence))
                     OR
                      (assessment.boundary_generation IS NULL
-                       AND s.updated_at_epoch >= ?7)
+                        AND s.updated_at_epoch >= :enabled_at)
                       OR (assessment.boundary_generation = -2
                           AND assessment.status IN ('idle', 'queued', 'running'))
                        OR (assessment.boundary_generation = -2
                            AND assessment.status = 'failed'
                            AND (assessment.next_attempt_at_epoch IS NULL
-                                 OR assessment.next_attempt_at_epoch <= ?5))
+                                  OR assessment.next_attempt_at_epoch <= :now_epoch))
                        OR (assessment.boundary_generation = -2
                            AND assessment.status IN ('completed', 'superseded')
                            AND s.activity_cursor <> assessment.boundary_activity_cursor
@@ -898,41 +947,64 @@ impl Store {
                                 OR assessment.source_generation IS NOT s.source_generation
                                 OR assessment.source_fingerprint IS NOT s.source_fingerprint
                                 OR assessment.published_fence IS NOT evidence.published_fence))
-                       OR (assessment.status = 'completed'
-                           AND assessment.boundary_generation <> -2
-                            AND assessment.evaluator_revision IS NOT ?9)
+                        OR (assessment.status = 'completed'
+                              AND assessment.evaluator_revision IS NOT :evaluator_revision)
                        OR (assessment.status = 'failed'
                            AND assessment.boundary_generation <> -2
-                            AND assessment.evaluator_revision IS NOT ?9)
+                             AND assessment.evaluator_revision IS NOT :evaluator_revision)
                )
                 AND (assessment.status IS NULL
                      OR assessment.status <> 'running'
-                      OR assessment.lease_expires_at_epoch <= ?5)
+                       OR COALESCE(assessment.lease_expires_at_epoch, 0) <= :now_epoch)
                  AND (assessment.next_attempt_at_epoch IS NULL
-                       OR assessment.next_attempt_at_epoch <= ?5
-                       OR assessment.evaluator_revision IS NOT ?9
-                      OR assessment.last_error_category IN
-                         ('usage_limit', 'request_limit', 'assessment_page_limit'))
-              ORDER BY row_number() OVER (
-                  PARTITION BY COALESCE(assessment.boundary_generation = -2, 0)
-                   ORDER BY s.updated_at_epoch DESC, COALESCE(assessment.updated_at_epoch, 0),
-                           s.environment_key, s.agent, s.session_id),
-                  COALESCE(assessment.boundary_generation = -2, 0),
-                  s.environment_key, s.agent, s.session_id
-              LIMIT ?8";
-        let mut statement = connection.prepare(sql)?;
+                        OR assessment.next_attempt_at_epoch <= :now_epoch
+                       OR (assessment.boundary_generation <> -2
+                            AND (assessment.evaluator_revision IS NOT :evaluator_revision
+                                OR assessment.last_error_category IN
+                                   ('usage_limit', 'request_limit', 'assessment_page_limit'))))
+                  AND (assessment.last_error_category IS NOT 'candidate_error'
+                       OR assessment.evaluator_revision IS NOT :evaluator_revision
+                       OR assessment.source_fingerprint IS NOT s.source_fingerprint
+                       OR assessment.source_generation IS NOT s.source_generation
+                       OR assessment.incarnation IS NOT s.incarnation
+                       OR assessment.published_fence IS NOT evidence.published_fence)
+                 AND (assessment.input_revision IS NULL
+                      OR assessment.scheduling_revision IS NOT assessment.input_revision
+                      OR assessment.evaluator_revision IS NOT :evaluator_revision
+                      OR assessment.source_fingerprint IS NOT s.source_fingerprint
+                      OR assessment.source_generation IS NOT s.source_generation
+                      OR assessment.incarnation IS NOT s.incarnation
+                      OR assessment.published_fence IS NOT evidence.published_fence
+                      OR assessment.runnable_targets > 0
+                      OR (assessment.status = 'running'
+                          AND COALESCE(assessment.lease_expires_at_epoch, 0) <= :now_epoch)
+                      OR (assessment.status = 'superseded' AND assessment.last_error_category = 'cancelled'))
+                 AND (:lane IS NULL OR :lane = COALESCE(
+                     assessment.scheduling_revision = assessment.input_revision
+                     AND assessment.evaluator_revision = :evaluator_revision
+                     AND assessment.source_fingerprint IS s.source_fingerprint
+                     AND assessment.source_generation IS s.source_generation
+                     AND assessment.incarnation IS s.incarnation
+                     AND assessment.published_fence IS evidence.published_fence
+                     AND assessment.eligible_targets > 0
+                     AND assessment.reviewed_targets >= (assessment.eligible_targets + 1) / 2, 0))
+               ORDER BY COALESCE(assessment.last_served_turn, 0),
+                   s.environment_key, s.agent, s.session_id
+               LIMIT :limit");
+        let mut statement = connection.prepare(&sql)?;
         let candidates = statement
             .query_map(
-                rusqlite::params![
-                    check_id,
-                    antiburn_local::analysis::PARSER_REVISION,
-                    antiburn_local::analysis::ANALYZER_REVISION,
-                    antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
-                    now_epoch,
-                    idle_secs.max(0),
-                    enabled_at,
-                    i64::try_from(limit.min(256)).unwrap_or(256),
-                    evaluator_revision,
+                rusqlite::named_params![
+                    ":check_id": check_id,
+                    ":parser_revision": antiburn_local::analysis::PARSER_REVISION,
+                    ":analyzer_revision": antiburn_local::analysis::ANALYZER_REVISION,
+                    ":evidence_schema_revision": antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+                    ":now_epoch": now_epoch,
+                    ":idle_secs": idle_secs.max(0),
+                    ":enabled_at": enabled_at,
+                    ":limit": i64::try_from(limit.min(256)).unwrap_or(256),
+                    ":evaluator_revision": evaluator_revision,
+                    ":lane": continuation,
                 ],
                 |row| {
                     let session = session_from_row(row)?;
@@ -965,6 +1037,204 @@ impl Store {
         Ok(candidates)
     }
 
+    /// Counts include unavailable targets. Only accepted decisions are reviewed.
+    pub fn save_burn_check_scheduling(
+        &self,
+        input: &BurnCheckInput,
+        eligible: Option<usize>,
+        reviewed: usize,
+        runnable: usize,
+    ) -> anyhow::Result<bool> {
+        if eligible
+            .is_some_and(|total| reviewed > total || runnable > total.saturating_sub(reviewed))
+        {
+            anyhow::bail!("Burn Check scheduling counts are invalid");
+        }
+        Ok(self.lock().execute(
+            "UPDATE burn_check_assessment SET eligible_targets = ?6, reviewed_targets = ?7,
+                 runnable_targets = ?8, scheduling_revision = ?5
+             WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+               AND check_id = ?4 AND input_revision = ?5
+               AND incarnation = ?9 AND source_generation = ?10
+               AND source_fingerprint IS ?11 AND published_fence = ?12
+               AND evaluator_revision = ?13",
+            rusqlite::params![
+                input.key.environment_key,
+                input.key.agent,
+                input.key.session_id,
+                input.check_id,
+                input.input_revision,
+                eligible.map(i64::try_from).transpose()?,
+                i64::try_from(reviewed)?,
+                i64::try_from(runnable)?,
+                input.incarnation,
+                input.source_generation,
+                input.source_fingerprint,
+                input.published_fence,
+                input.evaluator_revision
+            ],
+        )? == 1)
+    }
+
+    /// Read current counters through a report's read-only connection. Do not
+    /// load source bodies, result JSON, or serialized selection progress.
+    pub fn current_burn_check_review_counts(
+        connection: &rusqlite::Connection,
+        key: &SessionKey,
+        check_id: &str,
+        evaluator_revision: &str,
+    ) -> anyhow::Result<Option<BurnCheckReviewCounts>> {
+        let current_evidence = super::revision_sql::current_evidence("e", "s");
+        let counts: Option<BurnCheckReviewCounts> = connection
+            .query_row(
+                &format!(
+                    "SELECT a.eligible_targets, a.reviewed_targets, a.runnable_targets
+             FROM burn_check_assessment a
+             JOIN session s ON s.environment_key = a.environment_key AND s.agent = a.agent
+                  AND s.session_id = a.session_id AND s.incarnation = a.incarnation
+                  AND s.source_generation = a.source_generation
+                  AND s.source_fingerprint IS a.source_fingerprint
+             JOIN session_evidence e ON e.environment_key = s.environment_key AND e.agent = s.agent
+                  AND e.session_id = s.session_id AND e.status = 'ready'
+                  AND e.processed_fingerprint IS s.source_fingerprint
+                  AND e.published_fence = a.published_fence AND {current_evidence}
+             WHERE a.environment_key = :environment_key AND a.agent = :agent
+               AND a.session_id = :session_id AND a.check_id = :check_id
+               AND a.evaluator_revision = :evaluator_revision AND a.input_revision IS NOT NULL
+               AND a.scheduling_revision = a.input_revision
+               AND a.status IN ('queued', 'running', 'completed', 'failed')"
+                ),
+                rusqlite::named_params![
+                    ":environment_key": key.environment_key,
+                    ":agent": key.agent,
+                    ":session_id": key.session_id,
+                    ":check_id": check_id,
+                    ":evaluator_revision": evaluator_revision,
+                    ":parser_revision": antiburn_local::analysis::PARSER_REVISION,
+                    ":analyzer_revision": antiburn_local::analysis::ANALYZER_REVISION,
+                    ":evidence_schema_revision": antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+                ],
+                |row| {
+                    Ok(BurnCheckReviewCounts {
+                        eligible: row.get(0)?,
+                        reviewed: row.get(1)?,
+                        runnable: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?;
+        if counts.as_ref().is_some_and(|counts| {
+            counts.eligible.is_some_and(|total| {
+                counts.reviewed > total || counts.runnable > total.saturating_sub(counts.reviewed)
+            })
+        }) {
+            anyhow::bail!("Burn Check scheduling counts are invalid");
+        }
+        Ok(counts)
+    }
+
+    pub(crate) fn serve_burn_check_candidate(
+        &self,
+        candidate: &BurnCheckCandidate,
+        check_id: &str,
+        turn: u64,
+        cursor_json: &str,
+    ) -> anyhow::Result<()> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE burn_check_assessment SET last_served_turn = ?5
+             WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND check_id = ?4",
+            rusqlite::params![
+                candidate.session.key.environment_key,
+                candidate.session.key.agent,
+                candidate.session.key.session_id,
+                check_id,
+                i64::try_from(turn)?
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO setting(key, value) VALUES ('internal:burnCheckSchedulerV1', ?1)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [cursor_json],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn burn_check_scheduler_cursor(&self) -> anyhow::Result<Option<String>> {
+        internal_value_in(&self.lock(), "internal:burnCheckSchedulerV1")
+    }
+
+    pub(crate) fn next_burn_check_retry_at(&self, now: i64) -> anyhow::Result<Option<i64>> {
+        Ok(self.lock().query_row(
+            "SELECT MIN(next_attempt_at_epoch) FROM burn_check_assessment
+             WHERE status = 'failed' AND next_attempt_at_epoch > ?1",
+            [now],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub(crate) fn skill_observation_candidates(
+        &self,
+        after: Option<(&str, &str)>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<BurnCheckCandidate>> {
+        self.burn_check_dependency_candidates("skill_opportunities", after, limit)
+    }
+
+    pub(crate) fn burn_check_dependency_candidates(
+        &self,
+        check_id: &str,
+        after: Option<(&str, &str)>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<BurnCheckCandidate>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare("SELECT s.environment_key, s.agent, s.session_id, s.source_kind,
+            s.source_label, s.wsl_distro, s.title, s.title_source, s.cwd, s.surface,
+            s.updated_at_epoch, s.activity_cursor, s.activity_source, s.subagent_count,
+            (SELECT related_id FROM session_relation r WHERE r.environment_key = s.environment_key
+                AND r.agent = s.agent AND r.session_id = s.session_id AND r.kind = 'forkParent' LIMIT 1),
+            s.source_fingerprint, s.incarnation, s.source_generation, e.published_fence,
+            a.boundary_at_epoch, a.boundary_positions_json, a.boundary_generation
+            FROM session s JOIN session_evidence e ON e.environment_key = s.environment_key
+                AND e.agent = s.agent AND e.session_id = s.session_id
+            JOIN burn_check_assessment a ON a.environment_key = s.environment_key
+                AND a.agent = s.agent AND a.session_id = s.session_id AND a.check_id = ?4
+            WHERE s.environment_key = 'native' AND s.agent IN ('opencode', 'codex', 'claude', 'claude-code', 'pi') AND e.status = 'ready'
+                AND e.analyzed_generation = s.source_generation AND e.processed_fingerprint IS s.source_fingerprint
+                AND (?1 IS NULL OR (s.agent, s.session_id) > (?1, ?2))
+            ORDER BY s.agent, s.session_id LIMIT ?3")?;
+        let rows = statement
+            .query_map(
+                rusqlite::params![
+                    after.map(|(agent, _)| agent),
+                    after.map(|(_, session)| session),
+                    limit.min(256),
+                    check_id,
+                ],
+                |row| {
+                    let session = session_from_row(row)?;
+                    Ok(BurnCheckCandidate {
+                        incarnation: row.get(16)?,
+                        source_generation: row.get(17)?,
+                        source_fingerprint: session.source_fingerprint.clone(),
+                        activity_cursor: session.activity_cursor.clone(),
+                        published_fence: row.get(18)?,
+                        boundary_at_epoch: row.get::<_, Option<i64>>(19)?.unwrap_or(0),
+                        boundary_positions: row
+                            .get::<_, Option<String>>(20)?
+                            .and_then(|json| serde_json::from_str(&json).ok())
+                            .unwrap_or_default(),
+                        historical: row.get::<_, Option<i64>>(21)? == Some(-2),
+                        session,
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn record_burn_check_candidate_issue_for_check(
         &self,
         check_id: &str,
@@ -986,6 +1256,20 @@ impl Store {
             candidate.source_generation
         };
         let connection = self.lock();
+        let current: bool = connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM session s JOIN session_evidence e
+                ON e.environment_key = s.environment_key AND e.agent = s.agent AND e.session_id = s.session_id
+             WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3 AND s.incarnation = ?4
+                AND s.source_generation = ?5 AND s.source_fingerprint IS ?6 AND s.activity_cursor = ?7
+                AND e.published_fence = ?8)",
+            rusqlite::params![candidate.session.key.environment_key, candidate.session.key.agent,
+                candidate.session.key.session_id, candidate.incarnation, candidate.source_generation,
+                candidate.source_fingerprint, candidate.activity_cursor, candidate.published_fence],
+            |row| row.get(0),
+        )?;
+        if !current {
+            return Ok(());
+        }
         connection.execute(
             "INSERT INTO burn_check_assessment (
                  environment_key, agent, session_id, check_id, incarnation,
@@ -1075,8 +1359,8 @@ impl Store {
             transaction.commit()?;
             return Ok(false);
         }
-        let current: Option<CurrentAssessmentSource> = transaction
-            .query_row(
+        let current_evidence = super::revision_sql::current_evidence("e", "s");
+        let current_sql = format!(
                 "SELECT s.incarnation, s.source_generation, s.source_fingerprint,
                         s.activity_cursor, e.published_fence, s.updated_at_epoch
                    FROM session AS s
@@ -1084,19 +1368,20 @@ impl Store {
                      ON e.environment_key = s.environment_key AND e.agent = s.agent
                     AND e.session_id = s.session_id
                     AND e.status = 'ready'
-                    AND e.analyzed_generation = s.source_generation
-                    AND e.processed_fingerprint IS s.source_fingerprint
-                    AND e.parser_revision = ?4
-                    AND e.analyzer_revision = ?5
-                    AND e.evidence_schema_revision = ?6
-                  WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3",
-                rusqlite::params![
-                    input.key.environment_key,
-                    input.key.agent,
-                    input.key.session_id,
-                    antiburn_local::analysis::PARSER_REVISION,
-                    antiburn_local::analysis::ANALYZER_REVISION,
-                    antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+                     AND e.processed_fingerprint IS s.source_fingerprint
+                     AND {current_evidence}
+                   WHERE s.environment_key = :environment_key AND s.agent = :agent AND s.session_id = :session_id"
+        );
+        let current: Option<CurrentAssessmentSource> = transaction
+            .query_row(
+                &current_sql,
+                rusqlite::named_params![
+                    ":environment_key": input.key.environment_key,
+                    ":agent": input.key.agent,
+                    ":session_id": input.key.session_id,
+                    ":parser_revision": antiburn_local::analysis::PARSER_REVISION,
+                    ":analyzer_revision": antiburn_local::analysis::ANALYZER_REVISION,
+                    ":evidence_schema_revision": antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
                 ],
                 |row| {
                     Ok((
@@ -1153,6 +1438,13 @@ impl Store {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;
+        if historical
+            && old.as_ref().is_some_and(|(_, _, retry_at, _)| {
+                retry_at.is_some_and(|retry_at| retry_at > now_epoch)
+            })
+        {
+            return Ok(false);
+        }
         if let Some((Some(old_revision), status, next_attempt, lease)) = &old
             && old_revision == &input.input_revision
             && (status == "completed"
@@ -1179,8 +1471,9 @@ impl Store {
              ON CONFLICT(environment_key, agent, session_id, check_id) DO UPDATE SET
                  incarnation = excluded.incarnation,
                   boundary_generation = CASE WHEN ?15 THEN -1
-                      WHEN burn_check_assessment.boundary_generation = -2
-                           AND burn_check_assessment.status = 'completed' THEN ?6
+                       WHEN burn_check_assessment.boundary_generation = -2
+                            AND burn_check_assessment.status = 'completed'
+                            AND burn_check_assessment.evaluator_revision IS excluded.evaluator_revision THEN ?6
                       ELSE burn_check_assessment.boundary_generation END,
                  boundary_activity_cursor = CASE WHEN ?15 THEN '' ELSE burn_check_assessment.boundary_activity_cursor END,
                   boundary_at_epoch = COALESCE(burn_check_assessment.boundary_at_epoch, ?8),
@@ -1233,51 +1526,49 @@ impl Store {
         idle_secs: i64,
     ) -> anyhow::Result<bool> {
         let connection = self.lock();
+        let current_evidence = super::revision_sql::current_evidence("e", "s");
         let updated = connection.execute(
-            "UPDATE burn_check_assessment
-                SET status = 'running', lease_expires_at_epoch = ?8,
-                    updated_at_epoch = ?7
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
-                AND check_id = ?4 AND input_revision = ?5
+            &format!("UPDATE burn_check_assessment
+                SET status = 'running', lease_expires_at_epoch = :lease_expires_at,
+                    updated_at_epoch = :now_epoch
+              WHERE environment_key = :environment_key AND agent = :agent AND session_id = :session_id
+                AND check_id = :check_id AND input_revision = :input_revision
                 AND (status = 'queued' OR
-                     (status = 'running' AND lease_expires_at_epoch <= ?7))
-                AND (next_attempt_at_epoch IS NULL OR next_attempt_at_epoch <= ?7)
+                     (status = 'running' AND COALESCE(lease_expires_at_epoch, 0) <= :now_epoch))
+                AND (next_attempt_at_epoch IS NULL OR next_attempt_at_epoch <= :now_epoch)
                 AND EXISTS (
                     SELECT 1 FROM session AS s
                     JOIN session_evidence AS e
                       ON e.environment_key = s.environment_key AND e.agent = s.agent
                      AND e.session_id = s.session_id
                       AND e.status = 'ready'
-                      AND e.analyzed_generation = s.source_generation
                       AND e.processed_fingerprint IS s.source_fingerprint
-                       AND e.published_fence = ?6
-                       AND e.parser_revision = ?9
-                       AND e.analyzer_revision = ?16
-                       AND e.evidence_schema_revision = ?10
-                    WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
-                      AND s.incarnation = ?11
-                      AND s.source_generation = ?12
-                      AND s.source_fingerprint IS ?13
-                      AND s.activity_cursor = ?14
-                      AND s.updated_at_epoch <= ?7 - ?15
-                )",
-            rusqlite::params![
-                input.key.environment_key,
-                input.key.agent,
-                input.key.session_id,
-                input.check_id,
-                input.input_revision,
-                input.published_fence,
-                now_epoch,
-                now_epoch.saturating_add(lease_secs.max(1)),
-                antiburn_local::analysis::PARSER_REVISION,
-                antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
-                input.incarnation,
-                input.source_generation,
-                input.source_fingerprint,
-                input.activity_cursor,
-                idle_secs.max(0),
-                antiburn_local::analysis::ANALYZER_REVISION,
+                        AND e.published_fence = :published_fence
+                        AND {current_evidence}
+                    WHERE s.environment_key = :environment_key AND s.agent = :agent AND s.session_id = :session_id
+                      AND s.incarnation = :incarnation
+                      AND s.source_generation = :source_generation
+                      AND s.source_fingerprint IS :source_fingerprint
+                      AND s.activity_cursor = :activity_cursor
+                      AND s.updated_at_epoch <= :now_epoch - :idle_secs
+                )"),
+            rusqlite::named_params![
+                ":environment_key": input.key.environment_key,
+                ":agent": input.key.agent,
+                ":session_id": input.key.session_id,
+                ":check_id": input.check_id,
+                ":input_revision": input.input_revision,
+                ":published_fence": input.published_fence,
+                ":now_epoch": now_epoch,
+                ":lease_expires_at": now_epoch.saturating_add(lease_secs.max(1)),
+                ":parser_revision": antiburn_local::analysis::PARSER_REVISION,
+                ":analyzer_revision": antiburn_local::analysis::ANALYZER_REVISION,
+                ":evidence_schema_revision": antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+                ":incarnation": input.incarnation,
+                ":source_generation": input.source_generation,
+                ":source_fingerprint": input.source_fingerprint,
+                ":activity_cursor": input.activity_cursor,
+                ":idle_secs": idle_secs.max(0),
             ],
         )?;
         Ok(updated == 1)
@@ -1292,56 +1583,75 @@ impl Store {
         idle_secs: i64,
     ) -> anyhow::Result<bool> {
         let connection = self.lock();
+        let current_evidence = super::revision_sql::current_evidence("e", "s");
         let updated = connection.execute(
-            "UPDATE burn_check_assessment
-                SET lease_expires_at_epoch = ?8, updated_at_epoch = ?7
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
-                AND check_id = ?4 AND input_revision = ?5 AND status = 'running'
-                AND lease_expires_at_epoch > ?7
+            &format!("UPDATE burn_check_assessment
+                SET lease_expires_at_epoch = :lease_expires_at, updated_at_epoch = :now_epoch
+              WHERE environment_key = :environment_key AND agent = :agent AND session_id = :session_id
+                AND check_id = :check_id AND input_revision = :input_revision AND status = 'running'
+                AND lease_expires_at_epoch > :now_epoch
                 AND EXISTS (
                     SELECT 1 FROM session AS s
                     JOIN session_evidence AS e
                       ON e.environment_key = s.environment_key AND e.agent = s.agent
                      AND e.session_id = s.session_id
-                     AND e.status = 'ready'
-                      AND e.analyzed_generation = s.source_generation
+                      AND e.status = 'ready'
                       AND e.processed_fingerprint IS s.source_fingerprint
-                       AND e.published_fence = ?6
-                       AND e.parser_revision = ?14
-                       AND e.analyzer_revision = ?16
-                       AND e.evidence_schema_revision = ?15
-                    WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
-                      AND s.incarnation = ?9 AND s.source_generation = ?10
-                      AND s.source_fingerprint IS ?11 AND s.activity_cursor = ?12
-                      AND s.updated_at_epoch <= ?7 - ?13
-                )",
-            rusqlite::params![
-                input.key.environment_key,
-                input.key.agent,
-                input.key.session_id,
-                input.check_id,
-                input.input_revision,
-                input.published_fence,
-                now_epoch,
-                now_epoch.saturating_add(lease_secs.max(1)),
-                input.incarnation,
-                input.source_generation,
-                input.source_fingerprint,
-                input.activity_cursor,
-                idle_secs.max(0),
-                antiburn_local::analysis::PARSER_REVISION,
-                antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
-                antiburn_local::analysis::ANALYZER_REVISION,
+                        AND e.published_fence = :published_fence
+                        AND {current_evidence}
+                    WHERE s.environment_key = :environment_key AND s.agent = :agent AND s.session_id = :session_id
+                      AND s.incarnation = :incarnation AND s.source_generation = :source_generation
+                      AND s.source_fingerprint IS :source_fingerprint AND s.activity_cursor = :activity_cursor
+                      AND s.updated_at_epoch <= :now_epoch - :idle_secs
+                )"),
+            rusqlite::named_params![
+                ":environment_key": input.key.environment_key,
+                ":agent": input.key.agent,
+                ":session_id": input.key.session_id,
+                ":check_id": input.check_id,
+                ":input_revision": input.input_revision,
+                ":published_fence": input.published_fence,
+                ":now_epoch": now_epoch,
+                ":lease_expires_at": now_epoch.saturating_add(lease_secs.max(1)),
+                ":incarnation": input.incarnation,
+                ":source_generation": input.source_generation,
+                ":source_fingerprint": input.source_fingerprint,
+                ":activity_cursor": input.activity_cursor,
+                ":idle_secs": idle_secs.max(0),
+                ":parser_revision": antiburn_local::analysis::PARSER_REVISION,
+                ":analyzer_revision": antiburn_local::analysis::ANALYZER_REVISION,
+                ":evidence_schema_revision": antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
             ],
         )?;
         Ok(updated == 1)
     }
 
     /// Save typed, source-free progress only for a still-current active revision.
+    #[cfg(test)]
     pub fn save_burn_check_progress(
         &self,
         input: &BurnCheckInput,
         progress_json: &str,
+        now_epoch: i64,
+        lease_secs: i64,
+        idle_secs: i64,
+    ) -> anyhow::Result<bool> {
+        self.save_burn_check_checkpoint(
+            input,
+            progress_json,
+            None,
+            now_epoch,
+            lease_secs,
+            idle_secs,
+        )
+    }
+
+    /// Commit answers and progress together only for the exact active source and evaluator.
+    pub fn save_burn_check_checkpoint(
+        &self,
+        input: &BurnCheckInput,
+        progress_json: &str,
+        progress: Option<&antiburn_local::analysis::jev::JevRunProgress>,
         now_epoch: i64,
         lease_secs: i64,
         idle_secs: i64,
@@ -1351,51 +1661,60 @@ impl Store {
         {
             anyhow::bail!("Burn Check progress is invalid or too large");
         }
-        let connection = self.lock();
-        let updated = connection.execute(
-            "UPDATE burn_check_assessment
-                SET progress_json = ?6, updated_at_epoch = ?7,
-                    lease_expires_at_epoch = ?8
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
-                AND check_id = ?4 AND input_revision = ?5 AND status = 'running'
-                AND lease_expires_at_epoch > ?7
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        let current_evidence = super::revision_sql::current_evidence("e", "s");
+        let updated = transaction.execute(
+            &format!("UPDATE burn_check_assessment
+                SET progress_json = :progress_json, updated_at_epoch = :now_epoch,
+                    lease_expires_at_epoch = :lease_expires_at
+              WHERE environment_key = :environment_key AND agent = :agent AND session_id = :session_id
+                AND check_id = :check_id AND input_revision = :input_revision AND status = 'running'
+                AND evaluator_revision = :expected_evaluator_revision AND incarnation = :incarnation
+                AND source_generation = :source_generation AND source_fingerprint IS :source_fingerprint
+                AND published_fence = :published_fence
+                AND lease_expires_at_epoch > :now_epoch
                 AND EXISTS (
                     SELECT 1 FROM session AS s
                     JOIN session_evidence AS e
                       ON e.environment_key = s.environment_key AND e.agent = s.agent
                      AND e.session_id = s.session_id
-                     AND e.status = 'ready'
-                     AND e.analyzed_generation = s.source_generation
-                     AND e.processed_fingerprint IS s.source_fingerprint
-                      AND e.published_fence = ?9
-                      AND e.parser_revision = ?15
-                      AND e.analyzer_revision = ?17
-                      AND e.evidence_schema_revision = ?16
-                    WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
-                      AND s.incarnation = ?10 AND s.source_generation = ?11
-                      AND s.source_fingerprint IS ?12 AND s.activity_cursor = ?13
-                      AND s.updated_at_epoch <= ?7 - ?14
-                )",
-            rusqlite::params![
-                input.key.environment_key,
-                input.key.agent,
-                input.key.session_id,
-                input.check_id,
-                input.input_revision,
-                progress_json,
-                now_epoch,
-                now_epoch.saturating_add(lease_secs.max(1)),
-                input.published_fence,
-                input.incarnation,
-                input.source_generation,
-                input.source_fingerprint,
-                input.activity_cursor,
-                idle_secs.max(0),
-                antiburn_local::analysis::PARSER_REVISION,
-                antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
-                antiburn_local::analysis::ANALYZER_REVISION,
+                      AND e.status = 'ready'
+                      AND e.processed_fingerprint IS s.source_fingerprint
+                       AND e.published_fence = :published_fence
+                       AND {current_evidence}
+                    WHERE s.environment_key = :environment_key AND s.agent = :agent AND s.session_id = :session_id
+                      AND s.incarnation = :incarnation AND s.source_generation = :source_generation
+                      AND s.source_fingerprint IS :source_fingerprint AND s.activity_cursor = :activity_cursor
+                      AND s.updated_at_epoch <= :now_epoch - :idle_secs
+                )"),
+            rusqlite::named_params![
+                ":environment_key": input.key.environment_key,
+                ":agent": input.key.agent,
+                ":session_id": input.key.session_id,
+                ":check_id": input.check_id,
+                ":input_revision": input.input_revision,
+                ":progress_json": progress_json,
+                ":now_epoch": now_epoch,
+                ":lease_expires_at": now_epoch.saturating_add(lease_secs.max(1)),
+                ":published_fence": input.published_fence,
+                ":incarnation": input.incarnation,
+                ":source_generation": input.source_generation,
+                ":source_fingerprint": input.source_fingerprint,
+                ":activity_cursor": input.activity_cursor,
+                ":idle_secs": idle_secs.max(0),
+                ":parser_revision": antiburn_local::analysis::PARSER_REVISION,
+                ":analyzer_revision": antiburn_local::analysis::ANALYZER_REVISION,
+                ":evidence_schema_revision": antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+                ":expected_evaluator_revision": input.evaluator_revision,
             ],
         )?;
+        if updated == 1
+            && let Some(progress) = progress
+        {
+            insert_work_answers(&transaction, input, progress, now_epoch)?;
+        }
+        transaction.commit()?;
         Ok(updated == 1)
     }
 
@@ -1414,58 +1733,55 @@ impl Store {
         }
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
+        let current_evidence = super::revision_sql::current_evidence("e", "s");
         let updated = transaction.execute(
-            "UPDATE burn_check_assessment
-                 SET status = 'completed', result_json = ?6, result_revision = ?5,
-                     progress_json = '{}', boundary_generation = CASE
-                         WHEN boundary_generation = -2 THEN -2 ELSE ?9 END,
-                     boundary_activity_cursor = ?10,
+            &format!("UPDATE burn_check_assessment
+                 SET status = 'completed', result_json = :result_json, result_revision = :input_revision,
+                     progress_json = '{{}}', boundary_generation = CASE
+                         WHEN boundary_generation = -2 THEN -2 ELSE :source_generation END,
+                     boundary_activity_cursor = :activity_cursor,
                      boundary_positions_json =
-                         (SELECT COALESCE(json_group_object(source_key, last_index), '{}')
+                          (SELECT COALESCE(json_group_object(source_key, last_index), '{{}}')
                             FROM (SELECT source_key, MAX(turn_index) AS last_index FROM turn
-                                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                                   WHERE environment_key = :environment_key AND agent = :agent AND session_id = :session_id
                                   GROUP BY source_key)),
                      lease_expires_at_epoch = NULL,
                     next_attempt_at_epoch = NULL, last_error_category = NULL,
-                    updated_at_epoch = ?7
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
-                AND check_id = ?4 AND input_revision = ?5 AND status = 'running'
-                AND lease_expires_at_epoch > ?7
+                     updated_at_epoch = :now_epoch
+              WHERE environment_key = :environment_key AND agent = :agent AND session_id = :session_id
+                AND check_id = :check_id AND input_revision = :input_revision AND status = 'running'
+                AND lease_expires_at_epoch > :now_epoch
                 AND EXISTS (
                     SELECT 1 FROM session AS s
                     JOIN session_evidence AS e
                       ON e.environment_key = s.environment_key AND e.agent = s.agent
                      AND e.session_id = s.session_id
                      AND e.status = 'ready'
-                     AND e.analyzed_generation = s.source_generation
-                     AND e.processed_fingerprint IS s.source_fingerprint
-                       AND e.published_fence = ?8
-                       AND e.parser_revision = ?15
-                       AND e.analyzer_revision = ?17
-                       AND e.evidence_schema_revision = ?16
-                    WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
-                      AND s.incarnation = ?11 AND s.source_generation = ?12
-                      AND s.source_fingerprint IS ?13 AND s.activity_cursor = ?10
-                      AND s.updated_at_epoch <= ?7 - ?14
-                )",
-            rusqlite::params![
-                input.key.environment_key,
-                input.key.agent,
-                input.key.session_id,
-                input.check_id,
-                input.input_revision,
-                result_json,
-                now_epoch,
-                input.published_fence,
-                input.source_generation,
-                input.activity_cursor,
-                input.incarnation,
-                input.source_generation,
-                input.source_fingerprint,
-                idle_secs.max(0),
-                antiburn_local::analysis::PARSER_REVISION,
-                antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
-                antiburn_local::analysis::ANALYZER_REVISION,
+                      AND e.processed_fingerprint IS s.source_fingerprint
+                        AND e.published_fence = :published_fence
+                        AND {current_evidence}
+                    WHERE s.environment_key = :environment_key AND s.agent = :agent AND s.session_id = :session_id
+                      AND s.incarnation = :incarnation AND s.source_generation = :source_generation
+                      AND s.source_fingerprint IS :source_fingerprint AND s.activity_cursor = :activity_cursor
+                      AND s.updated_at_epoch <= :now_epoch - :idle_secs
+                )"),
+            rusqlite::named_params![
+                ":environment_key": input.key.environment_key,
+                ":agent": input.key.agent,
+                ":session_id": input.key.session_id,
+                ":check_id": input.check_id,
+                ":input_revision": input.input_revision,
+                ":result_json": result_json,
+                ":now_epoch": now_epoch,
+                ":published_fence": input.published_fence,
+                ":source_generation": input.source_generation,
+                ":activity_cursor": input.activity_cursor,
+                ":incarnation": input.incarnation,
+                ":source_fingerprint": input.source_fingerprint,
+                ":idle_secs": idle_secs.max(0),
+                ":parser_revision": antiburn_local::analysis::PARSER_REVISION,
+                ":analyzer_revision": antiburn_local::analysis::ANALYZER_REVISION,
+                ":evidence_schema_revision": antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
             ],
         )?;
         if updated == 0 {
@@ -1507,55 +1823,90 @@ impl Store {
             anyhow::bail!("Burn Check failure state is invalid or too large");
         }
         let connection = self.lock();
+        let current_evidence = super::revision_sql::current_evidence("e", "s");
         let updated = connection.execute(
-            "UPDATE burn_check_assessment
-                SET status = 'failed', next_attempt_at_epoch = ?6,
-                    result_json = ?7, result_revision = ?5, progress_json = ?8,
-                    lease_expires_at_epoch = NULL, last_error_category = ?9,
-                    updated_at_epoch = ?10
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
-                AND check_id = ?4 AND input_revision = ?5 AND status = 'running'
-                AND lease_expires_at_epoch > ?10
+            &format!("UPDATE burn_check_assessment
+                SET status = 'failed', next_attempt_at_epoch = :retry_at_epoch,
+                    result_json = :result_json, result_revision = :input_revision, progress_json = :progress_json,
+                    lease_expires_at_epoch = NULL, last_error_category = :error_category,
+                    updated_at_epoch = :now_epoch
+              WHERE environment_key = :environment_key AND agent = :agent AND session_id = :session_id
+                AND check_id = :check_id AND input_revision = :input_revision AND status = 'running'
+                AND lease_expires_at_epoch > :now_epoch
                 AND EXISTS (
                     SELECT 1 FROM session AS s
                     JOIN session_evidence AS e
                       ON e.environment_key = s.environment_key AND e.agent = s.agent
                      AND e.session_id = s.session_id
-                     AND e.status = 'ready'
-                     AND e.analyzed_generation = s.source_generation
-                     AND e.processed_fingerprint IS s.source_fingerprint
-                      AND e.published_fence = ?11
-                      AND e.parser_revision = ?17
-                      AND e.analyzer_revision = ?19
-                      AND e.evidence_schema_revision = ?18
-                    WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
-                      AND s.incarnation = ?12 AND s.source_generation = ?13
-                      AND s.source_fingerprint IS ?14 AND s.activity_cursor = ?15
-                      AND s.updated_at_epoch <= ?10 - ?16
-                )",
-            rusqlite::params![
-                input.key.environment_key,
-                input.key.agent,
-                input.key.session_id,
-                input.check_id,
-                input.input_revision,
-                failure.retry_at_epoch,
-                failure.result_json,
-                failure.progress_json,
-                failure.error_category,
-                now_epoch,
-                input.published_fence,
-                input.incarnation,
-                input.source_generation,
-                input.source_fingerprint,
-                input.activity_cursor,
-                idle_secs.max(0),
-                antiburn_local::analysis::PARSER_REVISION,
-                antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
-                antiburn_local::analysis::ANALYZER_REVISION,
+                      AND e.status = 'ready'
+                      AND e.processed_fingerprint IS s.source_fingerprint
+                       AND e.published_fence = :published_fence
+                       AND {current_evidence}
+                    WHERE s.environment_key = :environment_key AND s.agent = :agent AND s.session_id = :session_id
+                      AND s.incarnation = :incarnation AND s.source_generation = :source_generation
+                      AND s.source_fingerprint IS :source_fingerprint AND s.activity_cursor = :activity_cursor
+                      AND s.updated_at_epoch <= :now_epoch - :idle_secs
+                )"),
+            rusqlite::named_params![
+                ":environment_key": input.key.environment_key,
+                ":agent": input.key.agent,
+                ":session_id": input.key.session_id,
+                ":check_id": input.check_id,
+                ":input_revision": input.input_revision,
+                ":retry_at_epoch": failure.retry_at_epoch,
+                ":result_json": failure.result_json,
+                ":progress_json": failure.progress_json,
+                ":error_category": failure.error_category,
+                ":now_epoch": now_epoch,
+                ":published_fence": input.published_fence,
+                ":incarnation": input.incarnation,
+                ":source_generation": input.source_generation,
+                ":source_fingerprint": input.source_fingerprint,
+                ":activity_cursor": input.activity_cursor,
+                ":idle_secs": idle_secs.max(0),
+                ":parser_revision": antiburn_local::analysis::PARSER_REVISION,
+                ":analyzer_revision": antiburn_local::analysis::ANALYZER_REVISION,
+                ":evidence_schema_revision": antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
             ],
         )?;
         Ok(updated == 1)
+    }
+
+    /// Stop active dispatch without storing a result for resumed or disabled work.
+    pub fn invalidate_burn_check_inputs(
+        &self,
+        key: &SessionKey,
+        check_id: &str,
+        expected_input_revision: Option<&str>,
+        now_epoch: i64,
+    ) -> anyhow::Result<bool> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE burn_check_assessment SET status = 'queued', input_revision = NULL,
+                result_revision = NULL, result_json = NULL, progress_json = '{}',
+                lease_expires_at_epoch = NULL, next_attempt_at_epoch = NULL,
+                last_error_category = NULL, updated_at_epoch = ?6
+             WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+               AND check_id = ?4 AND input_revision IS ?5",
+            rusqlite::params![
+                key.environment_key,
+                key.agent,
+                key.session_id,
+                check_id,
+                expected_input_revision,
+                now_epoch
+            ],
+        )?;
+        if changed != 0 {
+            transaction.execute(
+                "DELETE FROM burn_check_work_answer WHERE environment_key = ?1 AND agent = ?2
+                    AND session_id = ?3 AND check_id = ?4",
+                rusqlite::params![key.environment_key, key.agent, key.session_id, check_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(changed != 0)
     }
 
     /// Stop active dispatch without storing a result for resumed or disabled work.
@@ -1594,7 +1945,7 @@ impl Store {
         let updated = self.lock().execute(
             "UPDATE burn_check_assessment
                 SET status = 'failed', lease_expires_at_epoch = NULL,
-                    next_attempt_at_epoch = ?6, last_error_category = ?7
+                    next_attempt_at_epoch = MAX(COALESCE(next_attempt_at_epoch, 0), ?6), last_error_category = ?7
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
                 AND check_id = ?4 AND input_revision = ?5 AND status = 'running'",
             rusqlite::params![
@@ -1608,6 +1959,157 @@ impl Store {
             ],
         )?;
         Ok(updated == 1)
+    }
+
+    pub(crate) fn settle_burn_check_candidate_error(
+        &self,
+        candidate: &BurnCheckCandidate,
+        check_id: &str,
+        evaluator_revision: &str,
+        now_epoch: i64,
+        category: &str,
+        retry_at: Option<i64>,
+    ) -> anyhow::Result<bool> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        let input = BurnCheckInput {
+            key: candidate.session.key.clone(),
+            check_id: check_id.into(),
+            incarnation: candidate.incarnation,
+            source_generation: candidate.source_generation,
+            source_fingerprint: candidate.source_fingerprint.clone(),
+            activity_cursor: candidate.activity_cursor.clone(),
+            published_fence: candidate.published_fence,
+            input_revision: String::new(),
+            evaluator_revision: evaluator_revision.into(),
+            boundary_at_epoch: candidate.boundary_at_epoch,
+        };
+        if !Self::burn_check_input_is_current(&transaction, &input)? {
+            return Ok(false);
+        }
+        let updated = transaction.execute(
+            "INSERT INTO burn_check_assessment (
+                environment_key, agent, session_id, check_id, incarnation, source_generation,
+                source_fingerprint, published_fence, evaluator_revision, boundary_generation,
+                boundary_activity_cursor, boundary_at_epoch, boundary_positions_json,
+                status, progress_json, created_at_epoch, updated_at_epoch, last_error_category, next_attempt_at_epoch)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?10, ?13, ?14, ?15, ?16,
+                'failed', '{}', ?9, ?9, ?11, ?12)
+             ON CONFLICT(environment_key, agent, session_id, check_id) DO UPDATE SET
+                status = 'failed', lease_expires_at_epoch = NULL,
+                next_attempt_at_epoch = CASE WHEN ?12 IS NULL THEN NULL
+                    ELSE MAX(COALESCE(burn_check_assessment.next_attempt_at_epoch, 0), ?12) END,
+                last_error_category = ?11, updated_at_epoch = ?9, scheduling_revision = NULL,
+                input_revision = CASE WHEN burn_check_assessment.incarnation = ?5
+                    AND burn_check_assessment.source_generation = ?6 AND burn_check_assessment.source_fingerprint IS ?7
+                    AND burn_check_assessment.published_fence = ?8 THEN burn_check_assessment.input_revision ELSE NULL END,
+                evaluator_revision = ?10, incarnation = ?5, source_generation = ?6,
+                source_fingerprint = ?7, published_fence = ?8
+             WHERE (burn_check_assessment.input_revision IS NULL
+                 OR (burn_check_assessment.incarnation = ?5 AND burn_check_assessment.source_generation = ?6
+                     AND burn_check_assessment.source_fingerprint IS ?7 AND burn_check_assessment.published_fence = ?8
+                     AND burn_check_assessment.evaluator_revision = ?10)
+                 OR burn_check_assessment.incarnation IS NOT ?5 OR burn_check_assessment.source_generation IS NOT ?6
+                 OR burn_check_assessment.source_fingerprint IS NOT ?7 OR burn_check_assessment.published_fence IS NOT ?8)
+                 AND (burn_check_assessment.status IN ('idle', 'queued', 'running', 'failed', 'superseded')
+                     OR (burn_check_assessment.status = 'completed' AND (burn_check_assessment.incarnation IS NOT ?5
+                         OR burn_check_assessment.source_generation IS NOT ?6 OR burn_check_assessment.source_fingerprint IS NOT ?7
+                         OR burn_check_assessment.published_fence IS NOT ?8)))",
+            rusqlite::params![
+                candidate.session.key.environment_key,
+                candidate.session.key.agent,
+                candidate.session.key.session_id,
+                check_id,
+                candidate.incarnation,
+                candidate.source_generation,
+                candidate.source_fingerprint,
+                candidate.published_fence,
+                now_epoch,
+                evaluator_revision,
+                category,
+                retry_at,
+                if candidate.historical { -2 } else { -1 },
+                candidate.activity_cursor,
+                candidate.boundary_at_epoch,
+                serde_json::to_string(&candidate.boundary_positions)?,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(updated == 1)
+    }
+
+    pub(crate) fn invalidate_burn_check_dependency(
+        &self,
+        input: &BurnCheckInput,
+        now: i64,
+    ) -> anyhow::Result<bool> {
+        let updated = self.lock().execute(
+            "UPDATE burn_check_assessment SET status = 'superseded', last_error_category = 'cancelled',
+                lease_expires_at_epoch = NULL, next_attempt_at_epoch = NULL, scheduling_revision = NULL,
+                updated_at_epoch = ?11
+             WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND check_id = ?4
+                AND incarnation = ?5 AND source_generation = ?6 AND source_fingerprint IS ?7
+                AND published_fence = ?8 AND input_revision = ?9 AND evaluator_revision = ?10
+                AND (status <> 'superseded' OR scheduling_revision IS NOT NULL)",
+            rusqlite::params![input.key.environment_key, input.key.agent, input.key.session_id, input.check_id,
+                input.incarnation, input.source_generation, input.source_fingerprint, input.published_fence,
+                input.input_revision, input.evaluator_revision, now],
+        )?;
+        Ok(updated == 1)
+    }
+
+    pub(crate) fn burn_check_input_is_current(
+        connection: &rusqlite::Connection,
+        input: &BurnCheckInput,
+    ) -> anyhow::Result<bool> {
+        if !check_id_enabled_in(connection, &input.check_id)?
+            || internal_value_in(connection, ENABLED_AT_KEY)?.is_none()
+        {
+            return Ok(false);
+        }
+        let current_evidence = super::revision_sql::current_evidence("e", "s");
+        Ok(connection.query_row(
+            &format!("SELECT EXISTS (SELECT 1 FROM session s JOIN session_evidence e
+                ON e.environment_key = s.environment_key AND e.agent = s.agent AND e.session_id = s.session_id
+                WHERE s.environment_key = :environment_key AND s.agent = :agent AND s.session_id = :session_id
+                    AND s.incarnation = :incarnation AND s.source_generation = :generation
+                    AND s.source_fingerprint IS :fingerprint AND s.activity_cursor = :cursor
+                    AND e.status = 'ready' AND e.published_fence = :fence
+                    AND e.processed_fingerprint IS s.source_fingerprint AND {current_evidence})"),
+            rusqlite::named_params![
+                ":environment_key": input.key.environment_key, ":agent": input.key.agent,
+                ":session_id": input.key.session_id, ":incarnation": input.incarnation,
+                ":generation": input.source_generation, ":fingerprint": input.source_fingerprint,
+                ":cursor": input.activity_cursor, ":fence": input.published_fence,
+                ":parser_revision": antiburn_local::analysis::PARSER_REVISION,
+                ":analyzer_revision": antiburn_local::analysis::ANALYZER_REVISION,
+                ":evidence_schema_revision": antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+            ],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn burn_check_next_attempt_at(
+        &self,
+        input: &BurnCheckInput,
+    ) -> anyhow::Result<Option<i64>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT next_attempt_at_epoch FROM burn_check_assessment
+             WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+               AND check_id = ?4 AND input_revision = ?5",
+                rusqlite::params![
+                    input.key.environment_key,
+                    input.key.agent,
+                    input.key.session_id,
+                    input.check_id,
+                    input.input_revision
+                ],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten())
     }
 
     /// Read one check's durable progress/result without reading private source content.
@@ -1641,19 +2143,71 @@ impl Store {
     }
 }
 
+fn insert_work_answers(
+    connection: &rusqlite::Connection,
+    input: &BurnCheckInput,
+    progress: &antiburn_local::analysis::jev::JevRunProgress,
+    now_epoch: i64,
+) -> anyhow::Result<()> {
+    let Some(scope) = progress
+        .completed_batch_ids
+        .iter()
+        .find(|id| id.starts_with("reuse-scope:"))
+    else {
+        return Ok(());
+    };
+    let mut inserted = false;
+    for (id, result) in &progress.results {
+        let prefix = format!("reuse-item:{id}:");
+        let Some(marker) = progress
+            .completed_batch_ids
+            .iter()
+            .find(|marker| marker.starts_with(&prefix))
+        else {
+            continue;
+        };
+        inserted |= connection.execute(
+            "INSERT OR IGNORE INTO burn_check_work_answer
+                (environment_key, agent, session_id, check_id, reuse_scope, item_marker, result_json, updated_at_epoch)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![input.key.environment_key, input.key.agent, input.key.session_id,
+                input.check_id, scope, marker, serde_json::to_string(result)?, now_epoch],
+        )? > 0;
+    }
+    if inserted {
+        connection.execute(
+            "DELETE FROM burn_check_work_answer WHERE rowid IN (
+                SELECT rowid FROM burn_check_work_answer
+                WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND check_id = ?4
+                ORDER BY updated_at_epoch DESC, rowid DESC LIMIT -1 OFFSET 8192)",
+            rusqlite::params![
+                input.key.environment_key,
+                input.key.agent,
+                input.key.session_id,
+                input.check_id
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn capture_burn_check_boundaries_in(
     connection: &rusqlite::Connection,
     check_ids: &[&str],
     now_epoch: i64,
     enable_master: bool,
 ) -> anyhow::Result<usize> {
+    if check_ids.is_empty() {
+        return Ok(0);
+    }
     if check_ids
         .iter()
         .any(|id| DetectorId::from_key(id).is_none())
     {
         anyhow::bail!("Burn Check ID is invalid");
     }
-    if enable_master {
+    let master_enabled_at = internal_value_in(connection, ENABLED_AT_KEY)?;
+    if enable_master && master_enabled_at.is_none() {
         connection.execute(
             "INSERT INTO setting (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -1681,9 +2235,29 @@ pub(super) fn capture_burn_check_boundaries_in(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(sessions);
 
+    let mut captured = 0;
     for check_id in check_ids {
+        let enabled_key = format!("{CHECK_ENABLED_AT_PREFIX}{check_id}");
+        if enable_master
+            && master_enabled_at.is_some()
+            && internal_value_in(connection, &enabled_key)?.is_some()
+        {
+            continue;
+        }
+        let enabled_at = if enable_master && *check_id == "ignored_instructions" {
+            master_enabled_at
+                .clone()
+                .unwrap_or_else(|| now_epoch.to_string())
+        } else {
+            now_epoch.to_string()
+        };
+        connection.execute(
+            "INSERT INTO setting (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![enabled_key, enabled_at],
+        )?;
         for (key, incarnation, generation, cursor) in &rows {
-            connection.execute(
+            captured += connection.execute(
                 "INSERT INTO burn_check_assessment (
                      environment_key, agent, session_id, check_id, incarnation,
                      boundary_generation, boundary_activity_cursor, boundary_at_epoch,
@@ -1717,7 +2291,7 @@ pub(super) fn capture_burn_check_boundaries_in(
                      next_attempt_at_epoch = NULL,
                      lease_expires_at_epoch = NULL,
                      last_error_category = NULL
-                  WHERE ?9 OR burn_check_assessment.last_error_category IS NOT 'cancelled'",
+                   WHERE ?10 AND (?9 OR burn_check_assessment.last_error_category IS NOT 'cancelled')",
                 rusqlite::params![
                     key.environment_key,
                     key.agent,
@@ -1728,19 +2302,12 @@ pub(super) fn capture_burn_check_boundaries_in(
                     cursor,
                     now_epoch,
                     !enable_master,
+                    !enable_master || master_enabled_at.is_none(),
                 ],
             )?;
         }
     }
-    Ok(rows.len().saturating_mul(check_ids.len()))
-}
-
-#[cfg(test)]
-fn ignored_instructions_history_check() -> BurnCheckHistoryCheck {
-    BurnCheckHistoryCheck {
-        check_id: DetectorId::IgnoredInstructions.key().to_owned(),
-        evaluator_revision: antiburn_local::analysis::ignored_instructions::evaluator_revision(),
-    }
+    Ok(captured)
 }
 
 pub(super) fn cancel_burn_check_in(
@@ -1818,15 +2385,25 @@ pub(super) fn clear_local_burn_check_state(
     connection.execute("DELETE FROM burn_check_work_answer", [])?;
     connection.execute("DELETE FROM burn_check_response_cache", [])?;
     connection.execute("DELETE FROM burn_check_request_outcome", [])?;
+    connection.execute("DELETE FROM burn_check_dispatch_attempt", [])?;
     connection.execute("DELETE FROM burn_check_usage_reservation", [])?;
     connection.execute(
-        "DELETE FROM setting WHERE key IN (?1, ?2, ?3)",
+        "DELETE FROM setting WHERE key IN (?1, ?2, ?3, 'internal:burnCheckSchedulerV1')",
         rusqlite::params![USAGE_LEDGER_KEY, RESPONSE_CACHE_KEY, HISTORY_BATCH_KEY],
     )?;
     if enabled {
         connection.execute(
-            "UPDATE setting SET value = ?2 WHERE key = ?1",
-            rusqlite::params![ENABLED_AT_KEY, now_epoch.to_string()],
+            "UPDATE setting SET value = ?2 WHERE key = ?1 OR key LIKE ?3",
+            rusqlite::params![
+                ENABLED_AT_KEY,
+                now_epoch.to_string(),
+                format!("{CHECK_ENABLED_AT_PREFIX}%")
+            ],
+        )?;
+    } else {
+        connection.execute(
+            "DELETE FROM setting WHERE key LIKE ?1",
+            [format!("{CHECK_ENABLED_AT_PREFIX}%")],
         )?;
     }
     Ok(())

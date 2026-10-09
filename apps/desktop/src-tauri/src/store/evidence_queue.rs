@@ -13,7 +13,7 @@
 use anyhow::Result;
 use rusqlite::{OptionalExtension, Transaction, params};
 
-use super::{EvidenceClaim, EvidenceFailure, ProjectionRevisions, SessionKey, Store};
+use super::{EvidenceClaim, EvidenceFailure, SessionKey, Store};
 
 /// The candidate order of one claim.
 #[derive(Clone, Copy)]
@@ -25,106 +25,6 @@ enum ClaimOrder {
 }
 
 impl Store {
-    /// Enroll missing evidence rows and requeue stale transcript projections.
-    pub fn reconcile_evidence_revisions(
-        &self,
-        agents: &[&str],
-        revisions: ProjectionRevisions,
-    ) -> Result<usize> {
-        if agents.is_empty() {
-            return Ok(0);
-        }
-
-        let mut connection = self.lock();
-        let transaction = connection.transaction()?;
-        let agent_placeholders = vec!["?"; agents.len()].join(", ");
-        let agent_values: Vec<rusqlite::types::Value> = agents
-            .iter()
-            .map(|agent| rusqlite::types::Value::Text((*agent).to_string()))
-            .collect();
-        let enroll_sql = format!(
-            "INSERT INTO session_evidence (environment_key, agent, session_id)
-                 SELECT session.environment_key, session.agent, session.session_id
-                   FROM session
-                  WHERE session.agent IN ({agent_placeholders})
-                    AND NOT EXISTS (
-                        SELECT 1 FROM session_evidence
-                         WHERE session_evidence.environment_key = session.environment_key
-                           AND session_evidence.agent = session.agent
-                            AND session_evidence.session_id = session.session_id
-                     )
-                 RETURNING environment_key, agent"
-        );
-        let mut enroll_statement = transaction.prepare(&enroll_sql)?;
-        let enrolled_scopes = enroll_statement
-            .query_map(rusqlite::params_from_iter(agent_values.iter()), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let enrolled = enrolled_scopes.len();
-        drop(enroll_statement);
-
-        let parser_parameter = agents.len() + 1;
-        let analyzer_parameter = agents.len() + 2;
-        let metrics_parameter = agents.len() + 3;
-        let evidence_parameter = agents.len() + 4;
-        let update_sql = format!(
-            "UPDATE session_evidence AS evidence
-                SET status = 'pending', last_error = NULL,
-                    next_attempt_at_epoch = NULL, retry_count = 0
-              WHERE evidence.agent IN ({agent_placeholders})
-                AND (
-                    evidence.status <> 'pending'
-                    OR evidence.last_error IS NOT NULL
-                    OR evidence.next_attempt_at_epoch IS NOT NULL
-                    OR evidence.retry_count <> 0
-                )
-                AND EXISTS (
-                    SELECT 1 FROM session
-                     WHERE session.environment_key = evidence.environment_key
-                       AND session.agent = evidence.agent
-                       AND session.session_id = evidence.session_id
-                       AND (
-                            evidence.analyzed_generation IS NOT session.source_generation
-                            OR (evidence.status NOT IN ('failed', 'unsupported')
-                                AND evidence.processed_fingerprint IS NOT session.source_fingerprint)
-                            OR evidence.parser_revision IS NOT ?{parser_parameter}
-                           OR evidence.analyzer_revision IS NOT ?{analyzer_parameter}
-                           OR evidence.evidence_schema_revision IS NOT ?{evidence_parameter}
-                           OR (evidence.status NOT IN ('failed', 'unsupported')
-                               AND NOT EXISTS (
-                               SELECT 1 FROM session_analysis AS analysis
-                                WHERE analysis.environment_key = session.environment_key
-                                  AND analysis.agent = session.agent
-                                  AND analysis.session_id = session.session_id
-                                  AND analysis.analyzed_generation = session.source_generation
-                                  AND analysis.parser_revision = ?{parser_parameter}
-                                  AND analysis.analyzer_revision = ?{analyzer_parameter}
-                                  AND analysis.metrics_schema_revision = ?{metrics_parameter}
-                           ))
-                       )
-                 )
-             RETURNING environment_key, agent"
-        );
-        let mut update_values = agent_values;
-        update_values.extend([
-            rusqlite::types::Value::Integer(revisions.parser_revision),
-            rusqlite::types::Value::Integer(revisions.analyzer_revision),
-            rusqlite::types::Value::Integer(revisions.metrics_schema_revision),
-            rusqlite::types::Value::Integer(revisions.evidence_schema_revision),
-        ]);
-        let mut update_statement = transaction.prepare(&update_sql)?;
-        let requeued_scopes = update_statement
-            .query_map(rusqlite::params_from_iter(update_values.iter()), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let requeued = requeued_scopes.len();
-        drop(update_statement);
-        transaction.commit()?;
-        Ok(enrolled + requeued)
-    }
-
     /// Claim the next eligible evidence row for an enabled agent.
     pub fn claim_next_evidence(
         &self,

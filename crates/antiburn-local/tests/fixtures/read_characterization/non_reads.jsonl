@@ -1,0 +1,10 @@
+{"id":"search","tool":"grep","callID":"search-1","state":{"status":"completed","input":{"pattern":"read","path":"src"},"output":"src/a.rs:1: text"}}
+{"id":"listing","tool":"list_files","callID":"list-1","state":{"status":"completed","input":{"path":"src"},"output":"src/a.rs\nsrc/b.rs"}}
+{"id":"glob","tool":"glob","callID":"glob-1","state":{"status":"completed","input":{"pattern":"src/*.rs"},"output":"src/a.rs"}}
+{"id":"outline","tool":"outline","callID":"outline-1","state":{"status":"completed","input":{"path":"src/a.rs"},"output":"1: fn run()"}}
+{"id":"preview","tool":"preview","callID":"preview-1","state":{"status":"completed","input":{"path":"src/a.rs","offset":1,"limit":2},"output":"1: preview"}}
+{"id":"cat","tool":"bash","callID":"shell-1","state":{"status":"completed","input":{"command":"cat src/a.rs"},"output":"text"}}
+{"id":"sed","tool":"bash","callID":"shell-2","state":{"status":"completed","input":{"command":"sed -n '2,4p' src/a.rs"},"output":"two\nthree\nfour"}}
+{"id":"head","tool":"bash","callID":"shell-3","state":{"status":"completed","input":{"command":"head -n 2 src/a.rs"},"output":"one\ntwo"}}
+{"id":"read-preview","tool":"read","callID":"read-1","state":{"status":"completed","input":{"filePath":"src/a.rs","offset":1,"limit":2},"output":"<preview>\n1: preview\n</preview>"}}
+{"id":"read-outline","tool":"read","callID":"read-2","state":{"status":"completed","input":{"filePath":"src/a.rs","offset":1,"limit":2},"output":"<outline>\n1: fn run()\n</outline>"}}

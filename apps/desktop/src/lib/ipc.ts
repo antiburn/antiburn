@@ -345,8 +345,18 @@ export type Interaction =
   | { kind: "burnCheckAutoFixReviewed"; outcome: AutoFixReviewAnalyticsOutcome }
   | { kind: "burnCheckAutoFixConfirmed" }
   | { kind: "burnCheckAutoFixCompleted"; outcome: AutoFixAnalyticsOutcome }
-  | { kind: "burnCheckPromptPrepared"; outcome: PromptPreparationAnalyticsOutcome }
-  | { kind: "burnCheckPromptCopied" }
+  | {
+      kind: "burnCheckPromptPrepared"
+      outcome: PromptPreparationAnalyticsOutcome
+      check?: SmartCheck
+    }
+  | { kind: "burnCheckPromptCopied"; check?: SmartCheck }
+  | {
+      kind: "smartCheckObserved"
+      check: SmartCheck
+      observation:
+        "finding_visible" | "evidence_available" | "evidence_unavailable" | "evidence_failed"
+    }
   | {
       kind: "ignoredInstructionObserved"
       stage: "finding" | "evidence" | "prompt"
@@ -388,6 +398,24 @@ export type Interaction =
       label: StepSettingsAnalyticsLabel
       detail: StepSettingsDetail
     }
+
+export type SmartCheck =
+  "ignored_instructions" | "scope_creep" | "over_exploring" | "skill_opportunities"
+
+export function smartCheckForDetector(detector: string): SmartCheck | undefined {
+  switch (detector) {
+    case "ignoredInstructions":
+      return "ignored_instructions"
+    case "scopeCreep":
+      return "scope_creep"
+    case "overExploring":
+      return "over_exploring"
+    case "skillOpportunities":
+      return "skill_opportunities"
+    default:
+      return undefined
+  }
+}
 
 export type Surface =
   | "activity"

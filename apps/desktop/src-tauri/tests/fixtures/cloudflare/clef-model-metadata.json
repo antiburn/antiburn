@@ -1,0 +1,19 @@
+{
+  "source": "https://developers.cloudflare.com/workers-ai/models/clef/ and https://developers.cloudflare.com/workers-ai/models/clef-flash/",
+  "captured": "2026-10-05",
+  "models": {
+    "clef": {
+      "model_id": "@cf/cloudflare/clef",
+      "context_window_tokens": 65536,
+      "maximum_questions": 64,
+      "maximum_state_tokens": null
+    },
+    "clef-flash": {
+      "model_id": "@cf/cloudflare/clef-flash",
+      "context_window_tokens": 65536,
+      "maximum_questions": 64,
+      "maximum_state_tokens": null
+    }
+  },
+  "limits_note": "Cloudflare documents that long state is truncated, but does not publish a separate state limit or tokenizer. The API schema does not report runtime context metadata."
+}

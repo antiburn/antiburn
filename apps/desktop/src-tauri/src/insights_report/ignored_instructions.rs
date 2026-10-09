@@ -1,19 +1,12 @@
 use super::findings::CurrentFindingSession;
 use super::*;
 
-pub(crate) fn has_published_sampled_instruction_assessment(
-    data_dir: &Path,
-    request: &ReportRequest,
-) -> Result<bool> {
-    let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
-    has_published_sampled_instruction_assessment_in(&connection, request)
-}
-
-fn has_published_sampled_instruction_assessment_in(
+pub(super) fn has_published_sampled_instruction_assessment_in(
     connection: &rusqlite::Connection,
     request: &ReportRequest,
 ) -> Result<bool> {
-    let mut statement = connection.prepare(
+    let current_evidence = crate::store::revision_sql::current_evidence("e", "s");
+    let sql = format!(
         "SELECT e.evidence_json, s.agent, s.session_id, s.incarnation,
                 s.source_generation, s.source_fingerprint, e.published_fence
            FROM session s
@@ -29,19 +22,19 @@ fn has_published_sampled_instruction_assessment_in(
             AND a.source_fingerprint IS s.source_fingerprint
             AND a.published_fence = e.published_fence
             AND a.input_revision = a.result_revision
-          WHERE s.environment_key = ?1 AND COALESCE(s.updated_at_epoch, s.started_at_epoch) >= ?2
-            AND COALESCE(s.updated_at_epoch, s.started_at_epoch) < ?3 AND e.status = 'ready'
-            AND e.analyzed_generation = s.source_generation
-            AND e.parser_revision = ?4 AND e.analyzer_revision = ?5
-            AND e.evidence_schema_revision = ?6",
-    )?;
-    let mut rows = statement.query(params![
-        request.environment_key,
-        request.window.start_epoch,
-        request.window.end_epoch,
-        PARSER_REVISION,
-        ANALYZER_REVISION,
-        EVIDENCE_SCHEMA_REVISION,
+           WHERE s.environment_key = :environment_key
+             AND COALESCE(s.updated_at_epoch, s.started_at_epoch) >= :window_start
+             AND COALESCE(s.updated_at_epoch, s.started_at_epoch) < :window_end
+             AND e.status = 'ready' AND {current_evidence}"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let mut rows = statement.query(named_params![
+        ":environment_key": request.environment_key,
+        ":window_start": request.window.start_epoch,
+        ":window_end": request.window.end_epoch,
+        ":parser_revision": PARSER_REVISION,
+        ":analyzer_revision": ANALYZER_REVISION,
+        ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION,
     ])?;
     while let Some(row) = rows.next()? {
         let evidence: SessionEvidence = serde_json::from_str(&row.get::<_, String>(0)?)
@@ -81,12 +74,11 @@ fn ignored_instruction_session_statuses_in(
     connection: &rusqlite::Connection,
     keys: &[crate::store::SessionKey],
 ) -> Result<Vec<crate::dto::IgnoredInstructionSessionStatus>> {
-    let sql = "SELECT e.evidence_json, s.incarnation, s.source_generation,
+    let current_evidence = crate::store::revision_sql::current_evidence("e", "s");
+    let sql = format!("SELECT e.evidence_json, s.incarnation, s.source_generation,
                 s.source_fingerprint, e.published_fence, e.status,
-                 (e.analyzed_generation = s.source_generation
-                  AND e.processed_fingerprint IS s.source_fingerprint
-                  AND e.parser_revision = ?4 AND e.analyzer_revision = ?5
-                  AND e.evidence_schema_revision = ?6),
+                 (e.status = 'ready' AND e.processed_fingerprint IS s.source_fingerprint
+                  AND {current_evidence}),
                  EXISTS (
                      SELECT 1 FROM turn_content AS content
                      JOIN turn AS content_turn ON content_turn.rowid = content.turn_rowid
@@ -104,9 +96,8 @@ fn ignored_instruction_session_statuses_in(
             LEFT JOIN burn_check_assessment a
               ON a.environment_key = s.environment_key AND a.agent = s.agent
              AND a.session_id = s.session_id AND a.check_id = 'ignored_instructions'
-           WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
-              AND EXISTS (SELECT 1 FROM setting WHERE key = 'internal:burnChecksEnabledAtEpochV1')"
-        .to_owned();
+            WHERE s.environment_key = :environment_key AND s.agent = :agent AND s.session_id = :session_id
+               AND EXISTS (SELECT 1 FROM setting WHERE key = 'internal:burnChecksEnabledAtEpochV1')");
     let mut statement = connection.prepare(&sql)?;
     let current_evaluator_revision =
         antiburn_local::analysis::ignored_instructions::evaluator_revision();
@@ -114,13 +105,13 @@ fn ignored_instruction_session_statuses_in(
         .map(|key| {
             let row = statement
                 .query_row(
-                    params![
-                        key.environment_key,
-                        key.agent,
-                        key.session_id,
-                        PARSER_REVISION,
-                        ANALYZER_REVISION,
-                        EVIDENCE_SCHEMA_REVISION
+                    named_params![
+                        ":environment_key": key.environment_key,
+                        ":agent": key.agent,
+                        ":session_id": key.session_id,
+                        ":parser_revision": PARSER_REVISION,
+                        ":analyzer_revision": ANALYZER_REVISION,
+                        ":evidence_schema_revision": EVIDENCE_SCHEMA_REVISION
                     ],
                     |row| {
                         Ok((
@@ -425,7 +416,7 @@ pub(crate) fn ignored_instruction_result_for(
     let Some((Some(revision), Some(result_json), input_revision, status)) = stored else {
         return Ok(None);
     };
-    let Ok(result) = serde_json::from_str::<
+    let Ok(mut result) = serde_json::from_str::<
         antiburn_local::analysis::ignored_instructions::AssessmentResult,
     >(&result_json) else {
         return Ok(None);
@@ -441,6 +432,16 @@ pub(crate) fn ignored_instruction_result_for(
         || (status == "failed" && result.findings.is_empty())
     {
         return Ok(None);
+    }
+    for finding in &mut result.findings {
+        if !finding.decision_record().is_some_and(|decision| {
+            decision.source_generation == identity.source_generation
+                && decision.source_fingerprint.as_deref() == identity.source_fingerprint
+                && decision.publication_fence == identity.published_fence
+                && decision.model == result.model_version
+        }) {
+            finding.decision = None;
+        }
     }
     Ok(Some(result))
 }
@@ -469,6 +470,7 @@ pub(crate) fn ignored_instruction_findings_for_evidence(
         .collect()
 }
 
+#[derive(Default)]
 pub(super) struct IgnoredInstructionReportCounts {
     pub eligible: u64,
     pub assessed: u64,
@@ -485,7 +487,14 @@ pub(super) fn apply_ignored_instruction_counts(
     report: &mut EfficiencyReport,
     ignored: IgnoredInstructionReportCounts,
 ) {
-    let detector = DetectorId::IgnoredInstructions;
+    apply_persisted_check_counts(report, DetectorId::IgnoredInstructions, ignored);
+}
+
+pub(super) fn apply_persisted_check_counts(
+    report: &mut EfficiencyReport,
+    detector: DetectorId,
+    ignored: IgnoredInstructionReportCounts,
+) {
     let index = detector.index();
     let counts = &mut report.detectors[index];
     counts.eligible = ignored.eligible;
@@ -554,6 +563,48 @@ mod tests {
     use antiburn_local::analysis::{
         EvidenceSource, SessionEvidenceAccumulator, SourceCapabilities, SourceKind, TurnFacts,
     };
+
+    #[test]
+    fn persisted_advisory_findings_win_over_clean_sessions_without_savings() {
+        let mut report = EfficiencyReportAccumulator::new().finish(ReportContext {
+            environment_key: "native".into(),
+            window: ReportWindow {
+                start_epoch: 0,
+                end_epoch: 100,
+            },
+            computed_at_epoch: 100,
+            parser_revision: PARSER_REVISION,
+            analyzer_revision: ANALYZER_REVISION,
+            evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
+            coverage: Default::default(),
+        });
+        apply_persisted_check_counts(
+            &mut report,
+            DetectorId::SkillOpportunities,
+            IgnoredInstructionReportCounts {
+                eligible: 2,
+                assessed: 2,
+                clean: 1,
+                finding_sessions: 1,
+                examples: vec![SessionExample {
+                    agent: "opencode".into(),
+                    session_id: "finding-session".into(),
+                }],
+                ..Default::default()
+            },
+        );
+        let index = DetectorId::SkillOpportunities.index();
+        assert_eq!(report.detectors[index].assessed, 2);
+        assert_eq!(report.detectors[index].finding, 1);
+        assert_eq!(report.detectors[index].clean, 1);
+        assert!(
+            matches!(&report.detector_statuses[index], DetectorStatus::Findings(values) if values.examples[0].session_id == "finding-session")
+        );
+        assert_eq!(
+            report.detector_estimated_token_burn_basis_points[index],
+            None
+        );
+    }
 
     fn result() -> AssessmentResult {
         AssessmentResult {

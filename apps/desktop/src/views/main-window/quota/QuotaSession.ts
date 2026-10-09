@@ -97,14 +97,12 @@ function findLane(
   return account.lanes.find((lane) => lane.lane === laneId) ?? null
 }
 
-/** The account's own weekly lane, not a model-scoped one, for the five-hour range fallback. */
-function weeklyLaneOf(account: QuotaAccountPayload | null): QuotaLanePayload | null {
-  return account?.lanes.find((lane) => lane.lane === "weekly") ?? null
-}
-
 /** The lane a fresh selection defaults to: the weekly lane, else the account's first lane. */
 function defaultLane(account: QuotaAccountPayload): QuotaLanePayload | null {
-  return weeklyLaneOf(account) ?? account.lanes[0] ?? null
+  const weekly = findLane(account, "weekly")
+  if (weekly) return weekly
+  if (account.lanes.length === 0) return null
+  return account.lanes[0]!
 }
 
 function selectionEquals(left: QuotaSelection, right: QuotaSelection | null): boolean {
@@ -362,12 +360,7 @@ export class QuotaSession {
     const previousSelection = this.snapshot.selection
     try {
       const payload = await this.adapter.getAccounts()
-      // The cached snapshot makes no provider request. A failed read keeps
-      // the generic empty state.
-      const liveUsage =
-        payload.accounts.length === 0
-          ? await this.adapter.getLiveUsage().catch(() => null)
-          : null
+      const liveUsage = payload.accounts.length === 0 ? await this.adapter.getLiveUsage() : null
       if (work !== this.workVersion || version !== this.accountsVersion) return
       const selection = this.resolveSelection(payload.accounts)
       const unchanged = selection != null && selectionEquals(selection, previousSelection)

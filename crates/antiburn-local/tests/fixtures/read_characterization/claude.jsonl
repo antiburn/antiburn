@@ -1,0 +1,2 @@
+{"type":"assistant","uuid":"read-request","sessionId":"root","message":{"id":"message-1","role":"assistant","model":"model","content":[{"type":"tool_use","id":"read-call","name":"Read","input":{"file_path":"src/a.rs","offset":7,"limit":3}}],"usage":{"input_tokens":1,"output_tokens":1}}}
+{"type":"user","uuid":"read-result","parentUuid":"read-request","sessionId":"root","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"read-call","content":"     7→é\n     8→eight\n     9→nine","is_error":false}]}}

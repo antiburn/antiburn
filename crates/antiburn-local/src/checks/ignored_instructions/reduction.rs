@@ -1,4 +1,4 @@
-//! Deterministic judgments, finding publication, and incomplete coverage.
+//! Reduction of one joint semantic decision per rule/action pair.
 
 use super::*;
 
@@ -6,359 +6,195 @@ use super::*;
 #[path = "reduction/tests.rs"]
 mod tests;
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ComparisonDiagnostic {
+    pub comparison_id: String,
+    pub action_id: String,
+    pub stage: String,
+    pub reason: String,
+    pub probabilities: BTreeMap<String, BTreeMap<String, f64>>,
+}
+
 pub fn reduce_assessment(
     plan: &AssessmentPlan,
     responses: &BTreeMap<String, JevWorkItemResult>,
     processing_complete: bool,
 ) -> AssessmentResult {
-    reduce_with_completion(plan, responses, processing_complete, &BTreeMap::new())
+    reduce_traced(plan, responses, processing_complete, &mut None)
 }
 
-pub(super) fn reduce_with_completion(
+pub(super) fn reduce_traced(
     plan: &AssessmentPlan,
     responses: &BTreeMap<String, JevWorkItemResult>,
     processing_complete: bool,
-    completion: &BTreeMap<String, CompletionCoverage>,
+    diagnostics: &mut Option<&mut Vec<ComparisonDiagnostic>>,
 ) -> AssessmentResult {
     let mut findings = BTreeMap::<String, AssessmentFinding>::new();
-    let mut reassessed_finding_ids = Vec::new();
     let mut pending_rules = Vec::new();
     let mut unassessed_comparisons = Vec::new();
-    let mut request_count = 0u32;
-    let mut input_tokens = 0u64;
-    let mut output_tokens = 0u64;
-    let mut seen = BTreeSet::new();
+    let mut coverage = plan.coverage.clone();
+    coverage.reassessed_comparison_ids.clear();
+    coverage.reassessed_rule_ids.clear();
+    coverage.reassessed_finding_ids.clear();
+    let mut request_count = 0;
+    let mut input_tokens = 0;
+    let mut output_tokens = 0;
     let mut seen_requests = BTreeSet::new();
     for comparison in &plan.comparisons {
-        let Some(initial) = responses.get(&comparison.id) else {
-            unassessed_comparisons.push(comparison.id.clone());
-            continue;
-        };
-        record_usage(
-            initial,
-            &mut seen_requests,
-            &mut request_count,
-            &mut input_tokens,
-            &mut output_tokens,
-        );
-        let Some(mut final_judgment) = judgment(initial, completion.get(&comparison.id).copied())
-        else {
-            unassessed_comparisons.push(comparison.id.clone());
-            continue;
-        };
-        if final_judgment.applicability == "not_applicable"
-            && (comparison.action.truncated
-                || comparison.action_text_start != 0
-                || comparison.rule_text_start != 0
-                || comparison.rule_text_end != comparison.rule_text.len())
-            && !initial.answers.contains_key(QUESTION_RELATIONSHIP)
-        {
-            unassessed_comparisons.push(comparison.id.clone());
-            continue;
+        let response = responses.get(&comparison.id);
+        if let Some(response) = response {
+            record_usage(
+                response,
+                &mut seen_requests,
+                &mut request_count,
+                &mut input_tokens,
+                &mut output_tokens,
+            );
         }
-        if final_judgment.applicability == "not_applicable"
-            && probability(&final_judgment, QUESTION_APPLICABILITY, "not_applicable")
-                >= LIKELY_THRESHOLD
-            && !comparison.action.truncated
-            && comparison.action_text_start == 0
-            && comparison.rule_text_start == 0
-            && comparison.rule_text_end == comparison.rule_text.len()
-            && !initial.answers.contains_key(QUESTION_RELATIONSHIP)
-            && !initial.answers.contains_key(QUESTION_EVIDENCE_BASIS)
-            && !plan
-                .observable_obligations
-                .get(&comparison.id)
-                .is_some_and(|obligation| {
-                    obligation.read_order_required && obligation.edit_scope_matches == Some(true)
-                        || obligation
-                            .literal_policies
+        let binding_valid = comparison.source_binding.as_ref().is_some_and(|binding| {
+            binding.matches(comparison)
+                && comparison
+                    .prerequisite_episode
+                    .as_ref()
+                    .is_none_or(|episode| episode.has_source_bindings(binding))
+        }) && comparison.reference.scope != InstructionScope::Unknown;
+        let decision = response.and_then(valid_decision);
+        let reason = if !binding_valid {
+            "source_binding_invalid"
+        } else if let Some((choice, probability)) = decision {
+            coverage
+                .reassessed_comparison_ids
+                .push(comparison.id.clone());
+            coverage
+                .reassessed_rule_ids
+                .push(comparison.reference.rule_id.clone());
+            let id = finding_id_for_reference(&comparison.reference);
+            match choice {
+                "conflict" if probability >= DECISION_THRESHOLD => {
+                    coverage.reassessed_finding_ids.push(id.clone());
+                    let limitations = comparison_limitations(plan, comparison);
+                    let finding = AssessmentFinding {
+                        decision: super::super::decisions::record(
+                            plan,
+                            comparison,
+                            None,
+                            limitations.clone(),
+                        ),
+                        id,
+                        reference: comparison.reference.clone(),
+                        instruction_excerpt: rule_text_fragment(comparison).to_owned(),
+                        instruction_excerpt_truncated: comparison.rule_text_start != 0
+                            || comparison.rule_text_end != comparison.rule_text.len(),
+                        action_excerpt: comparison.action.text.clone(),
+                        action_excerpt_truncated: comparison.action.truncated,
+                        nearby_context_ids: comparison
+                            .context
                             .iter()
-                            .any(|binding| {
-                                binding.exact_match == Some(true)
-                                    || binding.policy
-                                        == crate::analysis::jev::exact_facts::LiteralPolicy::ResponseLiteral
-                                    || (comparison.action.kind == "assistant_text"
-                                        && matches!(binding.policy,
-                                            crate::analysis::jev::exact_facts::LiteralPolicy::ConstructBan
-                                            | crate::analysis::jev::exact_facts::LiteralPolicy::CommandBan))
-                            })
-                })
-        {
-            reassessed_finding_ids.push(finding_id_for_reference(&comparison.reference));
-            continue;
-        }
-        if let Some(obligation) = plan.observable_obligations.get(&comparison.id) {
-            apply_literal_facts(comparison, obligation, initial, &mut final_judgment);
-            if obligation.read_order_required
-                && obligation.candidate_family == "edit"
-                && obligation.edit_scope_matches == Some(true)
-            {
-                final_judgment.applicability = "applies".to_owned();
-                final_judgment.probabilities.insert(
-                    QUESTION_APPLICABILITY.to_owned(),
-                    BTreeMap::from([("applies".to_owned(), 1.0)]),
-                );
-            }
-            let inactive_result_condition = obligation.condition_evidence
-                == crate::analysis::jev::obligations::ConditionEvidence::Result
-                && final_judgment.applicability == "not_applicable"
-                && probability(&final_judgment, QUESTION_APPLICABILITY, "not_applicable")
-                    >= POSSIBLE_THRESHOLD;
-            if (obligation.condition_evidence
-                != crate::analysis::jev::obligations::ConditionEvidence::Selected
-                && !inactive_result_condition)
-                || (obligation.prerequisite_required
-                    && !comparison.prior_history_complete
-                    && comparison.action.kind == "tool_input")
-            {
-                unassessed_comparisons.push(comparison.id.clone());
-                continue;
-            }
-            if !obligation.permission.observable_without_authority() {
-                unassessed_comparisons.push(comparison.id.clone());
-                continue;
-            }
-            if obligation.read_order_required
-                && obligation.recorded_edit_only
-                && obligation.candidate_family == "assistant"
-            {
-                continue;
-            }
-            if obligation.read_order_required
-                && obligation.candidate_family == "edit"
-                && obligation.edit_scope_unknown
-            {
-                unassessed_comparisons.push(comparison.id.clone());
-                continue;
-            }
-            if obligation.read_order_unknown && final_judgment.applicability != "not_applicable" {
-                unassessed_comparisons.push(comparison.id.clone());
-                continue;
-            }
-            if obligation.read_success_required
-                && obligation.read_prerequisite_absent
-                && obligation.candidate_family == "edit"
-                && probability(&final_judgment, QUESTION_APPLICABILITY, "applies")
-                    >= LIKELY_THRESHOLD
-            {
-                final_judgment.relationship = "conflict".to_owned();
-                final_judgment.evidence_basis = "self_contained".to_owned();
-                for (question, option) in [
-                    (QUESTION_RELATIONSHIP, "conflict"),
-                    (QUESTION_EVIDENCE_BASIS, "self_contained"),
-                ] {
-                    final_judgment.probabilities.insert(
-                        question.to_owned(),
-                        BTreeMap::from([(option.to_owned(), 1.0)]),
-                    );
+                            .map(|event| event.action_id.clone())
+                            .collect(),
+                        counterevidence_ids: comparison
+                            .prerequisite_episode
+                            .as_ref()
+                            .map(|episode| episode.events.as_slice())
+                            .unwrap_or(&comparison.counterevidence)
+                            .iter()
+                            .map(|event| event.action_id.clone())
+                            .collect(),
+                        certainty: if matches!(
+                            comparison.reference.provenance,
+                            InstructionProvenance::CurrentFileComparison
+                                | InstructionProvenance::ObservedRead
+                        ) || comparison.action.truncated
+                        {
+                            FindingCertainty::Possible
+                        } else {
+                            FindingCertainty::Likely
+                        },
+                        composite_probability: probability,
+                        limitations,
+                    };
+                    findings
+                        .entry(finding.id.clone())
+                        .and_modify(|previous| {
+                            if finding_order(&finding, previous).is_gt() {
+                                *previous = finding.clone();
+                            }
+                        })
+                        .or_insert(finding);
+                    "conflict"
                 }
-            }
-            if obligation.read_success_required
-                && final_judgment.applicability != "not_applicable"
-                && !(obligation.candidate_family == "edit"
-                    && obligation.read_prerequisite_absent
-                    && final_judgment.relationship == "conflict")
-            {
-                unassessed_comparisons.push(comparison.id.clone());
-                continue;
-            }
-            if obligation.read_order_required
-                && obligation.candidate_family == "edit"
-                && obligation.edit_scope_matches == Some(false)
-            {
-                continue;
-            }
-            if obligation.read_order_required
-                && (final_judgment.applicability == "applies"
-                    || obligation.candidate_family == "read")
-            {
-                let relationship = match obligation.candidate_family.as_str() {
-                    "edit" => match obligation
-                        .read_request_order
-                        .as_ref()
-                        .map(|order| order.state())
-                    {
-                        Some(crate::analysis::jev::obligations::ObligationState::Satisfied) => {
-                            "follows"
-                        }
-                        Some(crate::analysis::jev::obligations::ObligationState::Violated) => {
-                            "conflict"
-                        }
-                        _ => {
-                            unassessed_comparisons.push(comparison.id.clone());
-                            continue;
-                        }
-                    },
-                    "read" => {
-                        final_judgment.applicability = "applies".to_owned();
-                        final_judgment.probabilities.insert(
-                            QUESTION_APPLICABILITY.to_owned(),
-                            BTreeMap::from([("applies".to_owned(), 1.0)]),
-                        );
-                        "follows"
-                    }
-                    _ => {
-                        unassessed_comparisons.push(comparison.id.clone());
-                        continue;
-                    }
-                };
-                final_judgment.relationship = relationship.to_owned();
-                final_judgment.evidence_basis = "self_contained".to_owned();
-                final_judgment.completion = CompletionCoverage::NotObligation;
-                for (question, selected) in [
-                    (QUESTION_RELATIONSHIP, relationship),
-                    (QUESTION_EVIDENCE_BASIS, "self_contained"),
-                ] {
-                    final_judgment.probabilities.insert(
-                        question.to_owned(),
-                        BTreeMap::from([(selected.to_owned(), 1.0)]),
-                    );
+                "no_issue" => {
+                    coverage.reassessed_finding_ids.push(id);
+                    "no_issue"
                 }
+                "pending_completion" => {
+                    pending_rules.push(PendingRule {
+                        instruction_id: comparison.reference.instruction_id.clone(),
+                        instruction_digest: comparison.reference.instruction_digest.clone(),
+                        rule_id: comparison.reference.rule_id.clone(),
+                        heading: comparison.reference.rule_heading.clone(),
+                        reason: "completion_not_observed".to_owned(),
+                    });
+                    "pending_completion"
+                }
+                _ => "uncertain",
             }
+        } else {
+            "decision_missing_or_invalid"
+        };
+        if matches!(
+            reason,
+            "source_binding_invalid" | "decision_missing_or_invalid"
+        ) {
+            unassessed_comparisons.push(comparison.id.clone());
         }
-        if !seen.insert(comparison.id.clone()) {
-            continue;
+        if reason == "uncertain" {
+            unassessed_comparisons.push(comparison.id.clone());
+            coverage
+                .limitations
+                .push("semantic_decision_uncertain".to_owned());
         }
-        if final_judgment.completion == CompletionCoverage::BoundaryNotObserved
-            && probability(
-                &final_judgment,
-                QUESTION_COMPLETION,
-                "completion_not_observed",
-            ) >= POSSIBLE_THRESHOLD
-        {
-            pending_rules.push(PendingRule {
-                instruction_id: comparison.reference.instruction_id.clone(),
-                instruction_digest: comparison.reference.instruction_digest.clone(),
-                rule_id: comparison.reference.rule_id.clone(),
-                heading: comparison.reference.rule_heading.clone(),
-                reason: "completion_boundary_not_observed".to_owned(),
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.push(ComparisonDiagnostic {
+                comparison_id: comparison.id.clone(),
+                action_id: comparison.reference.action_id.clone(),
+                stage: "semantic".to_owned(),
+                reason: reason.to_owned(),
+                probabilities: response
+                    .and_then(|result| result.answers.get(QUESTION_DECISION))
+                    .and_then(|answer| match answer {
+                        JevAnswer::Choice { probabilities, .. } => Some(BTreeMap::from([(
+                            QUESTION_DECISION.to_owned(),
+                            probabilities.clone(),
+                        )])),
+                        _ => None,
+                    })
+                    .unwrap_or_default(),
             });
         }
-        let status = classify_comparison(comparison, &final_judgment);
-        if matches!(status, RuleStatus::Likely | RuleStatus::Possible)
-            || (status == RuleStatus::NoIssue
-                && comparison.rule_text_start == 0
-                && comparison.rule_text_end == comparison.rule_text.len()
-                && comparison.action_text_start == 0
-                && !comparison.action.truncated)
-        {
-            reassessed_finding_ids.push(finding_id_for_reference(&comparison.reference));
-        }
-        match status {
-            RuleStatus::Likely | RuleStatus::Possible => {
-                let certainty = if status == RuleStatus::Likely {
-                    FindingCertainty::Likely
-                } else {
-                    FindingCertainty::Possible
-                };
-                let mut finding_limits = comparison_limitations(plan, comparison);
-                if plan
-                    .observable_obligations
-                    .get(&comparison.id)
-                    .is_some_and(|obligation| obligation.read_order_required)
-                {
-                    finding_limits.push("recorded_read_request_order_only".to_owned());
-                    finding_limits.push("requests_do_not_prove_reading_or_execution".to_owned());
-                }
-                finding_limits.sort();
-                finding_limits.dedup();
-                let (instruction_excerpt, instruction_excerpt_truncated) =
-                    super::super::planning::bounded_text(
-                        super::super::planning::rule_text_fragment(comparison),
-                        2048,
-                    );
-                let action_text = comparison
-                    .action
-                    .text
-                    .get(comparison.action_text_start..comparison.action_text_end)
-                    .unwrap_or(&comparison.action.text);
-                let (action_excerpt, action_excerpt_truncated) =
-                    super::super::planning::bounded_text(action_text, 2048);
-                let finding = AssessmentFinding {
-                    id: finding_id_for_reference(&comparison.reference),
-                    reference: comparison.reference.clone(),
-                    instruction_excerpt,
-                    instruction_excerpt_truncated,
-                    action_excerpt,
-                    action_excerpt_truncated,
-                    nearby_context_ids: comparison
-                        .context
-                        .iter()
-                        .map(|event| event.action_id.clone())
-                        .collect(),
-                    counterevidence_ids: comparison
-                        .counterevidence
-                        .iter()
-                        .map(|event| event.action_id.clone())
-                        .collect(),
-                    certainty,
-                    conflict_probability: probability(
-                        &final_judgment,
-                        QUESTION_RELATIONSHIP,
-                        "conflict",
-                    ),
-                    applicability_probability: probability(
-                        &final_judgment,
-                        QUESTION_APPLICABILITY,
-                        "applies",
-                    ),
-                    evidence_basis_probability: probability(
-                        &final_judgment,
-                        QUESTION_EVIDENCE_BASIS,
-                        "self_contained",
-                    ),
-                    limitations: finding_limits,
-                };
-                findings
-                    .entry(finding.id.clone())
-                    .and_modify(|previous| {
-                        if finding_order(&finding, previous).is_gt() {
-                            *previous = finding.clone();
-                        }
-                    })
-                    .or_insert(finding);
-            }
-            RuleStatus::NoIssue => {}
-            RuleStatus::Unassessed => unassessed_comparisons.push(comparison.id.clone()),
-        }
     }
-    pending_rules.sort_by(|left, right| {
-        (
-            &left.instruction_id,
-            &left.instruction_digest,
-            &left.rule_id,
-        )
-            .cmp(&(
-                &right.instruction_id,
-                &right.instruction_digest,
-                &right.rule_id,
-            ))
+    pending_rules.sort_by(|a, b| {
+        (&a.instruction_id, &a.instruction_digest, &a.rule_id).cmp(&(
+            &b.instruction_id,
+            &b.instruction_digest,
+            &b.rule_id,
+        ))
     });
-    pending_rules.dedup_by(|left, right| {
-        left.instruction_id == right.instruction_id
-            && left.instruction_digest == right.instruction_digest
-            && left.rule_id == right.rule_id
+    pending_rules.dedup_by(|a, b| {
+        a.instruction_id == b.instruction_id
+            && a.instruction_digest == b.instruction_digest
+            && a.rule_id == b.rule_id
     });
     unassessed_comparisons.sort();
     unassessed_comparisons.dedup();
-    let mut coverage = plan.coverage.clone();
-    coverage.reassessed_comparison_ids = plan
-        .comparisons
-        .iter()
-        .map(|comparison| comparison.id.clone())
-        .collect();
-    coverage.reassessed_comparison_ids.sort();
-    coverage.reassessed_comparison_ids.dedup();
-    coverage.reassessed_rule_ids = plan
-        .comparisons
-        .iter()
-        .map(|comparison| comparison.reference.rule_id.clone())
-        .collect();
-    coverage.reassessed_rule_ids.sort();
-    coverage.reassessed_rule_ids.dedup();
-    coverage.reassessed_finding_ids = reassessed_finding_ids;
-    coverage.reassessed_finding_ids.sort();
-    coverage.reassessed_finding_ids.dedup();
+    for ids in [
+        &mut coverage.reassessed_comparison_ids,
+        &mut coverage.reassessed_rule_ids,
+        &mut coverage.reassessed_finding_ids,
+    ] {
+        ids.sort();
+        ids.dedup();
+    }
     if !plan.complete_input {
         coverage
             .limitations
@@ -397,6 +233,32 @@ pub(super) fn reduce_with_completion(
     }
 }
 
+fn valid_decision(result: &JevWorkItemResult) -> Option<(&str, f64)> {
+    let JevAnswer::Choice {
+        choice,
+        probabilities,
+        ..
+    } = result.answers.get(QUESTION_DECISION)?
+    else {
+        return None;
+    };
+    let options = ["conflict", "no_issue", "pending_completion", "uncertain"];
+    if !options.contains(&choice.as_str())
+        || probabilities.len() != options.len()
+        || options.iter().any(|option| {
+            !probabilities
+                .get(*option)
+                .is_some_and(|p| p.is_finite() && (0.0..=1.0).contains(p))
+        })
+        || (probabilities.values().sum::<f64>() - 1.0).abs() > 0.001
+    {
+        return None;
+    }
+    let selected =
+        crate::analysis::jev::classification::confident_choice(result, QUESTION_DECISION, 0.0)?;
+    Some((selected, probabilities[selected]))
+}
+
 fn finding_id_for_reference(reference: &RuleActionRef) -> String {
     sha256_hex(
         format!(
@@ -406,278 +268,48 @@ fn finding_id_for_reference(reference: &RuleActionRef) -> String {
             reference.rule_id,
             reference.action_id,
             reference.provenance.as_str(),
-            reference.scope,
+            reference.scope
         )
         .as_bytes(),
     )
 }
 
-fn apply_literal_facts(
-    comparison: &CandidateComparison,
-    obligation: &ObservableObligation,
-    response: &JevWorkItemResult,
-    judgment: &mut ComparisonJudgment,
-) {
-    use crate::analysis::jev::exact_facts::LiteralPolicy;
-    if !comparison.reference.action_stable || comparison.action.truncated {
-        return;
-    }
-    let strongest = obligation
-        .literal_policies
-        .iter()
-        .enumerate()
-        .filter_map(
-            |(index, binding)| match (binding.policy, binding.exact_match) {
-                (LiteralPolicy::ToolBan, Some(true)) => Some(("conflict", 1.0)),
-                (LiteralPolicy::ToolBan, Some(false)) => Some(("follows", 1.0)),
-                (LiteralPolicy::ResponseLiteral, Some(true)) => Some(("follows", 1.0)),
-                (LiteralPolicy::ResponseLiteral, Some(false)) => Some(("conflict", 1.0)),
-                (LiteralPolicy::ConstructBan | LiteralPolicy::CommandBan, _)
-                    if comparison.action.kind == "assistant_text" =>
-                {
-                    let question = format!("literal_report_{index}");
-                    if crate::analysis::jev::classification::confident_choice(
-                        response,
-                        &question,
-                        LIKELY_THRESHOLD,
-                    ) != Some("reports_addition")
-                    {
-                        return None;
-                    }
-                    let JevAnswer::Choice { probabilities, .. } =
-                        response.answers.get(&question)?
-                    else {
-                        return None;
-                    };
-                    Some(("conflict", *probabilities.get("reports_addition")?))
-                }
-                _ => None,
-            },
-        )
-        .max_by(|left, right| {
-            (left.0 == "conflict")
-                .cmp(&(right.0 == "conflict"))
-                .then_with(|| left.1.total_cmp(&right.1))
-        });
-    let Some((relationship, probability)) = strongest else {
-        return;
-    };
-    judgment.applicability = "applies".to_owned();
-    judgment.relationship = relationship.to_owned();
-    judgment.evidence_basis = "self_contained".to_owned();
-    judgment.completion = CompletionCoverage::NotObligation;
-    for (question, option, probability) in [
-        (QUESTION_APPLICABILITY, "applies", probability),
-        (QUESTION_RELATIONSHIP, relationship, probability),
-        (QUESTION_EVIDENCE_BASIS, "self_contained", 1.0),
-    ] {
-        judgment.probabilities.insert(
-            question.to_owned(),
-            BTreeMap::from([(option.to_owned(), probability)]),
-        );
-    }
+fn finding_order(left: &AssessmentFinding, right: &AssessmentFinding) -> std::cmp::Ordering {
+    left.composite_probability
+        .total_cmp(&right.composite_probability)
+        .then_with(|| {
+            (left.certainty == FindingCertainty::Likely)
+                .cmp(&(right.certainty == FindingCertainty::Likely))
+        })
+        .then_with(|| left.action_excerpt.cmp(&right.action_excerpt))
+        .then_with(|| left.instruction_excerpt.cmp(&right.instruction_excerpt))
+        .then_with(|| left.nearby_context_ids.cmp(&right.nearby_context_ids))
+        .then_with(|| left.counterevidence_ids.cmp(&right.counterevidence_ids))
+        .then_with(|| left.limitations.cmp(&right.limitations))
+        .then_with(|| {
+            left.decision
+                .as_ref()
+                .map(|record| &record.context_revision)
+                .cmp(
+                    &right
+                        .decision
+                        .as_ref()
+                        .map(|record| &record.context_revision),
+                )
+        })
 }
 
 pub(super) fn record_usage(
     result: &JevWorkItemResult,
-    seen_requests: &mut BTreeSet<String>,
+    seen: &mut BTreeSet<String>,
     request_count: &mut u32,
     input_tokens: &mut u64,
     output_tokens: &mut u64,
 ) {
-    if seen_requests.insert(result.request_id.clone()) {
+    if seen.insert(result.request_id.clone()) {
         *request_count = request_count.saturating_add(1);
         *input_tokens = input_tokens.saturating_add(result.usage.input_tokens);
         *output_tokens = output_tokens.saturating_add(result.usage.output_tokens);
-    }
-}
-
-fn finding_order(left: &AssessmentFinding, right: &AssessmentFinding) -> std::cmp::Ordering {
-    (left.certainty == FindingCertainty::Likely)
-        .cmp(&(right.certainty == FindingCertainty::Likely))
-        .then_with(|| {
-            left.conflict_probability
-                .total_cmp(&right.conflict_probability)
-        })
-        .then_with(|| {
-            left.applicability_probability
-                .total_cmp(&right.applicability_probability)
-        })
-        .then_with(|| {
-            left.evidence_basis_probability
-                .total_cmp(&right.evidence_basis_probability)
-        })
-        .then_with(|| left.nearby_context_ids.cmp(&right.nearby_context_ids))
-        .then_with(|| left.counterevidence_ids.cmp(&right.counterevidence_ids))
-        .then_with(|| left.limitations.cmp(&right.limitations))
-        .then_with(|| left.action_excerpt.cmp(&right.action_excerpt))
-        .then_with(|| left.instruction_excerpt.cmp(&right.instruction_excerpt))
-        .then_with(|| {
-            left.action_excerpt_truncated
-                .cmp(&right.action_excerpt_truncated)
-        })
-        .then_with(|| {
-            left.instruction_excerpt_truncated
-                .cmp(&right.instruction_excerpt_truncated)
-        })
-}
-
-fn judgment(
-    result: &JevWorkItemResult,
-    completion: Option<CompletionCoverage>,
-) -> Option<ComparisonJudgment> {
-    let probabilities: BTreeMap<String, BTreeMap<String, f64>> = result
-        .answers
-        .iter()
-        .filter_map(|(local_id, answer)| match answer {
-            JevAnswer::Choice { probabilities, .. } => {
-                Some((local_id.clone(), probabilities.clone()))
-            }
-            _ => None,
-        })
-        .collect();
-    let applicability = selected(result, QUESTION_APPLICABILITY)?;
-    if applicability == "not_applicable"
-        && crate::analysis::jev::classification::confident_choice(
-            result,
-            QUESTION_APPLICABILITY,
-            LIKELY_THRESHOLD,
-        ) == Some("not_applicable")
-        && !result.answers.contains_key(QUESTION_RELATIONSHIP)
-        && !result.answers.contains_key(QUESTION_EVIDENCE_BASIS)
-    {
-        return Some(ComparisonJudgment {
-            applicability,
-            relationship: "unrelated".to_owned(),
-            evidence_basis: "self_contained".to_owned(),
-            completion: CompletionCoverage::NotObligation,
-            probabilities: BTreeMap::from([
-                (
-                    QUESTION_RELATIONSHIP.to_owned(),
-                    BTreeMap::from([("unrelated".to_owned(), 1.0)]),
-                ),
-                (
-                    QUESTION_EVIDENCE_BASIS.to_owned(),
-                    BTreeMap::from([("self_contained".to_owned(), 1.0)]),
-                ),
-                (
-                    QUESTION_APPLICABILITY.to_owned(),
-                    probabilities[QUESTION_APPLICABILITY].clone(),
-                ),
-            ]),
-        });
-    }
-    let applies = probabilities
-        .get(QUESTION_APPLICABILITY)
-        .and_then(|distribution| distribution.get("applies"))
-        .copied()
-        .unwrap_or_default();
-    if applicability == "applies"
-        && applies >= POSSIBLE_THRESHOLD
-        && [
-            QUESTION_RELATIONSHIP,
-            QUESTION_EVIDENCE_BASIS,
-            QUESTION_COMPLETION,
-        ]
-        .iter()
-        .any(|question| {
-            !result.answers.contains_key(*question)
-                && (*question != QUESTION_COMPLETION || completion.is_none())
-        })
-    {
-        return None;
-    }
-    Some(ComparisonJudgment {
-        applicability,
-        relationship: selected(result, QUESTION_RELATIONSHIP).unwrap_or_default(),
-        evidence_basis: selected(result, QUESTION_EVIDENCE_BASIS).unwrap_or_default(),
-        completion: if let Some(completion) = completion {
-            completion
-        } else {
-            match selected(result, QUESTION_COMPLETION)
-                .as_deref()
-                .unwrap_or("uncertain")
-            {
-                "not_completion_obligation" => CompletionCoverage::NotObligation,
-                "completion_not_observed" => CompletionCoverage::BoundaryNotObserved,
-                "completion_observed" => CompletionCoverage::BoundaryObserved,
-                "uncertain" => CompletionCoverage::Uncertain,
-                _ => return None,
-            }
-        },
-        probabilities,
-    })
-}
-
-pub(super) fn selected(result: &JevWorkItemResult, question: &str) -> Option<String> {
-    crate::analysis::jev::classification::confident_choice(result, question, 0.0).map(str::to_owned)
-}
-
-pub(super) fn probability(judgment: &ComparisonJudgment, question: &str, option: &str) -> f64 {
-    judgment
-        .probabilities
-        .get(question)
-        .and_then(|distribution| distribution.get(option))
-        .copied()
-        .unwrap_or_default()
-}
-
-pub(super) fn classify_comparison(
-    comparison: &CandidateComparison,
-    judgment: &ComparisonJudgment,
-) -> RuleStatus {
-    let conflict = probability(judgment, QUESTION_RELATIONSHIP, "conflict");
-    let applies = probability(judgment, QUESTION_APPLICABILITY, "applies");
-    let history_basis = probability(judgment, QUESTION_EVIDENCE_BASIS, "self_contained");
-    if judgment.evidence_basis != "self_contained" || history_basis < POSSIBLE_THRESHOLD {
-        return RuleStatus::Unassessed;
-    }
-    let completion_option = match judgment.completion {
-        CompletionCoverage::NotObligation => "not_completion_obligation",
-        CompletionCoverage::BoundaryObserved => "completion_observed",
-        CompletionCoverage::BoundaryNotObserved | CompletionCoverage::Uncertain => {
-            return RuleStatus::Unassessed;
-        }
-    };
-    // Rule classification can settle action obligations without a completion question.
-    if judgment.probabilities.contains_key(QUESTION_COMPLETION)
-        && probability(judgment, QUESTION_COMPLETION, completion_option) < POSSIBLE_THRESHOLD
-    {
-        return RuleStatus::Unassessed;
-    }
-    if matches!(judgment.relationship.as_str(), "follows" | "unrelated") {
-        return if probability(judgment, QUESTION_RELATIONSHIP, &judgment.relationship)
-            >= POSSIBLE_THRESHOLD
-        {
-            RuleStatus::NoIssue
-        } else {
-            RuleStatus::Unassessed
-        };
-    }
-    if judgment.relationship != "conflict" || conflict < POSSIBLE_THRESHOLD {
-        return RuleStatus::Unassessed;
-    }
-    if judgment.applicability != "applies" || applies < POSSIBLE_THRESHOLD {
-        return RuleStatus::Unassessed;
-    }
-    let likely_evidence = comparison.reference.provenance
-        != InstructionProvenance::CurrentFileComparison
-        && comparison.reference.provenance != InstructionProvenance::ObservedRead
-        && comparison.action.role == "assistant"
-        && comparison.reference.action_stable
-        && !comparison.action.truncated
-        && comparison.reference.scope != InstructionScope::Unknown
-        && applies >= LIKELY_THRESHOLD
-        && conflict >= LIKELY_THRESHOLD
-        && history_basis >= LIKELY_THRESHOLD
-        && (!judgment.probabilities.contains_key(QUESTION_COMPLETION)
-            || probability(judgment, QUESTION_COMPLETION, completion_option) >= LIKELY_THRESHOLD);
-    if likely_evidence {
-        RuleStatus::Likely
-    } else if applies >= POSSIBLE_THRESHOLD {
-        RuleStatus::Possible
-    } else {
-        RuleStatus::Unassessed
     }
 }
 
@@ -689,10 +321,14 @@ fn comparison_limitations(plan: &AssessmentPlan, comparison: &CandidateCompariso
     if comparison.action.truncated {
         limitations.push("candidate_action_truncated".to_owned());
     }
-    if comparison.context_truncated || comparison.context.iter().any(|event| event.truncated) {
+    if comparison.context_truncated {
         limitations.push("nearby_context_truncated".to_owned());
     }
-    if comparison.earlier_history_truncated {
+    if comparison
+        .prerequisite_episode
+        .as_ref()
+        .is_some_and(|episode| !episode.complete_selected_history)
+    {
         limitations.push("earlier_history_truncated".to_owned());
     }
     if !comparison.prior_history_complete {
@@ -701,5 +337,7 @@ fn comparison_limitations(plan: &AssessmentPlan, comparison: &CandidateCompariso
     if !plan.complete_input {
         limitations.push("source_evidence_is_partial".to_owned());
     }
+    limitations.sort();
+    limitations.dedup();
     limitations
 }

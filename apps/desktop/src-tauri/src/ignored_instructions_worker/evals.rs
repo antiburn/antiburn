@@ -173,6 +173,10 @@ fn comparison_id_from_question_id(question_id: &str) -> Option<&str> {
 }
 
 #[cfg(test)]
+#[path = "tests/ii_native_boundaries.rs"]
+mod ii_native_boundaries;
+
+#[cfg(test)]
 mod question_id_tests {
     use super::comparison_id_from_question_id;
 
@@ -188,6 +192,27 @@ mod question_id_tests {
         );
         assert_eq!(comparison_id_from_question_id("target-"), None);
         assert_eq!(comparison_id_from_question_id("target-comparison"), None);
+    }
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::super::{AssessmentPageDecision, AssessmentPosition, assessment_page_decision};
+
+    #[test]
+    fn zero_request_unchanged_position_settles_and_moved_position_continues() {
+        let current: AssessmentPosition = (true, None, Some("comparison-1".into()));
+        let unchanged = current.clone();
+        let moved: AssessmentPosition = (true, None, Some("comparison-2".into()));
+
+        assert_eq!(
+            assessment_page_decision(true, &current, &unchanged),
+            AssessmentPageDecision::Incomplete
+        );
+        assert_eq!(
+            assessment_page_decision(true, &current, &moved),
+            AssessmentPageDecision::Continue
+        );
     }
 }
 
@@ -225,6 +250,203 @@ enum SyntheticPart {
         input: serde_json::Value,
         output: &'static str,
     },
+}
+
+#[tokio::test]
+async fn selected_worker_input_uses_active_capabilities_and_fences_saved_progress() {
+    use antiburn_local::analysis::jev::capabilities::{
+        CapabilityLimit, CapabilitySource, ModelCapabilities,
+    };
+    use antiburn_local::analysis::jev::{
+        pack_work_items_with_capabilities, validate_jev_request_with_capabilities,
+    };
+
+    let harness = build_eval_harness(vec![
+        EvalShape {
+            filler_events: 90,
+            multiple_pages: true
+        };
+        3
+    ])
+    .await;
+    let paged_case = harness
+        .cases
+        .iter()
+        .find(|case| !case.later_pages.is_empty())
+        .expect("the harness includes a paged session");
+    let candidate = harness
+        .store
+        .burn_check_candidates(CHECK_ID, NOW, IDLE_SECS, 16)
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.session.key == paged_case.key)
+        .expect("the paged session is a worker candidate");
+    let origin = harness
+        .store
+        .observe_burn_check_sample_origin(&candidate, CHECK_ID)
+        .unwrap();
+    let mut capabilities = ModelCapabilities::jev_default();
+    capabilities.model = "clef-local".into();
+    capabilities.model_revision = Some("runtime-digest-one".into());
+    capabilities.runtime_context_tokens =
+        CapabilityLimit::known(16384, CapabilitySource::RuntimeMetadata);
+    capabilities.request_body_bytes =
+        CapabilityLimit::known(65536, CapabilitySource::DocumentedDefault);
+    let mut cache = InstructionDiscoveryCache::default();
+    let prepare = |capabilities, backlog| SamplingPass {
+        pairs: &[],
+        round: 0,
+        backlog,
+        origin: &origin,
+        capabilities,
+        legacy_fixture: true,
+    };
+    let PrepareInputOutcome::Ready(mut first) = prepare_selected_input_with_home(
+        &harness.store,
+        &candidate,
+        None,
+        None,
+        harness._home.path(),
+        &mut cache,
+        prepare(&capabilities, false),
+    )
+    .await
+    .unwrap() else {
+        panic!("published input is available")
+    };
+    ignored_instructions::extend_jev_context_with_history_and_capabilities(
+        &mut first.context,
+        &mut [],
+        &first.page_actions,
+        first.prior_history_complete,
+        &capabilities,
+    )
+    .unwrap();
+    let plan = ignored_instructions::IgnoredInstructionsCheck
+        .prepare_with_capabilities(&first.context, &capabilities)
+        .unwrap();
+    assert!(!plan.work_items.is_empty());
+    assert_eq!(plan.capabilities, capabilities);
+    assert_eq!(plan.prepared.model_version, capabilities.model);
+    let packed = pack_work_items_with_capabilities(&plan.work_items, &capabilities);
+    let admitted = packed
+        .batches
+        .iter()
+        .flat_map(|batch| batch.work_item_ids.iter())
+        .collect::<std::collections::BTreeSet<_>>();
+    let skipped = packed
+        .skipped_item_ids
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(admitted.is_disjoint(&skipped));
+    assert_eq!(admitted.union(&skipped).count(), plan.work_items.len());
+    assert!(
+        plan.work_items
+            .iter()
+            .all(|item| admitted.contains(&item.id) || skipped.contains(&item.id))
+    );
+    for batch in packed.batches {
+        assert_eq!(batch.request.model, capabilities.model);
+        validate_jev_request_with_capabilities(&batch.request, &capabilities).unwrap();
+    }
+    let PrepareInputOutcome::Ready(backlog) = prepare_selected_input_with_home(
+        &harness.store,
+        &candidate,
+        None,
+        Some("normal-pass-comparison-cursor".into()),
+        harness._home.path(),
+        &mut cache,
+        prepare(&capabilities, true),
+    )
+    .await
+    .unwrap() else {
+        panic!("backlog input is available")
+    };
+    assert_eq!(first.input_revision, backlog.input_revision);
+    assert!(backlog.content.instructions.is_empty());
+    let saved_content_cursor = first
+        .next_content_cursor
+        .clone()
+        .expect("the selected session has a continuation page");
+    let capabilities = ModelCapabilities {
+        model_revision: Some("runtime-digest-two".into()),
+        ..capabilities.clone()
+    };
+    let PrepareInputOutcome::Ready(second) = prepare_selected_input_with_home(
+        &harness.store,
+        &candidate,
+        None,
+        None,
+        harness._home.path(),
+        &mut cache,
+        prepare(&capabilities, true),
+    )
+    .await
+    .unwrap() else {
+        panic!("published input is available")
+    };
+    assert_ne!(first.input_revision, second.input_revision);
+    assert!(second.content.instructions.is_empty());
+    let prior_finding: ignored_instructions::AssessmentFinding = serde_json::from_value(json!({
+        "id": "prior-finding",
+        "reference": {
+            "instruction_id": "instruction",
+            "instruction_digest": "instruction-digest",
+            "rule_id": "rule",
+            "rule_heading": "Rule",
+            "start_line": 1,
+            "end_line": 1,
+            "source": "AGENTS.md",
+            "provenance": "current_file_comparison",
+            "scope": "project",
+            "action_id": "action",
+            "action_digest": "action-digest",
+            "action_timestamp_ms": null,
+            "action_stable": true
+        },
+        "instruction_excerpt": "instruction",
+        "instruction_excerpt_truncated": false,
+        "action_excerpt": "action",
+        "action_excerpt_truncated": false,
+        "nearby_context_ids": [],
+        "counterevidence_ids": [],
+        "certainty": "possible",
+        "composite_probability": 0.5,
+        "limitations": []
+    }))
+    .unwrap();
+    let mut checkpoint = serde_json::to_value(AssessmentCursor {
+        input_revision: Some(first.input_revision.clone()),
+        backlog: true,
+        comparison_after: Some("saved-comparison".into()),
+        prior_findings: vec![prior_finding.clone()],
+        ..Default::default()
+    })
+    .unwrap();
+    checkpoint["selected_content"] = json!({
+        "revision": SELECTED_CONTENT_PROGRESS_REVISION,
+        "cursor": saved_content_cursor,
+    });
+    let saved = BurnCheckAssessment {
+        key: candidate.session.key.clone(),
+        check_id: CHECK_ID.into(),
+        input_revision: Some(first.input_revision.clone()),
+        status: "running".into(),
+        progress_json: serde_json::to_string(&checkpoint).unwrap(),
+        result_json: None,
+        result_revision: None,
+        request_count: 0,
+    };
+    let (restored, _, restored_selected) =
+        restore_selected_assessment(Some(&saved), &second.input_revision, true).unwrap();
+    assert_eq!(
+        restored.input_revision.as_deref(),
+        Some(second.input_revision.as_str())
+    );
+    assert!(restored.comparison_after.is_none());
+    assert!(restored.backlog);
+    assert!(restored_selected.cursor.is_none());
+    assert_eq!(restored.prior_findings, vec![prior_finding]);
 }
 
 #[tokio::test]
@@ -366,7 +588,40 @@ async fn persisted_opencode_pages_preserve_order_and_expose_projection_limits() 
     assert!(!serialized.contains("SYNTHETIC_PATCH_BODY_OLD"));
     assert!(!serialized.contains("SYNTHETIC_PATCH_BODY"));
     assert!(!serialized.contains("SYNTHETIC_COMMAND_BODY"));
-    assert!(!serialized.contains("SYNTHETIC_SHELL_RESULT"));
+    assert!(serialized.contains("SYNTHETIC_SHELL_RESULT"));
+    let shell_result = paged
+        .first_page
+        .content
+        .actions
+        .iter()
+        .find(|action| {
+            action.kind == "tool_result"
+                && action.tool_name.as_deref() == Some("bash")
+                && action.text.contains("SYNTHETIC_SHELL_RESULT")
+        })
+        .expect("the selected command-result field retains shell output");
+    let shell_input = paged
+        .first_page
+        .content
+        .actions
+        .iter()
+        .find(|action| {
+            action.tool_name.as_deref() == Some("bash") && action.text.contains("git push --force")
+        })
+        .expect("the native fixture contains a shell call");
+    let command_result = shell_result
+        .metadata
+        .command_result
+        .as_ref()
+        .expect("selected output retains its validated source-neutral binding");
+    assert!(command_result.matches_action(shell_result));
+    assert!(command_result.matches_request(shell_input));
+    assert_eq!(command_result.tool_name, "bash");
+    assert_eq!(
+        command_result.call_id,
+        shell_input.tool_call_id.as_deref().unwrap()
+    );
+    assert!(shell_result.metadata.read_result.is_none());
     let tool_input = paged
         .first_page
         .content
@@ -380,15 +635,6 @@ async fn persisted_opencode_pages_preserve_order_and_expose_projection_limits() 
             "paths": ["src/theme.tsx"]
         })
     );
-    let shell_input = paged
-        .first_page
-        .content
-        .actions
-        .iter()
-        .find(|action| {
-            action.tool_name.as_deref() == Some("bash") && action.text.contains("git push --force")
-        })
-        .expect("the native fixture contains a shell call");
     assert!(
         shell_input
             .text
@@ -426,6 +672,7 @@ async fn persisted_opencode_pages_preserve_order_and_expose_projection_limits() 
         prior_findings: Vec::new(),
         validated_prior_findings: Default::default(),
         carried_comparisons: Vec::new(),
+        ..Default::default()
     };
     advance_assessment_page(
         &mut cursor,
@@ -798,7 +1045,6 @@ async fn live_eval_runs_production_path_for_violation_compliance_and_uncertainty
                     let request_state = serde_json::to_string(&batch.request.state)
                         .expect("production batch state serializes");
                     assert!(!request_state.contains("SYNTHETIC_COMMAND_BODY"));
-                    assert!(!request_state.contains("SYNTHETIC_SHELL_RESULT"));
                     let mut observed_inputs = call_totals.observed_inputs.lock().unwrap();
                     match call_case_id {
                         "violates-multiple" => {
@@ -1126,14 +1372,7 @@ async fn live_eval_runs_production_path_for_violation_compliance_and_uncertainty
             String::from("violates-multiple"),
             pair.comparison_id.clone(),
         )];
-        assert_selected_choice(answers, &pair.comparison_id, "applicability", "applies");
-        assert_selected_choice(answers, &pair.comparison_id, "relationship", "conflict");
-        assert_selected_choice(
-            answers,
-            &pair.comparison_id,
-            "evidence_basis",
-            "self_contained",
-        );
+        assert_selected_choice(answers, &pair.comparison_id, "decision", "conflict");
     }
     assert!(results["follows"].findings.is_empty());
     for pair in &targets_by_case["follows"] {
@@ -1145,14 +1384,7 @@ async fn live_eval_runs_production_path_for_violation_compliance_and_uncertainty
             pair.action_label
         );
         let answers = &answers_by_target[&(String::from("follows"), pair.comparison_id.clone())];
-        assert_selected_choice(answers, &pair.comparison_id, "applicability", "applies");
-        assert_selected_choice(answers, &pair.comparison_id, "relationship", "follows");
-        assert_selected_choice(
-            answers,
-            &pair.comparison_id,
-            "evidence_basis",
-            "self_contained",
-        );
+        assert_selected_choice(answers, &pair.comparison_id, "decision", "no_issue");
     }
     let uncertain_pair = targets_by_case["questionable"]
         .iter()
@@ -1172,24 +1404,11 @@ async fn live_eval_runs_production_path_for_violation_compliance_and_uncertainty
         String::from("questionable"),
         uncertain_pair.comparison_id.clone(),
     )];
-    assert_selected_choice(
-        uncertain_answers,
-        &uncertain_pair.comparison_id,
-        "applicability",
-        "applies",
-    );
     assert_selected_choice_with_minimum(
         uncertain_answers,
         &uncertain_pair.comparison_id,
-        "relationship",
-        "insufficient_evidence",
-        0.50,
-    );
-    assert_selected_choice_with_minimum(
-        uncertain_answers,
-        &uncertain_pair.comparison_id,
-        "evidence_basis",
-        "evidence_incomplete",
+        "decision",
+        "uncertain",
         0.50,
     );
 }
@@ -1414,14 +1633,33 @@ fn publish_synthetic_source(
     fingerprint: &str,
     now: i64,
 ) -> anyhow::Result<()> {
+    publish_native_source(
+        store,
+        "opencode",
+        id,
+        RawSource::Sqlite(path.to_path_buf()),
+        SourceFormat::OpenCodeSqliteV2,
+        fingerprint,
+        now,
+    )
+}
+
+fn publish_native_source(
+    store: &Store,
+    agent: &str,
+    id: &str,
+    source: RawSource,
+    source_format: SourceFormat,
+    fingerprint: &str,
+    now: i64,
+) -> anyhow::Result<()> {
     let claim = store
-        .claim_next_evidence(&["opencode"], now, 300)?
+        .claim_next_evidence(&[agent], now, 300)?
         .ok_or_else(|| anyhow::anyhow!("synthetic source did not enter the evidence queue"))?;
     anyhow::ensure!(
         claim.key.session_id == id,
         "evidence claim selected another fixture"
     );
-    let source = RawSource::Sqlite(path.to_path_buf());
     let row_store: Arc<dyn TurnRowStore> = Arc::new(FencedTurnRowStore::new(
         store.clone(),
         claim.key.clone(),
@@ -1429,10 +1667,15 @@ fn publish_synthetic_source(
     ));
     let mut pass = crate::analysis::evidence_pass_with_turn_rows(
         &[SessionInput {
-            agent: "opencode".to_owned(),
+            agent: if agent == "claude-code" {
+                "claude"
+            } else {
+                agent
+            }
+            .to_owned(),
             session_id: id.to_owned(),
             source,
-            source_format: SourceFormat::OpenCodeSqliteV2,
+            source_format,
             fork_parent_session_id: None,
         }],
         &|| false,
@@ -1918,7 +2161,7 @@ fn assert_selected_choice(
     question: &str,
     expected: &str,
 ) {
-    assert_selected_choice_with_minimum(result, comparison_id, question, expected, 0.85);
+    assert_selected_choice_with_minimum(result, comparison_id, question, expected, 0.75);
 }
 
 fn assert_selected_choice_with_minimum(

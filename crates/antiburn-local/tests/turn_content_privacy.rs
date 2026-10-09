@@ -1,5 +1,6 @@
 //! Turn-content capture must never leak transcript text into any other
-//! projection. Content lives only in `turn_content`. `NormalizedSession`,
+//! metrics or summary projection. Content lives in `turn_content` and explicitly
+//! selected check inputs. `NormalizedSession`,
 //! `SessionEvidence` (diagnostics included), `SessionMetrics`, and every
 //! other table in the schema must never carry it. Deleting a session's turn
 //! rows must remove it completely.
@@ -253,12 +254,28 @@ fn assert_vendor_privacy(
             "{agent} selected content is non-empty"
         );
         assert!(selected.actions.iter().all(|action| {
-            action.kind != "user"
-                && action.kind != "user_text"
-                && action.kind != "thinking"
-                && (action.kind != "tool_result" || action.text.is_empty())
+            action.kind != "thinking"
+                && (action.kind != "tool_result"
+                    || (action.authority == "tool" && action.metadata.human_text.is_none()))
         }));
-        assert_eq!(selected.field_availability.len(), 12);
+        assert!(selected.field_availability.iter().any(|field| field.field
+            == antiburn_local::analysis::JevInputField::UserMessage
+            && field.selected));
+        assert!(selected.field_availability.iter().any(|field| field.field
+            == antiburn_local::analysis::JevInputField::BashCommandOutput
+            && field.selected));
+        for field in &selected.field_availability {
+            assert_eq!(field.selected, INPUT_SELECTION.includes(field.field));
+        }
+        let selected_json = serde_json::to_string(&selected).unwrap();
+        for sentinel in sentinels.iter().filter(|sentinel| {
+            sentinel.contains("thinking") || **sentinel == "private reasoning stays local"
+        }) {
+            assert!(
+                !selected_json.contains(sentinel),
+                "{agent} selected thinking: {sentinel}"
+            );
+        }
         assert!(selected.field_availability.iter().all(|field| {
             !field.selected
                 || field.capability != antiburn_local::analysis::JevFieldCapability::Unavailable
@@ -1113,10 +1130,13 @@ fn equivalent_native_requests_have_the_same_selected_meaning_for_all_six_formats
                 }
                 assert_eq!(
                     action.metadata.state,
-                    if agent == "opencode" {
-                        antiburn_local::analysis::jev_evidence::JevOperationState::Running
-                    } else {
-                        antiburn_local::analysis::jev_evidence::JevOperationState::Unknown
+                    match agent {
+                        "opencode" =>
+                            antiburn_local::analysis::jev_evidence::JevOperationState::Running,
+                        "pi" => antiburn_local::analysis::jev_evidence::JevOperationState::Pending,
+                        "claude" | "codex" | "cursor" | "antigravity" =>
+                            antiburn_local::analysis::jev_evidence::JevOperationState::Unknown,
+                        _ => unreachable!(),
                     }
                 );
             }

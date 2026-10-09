@@ -84,7 +84,34 @@ pub const MIGRATIONS: &[&str] = &[
     V71,
     V72,
     V73,
+    V74,
+    V75,
 ];
+
+const V73: &str = r#"
+ALTER TABLE burn_check_assessment ADD COLUMN eligible_targets INTEGER;
+ALTER TABLE burn_check_assessment ADD COLUMN reviewed_targets INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE burn_check_assessment ADD COLUMN runnable_targets INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE burn_check_assessment ADD COLUMN scheduling_revision TEXT;
+ALTER TABLE burn_check_assessment ADD COLUMN last_served_turn INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE burn_check_dispatch_attempt (
+    request_identity TEXT PRIMARY KEY NOT NULL,
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    attempts INTEGER NOT NULL CHECK(attempts BETWEEN 1 AND 3),
+    next_attempt_at_epoch INTEGER,
+    terminal INTEGER NOT NULL DEFAULT 0 CHECK(terminal IN (0, 1)),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+"#;
+
+const V74: &str = r#"
+ALTER TABLE burn_check_dispatch_attempt
+    ADD COLUMN last_attempt_at_epoch INTEGER NOT NULL DEFAULT 0;
+UPDATE burn_check_dispatch_attempt SET last_attempt_at_epoch = unixepoch();
+"#;
 
 const V69: &str = r#"
 CREATE TABLE burn_check_sampled_pair (
@@ -1606,12 +1633,19 @@ UPDATE setting
  WHERE key = 'disabledAgents';
 "#;
 
-/// v73 makes the next scan describe Claude sessions labelled `cli` again.
+/// v75 makes the next scan describe Claude sessions labelled `cli` again.
 /// Earlier scans labelled every session under `~/.claude/projects` as `cli`,
 /// including Claude Desktop and VS Code sessions. An empty activity cursor
 /// stops the scan from reusing the old record, so the scan reads the
 /// transcript head and stores the correct surface.
-const V73: &str = r#"
+///
+/// Routine scans read only the current window. Older rows change only in the
+/// historical pass, so v75 also clears the historical pass's completion
+/// marker, as `scan::history::reset_done` does. The automatic historical pass
+/// then runs again once.
+const V75: &str = r#"
 UPDATE session SET activity_cursor = ''
 WHERE agent = 'claude-code' AND surface = 'cli';
+UPDATE setting SET value = ''
+WHERE key = 'internal:historyDoneForRetentionDays';
 "#;
