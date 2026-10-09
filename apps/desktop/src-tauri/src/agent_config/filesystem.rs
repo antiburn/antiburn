@@ -9,18 +9,18 @@ use super::ConfigUnavailableReason;
 
 const MAX_CONFIG_BYTES: u64 = 256 * 1024;
 
-pub(super) struct CheckedFile {
-    pub(super) bytes: Vec<u8>,
+pub(crate) struct CheckedFile {
+    pub(crate) bytes: Vec<u8>,
     #[cfg(not(windows))]
-    pub(super) identity: FileIdentity,
+    pub(crate) identity: FileIdentity,
     #[cfg(not(windows))]
-    pub(super) permissions: fs::Permissions,
+    pub(crate) permissions: fs::Permissions,
     #[cfg(unix)]
-    pub(super) ownership: FileOwnership,
+    pub(crate) ownership: FileOwnership,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct FileIdentity {
+pub(crate) struct FileIdentity {
     #[cfg(unix)]
     device: u64,
     #[cfg(unix)]
@@ -31,17 +31,17 @@ pub(super) struct FileIdentity {
 
 #[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct FileOwnership {
+pub(crate) struct FileOwnership {
     user: u32,
     group: u32,
 }
 
-pub(super) fn canonical_root(path: &Path) -> Result<PathBuf, ConfigUnavailableReason> {
+pub(crate) fn canonical_root(path: &Path) -> Result<PathBuf, ConfigUnavailableReason> {
     path.canonicalize()
         .map_err(|_| ConfigUnavailableReason::UnsafePath)
 }
 
-pub(super) fn path_entry_exists(path: &Path) -> Result<bool, ConfigUnavailableReason> {
+pub(crate) fn path_entry_exists(path: &Path) -> Result<bool, ConfigUnavailableReason> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -52,7 +52,7 @@ pub(super) fn path_entry_exists(path: &Path) -> Result<bool, ConfigUnavailableRe
     }
 }
 
-pub(super) fn read_checked(
+pub(crate) fn read_checked(
     path: &Path,
     trusted_root: &Path,
 ) -> Result<CheckedFile, ConfigUnavailableReason> {
@@ -146,7 +146,7 @@ fn check_owner(
 }
 
 #[cfg(unix)]
-pub(super) fn file_ownership(metadata: &fs::Metadata) -> FileOwnership {
+pub(crate) fn file_ownership(metadata: &fs::Metadata) -> FileOwnership {
     use std::os::unix::fs::MetadataExt;
     FileOwnership {
         user: metadata.uid(),
@@ -159,7 +159,7 @@ fn check_owner(_: &fs::Metadata, _: &Path, _: &Path) -> Result<(), ConfigUnavail
     Ok(())
 }
 
-pub(super) fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
+pub(crate) fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -177,7 +177,7 @@ pub(super) fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
 }
 
 #[cfg(not(windows))]
-pub(super) fn create_temporary(
+pub(crate) fn create_temporary(
     path: &Path,
     permissions: &fs::Permissions,
 ) -> std::io::Result<fs::File> {
@@ -191,7 +191,7 @@ pub(super) fn create_temporary(
 }
 
 #[cfg(not(windows))]
-pub(super) fn map_write_error(error: std::io::Error) -> ConfigUnavailableReason {
+pub(crate) fn map_write_error(error: std::io::Error) -> ConfigUnavailableReason {
     if error.kind() == std::io::ErrorKind::PermissionDenied {
         ConfigUnavailableReason::PermissionDenied
     } else {

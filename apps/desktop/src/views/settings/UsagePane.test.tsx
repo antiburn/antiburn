@@ -293,6 +293,36 @@ describe("UsagePane", () => {
     expect(screen.queryByText(/^Signed in/)).not.toBeInTheDocument()
   })
 
+  it("links a Claude Desktop-only meter to the docs", async () => {
+    getLiveUsage.mockResolvedValue(
+      summary({
+        meters: [
+          {
+            provider: "anthropic",
+            displayName: "Claude",
+            shown: true,
+            detection: "installedNotSignedIn",
+            desktopAppLabel: "Claude Desktop",
+          },
+        ],
+        errors: [
+          {
+            source: "claude-usage-fetch",
+            provider: "anthropic",
+            displayName: "Claude",
+            category: "authentication",
+            detail: "desktopOnly",
+          },
+        ],
+      }),
+    )
+    pane({ liveUsageEnabled: true })
+    expect(
+      await screen.findByText("Usage limits not available for Claude Desktop."),
+    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Learn more" })).toBeInTheDocument()
+  })
+
   it("keeps the off-switch guidance and disables provider switches despite detection", async () => {
     getLiveUsage.mockResolvedValue(
       summary({

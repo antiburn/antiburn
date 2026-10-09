@@ -15,19 +15,41 @@ Thank you for contributing.
 
 ## Privacy and safety
 
+Local Skill Opportunities reference inputs retain bounded current skill names,
+descriptions or full Markdown fallback sources, semantic frontmatter/metadata,
+optional filesystem birth time, and selected native skill-use
+identity/lifecycle/timing. Current inventory
+does not prove historical visibility or contents. This local adapter sends no
+requests by itself. The production worker sends selected skill fields and use
+limits to the configured provider. A valid nonempty description is the only
+reference text sent. Missing, null, or blank descriptions and plain Markdown
+use bounded structural chunks of the full Markdown, with byte ranges and a
+partial flag. These fallback chunks can include frontmatter, paths, or other
+private values. Invalid YAML and non-string descriptions remain unsupported.
+Known used skills follow the same selection. Keep these inputs and native
+record/call IDs out of first-party analytics and ordinary report DTOs.
+Select individual reference snapshots rather
+than serialize the entire inventory.
+
 antiburn keeps its session index locally and needs no project-operated account.
-When the user enables Jev-powered Burn Checks with a TypeSafe API key, the
+When the user enables Smart Burn Checks with Jev, Ollama, Cloudflare, or Custom, the
 current Ignored Instructions check sends selected instruction text, assistant
 text excerpts, Bash command input, file-edit paths, read-file paths, search
-queries with scope filters, and other-tool inputs to TypeSafe. OpenCode
+queries with scope filters, and other-tool inputs to that provider. OpenCode
 `apply_patch` requests expose paths from valid `patchText` input. Bash input can
 include inline scripts, heredocs, and patches recorded inside the command.
-Dedicated edit-tool content is excluded. The check excludes user messages,
-read output, search output, command output, and all other tool-result text.
-Selected paths can leave the machine in TypeSafe requests. Keep this paid,
+Dedicated edit-tool content is excluded. Selected human text and exactly bound
+Bash results can supply bounded context; unknown-origin text and completion labels
+do not prove approval or passing tests. Read/search output, other results, typed
+question/plan fields, and thinking remain excluded from Ignored Instructions.
+Scope Creep, Over-exploring, and Skill Opportunities can send selected task/work,
+edit and tool-result content, supported question/plan records, and current skill
+reference fields. They reach pinned native Claude Code, Codex, OpenCode SQLite,
+and Pi roots; see [session coverage](docs/session-coverage.md).
+Selected paths can leave the machine in provider requests. Keep this
 optional request separate from first-party product analytics. Do not send its
 inputs, responses, keys, findings, or evidence to analytics. Store only bounded
-local TypeSafe usage aggregates, including the model and price version used for
+local Smart Check usage aggregates, including the model and price version used for
 estimates. Do not retain request histories or session identifiers for billing summaries.
 Session deletion keeps already-incurred totals. Clear Local Data removes them
 and the rolling usage reservations.
@@ -36,20 +58,34 @@ Instruction-file discovery compares supported files in their current state.
 It does not prove historical contents or activation. Recover historical
 instruction text only from an authoritative session record; do not infer it
 from a matching current path or a read request. Keep unavailable evidence
-unavailable. Ignored Instructions samples 256 high-priority rule/action pairs
-per review by default. This sample is not exhaustive or a spending cap. Clean
+unavailable. Ignored Instructions samples up to 8 high-priority rule/action pairs
+per turn by default. This sample is not exhaustive or a spending cap. Clean
 means no finding among sampled comparisons, not that all content is safe. Keep
 provider and evidence errors separate from the remaining sampling gap. Reuse a
 result only when the same instruction rule and action can be identified across
-an append or restart. Review new activity first, then older pairs not yet
-sampled. Instruction changes govern future actions only; the first observed
-version cannot establish historical activation. The roughly 60-second
+an append or restart. Alternate risk-ranked new activity with older unchecked
+work across source chronology. Instruction changes govern future actions only;
+the first observed version cannot establish historical activation. The roughly 60-second
 ordinary-session goal after worker start is not a cutoff or guarantee. An
-unknown outcome can trigger up to three total dispatch attempts while the worker
-tries to recover it. An earlier attempt may already have incurred a charge. If
-the result remains unknown, further dispatch of that work is blocked. Describe
+retryable transport failure can trigger up to three persisted dispatch attempts
+total. Unknown delivery blocks automatic redispatch when safe reconciliation is
+unavailable. An earlier attempt may already have incurred a charge. Describe
 incremental paid requests and compatible answer
 reuse without promising a per-session cost cap.
+
+Each production check descriptor initially targets 50% of eligible targets,
+then continues remaining work. State this as a target fraction, not confidence
+or finding probability. The shared scheduler rotates across all four descriptors,
+prefers initial review for four turns, and prefers continuation on the fifth.
+The other lane can run when the preferred lane is empty. Per-turn target limits
+are 8/4/3/4 for Ignored Instructions, Scope Creep, Over-exploring, and Skill
+Opportunities, respectively. Admit at most two provider dispatch attempts per
+turn, including retries. Persist finite attempt limits in the Store across
+turns and restarts; yielding must not reset them. Reuse typed answers only for
+the exact evidence and decision context, references, model/provider configuration,
+and revisions. Keep private thinking excluded. Count review only after all
+required answers and successful reduction; never use the initial fraction to
+convert incomplete, uncertain, unsupported, exhausted, or failed work into Clean.
 
 Follow [the reusable Jev check contract](docs/smart-burn-checks.md#reusable-jev-check-contract) when adding a
 check-owned projection, input window, question set, or reducer. See
@@ -63,7 +99,7 @@ setup completes, Settings → Privacy provides the opt-out, payloads contain no
 work or credentials, identifiers
 rotate, and builds without a configured endpoint send nothing.
 
-For Ignored Instructions, measure saved enablement transitions, completed
+For all four Smart Burn Checks, measure saved enablement and provider transitions, completed
 execution outcomes, visible findings, evidence outcomes, and prompt actions
 using closed values only. Exclude historical assessment outcomes from normal
 adoption and automatic execution rates. Measure user-requested history runs separately.
@@ -93,7 +129,7 @@ checks when a change crosses workspace boundaries or changes a public interface.
 cd crates/antiburn-local
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo nextest run
 ```
 
 ### Desktop checks
@@ -106,11 +142,33 @@ pnpm --filter @antiburn/desktop test
 pnpm --filter @antiburn/desktop build
 ```
 
+### Smart Check diagnostics
+
+Use the [Rust eval guide](apps/desktop/src-tauri/eval/README.md). Each check has
+one ignored `live` entry point and shared provider/suite/case/limit/capture support.
+Credentials come only from the authorized shell environment. Select exact cases
+with `ANTIBURN_EVAL_CASES` and bound calls with `ANTIBURN_EVAL_LIMIT`. Reports
+retain errors, abstentions, binding diagnostics, accuracy, usage, and latency.
+Scores are diagnostics, not strict thresholds or delivery gates. No recipe,
+frozen hash, previous passing report, or Python tool is required. Do not run every
+ignored test; imported production transport probes can incur charges.
+
+After coverage edits, run from the repository root:
+
+```sh
+cargo nextest run --manifest-path crates/antiburn-local/Cargo.toml --test check_coverage_contract
+cargo nextest run --manifest-path crates/antiburn-local/Cargo.toml --test source_contracts
+```
+
+When source claims or formats change, also run `source_contracts` and the
+affected native characterization targets with the same engine manifest. Select
+tests for the changed contract; live eval scores remain diagnostics, not gates.
+
 ### Desktop backend checks
 
 The Linux remote helper is another standalone workspace. When its protocol or
 engine inputs change, run `cargo fmt --check`, `cargo clippy --all-targets --locked
--- -D warnings`, and `cargo test --locked` from `crates/antiburn-remote` as well.
+-- -D warnings`, and `cargo nextest run --locked` from `crates/antiburn-remote` as well.
 CI also builds its static Linux x64 and ARM64 archives. See
 [remote sessions](docs/remote-sessions.md) for manual setup and evidence limits.
 
@@ -118,7 +176,7 @@ CI also builds its static Linux x64 and ARM64 archives. See
 cd apps/desktop/src-tauri
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo nextest run
 ```
 
 For analytics changes, also run these shell checks with the feature enabled:
@@ -128,7 +186,7 @@ cd apps/desktop/src-tauri
 cargo clippy --all-targets --features analytics -- -D warnings
 ANTIBURN_ANALYTICS_URL=http://127.0.0.1:8787 \
 ANTIBURN_ANALYTICS_OPERATOR="Local development" \
-cargo test --features analytics
+cargo nextest run --features analytics
 ```
 
 The endpoint and operator are build-time inputs. Use the loopback collector in

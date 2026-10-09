@@ -38,6 +38,9 @@ use crate::analysis::resume::{AdapterResume, StreamSnapshot};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
 use crate::analysis::threads::ThreadResolver;
 
+mod native;
+mod scope;
+
 /// Parses Pi transcript files without retaining transcript content.
 pub struct PiSessionReader;
 
@@ -130,7 +133,7 @@ impl PiSessionReader {
                     BufReader::new(File::open(path)?),
                     &|| false,
                     sink,
-                    PiStreamState::default(),
+                    PiStreamState::default().with_native_contract(input, dialect),
                     dialect,
                 )?,
                 RawSource::Jsonl(content) => {
@@ -140,7 +143,7 @@ impl PiSessionReader {
                         BufReader::new(source),
                         &|| false,
                         sink,
-                        PiStreamState::default(),
+                        PiStreamState::default().with_native_contract(input, dialect),
                         dialect,
                     )?
                 }
@@ -194,7 +197,7 @@ impl PiSessionReader {
                 BufReader::new(pinned.reader(limit)),
                 cancel,
                 sink,
-                PiStreamState::default(),
+                PiStreamState::default().with_native_contract(input, dialect),
                 dialect,
             )?;
             let outcome = match guarantee {
@@ -270,6 +273,7 @@ impl PiSessionReader {
             };
             let initial_state: PiStreamState = postcard::from_bytes(&resume.adapter.0)
                 .with_context(|| format!("decoding {label} adapter snapshot"))?;
+            let initial_state = initial_state.with_native_contract(input, dialect);
             let state = self.visit_reader_dialect(
                 BufReader::new(pinned.reader_from(resume.resume.offset, u64::MAX)),
                 cancel,
@@ -317,6 +321,7 @@ impl PiSessionReader {
     ) -> anyhow::Result<PiStreamState> {
         let label = dialect.label;
         let mut reader = BoundedJsonlReader::new(reader);
+        state.scope_enabled = dialect.label == "Pi";
 
         while let Some(record) = reader.next_record(cancel) {
             match record {
@@ -359,7 +364,7 @@ impl PiSessionReader {
                         state.reject_admission();
                         continue;
                     }
-                    state.observe_admitted(value, sink);
+                    state.observe_admitted(value, sink, cancel)?;
                 }
             }
         }
@@ -426,6 +431,9 @@ struct PiSubagentCall {
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct PiStreamState {
+    native: native::PiNativeState,
+    scope: scope::PiScopeState,
+    scope_enabled: bool,
     admission: PiAdmission,
     admission_checked: bool,
     /// The header version after applying Pi's documented read-time migrations.
@@ -469,7 +477,20 @@ pub(crate) enum PiAdmission {
 }
 
 impl PiStreamState {
+    fn with_native_contract(mut self, input: &SessionInput, dialect: PiDialect) -> Self {
+        // Legacy metric inputs do not establish retained user history.
+        self.native.enable(
+            dialect.label == "Pi"
+                && input.source_format == crate::analysis::SourceFormat::PiV3Jsonl
+                && matches!(self.session_version, 0 | 3),
+        );
+        self
+    }
+
     pub(crate) fn reject_admission(&mut self) {
+        if self.scope_enabled {
+            self.native.invalidate();
+        }
         if matches!(self.admission, PiAdmission::AwaitingHeader) {
             self.admission = PiAdmission::Rejected;
         }
@@ -479,35 +500,58 @@ impl PiStreamState {
         matches!(self.admission, PiAdmission::AwaitingHeader)
     }
 
-    pub(crate) fn observe_admitted(&mut self, value: Value, sink: &mut dyn RecordSink) {
+    pub(crate) fn observe_admitted(
+        &mut self,
+        value: Value,
+        sink: &mut dyn RecordSink,
+        cancel: &dyn Fn() -> bool,
+    ) -> anyhow::Result<()> {
         self.admission_checked = true;
         match self.admission {
-            PiAdmission::Accepted => self.observe(value, sink),
+            PiAdmission::Accepted => self.observe_cancellable(value, sink, cancel)?,
             PiAdmission::Rejected => {}
             PiAdmission::AwaitingHeader => {
                 let Some(reason) = pi_header_rejection(&value) else {
                     self.admission = PiAdmission::Accepted;
                     self.session_version = pi_header_version(&value).expect("admitted Pi version");
                     self.observe_session_header(&value);
-                    return;
+                    return Ok(());
                 };
                 self.admission = PiAdmission::Rejected;
                 sink.record(NormalizedRecord::Unusable(reason));
             }
         }
+        Ok(())
     }
 
+    #[cfg(test)]
     fn observe(&mut self, value: Value, sink: &mut dyn RecordSink) {
+        self.observe_cancellable(value, sink, &|| false)
+            .expect("test record observation completes");
+    }
+
+    fn observe_cancellable(
+        &mut self,
+        value: Value,
+        sink: &mut dyn RecordSink,
+        cancel: &dyn Fn() -> bool,
+    ) -> anyhow::Result<()> {
         let mut value = value;
         self.migrate_entry(&mut value);
+        if self.scope_enabled {
+            self.native.observe_entry(&value, sink);
+        }
         if let Some(reason) = pi_lineage_reason(&value) {
             sink.record(NormalizedRecord::Unusable(reason));
         }
         let id = thread_identity_field(&value, "id");
         let parent_id = thread_identity_field(&value, "parentId");
         if id.as_deref().is_some_and(|id| self.threads.contains(id)) {
+            if self.scope_enabled {
+                self.native.invalidate();
+            }
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
-            return;
+            return Ok(());
         }
         let thread_id = self.threads.resolve(id.as_deref(), parent_id.as_deref());
         if id.is_some()
@@ -527,7 +571,7 @@ impl PiStreamState {
             self.current_provider = policy.provider;
             self.current_thinking_mode = policy.thinking_mode;
         }
-        self.observe_row(&value, thread_id, sink);
+        self.observe_row(&value, thread_id, sink, cancel)?;
         // Use the thread resolver's bound and keep each identity's first policy.
         if !self.threads.capped()
             && let Some(id) = id
@@ -538,6 +582,7 @@ impl PiStreamState {
                 thinking_mode: self.current_thinking_mode.clone(),
             });
         }
+        Ok(())
     }
 
     fn migrate_entry(&mut self, value: &mut Value) {
@@ -586,7 +631,13 @@ impl PiStreamState {
         }
     }
 
-    fn observe_row(&mut self, value: &Value, thread_id: Option<String>, sink: &mut dyn RecordSink) {
+    fn observe_row(
+        &mut self,
+        value: &Value,
+        thread_id: Option<String>,
+        sink: &mut dyn RecordSink,
+        cancel: &dyn Fn() -> bool,
+    ) -> anyhow::Result<()> {
         let row_type = value.get("type").and_then(Value::as_str);
         let id = thread_identity_field(value, "id");
         let parent_id = thread_identity_field(value, "parentId");
@@ -615,7 +666,7 @@ impl PiStreamState {
                     sink.record(NormalizedRecord::Observation(Box::new(
                         EvidenceObservation::InheritedRecord,
                     )));
-                    return;
+                    return Ok(());
                 }
                 (Some(_), Some(_)) => {}
                 _ => {
@@ -626,7 +677,7 @@ impl PiStreamState {
                     sink.record(NormalizedRecord::Unusable(
                         PartialReason::AttributionIncomplete,
                     ));
-                    return;
+                    return Ok(());
                 }
             }
         }
@@ -641,11 +692,16 @@ impl PiStreamState {
                 EvidenceObservation::RecordTimestamp { ts_ms },
             )));
         }
+        let scope_parts = if self.scope_enabled {
+            self.scope.observe(value, sink, cancel)?
+        } else {
+            Vec::new()
+        };
         match row_type {
             Some("session") => {
                 sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             }
-            Some("message") => self.observe_message(value, thread_id, sink),
+            Some("message") => self.observe_message(value, thread_id, scope_parts, sink),
             Some("model_change") => self.observe_model_change(value, sink, false),
             Some("thinking_level_change") => self.observe_thinking_level_change(value, sink, false),
             Some("usage") => self.observe_usage(value, thread_id, sink),
@@ -653,14 +709,24 @@ impl PiStreamState {
             Some("branch_summary") => self.observe_branch_summary(value, thread_id, sink),
             Some("session_info" | "label") if is_inert_shape(value) => observe_inert(value, sink),
             Some("custom" | "custom_message") if is_inert_shape(value) => {
+                if !scope_parts.is_empty() {
+                    let mut event = NormalizedEvent::new(Role::System);
+                    event.ts_ms = value.get("timestamp").and_then(parse_ts);
+                    event.thread_id = thread_id;
+                    self.emit_event(event, scope_parts, sink);
+                }
                 observe_inert(value, sink)
             }
             Some(discriminator) => unrecognized(discriminator, sink),
             None => unrecognized("<missing>", sink),
         }
+        Ok(())
     }
 
     fn observe_session_header(&mut self, value: &Value) {
+        if self.scope_enabled {
+            self.native.start(value, self.session_version);
+        }
         let has_parent = value
             .as_object()
             .is_some_and(|header| header.contains_key("parentSession"));
@@ -683,6 +749,7 @@ impl PiStreamState {
         &mut self,
         value: &Value,
         thread_id: Option<String>,
+        scope_parts: Vec<ContentPart>,
         sink: &mut dyn RecordSink,
     ) {
         let role = value
@@ -788,7 +855,7 @@ impl PiStreamState {
             .collect();
 
         let unknown_blocks = unknown_content_blocks(value);
-        let content_parts = if role == "toolResult"
+        let mut content_parts = if role == "toolResult"
             && value.pointer("/message/toolName").and_then(Value::as_str) == Some("subagent")
         {
             Vec::new()
@@ -805,6 +872,10 @@ impl PiStreamState {
         } else {
             extract_content_parts(value, event.role)
         };
+        if self.scope_enabled {
+            self.native.bind_message(value, &mut content_parts);
+        }
+        content_parts.extend(scope_parts);
         self.emit_event(event, content_parts, sink);
         if role == "toolResult"
             && value.pointer("/message/toolName").and_then(Value::as_str) == Some("subagent")
@@ -1251,6 +1322,12 @@ impl PiStreamState {
             coverage_gaps.push(PartialReason::AttributionIncomplete);
         }
         if self.legacy_migration_incomplete {
+            coverage_gaps.push(PartialReason::AttributionIncomplete);
+        }
+        if self.scope.incomplete() {
+            coverage_gaps.push(PartialReason::AttributionIncomplete);
+        }
+        if self.native.incomplete() {
             coverage_gaps.push(PartialReason::AttributionIncomplete);
         }
         coverage_gaps.sort_unstable();

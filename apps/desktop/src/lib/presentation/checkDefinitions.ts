@@ -43,6 +43,25 @@ export const CHECK_DEFINITIONS = {
     kind: "local",
     description: "Checks recorded model versions against reviewed replacements.",
   },
+  skillOpportunities: {
+    label: "Skill opportunities",
+    aliases: ["improve skills", "skill improvements", "skill suggestions"],
+    kind: "smart",
+    description:
+      "Finds opportunities to improve skills from supported session evidence and current skill references.",
+  },
+  overExploring: {
+    label: "Over-exploring",
+    aliases: ["over_exploring", "excessive reading", "unrelated files", "file breadth"],
+    kind: "smart",
+    description: "Finds unrelated or excessive reading in supported session evidence.",
+  },
+  scopeCreep: {
+    label: "Scope creep",
+    aliases: ["scope_creep", "extra work", "agreed task", "task scope", "unapproved work"],
+    kind: "smart",
+    description: "Finds work beyond the agreed task in supported session evidence.",
+  },
   overuseOfFastMode: {
     label: "Fast mode overuse",
     aliases: ["fast mode", "priority", "speed"],
@@ -56,7 +75,7 @@ export const CHECK_DEFINITIONS = {
     description: "Checks compatible request records for excess cache rehydration.",
   },
   ignoredInstructions: {
-    label: "Ignored Instructions",
+    label: "Ignored instructions",
     aliases: ["instruction conflicts", "missed agent rules", "AGENTS.md", "CLAUDE.md"],
     kind: "smart",
     description:
@@ -90,6 +109,30 @@ export const CHECK_LABELS = Object.fromEntries(
   Object.entries(CHECK_DEFINITIONS).map(([id, definition]) => [id, definition.label]),
 ) as Record<BurnCheckDetectorId, string>
 
+export function isCheckAvailable(
+  id: BurnCheckDetectorId,
+  smartChecksAvailable: boolean,
+): boolean {
+  return smartChecksAvailable || CHECK_DEFINITIONS[id].kind === "local"
+}
+
+const OVER_EXPLORING_DETAILS = {
+  unrelated_files: "The assessed reads included files unrelated to the work.",
+  excessive_file_breadth: "The assessed work read more files than it needed.",
+  excessive_within_file_reading: "The assessed work read more of a file than it needed.",
+} as const
+
+export function overExploringDetail(reason: string | undefined): string | null {
+  switch (reason) {
+    case "unrelated_files":
+    case "excessive_file_breadth":
+    case "excessive_within_file_reading":
+      return OVER_EXPLORING_DETAILS[reason]
+    default:
+      return null
+  }
+}
+
 /** Short, plain problem phrases for a failing category. The Overview's
  *  first-run summary lists these instead of the category label, so the
  *  reader sees what is wrong, not just its name. */
@@ -104,4 +147,7 @@ export const CHECK_PROBLEM_PHRASES: Record<BurnCheckDetectorId, string> = {
   overuseOfFastMode: "fast mode runs where it doesn't pay off",
   cacheChurn: "cache is rehydrated more than it needs to be",
   ignoredInstructions: "agents go against your AGENTS.md or CLAUDE.md rules",
+  skillOpportunities: "skills could better support the work",
+  overExploring: "agents read more than the work needs",
+  scopeCreep: "agents do work beyond the agreed task",
 }

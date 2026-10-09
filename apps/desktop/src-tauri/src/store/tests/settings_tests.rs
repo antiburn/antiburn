@@ -429,7 +429,7 @@ fn v72_keeps_only_disabled_agents_that_have_sessions() {
          VALUES ('disabledAgents', 'amp-code, Cursor,,codex,pi,cursor');"
     ));
 
-    assert_eq!(store.schema_version().unwrap(), 72);
+    assert_eq!(store.schema_version().unwrap(), 74);
     assert_eq!(
         store.settings().unwrap().disabled_agents.as_str(),
         "codex,cursor"
@@ -442,7 +442,7 @@ fn v72_clears_a_disabled_list_with_no_session_agents() {
         "INSERT INTO setting (key, value) VALUES ('disabledAgents', 'amp-code,pi');",
     );
 
-    assert_eq!(store.schema_version().unwrap(), 72);
+    assert_eq!(store.schema_version().unwrap(), 74);
     assert!(!store.settings().unwrap().disabled_agents.any());
 }
 

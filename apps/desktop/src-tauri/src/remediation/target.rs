@@ -233,7 +233,10 @@ pub(super) fn finding_scope(
     workspace_key: Option<&str>,
 ) -> (String, String) {
     match cause {
-        FindingCause::CacheChurn { .. } => (
+        FindingCause::CacheChurn { .. }
+        | FindingCause::OverExploring(_)
+        | FindingCause::ScopeCreep(_)
+        | FindingCause::SkillOpportunity { .. } => (
             "session".to_owned(),
             session_scope_key(secret, agent, session_id),
         ),
@@ -642,6 +645,7 @@ mod instruction_scope_tests {
     fn cause(source: &str, instruction_scope: InstructionScope) -> FindingCause {
         FindingCause::IgnoredInstructionConflict(Box::new(
             antiburn_local::remediation::IgnoredInstructionConflictEvidence {
+                decision: None,
                 assessment_revision: "revision".to_owned(),
                 assessment_finding_id: "finding".to_owned(),
                 instruction_id: "instruction".to_owned(),

@@ -1,7 +1,7 @@
 # Main-window navigation and local search
 
 The retained main renderer owns a bounded history of 100 destinations. A destination is
-Overview, Limits, Sessions with its contextual filters and optional session identity, or Checks with an
+Overview, Limits, Memories, Sessions with its contextual filters and optional session identity, or Checks with an
 optional check ID. Explicit navigation appends; Back and Forward restore; automatic initial
 selection replaces. Selecting the same destination can reveal it again without appending.
 Opening one of the Agents, Sessions, or Checks progress steps' settings modals on top of

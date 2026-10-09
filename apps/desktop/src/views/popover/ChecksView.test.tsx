@@ -368,7 +368,7 @@ describe("Checks", () => {
   it("shows floored token burn estimates and every confirmed pass in preview mode", () => {
     const { container } = render(<ChecksPeek presentation={presentation} />)
     expect(screen.getByText("16% estimated token burn")).toBeInTheDocument()
-    expect(container.querySelectorAll(".text-roll")).toHaveLength(6)
+    expect(container.querySelectorAll(".text-roll")).toHaveLength(2)
     expect(screen.getByText(/1 check failed/)).toBeInTheDocument()
     expect(screen.getByText("7/11 sessions failed")).toBeInTheDocument()
     expect(screen.queryByText(/More evidence is needed/)).not.toBeInTheDocument()
@@ -391,7 +391,32 @@ describe("Checks", () => {
       expect(row.firstElementChild).toHaveClass("bg-system-green/10", "text-system-green")
     }
     expect(screen.getAllByText("Passed")).toHaveLength(4)
+    expect(screen.queryByText("0% estimated burn")).not.toBeInTheDocument()
     expect(screen.queryByRole("button")).not.toBeInTheDocument()
+  })
+
+  it("shows in-progress checks with the shared result style and spinner", () => {
+    render(
+      <ChecksPeek
+        presentation={{
+          ...presentation,
+          failures: [],
+          wins: [
+            category("scopeCreep", {
+              clean: 0,
+              estimatedTokenBurnBasisPoints: null,
+              lifecycle: null,
+              checking: true,
+            }),
+          ],
+        }}
+      />,
+    )
+    const row = screen.getByText("Scope creep").closest<HTMLElement>(".grid")!
+    expect(within(row).getByText("No issues found yet")).toHaveClass("text-system-green")
+    expect(within(row).getByText("Checking")).toBeVisible()
+    expect(row.querySelector(".lucide-loader-circle")).toBeInTheDocument()
+    expect(within(row).queryByText("0% estimated burn")).not.toBeInTheDocument()
   })
 
   it("shows the queued check count below the hero", () => {
@@ -505,7 +530,7 @@ describe("Checks", () => {
     expect(screen.getByText("7% estimated token burn")).toBeInTheDocument()
     expect(screen.getByText("5% estimated burn")).toBeInTheDocument()
     expect(screen.getByText("1/1 session failed")).toBeInTheDocument()
-    expect(container.querySelectorAll(".text-roll")).toHaveLength(6)
+    expect(container.querySelectorAll(".text-roll")).toHaveLength(2)
 
     rerender(
       <ChecksPeek
@@ -518,6 +543,7 @@ describe("Checks", () => {
     )
     expect(screen.getByText("8% estimated token burn")).toBeInTheDocument()
     expect(screen.getByText("6% estimated burn")).toBeInTheDocument()
+    expect(container.querySelectorAll(".text-roll")).toHaveLength(2)
     expect(container.querySelectorAll(".text-roll-in")).toHaveLength(2)
   })
 

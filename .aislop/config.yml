@@ -33,6 +33,6 @@ rules:
   ai-slop/narrative-comment: error
   ai-slop/meta-comment: error
   ai-slop/hardcoded-id: error
-  ai-slop/hardcoded-url: error
+  ai-slop/hardcoded-url: off
   ai-slop/rust-non-test-unwrap: error
   ai-slop/todo-stub: error

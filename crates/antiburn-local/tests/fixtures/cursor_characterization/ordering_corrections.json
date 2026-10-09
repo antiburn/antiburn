@@ -1,0 +1,4 @@
+[
+  {"role":"user","id":"z-first","content":"Implement the plan.","timestamp":2000,"createdAt":"2026-10-06T12:00:00Z"},
+  {"role":"user","id":"a-correction","content":"No. Do not implement it. Only add tests.","timestamp":1000,"createdAt":"2026-10-06T12:00:00Z"}
+]

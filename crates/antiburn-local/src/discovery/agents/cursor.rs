@@ -13,6 +13,9 @@ use async_trait::async_trait;
 use rusqlite::{Connection, OpenFlags, params};
 use serde_json::{Value, json};
 
+mod json_encoding;
+
+use self::json_encoding::{decode_hex_jsonish, looks_like_jsonish};
 use super::path_codec::decode_cursor_workspace_path_buf;
 use crate::discovery::scanner::{self, AgentKind};
 use crate::discovery::{
@@ -1018,6 +1021,21 @@ fn build_desktop_cursor_session_content(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let scope_ordering_proven = composer
+        .get("fullConversationHeadersOnly")
+        .and_then(Value::as_array)
+        .is_some_and(|headers| {
+            !headers.is_empty()
+                && headers.iter().all(|header| {
+                    header
+                        .get("bubbleId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| !id.is_empty())
+                })
+                && header_ids.iter().collect::<HashSet<_>>().len() == header_ids.len()
+        })
+        && composer.get("conversation").is_none()
+        && composer.get("conversationMap").is_none();
 
     header_ids.extend(extract_bubble_ids_from_value(
         composer.get("conversation").unwrap_or(&Value::Null),
@@ -1058,6 +1076,7 @@ fn build_desktop_cursor_session_content(
             "createdAt": composer.get("createdAt").and_then(Value::as_i64),
             "lastUpdatedAt": composer.get("lastUpdatedAt").and_then(Value::as_i64),
             "cursor_source": "desktop_state_vscdb",
+            "cursor_scope_ordering": if scope_ordering_proven { "recorded_headers" } else { "unproven" },
             "workspaceId": composer.get("workspaceId").and_then(Value::as_str),
             FORK_OBSERVATION_KEY: fork_observation,
         })
@@ -1066,12 +1085,18 @@ fn build_desktop_cursor_session_content(
 
     for bubble_id in header_ids {
         let Some(bubble) = bubbles.remove(&bubble_id) else {
+            lines.push(json!({"type":"__missing_bubble__","bubbleId":bubble_id}).to_string());
             continue;
         };
         let Some(role) = cursor_role_for_value(&bubble) else {
             continue;
         };
         let Some(content) = extract_cursor_bubble_text(&bubble) else {
+            if role == "user" {
+                lines.push(
+                    json!({"type":"__unavailable_user_content__","bubbleId":bubble_id}).to_string(),
+                );
+            }
             continue;
         };
         lines.push(
@@ -1142,12 +1167,21 @@ fn cursor_role_for_value(value: &Value) -> Option<&'static str> {
 
 fn extract_cursor_bubble_text(bubble: &Value) -> Option<String> {
     for key in ["text", "markdown", "content", "description"] {
-        if let Some(text) = bubble.get(key).and_then(Value::as_str) {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
+        if let Some(text) = bubble.get(key).and_then(Value::as_str)
+            && !text.trim().is_empty()
+        {
+            return Some(text.to_string());
         }
+    }
+
+    if let Some(rich_text) = bubble.get("richText").and_then(Value::as_str)
+        && serde_json::from_str::<Value>(rich_text).is_ok()
+    {
+        return Some(rich_text.to_owned());
+    }
+
+    if cursor_role_for_value(bubble) == Some("user") {
+        return None;
     }
 
     for pointer in [
@@ -1157,22 +1191,10 @@ fn extract_cursor_bubble_text(bubble: &Value) -> Option<String> {
         "/toolResult/output",
         "/errorDetails/message",
     ] {
-        if let Some(text) = bubble.pointer(pointer).and_then(Value::as_str) {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
-    }
-
-    if let Some(rich_text) = bubble.get("richText").and_then(Value::as_str)
-        && let Ok(parsed) = serde_json::from_str::<Value>(rich_text)
-    {
-        let mut fragments = Vec::new();
-        collect_rich_text_fragments(&parsed, &mut fragments);
-        let joined = fragments.join(" ").trim().to_string();
-        if !joined.is_empty() {
-            return Some(joined);
+        if let Some(text) = bubble.pointer(pointer).and_then(Value::as_str)
+            && !text.trim().is_empty()
+        {
+            return Some(text.to_string());
         }
     }
 
@@ -1207,30 +1229,6 @@ fn collect_bubble_ids(value: &Value, out: &mut Vec<String>) {
         Value::Array(items) => {
             for item in items {
                 collect_bubble_ids(item, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn collect_rich_text_fragments(value: &Value, out: &mut Vec<String>) {
-    match value {
-        Value::Object(map) => {
-            if let Some(text) = map.get("text").and_then(Value::as_str) {
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    out.push(trimmed.to_string());
-                }
-            }
-            if let Some(children) = map.get("children").and_then(Value::as_array) {
-                for child in children {
-                    collect_rich_text_fragments(child, out);
-                }
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_rich_text_fragments(item, out);
             }
         }
         _ => {}
@@ -1585,8 +1583,9 @@ fn read_cursor_store_db_snapshot(path: &Path) -> Option<CursorStoreDbSnapshot> {
         let (rows, unreadable) = sqlite_table_string_rows(&conn, table);
         if table == "meta" {
             meta_values.extend(rows.iter().map(|(_, value)| value.clone()));
+        } else {
+            records.extend(rows);
         }
-        records.extend(rows);
         if table == "blobs" && unreadable {
             records.push((
                 "cursor-unreadable-blob".to_owned(),
@@ -1785,27 +1784,36 @@ fn build_cursor_store_db_content(
             "createdAt": metadata.created_at,
             "lastUpdatedAt": metadata.updated_at,
             "cursor_source": "store_db",
+            "cursor_scope_ordering": "unproven",
             FORK_OBSERVATION_KEY: fork_observation,
         })
         .to_string(),
     ];
-    let mut seen = HashSet::new();
-    for (_, value) in records {
+    for (blob_id, value) in records {
         let Ok(json) = serde_json::from_str::<Value>(value) else {
+            lines.push(r#"{"type":"__unreadable_blob__"}"#.to_owned());
             continue;
         };
-        for message in extract_cursor_message_candidates(&json) {
-            let fingerprint = format!("{}:{}", message.role, message.content);
-            if !seen.insert(fingerprint) {
-                continue;
-            }
+        if json.get("type").and_then(Value::as_str) == Some("__unreadable_blob__") {
+            lines.push(json.to_string());
+            continue;
+        }
+        let messages = extract_cursor_message_candidates(&json);
+        if messages.is_empty() && json != json!({"messages": []}) {
+            lines.push(
+                json!({"type":"__unrecognized_store_blob__", "blobId":blob_id, "native":json})
+                    .to_string(),
+            );
+        }
+        for message in messages {
             lines.push(
                 json!({
                     "role": message.role,
                     "content": message.content,
                     "timestamp": message.timestamp,
                     "model": message.model,
-                    "bubbleId": message.record_id,
+                    "bubbleId": message.record_id.as_deref().or_else(|| json.get("role").is_some().then_some(blob_id.as_str())),
+                    "providerOptions": message.provider_options,
                 })
                 .to_string(),
             );
@@ -1821,68 +1829,70 @@ fn build_cursor_store_db_content(
 #[derive(Debug, Clone)]
 struct CursorMessageCandidate {
     role: String,
-    content: String,
+    content: Value,
+    provider_options: Option<Value>,
     timestamp: Option<i64>,
     model: Option<String>,
     record_id: Option<String>,
 }
 
 fn extract_cursor_message_candidates(value: &Value) -> Vec<CursorMessageCandidate> {
-    let mut out = Vec::new();
-    collect_cursor_message_candidates(value, &mut out);
-    out
+    if let Some(message) = cursor_transport_message(value) {
+        return vec![message];
+    }
+    let Some(map) = value.as_object() else {
+        return Vec::new();
+    };
+    if map.len() != 1 {
+        return Vec::new();
+    }
+    map.get("messages")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .map(cursor_transport_message)
+                .collect::<Option<Vec<_>>>()
+        })
+        .unwrap_or_default()
 }
 
-fn collect_cursor_message_candidates(value: &Value, out: &mut Vec<CursorMessageCandidate>) {
-    match value {
-        Value::Object(map) => {
-            let role = map
-                .get("role")
-                .and_then(Value::as_str)
-                .or_else(|| map.get("type").and_then(Value::as_str));
-            let content = map
-                .get("content")
-                .and_then(Value::as_str)
-                .or_else(|| map.get("text").and_then(Value::as_str))
-                .or_else(|| map.get("markdown").and_then(Value::as_str));
-            if let (Some(role), Some(content)) = (role, content)
-                && matches!(role, "user" | "assistant")
-                && !content.trim().is_empty()
-            {
-                out.push(CursorMessageCandidate {
-                    role: role.to_string(),
-                    content: content.trim().to_string(),
-                    timestamp: map
-                        .get("createdAt")
-                        .and_then(Value::as_i64)
-                        .or_else(|| map.get("timestamp").and_then(Value::as_i64)),
-                    model: map
-                        .get("model")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned)
-                        .or_else(|| {
-                            value
-                                .pointer("/modelInfo/modelName")
-                                .and_then(Value::as_str)
-                                .map(ToOwned::to_owned)
-                        }),
-                    record_id: ["bubbleId", "messageId", "id"]
-                        .into_iter()
-                        .find_map(|key| map.get(key).and_then(Value::as_str))
-                        .map(ToOwned::to_owned),
-                });
-            }
-            for child in map.values() {
-                collect_cursor_message_candidates(child, out);
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_cursor_message_candidates(item, out);
-            }
-        }
-        _ => {}
+fn cursor_transport_message(value: &Value) -> Option<CursorMessageCandidate> {
+    let map = value.as_object()?;
+    if map.contains_key("type") {
+        return None;
     }
+    let role = map.get("role")?.as_str()?;
+    let content = map.get("content")?;
+    if !matches!(role, "user" | "assistant" | "tool" | "system")
+        || !(content.is_string() || content.is_array())
+        || content.as_str().is_some_and(|text| text.trim().is_empty())
+    {
+        return None;
+    }
+    Some(CursorMessageCandidate {
+        role: role.to_string(),
+        content: content.clone(),
+        provider_options: map.get("providerOptions").cloned(),
+        timestamp: map
+            .get("createdAt")
+            .and_then(Value::as_i64)
+            .or_else(|| map.get("timestamp").and_then(Value::as_i64)),
+        model: map
+            .get("model")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                value
+                    .pointer("/modelInfo/modelName")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            }),
+        record_id: ["bubbleId", "messageId", "id"]
+            .into_iter()
+            .find_map(|key| map.get(key).and_then(Value::as_str))
+            .map(ToOwned::to_owned),
+    })
 }
 
 fn find_string_in_value(value: &Value, keys: &[&str]) -> Option<String> {
@@ -1948,7 +1958,11 @@ fn sqlite_table_exists(conn: &Connection, table: &str) -> bool {
 
 fn sqlite_table_string_rows(conn: &Connection, table: &str) -> (Vec<(String, String)>, bool) {
     let mut out = Vec::new();
-    let direct_sql = format!("SELECT key, CAST(value AS TEXT) FROM {table}");
+    let direct_sql = if table == "blobs" && conn.prepare("SELECT id, data FROM blobs").is_ok() {
+        "SELECT id, CAST(data AS TEXT) FROM blobs ORDER BY rowid".to_owned()
+    } else {
+        format!("SELECT key, CAST(value AS TEXT) FROM {table} ORDER BY rowid")
+    };
     if let Ok(mut stmt) = conn.prepare(&direct_sql)
         && let Ok(rows) = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -2031,55 +2045,371 @@ fn sqlite_table_string_rows(conn: &Connection, table: &str) -> (Vec<(String, Str
     (out, true)
 }
 
-fn looks_like_jsonish(text: &str) -> bool {
-    let trimmed = text.trim();
-    trimmed.starts_with('{') || trimmed.starts_with('[')
-}
-
-/// Cursor's `~/.cursor/chats/*/store.db#meta.value` is a TEXT column whose
-/// stored content is hex-encoded JSON (literal ASCII hex characters
-/// representing the raw bytes of a `{...}` document). Decode and return the
-/// JSON text if `value` looks like hex-encoded JSON; otherwise `None`.
-///
-/// Cheap pre-checks bail before any allocation: even length, first two
-/// chars decode to `{` or `[`, and the rest is all ASCII hex. Only after
-/// every check passes do we allocate the output buffer.
-fn decode_hex_jsonish(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.len() < 4 || !trimmed.len().is_multiple_of(2) {
-        return None;
-    }
-    let bytes = trimmed.as_bytes();
-    // Cheapest discriminating check first: the leading byte. If it doesn't
-    // decode to `{` / `[`, this isn't a hex-encoded JSON document and we
-    // bail before scanning the full string for hex-ness.
-    let head = hex_byte(bytes[0], bytes[1])?;
-    if head != b'{' && head != b'[' {
-        return None;
-    }
-    // Now confirm the tail is all hex, then decode into a single
-    // pre-sized buffer. `chunks_exact(2)` is bounds-check-free.
-    if !bytes[2..].iter().all(u8::is_ascii_hexdigit) {
-        return None;
-    }
-    let mut out = Vec::with_capacity(trimmed.len() / 2);
-    out.push(head);
-    for pair in bytes[2..].chunks_exact(2) {
-        out.push(hex_byte(pair[0], pair[1])?);
-    }
-    String::from_utf8(out).ok()
-}
-
-/// Decode a two-char ASCII hex pair (e.g. `b'7'`, `b'b'`) to one byte.
-/// Returns `None` if either char isn't a valid hex digit.
-fn hex_byte(hi: u8, lo: u8) -> Option<u8> {
-    let h = (hi as char).to_digit(16)?;
-    let l = (lo as char).to_digit(16)?;
-    Some(((h << 4) | l) as u8)
-}
-
 #[cfg(test)]
 mod tests {
+
+    fn assert_cursor_scope_ordering_gap(content: &str) {
+        let header_line = content.lines().next().expect("session has a header");
+        let header: Value =
+            serde_json::from_str(header_line).expect("session header is valid JSON");
+        assert_eq!(header["cursor_scope_ordering"], "unproven");
+        let input = crate::analysis::SessionInput {
+            agent: "cursor".into(),
+            session_id: "synthetic".into(),
+            source: crate::analysis::RawSource::Jsonl(content.to_owned()),
+            fork_parent_session_id: None,
+            source_format: Default::default(),
+        };
+        let mut collector = crate::analysis::SessionCollector::new("cursor", "synthetic");
+        crate::analysis::reader_for("cursor")
+            .visit(&input, &mut collector)
+            .expect("Cursor reader accepts the synthetic session");
+        assert!(
+            collector
+                .partial_reasons()
+                .contains(&crate::analysis::PartialReason::AttributionIncomplete)
+        );
+    }
+
+    #[test]
+    fn cursor_discovery_tool_aliases_and_unknown_wrappers_never_promote_nested_users() {
+        let values: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/cursor_characterization/discovery_boundaries.json"
+        ))
+        .unwrap();
+        let metadata =
+            parse_cursor_store_db_metadata(&[json!({"agentId":"synthetic"}).to_string()]).unwrap();
+        for value in values {
+            assert!(
+                extract_cursor_message_candidates(&value).is_empty(),
+                "{value}"
+            );
+            let content = build_cursor_store_db_content(
+                &metadata,
+                &[("unknown".into(), value.to_string())],
+                None,
+            )
+            .unwrap();
+            let raw: Value = serde_json::from_str(content.lines().nth(1).unwrap()).unwrap();
+            assert_eq!(raw["type"], "__unrecognized_store_blob__");
+            assert_eq!(raw["native"], value);
+        }
+        let messages = extract_cursor_message_candidates(&json!({"messages":[
+            {"role":"user","content":"Recorded task"},
+            {"role":"assistant","content":"Recorded proposal"}
+        ]}));
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
+    fn cursor_store_row_order_and_timestamps_do_not_prove_scope_chronology() {
+        let values: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/cursor_characterization/ordering_corrections.json"
+        ))
+        .unwrap();
+        for order in [[0, 1], [1, 0]] {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("store.db");
+            let db = create_cursor_store_db(&path);
+            db.execute(
+                "INSERT INTO meta VALUES ('session', ?1)",
+                params![json!({"agentId":"synthetic"}).to_string()],
+            )
+            .unwrap();
+            for index in order {
+                db.execute(
+                    "INSERT INTO blobs VALUES (?1, ?2)",
+                    params![
+                        values[index]["id"].as_str().unwrap(),
+                        values[index].to_string()
+                    ],
+                )
+                .unwrap();
+            }
+            drop(db);
+            let snapshot = read_cursor_store_db_snapshot(&path).unwrap();
+            let content =
+                build_cursor_store_db_content(&snapshot.metadata, &snapshot.records, None).unwrap();
+            assert_cursor_scope_ordering_gap(&content);
+            let turns = content
+                .lines()
+                .skip(1)
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(turns.len(), 2);
+            assert_eq!(turns[0]["content"], values[order[0]]["content"]);
+            assert_eq!(turns[1]["content"], values[order[1]]["content"]);
+        }
+    }
+
+    #[test]
+    fn cursor_native_id_fallback_and_tied_timestamps_do_not_prove_scope_chronology() {
+        let values: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/cursor_characterization/ordering_corrections.json"
+        ))
+        .unwrap();
+        for order in [[0, 1], [1, 0]] {
+            let temp = TempDir::new().unwrap();
+            let db = create_cursor_db(&temp.path().join("state.vscdb"));
+            db.execute(
+                "INSERT INTO cursorDiskKV VALUES ('composerData:synthetic', '{}')",
+                [],
+            )
+            .unwrap();
+            for index in order {
+                db.execute(
+                    "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
+                    params![
+                        format!(
+                            "bubbleId:synthetic:{}",
+                            values[index]["id"].as_str().unwrap()
+                        ),
+                        values[index].to_string()
+                    ],
+                )
+                .unwrap();
+            }
+            let content =
+                build_desktop_cursor_session_content(&db, "synthetic", None, None).unwrap();
+            assert_cursor_scope_ordering_gap(&content);
+            let turns = content
+                .lines()
+                .skip(1)
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(turns[0]["bubbleId"], "a-correction");
+            assert_eq!(turns[1]["bubbleId"], "z-first");
+            assert_eq!(turns[0]["content"], values[1]["content"]);
+            assert_eq!(turns[1]["content"], values[0]["content"]);
+        }
+    }
+
+    #[test]
+    fn cursor_native_scope_preserves_text_and_does_not_make_tool_fallbacks_user_scope() {
+        let bubbles: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/cursor_characterization/native_scope_bubbles.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            extract_cursor_bubble_text(&bubbles[0]).as_deref(),
+            bubbles[0]["text"].as_str()
+        );
+        assert_eq!(
+            extract_cursor_bubble_text(&bubbles[1]).as_deref(),
+            bubbles[1]["richText"].as_str()
+        );
+        assert_eq!(extract_cursor_bubble_text(&bubbles[2]), None);
+        assert_eq!(
+            extract_cursor_bubble_text(&bubbles[3]).as_deref(),
+            Some("approved")
+        );
+        assert_eq!(cursor_role_for_value(&bubbles[3]), Some("assistant"));
+    }
+
+    #[test]
+    fn cursor_native_missing_user_and_missing_bubble_prevent_complete_history() {
+        let temp = TempDir::new().unwrap();
+        let db = create_cursor_db(&temp.path().join("state.vscdb"));
+        let bubbles: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/cursor_characterization/native_scope_bubbles.json"
+        ))
+        .unwrap();
+        let mut headers = bubbles
+            .iter()
+            .map(|bubble| json!({"bubbleId":bubble["bubbleId"]}))
+            .collect::<Vec<_>>();
+        headers.push(json!({"bubbleId":"missing-bubble"}));
+        db.execute(
+            "INSERT INTO cursorDiskKV VALUES ('composerData:synthetic', ?1)",
+            params![json!({"fullConversationHeadersOnly":headers}).to_string()],
+        )
+        .unwrap();
+        for bubble in &bubbles {
+            db.execute(
+                "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
+                params![
+                    format!(
+                        "bubbleId:synthetic:{}",
+                        bubble["bubbleId"].as_str().unwrap()
+                    ),
+                    bubble.to_string()
+                ],
+            )
+            .unwrap();
+        }
+        let content = build_desktop_cursor_session_content(&db, "synthetic", None, None).unwrap();
+        let records = content
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records[1]["bubbleId"], "user-1");
+        assert_eq!(records[1]["content"], bubbles[0]["text"]);
+        assert_eq!(records[2]["content"], bubbles[1]["richText"]);
+        assert_eq!(records[3]["type"], "__unavailable_user_content__");
+        assert_eq!(records[4]["role"], "assistant");
+        assert_eq!(records[5]["type"], "__missing_bubble__");
+        let mut collector = crate::analysis::SessionCollector::new("cursor", "synthetic");
+        let input = crate::analysis::SessionInput {
+            agent: "cursor".into(),
+            session_id: "synthetic".into(),
+            source: crate::analysis::RawSource::Jsonl(content),
+            fork_parent_session_id: None,
+            source_format: Default::default(),
+        };
+        crate::analysis::reader_for("cursor")
+            .visit(&input, &mut collector)
+            .unwrap();
+        assert!(
+            collector
+                .partial_reasons()
+                .contains(&crate::analysis::PartialReason::UnrecognizedRecordType)
+        );
+    }
+
+    #[test]
+    fn cursor_store_generic_blobs_preserve_structure_order_and_identity() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("store.db");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT); CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB);").unwrap();
+        db.execute(
+            "INSERT INTO meta VALUES ('session', ?1)",
+            params![json!({"agentId":"synthetic-session"}).to_string()],
+        )
+        .unwrap();
+        let source = include_str!(
+            "../../../tests/fixtures/cursor_characterization/store_reader_blocks.jsonl"
+        );
+        for (index, line) in source.lines().enumerate() {
+            db.execute(
+                "INSERT INTO blobs VALUES (?1, ?2)",
+                params![format!("blob-{index}"), line.as_bytes()],
+            )
+            .unwrap();
+        }
+        let (rows, unreadable) = sqlite_table_string_rows(&db, "blobs");
+        assert!(!unreadable);
+        assert_eq!(rows.len(), 4);
+        drop(db);
+        let candidate = build_cursor_store_db_session(&path).unwrap();
+        let SessionSource::Inline { content, .. } = candidate.log.source else {
+            panic!("expected inline store")
+        };
+        let messages = content
+            .lines()
+            .skip(1)
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(messages.len(), 4);
+        for (message, original) in messages.iter().zip(source.lines()) {
+            let original: Value = serde_json::from_str(original).unwrap();
+            assert_eq!(message["content"], original["content"]);
+            assert_eq!(message["role"], original["role"]);
+            assert_eq!(message["bubbleId"], original["id"]);
+            assert_eq!(message["providerOptions"], original["providerOptions"]);
+        }
+        assert_eq!(messages[0]["content"], messages[3]["content"]);
+    }
+
+    #[test]
+    fn cursor_store_does_not_extract_user_turns_from_tool_arguments() {
+        let messages = extract_cursor_message_candidates(&json!({
+            "role":"assistant",
+            "content":[{"type":"tool-call","toolName":"Unknown","toolCallId":"call-1","args":{
+                "role":"user","content":"This is not user authorization"
+            }}]
+        }));
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "assistant");
+        assert!(
+            extract_cursor_message_candidates(&json!({
+                "type":"tool-call","toolName":"Unknown","toolCallId":"call-1",
+                "args":{"role":"user","content":"Not a user turn"}
+            }))
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn cursor_store_unreadable_blob_remains_a_parser_gap() {
+        let metadata =
+            parse_cursor_store_db_metadata(&[json!({"agentId":"synthetic"}).to_string()]).unwrap();
+        let content = build_cursor_store_db_content(
+            &metadata,
+            &[
+                (
+                    "user-1".into(),
+                    json!({"role":"user","content":"Task"}).to_string(),
+                ),
+                ("bad".into(), r#"{"type":"__unreadable_blob__"}"#.into()),
+            ],
+            None,
+        )
+        .unwrap();
+        let mut collector = crate::analysis::SessionCollector::new("cursor", "synthetic");
+        let input = crate::analysis::SessionInput {
+            agent: "cursor".into(),
+            session_id: "synthetic".into(),
+            source: crate::analysis::RawSource::Jsonl(content),
+            fork_parent_session_id: None,
+            source_format: Default::default(),
+        };
+        crate::analysis::reader_for("cursor")
+            .visit(&input, &mut collector)
+            .unwrap();
+        assert!(
+            collector
+                .partial_reasons()
+                .contains(&crate::analysis::PartialReason::UnrecognizedRecordType)
+        );
+    }
+
+    #[test]
+    fn cursor_store_generic_schema_rejects_missing_metadata_and_marks_invalid_utf8() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("store.db");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT); CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB);").unwrap();
+        db.execute("INSERT INTO blobs VALUES ('call', ?1)", params![json!({"role":"assistant","content":[{"type":"tool-call","toolCallId":"call-1","toolName":"Read","args":{}}]}).to_string().as_bytes()]).unwrap();
+        assert!(read_cursor_store_db_snapshot(&path).is_none());
+        db.execute(
+            "INSERT INTO meta VALUES ('session', ?1)",
+            params![json!({"agentId":"synthetic"}).to_string()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO blobs VALUES ('bad', ?1)",
+            params![vec![0xff_u8, 0xfe]],
+        )
+        .unwrap();
+        let (rows, unreadable) = sqlite_table_string_rows(&db, "blobs");
+        assert!(unreadable);
+        assert_eq!(rows.len(), 1);
+        drop(db);
+        let snapshot = read_cursor_store_db_snapshot(&path).unwrap();
+        assert!(
+            snapshot
+                .records
+                .iter()
+                .any(|(id, _)| id == "cursor-unreadable-blob")
+        );
+    }
+
+    #[tokio::test]
+    async fn cursor_store_discovery_does_not_scan_acp_or_unrelated_plans() {
+        let home = TempDir::new().unwrap();
+        let acp = home.path().join(".cursor/acp-sessions/synthetic-session");
+        std::fs::create_dir_all(&acp).unwrap();
+        seed_cursor_store_db(&acp.join("store.db"), "synthetic-session");
+        let plans = home.path().join(".cursor/plans");
+        std::fs::create_dir_all(&plans).unwrap();
+        std::fs::write(plans.join("unrelated.plan.md"), "# Unrelated plan").unwrap();
+        assert!(
+            discover_store_db_sessions(home.path(), current_unix_epoch_for_tests(), 3600)
+                .await
+                .is_empty()
+        );
+    }
 
     /// Read back the [`ForkObservation`] an adapter embedded in a synthetic
     /// metadata header. Mirrors what a consumer of the rendered content does.

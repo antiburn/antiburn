@@ -130,7 +130,11 @@ fn auto_fix_setting(agent: AgentKind, detector: DetectorId) -> Option<ConfigSett
         DetectorId::UnusedSkills => ConfigSetting::Skill,
         DetectorId::OldModelUsage => ConfigSetting::Model,
         DetectorId::OveruseOfFastMode => ConfigSetting::FastMode,
-        DetectorId::CacheChurn | DetectorId::IgnoredInstructions => return None,
+        DetectorId::CacheChurn
+        | DetectorId::IgnoredInstructions
+        | DetectorId::SkillOpportunities
+        | DetectorId::OverExploring
+        | DetectorId::ScopeCreep => return None,
     };
     if detector == DetectorId::UnusedBuiltInTools && optional_tool(agent).is_none() {
         None
@@ -171,6 +175,9 @@ fn detector_from_code(value: &str) -> Option<DetectorId> {
         "F" => Some(DetectorId::OveruseOfFastMode),
         "C" => Some(DetectorId::CacheChurn),
         "I" => Some(DetectorId::IgnoredInstructions),
+        "SkillOpportunities" => Some(DetectorId::SkillOpportunities),
+        "OverExploring" => Some(DetectorId::OverExploring),
+        "ScopeCreep" => Some(DetectorId::ScopeCreep),
         _ => None,
     }
 }

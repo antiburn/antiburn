@@ -83,7 +83,34 @@ pub const MIGRATIONS: &[&str] = &[
     V70,
     V71,
     V72,
+    V73,
+    V74,
 ];
+
+const V73: &str = r#"
+ALTER TABLE burn_check_assessment ADD COLUMN eligible_targets INTEGER;
+ALTER TABLE burn_check_assessment ADD COLUMN reviewed_targets INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE burn_check_assessment ADD COLUMN runnable_targets INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE burn_check_assessment ADD COLUMN scheduling_revision TEXT;
+ALTER TABLE burn_check_assessment ADD COLUMN last_served_turn INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE burn_check_dispatch_attempt (
+    request_identity TEXT PRIMARY KEY NOT NULL,
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    attempts INTEGER NOT NULL CHECK(attempts BETWEEN 1 AND 3),
+    next_attempt_at_epoch INTEGER,
+    terminal INTEGER NOT NULL DEFAULT 0 CHECK(terminal IN (0, 1)),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+"#;
+
+const V74: &str = r#"
+ALTER TABLE burn_check_dispatch_attempt
+    ADD COLUMN last_attempt_at_epoch INTEGER NOT NULL DEFAULT 0;
+UPDATE burn_check_dispatch_attempt SET last_attempt_at_epoch = unixepoch();
+"#;
 
 const V69: &str = r#"
 CREATE TABLE burn_check_sampled_pair (

@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type {
@@ -8,6 +8,9 @@ import type {
   LiveUsageWindowPayload,
 } from "../../../lib/ipc"
 import { OverviewProviderLimits, meterSegmentsForWidth } from "./OverviewProviderLimits"
+
+const invoke = vi.hoisted(() => vi.fn())
+vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
 
 const FORECAST = {
   unavailableReason: "sparseHistory",
@@ -183,6 +186,29 @@ describe("OverviewProviderLimits", () => {
     const card = screen.getByRole("group", { name: "Claude" })
     expect(card).toHaveTextContent(note)
     expect(card).not.toHaveTextContent("sign-in expired")
+  })
+
+  it("greys a Claude Desktop-only meter and links to the docs", async () => {
+    render(
+      <OverviewProviderLimits
+        live={liveSummary({
+          providers: [],
+          errors: [
+            sourceError({
+              provider: "anthropic",
+              displayName: "Claude",
+              detail: "desktopOnly",
+              plan: { name: "max", tier: "default_claude_max_20x" },
+            }),
+          ],
+        })}
+      />,
+    )
+    const card = screen.getByRole("group", { name: "Claude, Max 20x plan" })
+    expect(within(card).getByRole("heading")).toHaveTextContent("Claude · Max 20x")
+    expect(card).toHaveTextContent("Usage limits not available for Claude Desktop.")
+    fireEvent.click(within(card).getByRole("button", { name: "Learn more" }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_claude_desktop_limits_docs"))
   })
 
   it("shows the sign-in action for a failed provider", () => {

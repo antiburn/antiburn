@@ -210,15 +210,6 @@
   inset-inline: calc(0.5px - var(--spacing) * 1.5);
 }
 
-/* Keep the expanded target under the pointer throughout a click. */
-.session-filter-target:active,
-.session-filter-collection
-  [data-list-display-toolbar]
-  [data-variant="text-tabs"]
-  > button:active {
-  transform: none;
-}
-
 .session-filters-menu {
   min-inline-size: 224px;
   background: var(--color-surface-overlay);
