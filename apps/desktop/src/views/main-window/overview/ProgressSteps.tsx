@@ -297,21 +297,40 @@ function StepCard({
   )
 }
 
-/** The title and body of each step that has live content: what the step
- *  does now. */
-const STEP_COPY: Record<Exclude<ProgressStepKey, "fixes">, { title: string; body: string }> = {
-  agents: {
-    title: "Finding agents",
-    body: "Scanning last 30 days of session logs for active coding agents.",
-  },
-  sessions: {
-    title: "Reading sessions",
-    body: "antiburn pulls each session's metadata - every line of the log - into a local unencrypted sqlite db, for indexed access.",
-  },
-  checks: {
-    title: "Running session checks",
-    body: "Checking for anti-patterns: problems with context window, caching, and unused tools and skills.",
-  },
+function stepCopy(
+  step: Exclude<ProgressStepKey, "fixes">,
+  progress: OverviewProgress,
+): { title: string; body: string } {
+  switch (step) {
+    case "agents": {
+      if (!progress.agents.done) {
+        return {
+          title: "Finding agents…",
+          body: "Scanning last 30 days of session logs for active coding agents.",
+        }
+      }
+      const foundCount = progress.agents.rows.filter(
+        (row) => row.done && row.sessions > 0,
+      ).length
+      return {
+        title:
+          foundCount === 0
+            ? "No agents found"
+            : `${capitalize(countWord(foundCount))} ${pluralize(foundCount, "agent", "agents")} found`,
+        body: "Scanned the last 30 days of session logs for active coding agents.",
+      }
+    }
+    case "sessions":
+      return {
+        title: progress.sessions.done ? "Reading sessions" : "Reading sessions…",
+        body: "antiburn pulls each session's metadata - every line of the log - into a local unencrypted sqlite db, for indexed access.",
+      }
+    case "checks":
+      return {
+        title: progress.checks.done ? "Running session checks" : "Running session checks…",
+        body: "Checking for anti-patterns: problems with context window, caching, and unused tools and skills.",
+      }
+  }
 }
 
 /**
@@ -332,46 +351,24 @@ export function ProgressStepCard({
   bodyAction?: ReactNode
 }) {
   const permissionFlow = useReadPermissionFlow(progress)
-  // The first run adds an ellipsis to the title while the step still runs.
-  const copy = (key: Exclude<ProgressStepKey, "fixes">, done: boolean) => {
-    const base = STEP_COPY[key]
-    return done ? base : { ...base, title: `${base.title}…` }
-  }
   switch (step) {
-    case "agents": {
-      const agentCopy = copy("agents", progress.agents.done)
-      const foundCount = progress.agents.rows.filter(
-        (row) => row.done && row.sessions > 0,
-      ).length
-      // The finished first run states the count in the title.
-      const title = progress.agents.done
-        ? foundCount === 0
-          ? "No agents found"
-          : `${capitalize(countWord(foundCount))} ${pluralize(foundCount, "agent", "agents")} found`
-        : agentCopy.title
+    case "agents":
       return (
         <StepCard
           transitionName={transitionName}
           bodyAction={bodyAction}
-          {...agentCopy}
-          title={title}
-          body={
-            progress.agents.done
-              ? "Scanned the last 30 days of session logs for active coding agents."
-              : agentCopy.body
-          }
+          {...stepCopy("agents", progress)}
           childrenFirst
         >
           <AgentsStepRow snapshot={progress} />
         </StepCard>
       )
-    }
     case "sessions":
       return (
         <StepCard
           transitionName={transitionName}
           bodyAction={bodyAction}
-          {...copy("sessions", progress.sessions.done)}
+          {...stepCopy("sessions", progress)}
         >
           <SessionsStepRow snapshot={progress} permissionFlow={permissionFlow} />
         </StepCard>
@@ -381,7 +378,7 @@ export function ProgressStepCard({
         <StepCard
           transitionName={transitionName}
           bodyAction={bodyAction}
-          {...copy("checks", progress.checks.done)}
+          {...stepCopy("checks", progress)}
         >
           <ChecksStepRow snapshot={progress} />
         </StepCard>
