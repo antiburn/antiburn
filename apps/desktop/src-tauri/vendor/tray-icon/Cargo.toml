@@ -1,6 +1,6 @@
 [package]
 name = "tray-icon"
-version = "0.24.2"
+version = "0.25.1"
 edition = "2021"
 description = "Create tray icons for desktop applications"
 homepage = "https://github.com/tauri-apps/tray-icon"
@@ -23,14 +23,18 @@ path = "tests/macos_highlight_override.rs"
 harness = false
 
 [features]
-default = ["libxdo", "gtk"]
-libxdo = ["muda/libxdo"]
+default = ["muda-libxdo", "libappindicator"]
+libappindicator = ["muda/gtk3", "dep:libappindicator"]
+muda-libxdo = ["muda/libxdo"]
+muda-gtk3 = ["muda/gtk3"]
+muda-common-controls-v6 = ["muda/common-controls-v6"]
+libxdo = ["muda-libxdo"]
 serde = ["muda/serde", "dep:serde"]
-common-controls-v6 = ["muda/common-controls-v6"]
-gtk = ["muda/gtk", "dep:libappindicator"]
+common-controls-v6 = ["muda-common-controls-v6"]
+gtk = ["libappindicator"]
 
 [dependencies]
-muda = { version = "0.19.1", default-features = false }
+muda = { version = "0.20", default-features = false }
 crossbeam-channel = "0.5"
 once_cell = "1"
 thiserror = "2"

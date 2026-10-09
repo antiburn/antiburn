@@ -19,7 +19,6 @@ import {
   noteInteraction,
   openMainWindowSection,
   openMainWindowSession,
-  openSettingsWindow,
 } from "../lib/ipc"
 import {
   getPopoverPeekAnchorState,
@@ -198,7 +197,7 @@ export function PopoverView() {
                     void session.rescan()
                     return
                   }
-                  void openSettingsWindow(banner.action.pane)
+                  void openMainWindowSection("overview", banner.action.step)
                 }}
                 onDismiss={() => session.dismissBanner(banner.id)}
                 dismissLabel={banner.dismissLabel}

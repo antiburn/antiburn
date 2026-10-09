@@ -64,7 +64,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy fix prompt" }))
     await screen.findByRole("button", { name: "Copied" })
     expect(commands.noteInteraction.mock.calls).toContainEqual([
-      { kind: "ignoredInstructionObserved", stage: "prompt", outcome: "copied" },
+      { kind: "burnCheckPromptCopied", check: "ignored_instructions" },
     ])
     expect(commands.noteInteraction.mock.calls.flat()).not.toContainEqual(
       expect.objectContaining({ prompt: expect.any(String) }),

@@ -23,11 +23,11 @@ use antiburn_local::analysis::{
     MAX_PROVIDER_HINTS, METRICS_SCHEMA_REVISION, ModelRun, PARSER_REVISION, ProviderHint,
     RESUME_SNAPSHOT_REVISION, RawSource, ResumePoint, ResumeRevisions, ResumedVisit, SessionCost,
     SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
-    SessionMetricsAccumulator, SessionReader, SessionSummary, SourceCapabilities, SourceClaim,
-    SourceFormat, SourceKind, StoredResume, StreamSnapshot, TurnRow, TurnRowSink, TurnRowStore,
-    TurnScope, VisitOutcome, aggregate_metrics, append_only_guarantee, evidence_from_facts,
-    merge_metrics, metrics_by_source, metrics_from_rows, price_breakdown, pricing_generation,
-    reader_for_input,
+    SessionMetricsAccumulator, SessionReader, SessionSummary, SourceCapabilities,
+    SourceChangedReason, SourceClaim, SourceFormat, SourceKind, StoredResume, StreamSnapshot,
+    TurnRow, TurnRowSink, TurnRowStore, TurnScope, VisitOutcome, aggregate_metrics,
+    append_only_guarantee, evidence_from_facts, merge_metrics, metrics_by_source,
+    metrics_from_rows, price_breakdown, pricing_generation, reader_for_input,
 };
 use antiburn_local::discovery::source_version::claude_sidecar_fingerprint;
 use antiburn_local::discovery::{
@@ -236,6 +236,22 @@ enum StreamOutcome {
     ParentMissing,
     ParentUnsupported,
     ParentUnreadable(UnreadableReason),
+}
+
+fn source_changed_reason_label(reason: SourceChangedReason) -> &'static str {
+    match reason {
+        SourceChangedReason::IdentityMismatch => "identity-mismatch",
+        SourceChangedReason::ShortAtOpen { .. } => "short-at-open",
+        SourceChangedReason::HeadRegionMismatch => "head-region-mismatch",
+        SourceChangedReason::ShortRead { .. } => "short-read",
+        SourceChangedReason::TruncatedAfterRead { .. } => "truncated-after-read",
+        SourceChangedReason::FingerprintMismatch => "fingerprint-mismatch",
+        SourceChangedReason::ResumeTailMismatch => "resume-tail-mismatch",
+    }
+}
+
+fn log_source_changed(stage: &'static str, reason: &'static str) {
+    ::tracing::debug!(event = "analysis_source_changed", stage, reason);
 }
 
 enum ComputedAnalysis {
@@ -1628,7 +1644,8 @@ fn stream_vendor_with_hooks(
             RawSource::KiroCliV3Bundle { .. } => continue,
         };
         match result {
-            Ok(outcome @ VisitOutcome::SourceChanged(_)) => {
+            Ok(outcome @ VisitOutcome::SourceChanged(reason)) => {
+                log_source_changed("adapter_validity", source_changed_reason_label(reason));
                 accumulator.observe_source_outcome(outcome);
                 return StreamOutcome::SourceChanged;
             }
@@ -1841,6 +1858,7 @@ fn stream_vendor_with_hooks(
     if sidecars.iter().any(|(path, fingerprint)| {
         claude_sidecar_fingerprint(path).as_ref().ok() != Some(fingerprint)
     }) {
+        log_source_changed("claude_sidecar_fingerprint", "fingerprint-mismatch");
         return StreamOutcome::SourceChanged;
     }
     StreamOutcome::Published {
@@ -2063,6 +2081,7 @@ pub async fn analyze_located_for_evidence(
         && !subagent_paths.is_empty()
         && combined_fingerprint(agent, &source, &subagent_paths) != fingerprint
     {
+        log_source_changed("combined_source_fingerprint", "fingerprint-mismatch");
         computed = ComputedAnalysis::SourceChanged;
     }
     let (
@@ -2138,6 +2157,7 @@ pub async fn analyze_located_for_evidence(
         .as_deref()
         .is_some_and(|expected| parent_fingerprint.as_deref() != Some(expected))
     {
+        log_source_changed("claimed_source_fingerprint", "fingerprint-mismatch");
         return EvidencePass {
             analysis: SessionAnalysis {
                 source_path,

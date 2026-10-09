@@ -1,0 +1,4 @@
+{"type":"session_meta","timestamp":"2026-01-01T00:00:00Z","payload":{"id":"root","cwd":"/synthetic/project","cli_version":"synthetic"}}
+{"type":"response_item","timestamp":"2026-01-01T00:00:01Z","payload":{"type":"message","id":"codex-document","role":"user","content":[{"type":"input_text","text":"<skill>\n<name>review</name>\n<path>/synthetic/skills/review/SKILL.md</path>\n<resource_access>{\"read\":true}</resource_access>\nReview ownership and error handling.\n</skill>"}]}}
+{"type":"response_item","timestamp":"2026-01-01T00:00:02Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The review skill is useful."}]}}
+{"type":"response_item","timestamp":"2026-01-01T00:00:03Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Please use <skill>review</skill>."}]}}

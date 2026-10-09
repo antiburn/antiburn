@@ -32,7 +32,10 @@ impl SavingsEstimateMethod {
             DetectorId::OldModelUsage => Some(Self::OldModelPriceDifference),
             DetectorId::OveruseOfFastMode => Some(Self::FastTierPricePremium),
             DetectorId::CacheChurn => Some(Self::CacheRehydrationPriceDifference),
-            DetectorId::IgnoredInstructions => None,
+            DetectorId::IgnoredInstructions
+            | DetectorId::SkillOpportunities
+            | DetectorId::OverExploring
+            | DetectorId::ScopeCreep => None,
         }
     }
 }

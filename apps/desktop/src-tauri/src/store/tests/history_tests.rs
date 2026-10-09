@@ -316,12 +316,12 @@ fn selected_history_session_reaches_the_running_worker_state() {
             [],
         )
         .unwrap();
-    assert!(
-        store
-            .burn_check_candidates("ignored_instructions", NOW + 181, 180, 16)
-            .unwrap()
-            .is_empty()
-    );
+    let stale = store
+        .burn_check_candidates("ignored_instructions", NOW + 181, 180, 16)
+        .unwrap();
+    assert_eq!(stale.len(), 1);
+    assert!(stale[0].historical);
+    assert_eq!(stale[0].boundary_at_epoch, NOW - WEEK);
 }
 
 #[test]
@@ -504,8 +504,8 @@ fn completed_history_requeues_on_request_after_a_new_evaluator_revision() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(boundary, NOW + 2 - 7 * 24 * 60 * 60);
-    assert_eq!(positions, "{\"*\":0}");
+    assert_eq!(boundary, NOW - 10);
+    assert_eq!(positions, "{\"some-source\":5444}");
 }
 
 #[test]
@@ -585,11 +585,17 @@ fn historical_status_counts_only_the_latest_selected_window() {
         .capture_burn_check_boundaries(&["ignored_instructions"], NOW - MONTH)
         .unwrap();
     assert_eq!(store.enqueue_burn_checks(NOW, 30).unwrap(), 2);
+    store.lock().execute("UPDATE session_evidence SET status = 'ready', published_fence = 1,
+        analyzed_generation = (SELECT source_generation FROM session s WHERE s.session_id = session_evidence.session_id),
+        processed_fingerprint = (SELECT source_fingerprint FROM session s WHERE s.session_id = session_evidence.session_id),
+        parser_revision = ?1, analyzer_revision = ?2, evidence_schema_revision = ?3",
+        rusqlite::params![antiburn_local::analysis::PARSER_REVISION, antiburn_local::analysis::ANALYZER_REVISION, antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION]).unwrap();
     store
         .lock()
         .execute(
             "UPDATE burn_check_assessment
                 SET status = 'completed', evaluator_revision = ?1,
+                    published_fence = 1, input_revision = 'input', result_revision = 'input',
                     source_generation = (SELECT source_generation FROM session s
                         WHERE s.session_id = burn_check_assessment.session_id),
                     source_fingerprint = (SELECT source_fingerprint FROM session s
@@ -742,4 +748,324 @@ fn continuing_instruction_pages_count_as_in_progress_work() {
             .unwrap(),
         1
     );
+}
+
+#[test]
+fn registered_history_counts_check_session_jobs_and_uses_each_idle_policy() {
+    let store = store();
+    let checks = crate::jev::worker::registered_checks();
+    for detector in crate::jev::worker::registered_check_ids() {
+        store.set_check_enabled(detector, true).unwrap();
+    }
+    let ids = checks.iter().map(|check| check.id()).collect::<Vec<_>>();
+    let revisions = checks
+        .iter()
+        .map(|check| (check.id(), check.evaluator_revision()))
+        .collect::<Vec<_>>();
+    let policies = checks
+        .iter()
+        .map(|check| {
+            (
+                check.id(),
+                check.policy().idle_secs,
+                check.evaluator_revision(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let records = [
+        session("registered-recent", NOW - 100),
+        session("registered-old", NOW - 10 * 24 * 60 * 60),
+    ];
+    store
+        .upsert_sessions(&records, &crate::agents::evidence_cohort())
+        .unwrap();
+    for record in &records {
+        add_session_content(&store, record);
+    }
+    store
+        .capture_burn_check_boundaries(&ids, NOW - MONTH)
+        .unwrap();
+    assert_eq!(
+        store
+            .enqueue_burn_checks_for_revisions(&revisions, NOW, 30)
+            .unwrap(),
+        2 * checks.len()
+    );
+    let status = store
+        .historical_burn_check_status_for_checks(&policies, NOW)
+        .unwrap();
+    assert_eq!(status.total, 2 * checks.len());
+    assert_eq!(status.waiting_for_data, status.total);
+    store.lock().execute(
+        "UPDATE session_evidence SET status = 'ready',
+             analyzed_generation = (SELECT source_generation FROM session s WHERE s.session_id = session_evidence.session_id),
+             parser_revision = ?1, analyzer_revision = ?2, evidence_schema_revision = ?3, published_fence = 1",
+        rusqlite::params![antiburn_local::analysis::PARSER_REVISION, antiburn_local::analysis::ANALYZER_REVISION, antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION],
+    ).unwrap();
+    let status = store
+        .historical_burn_check_status_for_checks(&policies, NOW)
+        .unwrap();
+    assert_eq!(
+        status.waiting_for_idle,
+        policies.iter().filter(|(_, idle, _)| *idle > 100).count()
+    );
+    assert_eq!(status.ready + status.waiting_for_idle, status.total);
+    for (id, revision) in &revisions {
+        store.lock().execute(
+            "UPDATE burn_check_assessment SET status = 'completed', evaluator_revision = ?1,
+                  published_fence = 1, input_revision = 'input', result_revision = 'input',
+                 source_generation = (SELECT source_generation FROM session s WHERE s.session_id = burn_check_assessment.session_id),
+                 source_fingerprint = (SELECT source_fingerprint FROM session s WHERE s.session_id = burn_check_assessment.session_id),
+                 boundary_activity_cursor = (SELECT activity_cursor FROM session s WHERE s.session_id = burn_check_assessment.session_id)
+             WHERE check_id = ?2",
+            rusqlite::params![revision, id],
+        ).unwrap();
+    }
+    assert_eq!(
+        store
+            .enqueue_burn_checks_for_revisions(&revisions, NOW, 7)
+            .unwrap(),
+        0
+    );
+    let status = store
+        .historical_burn_check_status_for_checks(&policies, NOW)
+        .unwrap();
+    assert_eq!(status.total, checks.len());
+    assert_eq!(status.completed, checks.len());
+    store
+        .lock()
+        .execute(
+            "UPDATE burn_check_assessment SET evaluator_revision = 'stale' WHERE check_id = ?1",
+            [checks[0].id()],
+        )
+        .unwrap();
+    let stale = store
+        .historical_burn_check_status_for_checks(&policies, NOW)
+        .unwrap();
+    assert_eq!(stale.completed, checks.len() - 1);
+    assert_eq!(stale.total, checks.len());
+    for corruption in [
+        "source_generation = 999",
+        "published_fence = 999",
+        "incarnation = 999",
+        "result_revision = 'old'",
+        "source_fingerprint = 'old'",
+    ] {
+        store.lock().execute("UPDATE burn_check_assessment SET evaluator_revision = ?1,
+            incarnation = (SELECT incarnation FROM session s WHERE s.session_id = burn_check_assessment.session_id),
+            source_generation = (SELECT source_generation FROM session s WHERE s.session_id = burn_check_assessment.session_id),
+            source_fingerprint = (SELECT source_fingerprint FROM session s WHERE s.session_id = burn_check_assessment.session_id),
+            published_fence = 1, result_revision = input_revision WHERE check_id = ?2", rusqlite::params![checks[0].evaluator_revision(), checks[0].id()]).unwrap();
+        store
+            .lock()
+            .execute(
+                &format!("UPDATE burn_check_assessment SET {corruption} WHERE check_id = ?1"),
+                [checks[0].id()],
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .historical_burn_check_status_for_checks(&policies, NOW)
+                .unwrap()
+                .completed,
+            checks.len() - 1,
+            "{corruption}"
+        );
+    }
+}
+
+#[test]
+fn shared_history_request_is_atomic_and_another_check_running_blocks_a_new_batch() {
+    let store = store();
+    store
+        .set_check_enabled(antiburn_local::checks::DetectorId::ScopeCreep, true)
+        .unwrap();
+    let record = session("atomic-history", NOW - 200);
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    add_session_content(&store, &record);
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions", "scope_creep"], NOW - 300)
+        .unwrap();
+    let checks = [
+        ("ignored_instructions", "first".to_owned()),
+        ("scope_creep", "second".to_owned()),
+    ];
+    let initial_batch = store.internal_value("internal:jevBurnCheckHistoryBatchEpochV1");
+    store
+        .lock()
+        .execute_batch(
+            "CREATE TEMP TRIGGER fail_history BEFORE UPDATE ON burn_check_assessment
+         WHEN NEW.check_id = 'scope_creep' AND NEW.boundary_generation = -2
+         BEGIN SELECT RAISE(ABORT, 'injected history failure'); END;",
+        )
+        .unwrap();
+    assert!(
+        store
+            .enqueue_burn_checks_for_revisions(&checks, NOW, 7)
+            .is_err()
+    );
+    assert_eq!(
+        store.internal_value("internal:jevBurnCheckHistoryBatchEpochV1"),
+        initial_batch
+    );
+    let historical: usize = store
+        .lock()
+        .query_row(
+            "SELECT count(*) FROM burn_check_assessment WHERE boundary_generation = -2",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(historical, 0);
+    store
+        .lock()
+        .execute_batch("DROP TRIGGER fail_history")
+        .unwrap();
+    assert_eq!(
+        store
+            .enqueue_burn_checks_for_revisions(&checks, NOW, 7)
+            .unwrap(),
+        2
+    );
+    store
+        .lock()
+        .execute(
+            "UPDATE burn_check_assessment SET status = 'running' WHERE check_id = 'scope_creep'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .enqueue_burn_checks_for_revisions(&checks, NOW + 1, 30)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store
+            .internal_value("internal:jevBurnCheckHistoryBatchEpochV1")
+            .as_deref(),
+        Some(NOW.to_string().as_str())
+    );
+    let status = store
+        .historical_burn_check_status_for_checks(
+            &[
+                ("ignored_instructions", 0, "first".into()),
+                ("scope_creep", 0, "second".into()),
+            ],
+            NOW + 1,
+        )
+        .unwrap();
+    assert_eq!(status.total, 2);
+    assert_eq!(status.running, 1);
+}
+
+#[test]
+fn historical_revision_refresh_preserves_boundary_and_obeys_retry_before_queueing() {
+    let store = store();
+    store
+        .set_check_enabled(antiburn_local::checks::DetectorId::ScopeCreep, true)
+        .unwrap();
+    let record = session("stale-history-retry", NOW - 200);
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    add_session_content(&store, &record);
+    store
+        .capture_burn_check_boundaries(&["scope_creep"], NOW - 300)
+        .unwrap();
+    store
+        .enqueue_burn_checks_for_revisions(&[("scope_creep", "old".into())], NOW, 7)
+        .unwrap();
+    store.lock().execute(
+        "UPDATE session_evidence SET status = 'ready',
+             analyzed_generation = (SELECT source_generation FROM session s WHERE s.session_id = session_evidence.session_id),
+             parser_revision = ?1, analyzer_revision = ?2, evidence_schema_revision = ?3, published_fence = 1",
+        rusqlite::params![antiburn_local::analysis::PARSER_REVISION, antiburn_local::analysis::ANALYZER_REVISION, antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION],
+    ).unwrap();
+    store
+        .lock()
+        .execute(
+            "UPDATE burn_check_assessment SET status = 'failed', evaluator_revision = 'old',
+             last_error_category = 'invalid_response', next_attempt_at_epoch = ?1,
+             progress_json = '{\"saved\":true}', input_revision = 'old-input'",
+            [NOW + 60],
+        )
+        .unwrap();
+    assert!(
+        store
+            .burn_check_candidates_for_revision("scope_creep", "new", NOW + 1, 0, 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .enqueue_burn_checks_for_revisions(&[("scope_creep", "new".into())], NOW + 1, 30)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store
+            .burn_check_assessment(&record.key, "scope_creep")
+            .unwrap()
+            .unwrap()
+            .progress_json,
+        "{\"saved\":true}"
+    );
+    store
+        .lock()
+        .execute("UPDATE burn_check_assessment SET status = 'completed'", [])
+        .unwrap();
+    assert!(
+        store
+            .burn_check_candidates_for_revision("scope_creep", "new", NOW + 1, 0, 10)
+            .unwrap()
+            .is_empty()
+    );
+    let candidate = store
+        .burn_check_candidates_for_revision("scope_creep", "new", NOW + 60, 0, 10)
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert!(candidate.historical);
+    assert_eq!(candidate.boundary_at_epoch, NOW - WEEK);
+    assert_eq!(candidate.boundary_positions.get("*"), Some(&0));
+    let input = BurnCheckInput {
+        key: candidate.session.key.clone(),
+        check_id: "scope_creep".into(),
+        incarnation: candidate.incarnation,
+        source_generation: candidate.source_generation,
+        source_fingerprint: candidate.source_fingerprint.clone(),
+        activity_cursor: candidate.activity_cursor.clone(),
+        published_fence: candidate.published_fence,
+        input_revision: "new-input".into(),
+        evaluator_revision: "new".into(),
+        boundary_at_epoch: candidate.boundary_at_epoch,
+    };
+    assert!(
+        !store
+            .queue_burn_check_assessment(&input, NOW + 1, 0)
+            .unwrap()
+    );
+    assert!(
+        store
+            .queue_burn_check_assessment(&input, NOW + 60, 0)
+            .unwrap()
+    );
+    let generation: i64 = store
+        .lock()
+        .query_row(
+            "SELECT boundary_generation FROM burn_check_assessment",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(generation, -2);
 }

@@ -131,7 +131,7 @@ describe("OverviewUsage", () => {
     }
   })
 
-  it("holds the chart's legend row open while the chart is still loading", () => {
+  it("reserves the chart's frame while loading, then draws the legend over the plot", () => {
     const { rerender } = render(
       <OverviewUsage
         metric="allowance"
@@ -143,11 +143,9 @@ describe("OverviewUsage", () => {
       />,
     )
     const chart = screen.getByRole("region", { name: "Allowance chart" })
-    expect(chart.querySelector(".overview-chart-placeholder")).not.toBeNull()
     // Reserved rather than drawn: without it the rest of the page sits a row
     // too high until the plot arrives.
-    expect(chart.querySelector(".invisible")).not.toBeNull()
-    expect(chart.querySelector(".overview-chart-legend")).not.toBeNull()
+    expect(chart.querySelector(".overview-chart-placeholder")).not.toBeNull()
 
     rerender(
       <OverviewUsage
@@ -161,14 +159,14 @@ describe("OverviewUsage", () => {
         ])}
       />,
     )
-    // The drawn chart puts the provider tabs in that row, which are taller
-    // than the legend alone. Both rows take their height from the same rule,
-    // so the plot starts where the block did.
+    // Once an account is picked (the first one, by default) the plot draws
+    // its own legend floating over the chart area rather than in a held-open
+    // row above it.
     expect(
-      screen
-        .getByRole("region", { name: "Allowance chart" })
-        .querySelector(".overview-chart-legend"),
-    ).not.toBeNull()
+      within(screen.getByRole("region", { name: "Allowance chart" })).getByRole("list", {
+        name: "Layers",
+      }),
+    ).toBeInTheDocument()
   })
 
   it("hands the page the unit the reader picked", () => {
@@ -202,8 +200,11 @@ describe("OverviewUsage", () => {
         account({ provider: "openai", accountKey: "second", displayName: "Codex" }),
       ]),
     })
-    fireEvent.click(screen.getByRole("radio", { name: "Codex" }))
-    expect(screen.getByRole("radio", { name: "Codex" })).toHaveAttribute("aria-checked", "true")
+    const codexFigure = screen.getByRole("button", {
+      name: "Codex 41% Average subscription usage",
+    })
+    fireEvent.click(codexFigure)
+    expect(codexFigure).toHaveAttribute("aria-pressed", "true")
     expect(screen.getByText(/Codex: not enough window history/)).toBeInTheDocument()
     expect(onMetricChange).not.toHaveBeenCalled()
     expect(JSON.parse(localStorage.getItem("antiburn.overview.view.v1")!)).toEqual({

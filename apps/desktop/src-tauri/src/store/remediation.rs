@@ -1,9 +1,11 @@
 use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, params};
 
+use antiburn_local::insights::DetectorId;
+
 use super::{
-    EvidenceClaim, Remediation, RemediationEvidenceGuard, RemediationRecord, RemediationResult,
-    RemediationState, SessionKey, Store,
+    Remediation, RemediationEvidenceGuard, RemediationRecord, RemediationResult, RemediationState,
+    Store, check_preferences_snapshot_in, enabled_checks_in,
 };
 
 mod history_progress;
@@ -303,6 +305,32 @@ impl Store {
         &self,
         remediations: &[(Remediation, Vec<RemediationEvidenceGuard>)],
     ) -> Result<Option<Vec<RemediationRecord>>> {
+        self.create_or_reuse_remediations_at_check_revision(remediations, None)
+    }
+
+    /// Creates or reuses exact watches only while one check policy snapshot remains current.
+    pub fn create_or_reuse_remediations_for_enabled_check(
+        &self,
+        remediations: &[(Remediation, Vec<RemediationEvidenceGuard>)],
+        detector: DetectorId,
+        expected_revision: u64,
+        expected_smart_master_generation: Option<&str>,
+    ) -> Result<Option<Vec<RemediationRecord>>> {
+        self.create_or_reuse_remediations_at_check_revision(
+            remediations,
+            Some((
+                detector,
+                expected_revision,
+                expected_smart_master_generation,
+            )),
+        )
+    }
+
+    fn create_or_reuse_remediations_at_check_revision(
+        &self,
+        remediations: &[(Remediation, Vec<RemediationEvidenceGuard>)],
+        check_policy: Option<(DetectorId, u64, Option<&str>)>,
+    ) -> Result<Option<Vec<RemediationRecord>>> {
         ensure!(
             !remediations.is_empty(),
             "a remediation batch requires watches"
@@ -326,6 +354,26 @@ impl Store {
         }
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
+        if let Some((detector, expected_revision, expected_smart_master_generation)) = check_policy
+        {
+            let (enabled, current_revision) = check_preferences_snapshot_in(&transaction)?;
+            if current_revision != expected_revision || !enabled.contains(&detector) {
+                return Ok(None);
+            }
+            if let Some(expected_generation) = expected_smart_master_generation {
+                let current_generation = transaction
+                    .query_row(
+                        "SELECT value FROM setting
+                          WHERE key = 'internal:burnChecksEnabledAtEpochV1'",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                if current_generation.as_deref() != Some(expected_generation) {
+                    return Ok(None);
+                }
+            }
+        }
         for (_, guards) in remediations {
             for guard in guards {
                 if !Self::remediation_guard_is_current(&transaction, guard)? {
@@ -373,19 +421,27 @@ impl Store {
         transaction: &rusqlite::Transaction<'_>,
         guard: &RemediationEvidenceGuard,
     ) -> Result<bool> {
+        let captured_revisions = super::revision_sql::captured_evidence_revisions("e");
         transaction.query_row(
-        "SELECT EXISTS (
+        &format!("SELECT EXISTS (
             SELECT 1 FROM session s JOIN session_evidence e USING (environment_key, agent, session_id)
-             WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
-                AND s.source_generation = ?4 AND e.published_fence = ?5
-                AND s.source_fingerprint IS ?6 AND e.processed_fingerprint IS ?7
-                AND e.parser_revision = ?8 AND e.analyzer_revision = ?9
-                AND e.evidence_schema_revision = ?10 AND e.status = 'ready'
-                AND e.analyzed_generation = s.source_generation)",
-        params![guard.environment_key, guard.agent, guard.session_id,
-            guard.source_generation, guard.published_fence, guard.source_fingerprint,
-            guard.processed_fingerprint, guard.parser_revision, guard.analyzer_revision,
-            guard.evidence_schema_revision],
+              WHERE s.environment_key = :environment_key AND s.agent = :agent AND s.session_id = :session_id
+                 AND s.source_generation = :source_generation AND e.published_fence = :published_fence
+                 AND s.source_fingerprint IS :source_fingerprint AND e.processed_fingerprint IS :processed_fingerprint
+                AND {captured_revisions} AND e.status = 'ready'
+                AND e.analyzed_generation = s.source_generation)"),
+        rusqlite::named_params![
+            ":environment_key": guard.environment_key,
+            ":agent": guard.agent,
+            ":session_id": guard.session_id,
+            ":source_generation": guard.source_generation,
+            ":published_fence": guard.published_fence,
+            ":source_fingerprint": guard.source_fingerprint,
+            ":processed_fingerprint": guard.processed_fingerprint,
+            ":captured_parser_revision": guard.parser_revision,
+            ":captured_analyzer_revision": guard.analyzer_revision,
+            ":captured_evidence_schema_revision": guard.evidence_schema_revision,
+        ],
         |row| row.get(0),
     )
     .map_err(Into::into)
@@ -713,15 +769,35 @@ impl Store {
     }
 
     pub fn next_dirty_remediation(&self) -> Result<Option<RemediationRecord>> {
-        self.lock()
+        let connection = self.lock();
+        let mut enabled = enabled_checks_in(&connection)?;
+        let smart_checks_enabled = connection.query_row(
+            "SELECT EXISTS (
+                    SELECT 1 FROM setting
+                     WHERE key = 'internal:burnChecksEnabledAtEpochV1')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !smart_checks_enabled {
+            enabled.remove(&DetectorId::IgnoredInstructions);
+        }
+        let enabled = enabled
+            .into_iter()
+            .map(|detector| detector.key())
+            .collect::<Vec<_>>();
+        let enabled_json = serde_json::to_string(&enabled)?;
+        connection
             .query_row(
                 &format!(
                     "SELECT {REMEDIATION_COLUMNS} FROM remediation
                 WHERE evaluated_revision < dirty_revision
                   AND state IN ('watching', 'fixed', 'recurred')
+                  AND (json_type(definition_json, '$.detector') IS NULL
+                       OR json_extract(definition_json, '$.detector')
+                          IN (SELECT value FROM json_each(?1)))
                 ORDER BY updated_at_epoch, remediation_id LIMIT 1"
                 ),
-                [],
+                [enabled_json],
                 remediation_from_row,
             )
             .optional()
@@ -926,109 +1002,6 @@ impl Store {
             |row| row.get(0),
         )?;
         Ok(usize::try_from(count).unwrap_or(0))
-    }
-
-    /// Claim the next pending or expired-lease evidence row for `agents`,
-    /// preferring the session most recently active.
-    ///
-    /// Same claim rules as the plain, arrival-ordered claim: pending or
-    /// expired-lease processing, a due `next_attempt_at_epoch`, and the same
-    /// `claim_fence + 1`/lease update. Only the candidate order differs: this
-    /// orders by the claimed session's `updated_at_epoch` descending (NULLs
-    /// last, so an unknown activity never jumps ahead of a known one), then
-    /// falls back to the existing tiebreakers so two candidates with the same
-    /// activity (or none) still claim deterministically. Analysis then runs
-    /// newest-first, so a current session never waits behind a history one
-    /// in the same backlog.
-    pub fn claim_next_evidence_by_recency(
-        &self,
-        agents: &[&str],
-        now_epoch: i64,
-        lease_secs: i64,
-    ) -> Result<Option<EvidenceClaim>> {
-        if agents.is_empty() {
-            return Ok(None);
-        }
-
-        let mut connection = self.lock();
-        let transaction = connection.transaction()?;
-        let agent_placeholders = vec!["?"; agents.len()].join(", ");
-        let mut values: Vec<rusqlite::types::Value> = agents
-            .iter()
-            .map(|agent| rusqlite::types::Value::Text((*agent).to_string()))
-            .collect();
-        values.push(rusqlite::types::Value::Integer(now_epoch));
-        let now_parameter = values.len();
-        let candidate = transaction
-            .query_row(
-                &format!(
-                    "SELECT evidence.environment_key, evidence.agent, evidence.session_id
-                       FROM session_evidence AS evidence
-                       JOIN session
-                         ON session.environment_key = evidence.environment_key
-                        AND session.agent = evidence.agent
-                        AND session.session_id = evidence.session_id
-                      WHERE evidence.agent IN ({agent_placeholders})
-                        AND (
-                            evidence.status = 'pending'
-                            OR (evidence.status = 'processing'
-                                AND evidence.lease_expires_at_epoch <= ?{now_parameter})
-                        )
-                        AND (evidence.next_attempt_at_epoch IS NULL
-                             OR evidence.next_attempt_at_epoch <= ?{now_parameter})
-                      ORDER BY session.updated_at_epoch IS NULL, session.updated_at_epoch DESC,
-                               evidence.next_attempt_at_epoch,
-                               evidence.claimed_at_epoch,
-                               evidence.environment_key, evidence.agent, evidence.session_id
-                      LIMIT 1"
-                ),
-                rusqlite::params_from_iter(values.iter()),
-                |row| {
-                    Ok(SessionKey::new(
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let Some(key) = candidate else {
-            transaction.commit()?;
-            return Ok(None);
-        };
-
-        transaction.execute(
-            "UPDATE session_evidence
-                SET status = 'processing', claim_fence = claim_fence + 1,
-                    claimed_at_epoch = ?4, lease_expires_at_epoch = ?5
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-            params![
-                key.environment_key,
-                key.agent,
-                key.session_id,
-                now_epoch,
-                now_epoch + lease_secs,
-            ],
-        )?;
-        let (source_generation, claim_fence, retry_count) = transaction.query_row(
-            "SELECT session.source_generation, evidence.claim_fence, evidence.retry_count
-               FROM session_evidence AS evidence
-               JOIN session
-                 ON session.environment_key = evidence.environment_key
-                AND session.agent = evidence.agent
-                AND session.session_id = evidence.session_id
-              WHERE evidence.environment_key = ?1
-                AND evidence.agent = ?2 AND evidence.session_id = ?3",
-            params![key.environment_key, key.agent, key.session_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
-        transaction.commit()?;
-        Ok(Some(EvidenceClaim {
-            key,
-            source_generation,
-            claim_fence,
-            retry_count,
-        }))
     }
 }
 

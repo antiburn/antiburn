@@ -45,6 +45,13 @@ const MAX_QUOTA_TURNS: usize = 2 * 70 * (240_000 / 30);
 /// Provider periods one candidate scan may return.
 const MAX_CANDIDATE_PERIODS: usize = 64;
 
+/// A factor sample with turns but no dollars, because no turn in it had a
+/// price.
+const UNPRICED_SAMPLE: &str = "turn_count > 0
+    AND (kind = 'unattributed'
+         OR (kind = 'window_start'
+             AND input_usd + output_usd + cache_read_usd + cache_write_usd = 0))";
+
 /// How far back the diagnostics export counts recent delta and unattributed
 /// samples, matching the factor's own weighted-median lookback.
 const RECENT_SAMPLE_WINDOW_SECS: i64 = 14 * 86_400;
@@ -966,6 +973,42 @@ impl Store {
             params![period_id, learned_through_epoch],
         )?;
         Ok(())
+    }
+
+    /// Remove each sample that has turns but no dollars, and the learn
+    /// cursors of their periods, so the next learning pass prices those
+    /// pairs again.
+    ///
+    /// No turn in such a sample had a price. A delta pair with no dollars is
+    /// `unattributed`, and a window-start sample keeps its kind at zero
+    /// dollars. Call this when the pricing table changes. Returns the number
+    /// of samples removed.
+    pub(crate) fn reopen_unpriced_factor_samples(&self) -> Result<usize> {
+        let _learning = self
+            .limit_factor_learn
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            &format!(
+                "DELETE FROM provider_limit_learn_cursor
+                  WHERE period_id IN (
+                      SELECT period_id FROM provider_limit_factor_sample
+                       WHERE {UNPRICED_SAMPLE}
+                  )"
+            ),
+            [],
+        )?;
+        let removed = transaction.execute(
+            &format!("DELETE FROM provider_limit_factor_sample WHERE {UNPRICED_SAMPLE}"),
+            [],
+        )?;
+        transaction.commit()?;
+        if removed > 0 {
+            ::tracing::info!(event = "limit_factor_unpriced_reopened", removed);
+        }
+        Ok(removed)
     }
 
     /// Insert or replace one factor sample, keyed by its interval.

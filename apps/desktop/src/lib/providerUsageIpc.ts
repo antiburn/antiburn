@@ -475,6 +475,8 @@ export interface LiveUsageSourceErrorPayload {
   category: string
   /** Which failure inside the category, when the source can say. Mirrors Rust `SourceErrorDetail`. */
   detail?: LiveUsageSourceErrorDetail
+  /** The plan named in a local file, when the failure has no reading to carry it. */
+  plan?: LiveUsagePlanPayload
 }
 
 export type LiveUsageSourceErrorDetail =
@@ -483,6 +485,7 @@ export type LiveUsageSourceErrorDetail =
   | "cliMissing"
   | "signInRequired"
   | "refreshPending"
+  | "desktopOnly"
 
 /** Live provider usage as one snapshot. Mirrors Rust `LiveUsageSummary`. */
 export interface LiveUsageSummaryPayload {
@@ -506,6 +509,8 @@ export interface LiveUsageMeterPayload {
   carrier?: LiveLoginCarrier
   /** `carrier` as the reader would name it, e.g. "the Claude Code CLI (Keychain)". */
   carrierLabel?: string
+  /** The provider's desktop app, e.g. "Claude Desktop", when it is installed, whatever login was found. */
+  desktopAppLabel?: string
 }
 
 /**

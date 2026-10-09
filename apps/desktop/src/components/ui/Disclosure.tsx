@@ -9,8 +9,8 @@ import { cn } from "../../lib/cn"
  * surface rather than inside a `Card`, for explanatory prose that would read as
  * an over-built list if every paragraph were given a container.
  *
- * Uncontrolled, because a disclosure's open state is presentation, not data.
- * Pass `defaultOpen` for the one that should start expanded.
+ * Pass `defaultOpen` for an initially expanded disclosure. Use `open` and
+ * `onOpenChange` when navigation controls the expanded state.
  *
  * Hand-rolled rather than pulled from a library: the whole contract here is a
  * button, `aria-expanded`, and `aria-controls`, which is not worth a
@@ -20,14 +20,19 @@ export function Disclosure({
   label,
   children,
   defaultOpen = false,
+  open: controlledOpen,
+  onOpenChange,
   className = "",
 }: {
   label: string
   children: ReactNode
   defaultOpen?: boolean
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
   className?: string
 }) {
-  const [open, setOpen] = useState(defaultOpen)
+  const [localOpen, setOpen] = useState(defaultOpen)
+  const open = controlledOpen ?? localOpen
   const bodyId = useId()
 
   return (
@@ -36,17 +41,16 @@ export function Disclosure({
         type="button"
         aria-expanded={open}
         aria-controls={bodyId}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          setOpen(!open)
+          onOpenChange?.(!open)
+        }}
         // No hover fill and no press feedback: these sit on the bare window
         // surface as prose, not as list rows, and the global button:active
-        // scale/opacity rule (styles/controls.css) made a paragraph heading
+        // opacity rule (styles/controls.css) made a paragraph heading
         // twitch. The chevron rotation is the affordance.
-        // `active:transform-none` is what actually cancels that rule —
-        // Tailwind's `scale-*` sets the separate `scale` property and composes
-        // with its `transform` instead.
-        className="flex w-full items-center justify-between gap-3 rounded-control px-1 py-3 text-left active:transform-none active:opacity-100"
+        className="flex w-full items-center gap-3 rounded-control px-1 py-3 text-left active:opacity-100 hover:opacity-70"
       >
-        <span className="type-body text-label">{label}</span>
         <ChevronDown
           size={14}
           strokeWidth={2}
@@ -56,6 +60,7 @@ export function Disclosure({
             open && "rotate-180",
           )}
         />
+        <span className="type-body text-label">{label}</span>
       </button>
       {/* Unmounted rather than hidden when collapsed, so collapsed prose stays
           out of the accessibility tree and out of find-in-page. */}

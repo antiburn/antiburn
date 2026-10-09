@@ -6,15 +6,16 @@ import type {
 } from "../../../lib/providerUsageIpc"
 import {
   liveDisplayableProviders,
-  liveErrorNote,
   liveGraceNote,
   livePlanAccountLabel,
   liveProviderStatus,
   liveUnavailableProviders,
   liveWindows,
   orderedLiveAccounts,
+  providerGroupLabel,
 } from "../../../lib/presentation/liveUsage"
 
+import { UnavailableNote } from "../../../components/providerUsage/UnavailableNote"
 import { WindowMeterRow } from "../../../components/providerUsage/UsageLimitsBar"
 import { useStableAccountNumbers } from "../../../components/providerUsage/useStableAccountNumbers"
 import { Skeleton } from "../../../components/ui/Skeleton"
@@ -64,7 +65,9 @@ function MeterGroup({ windows, now }: { windows: LiveUsageWindowPayload[]; now: 
  * dots as it grows. The stale tag floats in the top-right corner.
  *
  * The card sits beside the Overview page, in its own scrolling column. It
- * shows no local cost figure; those belong to the totals above it.
+ * shows no local cost figure; those belong to the totals above it. The
+ * caller renders this only once live usage is enabled and started — the
+ * pane itself has nothing to say before that.
  */
 export function OverviewProviderLimits({
   live,
@@ -87,19 +90,22 @@ export function OverviewProviderLimits({
     limited.map(({ key, reading }) => ({ key, provider: reading.provider })),
   )
   const at = live ? Date.parse(live.generatedAt) || 0 : 0
+  // A summary with no stamp is the roster from before live usage started:
+  // nothing is collected yet, so it is not an answer.
+  const pending = loading || (live !== null && live.generatedAt === "")
   const nothing = !live || (limited.length === 0 && unavailable.length === 0)
 
   return (
     <section
       aria-label="Provider limits"
-      aria-busy={loading || undefined}
+      aria-busy={pending || undefined}
       className="relative px-(--space-lg) py-(--space-lg)"
     >
-      {nothing && !loading ? (
+      {nothing && !pending ? (
         <p className="type-callout text-label-secondary">No providers set up for limits yet.</p>
       ) : (
         <div className="flex flex-col gap-(--space-xl)">
-          {loading
+          {pending
             ? ["first", "second"].map((seat) => (
                 <div key={seat} className="flex flex-col gap-y-(--space-lg)">
                   <Skeleton className="h-3 w-28" />
@@ -133,7 +139,7 @@ export function OverviewProviderLimits({
 
                         <div
                           role="group"
-                          aria-label={plan ? `${displayName}, ${plan} plan` : displayName}
+                          aria-label={providerGroupLabel(displayName, plan)}
                           className="min-w-0"
                         >
                           <h3 className="min-w-0 type-footnote truncate">
@@ -157,13 +163,18 @@ export function OverviewProviderLimits({
                     <Fragment key={entry.provider}>
                       {index > 0 && <div className="h-px w-full bg-separator" />}
 
-                      <div role="group" aria-label={entry.displayName} className="min-w-0">
-                        <h3 className="type-footnote truncate font-medium tracking-wide text-label uppercase">
-                          {entry.displayName}
+                      <div
+                        role="group"
+                        aria-label={providerGroupLabel(entry.displayName, entry.planLabel)}
+                        className="min-w-0"
+                      >
+                        <h3 className="type-footnote truncate font-medium tracking-wide text-label">
+                          <span className="uppercase">{entry.displayName}</span>
+                          {entry.planLabel && (
+                            <span className="text-label-secondary"> · {entry.planLabel}</span>
+                          )}
                         </h3>
-                        <p className="type-footnote pt-(--space-md) text-label-secondary">
-                          {liveErrorNote(entry.category, entry.provider, entry.detail)}
-                        </p>
+                        <UnavailableNote entry={entry} className="pt-(--space-md)" />
                       </div>
                     </Fragment>
                   ))}

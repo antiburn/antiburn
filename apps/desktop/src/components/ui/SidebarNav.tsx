@@ -30,6 +30,10 @@ export type SidebarNavItem = {
   /** Rows nested under this item, one level deep. They join the same tablist,
    *  in document order right after their parent. */
   children?: ReadonlyArray<SidebarNavChildItem>
+  /** Removes this row from keyboard navigation and from click selection, and
+   *  renders it in tertiary ink with no hover. A generic primitive flag: it
+   *  carries no opinion about why a row is disabled. */
+  disabled?: boolean
 }
 
 /** One row in the flattened tablist: a top-level item, or one of its
@@ -47,6 +51,11 @@ function flattenItems(items: ReadonlyArray<SidebarNavItem>): FlatRow[] {
     }
   }
   return rows
+}
+
+/** A child row carries no `disabled` field, so only a top-level row can be. */
+function isRowDisabled(row: FlatRow): boolean {
+  return !row.isChild && row.item.disabled === true
 }
 
 /** Source-list navigation for a multi-pane window.
@@ -88,15 +97,28 @@ export function SidebarNav({
   const rowRefs = useRef(new Map<string, HTMLButtonElement>())
   const rows = flattenItems(items)
 
+  // Steps over disabled rows in `delta`'s direction, wrapping at the ends,
+  // so keyboard navigation never lands on one.
+  function stepIndex(start: number, delta: 1 | -1): number {
+    let next = start
+    for (let steps = 0; steps < rows.length; steps += 1) {
+      next = (next + delta + rows.length) % rows.length
+      if (!isRowDisabled(rows[next]!)) return next
+    }
+    return start
+  }
+
   function handleKeyDown(e: KeyboardEvent<HTMLDivElement>) {
     if (rows.length === 0) return
     const current = rows.findIndex((row) => row.item.id === value)
     let next: number
-    if (e.key === "ArrowDown") next = (current + 1) % rows.length
-    else if (e.key === "ArrowUp") next = (current - 1 + rows.length) % rows.length
-    else if (e.key === "Home") next = 0
-    else if (e.key === "End") next = rows.length - 1
+    if (e.key === "ArrowDown") next = stepIndex(current, 1)
+    else if (e.key === "ArrowUp") next = stepIndex(current, -1)
+    else if (e.key === "Home") next = rows.findIndex((row) => !isRowDisabled(row))
+    else if (e.key === "End")
+      next = rows.length - 1 - [...rows].reverse().findIndex((row) => !isRowDisabled(row))
     else return
+    if (next < 0) return
 
     e.preventDefault()
     const target = rows[next]
@@ -174,12 +196,8 @@ export function SidebarNav({
           )
         })}
       </div>
-      {footer && (
-        <div className="px-2 pb-3">
-          <div role="presentation" className="mb-2 h-px bg-separator" />
-          {footer}
-        </div>
-      )}
+
+      {footer && <div className="px-2 pb-3">{footer}</div>}
     </div>
   )
 }
@@ -207,6 +225,7 @@ function SidebarNavRow({
 }) {
   const Icon = item.icon
   const controls = ("controls" in item && item.controls) || `${item.id}-panel`
+  const disabled = "disabled" in item && item.disabled === true
   return (
     <button
       ref={(node) => {
@@ -217,14 +236,16 @@ function SidebarNavRow({
       role="tab"
       id={`${item.id}-tab`}
       aria-selected={selected}
+      aria-disabled={disabled || undefined}
       aria-controls={controls}
       data-nested={nested ? "" : undefined}
       // Set the accessible name to the label alone when a count pill is
       // present. This keeps the name stable and free of the count digits,
       // which the row already shows as visible text.
       aria-label={item.count !== undefined ? item.label : undefined}
-      tabIndex={selected ? 0 : -1}
+      tabIndex={selected && !disabled ? 0 : -1}
       onClick={() => {
+        if (disabled) return
         onChange(item.id)
         onActivate?.()
       }}
@@ -232,7 +253,11 @@ function SidebarNavRow({
         "type-body flex items-center gap-3 rounded-control transition-colors duration-[var(--duration-fast)] ease-out",
         heightClass,
         paddingClass,
-        selected ? "bg-surface-selected text-label" : "text-label hover:bg-surface-hover",
+        disabled
+          ? "text-label-tertiary"
+          : selected
+            ? "bg-surface-selected text-label"
+            : "text-label hover:bg-surface-hover",
       )}
     >
       {Icon && <Icon size={16} strokeWidth={2} className="shrink-0" aria-hidden="true" />}

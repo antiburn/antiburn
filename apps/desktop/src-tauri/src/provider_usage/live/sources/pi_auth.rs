@@ -32,9 +32,23 @@ impl PiOauth {
     }
 }
 
-/// Pi's auth store path.
+/// Set to `1` to make live usage ignore Pi's auth store. Debug builds only.
+/// A tester who uses Pi can then see what a reader without Pi sees, for
+/// example the Claude Desktop-only state.
+const IGNORE_ENV: &str = "ANTIBURN_IGNORE_PI_AUTH";
+
+/// Pi's auth store path, or `None` when a debug build ignores Pi.
 pub fn default_auth_path() -> Option<PathBuf> {
+    if ignore_requested(cfg!(debug_assertions), std::env::var_os(IGNORE_ENV)) {
+        ::tracing::info!(event = "pi_auth_ignored");
+        return None;
+    }
     Some(antiburn_local::paths::home_dir()?.join(".pi/agent/auth.json"))
+}
+
+/// Whether to ignore Pi: only in a debug build, and only for the value `1`.
+fn ignore_requested(debug_build: bool, value: Option<std::ffi::OsString>) -> bool {
+    debug_build && value.is_some_and(|value| value == "1")
 }
 
 /// The provider keys the store holds, and nothing under them.
@@ -90,6 +104,15 @@ fn parse_entry(contents: &str, provider_key: &str) -> Option<PiOauth> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_debug_build_with_the_value_one_ignores_pi() {
+        assert!(ignore_requested(true, Some("1".into())));
+        assert!(!ignore_requested(false, Some("1".into())));
+        assert!(!ignore_requested(true, Some("0".into())));
+        assert!(!ignore_requested(true, Some("true".into())));
+        assert!(!ignore_requested(true, None));
+    }
 
     const STORE: &str = r#"{
       "anthropic": {"type": "oauth", "access": "synthetic-anthropic-access",

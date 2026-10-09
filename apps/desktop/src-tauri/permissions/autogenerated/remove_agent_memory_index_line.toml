@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-remove-agent-memory-index-line"
+description = "Enables the remove_agent_memory_index_line command without any pre-configured scope."
+commands.allow = ["remove_agent_memory_index_line"]
+
+[[permission]]
+identifier = "deny-remove-agent-memory-index-line"
+description = "Denies the remove_agent_memory_index_line command without any pre-configured scope."
+commands.deny = ["remove_agent_memory_index_line"]

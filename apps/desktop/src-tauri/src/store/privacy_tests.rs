@@ -447,3 +447,35 @@ fn clear_local_session_data_removes_the_sentinel_from_every_table() {
     assert_absent_everywhere(&connection, CLAUDE_SENTINEL);
     assert_absent_everywhere(&connection, CODEX_SENTINEL);
 }
+
+#[test]
+fn clear_local_session_data_preserves_model_connections_and_credentials_metadata() {
+    let store = store();
+    store.set_internal_value(
+        "internal:smartChecksConnectionsV1",
+        r#"{"activeId":"local","profiles":{}}"#,
+    );
+    store.set_internal_value("internal:smartChecksActiveConnectionV1", "local");
+    store.set_internal_value("internal:smartChecksProviderMigrationV1", "1");
+
+    store.clear_local_session_data().expect("clear local data");
+
+    assert_eq!(
+        store
+            .internal_value("internal:smartChecksConnectionsV1")
+            .as_deref(),
+        Some(r#"{"activeId":"local","profiles":{}}"#)
+    );
+    assert_eq!(
+        store
+            .internal_value("internal:smartChecksActiveConnectionV1")
+            .as_deref(),
+        Some("local")
+    );
+    assert_eq!(
+        store
+            .internal_value("internal:smartChecksProviderMigrationV1")
+            .as_deref(),
+        Some("1")
+    );
+}

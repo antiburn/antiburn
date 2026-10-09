@@ -17,12 +17,20 @@ pub(super) struct CompactCarriedComparisons {
 
 #[derive(Serialize, Deserialize)]
 struct CompactComparison {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_binding: Option<antiburn_local::analysis::ignored_instructions::ActionSourceBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prerequisite_episode:
+        Option<antiburn_local::analysis::ignored_instructions::PrerequisiteEpisode>,
     id: String,
     reference: antiburn_local::analysis::ignored_instructions::RuleActionRef,
     source_thread_digest: String,
     source_turn_index: u64,
     source_turn_scope: String,
     rule_text: usize,
+    #[serde(default)]
+    instruction_context:
+        Vec<antiburn_local::analysis::ignored_instructions::InstructionContextRange>,
     rule_text_start: usize,
     rule_text_end: usize,
     action: usize,
@@ -59,12 +67,15 @@ impl CompactCarriedComparisons {
                         index
                     });
                 CompactComparison {
+                    source_binding: comparison.source_binding.clone(),
+                    prerequisite_episode: comparison.prerequisite_episode.clone(),
                     id: comparison.id.clone(),
                     reference: comparison.reference.clone(),
                     source_thread_digest: comparison.source_thread_digest.clone(),
                     source_turn_index: comparison.source_turn_index,
                     source_turn_scope: comparison.source_turn_scope.clone(),
                     rule_text,
+                    instruction_context: comparison.instruction_context.clone(),
                     rule_text_start: comparison.rule_text_start,
                     rule_text_end: comparison.rule_text_end,
                     action: event_index(&comparison.action),
@@ -100,6 +111,8 @@ impl CompactCarriedComparisons {
                         .ok_or(JevError::InvalidCheckPlan)
                 };
                 Ok(CandidateComparison {
+                    source_binding: entry.source_binding,
+                    prerequisite_episode: entry.prerequisite_episode,
                     id: entry.id,
                     reference: entry.reference,
                     source_thread_digest: entry.source_thread_digest,
@@ -110,6 +123,7 @@ impl CompactCarriedComparisons {
                         .get(entry.rule_text)
                         .cloned()
                         .ok_or(JevError::InvalidCheckPlan)?,
+                    instruction_context: entry.instruction_context,
                     rule_text_start: entry.rule_text_start,
                     rule_text_end: entry.rule_text_end,
                     action: event(entry.action)?,
@@ -152,6 +166,10 @@ pub(super) struct CompactProgress {
 }
 
 impl CompactProgress {
+    pub(super) fn revision_matches(&self) -> bool {
+        self.version == 3
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.answers.iter().all(Option::is_none)
             && self.followup_answers.iter().all(Option::is_none)
@@ -219,7 +237,7 @@ impl CompactProgress {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
-            version: 2,
+            version: 3,
             input_revision: progress.input_revision.clone(),
             completed_batch_ids: progress.completed_batch_ids.clone(),
             failed_item_ids: progress.failed_item_ids.clone(),
@@ -247,7 +265,7 @@ impl CompactProgress {
         context: &JevSessionContext,
         work_items: &[JevWorkItem],
     ) -> Result<JevRunProgress, JevError> {
-        if !matches!(self.version, 1 | 2)
+        if !self.revision_matches()
             || self.answers.len() != work_items.len()
             || (!self.followup_answers.is_empty()
                 && self.followup_answers.len() != work_items.len())
@@ -364,6 +382,131 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn source_bound_comparisons_survive_durable_reload_and_legacy_has_no_binding() {
+        use antiburn_local::analysis::ignored_instructions::*;
+        let actions = (1..=12)
+            .map(|index| ContentAction {
+                reference: ContentEventReference {
+                    id: format!("action-{index}"),
+                    source_key_digest: "source".into(),
+                    thread_digest: "thread".into(),
+                    turn_index: index,
+                    native_record_id: None,
+                    part_index: 0,
+                    stable: true,
+                },
+                timestamp_ms: Some(index as i64),
+                turn_role: "assistant".into(),
+                turn_scope: "main".into(),
+                authority: "assistant".into(),
+                kind: "assistant_text".into(),
+                text: "Published without validation.".into(),
+                tool_name: None,
+                tool_call_id: None,
+                normalized_fields: None,
+                metadata: Default::default(),
+                truncated: false,
+                context_only: false,
+            })
+            .collect();
+        let input = AssessmentInput {
+            content: SessionContentEvidence {
+                session_identity_digest: "session".into(),
+                source_format: antiburn_local::analysis::SourceFormat::ClaudeJsonl,
+                publication_fence: 3,
+                selected_input_digest: "selected".into(),
+                actions,
+                instructions: vec![
+                    snapshot_from_text(
+                        "AGENTS.md",
+                        "Request validation before publishing.".into(),
+                        InstructionProvenance::RecordedInjection,
+                        InstructionScope::Project,
+                    )
+                    .unwrap(),
+                ],
+                complete: true,
+                limitations: vec![],
+                excluded_thinking_parts: 0,
+                field_availability: vec![],
+            },
+            prior_history_complete: true,
+            activity_after_ms: None,
+            boundary_positions: BTreeMap::new(),
+            source_generation: 2,
+            source_fingerprint: Some("fingerprint".into()),
+            incarnation: 1,
+            comparison_after: None,
+        };
+        let context = build_jev_context(&input).unwrap();
+        let mut plan = IgnoredInstructionsCheck.prepare(&context).unwrap();
+        let expanded = plan
+            .prepared
+            .comparisons
+            .iter_mut()
+            .find(|comparison| comparison.reference.action_id == "action-12")
+            .unwrap();
+        let earlier = &input.content.actions[..11];
+        expanded.prerequisite_episode = Some(PrerequisiteEpisode {
+            selected_actions: earlier.to_vec(),
+            events: earlier
+                .iter()
+                .map(|action| CounterEvidence {
+                    action_id: action.reference.id.clone(),
+                    source_order: action.reference.turn_index,
+                    role: action.turn_role.clone(),
+                    kind: action.kind.clone(),
+                    timestamp_ms: action.timestamp_ms,
+                    tool_name: None,
+                    text: action.text.clone(),
+                    truncated: false,
+                })
+                .collect(),
+            identities: earlier
+                .iter()
+                .map(|action| EvidenceIdentity {
+                    source: action.reference.clone(),
+                    content_digest: content_action_digest(action),
+                    start_byte: 0,
+                    end_byte: action.text.len(),
+                })
+                .collect(),
+            complete_selected_history: true,
+            revision: "episode-revision".into(),
+        });
+        let comparisons = &plan.prepared.comparisons;
+        assert!(!comparisons.is_empty());
+        assert!(
+            comparisons
+                .iter()
+                .all(|comparison| comparison.source_binding.is_some())
+        );
+        let expanded = comparisons
+            .iter()
+            .find(|comparison| comparison.reference.action_id == "action-12")
+            .unwrap();
+        assert!(expanded.prerequisite_episode.as_ref().unwrap().events.len() > 3);
+        let compact = CompactCarriedComparisons::from_comparisons(comparisons);
+        let saved = serde_json::to_string(&compact).unwrap();
+        let restored: CompactCarriedComparisons = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.restore().unwrap(), *comparisons);
+        let mut legacy: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        for comparison in legacy["comparisons"].as_array_mut().unwrap() {
+            comparison.as_object_mut().unwrap().remove("source_binding");
+            comparison
+                .as_object_mut()
+                .unwrap()
+                .remove("prerequisite_episode");
+        }
+        let legacy: CompactCarriedComparisons = serde_json::from_value(legacy).unwrap();
+        for comparison in legacy.restore().unwrap() {
+            assert!(comparison.source_binding.is_none());
+            let rebuilt = extend_comparison_with_history(&comparison, &input.content.actions, true);
+            assert!(rebuilt.source_binding.is_none());
+        }
+    }
+
+    #[test]
     fn page_boundary_checkpoint_restores_with_a_different_next_page_layout() {
         let context = JevSessionContext {
             input_revision: "page-two".to_owned(),
@@ -455,12 +598,13 @@ mod tests {
                     questions: (0..8)
                         .map(|question| {
                             (
-                                format!("target-{id}{question:02}::applicability"),
+                                format!("target-{id}{question:02}::decision"),
                                 JevQuestion::Choice {
-                                    instructions: json!("Does the instruction cover the action?"),
+                                    instructions: json!("Assess the rule/action pair."),
                                     criteria: BTreeMap::from([
-                                        ("applies".to_owned(), json!("Applies")),
-                                        ("not_applicable".to_owned(), json!("Does not apply")),
+                                        ("conflict".to_owned(), json!("Conflicts")),
+                                        ("no_issue".to_owned(), json!("No issue")),
+                                        ("pending_completion".to_owned(), json!("Pending completion")),
                                         ("uncertain".to_owned(), json!("Unclear")),
                                     ]),
                                 },
@@ -493,10 +637,11 @@ mod tests {
                                 (
                                     question.clone(),
                                     JevAnswer::Choice {
-                                        choice: "not_applicable".to_owned(),
+                                        choice: "no_issue".to_owned(),
                                         probabilities: BTreeMap::from([
-                                            ("applies".to_owned(), 0.01),
-                                            ("not_applicable".to_owned(), 0.98),
+                                            ("conflict".to_owned(), 0.01),
+                                            ("no_issue".to_owned(), 0.97),
+                                            ("pending_completion".to_owned(), 0.01),
                                             ("uncertain".to_owned(), 0.01),
                                         ]),
                                         confidence: 0.97,
@@ -540,48 +685,14 @@ mod tests {
             else {
                 unreachable!()
             };
-            *choice = "applies".to_owned();
-            probabilities.insert("applies".to_owned(), 0.98);
-            probabilities.insert("not_applicable".to_owned(), 0.01);
+            *choice = "pending_completion".to_owned();
+            probabilities.insert("pending_completion".to_owned(), 0.97);
+            probabilities.insert("no_issue".to_owned(), 0.01);
         }
         let followup = check
             .reconcile(first, &progress.results[&first.id], &context)
-            .unwrap()
             .unwrap();
-        let followup_batch = pack_work_items(std::slice::from_ref(&followup))
-            .batches
-            .remove(0);
-        progress
-            .completed_batch_ids
-            .insert(followup_batch.id.clone());
-        progress.request_count += 1;
-        progress.results.insert(
-            followup.id.clone(),
-            JevWorkItemResult {
-                request_id: followup_batch.id,
-                work_item_id: followup.id.clone(),
-                answers: followup
-                    .questions
-                    .keys()
-                    .map(|id| {
-                        (
-                            id.clone(),
-                            JevAnswer::Choice {
-                                choice: "conflict".to_owned(),
-                                probabilities: BTreeMap::from([("conflict".to_owned(), 0.97)]),
-                                confidence: 0.97,
-                            },
-                        )
-                    })
-                    .collect(),
-                evidence: followup.window.evidence.clone(),
-                model: PINNED_MODEL.to_owned(),
-                usage: JevUsage {
-                    input_tokens: 4000,
-                    output_tokens: 1200,
-                },
-            },
-        );
+        assert!(followup.is_none());
         let last = work_items.last().unwrap();
         let repacked = pack_work_items(std::slice::from_ref(last))
             .batches
@@ -603,34 +714,14 @@ mod tests {
             restored.restore(&check, &context, &work_items).unwrap(),
             progress
         );
-        let mut classified = first.clone();
-        for target in classified.window.fields["instruction_targets"]
-            .as_array_mut()
-            .unwrap()
-        {
-            target["obligation"] = json!("prerequisite");
+        for old_version in [1, 2] {
+            let mut old: CompactProgress = serde_json::from_str(&stored).unwrap();
+            old.version = old_version;
+            assert!(matches!(
+                old.restore(&check, &context, &work_items),
+                Err(JevError::InvalidCheckPlan)
+            ));
         }
-        let classified_followup = check
-            .reconcile(&classified, &progress.results[&first.id], &context)
-            .unwrap()
-            .unwrap();
-        assert_eq!(classified_followup.questions.len(), 16);
-        let mut dynamic = progress.clone();
-        dynamic
-            .results
-            .get_mut(&classified_followup.id)
-            .unwrap()
-            .answers
-            .retain(|id, _| classified_followup.questions.contains_key(id));
-        let compact =
-            CompactProgress::from_progress(&check, &context, &dynamic, &work_items).unwrap();
-        assert!(compact.extra_results.contains_key(&classified_followup.id));
-        let stored = serde_json::to_string(&compact).unwrap();
-        let restored: CompactProgress = serde_json::from_str(&stored).unwrap();
-        assert_eq!(
-            restored.restore(&check, &context, &work_items).unwrap(),
-            dynamic
-        );
         let cursor = AssessmentCursor {
             input_revision: Some("revision".to_owned()),
             progress: progress.clone(),

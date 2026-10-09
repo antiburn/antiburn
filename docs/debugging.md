@@ -66,6 +66,14 @@ metadata failures, launch failures, verification timeouts, and settled refreshes
 `live_source_failed` also includes the typed error detail. These events contain
 no credentials or CLI output. A settled refresh means the credential carrier
 changed; the subsequent usage request still determines whether recovery worked.
+When Claude Desktop is the only Claude app and no Claude Code or Pi login
+exists, the check fails as `authentication` with detail `DesktopOnly`. Claude
+Desktop's own sign-in is never read.
+
+To test without Pi's logins, start a debug build with
+`ANTIBURN_IGNORE_PI_AUTH=1`. Live usage then ignores `~/.pi/agent/auth.json`
+for Claude and Codex, and logs `pi_auth_ignored`. Release builds ignore the
+variable.
 
 The `claude_keychain_read` debug event records each Keychain secret read as
 `absent`, `unreadable`, `found`, or `found_without_login`, with the `security`
@@ -84,16 +92,18 @@ An app that starts from Finder gets only `/usr/bin:/bin:/usr/sbin:/sbin`;
 Finder launch from a terminal, run
 `osascript -e 'tell application "Finder" to open (POSIX file "/path/to/antiburn.app" as alias)'`.
 
-## Restart onboarding
+## Reset first run
 
-Select **Reset Onboarding** in the debug-build tray menu. This action sets
-`onboardingCompleted` to `false` and opens setup at Welcome. It keeps indexed
-sessions, scan folders, repository choices, and preferences. Closing setup
-before completion keeps onboarding pending.
+Select **Reset First Run** in the debug-build tray menu. This action clears
+locally indexed session data, resets the main window's saved placement, and
+sets `onboardingCompleted` and `liveUsageStarted` back to `false`. The next
+launch — or the current main window, once it reconciles the new settings —
+shows the first-run Overview again, as a fresh install would.
 
-Use the fresh-profile procedure above when you need a true first-install test.
-Packaged builds provide **Settings → General → Run setup again** for the same
-non-destructive restart.
+This is destructive: unlike the retired packaged-build restart, it does not
+keep indexed sessions. Use the fresh-profile procedure above instead when you
+need a true first-install test without touching an existing debug profile's
+other data.
 
 ## Show sample notifications
 

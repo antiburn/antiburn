@@ -75,10 +75,12 @@ function OverviewRecentSessionRow({
   metric,
   limitBadge,
   now,
+  showChecks,
   onSelect,
 }: {
   entry: SessionListEntry
   now: number
+  showChecks: boolean
   hygiene: SessionHygienePayload
   snoozedDetectors: ReadonlySet<BurnCheckDetectorId>
   metric: OverviewMetric
@@ -205,9 +207,13 @@ function OverviewRecentSessionRow({
           : limitBadge && <SessionLimitBadge limitBadge={limitBadge} suffix="of week" plain />}
       </span>
 
-      <Tooltip label={presentation.accessibleDescription} delayMs={150}>
-        <BurnCheckStatus presentation={presentation} />
-      </Tooltip>
+      {showChecks ? (
+        <Tooltip label={presentation.accessibleDescription} delayMs={150}>
+          <BurnCheckStatus presentation={presentation} />
+        </Tooltip>
+      ) : (
+        <span />
+      )}
     </div>
   )
 }
@@ -221,6 +227,8 @@ export function OverviewRecentSessions({
   metric,
   liveUsage,
   sessionLimitAllocations,
+  showChecks = true,
+  showOpenAll = true,
 }: {
   entries: SessionListEntry[] | null
   active?: boolean
@@ -230,6 +238,12 @@ export function OverviewRecentSessions({
   metric: OverviewMetric
   liveUsage?: LiveUsageSummaryPayload | undefined
   sessionLimitAllocations?: SessionLimitAllocationSummaryPayload | null | undefined
+  /** False during the first run until the Checks step is done: the rows
+   *  show without check results, which are not ready yet. */
+  showChecks?: boolean
+  /** False during the first run, when the Sessions view is not open to the
+   *  reader yet. */
+  showOpenAll?: boolean
 }) {
   const now =
     useSyncExternalStore(
@@ -265,14 +279,16 @@ export function OverviewRecentSessions({
       <div className="flex items-baseline justify-between">
         <h2 className="type-caption text-label-secondary">Recent sessions</h2>
 
-        <button
-          type="button"
-          onClick={onOpenAll}
-          className="inline-flex items-center gap-1 type-caption text-label-secondary hover:text-label hover:underline hover:underline-offset-[3px]"
-        >
-          All sessions
-          <ArrowRight size={12} strokeWidth={2} aria-hidden="true" />
-        </button>
+        {showOpenAll && (
+          <button
+            type="button"
+            onClick={onOpenAll}
+            className="inline-flex items-center gap-1 type-caption text-label-secondary hover:text-label hover:underline hover:underline-offset-[3px]"
+          >
+            All sessions
+            <ArrowRight size={12} strokeWidth={2} aria-hidden="true" />
+          </button>
+        )}
       </div>
       {snoozes.status === "error" ? (
         <p role="status" className="type-callout text-label-secondary">
@@ -283,7 +299,7 @@ export function OverviewRecentSessions({
       ) : (
         <div className="overview-recent-rows grid grid-cols-[auto_1fr_auto_auto_auto] @max-[720px]:grid-cols-[auto_1fr_auto_auto] gap-y-1.5">
           {entries && snoozes.status === "ready"
-            ? entries.map((entry) => (
+            ? entries.slice(0, OVERVIEW_RECENT_SESSION_COUNT).map((entry) => (
                 <OverviewRecentSessionRow
                   key={localSessionKey(
                     entry.agent,
@@ -293,6 +309,7 @@ export function OverviewRecentSessions({
                   )}
                   entry={entry}
                   now={now}
+                  showChecks={showChecks}
                   hygiene={
                     entry.sessionId
                       ? sessionHygieneFor(hygieneBySession, {
@@ -321,6 +338,7 @@ export function OverviewRecentSessions({
                                 ),
                               )
                             : undefined,
+                          !!entry.totalTokens || !!entry.cost,
                         ),
                       }
                     : {})}

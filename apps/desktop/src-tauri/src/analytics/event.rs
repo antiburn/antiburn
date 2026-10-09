@@ -29,15 +29,6 @@ use serde::Serialize;
 pub enum EventName {
     /// The application started.
     AppLaunched,
-    /// A new or explicitly restarted setup flow finished.
-    #[cfg(feature = "analytics")]
-    OnboardingFinished,
-    /// A new or explicitly restarted setup flow became visible.
-    #[cfg(feature = "analytics")]
-    OnboardingStarted,
-    /// One fixed onboarding step became visible.
-    #[cfg(feature = "analytics")]
-    OnboardingStepViewed,
     /// A discovery pass completed, with a bucketed count of what it found.
     #[cfg(feature = "analytics")]
     ScanCompleted,
@@ -114,6 +105,9 @@ pub enum EventName {
     /// An explicit project folder action completed.
     #[cfg(feature = "analytics")]
     ProjectFolderAction,
+    /// A memory action in the Memories view settled.
+    #[cfg(feature = "analytics")]
+    MemoryAction,
     /// An assessed cohort's quota-pressure section has assessed incidents,
     /// with a bucketed hit count per limit kind.
     QuotaIncidentsObserved,
@@ -135,12 +129,29 @@ pub enum EventName {
     AppSearchResultOpened,
     /// The reader saved a different application interface size preset.
     InterfaceScaleChanged,
+    /// The first-run Overview reached a fixed funnel step.
+    #[cfg(feature = "analytics")]
+    FirstRunStepReached,
+    /// A deliberate action in the first-run Overview completed.
+    #[cfg(feature = "analytics")]
+    FirstRunAction,
+    /// The first-run Overview's result first showed.
+    #[cfg(feature = "analytics")]
+    FirstRunFinished,
     /// A reader viewed an Ignored Instructions finding or acted on its evidence or prompt.
     #[cfg(feature = "analytics")]
     IgnoredInstructionObserved,
     /// A saved TypeSafe setting, a history run request, or a terminal check result.
     #[cfg(feature = "analytics")]
     IgnoredInstructionLifecycle,
+    /// One check's enabled preference completed a persisted state transition.
+    #[cfg(feature = "analytics")]
+    CheckEnablementSaved,
+    /// A progress step's settings became visible: the first-run "Show
+    /// settings" disclosure opened, or the step's modal opened after the
+    /// first run.
+    #[cfg(feature = "analytics")]
+    StepSettingsViewed,
 }
 
 /// Every event this application may send.
@@ -154,9 +165,6 @@ pub enum EventName {
 #[cfg(all(test, feature = "analytics"))]
 pub const EVERY_EVENT: &[EventName] = &[
     EventName::AppLaunched,
-    EventName::OnboardingFinished,
-    EventName::OnboardingStarted,
-    EventName::OnboardingStepViewed,
     EventName::ScanCompleted,
     EventName::SettingToggled,
     EventName::AnalyticsOptedOut,
@@ -183,6 +191,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::RemoteHostChanged,
     EventName::RemoteSyncCompleted,
     EventName::ProjectFolderAction,
+    EventName::MemoryAction,
     EventName::QuotaIncidentsObserved,
     EventName::ProviderIncidentsObserved,
     EventName::ProviderIncidentsIngested,
@@ -191,8 +200,13 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::AppSearchOpened,
     EventName::AppSearchResultOpened,
     EventName::InterfaceScaleChanged,
+    EventName::FirstRunStepReached,
+    EventName::FirstRunAction,
+    EventName::FirstRunFinished,
     EventName::IgnoredInstructionObserved,
     EventName::IgnoredInstructionLifecycle,
+    EventName::CheckEnablementSaved,
+    EventName::StepSettingsViewed,
 ];
 
 #[cfg(feature = "analytics")]
@@ -200,9 +214,6 @@ impl EventName {
     pub fn as_str(self) -> &'static str {
         match self {
             EventName::AppLaunched => "antiburn.app_launched",
-            EventName::OnboardingFinished => "antiburn.onboarding_finished",
-            EventName::OnboardingStarted => "antiburn.onboarding_started",
-            EventName::OnboardingStepViewed => "antiburn.onboarding_step_viewed",
             EventName::ScanCompleted => "antiburn.scan_completed",
             EventName::SettingToggled => "antiburn.setting_toggled",
             EventName::AnalyticsOptedOut => "antiburn.analytics_opted_out",
@@ -224,6 +235,7 @@ impl EventName {
             EventName::BurnCheckPromptCopied => "antiburn.burn_check_prompt_copied",
             EventName::BurnCheckOutcomeObserved => "antiburn.burn_check_outcome_observed",
             EventName::ProjectFolderAction => "antiburn.project_folder_action",
+            EventName::MemoryAction => "antiburn.memory_action",
             EventName::SessionFilterSelected => "antiburn.session_filter_selected",
             EventName::SessionFiltersChanged => "antiburn.session_filters_changed",
             EventName::RemoteHostConnectionChecked => "antiburn.remote_host_connection_checked",
@@ -237,8 +249,13 @@ impl EventName {
             EventName::AppSearchOpened => "antiburn.app_search_opened",
             EventName::AppSearchResultOpened => "antiburn.app_search_result_opened",
             EventName::InterfaceScaleChanged => "antiburn.interface_scale_changed",
+            EventName::FirstRunStepReached => "antiburn.first_run_step_reached",
+            EventName::FirstRunAction => "antiburn.first_run_action",
+            EventName::FirstRunFinished => "antiburn.first_run_finished",
             EventName::IgnoredInstructionObserved => "antiburn.ignored_instruction_observed",
             EventName::IgnoredInstructionLifecycle => "antiburn.ignored_instruction_lifecycle",
+            EventName::CheckEnablementSaved => "antiburn.check_enablement_saved",
+            EventName::StepSettingsViewed => "antiburn.step_settings_viewed",
         }
     }
 }
@@ -461,9 +478,11 @@ pub enum Interaction {
         action: ProjectFolderAction,
         outcome: ProjectFolderOutcome,
     },
-    /// A fixed onboarding step became visible.
-    OnboardingStepViewed {
-        step: OnboardingStep,
+    /// A memory action settled. The event carries no path, name, content or
+    /// error text.
+    MemoryAction {
+        action: MemoryActionKind,
+        outcome: MemoryActionOutcome,
     },
     /// A session was opened from the activity list. `agent` deserializes into
     /// the engine's own closed enum, so an unrecognised slug is a rejected
@@ -506,9 +525,12 @@ pub enum Interaction {
     /// A fix prompt request completed.
     BurnCheckPromptPrepared {
         outcome: PromptPreparationOutcome,
+        check: Option<SmartCheck>,
     },
     /// A prepared fix prompt reached the clipboard.
-    BurnCheckPromptCopied,
+    BurnCheckPromptCopied {
+        check: Option<SmartCheck>,
+    },
     /// A later result appeared in the visible Burn Checks workspace.
     BurnCheckOutcomeObserved {
         outcome: BurnCheckOutcome,
@@ -533,11 +555,259 @@ pub enum Interaction {
         stage: IgnoredInstructionStage,
         outcome: IgnoredInstructionOutcome,
     },
+    SmartCheckObserved {
+        check: SmartCheck,
+        observation: SmartCheckObservation,
+    },
     /// The contextual Sessions filters changed.
     SessionFiltersChanged {
         action: SessionFilterAction,
         agent: Option<AgentKind>,
     },
+    /// The first-run Overview reached a fixed funnel step.
+    FirstRunStepReached {
+        step: FirstRunStep,
+        /// The discovery pass's total session count. Present only when
+        /// `step` is `found`; bucketed before it reaches [`Facts`].
+        sessions: Option<u32>,
+        /// Which result first showed. Present only when `step` is `result`.
+        result: Option<FirstRunResult>,
+    },
+    /// A deliberate action in the first-run Overview completed.
+    FirstRunAction {
+        action: FirstRunActionKind,
+    },
+    /// The first-run Overview's result first showed.
+    FirstRunFinished {},
+    /// A progress step's settings became visible. `limits` only ever
+    /// carries `first_run`: after the first run, its settings live in
+    /// Settings → Usage, which reports its own `settings_pane_viewed`
+    /// instead. Nothing here enforces that pairing — it holds because the
+    /// only caller for `limits` is the first-run disclosure — so it is
+    /// documented, not typed.
+    StepSettingsViewed {
+        label: StepSettingsLabel,
+        detail: StepSettingsDetail,
+    },
+}
+
+/// A stable, closed analytics identity for a check.
+///
+/// Keep this separate from arbitrary serialized keys so a future detector does
+/// not enter analytics until its measurement contract is reviewed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckEnablementId {
+    SessionsOverDepth,
+    ModelOverthinking,
+    OverpoweredSubagents,
+    UnusedMcpServers,
+    UnusedBuiltInTools,
+    UnusedSkills,
+    OldModelUsage,
+    OveruseOfFastMode,
+    CacheChurn,
+    IgnoredInstructions,
+    SkillOpportunities,
+    OverExploring,
+    ScopeCreep,
+}
+
+impl From<antiburn_local::checks::DetectorId> for CheckEnablementId {
+    fn from(detector: antiburn_local::checks::DetectorId) -> Self {
+        use antiburn_local::checks::DetectorId;
+
+        match detector {
+            DetectorId::SessionsOverDepth => Self::SessionsOverDepth,
+            DetectorId::ModelOverthinking => Self::ModelOverthinking,
+            DetectorId::OverpoweredSubagents => Self::OverpoweredSubagents,
+            DetectorId::UnusedMcpServers => Self::UnusedMcpServers,
+            DetectorId::UnusedBuiltInTools => Self::UnusedBuiltInTools,
+            DetectorId::UnusedSkills => Self::UnusedSkills,
+            DetectorId::OldModelUsage => Self::OldModelUsage,
+            DetectorId::OveruseOfFastMode => Self::OveruseOfFastMode,
+            DetectorId::CacheChurn => Self::CacheChurn,
+            DetectorId::IgnoredInstructions => Self::IgnoredInstructions,
+            DetectorId::SkillOpportunities => Self::SkillOpportunities,
+            DetectorId::OverExploring => Self::OverExploring,
+            DetectorId::ScopeCreep => Self::ScopeCreep,
+        }
+    }
+}
+
+impl CheckEnablementId {
+    #[cfg(feature = "analytics")]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::SessionsOverDepth => "sessions_over_depth",
+            Self::ModelOverthinking => "model_overthinking",
+            Self::OverpoweredSubagents => "overpowered_subagents",
+            Self::UnusedMcpServers => "unused_mcp_servers",
+            Self::UnusedBuiltInTools => "unused_built_in_tools",
+            Self::UnusedSkills => "unused_skills",
+            Self::OldModelUsage => "old_model_usage",
+            Self::OveruseOfFastMode => "overuse_of_fast_mode",
+            Self::CacheChurn => "cache_churn",
+            Self::IgnoredInstructions => "ignored_instructions",
+            Self::SkillOpportunities => "skill_opportunities",
+            Self::OverExploring => "over_exploring",
+            Self::ScopeCreep => "scope_creep",
+        }
+    }
+}
+
+#[cfg(feature = "analytics")]
+pub(crate) fn check_enablement_facts(
+    detector: antiburn_local::checks::DetectorId,
+    enabled: bool,
+) -> Facts {
+    Facts {
+        label: Some(CheckEnablementId::from(detector).as_str()),
+        detail: Some(if enabled { "enabled" } else { "disabled" }),
+        ..Facts::default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmartCheck {
+    IgnoredInstructions,
+    ScopeCreep,
+    OverExploring,
+    SkillOpportunities,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmartCheckObservation {
+    FindingVisible,
+    EvidenceAvailable,
+    EvidenceUnavailable,
+    EvidenceFailed,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SmartCheckProvider {
+    Jev,
+    Cloudflare,
+    Ollama,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ProviderSetupOutcome {
+    Saved,
+    Switched,
+    CredentialRemoved,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ProviderTestOutcome {
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmartCheckAssessmentOutcome {
+    Finding,
+    Clean,
+    Abstained,
+    Failed,
+}
+
+/// Native operation boundaries own lifecycle events.
+#[derive(Debug, Clone, Copy)]
+pub enum SmartCheckLifecycle {
+    Enablement {
+        enabled: bool,
+    },
+    ProviderSetup {
+        provider: SmartCheckProvider,
+        outcome: ProviderSetupOutcome,
+    },
+    ProviderTest {
+        provider: SmartCheckProvider,
+        outcome: ProviderTestOutcome,
+    },
+    Assessment {
+        check: SmartCheck,
+        outcome: SmartCheckAssessmentOutcome,
+        historical: bool,
+    },
+}
+
+impl From<crate::jev::config::SystemOneProvider> for SmartCheckProvider {
+    fn from(provider: crate::jev::config::SystemOneProvider) -> Self {
+        use crate::jev::config::SystemOneProvider;
+        match provider {
+            SystemOneProvider::Jev => Self::Jev,
+            SystemOneProvider::Cloudflare => Self::Cloudflare,
+            SystemOneProvider::Ollama => Self::Ollama,
+            SystemOneProvider::Custom => Self::Custom,
+        }
+    }
+}
+
+impl SmartCheckAssessmentOutcome {
+    pub(crate) fn from_evidence(has_finding: bool, clean: bool) -> Self {
+        if has_finding {
+            Self::Finding
+        } else if clean {
+            Self::Clean
+        } else {
+            Self::Abstained
+        }
+    }
+}
+
+#[cfg(feature = "analytics")]
+impl SmartCheckLifecycle {
+    pub fn resolve(self) -> (EventName, Facts) {
+        let (label, detail) = match self {
+            Self::Enablement { enabled } => {
+                ("enablement", if enabled { "enabled" } else { "disabled" })
+            }
+            Self::ProviderSetup { provider, outcome } => (
+                provider.as_str(),
+                match outcome {
+                    ProviderSetupOutcome::Saved => "provider_saved",
+                    ProviderSetupOutcome::Switched => "provider_switched",
+                    ProviderSetupOutcome::CredentialRemoved => "credential_removed",
+                },
+            ),
+            Self::ProviderTest { provider, outcome } => (
+                provider.as_str(),
+                match outcome {
+                    ProviderTestOutcome::Succeeded => "test_succeeded",
+                    ProviderTestOutcome::Failed => "test_failed",
+                },
+            ),
+            Self::Assessment {
+                check,
+                outcome,
+                historical,
+            } => (
+                check.as_str(),
+                match (historical, outcome) {
+                    (false, SmartCheckAssessmentOutcome::Finding) => "execution_finding",
+                    (false, SmartCheckAssessmentOutcome::Clean) => "execution_clean",
+                    (false, SmartCheckAssessmentOutcome::Abstained) => "execution_abstained",
+                    (false, SmartCheckAssessmentOutcome::Failed) => "execution_failed",
+                    (true, SmartCheckAssessmentOutcome::Finding) => "backfill_finding",
+                    (true, SmartCheckAssessmentOutcome::Clean) => "backfill_clean",
+                    (true, SmartCheckAssessmentOutcome::Abstained) => "backfill_abstained",
+                    (true, SmartCheckAssessmentOutcome::Failed) => "backfill_failed",
+                },
+            ),
+        };
+        (
+            EventName::IgnoredInstructionLifecycle,
+            Facts {
+                label: Some(label),
+                detail: Some(detail),
+                ..Facts::default()
+            },
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -572,6 +842,25 @@ pub enum ProjectFolderOutcome {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryActionKind {
+    Reveal,
+    Archive,
+    Restore,
+    RemoveIndexLine,
+    OpenFromSession,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryActionOutcome {
+    Succeeded,
+    Failed,
+    ChangedOnDisk,
+    Unsupported,
+}
+
 /// A product surface whose visibility is measured.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -585,6 +874,7 @@ pub enum Surface {
     Settings,
     BurnChecks,
     Quota,
+    Memories,
 }
 
 /// A surface that can present a measured data state.
@@ -600,6 +890,7 @@ pub enum StateSurface {
     Settings,
     BurnChecks,
     Quota,
+    Memories,
 }
 
 /// A closed Auto Fix review preparation result.
@@ -679,7 +970,6 @@ pub enum SurfaceState {
 pub enum SettingsPane {
     General,
     Appearance,
-    Sources,
     Privacy,
     Notifications,
     Usage,
@@ -705,24 +995,6 @@ pub enum LiveUsageState {
     RateLimited,
     Unavailable,
     NoCredentials,
-}
-
-/// Which setup lifecycle is active.
-#[cfg(feature = "analytics")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OnboardingFlow {
-    New,
-    Restart,
-}
-
-/// A screen in the fixed first-run flow.
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OnboardingStep {
-    Welcome,
-    AgentsDetected,
-    SourcesAndRepos,
-    Ready,
 }
 
 /// Where an agent ran. Two values, and neither names anything: a WSL
@@ -762,6 +1034,7 @@ pub enum HistoryDirection {
 pub enum SearchCategory {
     View,
     Setting,
+    StepSetting,
     Check,
 }
 
@@ -785,6 +1058,62 @@ pub enum SessionFilterAction {
     SourceRemoteHostAdded,
     SourceRemoteHostRemoved,
     ClearedAll,
+}
+
+/// A fixed step in the first-run Overview's funnel.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FirstRunStep {
+    Started,
+    Found,
+    Read,
+    Checked,
+    Result,
+}
+
+/// Which result the first-run Overview showed. Present only alongside
+/// [`FirstRunStep::Result`].
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FirstRunResult {
+    Empty,
+    ChecksDisabled,
+    Clean,
+    FixesFound,
+}
+
+/// A deliberate action the first-run Overview can report.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FirstRunActionKind {
+    FolderAccessRequested,
+    FolderAccessGranted,
+    IncludeNonRepoFolders,
+    LiveUsageStarted,
+    LiveUsageSkipped,
+    EnhanceOpened,
+}
+
+/// A progress step whose settings a reader can view. Narrower than the
+/// renderer's own `StepSettingsStep`: `fixes` has no settings to report and
+/// never reaches this enum.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StepSettingsLabel {
+    Agents,
+    Limits,
+    Sessions,
+    Checks,
+}
+
+/// Which surface showed the step's settings.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StepSettingsDetail {
+    /// The first-run takeover's "Show settings" disclosure opened.
+    FirstRun,
+    /// The progress-nav step modal opened, after the first run.
+    Modal,
 }
 
 /// A privacy-safe result from checking one remote host connection.
@@ -828,13 +1157,6 @@ impl Interaction {
     /// The event and the facts this interaction becomes.
     pub fn resolve(self) -> (EventName, Facts) {
         match self {
-            Interaction::OnboardingStepViewed { step } => (
-                EventName::OnboardingStepViewed,
-                Facts {
-                    label: Some(step.as_str()),
-                    ..Facts::default()
-                },
-            ),
             Interaction::SessionOpened { agent, environment } => (
                 EventName::SessionOpened,
                 Facts {
@@ -898,16 +1220,21 @@ impl Interaction {
                     ..Facts::default()
                 },
             ),
-            Interaction::BurnCheckPromptPrepared { outcome } => (
+            Interaction::BurnCheckPromptPrepared { outcome, check } => (
                 EventName::BurnCheckPromptPrepared,
                 Facts {
+                    label: check.map(SmartCheck::as_str),
                     detail: Some(outcome.as_str()),
                     ..Facts::default()
                 },
             ),
-            Interaction::BurnCheckPromptCopied => {
-                (EventName::BurnCheckPromptCopied, Facts::default())
-            }
+            Interaction::BurnCheckPromptCopied { check } => (
+                EventName::BurnCheckPromptCopied,
+                Facts {
+                    label: check.map(SmartCheck::as_str),
+                    ..Facts::default()
+                },
+            ),
             Interaction::BurnCheckOutcomeObserved { outcome, origin } => (
                 EventName::BurnCheckOutcomeObserved,
                 Facts {
@@ -926,6 +1253,25 @@ impl Interaction {
                     detail: Some(match outcome {
                         ProjectFolderOutcome::Succeeded => "succeeded",
                         ProjectFolderOutcome::Failed => "failed",
+                    }),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::MemoryAction { action, outcome } => (
+                EventName::MemoryAction,
+                Facts {
+                    label: Some(match action {
+                        MemoryActionKind::Reveal => "reveal",
+                        MemoryActionKind::Archive => "archive",
+                        MemoryActionKind::Restore => "restore",
+                        MemoryActionKind::RemoveIndexLine => "remove_index_line",
+                        MemoryActionKind::OpenFromSession => "open_from_session",
+                    }),
+                    detail: Some(match outcome {
+                        MemoryActionOutcome::Succeeded => "succeeded",
+                        MemoryActionOutcome::Failed => "failed",
+                        MemoryActionOutcome::ChangedOnDisk => "changed_on_disk",
+                        MemoryActionOutcome::Unsupported => "unsupported",
                     }),
                     ..Facts::default()
                 },
@@ -961,6 +1307,14 @@ impl Interaction {
                     ..Facts::default()
                 },
             ),
+            Interaction::SmartCheckObserved { check, observation } => (
+                EventName::IgnoredInstructionObserved,
+                Facts {
+                    label: Some(check.as_str()),
+                    detail: Some(observation.as_str()),
+                    ..Facts::default()
+                },
+            ),
             Interaction::SessionFiltersChanged { action, agent } => (
                 EventName::SessionFiltersChanged,
                 Facts {
@@ -971,6 +1325,35 @@ impl Interaction {
                         }
                         _ => None,
                     },
+                    ..Facts::default()
+                },
+            ),
+            Interaction::FirstRunStepReached {
+                step,
+                sessions,
+                result,
+            } => (
+                EventName::FirstRunStepReached,
+                Facts {
+                    label: Some(step.as_str()),
+                    bucket: sessions.map(|count| bucket(count as u64)),
+                    detail: result.map(FirstRunResult::as_str),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::FirstRunAction { action } => (
+                EventName::FirstRunAction,
+                Facts {
+                    label: Some(action.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::FirstRunFinished {} => (EventName::FirstRunFinished, Facts::default()),
+            Interaction::StepSettingsViewed { label, detail } => (
+                EventName::StepSettingsViewed,
+                Facts {
+                    label: Some(label.as_str()),
+                    detail: Some(detail.as_str()),
                     ..Facts::default()
                 },
             ),
@@ -992,6 +1375,28 @@ macro_rules! wire_values {
 }
 
 #[cfg(feature = "analytics")]
+wire_values!(SmartCheck, {
+    SmartCheck::IgnoredInstructions => "ignored_instructions",
+    SmartCheck::ScopeCreep => "scope_creep",
+    SmartCheck::OverExploring => "over_exploring",
+    SmartCheck::SkillOpportunities => "skill_opportunities",
+});
+#[cfg(feature = "analytics")]
+wire_values!(SmartCheckObservation, {
+    SmartCheckObservation::FindingVisible => "finding_visible",
+    SmartCheckObservation::EvidenceAvailable => "evidence_available",
+    SmartCheckObservation::EvidenceUnavailable => "evidence_unavailable",
+    SmartCheckObservation::EvidenceFailed => "evidence_failed",
+});
+#[cfg(feature = "analytics")]
+wire_values!(SmartCheckProvider, {
+    SmartCheckProvider::Jev => "jev",
+    SmartCheckProvider::Cloudflare => "cloudflare",
+    SmartCheckProvider::Ollama => "ollama",
+    SmartCheckProvider::Custom => "custom",
+});
+
+#[cfg(feature = "analytics")]
 wire_values!(Surface, {
     Surface::Activity => "activity",
     Surface::SessionDetail => "session_detail",
@@ -1002,6 +1407,7 @@ wire_values!(Surface, {
     Surface::Settings => "settings",
     Surface::BurnChecks => "burn_checks",
     Surface::Quota => "quota",
+    Surface::Memories => "memories",
 });
 
 #[cfg(feature = "analytics")]
@@ -1015,6 +1421,7 @@ wire_values!(StateSurface, {
     StateSurface::Settings => "settings",
     StateSurface::BurnChecks => "burn_checks",
     StateSurface::Quota => "quota",
+    StateSurface::Memories => "memories",
 });
 
 #[cfg(feature = "analytics")]
@@ -1029,7 +1436,7 @@ wire_values!(SessionFilterKind, {
 #[cfg(feature = "analytics")]
 wire_values!(HistoryDirection, { HistoryDirection::Back => "back", HistoryDirection::Forward => "forward" });
 #[cfg(feature = "analytics")]
-wire_values!(SearchCategory, { SearchCategory::View => "view", SearchCategory::Setting => "setting", SearchCategory::Check => "check" });
+wire_values!(SearchCategory, { SearchCategory::View => "view", SearchCategory::Setting => "setting", SearchCategory::StepSetting => "step_setting", SearchCategory::Check => "check" });
 #[cfg(feature = "analytics")]
 wire_values!(IgnoredInstructionStage, {
     IgnoredInstructionStage::Finding => "finding",
@@ -1064,6 +1471,33 @@ wire_values!(SessionFilterAction, {
     SessionFilterAction::SourceRemoteHostAdded => "source_remote_host_added",
     SessionFilterAction::SourceRemoteHostRemoved => "source_remote_host_removed",
     SessionFilterAction::ClearedAll => "cleared_all",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(FirstRunStep, {
+    FirstRunStep::Started => "started",
+    FirstRunStep::Found => "found",
+    FirstRunStep::Read => "read",
+    FirstRunStep::Checked => "checked",
+    FirstRunStep::Result => "result",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(FirstRunResult, {
+    FirstRunResult::Empty => "empty",
+    FirstRunResult::ChecksDisabled => "checks_disabled",
+    FirstRunResult::Clean => "clean",
+    FirstRunResult::FixesFound => "fixes_found",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(FirstRunActionKind, {
+    FirstRunActionKind::FolderAccessRequested => "folder_access_requested",
+    FirstRunActionKind::FolderAccessGranted => "folder_access_granted",
+    FirstRunActionKind::IncludeNonRepoFolders => "include_non_repo_folders",
+    FirstRunActionKind::LiveUsageStarted => "live_usage_started",
+    FirstRunActionKind::LiveUsageSkipped => "live_usage_skipped",
+    FirstRunActionKind::EnhanceOpened => "enhance_opened",
 });
 
 #[cfg(feature = "analytics")]
@@ -1127,11 +1561,24 @@ wire_values!(SurfaceState, {
 wire_values!(SettingsPane, {
     SettingsPane::General => "general",
     SettingsPane::Appearance => "appearance",
-    SettingsPane::Sources => "sources",
     SettingsPane::Privacy => "privacy",
     SettingsPane::Notifications => "notifications",
     SettingsPane::Usage => "usage",
     SettingsPane::About => "about",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(StepSettingsLabel, {
+    StepSettingsLabel::Agents => "agents",
+    StepSettingsLabel::Limits => "limits",
+    StepSettingsLabel::Sessions => "sessions",
+    StepSettingsLabel::Checks => "checks",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(StepSettingsDetail, {
+    StepSettingsDetail::FirstRun => "first_run",
+    StepSettingsDetail::Modal => "modal",
 });
 
 #[cfg(feature = "analytics")]
@@ -1172,24 +1619,6 @@ wire_values!(LiveUsageState, {
     LiveUsageState::Unavailable => "unavailable",
     LiveUsageState::NoCredentials => "no_credentials",
 });
-
-#[cfg(feature = "analytics")]
-wire_values!(OnboardingFlow, {
-    OnboardingFlow::New => "new",
-    OnboardingFlow::Restart => "restart",
-});
-
-#[cfg(feature = "analytics")]
-impl OnboardingStep {
-    fn as_str(self) -> &'static str {
-        match self {
-            OnboardingStep::Welcome => "welcome",
-            OnboardingStep::AgentsDetected => "agents_detected",
-            OnboardingStep::SourcesAndRepos => "sources_and_repos",
-            OnboardingStep::Ready => "ready",
-        }
-    }
-}
 
 #[cfg(feature = "analytics")]
 impl Environment {
@@ -1420,12 +1849,275 @@ mod tests {
     };
     use super::*;
 
+    fn assert_smart_check_payload(
+        resolved: (EventName, Facts),
+        name: &str,
+        label: Option<&str>,
+        detail: Option<&str>,
+    ) {
+        let (event_name, facts) = resolved;
+        let mut event = sample();
+        event.event = event_name.as_str().to_owned();
+        event.properties = Properties {
+            arch: "aarch64",
+            bucket: facts.bucket,
+            label: facts.label,
+            detail: facts.detail,
+            origin: facts.origin,
+            usage_band: facts.usage_band,
+            response_shape: facts.response_shape,
+            eligibility: facts.eligibility,
+            ineligible_reason: facts.ineligible_reason,
+            experiment: facts.experiment,
+            reset_arm: facts.reset_arm,
+            reset_availability: facts.reset_availability,
+            resets_per_week: facts.resets_per_week,
+            next_reset_available: facts.next_reset_available,
+            plan: facts.plan,
+            factor_band: facts.factor_band,
+            residual_band: facts.residual_band,
+            estimate_bias: facts.estimate_bias,
+            unexplained_band: facts.unexplained_band,
+            reading_coverage: facts.reading_coverage,
+            resource_usage: facts.resource_usage,
+            unrecognized_types: facts.unrecognized_types,
+        };
+        let payload = serde_json::to_value(event).expect("Typed Smart Check event serializes");
+        assert_eq!(payload["event"], name);
+        let mut expected = serde_json::json!({"arch": "aarch64"});
+        if let Some(label) = label {
+            expected["label"] = label.into();
+        }
+        if let Some(detail) = detail {
+            expected["detail"] = detail.into();
+        }
+        assert_eq!(payload["properties"], expected);
+    }
+
+    const SMART_CHECKS: &[&str] = &[
+        "ignored_instructions",
+        "scope_creep",
+        "over_exploring",
+        "skill_opportunities",
+    ];
+
+    #[test]
+    fn smart_check_enablement_preserves_the_existing_global_contract() {
+        for enabled in [false, true] {
+            let lifecycle = SmartCheckLifecycle::Enablement { enabled };
+            assert_smart_check_payload(
+                lifecycle.resolve(),
+                "antiburn.ignored_instruction_lifecycle",
+                Some("enablement"),
+                Some(if enabled { "enabled" } else { "disabled" }),
+            );
+        }
+    }
+
+    #[test]
+    fn smart_check_provider_setup_and_test_payloads_are_closed() {
+        use crate::jev::config::SystemOneProvider;
+        for (source, label) in [
+            (SystemOneProvider::Jev, "jev"),
+            (SystemOneProvider::Cloudflare, "cloudflare"),
+            (SystemOneProvider::Ollama, "ollama"),
+            (SystemOneProvider::Custom, "custom"),
+        ] {
+            let provider = source.into();
+            for (outcome, detail) in [
+                (ProviderSetupOutcome::Saved, "provider_saved"),
+                (ProviderSetupOutcome::Switched, "provider_switched"),
+                (
+                    ProviderSetupOutcome::CredentialRemoved,
+                    "credential_removed",
+                ),
+            ] {
+                let lifecycle = SmartCheckLifecycle::ProviderSetup { provider, outcome };
+                assert_smart_check_payload(
+                    lifecycle.resolve(),
+                    "antiburn.ignored_instruction_lifecycle",
+                    Some(label),
+                    Some(detail),
+                );
+            }
+            for (outcome, detail) in [
+                (ProviderTestOutcome::Succeeded, "test_succeeded"),
+                (ProviderTestOutcome::Failed, "test_failed"),
+            ] {
+                assert_smart_check_payload(
+                    SmartCheckLifecycle::ProviderTest { provider, outcome }.resolve(),
+                    "antiburn.ignored_instruction_lifecycle",
+                    Some(label),
+                    Some(detail),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn smart_check_assessment_and_abstention_payloads_are_closed() {
+        for (check, label) in [
+            (SmartCheck::IgnoredInstructions, "ignored_instructions"),
+            (SmartCheck::ScopeCreep, "scope_creep"),
+            (SmartCheck::OverExploring, "over_exploring"),
+            (SmartCheck::SkillOpportunities, "skill_opportunities"),
+        ] {
+            for historical in [false, true] {
+                for (outcome, suffix) in [
+                    (SmartCheckAssessmentOutcome::Finding, "finding"),
+                    (SmartCheckAssessmentOutcome::Clean, "clean"),
+                    (SmartCheckAssessmentOutcome::Abstained, "abstained"),
+                    (SmartCheckAssessmentOutcome::Failed, "failed"),
+                ] {
+                    let lifecycle = SmartCheckLifecycle::Assessment {
+                        check,
+                        outcome,
+                        historical,
+                    };
+                    let detail = format!(
+                        "{}_{suffix}",
+                        if historical { "backfill" } else { "execution" }
+                    );
+                    assert_smart_check_payload(
+                        lifecycle.resolve(),
+                        "antiburn.ignored_instruction_lifecycle",
+                        Some(label),
+                        Some(&detail),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn smart_check_assessment_requires_a_finding_or_proven_clean_evidence() {
+        assert_eq!(
+            SmartCheckAssessmentOutcome::from_evidence(false, false),
+            SmartCheckAssessmentOutcome::Abstained
+        );
+        assert_eq!(
+            SmartCheckAssessmentOutcome::from_evidence(false, true),
+            SmartCheckAssessmentOutcome::Clean
+        );
+        assert_eq!(
+            SmartCheckAssessmentOutcome::from_evidence(true, false),
+            SmartCheckAssessmentOutcome::Finding
+        );
+        assert_eq!(
+            SmartCheckAssessmentOutcome::from_evidence(true, true),
+            SmartCheckAssessmentOutcome::Finding
+        );
+    }
+
+    #[test]
+    fn smart_check_visible_finding_and_evidence_payloads_are_closed() {
+        for check in SMART_CHECKS {
+            for observation in [
+                "finding_visible",
+                "evidence_available",
+                "evidence_unavailable",
+                "evidence_failed",
+            ] {
+                let interaction: Interaction = serde_json::from_value(serde_json::json!({
+                    "kind":"smartCheckObserved", "check":check, "observation":observation,
+                }))
+                .expect("Authored Smart Check observation uses closed interaction values");
+                assert_smart_check_payload(
+                    interaction.resolve(),
+                    "antiburn.ignored_instruction_observed",
+                    Some(check),
+                    Some(observation),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn smart_check_prompt_payloads_preserve_legacy_and_classify_four_checks() {
+        for check in [None]
+            .into_iter()
+            .chain(SMART_CHECKS.iter().copied().map(Some))
+        {
+            for outcome in ["ready", "stale", "expired", "unavailable", "failed"] {
+                let mut input =
+                    serde_json::json!({"kind":"burnCheckPromptPrepared", "outcome":outcome});
+                if let Some(check) = check {
+                    input["check"] = check.into();
+                }
+                let interaction: Interaction = serde_json::from_value(input)
+                    .expect("Authored prompt preparation uses closed interaction values");
+                assert_smart_check_payload(
+                    interaction.resolve(),
+                    "antiburn.burn_check_prompt_prepared",
+                    check,
+                    Some(outcome),
+                );
+            }
+            let mut input = serde_json::json!({"kind":"burnCheckPromptCopied"});
+            if let Some(check) = check {
+                input["check"] = check.into();
+            }
+            let interaction: Interaction = serde_json::from_value(input)
+                .expect("Authored prompt copy uses a supported check value");
+            assert_smart_check_payload(
+                interaction.resolve(),
+                "antiburn.burn_check_prompt_copied",
+                check,
+                None,
+            );
+        }
+    }
+
+    #[test]
+    fn smart_check_contracts_reject_private_fields_and_unknown_values() {
+        let interactions = [
+            serde_json::json!({"kind":"smartCheckObserved", "check":"scope_creep", "observation":"finding_visible"}),
+            serde_json::json!({"kind":"burnCheckPromptPrepared", "check":"over_exploring", "outcome":"ready"}),
+            serde_json::json!({"kind":"burnCheckPromptCopied", "check":"skill_opportunities"}),
+            serde_json::json!({"kind":"ignoredInstructionObserved", "stage":"evidence", "outcome":"available"}),
+        ];
+        for input in &interactions {
+            for field in ["check", "observation", "outcome", "stage"] {
+                if input.get(field).is_some() {
+                    let mut invalid = input.clone();
+                    invalid[field] = "private_unknown_value".into();
+                    assert!(serde_json::from_value::<Interaction>(invalid).is_err());
+                }
+            }
+        }
+        for field in [
+            "content",
+            "prompt",
+            "excerpt",
+            "path",
+            "url",
+            "endpoint",
+            "model",
+            "key",
+            "apiKey",
+            "accountId",
+            "sessionId",
+            "findingId",
+            "approval",
+            "error",
+        ] {
+            for input in &interactions {
+                let mut invalid = input.clone();
+                invalid[field] = "private".into();
+                assert!(
+                    serde_json::from_value::<Interaction>(invalid).is_err(),
+                    "{field}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn ignored_instruction_interactions_accept_only_closed_statuses() {
         let interaction: Interaction = serde_json::from_str(
             r#"{"kind":"ignoredInstructionObserved","stage":"evidence","outcome":"available"}"#,
         )
-        .unwrap();
+        .expect("Authored ignored instruction interaction uses closed status values");
         let (name, facts) = interaction.resolve();
         assert_eq!(name.as_str(), "antiburn.ignored_instruction_observed");
         assert_eq!(facts.label, Some("evidence"));
@@ -1439,6 +2131,56 @@ mod tests {
             r#"{"kind":"ignoredInstructionObserved","stage":"evidence","outcome":"available","excerpt":"private"}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn memory_action_resolves_to_closed_wire_labels() {
+        let cases = [
+            ("reveal", "succeeded"),
+            ("archive", "changed_on_disk"),
+            ("restore", "failed"),
+            ("remove_index_line", "unsupported"),
+            ("open_from_session", "succeeded"),
+        ];
+        for (action, outcome) in cases {
+            let interaction: Interaction = serde_json::from_value(serde_json::json!({
+                "kind": "memoryAction",
+                "action": action,
+                "outcome": outcome,
+            }))
+            .unwrap();
+            let (name, facts) = interaction.resolve();
+            assert_eq!(name.as_str(), "antiburn.memory_action");
+            assert_eq!(facts.label, Some(action));
+            assert_eq!(facts.detail, Some(outcome));
+        }
+        for bad in [
+            serde_json::json!({"kind":"memoryAction","action":"delete","outcome":"succeeded"}),
+            serde_json::json!({"kind":"memoryAction","action":"archive","outcome":"ok"}),
+            serde_json::json!({"kind":"memoryAction","action":"archive","outcome":"failed","path":"/x"}),
+        ] {
+            assert!(serde_json::from_value::<Interaction>(bad).is_err());
+        }
+    }
+
+    #[test]
+    fn memories_surface_resolves_to_its_wire_label() {
+        let viewed: Interaction = serde_json::from_str(
+            r#"{"kind":"surfaceViewed","surface":"memories","origin":"user"}"#,
+        )
+        .unwrap();
+        let (name, facts) = viewed.resolve();
+        assert_eq!(name.as_str(), "antiburn.surface_viewed");
+        assert_eq!(facts.label, Some("memories"));
+        assert_eq!(facts.detail, Some("user"));
+
+        let observed: Interaction = serde_json::from_str(
+            r#"{"kind":"surfaceStateObserved","surface":"memories","state":"empty","origin":"user"}"#,
+        )
+        .unwrap();
+        let (name, facts) = observed.resolve();
+        assert_eq!(name.as_str(), "antiburn.surface_state_observed");
+        assert_eq!(facts.label, Some("memories"));
     }
 
     fn resource_summary() -> ResourceUsageSummary {
@@ -1865,15 +2607,12 @@ mod tests {
         fn listed(event: EventName) -> bool {
             match event {
                 EventName::AppLaunched
-                | EventName::OnboardingFinished
-                | EventName::OnboardingStepViewed
                 | EventName::ScanCompleted
                 | EventName::SettingToggled
                 | EventName::AnalyticsOptedOut
                 | EventName::SessionOpened
                 | EventName::ErrorOccurred
                 | EventName::UnrecognizedRecordsObserved
-                | EventName::OnboardingStarted
                 | EventName::SurfaceViewed
                 | EventName::SettingsPaneViewed
                 | EventName::SurfaceStateObserved
@@ -1889,6 +2628,7 @@ mod tests {
                 | EventName::BurnCheckPromptCopied
                 | EventName::BurnCheckOutcomeObserved
                 | EventName::ProjectFolderAction
+                | EventName::MemoryAction
                 | EventName::SessionFilterSelected
                 | EventName::SessionFiltersChanged
                 | EventName::RemoteHostConnectionChecked
@@ -1902,16 +2642,67 @@ mod tests {
                 | EventName::AppSearchOpened
                 | EventName::AppSearchResultOpened
                 | EventName::InterfaceScaleChanged
-                | EventName::IgnoredInstructionObserved
-                | EventName::IgnoredInstructionLifecycle => true,
+                | EventName::FirstRunStepReached
+                | EventName::FirstRunAction
+                | EventName::FirstRunFinished
+                | EventName::CheckEnablementSaved
+                | EventName::StepSettingsViewed => true,
+                EventName::IgnoredInstructionObserved | EventName::IgnoredInstructionLifecycle => {
+                    true
+                }
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            40,
+            43,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
+    }
+
+    #[test]
+    fn check_enablement_ids_cover_every_detector_with_stable_values() {
+        use antiburn_local::checks::DetectorId;
+
+        let values: Vec<_> = DetectorId::ALL
+            .into_iter()
+            .map(|detector| CheckEnablementId::from(detector).as_str())
+            .collect();
+
+        assert_eq!(
+            values,
+            [
+                "sessions_over_depth",
+                "model_overthinking",
+                "overpowered_subagents",
+                "unused_mcp_servers",
+                "unused_built_in_tools",
+                "unused_skills",
+                "old_model_usage",
+                "overuse_of_fast_mode",
+                "cache_churn",
+                "ignored_instructions",
+                "skill_opportunities",
+                "over_exploring",
+                "scope_creep",
+            ]
+        );
+    }
+
+    #[test]
+    fn check_enablement_facts_carry_only_check_and_saved_state() {
+        use antiburn_local::checks::DetectorId;
+
+        let enabled = check_enablement_facts(DetectorId::UnusedSkills, true);
+        assert_eq!(enabled.label, Some("unused_skills"));
+        assert_eq!(enabled.detail, Some("enabled"));
+        assert!(enabled.bucket.is_none());
+        assert!(enabled.origin.is_none());
+
+        let disabled = check_enablement_facts(DetectorId::IgnoredInstructions, false);
+        assert_eq!(disabled.label, Some("ignored_instructions"));
+        assert_eq!(disabled.detail, Some("disabled"));
+        assert!(disabled.unrecognized_types.is_none());
     }
 
     /// The public catalog in `docs/analytics.md` is a promise to a
@@ -1990,13 +2781,6 @@ mod tests {
     /// anything the renderer supplied verbatim.
     #[test]
     fn an_interaction_resolves_to_this_files_own_constants() {
-        let (name, facts) = Interaction::OnboardingStepViewed {
-            step: OnboardingStep::SourcesAndRepos,
-        }
-        .resolve();
-        assert_eq!(name, EventName::OnboardingStepViewed);
-        assert_eq!(facts.label, Some("sources_and_repos"));
-
         let (name, facts) = Interaction::SessionOpened {
             agent: AgentKind::Claude,
             environment: Environment::Wsl,
@@ -2308,6 +3092,13 @@ mod tests {
                 EventName::AppSearchResultOpened,
                 Some("check"),
             ),
+            (
+                Interaction::AppSearchResultOpened {
+                    category: SearchCategory::StepSetting,
+                },
+                EventName::AppSearchResultOpened,
+                Some("step_setting"),
+            ),
         ];
         for (interaction, expected_name, expected_label) in cases {
             let (name, facts) = interaction.resolve();
@@ -2320,6 +3111,151 @@ mod tests {
             serde_json::json!({"kind":"appSearchResultOpened","category":"session"}),
         ] {
             assert!(serde_json::from_value::<Interaction>(value).is_err());
+        }
+    }
+
+    /// Each fixed funnel step carries only the facts the catalog documents
+    /// for it: `found` buckets its raw session count rather than sending it
+    /// exact, and `result` carries the closed result vocabulary. The other
+    /// steps carry neither.
+    #[test]
+    fn first_run_step_reached_carries_only_the_facts_its_own_step_defines() {
+        let (name, facts) = Interaction::FirstRunStepReached {
+            step: FirstRunStep::Started,
+            sessions: None,
+            result: None,
+        }
+        .resolve();
+        assert_eq!(name, EventName::FirstRunStepReached);
+        assert_eq!(facts.label, Some("started"));
+        assert_eq!(facts.bucket, None);
+        assert_eq!(facts.detail, None);
+
+        let (_, facts) = Interaction::FirstRunStepReached {
+            step: FirstRunStep::Found,
+            sessions: Some(49),
+            result: None,
+        }
+        .resolve();
+        assert_eq!(facts.label, Some("found"));
+        assert_eq!(facts.bucket, Some(bucket(49)));
+        assert_eq!(facts.bucket, Some("10-49"));
+        assert_eq!(facts.detail, None);
+
+        let (_, facts) = Interaction::FirstRunStepReached {
+            step: FirstRunStep::Read,
+            sessions: None,
+            result: None,
+        }
+        .resolve();
+        assert_eq!(facts.label, Some("read"));
+        assert_eq!(facts.bucket, None);
+
+        let (_, facts) = Interaction::FirstRunStepReached {
+            step: FirstRunStep::Checked,
+            sessions: None,
+            result: None,
+        }
+        .resolve();
+        assert_eq!(facts.label, Some("checked"));
+        assert_eq!(facts.bucket, None);
+
+        for (result, expected) in [
+            (FirstRunResult::Empty, "empty"),
+            (FirstRunResult::ChecksDisabled, "checks_disabled"),
+            (FirstRunResult::Clean, "clean"),
+            (FirstRunResult::FixesFound, "fixes_found"),
+        ] {
+            let (_, facts) = Interaction::FirstRunStepReached {
+                step: FirstRunStep::Result,
+                sessions: None,
+                result: Some(result),
+            }
+            .resolve();
+            assert_eq!(facts.label, Some("result"));
+            assert_eq!(facts.bucket, None);
+            assert_eq!(facts.detail, Some(expected));
+        }
+    }
+
+    #[test]
+    fn first_run_action_uses_closed_vocabulary() {
+        for (action, expected) in [
+            (
+                FirstRunActionKind::FolderAccessRequested,
+                "folder_access_requested",
+            ),
+            (
+                FirstRunActionKind::FolderAccessGranted,
+                "folder_access_granted",
+            ),
+            (
+                FirstRunActionKind::IncludeNonRepoFolders,
+                "include_non_repo_folders",
+            ),
+            (FirstRunActionKind::LiveUsageStarted, "live_usage_started"),
+            (FirstRunActionKind::LiveUsageSkipped, "live_usage_skipped"),
+            (FirstRunActionKind::EnhanceOpened, "enhance_opened"),
+        ] {
+            let (name, facts) = Interaction::FirstRunAction { action }.resolve();
+            assert_eq!(name, EventName::FirstRunAction);
+            assert_eq!(facts.label, Some(expected));
+        }
+    }
+
+    #[test]
+    fn step_settings_viewed_uses_closed_vocabulary() {
+        for (label, expected_label) in [
+            (StepSettingsLabel::Agents, "agents"),
+            (StepSettingsLabel::Limits, "limits"),
+            (StepSettingsLabel::Sessions, "sessions"),
+            (StepSettingsLabel::Checks, "checks"),
+        ] {
+            for (detail, expected_detail) in [
+                (StepSettingsDetail::FirstRun, "first_run"),
+                (StepSettingsDetail::Modal, "modal"),
+            ] {
+                let (name, facts) = Interaction::StepSettingsViewed { label, detail }.resolve();
+                assert_eq!(name, EventName::StepSettingsViewed);
+                assert_eq!(facts.label, Some(expected_label));
+                assert_eq!(facts.detail, Some(expected_detail));
+            }
+        }
+        for value in [
+            serde_json::json!({"kind":"stepSettingsViewed","label":"usage","detail":"modal"}),
+            serde_json::json!({"kind":"stepSettingsViewed","label":"agents","detail":"settings"}),
+            serde_json::json!({"kind":"stepSettingsViewed","label":"agents","detail":"modal","extra":true}),
+        ] {
+            assert!(serde_json::from_value::<Interaction>(value).is_err());
+        }
+    }
+
+    #[test]
+    fn first_run_finished_carries_no_properties() {
+        let (name, facts) = Interaction::FirstRunFinished {}.resolve();
+        assert_eq!(name, EventName::FirstRunFinished);
+        assert_eq!(facts.label, None);
+        assert_eq!(facts.bucket, None);
+        assert_eq!(facts.detail, None);
+    }
+
+    /// The renderer cannot send an unlisted step, action, or result, and
+    /// cannot attach a property the schema does not define for that shape.
+    #[test]
+    fn first_run_interactions_are_refused_at_the_boundary_for_unknown_values() {
+        for value in [
+            serde_json::json!({"kind":"firstRunStepReached","step":"welcome"}),
+            serde_json::json!({"kind":"firstRunStepReached","step":"result","result":"broken"}),
+            serde_json::json!({"kind":"firstRunStepReached","step":"started","path":"/private"}),
+            serde_json::json!({"kind":"firstRunAction","action":"folder_opened"}),
+            serde_json::json!({"kind":"firstRunAction","action":"live_usage_stopped"}),
+            serde_json::json!({"kind":"firstRunAction"}),
+            serde_json::json!({"kind":"firstRunFinished","result":"clean"}),
+        ] {
+            assert!(
+                serde_json::from_value::<Interaction>(value.clone()).is_err(),
+                "{value}"
+            );
         }
     }
 }

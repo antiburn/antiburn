@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import type { ChecksReportPayload } from "../../../lib/insightsIpc"
+import type {
+  AggregateWinsPayload,
+  BurnCheckTargetListPayload,
+  ChecksReportPayload,
+} from "../../../lib/insightsIpc"
 import type * as IpcModule from "../../../lib/ipc"
 import { BurnChecksController, type BurnChecksControllerAdapter } from "./BurnChecksController"
 
@@ -13,7 +17,9 @@ vi.mock("../../../lib/ipc", async (importOriginal) => ({
 
 const report = (burn: number): ChecksReportPayload => ({
   evidenceSettled: true,
+  windowSessions: 0,
   pendingEvidence: 0,
+  deferredEvidence: 0,
   estimatedTokenBurnBasisPoints: burn,
   estimatedTokenBurnBasisPointsByDetectorMask: [],
   categories: [],
@@ -83,6 +89,172 @@ const sessions: BurnChecksController[] = []
 afterEach(() => sessions.splice(0).forEach((session) => session.dispose()))
 
 describe("BurnChecksController", () => {
+  it("retains successful data throughout event refreshes and replaces it with an empty result", async () => {
+    const { adapter, session, changed } = setup()
+    sessions.push(session)
+    await vi.waitFor(() => expect(session.getSnapshot().aggregate).not.toBeNull())
+    session.setTargetsVisible("ignoredInstructions", true)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().targets.ignoredInstructions?.loading).toBe(false),
+    )
+    const previous = session.getSnapshot()
+    const nextReport = deferred<ChecksReportPayload | null>()
+    const nextAggregate = deferred<AggregateWinsPayload | null>()
+    const nextTargets = deferred<BurnCheckTargetListPayload | null>()
+    vi.mocked(adapter.getReport).mockReturnValueOnce(nextReport.promise)
+    vi.mocked(adapter.getAggregateWins).mockReturnValueOnce(nextAggregate.promise)
+    vi.mocked(adapter.getTargets).mockReturnValueOnce(nextTargets.promise)
+
+    changed()
+    expect(session.getSnapshot()).toMatchObject({ loading: false, refreshing: true })
+    expect(session.getSnapshot().report).toBe(previous.report)
+    expect(session.getSnapshot().aggregate).toBe(previous.aggregate)
+    expect(session.getSnapshot().targets.ignoredInstructions?.data).toBe(
+      previous.targets.ignoredInstructions?.data,
+    )
+
+    nextReport.resolve(report(200))
+    await vi.waitFor(() => expect(adapter.getTargets).toHaveBeenCalledTimes(2))
+    expect(session.getSnapshot().aggregate).toBe(previous.aggregate)
+    expect(session.getSnapshot().targets.ignoredInstructions).toMatchObject({ loading: true })
+    expect(session.getSnapshot().targets.ignoredInstructions?.data).toBe(
+      previous.targets.ignoredInstructions?.data,
+    )
+
+    const empty = { targets: [], samples: [], truncated: false }
+    nextTargets.resolve(empty)
+    const emptyAggregate = { wins: [] }
+    nextAggregate.resolve(emptyAggregate)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().targets.ignoredInstructions).toEqual({
+        data: empty,
+        loading: false,
+        error: false,
+      }),
+    )
+    expect(session.getSnapshot().aggregate).toBe(emptyAggregate)
+    expect(adapter.getTargets).toHaveBeenCalledTimes(2)
+  })
+
+  it("retains aggregate data on failure and rejects older aggregate responses", async () => {
+    const { adapter, session } = setup()
+    sessions.push(session)
+    await vi.waitFor(() => expect(session.getSnapshot().aggregate).not.toBeNull())
+    const previous = session.getSnapshot().aggregate
+    const older = deferred<AggregateWinsPayload | null>()
+    const newer = deferred<AggregateWinsPayload | null>()
+    vi.mocked(adapter.getAggregateWins)
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise)
+    session.refresh()
+    await vi.waitFor(() => expect(adapter.getAggregateWins).toHaveBeenCalledTimes(2))
+    session.refresh()
+    await vi.waitFor(() => expect(adapter.getAggregateWins).toHaveBeenCalledTimes(3))
+    newer.reject(new Error("Unavailable"))
+    older.resolve({ wins: [] })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(session.getSnapshot().aggregate).toBe(previous)
+    expect(session.getSnapshot().error).toBe(false)
+  })
+
+  it("does not let an old target task delete resumed work or publish stale data", async () => {
+    const { adapter, session, setVisible } = setup()
+    sessions.push(session)
+    await vi.waitFor(() => expect(session.getSnapshot().report).not.toBeNull())
+    const older = deferred<BurnCheckTargetListPayload | null>()
+    const newer = deferred<BurnCheckTargetListPayload | null>()
+    const final = deferred<BurnCheckTargetListPayload | null>()
+    vi.mocked(adapter.getTargets)
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise)
+      .mockReturnValueOnce(final.promise)
+    session.setTargetsVisible("ignoredInstructions", true)
+    setVisible(false)
+    setVisible(true)
+    await vi.waitFor(() => expect(adapter.getReport).toHaveBeenCalledTimes(2))
+    expect(adapter.getTargets).toHaveBeenCalledTimes(2)
+
+    older.resolve({ targets: [], samples: [], truncated: true })
+    await older.promise
+    await Promise.resolve()
+    expect(session.getSnapshot().targets.ignoredInstructions?.data).toBeNull()
+    expect(adapter.getTargets).toHaveBeenCalledTimes(2)
+
+    newer.resolve({ targets: [], samples: [], truncated: true })
+    await vi.waitFor(() => expect(adapter.getTargets).toHaveBeenCalledTimes(3))
+    const empty = { targets: [], samples: [], truncated: false }
+    final.resolve(empty)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().targets.ignoredInstructions?.data).toBe(empty),
+    )
+    expect(session.getSnapshot().targets.ignoredInstructions?.loading).toBe(false)
+  })
+
+  it("resumes report reads without waiting for hidden work and ignores its cleanup", async () => {
+    const older = deferred<ChecksReportPayload | null>()
+    const newer = deferred<ChecksReportPayload | null>()
+    const final = deferred<ChecksReportPayload | null>()
+    const { adapter, session, setVisible, changed } = setup(true, {
+      getReport: vi
+        .fn()
+        .mockReturnValueOnce(older.promise)
+        .mockReturnValueOnce(newer.promise)
+        .mockReturnValueOnce(final.promise),
+    })
+    sessions.push(session)
+    await vi.waitFor(() => expect(adapter.getReport).toHaveBeenCalledOnce())
+    setVisible(false)
+    setVisible(true)
+    expect(adapter.getReport).toHaveBeenCalledTimes(2)
+    older.reject(new Error("Cancelled"))
+    await older.promise.catch(() => undefined)
+    await Promise.resolve()
+    changed()
+    expect(adapter.getReport).toHaveBeenCalledTimes(2)
+    expect(session.getSnapshot()).toMatchObject({ report: null, loading: true, error: false })
+    newer.resolve(report(200))
+    await vi.waitFor(() => expect(adapter.getReport).toHaveBeenCalledTimes(3))
+    expect(session.getSnapshot().report?.estimatedTokenBurnBasisPoints).toBe(200)
+    final.resolve(report(300))
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().report?.estimatedTokenBurnBasisPoints).toBe(300),
+    )
+  })
+
+  it("keeps initial failures distinct from a successful empty target list and allows retry", async () => {
+    const { adapter, session } = setup(true, {
+      getTargets: vi.fn().mockResolvedValueOnce(null),
+    })
+    sessions.push(session)
+    await vi.waitFor(() => expect(session.getSnapshot().report).not.toBeNull())
+    session.setTargetsVisible("ignoredInstructions", true)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().targets.ignoredInstructions).toEqual({
+        data: null,
+        loading: false,
+        error: true,
+      }),
+    )
+    const pending = deferred<BurnCheckTargetListPayload | null>()
+    vi.mocked(adapter.getTargets).mockReturnValueOnce(pending.promise)
+    session.loadTargets("ignoredInstructions", true)
+    expect(session.getSnapshot().targets.ignoredInstructions).toEqual({
+      data: null,
+      loading: true,
+      error: false,
+    })
+    const empty = { targets: [], samples: [], truncated: false }
+    pending.resolve(empty)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().targets.ignoredInstructions).toEqual({
+        data: empty,
+        loading: false,
+        error: false,
+      }),
+    )
+  })
+
   it("suspends hidden and inactive work and cancels only its own consumer", async () => {
     const { adapter, session, stop, setVisible, changed } = setup(false)
     sessions.push(session)

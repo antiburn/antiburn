@@ -2,7 +2,11 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { memo } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { QuotaAccountPayload, QuotaUsagePayload } from "../../../lib/providerUsageIpc"
+import type {
+  LiveUsageSummaryPayload,
+  QuotaAccountPayload,
+  QuotaUsagePayload,
+} from "../../../lib/providerUsageIpc"
 import type { SessionSubject } from "../../../lib/sessionSubject"
 import type * as QuotaBurnupChartModule from "./QuotaBurnupChart"
 import { QuotaSession, type QuotaAdapter } from "./QuotaSession"
@@ -195,10 +199,18 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+const EMPTY_LIVE: LiveUsageSummaryPayload = {
+  providers: [],
+  errors: [],
+  meters: [],
+  generatedAt: "g",
+}
+
 function setup(overrides: Partial<QuotaAdapter> = {}) {
   const adapter: QuotaAdapter = {
     getAccounts: vi.fn().mockResolvedValue({ accounts: [account()], generatedAt: "g" }),
     getUsage: vi.fn().mockResolvedValue(usage()),
+    getLiveUsage: vi.fn().mockResolvedValue(EMPTY_LIVE),
     getVisible: vi.fn().mockResolvedValue(true),
     onVisible: vi.fn(async () => () => undefined),
     now: vi.fn(() => NOW),
@@ -249,6 +261,57 @@ describe("QuotaView", () => {
     })
     sessions.push(session)
     await screen.findByText(/No limit readings yet/)
+  })
+
+  it("explains a Claude Desktop-only install instead of asking to turn on live usage", async () => {
+    const { session } = setup({
+      getAccounts: vi.fn().mockResolvedValue({ accounts: [], generatedAt: "g" }),
+      getLiveUsage: vi.fn().mockResolvedValue({
+        ...EMPTY_LIVE,
+        errors: [
+          {
+            source: "claude-oauth-usage",
+            provider: "anthropic",
+            displayName: "Claude",
+            category: "authentication",
+            detail: "desktopOnly",
+            plan: { name: "max", tier: "default_claude_max_20x" },
+          },
+        ],
+      }),
+    })
+    sessions.push(session)
+    const group = await screen.findByRole("group", { name: "Claude, Max 20x plan" })
+    expect(within(group).getByRole("heading")).toHaveTextContent("Claude · Max 20x")
+    expect(group).toHaveTextContent("Usage limits not available for Claude Desktop.")
+    expect(within(group).getByRole("button", { name: "Learn more" })).toBeInTheDocument()
+    expect(screen.queryByText(/Turn on live usage/)).toBeNull()
+  })
+
+  it("keeps the empty copy for a failure that has no docs page", async () => {
+    const { session } = setup({
+      getAccounts: vi.fn().mockResolvedValue({ accounts: [], generatedAt: "g" }),
+      getLiveUsage: vi.fn().mockResolvedValue({
+        ...EMPTY_LIVE,
+        errors: [
+          {
+            source: "codex-usage-fetch",
+            provider: "openai",
+            displayName: "Codex",
+            category: "authentication",
+          },
+        ],
+      }),
+    })
+    sessions.push(session)
+    await screen.findByText(/No limit readings yet/)
+  })
+
+  it("does not read live usage when an account has readings", async () => {
+    const { session, adapter } = setup()
+    sessions.push(session)
+    await screen.findByRole("region", { name: "Limits" })
+    expect(adapter.getLiveUsage).not.toHaveBeenCalled()
   })
 
   it("shows an error with a retry button when accounts fail to load", async () => {

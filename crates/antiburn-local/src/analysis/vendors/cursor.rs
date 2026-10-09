@@ -143,6 +143,13 @@ fn visit_cursor_reader(
                 }
                 if is_cursor_metadata(&value) {
                     header_model = model_from(&value).map(str::to_owned);
+                    if value.get("cursor_scope_ordering").and_then(Value::as_str)
+                        == Some("unproven")
+                    {
+                        sink.record(NormalizedRecord::Unusable(
+                            crate::analysis::PartialReason::AttributionIncomplete,
+                        ));
+                    }
                     continue;
                 }
                 let Some(mut event) = parse_record(&value, RecordShape::Cursor) else {
@@ -166,7 +173,8 @@ fn visit_cursor_reader(
                 if event.uuid.is_none() {
                     event.uuid = cursor_record_id(&value).map(str::to_owned);
                 }
-                let content = cursor_content_parts(&value, event.role);
+                let mut content = cursor_content_parts(&value, event.role);
+                add_cursor_rich_result(&value, event.role, &mut content);
                 sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
                 if !content.is_empty() {
                     sink.record(NormalizedRecord::TurnContent(Box::new(TurnContent {
@@ -203,8 +211,7 @@ fn cursor_record_id(value: &Value) -> Option<&str> {
     ["bubbleId", "messageId", "id"]
         .into_iter()
         .find_map(|key| value.get(key).and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn model_from(value: &Value) -> Option<&str> {
@@ -238,10 +245,11 @@ fn add_cursor_tool_calls(value: &Value, event: &mut crate::analysis::model::Norm
         }
         let name = block
             .get("name")
+            .or_else(|| block.get("toolName"))
             .or_else(|| block.get("tool"))
             .and_then(Value::as_str)
             .filter(|name| !name.is_empty());
-        let input = block.get("input").or_else(|| block.get("arguments"));
+        let input = cursor_tool_input(block);
         if let Some(name) = name {
             if let Some(index) = parsed_names.iter().position(|parsed| parsed == name) {
                 parsed_names.swap_remove(index);
@@ -262,6 +270,50 @@ fn is_cursor_tool_call_kind(kind: &str) -> bool {
         kind,
         "tool_use" | "tool-use" | "toolCall" | "tool-call" | "tool_call"
     )
+}
+
+fn cursor_tool_input(value: &Value) -> Option<&Value> {
+    value
+        .get("input")
+        .or_else(|| value.get("arguments"))
+        .or_else(|| value.get("args"))
+}
+
+fn add_cursor_rich_result(value: &Value, role: Role, parts: &mut Vec<ContentPart>) {
+    if role != Role::Tool {
+        return;
+    }
+    let Some(result) = value.pointer("/providerOptions/cursor/highLevelToolCallResult") else {
+        return;
+    };
+    let Some(blocks) = cursor_content(value).and_then(Value::as_array) else {
+        return;
+    };
+    let results = blocks
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool-result"))
+        .collect::<Vec<_>>();
+    let identity = match results.as_slice() {
+        [block] => (
+            block
+                .get("toolName")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            block
+                .get("toolCallId")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        ),
+        _ => (None, None),
+    };
+    parts.push(
+        ContentPart::new(
+            ContentKind::ToolResult,
+            serde_json::json!({"providerOptions": {"cursor": {"highLevelToolCallResult": result}}})
+                .to_string(),
+        )
+        .with_tool_identity(identity.0, identity.1),
+    );
 }
 
 fn is_cursor_tool_result_only(value: &Value) -> bool {
@@ -296,7 +348,7 @@ fn collect_cursor_content_part(value: &Value, role: Role, parts: &mut Vec<Conten
     match kind {
         "text" => {
             if let Some(text) = value.get("text").and_then(Value::as_str)
-                && let Some(text) = cursor_text(role, text)
+                && let Some(text) = cursor_text(text)
             {
                 parts.push(
                     ContentPart::new(cursor_text_kind(role), text)
@@ -313,18 +365,17 @@ fn collect_cursor_content_part(value: &Value, role: Role, parts: &mut Vec<Conten
             }
         }
         kind if is_cursor_tool_call_kind(kind) => {
-            let input = value
-                .get("input")
-                .or_else(|| value.get("arguments"))
-                .and_then(compact_json_text);
+            let input = cursor_tool_input(value).and_then(compact_json_text);
             if let Some(input) = input {
                 let name = value
                     .get("name")
+                    .or_else(|| value.get("toolName"))
                     .or_else(|| value.get("tool"))
                     .and_then(Value::as_str)
                     .map(str::to_owned);
                 let call_id = value
                     .get("id")
+                    .or_else(|| value.get("toolCallId"))
                     .or_else(|| value.get("call_id"))
                     .and_then(Value::as_str)
                     .map(str::to_owned);
@@ -332,14 +383,13 @@ fn collect_cursor_content_part(value: &Value, role: Role, parts: &mut Vec<Conten
                     ContentPart::new(ContentKind::ToolInput, input)
                         .with_tool_identity(name, call_id)
                         .with_native_input_fields(
-                            value
-                                .get("input")
-                                .or_else(|| value.get("arguments"))
-                                .expect("captured native input"),
+                            cursor_tool_input(value).expect("captured native input"),
                             if value.get("input").is_some() {
                                 "/input"
-                            } else {
+                            } else if value.get("arguments").is_some() {
                                 "/arguments"
+                            } else {
+                                "/args"
                             },
                             crate::analysis::jev_evidence::JevNativeFieldContainer::ToolBlock,
                         ),
@@ -347,6 +397,25 @@ fn collect_cursor_content_part(value: &Value, role: Role, parts: &mut Vec<Conten
             }
         }
         "tool_result" | "tool-result" => {
+            if let Some(result) = value.get("result") {
+                parts.push(
+                    ContentPart::new(
+                        ContentKind::ToolResult,
+                        compact_json_text(result).expect("JSON result serializes"),
+                    )
+                    .with_tool_identity(
+                        value
+                            .get("toolName")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        value
+                            .get("toolCallId")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                    ),
+                );
+                return;
+            }
             if let Some(content) = value.get("content") {
                 let text = content.as_str().map(str::to_owned).or_else(|| {
                     content.as_array().and_then(|blocks| {
@@ -425,7 +494,7 @@ fn collect_cursor_content_part(value: &Value, role: Role, parts: &mut Vec<Conten
         "redacted" => {}
         _ => {
             if let Some(text) = value.get("text").and_then(Value::as_str)
-                && let Some(text) = cursor_text(role, text)
+                && let Some(text) = cursor_text(text)
             {
                 parts.push(
                     ContentPart::new(cursor_text_kind(role), text)
@@ -439,7 +508,7 @@ fn collect_cursor_content_part(value: &Value, role: Role, parts: &mut Vec<Conten
 fn cursor_text_part(value: Option<&Value>, role: Role) -> Option<ContentPart> {
     value
         .and_then(Value::as_str)
-        .and_then(|text| cursor_text(role, text))
+        .and_then(cursor_text)
         .map(|text| {
             ContentPart::new(cursor_text_kind(role), text).with_authority(cursor_authority(role))
         })
@@ -462,19 +531,8 @@ fn cursor_authority(role: Role) -> ContentAuthority {
     }
 }
 
-fn cursor_text(role: Role, text: &str) -> Option<String> {
-    let text = if role == Role::User {
-        text.split_once("<user_query>")
-            .map(|(_, text)| {
-                text.split_once("</user_query>")
-                    .map_or(text, |(text, _)| text)
-            })
-            .unwrap_or(text)
-    } else {
-        text
-    };
-    let text = text.trim();
-    (!text.is_empty() && text != "[REDACTED]").then(|| text.to_owned())
+fn cursor_text(text: &str) -> Option<String> {
+    (!text.trim().is_empty() && text.trim() != "[REDACTED]").then(|| text.to_owned())
 }
 
 fn compact_json_text(value: &Value) -> Option<String> {

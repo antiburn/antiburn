@@ -10,7 +10,7 @@ import {
   type ChecksReportPayload,
 } from "../../../lib/insightsIpc"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listen } from "../../../lib/tauriEvents"
 import {
   getMainWindowVisible,
   noteInteraction,
@@ -183,6 +183,7 @@ export class BurnChecksController {
       this.exposure.conceal("burn_checks", this.exposureGeneration ?? undefined)
       this.exposureGeneration = null
       this.observedOutcomes.clear()
+      this.refreshTask = null
       this.targetTasks.clear()
       const consumerId = this.consumerId
       this.consumerId = null
@@ -206,10 +207,12 @@ export class BurnChecksController {
   refresh = (): void => {
     this.refreshDirty = true
     if (!this.snapshot.active || this.refreshTask) return
-    this.refreshTask = this.runRefresh().finally(() => {
+    const task = this.runRefresh().finally(() => {
+      if (this.refreshTask !== task) return
       this.refreshTask = null
       if (this.refreshDirty && this.snapshot.active) this.refresh()
     })
+    this.refreshTask = task
   }
 
   private async runRefresh(): Promise<void> {
@@ -220,14 +223,13 @@ export class BurnChecksController {
       const consumerId = this.consumerId
       if (!consumerId) return
       this.update({
-        aggregate: null,
         loading: !this.snapshot.report,
         refreshing: !!this.snapshot.report,
       })
       this.aggregateVersion = 0
       try {
         const report = await this.adapter.getReport(consumerId)
-        if (work !== this.workVersion || consumerId !== this.consumerId) continue
+        if (work !== this.workVersion || consumerId !== this.consumerId) return
         if (!report) throw new Error("Checks are unavailable")
         this.reportVersion = version
         this.update({ report, loading: false, refreshing: false, error: false })
@@ -241,10 +243,9 @@ export class BurnChecksController {
           this.loadTargets(detector, true)
         }
       } catch {
-        if (work === this.workVersion && consumerId === this.consumerId) {
-          this.update({ loading: false, refreshing: false, error: true })
-          this.exposure.observe("error", this.exposureGeneration ?? undefined)
-        }
+        if (work !== this.workVersion || consumerId !== this.consumerId) return
+        this.update({ loading: false, refreshing: false, error: true })
+        this.exposure.observe("error", this.exposureGeneration ?? undefined)
       }
     }
   }
@@ -268,6 +269,7 @@ export class BurnChecksController {
   }
 
   loadTargets = (detector: BurnCheckDetectorId, force = false): void => {
+    if (!this.snapshot.active) return
     const current = this.snapshot.targets[detector]
     if (!force && (current?.data || current?.loading)) return
     const version = (this.targetVersions.get(detector) ?? 0) + 1
@@ -278,8 +280,9 @@ export class BurnChecksController {
         [detector]: { data: current?.data ?? null, loading: true, error: false },
       },
     })
-    if (!this.snapshot.active || this.targetTasks.has(detector)) return
+    if (this.targetTasks.has(detector)) return
     const task = this.runTargetLoad(detector).finally(() => {
+      if (this.targetTasks.get(detector) !== task) return
       this.targetTasks.delete(detector)
       const latest = this.snapshot.targets[detector]
       if (latest?.loading && this.snapshot.active && this.visibleTargets.has(detector))

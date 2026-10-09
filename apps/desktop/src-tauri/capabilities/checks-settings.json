@@ -1,12 +1,19 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "checks-settings",
-  "description": "Only Settings may change the TypeSafe credential.",
-  "windows": ["settings"],
+  "description": "Only Settings and the main window's Checks step may manage Smart Burn Checks, connections, and credentials.",
+  "windows": ["main", "settings"],
   "permissions": [
     "allow-set-typesafe-api-key",
     "allow-remove-typesafe-api-key",
+    "allow-get-system-one-settings",
+    "allow-test-system-one-connection",
+    "allow-save-system-one-connection",
+    "allow-switch-system-one-connection",
+    "allow-refresh-system-one-limits",
+    "allow-remove-system-one-credential",
     "allow-set-check-history-days",
+    "allow-set-check-enabled",
     "allow-set-smart-burn-checks-enabled",
     "allow-run-check-backfill"
   ]

@@ -11,9 +11,8 @@ use tauri::WebviewWindow;
 ///
 /// The cursor is the active-monitor signal because every path into these
 /// windows follows a click — the tray menu, the popover's affordances, ⌘, —
-/// so the pointer is on the display the reader is working on. The one path that
-/// does not is the onboarding window at launch, where the cursor is still the
-/// best guess available and the fallbacks below catch the rest.
+/// so the pointer is on the display the reader is working on. The fallbacks
+/// below catch the rest.
 ///
 /// Falls back through the window's current monitor to the primary one, and does
 /// nothing if even that cannot be resolved: a window at its old position is

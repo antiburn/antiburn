@@ -701,6 +701,48 @@ describe("PopoverSession surface presentation", () => {
     unsubscribe()
   })
 
+  it("defers hidden checks updates and refreshes once when shown", async () => {
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.waitFor(() => expect(sessionUpdatedHandler).not.toBeNull())
+    await vi.waitFor(() => expect(getChecksReport).toHaveBeenCalled())
+    const baseline = getChecksReport.mock.calls.length
+
+    popoverHiddenHandler?.()
+    emitUpdated(changedEntry(), { checks: true })
+    indexChangedHandler?.({ seq: ++updateSeq, cause: "scan_pass" })
+    await Promise.resolve()
+    expect(getChecksReport).toHaveBeenCalledTimes(baseline)
+
+    popoverShownHandler?.()
+    await vi.waitFor(() => expect(getChecksReport).toHaveBeenCalledTimes(baseline + 1))
+    unsubscribe()
+  })
+
+  it("keeps a hidden checks update dirty when an earlier report is in flight", async () => {
+    let resolveReport!: (report: null) => void
+    getChecksReport.mockReturnValueOnce(
+      new Promise<null>((resolve) => {
+        resolveReport = resolve
+      }),
+    )
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.waitFor(() => expect(sessionUpdatedHandler).not.toBeNull())
+    await vi.waitFor(() => expect(getChecksReport).toHaveBeenCalledOnce())
+
+    popoverHiddenHandler?.()
+    emitUpdated(changedEntry(), { checks: true })
+    resolveReport(null)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(getChecksReport).toHaveBeenCalledOnce()
+
+    popoverShownHandler?.()
+    await vi.waitFor(() => expect(getChecksReport).toHaveBeenCalledTimes(2))
+    unsubscribe()
+  })
+
   it("keeps the activity clock current while visible and refreshes it when shown", async () => {
     vi.useFakeTimers()
     vi.setSystemTime("2027-01-15T08:00:00Z")

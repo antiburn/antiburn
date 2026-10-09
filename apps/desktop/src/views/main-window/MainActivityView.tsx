@@ -1,9 +1,8 @@
-import { lazy, Suspense, useRef, useState, useSyncExternalStore } from "react"
+import { lazy, Suspense, useRef, useSyncExternalStore } from "react"
 import { CalendarDays } from "lucide-react"
 
 import { SessionList } from "../../components/session/SessionList"
 import { PushButton } from "../../components/ui/PushButton"
-import { openSettingsWindow } from "../../lib/ipc"
 import type { SessionQuotaOpenTarget } from "../../components/session/SessionQuotaSection"
 import { renderAgentIcon } from "../../lib/agentIcon"
 import { filterSessionEntries, sessionFilterCounts } from "../../lib/sessionFilters"
@@ -41,6 +40,8 @@ export function MainActivityView({
   session,
   hygieneBySession,
   onOpenQuota,
+  onOpenMemory,
+  onOpenRangeSettings,
 }: {
   active: boolean
   session: MainActivitySession
@@ -49,8 +50,11 @@ export function MainActivityView({
   /** Open one quota window on the Quota screen. Omitted where there is no
    *  Quota screen to open. */
   onOpenQuota?: (target: SessionQuotaOpenTarget) => void
+  onOpenMemory?: (target: { slug: string; path: string }) => void
+  /** Open the Overview's Sessions step modal on the "Show the last" row.
+   *  Omitted where there is no Overview to open. */
+  onOpenRangeSettings?: () => void
 }) {
-  const [rangeError, setRangeError] = useState(false)
   const filterButtonRef = useRef<HTMLButtonElement | null>(null)
   const state = useSyncExternalStore(
     active ? session.subscribe : session.subscribeInactive,
@@ -92,15 +96,6 @@ export function MainActivityView({
   const next = index >= 0 ? ordered[index + 1] : undefined
   const filterEmpty = eligibleEntries.length > 0 && filteredEntries.length === 0
   const days = state.settings.activityWindowDays
-
-  async function changeTimeRange() {
-    setRangeError(false)
-    try {
-      await openSettingsWindow("general", "recentDays")
-    } catch {
-      setRangeError(true)
-    }
-  }
 
   function clearFilters() {
     session.clearFilters()
@@ -145,14 +140,9 @@ export function MainActivityView({
               onClear={session.clearFilters}
               highCostThresholdUsd={highCostThresholdUsd ?? undefined}
               days={days}
-              onChangeTimeRange={() => void changeTimeRange()}
+              onChangeTimeRange={() => onOpenRangeSettings?.()}
               triggerRef={filterButtonRef}
             />
-          )}
-          {rangeError && (
-            <p role="status" className="px-4 py-2 type-callout text-label-secondary">
-              Could not open time-range settings. Try again.
-            </p>
           )}
           {state.listError && (
             <div role="status" className="px-4 py-2 type-callout text-label-secondary">
@@ -192,7 +182,7 @@ export function MainActivityView({
                       "Try a wider time range. New sessions appear here as they are discovered on this machine.",
                     emptyIcon: <CalendarDays size={20} strokeWidth={1.75} aria-hidden="true" />,
                     emptyActions: (
-                      <PushButton onClick={() => void changeTimeRange()}>
+                      <PushButton onClick={() => onOpenRangeSettings?.()}>
                         Change time range
                       </PushButton>
                     ),
@@ -249,6 +239,8 @@ export function MainActivityView({
               onOpenSession={session.openRelated}
               sessionQuota={state.sessionQuota}
               {...(onOpenQuota ? { onOpenQuota } : {})}
+              sessionMemories={state.sessionMemories}
+              {...(onOpenMemory ? { onOpenMemory } : {})}
               onDeleted={session.deleted}
             />
           </div>

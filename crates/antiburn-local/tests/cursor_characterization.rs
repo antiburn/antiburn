@@ -229,7 +229,10 @@ fn cursor_agent_content_blocks_capture_clean_text_tools_and_results() {
     assert_eq!(sink.events[2].role, antiburn_local::analysis::Role::Tool);
     assert_eq!(sink.contents.len(), 3);
     assert_eq!(sink.contents[0].parts[0].kind, ContentKind::UserText);
-    assert_eq!(sink.contents[0].parts[0].text, "run the focused tests");
+    assert_eq!(
+        sink.contents[0].parts[0].text,
+        "<user_query>run the focused tests</user_query><context>private context omitted</context>"
+    );
     assert_eq!(sink.contents[1].parts[0].kind, ContentKind::Thinking);
     assert_eq!(sink.contents[1].parts[1].kind, ContentKind::ToolInput);
     assert_eq!(sink.contents[2].parts[0].kind, ContentKind::ToolResult);
@@ -314,7 +317,10 @@ fn native_message_variants_preserve_authority_and_tool_identity() {
         Some("call-2")
     );
     assert_eq!(sink.contents[4].parts.len(), 1);
-    assert_eq!(sink.contents[4].parts[0].text, "user request");
+    assert_eq!(
+        sink.contents[4].parts[0].text,
+        "<user_query>user request</user_query>"
+    );
 }
 
 #[test]
@@ -353,4 +359,196 @@ fn resource_tool_calls_remain_unclassified_without_resource_metadata() {
             .values()
             .all(|tool| tool.calls == 1 && tool.class == ToolClass::Unclassified)
     );
+}
+
+#[test]
+fn public_store_reader_shape_preserves_structure_identity_and_repeated_scope() {
+    use antiburn_local::analysis::{ContentAuthority, Role};
+
+    let source = include_str!("fixtures/cursor_characterization/store_reader_blocks.jsonl");
+    let mut sink = CursorRecordingSink::default();
+    reader_for("cursor")
+        .visit(&input(RawSource::Jsonl(source.to_owned())), &mut sink)
+        .unwrap();
+
+    assert_eq!(sink.events.len(), 4);
+    assert_eq!(sink.events[0].uuid.as_deref(), Some("user-1"));
+    assert_eq!(sink.events[3].uuid.as_deref(), Some("user-2"));
+    assert_eq!(sink.contents[0], sink.contents[3]);
+    assert_eq!(sink.contents[0].parts[0].authority, ContentAuthority::User);
+    assert_eq!(
+        sink.contents[0].parts[0].text,
+        "  Keep the change small.\n    Keep this indentation.\n"
+    );
+    let call = &sink.contents[1].parts[1];
+    assert_eq!(sink.events[1].tools[0].name, "Read");
+    assert_eq!(call.tool_name.as_deref(), Some("Read"));
+    assert_eq!(call.tool_call_id.as_deref(), Some("read-1"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&call.text).unwrap(),
+        serde_json::json!({"path":"/synthetic/project/task.plan.md"})
+    );
+    assert_eq!(sink.events[2].role, Role::Tool);
+    let results = &sink.contents[2].parts;
+    assert_eq!(results.len(), 2);
+    for result in results {
+        assert_eq!(result.kind, ContentKind::ToolResult);
+        assert_eq!(result.authority, ContentAuthority::Tool);
+        assert_eq!(result.tool_call_id.as_deref(), Some("read-1"));
+        assert!(result.metadata.user_answers.is_empty());
+        assert!(result.metadata.plan_references.is_empty());
+    }
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&results[0].text).unwrap(),
+        serde_json::json!([
+            {"type":"text","text":"# Task\n"},
+            {"type":"text","text":"Keep the change small."}
+        ])
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&results[1].text).unwrap()["providerOptions"]["cursor"]
+            ["highLevelToolCallResult"]["workspaceResults"][0]["filePath"],
+        "/synthetic/project/task.plan.md"
+    );
+}
+
+#[test]
+fn optional_question_and_plan_evidence_stays_unavailable_without_a_dedicated_pin() {
+    use antiburn_local::analysis::ContentAuthority;
+
+    let source = include_str!("fixtures/cursor_characterization/optional_evidence_negative.jsonl");
+    for format in [
+        SourceFormat::CursorJsonl,
+        SourceFormat::CursorCliAgentJsonl,
+        SourceFormat::CursorCliStoreDb,
+        SourceFormat::CursorChatStoreDb,
+        SourceFormat::CursorIdeComposer,
+    ] {
+        let mut session_input = input(RawSource::Jsonl(source.to_owned()));
+        session_input.source_format = format;
+        let mut sink = CursorRecordingSink::default();
+        reader_for("cursor")
+            .visit(&session_input, &mut sink)
+            .unwrap();
+        assert_eq!(sink.events.len(), 8);
+        let parts = sink
+            .contents
+            .iter()
+            .flat_map(|turn| &turn.parts)
+            .collect::<Vec<_>>();
+        assert!(
+            parts
+                .iter()
+                .all(|part| part.metadata.user_answers.is_empty()
+                    && part.metadata.plan_references.is_empty())
+        );
+        let users = parts
+            .iter()
+            .filter(|part| part.authority == ContentAuthority::User)
+            .collect::<Vec<_>>();
+        assert_eq!(users.len(), 2);
+        assert_eq!(users[1].text, "No. Do not implement extra work.");
+        assert!(
+            parts
+                .iter()
+                .any(|part| part.tool_call_id.as_deref() == Some("question-2")
+                    && part.kind == ContentKind::ToolInput)
+        );
+        assert!(
+            parts
+                .iter()
+                .any(|part| part.tool_call_id.as_deref() == Some("unrelated")
+                    && part.authority == ContentAuthority::Tool)
+        );
+    }
+}
+
+#[test]
+fn rich_results_keep_unknown_authority_and_do_not_guess_ambiguous_call_binding() {
+    for role in ["assistant", "tool"] {
+        let source = serde_json::json!({
+            "role": role,
+            "content": [
+                {"type":"tool-result","toolCallId":"first","result":"one"},
+                {"type":"tool-result","toolCallId":"second","result":"two"}
+            ],
+            "providerOptions":{"cursor":{"highLevelToolCallResult":{"approved":true}}}
+        });
+        let mut sink = CursorRecordingSink::default();
+        reader_for("cursor")
+            .visit(&input(RawSource::Jsonl(source.to_string())), &mut sink)
+            .unwrap();
+        // Result-only blocks have tool authority even when their wrapper says assistant.
+        assert_eq!(sink.contents[0].parts.len(), 3);
+        let rich = &sink.contents[0].parts[2];
+        assert_eq!(rich.tool_call_id, None);
+        assert_eq!(
+            rich.authority,
+            antiburn_local::analysis::ContentAuthority::Tool
+        );
+        assert!(rich.metadata.user_answers.is_empty());
+    }
+}
+
+#[test]
+fn cursor_scope_content_reports_truncation_instead_of_claiming_complete_text() {
+    let text = "x".repeat(300 * 1024);
+    let source = serde_json::json!({"role":"user","id":"long-user","content":text});
+    let mut sink = CursorRecordingSink::default();
+    reader_for("cursor")
+        .visit(&input(RawSource::Jsonl(source.to_string())), &mut sink)
+        .unwrap();
+    let part = &sink.contents[0].parts[0];
+    assert_eq!(part.kind, ContentKind::UserText);
+    assert!(part.truncated);
+    assert_eq!(part.text.len(), 256 * 1024);
+}
+
+#[test]
+fn native_user_query_tags_never_delete_conditions_examples_or_sections() {
+    let source = include_str!("fixtures/cursor_characterization/user_query_text.jsonl");
+    let mut sink = CursorRecordingSink::default();
+    reader_for("cursor")
+        .visit(&input(RawSource::Jsonl(source.to_owned())), &mut sink)
+        .unwrap();
+    assert_eq!(sink.contents.len(), 5);
+    for (turn, line) in sink.contents.iter().zip(source.lines()) {
+        let native: serde_json::Value = serde_json::from_str(line).unwrap();
+        let text = native["content"]
+            .as_str()
+            .or_else(|| native["content"][0]["text"].as_str())
+            .unwrap();
+        assert_eq!(turn.parts.len(), 1);
+        assert_eq!(turn.parts[0].text, text);
+        assert_eq!(
+            turn.parts[0].authority,
+            antiburn_local::analysis::ContentAuthority::User
+        );
+        assert!(turn.parts[0].metadata.user_answers.is_empty());
+        assert!(turn.parts[0].metadata.plan_references.is_empty());
+    }
+}
+
+#[test]
+fn synthetic_unproven_order_propagates_to_whole_source_coverage() {
+    for marker in ["store_db", "desktop_state_vscdb"] {
+        let source = format!(
+            "{}\n{}",
+            serde_json::json!({"cursor_source":marker,"cursor_scope_ordering":"unproven"}),
+            r#"{"role":"user","id":"correction","timestamp":2000,"content":"No. Do not implement it."}"#
+        );
+        let session_input = input(RawSource::Jsonl(source));
+        let observed = evidence(&session_input);
+        assert!(matches!(observed.coverage, EvidenceCoverage::Partial(_)));
+        let mut collector = SessionCollector::new("cursor", "synthetic");
+        reader_for("cursor")
+            .visit(&session_input, &mut collector)
+            .unwrap();
+        assert!(
+            collector
+                .partial_reasons()
+                .contains(&PartialReason::AttributionIncomplete)
+        );
+        assert_eq!(collector.into_session().unwrap().events.len(), 1);
+    }
 }

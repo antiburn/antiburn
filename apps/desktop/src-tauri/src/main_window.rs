@@ -40,6 +40,16 @@ pub enum MainWindowSection {
     BurnChecks,
 }
 
+/// One Overview step-settings modal the shell can open directly, from outside
+/// the retained renderer (the popover's attention banners today).
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OverviewStep {
+    Agents,
+    Sessions,
+    Checks,
+}
+
 /// Event asking the retained renderer to report its committed health.
 pub const HEALTH_CHECK_EVENT: &str = "main:health-check";
 
@@ -72,6 +82,10 @@ pub struct NavigationDestination {
     target: Option<SessionTarget>,
     #[serde(skip_serializing_if = "Option::is_none")]
     remote_host_id: Option<String>,
+    /// Set only for an [`MainWindowSection::Overview`] destination that must
+    /// also open one step's settings modal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    overview_step: Option<OverviewStep>,
 }
 
 /// Revisioned request shared by the event and renderer recovery paths.
@@ -951,6 +965,7 @@ fn route_session_target(app: &AppHandle, target: SessionTarget) -> Result<(), St
         section: MainWindowSection::Activity,
         target: Some(target),
         remote_host_id: None,
+        overview_step: None,
     });
     if let Err(error) = open(app, OpenTrigger::Interaction) {
         state.clear_navigation_target(request.revision);
@@ -967,6 +982,7 @@ pub(crate) fn sample_payloads_from_store(
     repositories: &[RepositoryRecord],
     samples: &[BurnCheckSampleSession],
     now_epoch: i64,
+    smart_checks_available: bool,
 ) -> Result<Vec<BurnCheckSamplePayload>, String> {
     let keys = samples.iter().map(sample_key).collect::<Vec<_>>();
     let mut records = store
@@ -990,9 +1006,17 @@ pub(crate) fn sample_payloads_from_store(
     let generations = store
         .source_generation_batch(&keys)
         .map_err(|error| error.to_string())?;
-    let findings = if store
+    let (enabled_checks, check_preferences_revision) = store
+        .check_preferences_snapshot()
+        .map_err(|error| error.to_string())?;
+    let enabled_selection =
+        antiburn_local::insights::DetectorSelection::from_enabled(enabled_checks.iter().copied());
+    let smart_checks_enabled = store
         .internal_value("internal:burnChecksEnabledAtEpochV1")
-        .is_some()
+        .is_some();
+    let findings = if enabled_checks
+        .contains(&antiburn_local::insights::DetectorId::IgnoredInstructions)
+        && smart_checks_enabled
     {
         crate::insights_report::ignored_instruction_session_statuses(store.state_dir(), &keys)
             .map_err(|error| error.to_string())?
@@ -1006,12 +1030,70 @@ pub(crate) fn sample_payloads_from_store(
         ]
     };
     let now = Instant::now();
-    selected
+    let skill_statuses = if smart_checks_enabled
+        && enabled_checks.contains(&antiburn_local::insights::DetectorId::SkillOpportunities)
+    {
+        crate::insights_report::smart_session_statuses(
+            store.state_dir(),
+            &keys,
+            antiburn_local::insights::DetectorId::SkillOpportunities,
+            smart_checks_available,
+        )
+        .map_err(|error| error.to_string())?
+    } else {
+        vec![
+            crate::dto::IgnoredInstructionSessionStatus {
+                status: crate::dto::SessionHygieneStatus::NotAssessed,
+                reason: None,
+            };
+            keys.len()
+        ]
+    };
+    let over_statuses = if smart_checks_enabled
+        && enabled_checks.contains(&antiburn_local::insights::DetectorId::OverExploring)
+    {
+        crate::insights_report::smart_session_statuses(
+            store.state_dir(),
+            &keys,
+            antiburn_local::insights::DetectorId::OverExploring,
+            smart_checks_available,
+        )
+        .map_err(|error| error.to_string())?
+    } else {
+        vec![
+            crate::dto::IgnoredInstructionSessionStatus {
+                status: crate::dto::SessionHygieneStatus::NotAssessed,
+                reason: None,
+            };
+            keys.len()
+        ]
+    };
+    let scope_statuses = if smart_checks_enabled
+        && enabled_checks.contains(&antiburn_local::insights::DetectorId::ScopeCreep)
+    {
+        crate::insights_report::smart_session_statuses(
+            store.state_dir(),
+            &keys,
+            antiburn_local::insights::DetectorId::ScopeCreep,
+            smart_checks_available,
+        )
+        .map_err(|error| error.to_string())?
+    } else {
+        vec![
+            crate::dto::IgnoredInstructionSessionStatus {
+                status: crate::dto::SessionHygieneStatus::NotAssessed,
+                reason: None,
+            };
+            keys.len()
+        ]
+    };
+    let payloads = selected
         .into_iter()
         .zip(evidence)
         .zip(generations)
         .zip(findings)
-        .map(|(((sample, evidence), generation), finding)| {
+        .enumerate()
+        .map(|(index, (((sample, evidence), generation), finding))| {
             let record = records
                 .remove(&sample_key(sample))
                 .ok_or("session metadata is unavailable")?;
@@ -1034,10 +1116,29 @@ pub(crate) fn sample_payloads_from_store(
                     now,
                 )?,
             };
-            let mut hygiene = crate::commands::session_hygiene_payload(evidence, generation);
+            let mut hygiene = crate::commands::session_hygiene_payload_with_selection(
+                evidence,
+                generation,
+                &enabled_selection,
+            );
             crate::commands::attach_ignored_instruction_statuses(
                 std::slice::from_mut(&mut hygiene),
                 [finding],
+            );
+            crate::commands::attach_smart_check_statuses(
+                std::slice::from_mut(&mut hygiene),
+                [skill_statuses[index]],
+                "skillOpportunities",
+            );
+            crate::commands::attach_smart_check_statuses(
+                std::slice::from_mut(&mut hygiene),
+                [over_statuses[index]],
+                "overExploring",
+            );
+            crate::commands::attach_smart_check_statuses(
+                std::slice::from_mut(&mut hygiene),
+                [scope_statuses[index]],
+                "scopeCreep",
             );
             Ok(BurnCheckSamplePayload {
                 navigation_handle,
@@ -1056,7 +1157,19 @@ pub(crate) fn sample_payloads_from_store(
                 hygiene,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    if store
+        .check_preferences_revision()
+        .map_err(|error| error.to_string())?
+        != check_preferences_revision
+        || store
+            .internal_value("internal:burnChecksEnabledAtEpochV1")
+            .is_some()
+            != smart_checks_enabled
+    {
+        return Err("check preferences changed while publishing session samples".to_owned());
+    }
+    Ok(payloads)
 }
 
 fn sample_key(sample: &BurnCheckSampleSession) -> SessionKey {
@@ -1178,8 +1291,10 @@ pub async fn open_main_window_section(
     app: AppHandle,
     section: MainWindowSection,
     remote_host_id: Option<String>,
+    overview_step: Option<OverviewStep>,
 ) -> Result<(), String> {
-    let destination = section_navigation_destination(window.label(), section, remote_host_id)?;
+    let destination =
+        section_navigation_destination(window.label(), section, remote_host_id, overview_step)?;
     on_main_value(&app, move |app| route_section_target(app, destination)).await?
 }
 
@@ -1187,12 +1302,16 @@ fn section_navigation_destination(
     caller: &str,
     section: MainWindowSection,
     remote_host_id: Option<String>,
+    overview_step: Option<OverviewStep>,
 ) -> Result<NavigationDestination, String> {
     let settings_host = caller == crate::settings::LABEL
         && section == MainWindowSection::Activity
         && remote_host_id.is_some();
     if !settings_host && (caller != crate::popover::LABEL || remote_host_id.is_some()) {
         return Err("main-window sections are unavailable to this window".to_owned());
+    }
+    if overview_step.is_some() && section != MainWindowSection::Overview {
+        return Err("an overview step is only valid for the Overview section".to_owned());
     }
     if let Some(id) = remote_host_id.as_deref() {
         crate::remote_sessions::validate_host_id(id)?;
@@ -1201,7 +1320,27 @@ fn section_navigation_destination(
         section,
         target: None,
         remote_host_id,
+        overview_step,
     })
+}
+
+/// Show and focus the retained main window, and route it straight to `section`.
+///
+/// For a native caller, not a webview under IPC — the debug-only tray reset
+/// is its only caller today, hence the `cfg`. It skips the caller-label check
+/// [`section_navigation_destination`] applies, because that check exists only
+/// to stop an untrusted webview from asking for a window it must not open.
+#[cfg(debug_assertions)]
+pub(crate) fn open_at_section(app: &AppHandle, section: MainWindowSection) -> Result<(), String> {
+    route_section_target(
+        app,
+        NavigationDestination {
+            section,
+            target: None,
+            remote_host_id: None,
+            overview_step: None,
+        },
+    )
 }
 
 fn route_section_target(app: &AppHandle, destination: NavigationDestination) -> Result<(), String> {
@@ -1462,7 +1601,6 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
             window_lifecycle::trace_page_load::<MainWindowState>(window, payload, LABEL);
         },
     )?;
-    crate::wayland_titlebar::repair(&built.window);
     crate::interface_scale::apply_window(&built.window, interface_scale)?;
     let applied = built
         .placement
@@ -1867,6 +2005,27 @@ pub fn close(window: &WebviewWindow) {
     emit_visibility_changed(window);
 }
 
+/// Debug tool: forget the saved placement, return the main window to its
+/// default size and position, and hide it, as for a new install.
+#[cfg(debug_assertions)]
+pub(crate) fn reset_placement(app: &AppHandle) {
+    debug_assert_main_thread();
+    let state = app.state::<MainWindowState>();
+    state.placement_generation.fetch_add(1, Ordering::AcqRel);
+    *lock(&state.placement) = None;
+    app.state::<Store>().remove_internal_value(PLACEMENT_KEY);
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return;
+    };
+    match antiburn_main_window::reset_placement(&window) {
+        Ok(placement) => *lock(&state.placement) = Some(placement),
+        Err(error) => {
+            ::tracing::warn!(event = "main_window_placement_reset_failed", error = %error);
+        }
+    }
+    close(&window);
+}
+
 /// Read whether the main window can present work without treating blur as hidden.
 pub fn is_visible(window: &WebviewWindow) -> bool {
     #[cfg(target_os = "macos")]
@@ -1914,9 +2073,7 @@ pub(crate) fn restore_after_activation(app: &AppHandle) {
     let main_minimized = app
         .get_webview_window(LABEL)
         .is_some_and(|window| window.is_minimized().unwrap_or(false));
-    let another_window_owns_activation = crate::onboarding::is_pending(app)
-        || window_is_visible(app, crate::onboarding::LABEL)
-        || window_is_visible(app, crate::settings::LABEL)
+    let another_window_owns_activation = window_is_visible(app, crate::settings::LABEL)
         || [
             crate::popover::LABEL,
             crate::popover_peek::LABEL,
@@ -2188,6 +2345,7 @@ mod tests {
             section: MainWindowSection::Activity,
             target: Some(target(id)),
             remote_host_id: None,
+            overview_step: None,
         }
     }
 
@@ -2196,6 +2354,16 @@ mod tests {
             section,
             target: None,
             remote_host_id: None,
+            overview_step: None,
+        }
+    }
+
+    const fn overview_step_destination(step: OverviewStep) -> NavigationDestination {
+        NavigationDestination {
+            section: MainWindowSection::Overview,
+            target: None,
+            remote_host_id: None,
+            overview_step: Some(step),
         }
     }
 
@@ -2750,8 +2918,9 @@ mod tests {
             })
             .collect::<Vec<_>>();
         store.upsert_sessions(&records, &[]).unwrap();
-        let first = sample_payloads_from_store(&state, &store, &[], &samples, 1000).unwrap();
-        let second = sample_payloads_from_store(&state, &store, &[], &samples, 1000).unwrap();
+        let first = sample_payloads_from_store(&state, &store, &[], &samples, 1000, false).unwrap();
+        let second =
+            sample_payloads_from_store(&state, &store, &[], &samples, 1000, false).unwrap();
         assert_eq!(first.len(), 2);
         assert_eq!(second.len(), 2);
         assert_eq!(first[0].agent, "claude-code");
@@ -2947,6 +3116,7 @@ mod tests {
             crate::settings::LABEL,
             MainWindowSection::Activity,
             Some(id.clone()),
+            None,
         )
         .unwrap();
         assert_eq!(destination.remote_host_id, Some(id.clone()));
@@ -2963,7 +3133,8 @@ mod tests {
             section_navigation_destination(
                 crate::settings::LABEL,
                 MainWindowSection::Activity,
-                None
+                None,
+                None,
             )
             .is_err()
         );
@@ -2971,7 +3142,8 @@ mod tests {
             section_navigation_destination(
                 crate::settings::LABEL,
                 MainWindowSection::Activity,
-                Some("invalid".to_owned())
+                Some("invalid".to_owned()),
+                None,
             )
             .is_err()
         );
@@ -2979,22 +3151,71 @@ mod tests {
             section_navigation_destination(
                 crate::popover::LABEL,
                 MainWindowSection::Activity,
-                Some(id.clone())
+                Some(id.clone()),
+                None,
             )
             .is_err()
         );
         assert!(
-            section_navigation_destination("untrusted", MainWindowSection::Activity, Some(id))
-                .is_err()
+            section_navigation_destination(
+                "untrusted",
+                MainWindowSection::Activity,
+                Some(id),
+                None,
+            )
+            .is_err()
         );
         assert!(
             section_navigation_destination(
                 crate::popover::LABEL,
                 MainWindowSection::Activity,
-                None
+                None,
+                None,
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn overview_step_navigation_is_scoped_to_the_overview_section() {
+        let destination = section_navigation_destination(
+            crate::popover::LABEL,
+            MainWindowSection::Overview,
+            None,
+            Some(OverviewStep::Agents),
+        )
+        .unwrap();
+        assert_eq!(destination.overview_step, Some(OverviewStep::Agents));
+        let json = serde_json::to_value(&destination).unwrap();
+        assert_eq!(json["overviewStep"], "agents");
+        assert!(
+            section_navigation_destination(
+                crate::popover::LABEL,
+                MainWindowSection::Activity,
+                None,
+                Some(OverviewStep::Sessions),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn overview_step_destination_round_trips_through_the_request_queue() {
+        let state = state();
+        let request =
+            state.request_navigation_target(overview_step_destination(OverviewStep::Checks));
+        assert_eq!(
+            lock(&state.navigation_target).pending,
+            Some(request.clone())
+        );
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["destination"]["overviewStep"], "checks");
+        assert!(json["destination"].get("remoteHostId").is_none());
+
+        let plain =
+            state.request_navigation_target(section_destination(MainWindowSection::Overview));
+        let plain_json = serde_json::to_value(&plain).unwrap();
+        assert!(plain_json["destination"].get("overviewStep").is_none());
     }
 
     #[test]
@@ -3010,6 +3231,7 @@ mod tests {
                 remote_host_id: None,
             }),
             remote_host_id: None,
+            overview_step: None,
         });
 
         assert!(external.revision > sample.revision);

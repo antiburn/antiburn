@@ -18,7 +18,8 @@ drafts; a person reads the draft and presses Publish. There is no auto-publish
 and there will not be one — the review is the point, not a formality on the way
 to it.
 
-GitHub Releases is the only place antiburn's artifacts live. There is no
+GitHub Releases hosts published artifacts. Manual builds store their assets in
+GitHub Actions. There is no
 separate download host, no object store, and no content-delivery layer: the
 release page is the canonical artifact host and the updater host at once.
 
@@ -42,7 +43,7 @@ only jobs that can reach them are the ones that ask for the environment by name
 Configure it as:
 
 - **Deployment branches and tags:** _Selected branches and tags_ → add the tag
-  rule `antiburn-v*`. Nothing else can start a job that touches these secrets.
+  rule `antiburn-v*` and branch rule `main`. Manual builds run only on `main`.
 - **Required reviewers:** optional. The draft-then-publish step is already a
   human gate; add reviewers here as well if you want the pause to happen
   _before_ the credentials are used rather than after.
@@ -120,7 +121,8 @@ the signing service is hosted in another region.
 Basic includes 5,000 signatures per month at a published USD 9.99/month before
 tax. Each file signed consumes a signature. Tauri signs the app, NSIS plugin
 copies, uninstaller, and installer, so each release target uses several
-signatures. Check current [pricing](https://azure.microsoft.com/pricing/details/artifact-signing/)
+signatures. The Windows signing probe adds one signature per target and verifies
+live authentication before the full compile. Check current [pricing](https://azure.microsoft.com/pricing/details/artifact-signing/)
 before changing the subscription.
 
 Add these as **environment variables** under Settings → Environments → `release`:
@@ -166,7 +168,8 @@ Windows releases.
    ```
 
 6. Configure the six GitHub environment variables and keep the environment's
-   `antiburn-v*` tag restriction. Azure login uses OIDC through the CLI. The
+   `antiburn-v*` tag and `main` branch restrictions. Azure login uses OIDC through
+   the CLI. The
    signing client excludes all credential types except Azure CLI.
 
 The shared release build matrix has `id-token: write`; only the Windows signed
@@ -204,8 +207,11 @@ installer and its updater signature. Never sign an installer again after its
 detached updater signature, checksum, or provenance is generated.
 
 The build rejects SignTool warnings and errors. Final verification checks the
-app executable and NSIS installer. Windows acceptance also checks the installed
-uninstaller. A valid timestamp lets signatures remain valid after leaf expiry;
+NSIS installer, silently installs it into a runner temporary directory, and
+checks the installed executable and uninstaller before uninstalling. Tauri
+restores its unsigned raw build executable after packaging, so checking that
+file would reject a correctly signed installer. A valid timestamp lets
+signatures remain valid after leaf expiry;
 the verifier uses Windows trust validation rather than rejecting every expired
 leaf certificate.
 
@@ -215,13 +221,11 @@ endpoint commonly produces 403. Do not change the role to Owner or add a secret
 fallback. Runtime or DLL-load errors require checking the pinned x64 toolchain
 and its `DOTNET_ROOT` configuration, especially on ARM64.
 
-#### Legacy unsigned waiver
+#### Required Windows signing
 
-`ALLOW_UNSIGNED_WINDOWS` is a repository variable. It permits a clearly labelled
-unsigned Windows build only when **all six Azure variables are absent**. With
-all six configured, signing is required even if the waiver is still `true`.
-A partial configuration fails; a signing failure cannot use the waiver.
-Remove the variable after signed release acceptance. macOS releases always
+Both Windows targets require Azure Authenticode signing. Missing configuration,
+signing failures, or failed verification stop the build. The former
+`ALLOW_UNSIGNED_WINDOWS` waiver is removed and has no effect. macOS releases
 require Developer ID signing and notarization.
 
 #### Enabling Windows installer signature enforcement
@@ -231,8 +235,8 @@ unsigned Windows packages. Activate strict bootstrap verification after the
 first signed production release passes Windows acceptance and becomes latest:
 
 1. Rehearse both Windows targets with the configured Azure signing profile.
-2. Remove `ALLOW_UNSIGNED_WINDOWS` and confirm both inventory entries use
-   `authenticode`.
+2. Confirm both inventory entries use `authenticode`; unsigned Windows builds
+   are no longer permitted.
 3. Extend `Assert-InstallerIntegrity` in the root `install.ps1` with
    `Get-AuthenticodeSignature`. Require `Valid` status and the expected antiburn
    publisher identity.
@@ -286,13 +290,49 @@ repository maintenance, not routine contributions or releases.
 ### 1.6 Attestations
 
 Build provenance is recorded with `actions/attest-build-provenance`, which needs
-`id-token: write` and `attestations: write`. Only the draft job has
+`id-token: write` and `attestations: write`. Only the assemble job has
 `attestations: write`; the build job also needs `id-token: write` for Azure login.
 Public repositories get attestations for free; nothing else needs enabling.
 
 ---
 
 ## Part 2 — Cutting an application release
+
+### Manual full-matrix build
+
+Run the same signed packaging pipeline without creating a tag or GitHub Release:
+
+```bash
+gh workflow run release-app.yml --ref main -f version=0.9.0
+```
+
+The version input is required and can be an existing version or a supported
+prerelease such as `0.10.0-rc.1`. The workflow applies it only in runner checkouts
+to all application and helper manifests and lockfile entries. It runs all six
+desktop targets, both remote helpers, SBOMs, updater signing, platform signature
+checks, checksum assembly, and provenance. Artifact and installer names are the
+same as tag builds. Download individual platform artifacts or the assembled
+`release` artifact from the Actions run.
+
+Manual builds require successful main CI for the dispatched SHA and the existing
+release credentials. They do not require a matching engine release tag or a
+changelog entry. `BUILD-INFO.json` records the source SHA, version, event, and
+engine tree identity. Tag builds retain engine-release and changelog checks.
+
+Only tag pushes can reach the GitHub Releases write job. A manual build cannot
+create or update a release or change Latest. The assembled `latest.json` retains
+the normal version-based release URLs for packaging validation; the workflow
+does not host those newly built files at those URLs. Use the Actions artifacts
+for manual acceptance, not the published update endpoint.
+
+Signing and notarization consume the existing service quotas. Installing a
+manual build with the same version uses the regular app identity and paths;
+perform acceptance on the intended Windows test systems.
+
+Linux packaging pins both architecture assets from retained linuxdeploy release
+`1-alpha-20251107-1` by asset ID and SHA-256. Do not pin the moving `continuous`
+release: upstream replaces its assets and deletes their old IDs. Keep the
+post-build host-Wayland boundary check when changing this tool.
 
 ### 2.1 Decide the version
 
@@ -405,11 +445,13 @@ tag only after the commit is on `main`.
 5. **remote-helper** — builds static Linux x64 and ARM64 helpers on native
    runners, runs their tests, checks static linkage, and verifies archive
    extraction. It has no signing or repository-write credentials.
-6. **draft** — requires both helper archives, adds the root `install.sh` and `install.ps1`, then merges the
+6. **assemble** — requires both helper archives, adds the root `install.sh` and `install.ps1`, then merges the
    fragments into `latest.json` with immutable
    tag-specific URLs; verifies all six platform keys, asset presence, detached
    signatures, reported signing modes, and `SHA256SUMS`; attests provenance over
-   every asset; and creates the draft.
+    every asset; and uploads the assembled `release` Actions artifact.
+7. **draft** — runs only for tag pushes and creates or updates the draft from
+   the assembled assets.
 
 The main run and its cache warming finish before the exact-SHA gate opens, so
 the tag's critical path is packaging and signing rather than another test

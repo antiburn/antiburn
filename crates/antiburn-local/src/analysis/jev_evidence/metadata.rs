@@ -15,6 +15,9 @@ pub enum JevOperationState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JevNativeFieldRange {
+    /// Identity of the native record that contains this range, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_record_id: Option<String>,
     pub field: JevInputField,
     pub container: JevNativeFieldContainer,
     /// JSON pointer within the native container, not within normalized text.
@@ -37,11 +40,89 @@ pub enum JevNativeFieldContainer {
 pub struct JevOperationMetadata {
     pub state: JevOperationState,
     pub bindings: Vec<JevNativeFieldRange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_answers: Vec<super::JevUserAnswer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plan_references: Vec<super::JevPlanReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_request: Option<super::JevReadRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_result: Option<super::JevReadResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_text_history: Option<UserTextHistoryProof>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_skill_result: Option<super::JevRecordedSkillResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_skill: Option<super::JevSelectedSkillProof>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub human_text: Option<super::JevHumanText>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_result: Option<super::JevBoundCommandResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_authorizing_context_proof: Option<super::JevNonAuthorizingContextProof>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_authorizing_context: Option<super::JevNonAuthorizingContext>,
+}
+
+/// The adapter retains every native part of this text-only root user message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserTextHistoryProof {
+    pub source_format: crate::analysis::SourceFormat,
+    pub session_id: String,
+    pub message_id: String,
+    pub revision: u32,
 }
 
 impl JevOperationMetadata {
     pub fn selected(&self, selection: JevInputSelection) -> Self {
         Self {
+            non_authorizing_context_proof: self
+                .non_authorizing_context_proof
+                .clone()
+                .filter(|_| selection.includes(JevInputField::UserMessage)),
+            non_authorizing_context: self
+                .non_authorizing_context
+                .clone()
+                .filter(|_| selection.includes(JevInputField::UserMessage)),
+            human_text: self
+                .human_text
+                .clone()
+                .filter(|_| selection.includes(JevInputField::UserMessage)),
+            command_result: self
+                .command_result
+                .clone()
+                .filter(|_| selection.includes(JevInputField::BashCommandOutput)),
+            selected_skill: self
+                .selected_skill
+                .as_ref()
+                .and_then(|proof| proof.selected(selection)),
+            user_text_history: selection
+                .includes(JevInputField::UserMessage)
+                .then(|| self.user_text_history.clone())
+                .flatten(),
+            recorded_skill_result: self
+                .recorded_skill_result
+                .as_ref()
+                .filter(|result| selection.includes(result.field))
+                .cloned(),
+            read_request: selection
+                .includes(JevInputField::ReadFileRequest)
+                .then(|| self.read_request.clone())
+                .flatten(),
+            read_result: selection
+                .includes(JevInputField::ReadFileResult)
+                .then(|| self.read_result.clone())
+                .flatten(),
+            user_answers: if selection.includes(JevInputField::UserAnswer) {
+                self.user_answers.clone()
+            } else {
+                Vec::new()
+            },
+            plan_references: if selection.includes(JevInputField::PlanReference) {
+                self.plan_references.clone()
+            } else {
+                Vec::new()
+            },
             state: self.state,
             bindings: self
                 .bindings
@@ -68,6 +149,7 @@ pub(crate) fn native_input_bindings(
                 .is_some_and(|selected| selected == text)
         {
             bindings.push(JevNativeFieldRange {
+                native_record_id: None,
                 field: JevInputField::BashCommandInput,
                 container,
                 pointer: pointer.to_owned(),
@@ -140,6 +222,7 @@ pub(crate) fn native_input_bindings(
                     });
                 if let Some((field, start, len)) = selected {
                     bindings.push(JevNativeFieldRange {
+                        native_record_id: None,
                         field,
                         container,
                         pointer: format!("{pointer}/{key}"),
@@ -187,6 +270,7 @@ pub(crate) fn native_input_bindings(
             && text.len() <= crate::analysis::interface::MAX_CONTENT_PART_BYTES
         {
             bindings.push(JevNativeFieldRange {
+                native_record_id: None,
                 field,
                 container,
                 pointer: format!("{pointer}/{key}"),

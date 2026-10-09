@@ -193,6 +193,25 @@ describe("liveUsageObservations", () => {
     ])
   })
 
+  it("reports Claude Desktop alone as missing credentials, not a failed sign-in", () => {
+    const summary = liveUsage({
+      providers: [],
+      errors: [
+        {
+          source: "claude",
+          provider: "anthropic",
+          displayName: "Claude",
+          category: "authentication",
+          detail: "desktopOnly",
+        },
+      ],
+    })
+
+    expect(liveUsageObservations(summary)).toEqual([
+      { provider: "anthropic", state: "no_credentials" },
+    ])
+  })
+
   it("does not infer missing credentials from an empty provider result", () => {
     expect(liveUsageObservations(liveUsage())).toEqual([])
   })

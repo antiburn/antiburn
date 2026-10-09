@@ -10,7 +10,7 @@ runtime usage-meter frames from this image by lowering the alpha of individual
 dots. The checked-in image stays the source artwork.
 
 A separate 256px copy ships in the frontend at `src/assets/app-icon.png`
-for in-app use (onboarding Welcome step, About).
+for in-app use (the notification window).
 
 `icon.icns` and `icon.ico` are checked in and derived from the `icon.png`
 master: the `.icns` via macOS `sips` resizing into an iconset plus

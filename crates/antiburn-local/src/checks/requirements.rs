@@ -222,9 +222,19 @@ pub fn requirements(detector: DetectorId) -> DetectorRequirements {
                 Fact::TimeRange,
             ],
         },
-        DetectorId::IgnoredInstructions => DetectorRequirements {
-            finding: &[],
-            clean: &[],
+        DetectorId::IgnoredInstructions | DetectorId::OverExploring | DetectorId::ScopeCreep => {
+            DetectorRequirements {
+                finding: &[],
+                clean: &[],
+            }
+        }
+        DetectorId::SkillOpportunities => DetectorRequirements {
+            finding: &[Fact::SkillInventory, Fact::ToolInvocations],
+            clean: &[
+                Fact::SkillInventory,
+                Fact::ToolInvocations,
+                Fact::Eligibility,
+            ],
         },
     }
 }
@@ -311,7 +321,10 @@ fn source_supports_finding(detector: DetectorId, format: crate::analysis::Source
 pub fn clean_facts_complete(detector: DetectorId, evidence: &SessionEvidence) -> bool {
     !matches!(
         detector,
-        DetectorId::UnusedSkills | DetectorId::UnusedMcpServers | DetectorId::UnusedBuiltInTools
+        DetectorId::UnusedSkills
+            | DetectorId::UnusedMcpServers
+            | DetectorId::UnusedBuiltInTools
+            | DetectorId::SkillOpportunities
     ) && evidence.coverage == EvidenceCoverage::Complete
         && source_supports_clean(detector, evidence.capabilities.source_format)
         && requirements(detector)

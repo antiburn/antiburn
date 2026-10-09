@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core"
-import { listen, type UnlistenFn } from "@tauri-apps/api/event"
+import { listen, type UnlistenFn } from "./tauriEvents"
 
 import { hasShell } from "./ipc"
 import type { ActivityEntryPayload } from "./ipc"
@@ -32,8 +32,28 @@ export interface ChecksCategoryPayload {
   clean: number
   /** Sessions without enough evidence for a finding or clean result. */
   unavailable: number
-  /** True when Ignored Instructions published a priority-sampled assessment. */
+  /** True when this check assesses selected evidence. */
   sampled?: boolean
+  /** True only while this category has queued or running work. */
+  checking?: boolean
+  /** Sessions with queued, running, or resumable continuation work. */
+  checkingCount?: number
+  /** True when the assessment uses incomplete context. */
+  partialContext?: boolean
+  reviewCoverage?: {
+    /** Terminal review targets, including uncertain answers. */
+    reviewed: number
+    /** Null when any applicable session has a missing or capped target inventory. */
+    total: number | null
+    /** Reviewed targets with an uncertain answer; a subset of reviewed. */
+    uncertain: number | null
+    /** Targets without a terminal answer; does not promise another review. */
+    pending: number | null
+    /** Reviewed targets that wait for task completion, not for a review answer. */
+    pendingCompletion?: number | null
+    /** True only when work can continue and the check is queued or running. */
+    continuing: boolean
+  }
   /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 10000. */
   estimatedTokenBurnBasisPoints: number | null
 }
@@ -42,10 +62,18 @@ export type ChecksCategoryLifecycle = "failing" | "awaitingVerification" | "pass
 
 /** The bounded subset of the local report needed by All checks. */
 export interface ChecksReportPayload {
+  smartChecksAvailable?: boolean
   /** False while this report snapshot still has queued or running evidence work. */
   evidenceSettled: boolean
+  /** Sessions the report window's denominator counts, regardless of evidence
+   *  state. `pendingEvidence` is the subset of this total still queued or
+   *  processing. */
+  windowSessions: number
   /** Sessions with evidence queued or processing for this report window. */
   pendingEvidence: number
+  /** The subset of `pendingEvidence` that waits for a retry backoff, for
+   *  example a live session whose transcript changed during its check. */
+  deferredEvidence: number
   /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 10000. */
   estimatedTokenBurnBasisPoints: number | null
   /** Aggregate burn indexed by the active detector bit mask in canonical detector order. */
@@ -54,16 +82,20 @@ export interface ChecksReportPayload {
 }
 
 export type BurnCheckDetectorId =
+  | "scopeCreep"
+  | "overExploring"
   | "sessionsOverDepth"
   | "modelOverthinking"
   | "overpoweredSubagents"
   | "unusedMcpServers"
   | "unusedBuiltInTools"
   | "unusedSkills"
+  | "skillOpportunities"
   | "oldModelUsage"
   | "overuseOfFastMode"
   | "cacheChurn"
   | "ignoredInstructions"
+  | "skillOpportunities"
 
 export type BurnCheckEstimateMethod =
   | "repeatedContextAboveDepthCap"
@@ -122,6 +154,9 @@ export type BurnCheckSourceFormat =
   | "uncharacterized"
 
 export interface BurnCheckFindingPayload {
+  overExploringReason?:
+    "unrelated_files" | "excessive_file_breadth" | "excessive_within_file_reading"
+  decisionProof?: IgnoredInstructionDecisionProofPayload
   detector: BurnCheckDetectorId
   agent: string
   sourceFormat: BurnCheckSourceFormat
@@ -265,9 +300,38 @@ export interface BurnCheckEvidenceItemPayload {
   limitation: string | null
 }
 
+export interface IgnoredInstructionDecisionDecisionCoveragePayload {
+  source_complete: boolean
+  selected_history_complete: boolean
+  read_request_inventory_complete: boolean
+  results_excluded: boolean
+  user_authority_excluded: boolean
+  limitations: string[]
+}
+
+export interface IgnoredInstructionDecisionCitationPayload {
+  claim: "rule_requirement" | "anchored_action" | "prerequisite_contrast" | "observed_context"
+  source_ids: string[]
+}
+
+export interface IgnoredInstructionDecisionProofPayload {
+  contrast: string
+  prerequisite: "not_required" | "earlier_request_absent" | "selected_history_conflict"
+  citations: IgnoredInstructionDecisionCitationPayload[]
+  coverage: IgnoredInstructionDecisionDecisionCoveragePayload
+  contextRevision: string
+}
+
 export interface BurnCheckTargetEvidencePayload {
   status: "available" | "unavailable"
   items: BurnCheckEvidenceItemPayload[]
+  decisionProof?: IgnoredInstructionDecisionProofPayload
+  occurrences?: {
+    findingId: string
+    status: "available" | "unavailable"
+    items: BurnCheckEvidenceItemPayload[]
+    decisionProof?: IgnoredInstructionDecisionProofPayload
+  }[]
 }
 
 /** Bounded display metadata plus an opaque, expiring route to one local session. */
@@ -414,6 +478,9 @@ export interface AggregateWinsPayload {
 }
 
 export type SessionHygieneBadgeId =
+  | "scopeCreep"
+  | "skillOpportunities"
+  | "overExploring"
   | "sessionOverdepth"
   | "modelOverthinking"
   | "overpoweredSubagents"
@@ -492,23 +559,6 @@ export interface SessionHygienePayload {
   badges: SessionHygieneBadgePayload[]
   evidenceState: SessionHygieneEvidenceState
   unusedResources: SessionUnusedResources | null
-}
-
-/**
- * Aggregate hygiene numbers for the sessions in the activity window.
- * Mirrors Rust `HygieneSummaryPayload`.
- */
-export interface HygieneSummary {
-  /** Sessions in the window, after the disabled-agent display filter. */
-  totalSessions: number
-  /** Sessions whose analysis reached a terminal state. */
-  settledSessions: number
-  /** Sessions with current ready evidence, so the checks ran. */
-  analyzedSessions: number
-  /** Analyzed sessions with at least one finding. */
-  failingSessions: number
-  /** Badge id of the most frequent finding, when any session fails. */
-  mostCommonFinding: SessionHygieneBadgeId | null
 }
 
 /** The real local detector results and bounded session navigation targets. */
@@ -612,12 +662,6 @@ export async function cancelChecksReport(consumerId: string): Promise<void> {
 /** Run after the evidence worker publishes every item in its current queue. */
 export async function onChecksReportChanged(handler: () => void): Promise<UnlistenFn> {
   return listen("checks:report-changed", handler)
-}
-
-/** The aggregate hygiene numbers for the sessions in the activity window. */
-export async function getHygieneSummary(): Promise<HygieneSummary | null> {
-  if (!hasShell()) return null
-  return invoke<HygieneSummary>("get_hygiene_summary")
 }
 
 /** The hygiene badges reduced from a bounded set of stored evidence rows. */

@@ -54,18 +54,18 @@ describe("SettingsWindowSession", () => {
     })
     takeSettingsPane.mockImplementation(async () => {
       order.push("take")
-      return "sources"
+      return "privacy"
     })
     const session = new SettingsWindowSession()
     const unsubscribe = session.subscribe(() => {})
 
-    await vi.waitFor(() => expect(session.getSnapshot().pane).toBe("sources"))
+    await vi.waitFor(() => expect(session.getSnapshot().pane).toBe("privacy"))
 
     expect(order).toEqual(["listen", "take"])
     expect(noteInteraction).toHaveBeenCalledOnce()
     expect(noteInteraction).toHaveBeenCalledWith({
       kind: "settingsPaneViewed",
-      pane: "sources",
+      pane: "privacy",
     })
     unsubscribe()
   })
@@ -227,11 +227,11 @@ describe("SettingsWindowSession", () => {
     isVisible.mockImplementation(() => {
       throw new Error("missing window metadata")
     })
-    takeSettingsPane.mockResolvedValue("sources")
+    takeSettingsPane.mockResolvedValue("privacy")
     const session = new SettingsWindowSession()
     const unsubscribe = session.subscribe(() => {})
 
-    await vi.waitFor(() => expect(session.getSnapshot().pane).toBe("sources"))
+    await vi.waitFor(() => expect(session.getSnapshot().pane).toBe("privacy"))
     expect(noteInteraction).not.toHaveBeenCalled()
     unsubscribe()
   })
@@ -248,9 +248,9 @@ describe("SettingsWindowSession", () => {
     await vi.waitFor(() => expect(takeSettingsPane).toHaveBeenCalledTimes(1))
     takeSettingsPane.mockClear()
 
-    delivery.current?.("sources")
+    delivery.current?.("privacy")
 
-    await vi.waitFor(() => expect(session.getSnapshot().pane).toBe("sources"))
+    await vi.waitFor(() => expect(session.getSnapshot().pane).toBe("privacy"))
     expect(takeSettingsPane).toHaveBeenCalledTimes(1)
     unsubscribe()
   })
@@ -274,7 +274,7 @@ describe("SettingsWindowSession", () => {
     await vi.waitFor(() => expect(takeSettingsPane).toHaveBeenCalledTimes(1))
 
     delivery.current?.("usage")
-    resolvePending("sources")
+    resolvePending("privacy")
 
     await vi.waitFor(() => expect(session.getSnapshot().pane).toBe("usage"))
     unsubscribe()
@@ -293,7 +293,7 @@ describe("SettingsWindowSession", () => {
     await vi.waitFor(() => expect(takeSettingsPane).toHaveBeenCalledOnce())
 
     session.setPane("usage")
-    resolvePending("sources")
+    resolvePending("privacy")
 
     await vi.waitFor(() => expect(session.getSnapshot().pane).toBe("usage"))
     expect(noteInteraction).toHaveBeenLastCalledWith({
@@ -319,11 +319,11 @@ describe("SettingsWindowSession", () => {
 
   it("uses the pending pane when listener registration fails", async () => {
     onSettingsPaneRequest.mockRejectedValue(new Error("listener unavailable"))
-    takeSettingsPane.mockResolvedValue("sources")
+    takeSettingsPane.mockResolvedValue("privacy")
     const session = new SettingsWindowSession()
     const unsubscribe = session.subscribe(() => {})
 
-    await vi.waitFor(() => expect(session.getSnapshot().pane).toBe("sources"))
+    await vi.waitFor(() => expect(session.getSnapshot().pane).toBe("privacy"))
 
     expect(takeSettingsPane).toHaveBeenCalledTimes(1)
     unsubscribe()

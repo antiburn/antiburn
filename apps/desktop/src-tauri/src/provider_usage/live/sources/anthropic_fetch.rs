@@ -119,7 +119,7 @@ use time::OffsetDateTime;
 use crate::provider_usage::live::SourceErrorDetail;
 use crate::provider_usage::live::anthropic;
 use crate::provider_usage::live::model::{
-    Confidence, Detection, Freshness, LoginCarrier, Presence, ProviderUsageError,
+    Confidence, DesktopApp, Detection, Freshness, LoginCarrier, Presence, ProviderUsageError,
     ProviderUsageSnapshot, UsageSource,
 };
 use crate::provider_usage::live::{LiveUsageSource, SourceOutcome};
@@ -233,6 +233,103 @@ fn detect_presence(
         Err(_) => Presence::UNKNOWN,
         Ok(false) if probe.binary_present(BINARY) => Presence::new(Detection::InstalledNotSignedIn),
         Ok(false) => Presence::new(Detection::NotInstalled),
+    }
+}
+
+/// Where Claude Desktop may be installed: app folders and a launcher on
+/// `PATH`. Empty in tests, so that a test never depends on its machine.
+#[derive(Default)]
+struct DesktopAppLocations {
+    paths: Vec<PathBuf>,
+    binary: Option<&'static str>,
+}
+
+/// Note whether Claude Desktop is installed, whatever login was found.
+///
+/// Claude Desktop keeps its own sign-in, which antiburn does not read, so the
+/// app never makes the meter signed in. The agent lists name the app even
+/// when a login was found, for example a Claude login that only Pi holds.
+/// The usage note names it only when no login was found. Only file metadata
+/// is read.
+fn with_claude_desktop(
+    presence: Presence,
+    probe: &impl PresenceProbe,
+    app: &DesktopAppLocations,
+) -> Presence {
+    let installed = claude_desktop_installed(probe, app);
+    presence.with_desktop_app(installed.then_some(DesktopApp::ClaudeDesktop))
+}
+
+/// Whether Claude Desktop is on disk. Only file metadata is read.
+fn claude_desktop_installed(probe: &impl PresenceProbe, app: &DesktopAppLocations) -> bool {
+    app.paths
+        .iter()
+        .any(|path| presence::path_exists(probe, path).unwrap_or(false))
+        || app
+            .binary
+            .is_some_and(|binary| probe.binary_present(binary))
+}
+
+/// The failure a check reports when it found no Claude login at all and
+/// Claude Desktop is the only Claude app here.
+///
+/// Claude Desktop keeps its own sign-in, which antiburn does not read, so the
+/// limits cannot be checked. The views grey the meter and link to the docs.
+/// A `claude` on `PATH` means Claude Code is installed but signed out, which
+/// keeps the ordinary sign-in note, so this returns `None`.
+fn desktop_only_failure(
+    probe: &impl PresenceProbe,
+    app: &DesktopAppLocations,
+) -> Option<FetchFailure> {
+    if !claude_desktop_installed(probe, app) || probe.binary_present(BINARY) {
+        return None;
+    }
+    Some(FetchFailure {
+        error: ProviderUsageError::Authentication,
+        detail: Some(SourceErrorDetail::DesktopOnly),
+        last_known: None,
+    })
+}
+
+/// Claude Desktop on macOS: the app bundle.
+#[cfg(target_os = "macos")]
+fn claude_desktop_locations(home: Option<&Path>) -> DesktopAppLocations {
+    let mut paths = vec![PathBuf::from("/Applications/Claude.app")];
+    if let Some(home) = home {
+        paths.push(home.join("Applications/Claude.app"));
+    }
+    DesktopAppLocations {
+        paths,
+        binary: None,
+    }
+}
+
+/// Claude Desktop on Windows: the Squirrel install folder, or the per-user
+/// data folder of the MSIX package that claude.ai/download installs.
+#[cfg(target_os = "windows")]
+fn claude_desktop_locations(home: Option<&Path>) -> DesktopAppLocations {
+    let paths = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .or_else(|| home.map(|home| home.join("AppData").join("Local")))
+        .map(|local| {
+            vec![
+                local.join("AnthropicClaude"),
+                local.join("Packages").join("Claude_pzs8sxrjxfjjc"),
+            ]
+        })
+        .unwrap_or_default();
+    DesktopAppLocations {
+        paths,
+        binary: None,
+    }
+}
+
+/// Claude Desktop on Linux (beta): the `claude-desktop` package's launcher.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn claude_desktop_locations(_home: Option<&Path>) -> DesktopAppLocations {
+    DesktopAppLocations {
+        paths: Vec::new(),
+        binary: Some("claude-desktop"),
     }
 }
 
@@ -521,6 +618,8 @@ pub struct ClaudeDirectFetch {
     /// The cooldown, in-flight dedup, and terminal state the touch runs
     /// behind, so one expired credential cannot spawn PTYs repeatedly.
     touch_gate: claude_touch::TouchGate,
+    /// Where Claude Desktop may be installed.
+    desktop_app: DesktopAppLocations,
     /// The last credential successfully parsed out of the Keychain, held
     /// until its own `expiresAt` so a live token's secret is never read
     /// twice — see the module doc's "Delegating refresh to the CLI" section.
@@ -616,6 +715,7 @@ impl ClaudeDirectFetch {
                 default_credentials_path(),
             ))),
             touch_gate: claude_touch::TouchGate::new(),
+            desktop_app: claude_desktop_locations(antiburn_local::paths::home_dir().as_deref()),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
@@ -641,6 +741,7 @@ impl ClaudeDirectFetch {
             pi_refresh: PiRefresher::unavailable(),
             touch_env: None,
             touch_gate: claude_touch::TouchGate::new(),
+            desktop_app: DesktopAppLocations::default(),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
@@ -669,6 +770,7 @@ impl ClaudeDirectFetch {
             pi_refresh: PiRefresher::unavailable(),
             touch_env: Some(touch_env),
             touch_gate: claude_touch::TouchGate::new(),
+            desktop_app: DesktopAppLocations::default(),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
@@ -696,6 +798,7 @@ impl ClaudeDirectFetch {
             pi_refresh: PiRefresher::unavailable(),
             touch_env: Some(touch_env),
             touch_gate: claude_touch::TouchGate::new(),
+            desktop_app: DesktopAppLocations::default(),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
@@ -728,6 +831,7 @@ impl ClaudeDirectFetch {
             pi_refresh: PiRefresher::unavailable(),
             touch_env: None,
             touch_gate: claude_touch::TouchGate::new(),
+            desktop_app: DesktopAppLocations::default(),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
@@ -755,10 +859,19 @@ impl ClaudeDirectFetch {
             pi_refresh,
             touch_env: None,
             touch_gate: claude_touch::TouchGate::new(),
+            desktop_app: DesktopAppLocations::default(),
             #[cfg(target_os = "macos")]
             keychain_credentials: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
             limit_reset_diagnostic: LimitResetDiagnosticState::default(),
+        }
+    }
+
+    /// The metadata probe that detection and the Desktop-only check share.
+    fn presence_probe(&self) -> SystemPresenceProbe {
+        SystemPresenceProbe {
+            #[cfg(target_os = "macos")]
+            try_keychain: self.try_keychain,
         }
     }
 
@@ -1009,18 +1122,17 @@ impl LiveUsageSource for ClaudeDirectFetch {
     }
 
     fn detect(&self, online: bool) -> Presence {
-        detect_presence(
-            &SystemPresenceProbe {
-                #[cfg(target_os = "macos")]
-                try_keychain: self.try_keychain,
-            },
+        let probe = self.presence_probe();
+        let presence = detect_presence(
+            &probe,
             self.credentials_path.as_deref(),
             self.pi_auth_path.as_deref(),
             || match (online, self.pi_auth_path.as_deref()) {
                 (true, Some(path)) => self.pi_refresh.status(path, pi_auth::ANTHROPIC_KEY),
                 _ => PiStatus::Unknown,
             },
-        )
+        );
+        with_claude_desktop(presence, &probe, &self.desktop_app)
     }
 
     fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome {
@@ -1116,7 +1228,12 @@ impl LiveUsageSource for ClaudeDirectFetch {
                 }
                 other => other.map_err(FetchFailure::from),
             };
-            with_carrier_error(fetched, carrier_error).map_err(|mut failure| {
+            let fetched = match with_carrier_error(fetched, carrier_error) {
+                Ok(None) => desktop_only_failure(&self.presence_probe(), &self.desktop_app)
+                    .map_or(Ok(None), Err),
+                other => other,
+            };
+            fetched.map_err(|mut failure| {
                 failure.last_known = native.as_ref().and_then(|native| {
                     cached
                         .filter(|cached| now - cached.observed_at <= cooldown::MAX_AGE)
@@ -1133,6 +1250,14 @@ impl LiveUsageSource for ClaudeDirectFetch {
             self.limit_reset_diagnostic.defer(delay);
         }
         outcome
+    }
+
+    /// Lets a Desktop-only reader see their plan above the note that limits
+    /// are not available.
+    fn local_plan(&self) -> Option<crate::dto::LiveProviderPlan> {
+        self.claude_json_path
+            .as_deref()
+            .and_then(read_claude_json_plan)
     }
 
     #[cfg(feature = "analytics")]
@@ -1516,19 +1641,45 @@ fn parse_profile(body: &str) -> Option<ClaudeIdentity> {
     })
 }
 
-fn read_claude_json_identity(path: &Path) -> Option<ClaudeIdentity> {
+/// The `oauthAccount` object from `~/.claude.json`, if the file is small
+/// enough to read and parses.
+fn read_claude_json_account(path: &Path) -> Option<Value> {
     let metadata = fs::metadata(path).ok()?;
     if metadata.len() > MAX_CLAUDE_JSON_BYTES {
         return None;
     }
     let contents = fs::read_to_string(path).ok()?;
-    let value: Value = serde_json::from_str(&contents).ok()?;
-    let account = value.get("oauthAccount")?;
+    let mut value: Value = serde_json::from_str(&contents).ok()?;
+    Some(value.get_mut("oauthAccount")?.take())
+}
+
+fn read_claude_json_identity(path: &Path) -> Option<ClaudeIdentity> {
+    let account = read_claude_json_account(path)?;
     Some(ClaudeIdentity {
         uuid: non_empty_str(account.get("accountUuid")),
         email: non_empty_str(account.get("emailAddress")),
         plan: None,
         tier: non_empty_str(account.get("userRateLimitTier")),
+    })
+}
+
+/// The plan Claude's own tools last wrote to `~/.claude.json`.
+///
+/// Claude Desktop writes `oauthAccount` there when the reader signs in, even
+/// with no Claude Code login. Only `organizationType` (for example
+/// `claude_max`) and `organizationRateLimitTier` (for example
+/// `default_claude_max_20x`) are read. The file holds no token.
+fn read_claude_json_plan(path: &Path) -> Option<crate::dto::LiveProviderPlan> {
+    plan_from_oauth_account(&read_claude_json_account(path)?)
+}
+
+/// `claude_max` names the plan `max`, matching the profile endpoint's names.
+fn plan_from_oauth_account(account: &Value) -> Option<crate::dto::LiveProviderPlan> {
+    let kind = non_empty_str(account.get("organizationType"))?;
+    let name = kind.strip_prefix("claude_").unwrap_or(&kind).to_owned();
+    Some(crate::dto::LiveProviderPlan {
+        name,
+        tier: non_empty_str(account.get("organizationRateLimitTier")),
     })
 }
 
@@ -1832,6 +1983,125 @@ mod tests {
                 .insert(path.into(), Err(io::ErrorKind::NotFound));
         }
         assert_eq!(detected(&probe), Detection::NotInstalled);
+    }
+
+    #[test]
+    fn claude_desktop_is_noted_whatever_login_was_found() {
+        const APP: &str = "/fixture/Applications/Claude.app";
+        let mut probe = RecordingPresence::default();
+        probe.paths.insert(APP.into(), Ok(true));
+        let app = DesktopAppLocations {
+            paths: vec![PathBuf::from(APP)],
+            binary: None,
+        };
+
+        let not_installed =
+            with_claude_desktop(Presence::new(Detection::NotInstalled), &probe, &app);
+        assert_eq!(not_installed.detection, Detection::NotInstalled);
+        assert_eq!(not_installed.desktop_app, Some(DesktopApp::ClaudeDesktop));
+
+        // A login does not hide the app. The agent lists still name it.
+        let signed_in = with_claude_desktop(
+            Presence::via(Detection::SignedIn, LoginCarrier::ClaudeKeychain),
+            &probe,
+            &app,
+        );
+        assert_eq!(signed_in.detection, Detection::SignedIn);
+        assert_eq!(signed_in.desktop_app, Some(DesktopApp::ClaudeDesktop));
+
+        let pi_only = with_claude_desktop(
+            Presence::via(Detection::SignedIn, LoginCarrier::Pi),
+            &probe,
+            &app,
+        );
+        assert_eq!(pi_only.carrier, Some(LoginCarrier::Pi));
+        assert_eq!(pi_only.desktop_app, Some(DesktopApp::ClaudeDesktop));
+
+        // No app on disk: nothing is noted.
+        let absent = with_claude_desktop(
+            Presence::new(Detection::InstalledNotSignedIn),
+            &RecordingPresence::default(),
+            &app,
+        );
+        assert_eq!(absent.desktop_app, None);
+    }
+
+    #[test]
+    fn the_local_plan_comes_from_claude_json_without_reading_tokens() {
+        let account = serde_json::json!({
+            "organizationType": "claude_max",
+            "organizationRateLimitTier": "default_claude_max_20x",
+        });
+        assert_eq!(
+            plan_from_oauth_account(&account),
+            Some(crate::dto::LiveProviderPlan {
+                name: "max".into(),
+                tier: Some("default_claude_max_20x".into()),
+            })
+        );
+        let pro = serde_json::json!({ "organizationType": "claude_pro" });
+        assert_eq!(
+            plan_from_oauth_account(&pro).map(|plan| plan.name),
+            Some("pro".into())
+        );
+        assert_eq!(plan_from_oauth_account(&serde_json::json!({})), None);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude.json");
+        fs::write(&path, format!(r#"{{"oauthAccount": {account}}}"#)).expect("write");
+        assert_eq!(
+            read_claude_json_plan(&path).map(|plan| plan.name),
+            Some("max".into())
+        );
+        assert_eq!(read_claude_json_plan(&dir.path().join("absent.json")), None);
+    }
+
+    #[test]
+    fn a_desktop_only_install_fails_with_its_own_detail() {
+        const APP: &str = "/fixture/Applications/Claude.app";
+        let app = DesktopAppLocations {
+            paths: vec![PathBuf::from(APP)],
+            binary: None,
+        };
+        let mut desktop_only = RecordingPresence::default();
+        desktop_only.paths.insert(APP.into(), Ok(true));
+
+        let failure = desktop_only_failure(&desktop_only, &app).expect("desktop only");
+        assert_eq!(failure.error, ProviderUsageError::Authentication);
+        assert_eq!(failure.detail, Some(SourceErrorDetail::DesktopOnly));
+        assert!(failure.last_known.is_none());
+
+        // Claude Code on PATH but signed out keeps the ordinary sign-in note.
+        let mut with_cli = RecordingPresence {
+            binary: true,
+            ..Default::default()
+        };
+        with_cli.paths.insert(APP.into(), Ok(true));
+        assert!(desktop_only_failure(&with_cli, &app).is_none());
+
+        // No Claude Desktop: no Claude app at all, so nothing to report.
+        assert!(desktop_only_failure(&RecordingPresence::default(), &app).is_none());
+    }
+
+    #[test]
+    fn claude_desktop_on_linux_is_found_by_its_launcher() {
+        let probe = RecordingPresence {
+            binary: true,
+            ..Default::default()
+        };
+        let app = DesktopAppLocations {
+            paths: Vec::new(),
+            binary: Some("claude-desktop"),
+        };
+        let presence = with_claude_desktop(Presence::new(Detection::NotInstalled), &probe, &app);
+        assert_eq!(presence.desktop_app, Some(DesktopApp::ClaudeDesktop));
+        assert!(
+            probe
+                .calls
+                .borrow()
+                .iter()
+                .any(|call| call == "binary_present")
+        );
     }
 
     #[test]

@@ -1,3 +1,4 @@
+import type * as MemoriesIpcModule from "../../lib/memoriesIpc"
 import type * as IpcModule from "../../lib/ipc"
 import type * as SubjectModule from "../../lib/sessionSubject"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -26,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   getLiveUsage: vi.fn(),
   getSessionLimitAllocations: vi.fn(),
   getSessionQuota: vi.fn(),
+  getSessionMemories: vi.fn(),
   loadSessionAnalysis: vi.fn(),
   noteInteraction: vi.fn(),
   stops: [] as ReturnType<typeof vi.fn>[],
@@ -49,6 +51,10 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     onLiveUsageChanged: subscribe("usage"),
   }
 })
+vi.mock("../../lib/memoriesIpc", async (importOriginal) => ({
+  ...(await importOriginal<typeof MemoriesIpcModule>()),
+  getSessionMemories: mocks.getSessionMemories,
+}))
 vi.mock("../../lib/sessionSubject", async (importOriginal) => ({
   ...(await importOriginal<typeof SubjectModule>()),
   loadSessionAnalysis: mocks.loadSessionAnalysis,
@@ -135,6 +141,8 @@ beforeEach(() => {
   mocks.getLiveUsage.mockResolvedValue(null)
   mocks.getSessionLimitAllocations.mockResolvedValue(null)
   mocks.getSessionQuota.mockResolvedValue({ entries: [], generatedAt: "g" })
+  mocks.getSessionMemories.mockReset()
+  mocks.getSessionMemories.mockResolvedValue({ entries: [] })
 })
 afterEach(() => sessions.forEach((session) => session.dispose()))
 
@@ -228,6 +236,7 @@ describe("MainActivitySession", () => {
         return () => undefined
       },
       onLiveUsageChanged: async () => () => undefined,
+      onLimitEstimatesChanged: async () => () => undefined,
       onSessionIndexChanged: async () => () => undefined,
       onSessionUpdated: async () => () => undefined,
     }
@@ -1378,6 +1387,47 @@ describe("MainActivitySession", () => {
     expect(mocks.getSessionQuota).toHaveBeenCalledWith(
       expect.objectContaining({ agent: "claude", sessionId: "one", wslDistro: null }),
     )
+  })
+
+  it("loads the memories the open subject touched and resets them on a new selection", async () => {
+    const touch = {
+      slug: "-work",
+      path: "/h/.claude/projects/-work/memory/a.md",
+      fileName: "a.md",
+      title: "Alpha",
+      action: "referenced" as const,
+      count: 2,
+      lastMs: 5,
+      exists: true,
+    }
+    mocks.getSessionMemories.mockResolvedValueOnce({ entries: [touch] })
+    const { session } = start()
+    await ready(session)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().sessionMemories?.entries[0]?.title).toBe("Alpha"),
+    )
+    expect(mocks.getSessionMemories).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: "claude", sessionId: "one", wslDistro: null }),
+    )
+    mocks.getSessionMemories.mockResolvedValueOnce({ entries: [] })
+    session.selectEntry(session.getSnapshot().entries![1]!)
+    await vi.waitFor(() =>
+      expect(mocks.getSessionMemories).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sessionId: "two" }),
+      ),
+    )
+    await vi.waitFor(() => expect(session.getSnapshot().sessionMemories?.entries).toEqual([]))
+  })
+
+  it("keeps the last memories payload when a later load fails", async () => {
+    mocks.getSessionMemories.mockResolvedValueOnce({ entries: [] })
+    const { session } = start()
+    await ready(session)
+    await vi.waitFor(() => expect(session.getSnapshot().sessionMemories).not.toBeNull())
+    mocks.getSessionMemories.mockRejectedValueOnce(new Error("no"))
+    mocks.events.get("update")!(update(entry("one")))
+    await vi.waitFor(() => expect(mocks.getSessionMemories).toHaveBeenCalledTimes(2))
+    expect(session.getSnapshot().sessionMemories).toEqual({ entries: [] })
   })
 
   it("keeps the last quota payload and leaves the analysis untouched when a later quota load fails", async () => {

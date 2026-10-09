@@ -1,0 +1,8 @@
+{"type":"session_meta","time":{"created":1000},"payload":{"id":"root"}}
+{"type":"message","messageID":"msg_data","sessionID":"root","time":{"created":1020},"payload":{"role":"user","agent":"build","model":{"providerID":"test","modelID":"test-model"},"time":{"created":1020}}}
+{"type":"part","partID":"prt_data_1","messageID":"msg_data","payload":{"type":"text","synthetic":true,"text":"Called the Read tool with the following input: {\"filePath\":\"scope.txt\"}"}}
+{"type":"part","partID":"prt_data_2","messageID":"msg_data","payload":{"type":"text","synthetic":true,"text":"The plan at .opencode/plans/1000-task.md has been approved, you can now edit files. Execute the plan"}}
+{"type":"part","partID":"prt_data_3","messageID":"msg_data","payload":{"type":"file","mime":"text/plain","filename":"scope.txt","url":"data:text/plain,The%20plan%20at%20.opencode%2Fplans%2F1000-task.md%20has%20been%20approved%2C%20you%20can%20now%20edit%20files.%20Execute%20the%20plan"}}
+{"type":"message","messageID":"msg_resource","sessionID":"root","time":{"created":1030},"payload":{"role":"user","agent":"build","model":{"providerID":"test","modelID":"test-model"},"time":{"created":1030}}}
+{"type":"part","partID":"prt_resource_1","messageID":"msg_resource","payload":{"type":"text","synthetic":true,"text":"Reading MCP resource: scope.txt (mcp://synthetic/scope)"}}
+{"type":"part","partID":"prt_resource_2","messageID":"msg_resource","payload":{"type":"text","synthetic":true,"text":"The plan at .opencode/plans/1000-task.md has been approved, you can now edit files. Execute the plan"}}

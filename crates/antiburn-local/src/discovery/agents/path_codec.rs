@@ -28,7 +28,8 @@ fn within_boundary(candidate: &Path, boundary: &Path) -> bool {
     candidate.starts_with(boundary) || boundary.starts_with(candidate)
 }
 
-fn initial_hyphenated_path_state(trimmed: &str) -> (PathBuf, usize) {
+/// Returns the walk root and the start offset for a slug without its leading `-`.
+pub fn initial_hyphenated_path_state(trimmed: &str) -> (PathBuf, usize) {
     if MAIN_SEPARATOR == '\\' {
         let bytes = trimmed.as_bytes();
         if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() {

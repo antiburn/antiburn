@@ -13,7 +13,7 @@ use antiburn_local::insights::{
 };
 use antiburn_local::model::AgentKind;
 use rusqlite::{Connection, params};
-use serde_json::json;
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 fn create_database() -> (TempDir, std::path::PathBuf) {
@@ -38,6 +38,871 @@ fn create_database() -> (TempDir, std::path::PathBuf) {
         .expect("schema");
     drop(connection);
     (directory, path)
+}
+
+fn scope_sources(records: &str) -> (TempDir, Vec<SessionInput>) {
+    let (directory, path) = create_database();
+    let connection = Connection::open(&path).unwrap();
+    insert_session(&connection, "root", None, None, 1000);
+    let mut timestamp = 1000;
+    for line in records.lines() {
+        let record: serde_json::Value = serde_json::from_str(line).unwrap();
+        match record["type"].as_str().unwrap() {
+            "message" => {
+                timestamp = record["time"]["created"].as_i64().unwrap();
+                insert_message(
+                    &connection,
+                    record["messageID"].as_str().unwrap(),
+                    "root",
+                    timestamp,
+                    &record["payload"].to_string(),
+                );
+            }
+            "part" => insert_part(
+                &connection,
+                record["partID"].as_str().unwrap(),
+                record["messageID"].as_str().unwrap(),
+                "root",
+                timestamp,
+                &record["payload"].to_string(),
+            ),
+            "session_meta" => {}
+            _ => panic!("unexpected fixture record"),
+        }
+    }
+    drop(connection);
+    let sqlite = SessionInput {
+        source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+        ..sqlite_input(&path, "root")
+    };
+    let jsonl = SessionInput {
+        source: RawSource::Jsonl(records.into()),
+        source_format: antiburn_local::analysis::SourceFormat::OpenCodeJsonl,
+        ..sqlite.clone()
+    };
+    (directory, vec![sqlite, jsonl])
+}
+
+#[test]
+fn persisted_scope_field_availability_requires_supported_source_and_explicit_selection() {
+    use antiburn_local::analysis::SourceFormat;
+    use antiburn_local::analysis::jev::{
+        JevFieldAvailabilityState, JevFieldCapability, JevInputField, JevInputSelection,
+    };
+    use antiburn_local::analysis::jev_evidence::{prepare_session_content, select_session_content};
+
+    for observed in [true, false] {
+        let records = include_str!("fixtures/opencode_characterization/scope_native.jsonl")
+            .lines()
+            .map(|line| {
+                let mut record: serde_json::Value = serde_json::from_str(line).unwrap();
+                if !observed && record["type"] == "part" {
+                    if record["payload"]["type"] == "tool" {
+                        record["payload"]["tool"] = json!("other");
+                    } else {
+                        record["payload"]["text"] = json!("Continue.");
+                    }
+                }
+                record.to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (_directory, inputs) = scope_sources(&records);
+        for input in inputs {
+            let (_, store) = evidence_and_rows(&input);
+            store.with_connection(|connection| {
+                let query = |selection| {
+                    let content = antiburn_local::analysis::query_turn_content_offset_selected(
+                        connection,
+                        &antiburn_local::analysis::TurnSessionKey {
+                            environment_key: "native",
+                            agent: "opencode",
+                            session_id: "root",
+                        },
+                        &antiburn_local::analysis::FenceScope::single(1),
+                        None,
+                        &Default::default(),
+                        0,
+                        selection,
+                    )
+                    .unwrap();
+                    select_session_content(
+                        &prepare_session_content("root", input.source_format, content, Vec::new()),
+                        selection,
+                    )
+                };
+                let fields = [JevInputField::UserAnswer, JevInputField::PlanReference];
+                let selected = query(JevInputSelection::from_fields(&fields));
+                for field in fields {
+                    let availability = selected
+                        .field_availability
+                        .iter()
+                        .find(|a| a.field == field)
+                        .unwrap();
+                    assert!(availability.selected);
+                    let (capability, state) = match (input.source_format, observed) {
+                        (SourceFormat::OpenCodeSqliteV2, true) => (
+                            JevFieldCapability::Conditional,
+                            JevFieldAvailabilityState::Observed,
+                        ),
+                        (SourceFormat::OpenCodeSqliteV2, false) => (
+                            JevFieldCapability::Conditional,
+                            JevFieldAvailabilityState::NotObserved,
+                        ),
+                        (SourceFormat::OpenCodeJsonl, _) => (
+                            JevFieldCapability::Unavailable,
+                            JevFieldAvailabilityState::Unsupported,
+                        ),
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(availability.capability, capability);
+                    assert_eq!(availability.state, state);
+                    assert_eq!(
+                        availability.observed_parts > 0,
+                        input.source_format == SourceFormat::OpenCodeSqliteV2 && observed
+                    );
+                }
+                for selection in [
+                    JevInputSelection::ALL,
+                    antiburn_local::analysis::ignored_instructions::INPUT_SELECTION,
+                ] {
+                    let excluded = query(selection);
+                    assert!(
+                        excluded
+                            .field_availability
+                            .iter()
+                            .all(|a| !fields.contains(&a.field))
+                    );
+                    assert!(
+                        excluded
+                            .actions
+                            .iter()
+                            .all(|a| a.metadata.user_answers.is_empty()
+                                && a.metadata.plan_references.is_empty())
+                    );
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn scope_workflows_survive_storage_and_explicit_field_selection() {
+    use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
+    use antiburn_local::analysis::jev_evidence::{
+        JevPlanContentStatus, JevPlanStatus, JevUserAnswerOrigin, JevUserAnswerStatus,
+    };
+    let (_directory, inputs) = scope_sources(include_str!(
+        "fixtures/opencode_characterization/scope_native.jsonl"
+    ));
+    for input in inputs {
+        let (_, store) = evidence_and_rows(&input);
+        store.with_connection(|connection| {
+            let query = |selection| {
+                antiburn_local::analysis::query_turn_content_offset_selected(
+                    connection,
+                    &antiburn_local::analysis::TurnSessionKey {
+                        environment_key: "native",
+                        agent: "opencode",
+                        session_id: "root",
+                    },
+                    &antiburn_local::analysis::FenceScope::single(1),
+                    None,
+                    &Default::default(),
+                    0,
+                    selection,
+                )
+                .unwrap()
+            };
+            let selection = JevInputSelection::from_fields(&[
+                JevInputField::UserAnswer,
+                JevInputField::PlanReference,
+            ]);
+            let content = query(selection);
+            let answers: Vec<_> = content
+                .parts
+                .iter()
+                .flat_map(|p| &p.part.metadata.user_answers)
+                .collect();
+            assert_eq!(answers.len(), 6);
+            assert!(
+                content
+                    .parts
+                    .iter()
+                    .filter(|p| p.part.tool_call_id.as_deref() == Some("call_interrupted"))
+                    .all(|p| p.part.metadata.state
+                        == antiburn_local::analysis::jev_evidence::JevOperationState::Error)
+            );
+            let calls: Vec<_> = answers
+                .iter()
+                .map(|a| a.source.call_id.as_deref().unwrap())
+                .collect();
+            let expected = if input.source_format
+                == antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2
+            {
+                vec![
+                    "call_fallback",
+                    "call_interrupted",
+                    "call_questions",
+                    "call_questions",
+                    "call_rejected",
+                    "call_running",
+                ]
+            } else {
+                vec![
+                    "call_questions",
+                    "call_questions",
+                    "call_rejected",
+                    "call_interrupted",
+                    "call_running",
+                    "call_fallback",
+                ]
+            };
+            assert_eq!(calls, expected, "preserve each source's native part order");
+            let scope = answers
+                .iter()
+                .find(|a| {
+                    a.source.call_id.as_deref() == Some("call_questions") && a.source.order == 0
+                })
+                .unwrap();
+            assert!(scope.is_authoritative_user_response());
+            assert_eq!(
+                scope.source.native_record_id.as_deref(),
+                Some("prt_questions")
+            );
+            assert_eq!(scope.source.source_format, input.source_format);
+            assert!(scope.source.question_id.is_none());
+            assert_eq!(scope.multi_select, Some(true));
+            assert_eq!(
+                scope
+                    .selections
+                    .iter()
+                    .map(|s| s.option_index)
+                    .collect::<Vec<_>>(),
+                vec![Some(0), Some(1)]
+            );
+            assert_eq!(
+                scope.options[0].description.as_deref(),
+                Some("Implement API only.\n  Do not change billing.")
+            );
+            let custom = answers
+                .iter()
+                .find(|a| {
+                    a.source.call_id.as_deref() == Some("call_questions") && a.source.order == 1
+                })
+                .unwrap();
+            assert!(custom.is_authoritative_user_response());
+            assert_eq!(
+                custom.free_text.as_deref(),
+                Some("Well, no. Keep this:\n```\n  x = 2\n``` 实现 API only.")
+            );
+            assert_eq!(custom.selections[0].custom, Some(true));
+            for (call, status) in [
+                ("call_rejected", JevUserAnswerStatus::Cancelled),
+                ("call_interrupted", JevUserAnswerStatus::Unknown),
+                ("call_running", JevUserAnswerStatus::Pending),
+            ] {
+                let answer = answers
+                    .iter()
+                    .find(|a| a.source.call_id.as_deref() == Some(call))
+                    .unwrap();
+                assert_eq!(answer.status, status);
+                assert!(!answer.is_authoritative_user_response());
+                assert!(answer.selections.is_empty());
+            }
+            assert!(
+                answers
+                    .iter()
+                    .find(|a| a.source.call_id.as_deref() == Some("call_fallback"))
+                    .unwrap()
+                    .is_authoritative_user_response()
+            );
+            let plans: Vec<_> = content
+                .parts
+                .iter()
+                .flat_map(|p| &p.part.metadata.plan_references)
+                .collect();
+            assert_eq!(plans.len(), 2);
+            assert_eq!(plans[0].source.call_id.as_deref(), Some("call_plan_exit"));
+            assert_eq!(plans[0].origin, JevUserAnswerOrigin::User);
+            assert_eq!(plans[0].status, JevPlanStatus::Approved);
+            assert_eq!(plans[0].source.provenance, antiburn_local::analysis::jev_evidence::JevScopeEvidenceProvenance::RecognizedPlanWorkflow);
+            assert_eq!(plans[1].origin, JevUserAnswerOrigin::Synthetic);
+            assert_eq!(plans[1].status, JevPlanStatus::Unknown);
+            assert_eq!(plans[1].source.provenance, antiburn_local::analysis::jev_evidence::JevScopeEvidenceProvenance::Unknown);
+            assert!(plans[1].source.call_id.is_none());
+            assert_eq!(
+                plans[1].path.as_deref(),
+                Some(".opencode/plans/1000-task.md")
+            );
+            for plan in plans {
+                assert_eq!(plan.source.source_format, input.source_format);
+                assert_eq!(plan.content_status, JevPlanContentStatus::Unresolved);
+                assert!(
+                    plan.text.is_none()
+                        && plan.approved_revision.is_none()
+                        && plan.approved_content_digest.is_none()
+                );
+            }
+            let answer_only = query(JevInputSelection::from_fields(&[JevInputField::UserAnswer]));
+            assert!(
+                answer_only
+                    .parts
+                    .iter()
+                    .all(|p| p.part.metadata.plan_references.is_empty() && p.part.text.is_empty())
+            );
+            let plan_only = query(JevInputSelection::from_fields(&[
+                JevInputField::PlanReference,
+            ]));
+            assert!(
+                plan_only
+                    .parts
+                    .iter()
+                    .all(|p| p.part.metadata.user_answers.is_empty() && p.part.text.is_empty())
+            );
+            let legacy = query(antiburn_local::analysis::ignored_instructions::INPUT_SELECTION);
+            assert!(
+                legacy
+                    .parts
+                    .iter()
+                    .all(|p| p.part.metadata.user_answers.is_empty()
+                        && p.part.metadata.plan_references.is_empty())
+            );
+            let user = query(JevInputSelection::from_fields(&[
+                JevInputField::UserMessage,
+            ]));
+            assert!(
+                user.parts.iter().all(
+                    |p| p.part.authority == antiburn_local::analysis::ContentAuthority::Unknown
+                )
+            );
+            let user_selection = JevInputSelection::from_fields(&[JevInputField::UserMessage]);
+            let selected_user = antiburn_local::analysis::jev_evidence::select_session_content(
+                &antiburn_local::analysis::jev_evidence::prepare_session_content(
+                    "root",
+                    input.source_format,
+                    user,
+                    Vec::new(),
+                ),
+                user_selection,
+            );
+            assert!(
+                selected_user.actions.is_empty(),
+                "synthetic plan text is not ordinary user authority"
+            );
+            let selected = antiburn_local::analysis::jev_evidence::select_session_content(
+                &antiburn_local::analysis::jev_evidence::prepare_session_content(
+                    "root",
+                    input.source_format,
+                    content,
+                    Vec::new(),
+                ),
+                selection,
+            );
+            assert_eq!(
+                selected
+                    .actions
+                    .iter()
+                    .any(|action| { !action.metadata.user_answers.is_empty() }),
+                antiburn_local::analysis::jev_evidence::source_supported(input.source_format)
+            );
+            assert!(
+                selected
+                    .actions
+                    .iter()
+                    .all(|action| { action.text.is_empty() })
+            );
+        });
+    }
+}
+
+#[test]
+fn provider_executed_results_retain_unknown_scope_evidence_without_user_authority() {
+    use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
+    use antiburn_local::analysis::jev_evidence::{
+        JevPlanStatus, JevScopeEvidenceProvenance, JevUserAnswerOrigin, JevUserAnswerStatus,
+    };
+
+    for provider_executed in [false, true] {
+        let mut records: Vec<serde_json::Value> =
+            include_str!("fixtures/opencode_characterization/scope_native.jsonl")
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+        for index in [2, 6, 8] {
+            records[index]["payload"]["metadata"] = json!({"providerExecuted": provider_executed});
+        }
+        let records = records
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (_directory, inputs) = scope_sources(&records);
+        for input in inputs {
+            let (_, store) = evidence_and_rows(&input);
+            store.with_connection(|connection| {
+                let content = antiburn_local::analysis::query_turn_content_offset_selected(
+                    connection,
+                    &antiburn_local::analysis::TurnSessionKey {
+                        environment_key: "native",
+                        agent: "opencode",
+                        session_id: "root",
+                    },
+                    &antiburn_local::analysis::FenceScope::single(1),
+                    None,
+                    &Default::default(),
+                    0,
+                    JevInputSelection::from_fields(&[
+                        JevInputField::UserAnswer,
+                        JevInputField::PlanReference,
+                    ]),
+                )
+                .unwrap();
+                let answers: Vec<_> = content
+                    .parts
+                    .iter()
+                    .flat_map(|p| &p.part.metadata.user_answers)
+                    .filter(|a| {
+                        matches!(
+                            a.source.call_id.as_deref(),
+                            Some("call_questions" | "call_fallback")
+                        )
+                    })
+                    .collect();
+                assert_eq!(answers.len(), 3);
+                for answer in &answers {
+                    assert_eq!(answer.is_authoritative_user_response(), !provider_executed);
+                    assert_eq!(
+                        answer.status,
+                        if provider_executed {
+                            JevUserAnswerStatus::Unknown
+                        } else {
+                            JevUserAnswerStatus::Submitted
+                        }
+                    );
+                    assert_eq!(
+                        answer.origin,
+                        if provider_executed {
+                            JevUserAnswerOrigin::UnknownOrigin
+                        } else {
+                            JevUserAnswerOrigin::User
+                        }
+                    );
+                    assert_eq!(
+                        answer.source.provenance,
+                        if provider_executed {
+                            JevScopeEvidenceProvenance::Unknown
+                        } else {
+                            JevScopeEvidenceProvenance::RecognizedQuestionWorkflow
+                        }
+                    );
+                    assert!(
+                        !answer.selections.is_empty(),
+                        "retain matched values even without user authority"
+                    );
+                    assert_eq!(answer.source.source_format, input.source_format);
+                    assert!(answer.source.native_record_id.is_some());
+                }
+                let custom = answers
+                    .iter()
+                    .find(|a| {
+                        a.source.call_id.as_deref() == Some("call_questions") && a.source.order == 1
+                    })
+                    .unwrap();
+                assert_eq!(
+                    custom.free_text.as_deref(),
+                    Some("Well, no. Keep this:\n```\n  x = 2\n``` 实现 API only.")
+                );
+                let plans: Vec<_> = content
+                    .parts
+                    .iter()
+                    .flat_map(|p| &p.part.metadata.plan_references)
+                    .filter(|p| p.source.call_id.as_deref() == Some("call_plan_exit"))
+                    .collect();
+                assert_eq!(plans.len(), 1);
+                let plan = plans[0];
+                assert_eq!(
+                    plan.status,
+                    if provider_executed {
+                        JevPlanStatus::Unknown
+                    } else {
+                        JevPlanStatus::Approved
+                    }
+                );
+                assert_eq!(
+                    plan.origin,
+                    if provider_executed {
+                        JevUserAnswerOrigin::UnknownOrigin
+                    } else {
+                        JevUserAnswerOrigin::User
+                    }
+                );
+                assert_eq!(
+                    plan.source.provenance,
+                    if provider_executed {
+                        JevScopeEvidenceProvenance::Unknown
+                    } else {
+                        JevScopeEvidenceProvenance::RecognizedPlanWorkflow
+                    }
+                );
+                assert_eq!(
+                    plan.source.native_record_id.as_deref(),
+                    Some("prt_plan_exit")
+                );
+            });
+        }
+    }
+}
+
+#[test]
+fn synthetic_attachment_approval_text_never_binds_to_a_plan_workflow() {
+    use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
+    use antiburn_local::analysis::jev_evidence::{
+        JevPlanContentStatus, JevPlanStatus, JevScopeEvidenceProvenance, JevUserAnswerOrigin,
+        prepare_session_content, select_session_content,
+    };
+
+    for nearby_plan_exit in [false, true] {
+        let attachments =
+            include_str!("fixtures/opencode_characterization/synthetic_attachments_native.jsonl");
+        let records = if nearby_plan_exit {
+            format!(
+                "{}{}",
+                include_str!("fixtures/opencode_characterization/scope_native.jsonl"),
+                attachments.lines().skip(1).collect::<Vec<_>>().join("\n")
+            )
+        } else {
+            attachments.into()
+        };
+        let (_directory, inputs) = scope_sources(&records);
+        for input in inputs {
+            let (_, store) = evidence_and_rows(&input);
+            store.with_connection(|connection| {
+                let query = |selection| {
+                    antiburn_local::analysis::query_turn_content_offset_selected(
+                        connection,
+                        &antiburn_local::analysis::TurnSessionKey {
+                            environment_key: "native",
+                            agent: "opencode",
+                            session_id: "root",
+                        },
+                        &antiburn_local::analysis::FenceScope::single(1),
+                        None,
+                        &Default::default(),
+                        0,
+                        selection,
+                    )
+                    .unwrap()
+                };
+                let content = query(JevInputSelection::from_fields(&[
+                    JevInputField::PlanReference,
+                ]));
+                let plans: Vec<_> = content
+                    .parts
+                    .iter()
+                    .flat_map(|p| &p.part.metadata.plan_references)
+                    .filter(|p| p.origin == JevUserAnswerOrigin::Synthetic)
+                    .collect();
+                assert_eq!(plans.len(), if nearby_plan_exit { 3 } else { 2 });
+                for plan in plans {
+                    assert_eq!(plan.status, JevPlanStatus::Unknown);
+                    assert_eq!(plan.source.provenance, JevScopeEvidenceProvenance::Unknown);
+                    assert!(plan.source.call_id.is_none());
+                    assert_eq!(plan.path.as_deref(), Some(".opencode/plans/1000-task.md"));
+                    assert_eq!(plan.content_status, JevPlanContentStatus::Unresolved);
+                    assert!(
+                        plan.text.is_none()
+                            && plan.approved_content_digest.is_none()
+                            && plan.approved_revision.is_none()
+                    );
+                }
+                let selection = JevInputSelection::from_fields(&[JevInputField::UserMessage]);
+                let user = select_session_content(
+                    &prepare_session_content(
+                        "root",
+                        input.source_format,
+                        query(selection),
+                        Vec::new(),
+                    ),
+                    selection,
+                );
+                assert!(
+                    user.actions.is_empty(),
+                    "attachments do not become authoritative user messages"
+                );
+            });
+        }
+    }
+}
+
+#[test]
+fn question_workflows_do_not_promote_incomplete_or_unmatched_results() {
+    use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
+    for case in [
+        "wrong_tool",
+        "missing_call",
+        "wrong_message",
+        "wrong_session",
+        "missing_prompt",
+        "missing_description",
+        "malformed_multiple",
+        "malformed_answers",
+        "missing_answers",
+        "missing_output",
+        "mismatched_output",
+        "too_few_answers",
+        "too_many_answers",
+        "empty_answers",
+        "truncated",
+        "compacted",
+        "interrupted",
+        "pending",
+        "running",
+        "error",
+        "user_role",
+        "oversized_metadata",
+        "missing_time",
+        "wrong_title",
+    ] {
+        let mut records: Vec<serde_json::Value> =
+            include_str!("fixtures/opencode_characterization/scope_native.jsonl")
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+        match case {
+            "wrong_tool" => records[2]["payload"]["tool"] = json!("other_question"),
+            "missing_call" => records[2]["payload"]["callID"] = json!(null),
+            "wrong_message" => records[2]["payload"]["messageID"] = json!("other_message"),
+            "wrong_session" => records[2]["payload"]["sessionID"] = json!("other_session"),
+            "missing_prompt" => {
+                records[2]["payload"]["state"]["input"]["questions"][0]["question"] = json!(null)
+            }
+            "missing_description" => {
+                records[2]["payload"]["state"]["input"]["questions"][0]["options"][0]["description"] =
+                    json!(null)
+            }
+            "malformed_multiple" => {
+                records[2]["payload"]["state"]["input"]["questions"][0]["multiple"] = json!("true")
+            }
+            "malformed_answers" => {
+                records[2]["payload"]["state"]["metadata"]["answers"] = json!({"0":"API"})
+            }
+            "missing_answers" => {
+                records[2]["payload"]["state"]["metadata"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("answers");
+            }
+            "missing_output" => records[2]["payload"]["state"]["output"] = json!(null),
+            "mismatched_output" => records[2]["payload"]["state"]["output"] = json!("approved"),
+            "too_few_answers" => {
+                records[2]["payload"]["state"]["metadata"]["answers"] = json!([["API"]])
+            }
+            "too_many_answers" => {
+                records[2]["payload"]["state"]["metadata"]["answers"] =
+                    json!([["API"], ["Tests"], ["Yes"]])
+            }
+            "empty_answers" => {
+                records[2]["payload"]["state"]["metadata"]["answers"] = json!([[], []]);
+                records[2]["payload"]["state"]["output"] = json!(
+                    "User has answered your questions: \"Which changes?\"=\"Unanswered\", \"Any conditions?\"=\"Unanswered\". You can now continue with the user's answers in mind."
+                );
+            }
+            "truncated" => records[2]["payload"]["state"]["metadata"]["truncated"] = json!(true),
+            "compacted" => records[2]["payload"]["state"]["time"]["compacted"] = json!(1020),
+            "interrupted" => {
+                records[2]["payload"]["state"]["metadata"]["interrupted"] = json!(true)
+            }
+            "pending" | "running" | "error" => {
+                records[2]["payload"]["state"]["status"] = json!(case)
+            }
+            "user_role" => records[1]["payload"]["role"] = json!("user"),
+            "oversized_metadata" => {
+                records[2]["payload"]["state"]["input"]["questions"][0]["options"][0]["description"] =
+                    json!("x".repeat(antiburn_local::analysis::MAX_CONTENT_PART_BYTES))
+            }
+            "missing_time" => records[2]["payload"]["state"]["time"] = json!(null),
+            "wrong_title" => records[2]["payload"]["state"]["title"] = json!("Asked 1 question"),
+            _ => unreachable!(),
+        }
+        let records = records
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (_directory, inputs) = scope_sources(&records);
+        for input in inputs {
+            let (_, store) = evidence_and_rows(&input);
+            store.with_connection(|connection| {
+                let content = antiburn_local::analysis::query_turn_content_offset_selected(
+                    connection,
+                    &antiburn_local::analysis::TurnSessionKey {
+                        environment_key: "native",
+                        agent: "opencode",
+                        session_id: "root",
+                    },
+                    &antiburn_local::analysis::FenceScope::single(1),
+                    None,
+                    &Default::default(),
+                    0,
+                    JevInputSelection::from_fields(&[JevInputField::UserAnswer]),
+                )
+                .unwrap();
+                for answer in content
+                    .parts
+                    .iter()
+                    .flat_map(|p| &p.part.metadata.user_answers)
+                    .filter(|a| a.source.call_id.as_deref() == Some("call_questions"))
+                {
+                    assert!(
+                        !answer.is_authoritative_user_response(),
+                        "{case}: {:?}",
+                        input.source_format
+                    );
+                    assert!(answer.selections.is_empty(), "{case}");
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn plan_workflows_require_native_shapes_and_keep_versions_unavailable() {
+    use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
+    use antiburn_local::analysis::jev_evidence::{JevPlanStatus, JevUserAnswerOrigin};
+    for case in [
+        "wrong_tool",
+        "assistant_plan",
+        "wrong_input",
+        "wrong_output",
+        "wrong_title",
+        "wrong_metadata",
+        "empty_metadata",
+        "truncated",
+        "missing_call",
+        "interrupted",
+        "running",
+        "rejected",
+        "not_synthetic",
+        "wrong_agent",
+        "missing_model",
+        "assistant_message",
+        "wrong_synthetic_message",
+        "wrong_synthetic_session",
+        "ordinary_synthetic",
+    ] {
+        let mut records: Vec<serde_json::Value> =
+            include_str!("fixtures/opencode_characterization/scope_native.jsonl")
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+        match case {
+            "wrong_tool" => records[8]["payload"]["tool"] = json!("write"),
+            "assistant_plan" => {
+                records[8]["payload"] =
+                    json!({"type":"text","text":"Plan: Implement billing. Approved."})
+            }
+            "wrong_input" => {
+                records[8]["payload"]["state"]["input"] = json!({"plan":"Implement billing"})
+            }
+            "wrong_output" => records[8]["payload"]["state"]["output"] = json!("Approved"),
+            "wrong_title" => records[8]["payload"]["state"]["title"] = json!("Approved"),
+            "wrong_metadata" => {
+                records[8]["payload"]["state"]["metadata"] = json!({"answers":[["Yes"]]})
+            }
+            "empty_metadata" => records[8]["payload"]["state"]["metadata"] = json!({}),
+            "truncated" => records[8]["payload"]["state"]["metadata"]["truncated"] = json!(true),
+            "missing_call" => records[8]["payload"]["callID"] = json!(null),
+            "interrupted" => {
+                records[8]["payload"]["state"]["metadata"] = json!({"interrupted":true})
+            }
+            "running" => records[8]["payload"]["state"]["status"] = json!("running"),
+            "rejected" => {
+                records[8]["payload"]["state"]["status"] = json!("error");
+                records[8]["payload"]["state"]["error"] = json!("The user dismissed this question");
+            }
+            "not_synthetic" => records[10]["payload"]["synthetic"] = json!(false),
+            "wrong_agent" => records[9]["payload"]["agent"] = json!("plan"),
+            "missing_model" => records[9]["payload"]["model"] = json!(null),
+            "assistant_message" => records[9]["payload"]["role"] = json!("assistant"),
+            "wrong_synthetic_message" => {
+                records[10]["payload"]["messageID"] = json!("other_message")
+            }
+            "wrong_synthetic_session" => {
+                records[10]["payload"]["sessionID"] = json!("other_session")
+            }
+            "ordinary_synthetic" => records[10]["payload"]["text"] = json!("Plan approved"),
+            _ => unreachable!(),
+        }
+        let records = records
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (_directory, inputs) = scope_sources(&records);
+        for input in inputs {
+            let (_, store) = evidence_and_rows(&input);
+            store.with_connection(|connection| {
+                let content = antiburn_local::analysis::query_turn_content_offset_selected(
+                    connection,
+                    &antiburn_local::analysis::TurnSessionKey {
+                        environment_key: "native",
+                        agent: "opencode",
+                        session_id: "root",
+                    },
+                    &antiburn_local::analysis::FenceScope::single(1),
+                    None,
+                    &Default::default(),
+                    0,
+                    JevInputSelection::from_fields(&[JevInputField::PlanReference]),
+                )
+                .unwrap();
+                let plans: Vec<_> = content
+                    .parts
+                    .iter()
+                    .flat_map(|p| &p.part.metadata.plan_references)
+                    .collect();
+                if matches!(
+                    case,
+                    "not_synthetic"
+                        | "wrong_agent"
+                        | "missing_model"
+                        | "assistant_message"
+                        | "wrong_synthetic_message"
+                        | "wrong_synthetic_session"
+                        | "ordinary_synthetic"
+                ) {
+                    assert!(
+                        plans
+                            .iter()
+                            .all(|p| p.origin != JevUserAnswerOrigin::Synthetic),
+                        "{case}"
+                    );
+                } else {
+                    assert!(
+                        plans
+                            .iter()
+                            .filter(|p| p.source.call_id.as_deref() == Some("call_plan_exit"))
+                            .all(|p| p.status != JevPlanStatus::Approved),
+                        "{case}"
+                    );
+                }
+                if case == "rejected" {
+                    assert_eq!(
+                        plans
+                            .iter()
+                            .find(|p| p.source.call_id.as_deref() == Some("call_plan_exit"))
+                            .unwrap()
+                            .status,
+                        JevPlanStatus::Cancelled
+                    );
+                }
+                assert!(plans.iter().all(|p| p.text.is_none()
+                    && p.content_digest.is_none()
+                    && p.approved_content_digest.is_none()));
+            });
+        }
+    }
 }
 
 fn sqlite_input(path: &std::path::Path, session_id: &str) -> SessionInput {
@@ -257,16 +1122,131 @@ fn sqlite_tool_lifecycle_keeps_requests_distinct_from_results() {
             ),
             INPUT_SELECTION,
         );
-        assert_eq!(selected.actions.len(), 4);
-        assert!(
-            selected
+        use antiburn_local::analysis::jev_evidence::JevNativeFieldContainer;
+        let expected = [
+            (
+                "call-completed",
+                "tool_input",
+                JevOperationState::Completed,
+                JevInputField::BashCommandInput,
+                "/state/input/command",
+                "printf completed",
+            ),
+            (
+                "call-completed",
+                "tool_result",
+                JevOperationState::Completed,
+                JevInputField::BashCommandOutput,
+                "/state/output",
+                "completed output",
+            ),
+            (
+                "call-running",
+                "tool_input",
+                JevOperationState::Running,
+                JevInputField::BashCommandInput,
+                "/state/input/command",
+                "printf running",
+            ),
+            (
+                "call-error",
+                "tool_input",
+                JevOperationState::Error,
+                JevInputField::BashCommandInput,
+                "/state/input/command",
+                "printf error",
+            ),
+            (
+                "call-error",
+                "tool_result",
+                JevOperationState::Error,
+                JevInputField::BashCommandOutput,
+                "/state/error",
+                "command failed",
+            ),
+            (
+                "call-pending",
+                "tool_input",
+                JevOperationState::Pending,
+                JevInputField::BashCommandInput,
+                "/state/input/command",
+                "printf pending",
+            ),
+        ];
+        assert_eq!(selected.actions.len(), expected.len());
+        let native: Vec<Value> = records
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        for (call, kind, state, field, pointer, text) in expected {
+            let matching: Vec<_> = selected
                 .actions
                 .iter()
-                .all(|action| action.kind == "tool_input")
-        );
-        let retained = serde_json::to_string(&selected).unwrap();
-        assert!(!retained.contains("completed output"));
-        assert!(!retained.contains("command failed"));
+                .filter(|action| {
+                    action.tool_call_id.as_deref() == Some(call) && action.kind == kind
+                })
+                .collect();
+            assert_eq!(matching.len(), 1, "{call}: {kind}");
+            let action = matching[0];
+            assert_eq!(action.tool_name.as_deref(), Some("bash"));
+            assert_eq!(action.turn_role, "assistant");
+            assert_eq!(
+                action.authority,
+                if kind == "tool_input" {
+                    "assistant"
+                } else {
+                    "tool"
+                }
+            );
+            assert_eq!(action.metadata.state, state);
+            assert_eq!(action.text, text);
+            assert!(!action.truncated);
+            assert!(action.metadata.human_text.is_none());
+            assert!(action.metadata.user_text_history.is_none());
+            assert_eq!(action.metadata.bindings.len(), 1);
+            let range = &action.metadata.bindings[0];
+            assert_eq!(range.field, field);
+            assert_eq!(range.container, JevNativeFieldContainer::Part);
+            assert_eq!(range.native_record_id.as_deref(), Some("m-lifecycle"));
+            assert_eq!(range.pointer, pointer);
+            assert_eq!((range.start, range.end), (0, text.len()));
+            let payload = &native
+                .iter()
+                .find(|record| record["payload"]["callID"] == call)
+                .unwrap()["payload"];
+            assert_eq!(
+                payload
+                    .pointer(pointer)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .get(range.start..range.end),
+                Some(action.text.as_str())
+            );
+            if kind == "tool_result" {
+                let fact = action
+                    .metadata
+                    .command_result
+                    .as_ref()
+                    .expect("native bound command result");
+                let request = selected
+                    .actions
+                    .iter()
+                    .find(|request| {
+                        request.kind == "tool_input"
+                            && request.tool_call_id.as_deref() == Some(call)
+                    })
+                    .unwrap();
+                assert!(fact.matches_action(action));
+                assert!(fact.matches_request(request));
+                assert_eq!(fact.state, state);
+                assert_eq!(fact.call_id, call);
+                assert_eq!(fact.range.pointer, pointer);
+                assert_eq!(fact.request_range.pointer, "/state/input/command");
+            } else {
+                assert!(action.metadata.command_result.is_none());
+            }
+        }
     });
 }
 
@@ -284,6 +1264,339 @@ fn insert_session(
             params![id, parent, title, timestamp],
         )
         .expect("session");
+}
+
+#[test]
+fn sqlite_human_history_binds_exact_decoded_text_and_rejects_injected_or_wrong_identity() {
+    use antiburn_local::analysis::SourceFormat;
+    use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
+    use antiburn_local::analysis::jev_evidence::{
+        JevNativeFieldContainer, prepare_session_content,
+    };
+    for control in [
+        "native",
+        "synthetic",
+        "ignored",
+        "wrong-message",
+        "wrong-session",
+    ] {
+        let (_directory, path) = create_database();
+        let connection = Connection::open(&path).unwrap();
+        insert_session(&connection, "root", None, None, 1_000);
+        insert_message(&connection, "human", "root", 1_000, &json!({"role":"user", "agent":"build", "model":{"providerID":"provider", "modelID":"model"}}).to_string());
+        let mut native = vec![
+            json!({"type":"text", "id":"p-1", "messageID":"human", "sessionID":"root", "text":"é\n\"quoted\"\\path"}),
+            json!({"type":"text", "id":"p-2", "messageID":"human", "sessionID":"root", "text":"Second block 🦀"}),
+        ];
+        match control {
+            "synthetic" => native[1]["synthetic"] = json!(true),
+            "ignored" => native[1]["ignored"] = json!(true),
+            "wrong-message" => native[1]["messageID"] = json!("other"),
+            "wrong-session" => native[1]["sessionID"] = json!("other"),
+            "native" => {}
+            _ => unreachable!(),
+        }
+        for part in &native {
+            insert_part(
+                &connection,
+                part["id"].as_str().unwrap(),
+                "human",
+                "root",
+                1_001,
+                &part.to_string(),
+            );
+        }
+        drop(connection);
+        let (_, store) = evidence_and_rows(&sqlite_input(&path, "root"));
+        store.with_connection(|connection| {
+            let published = antiburn_local::analysis::query_turn_content_offset_selected(
+                connection,
+                &antiburn_local::analysis::TurnSessionKey {
+                    environment_key: "native",
+                    agent: "opencode",
+                    session_id: "root",
+                },
+                &antiburn_local::analysis::FenceScope::single(1),
+                None,
+                &Default::default(),
+                0,
+                JevInputSelection::from_fields(&[JevInputField::UserMessage]),
+            )
+            .unwrap();
+            let prepared =
+                prepare_session_content("root", SourceFormat::OpenCodeSqliteV2, published, vec![]);
+            if control != "native" {
+                assert!(
+                    prepared.actions.iter().all(|action| action
+                        .metadata
+                        .user_text_history
+                        .is_none()
+                        && action.metadata.human_text.is_none()),
+                    "{control}"
+                );
+                return;
+            }
+            assert_eq!(prepared.actions.len(), native.len());
+            for (action, part) in prepared.actions.iter().zip(&native) {
+                assert_eq!(action.authority, "user");
+                assert_eq!(action.turn_role, "user");
+                assert_eq!(action.text, part["text"].as_str().unwrap());
+                let proof = action.metadata.user_text_history.as_ref().unwrap();
+                assert_eq!(proof.message_id, "human");
+                assert_eq!(proof.session_id, "root");
+                let fact = action
+                    .metadata
+                    .human_text
+                    .as_ref()
+                    .expect("bound human text");
+                assert!(fact.matches_action(action));
+                assert_eq!(fact.range.native_record_id.as_deref(), Some("human"));
+                assert_eq!(fact.range.container, JevNativeFieldContainer::Part);
+                assert_eq!(fact.range.field, JevInputField::UserMessage);
+                assert_eq!(fact.range.pointer, "/text");
+                assert_eq!((fact.range.start, fact.range.end), (0, action.text.len()));
+                assert_eq!(
+                    part["text"]
+                        .as_str()
+                        .unwrap()
+                        .get(fact.range.start..fact.range.end),
+                    Some(action.text.as_str())
+                );
+            }
+        });
+    }
+}
+
+#[test]
+fn sqlite_command_results_abstain_for_incomplete_or_ambiguous_native_calls() {
+    use antiburn_local::analysis::SourceFormat;
+    use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
+    use antiburn_local::analysis::jev_evidence::{
+        JevOperationState, prepare_session_content, select_session_content,
+    };
+    for control in [
+        "completed",
+        "pending",
+        "running",
+        "truncated",
+        "interrupted",
+        "compacted",
+        "wrong-message",
+        "duplicate-call",
+    ] {
+        let (_directory, path) = create_database();
+        let connection = Connection::open(&path).unwrap();
+        insert_session(&connection, "root", None, None, 1_000);
+        insert_message(
+            &connection,
+            "command",
+            "root",
+            1_000,
+            &json!({"role":"assistant"}).to_string(),
+        );
+        let mut part = json!({"type":"tool", "id":"p-command", "messageID":"command", "sessionID":"root", "tool":"bash", "callID":"call", "state":{"status":"completed", "input":{"command":"printf é"}, "output":"é\n\"quoted\""}});
+        match control {
+            "pending" | "running" => part["state"]["status"] = json!(control),
+            "truncated" | "interrupted" => part["state"]["metadata"][control] = json!(true),
+            "compacted" => part["state"]["time"]["compacted"] = json!(1_002),
+            "wrong-message" => part["messageID"] = json!("other"),
+            "completed" | "duplicate-call" => {}
+            _ => unreachable!(),
+        }
+        insert_part(
+            &connection,
+            "p-command",
+            "command",
+            "root",
+            1_001,
+            &part.to_string(),
+        );
+        if control == "duplicate-call" {
+            insert_part(
+                &connection,
+                "p-duplicate",
+                "command",
+                "root",
+                1_002,
+                &part.to_string(),
+            );
+        }
+        drop(connection);
+        let (_, store) = evidence_and_rows(&sqlite_input(&path, "root"));
+        store.with_connection(|connection| {
+            let published = antiburn_local::analysis::query_turn_content_offset_selected(
+                connection,
+                &antiburn_local::analysis::TurnSessionKey {
+                    environment_key: "native",
+                    agent: "opencode",
+                    session_id: "root",
+                },
+                &antiburn_local::analysis::FenceScope::single(1),
+                None,
+                &Default::default(),
+                0,
+                JevInputSelection::from_fields(&[
+                    JevInputField::BashCommandInput,
+                    JevInputField::BashCommandOutput,
+                ]),
+            )
+            .unwrap();
+            let prepared =
+                prepare_session_content("root", SourceFormat::OpenCodeSqliteV2, published, vec![]);
+            let prepared = select_session_content(
+                &prepared,
+                JevInputSelection::from_fields(&[
+                    JevInputField::BashCommandInput,
+                    JevInputField::BashCommandOutput,
+                ]),
+            );
+            if control != "completed" {
+                assert!(
+                    prepared
+                        .actions
+                        .iter()
+                        .all(|action| action.metadata.command_result.is_none()),
+                    "{control}"
+                );
+                return;
+            }
+            let result = prepared
+                .actions
+                .iter()
+                .find(|action| action.kind == "tool_result")
+                .unwrap();
+            let request = prepared
+                .actions
+                .iter()
+                .find(|action| action.kind == "tool_input")
+                .unwrap();
+            let fact = result
+                .metadata
+                .command_result
+                .as_ref()
+                .expect("native completed command result");
+            assert_eq!(result.text, "é\n\"quoted\"");
+            assert_eq!(fact.state, JevOperationState::Completed);
+            assert!(fact.matches_action(result) && fact.matches_request(request));
+            assert_eq!(fact.range.pointer, "/state/output");
+            assert_eq!(
+                part.pointer(&fact.range.pointer)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .get(fact.range.start..fact.range.end),
+                Some(result.text.as_str())
+            );
+        });
+    }
+}
+
+#[test]
+fn legacy_shell_results_stay_unknown_while_native_sqlite_read_has_observed_extent() {
+    use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
+    use antiburn_local::analysis::jev_evidence::{
+        JevOperationState, JevReadStatus, prepare_session_content,
+    };
+    use antiburn_local::analysis::{ContentKind, SourceFormat};
+    let legacy = SessionInput {
+        agent: "opencode".into(),
+        session_id: "root".into(),
+        source: RawSource::Jsonl(
+            include_str!("fixtures/opencode_characterization/tool_lifecycle_native.jsonl").into(),
+        ),
+        source_format: SourceFormat::OpenCodeJsonl,
+        fork_parent_session_id: None,
+    };
+    let mut captured = ContentCapturingSink::default();
+    reader_for("opencode")
+        .visit(&legacy, &mut captured)
+        .unwrap();
+    let results: Vec<_> = captured
+        .contents
+        .iter()
+        .flat_map(|content| &content.parts)
+        .filter(|part| part.kind == ContentKind::ToolResult)
+        .collect();
+    assert_eq!(results.len(), 2);
+    assert!(
+        results
+            .iter()
+            .all(|part| part.metadata.state == JevOperationState::Unknown
+                && part.metadata.bindings.is_empty()
+                && part.metadata.command_result.is_none())
+    );
+
+    let (_directory, path) = create_database();
+    let connection = Connection::open(&path).unwrap();
+    insert_session(&connection, "root", None, None, 1_000);
+    insert_message(
+        &connection,
+        "read",
+        "root",
+        1_000,
+        &json!({"role":"assistant"}).to_string(),
+    );
+    let mut native: Value = serde_json::from_str(
+        include_str!("fixtures/read_characterization/opencode.jsonl")
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    native["type"] = json!("tool");
+    insert_part(
+        &connection,
+        "first",
+        "read",
+        "root",
+        1_001,
+        &native.to_string(),
+    );
+    drop(connection);
+    let (_, store) = evidence_and_rows(&sqlite_input(&path, "root"));
+    store.with_connection(|connection| {
+        let published = antiburn_local::analysis::query_turn_content_offset_selected(
+            connection,
+            &antiburn_local::analysis::TurnSessionKey {
+                environment_key: "native",
+                agent: "opencode",
+                session_id: "root",
+            },
+            &antiburn_local::analysis::FenceScope::single(1),
+            None,
+            &Default::default(),
+            0,
+            JevInputSelection::from_fields(&[
+                JevInputField::ReadFileRequest,
+                JevInputField::ReadFileResult,
+            ]),
+        )
+        .unwrap();
+        let prepared =
+            prepare_session_content("root", SourceFormat::OpenCodeSqliteV2, published, vec![]);
+        let action = prepared
+            .actions
+            .iter()
+            .find(|action| action.kind == "tool_result")
+            .unwrap();
+        assert_eq!(action.tool_call_id.as_deref(), Some("read-1"));
+        assert_eq!(action.authority, "tool");
+        assert_eq!(action.metadata.state, JevOperationState::Completed);
+        assert_eq!(action.text, native["state"]["output"].as_str().unwrap());
+        let result = action
+            .metadata
+            .read_result
+            .as_ref()
+            .expect("typed native read result");
+        assert_eq!(result.status, JevReadStatus::Success);
+        let extent = result.returned_extent.as_ref().unwrap();
+        assert_eq!(
+            (extent.offset, extent.limit, extent.end_inclusive),
+            (Some(2), Some(2), Some(3))
+        );
+        assert!(result.request_reference_id.is_some());
+        assert!(action.metadata.command_result.is_none());
+    });
 }
 
 /// Streams `session_id` through the OpenCode adapter and the real evidence

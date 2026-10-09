@@ -51,6 +51,9 @@ pub(crate) fn evaluate(
             DetectorId::OveruseOfFastMode => super::fast_mode_overuse::evaluate(evidence, catalogs),
             DetectorId::CacheChurn => super::cache_churn::evaluate(evidence, catalogs),
             DetectorId::IgnoredInstructions => Observation::NoFinding,
+            DetectorId::SkillOpportunities => Observation::NoFinding,
+            DetectorId::OverExploring => Observation::NoFinding,
+            DetectorId::ScopeCreep => Observation::NoFinding,
         },
     }
 }
@@ -102,7 +105,10 @@ pub(crate) fn evaluate_with_source_evidence(
 /// Returns whether this session belongs in the detector's eligible denominator.
 pub(crate) fn in_denominator(detector: DetectorId, evidence: &SessionEvidence) -> bool {
     match detector {
-        DetectorId::IgnoredInstructions => false,
+        DetectorId::IgnoredInstructions
+        | DetectorId::SkillOpportunities
+        | DetectorId::OverExploring
+        | DetectorId::ScopeCreep => false,
         DetectorId::UnusedMcpServers | DetectorId::UnusedSkills => complete(&evidence.eligibility)
             .is_none_or(|eligibility| eligibility.assistant_turns > 0),
         _ => true,

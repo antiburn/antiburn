@@ -83,9 +83,10 @@ Reading the Focus status needs two authorizations — User Notifications, then
 Focus status — and the second prompt only means something after the first.
 antiburn requests them once per process, chained so macOS never shows two
 sheets at once, and only when setup is complete and the master notification
-preference is on. First runs never see the prompt over the onboarding window;
-`apply_settings_transition` asks again when onboarding finishes or the master
-switch turns on, and the gate's once-flag makes repeat calls free.
+preference is on. A first run never sees the prompt while its own setup is
+still showing in the Overview; `apply_settings_transition` asks again when the
+first run finishes or the master switch turns on, and the gate's once-flag
+makes repeat calls free.
 
 A denied prompt is a fail-open state, not an error: notifications keep
 working, they just stop yielding to Focus. The reader can change their mind in
@@ -109,7 +110,7 @@ provisioning profile. Two consequences:
 
 ## Manual test recipe (signed build)
 
-1. Enable notifications, complete onboarding, and accept both authorization
+1. Enable notifications, complete the first run, and accept both authorization
    prompts. Confirm the prompts appear once and never again.
 2. Turn on Do Not Disturb. Fire an automated trigger (lower the disk threshold
    above current free space, or wait for a milestone). Nothing appears, and
