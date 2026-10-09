@@ -1392,50 +1392,28 @@ impl LiveUsageSource for SilentlyAbsent {
 }
 
 #[test]
-fn an_installed_provider_never_vanishes_without_an_error() {
-    use super::SourceErrorDetail;
-
-    for (detection, expected, meter_detection) in [
-        (
-            Detection::SignedIn,
-            Some(SourceErrorDetail::SignInRequired),
-            Detection::SignInRequired,
-        ),
-        (
-            Detection::SignInRequired,
-            Some(SourceErrorDetail::SignInRequired),
-            Detection::SignInRequired,
-        ),
-        (
-            Detection::InstalledNotSignedIn,
-            Some(SourceErrorDetail::NotSignedIn),
-            Detection::InstalledNotSignedIn,
-        ),
-        (Detection::NotInstalled, None, Detection::NotInstalled),
-        (Detection::Unknown, None, Detection::Unknown),
+fn a_silent_source_is_not_given_a_sign_in_state() {
+    // Some sources answer with nothing for a login that works, for example a
+    // Codex API key or an account with no rate limits. Detection still finds
+    // the login there, so the pass must not turn the silence into a sign-in
+    // failure. The Claude source reports its own sign-in states.
+    for detection in [
+        Detection::SignedIn,
+        Detection::SignInRequired,
+        Detection::InstalledNotSignedIn,
+        Detection::NotInstalled,
+        Detection::Unknown,
     ] {
         let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(SilentlyAbsent(detection))];
         let collected = sources::collect(&sources, true, &HiddenMeters::default(), MAX_AGE);
         assert!(collected.snapshots.is_empty());
-        assert_eq!(
-            collected.errors.first().and_then(|failure| failure.detail),
-            expected,
-            "{detection:?}"
-        );
-        if expected.is_some() {
-            assert_eq!(
-                collected.errors[0].error,
-                ProviderUsageError::Authentication
-            );
-        }
-        // The meter stays on the roster with the proved login state, so a
-        // view can grey it and say why.
+        assert!(collected.errors.is_empty(), "{detection:?}");
+        // The meter keeps the detected login state.
         let detected = DetectionMap::from([("anthropic".into(), Presence::new(detection))]);
         let meters = roster(&sources, &HiddenMeters::default(), &detected);
         let summary = summarize_collected(collected, meters, None, None, NOW, 0);
         assert_eq!(summary.meters.len(), 1);
-        assert!(summary.meters[0].shown);
-        assert_eq!(summary.meters[0].detection, meter_detection);
+        assert_eq!(summary.meters[0].detection, detection);
     }
 }
 

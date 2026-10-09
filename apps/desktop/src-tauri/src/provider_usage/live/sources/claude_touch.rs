@@ -52,10 +52,13 @@
 //! stays blocked until the credential material on disk changes — that is,
 //! until the reader runs `claude` and signs in again.
 //!
-//! A login that cannot refresh (a blank login, or a login without a refresh
-//! token) gets one attempt per change of the material. When that attempt
-//! does not settle, the gate also marks the material terminal. See
-//! [`TouchRequest::single_attempt`].
+//! An attempt that does not settle also counts against the material. A
+//! login that cannot refresh (a blank login, or a login without a refresh
+//! token) and a live login that the endpoint rejected get one attempt per
+//! change of the material. An expired login with a refresh token gets
+//! [`UNCHANGED_ATTEMPT_LIMIT`] attempts. After the limit, the gate marks the
+//! material terminal. A refresh before expiry never counts. See
+//! [`TouchRequest::attempt_limit`].
 //!
 //! # Retrying an attribute read
 //!
@@ -99,6 +102,12 @@ pub(super) const TOUCH_COOLDOWN: Duration = Duration::from_secs(5 * 60);
 /// user-initiated check still uses [`TOUCH_COOLDOWN`].
 pub(super) const BACKGROUND_TOUCH_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 
+/// How many attempts at the same material can end unchanged before an
+/// expired login with a refresh token needs a new sign-in. The CLI refreshes
+/// an expired token on its first run, so more unchanged runs show that the
+/// refresh token is bad.
+pub(super) const UNCHANGED_ATTEMPT_LIMIT: u32 = 3;
+
 /// The waits before each retry of a failed attribute read. Three retries
 /// follow the first attempt, so a read is tried four times in total.
 pub(super) const RETRY_DELAYS: [Duration; 3] = [
@@ -135,11 +144,11 @@ pub(super) fn with_retries<T>(
 pub struct TouchRequest {
     /// The wait since the last attempt before a new attempt may start.
     pub cooldown: Duration,
-    /// Whether the login can only recover through a new sign-in (a blank
-    /// login, or a login without a refresh token). Then an attempt that does
-    /// not settle marks the material terminal, so the next attempt waits
-    /// for the material to change.
-    pub single_attempt: bool,
+    /// How many attempts at the same material can end unchanged. The
+    /// attempt that reaches the limit marks the material terminal, so the
+    /// next attempt waits for the material to change. `None` never marks it,
+    /// for a refresh before expiry of a login that still works.
+    pub attempt_limit: Option<u32>,
 }
 
 /// An opaque, metadata-only summary of the credential carrier's state.
@@ -229,15 +238,19 @@ pub fn touch(env: &dyn TouchEnvironment, gate: &TouchGate, request: TouchRequest
     gate.finish();
     match settled {
         Some(fingerprint) => {
+            gate.clear_unchanged();
             log_touch_outcome("settled");
             TouchOutcome::Settled(fingerprint)
         }
         None => {
             log_touch_outcome("verification_timeout");
-            if request.single_attempt {
-                // Waiting does not repair a login that cannot refresh. Block
-                // further attempts until the reader signs in again.
+            if let Some(limit) = request.attempt_limit
+                && gate.note_unchanged(&before) >= limit
+            {
+                // More attempts do not repair this login. Block them until
+                // the reader signs in again.
                 gate.mark_terminal(before);
+                return TouchOutcome::Terminal;
             }
             TouchOutcome::NotRefreshed
         }
@@ -295,6 +308,9 @@ struct GateInner {
     /// carrier still matches it, no touch runs: the fix is signing in with
     /// the CLI, not another touch.
     terminal: Option<Fingerprint>,
+    /// The material of the last attempts that ended unchanged, and how many
+    /// attempts in a row did.
+    unchanged: Option<(Fingerprint, u32)>,
 }
 
 impl TouchGate {
@@ -355,13 +371,49 @@ impl TouchGate {
         inner.terminal = Some(fingerprint);
     }
 
-    /// Clear the terminal block after a refresh produced a live credential.
+    /// Clear the terminal block and the unchanged count after the login
+    /// worked again.
     pub fn clear_terminal(&self) {
         let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner.terminal = None;
+        inner.unchanged = None;
+    }
+
+    /// Count one more attempt that ended unchanged at `before`. Returns the
+    /// count in a row at this material.
+    fn note_unchanged(&self, before: &Fingerprint) -> u32 {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let count = match &inner.unchanged {
+            Some((material, count)) if material == before => count + 1,
+            _ => 1,
+        };
+        inner.unchanged = Some((before.clone(), count));
+        count
+    }
+
+    /// Forget the unchanged count after an attempt settled.
+    fn clear_unchanged(&self) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        inner.unchanged = None;
+    }
+
+    /// Whether the gate blocks any material.
+    #[cfg(test)]
+    pub fn is_terminal_for_test(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .terminal
+            .is_some()
     }
 
     /// Backdate the cooldown so a test can attempt again immediately — the
@@ -633,7 +685,7 @@ mod tests {
 
     const REQUEST: TouchRequest = TouchRequest {
         cooldown: TOUCH_COOLDOWN,
-        single_attempt: false,
+        attempt_limit: None,
     };
 
     #[cfg(target_os = "macos")]
@@ -866,17 +918,17 @@ mod tests {
     #[test]
     fn a_single_attempt_that_does_not_settle_blocks_the_same_material() {
         let request = TouchRequest {
-            single_attempt: true,
+            attempt_limit: Some(1),
             ..REQUEST
         };
         let gate = TouchGate::new();
         let env = ScriptedEnv::new(&["blank"]);
-        assert_eq!(touch(&env, &gate, request), TouchOutcome::NotRefreshed);
+        assert_eq!(touch(&env, &gate, request), TouchOutcome::Terminal);
         gate.open_cooldown_for_test();
         let again = ScriptedEnv::new(&["blank"]);
         assert_eq!(touch(&again, &gate, request), TouchOutcome::Terminal);
         assert_eq!(again.spawns.load(Ordering::SeqCst), 0);
-        // A refreshable login keeps trying after a timeout.
+        // A refresh before expiry keeps trying after a timeout.
         let gate = TouchGate::new();
         assert_eq!(
             touch(&ScriptedEnv::new(&["a"]), &gate, REQUEST),
@@ -884,6 +936,54 @@ mod tests {
         );
         gate.open_cooldown_for_test();
         assert!(gate.begin(&Fingerprint("a".into()), TOUCH_COOLDOWN));
+    }
+
+    #[test]
+    fn an_expired_login_needs_a_sign_in_after_the_unchanged_limit() {
+        let request = TouchRequest {
+            attempt_limit: Some(UNCHANGED_ATTEMPT_LIMIT),
+            ..REQUEST
+        };
+        let gate = TouchGate::new();
+        for _ in 1..UNCHANGED_ATTEMPT_LIMIT {
+            assert_eq!(
+                touch(&ScriptedEnv::new(&["dead"]), &gate, request),
+                TouchOutcome::NotRefreshed
+            );
+            gate.open_cooldown_for_test();
+        }
+        assert_eq!(
+            touch(&ScriptedEnv::new(&["dead"]), &gate, request),
+            TouchOutcome::Terminal
+        );
+        gate.open_cooldown_for_test();
+        let blocked = ScriptedEnv::new(&["dead"]);
+        assert_eq!(touch(&blocked, &gate, request), TouchOutcome::Terminal);
+        assert_eq!(blocked.spawns.load(Ordering::SeqCst), 0);
+        // New material starts a new count.
+        assert_eq!(
+            touch(&ScriptedEnv::new(&["new"]), &gate, request),
+            TouchOutcome::NotRefreshed
+        );
+    }
+
+    #[test]
+    fn a_working_login_resets_the_unchanged_count() {
+        let request = TouchRequest {
+            attempt_limit: Some(2),
+            ..REQUEST
+        };
+        let gate = TouchGate::new();
+        assert_eq!(
+            touch(&ScriptedEnv::new(&["a"]), &gate, request),
+            TouchOutcome::NotRefreshed
+        );
+        gate.clear_terminal();
+        gate.open_cooldown_for_test();
+        assert_eq!(
+            touch(&ScriptedEnv::new(&["a"]), &gate, request),
+            TouchOutcome::NotRefreshed
+        );
     }
 
     #[test]

@@ -91,10 +91,12 @@ then keeps the cached login and does not read the secret. The `warn` event
 `claude_keychain_secret_missing` means that the secret read found no
 `Claude Code-credentials` item but the attribute read found it. The meter then
 shows a Keychain read failure, unless another credential carrier returns a
-reading. The debug event `live_source_absent` records a source that returned no
-reading and no error. Its `reported` field holds the error detail the shell
-reports instead: `SignInRequired` when detection found a login, `NotSignedIn`
-when it found only an install, or `None` when nothing is installed.
+reading. After a failed secret read, background checks do not read the secret
+again until the item changes. A check that the reader starts reads it again
+after 15 minutes. When no carrier holds a Claude login but the Claude Code
+config folder or CLI exists, the check reports `NotSignedIn`, so the meter
+stays visible. The debug event `live_source_absent` records any source that
+returned no reading and no error.
 
 At launch, the `info` event `cli_located` records where antiburn finds the
 `claude` CLI: `process_path`, `install_dir` (an install directory outside the

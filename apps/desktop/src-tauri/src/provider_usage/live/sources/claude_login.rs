@@ -388,6 +388,10 @@ impl<M> CachedLogin<M> {
 pub(super) struct NativeLogins {
     #[cfg(target_os = "macos")]
     pub(super) keychain: Mutex<Option<CachedLogin<KeychainMarker>>>,
+    /// The marker where the last secret read failed, and when. A denied or
+    /// ignored Keychain prompt must not come back on every check.
+    #[cfg(target_os = "macos")]
+    pub(super) keychain_secret_failed: Mutex<Option<(KeychainMarker, std::time::Instant)>>,
     pub(super) file: Mutex<Option<CachedLogin<FileMarker>>>,
     /// Login and refresh outcomes that wait for the analytics pass.
     #[cfg(feature = "analytics")]

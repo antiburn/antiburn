@@ -126,21 +126,18 @@ pub fn collect(
         if hidden.contains(source.provider()) {
             continue;
         }
-        let mut outcome = source.fetch(max_age);
+        let outcome = source.fetch(max_age);
         // No reading and no error removes the provider from every usage
-        // surface. When the tool is installed, report why instead.
+        // surface. A source that knows its tool is installed reports why
+        // itself (for Claude, see `anthropic_fetch`). Some sources answer
+        // with nothing for a working login, for example a Codex API key, so
+        // this pass does not guess a sign-in state for them.
         if outcome.error.is_none() && outcome.snapshots.is_empty() {
-            let detail = silent_absence_detail(source.detect(online).detection);
             ::tracing::debug!(
                 event = "live_source_absent",
                 source = source.id(),
-                provider = source.provider(),
-                reported = ?detail
+                provider = source.provider()
             );
-            if let Some(detail) = detail {
-                outcome.error = Some(super::model::ProviderUsageError::Authentication);
-                outcome.detail = Some(detail);
-            }
         }
         if let Some(error) = outcome.error {
             ::tracing::warn!(
@@ -172,26 +169,6 @@ pub fn collect(
         }
     }
     collected
-}
-
-/// The error detail for a source that returned no reading and no error,
-/// from what its detection found.
-///
-/// An install without a login is "not signed in". A login that gave no
-/// reading cannot be used, so only a new sign-in can fix it. With nothing
-/// installed, or nothing known, the provider has nothing to report.
-///
-/// The source detects again here, after its fetch, because the fetch can
-/// correct what an earlier detection guessed (for example a Keychain item
-/// that holds no Claude login). Detection reads metadata and cached state
-/// only.
-fn silent_absence_detail(detection: super::model::Detection) -> Option<SourceErrorDetail> {
-    use super::model::Detection;
-    match detection {
-        Detection::SignedIn | Detection::SignInRequired => Some(SourceErrorDetail::SignInRequired),
-        Detection::InstalledNotSignedIn => Some(SourceErrorDetail::NotSignedIn),
-        Detection::NotInstalled | Detection::Unknown => None,
-    }
 }
 
 /// The result of one collection pass across every source.
