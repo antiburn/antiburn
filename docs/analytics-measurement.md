@@ -97,11 +97,12 @@ Evidence: [event schema](../apps/desktop/src-tauri/src/analytics/event.rs),
    analysis. There is no general distinction between useful data, empty data,
    loading that stalls, and a failed view. Live provider failures, source access
    trouble, and analysis failures can make a feature appear simply unwanted.
-3. **The analytics session is an event-activity window.** Every queued event
-   calls `current_session_id`, including background scans and diagnostics.
-   Background changes can keep it alive; silence can split one process run.
-   Neither its count nor its first-to-last timestamp measures engaged visits or
-   time spent. Adding events would change these measures again.
+3. **The analytics session is an interaction-activity window.** User-oriented
+   events refresh its 30-minute timeout; background scans and diagnostics do
+   not. The exhaustive event classifier in `EventName::is_user_oriented` makes
+   each event's session effect explicit. Silence can split one process run,
+   while app restarts always start a new ID. Neither session count nor its
+   first-to-last timestamp measures engaged visits or time spent.
 4. **Feature adoption and intervention results are missing.** HUD enablement,
    notification actions, source setup, report refresh, session actions, and
    update actions have no complete measurement. Four setting keys without
@@ -167,9 +168,12 @@ exposure. Automatic HUD restoration can establish that the display works, but
 does not establish that the user has reached value through deliberate use.
 
 For visit frequency, group only deliberate interaction events by installation
-with a documented 30-minute inactivity gap in analysis. Ignore background events
-when constructing visits. Keep the existing wire `sessionId` unchanged initially
-and document its actual meaning. Do not infer attention duration from gaps.
+with a 30-minute inactivity gap. Background events do not refresh the wire
+`sessionId` timeout, but they can still appear inside an interaction session.
+Ignore background events when constructing visits. Segment `sessionId`-based
+reports at the first shipping app version with the user-oriented timeout;
+earlier builds refresh the timeout on every captured event.
+Do not infer attention duration from gaps.
 Neither tray visibility nor a persistent HUD proves that someone looked at it.
 
 ## Event additions and proposals
