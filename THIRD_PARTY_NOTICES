@@ -169,9 +169,9 @@ Frontend packages
 @standard-schema/utils@0.3.0 | MIT | https://github.com/standard-schema/standard-schema#readme
 @tanstack/react-virtual@3.14.13 | MIT | https://tanstack.com/virtual
 @tanstack/virtual-core@3.17.11 | MIT | https://tanstack.com/virtual
-@tauri-apps/api@2.11.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri#readme
-@tauri-apps/plugin-clipboard-manager@2.3.3 | MIT OR Apache-2.0 | https://github.com/tauri-apps/plugins-workspace#readme
-@tauri-apps/plugin-dialog@2.7.3 | MIT OR Apache-2.0 | https://github.com/tauri-apps/plugins-workspace#readme
+@tauri-apps/api@2.12.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri#readme
+@tauri-apps/plugin-clipboard-manager@2.4.1 | MIT OR Apache-2.0 | https://github.com/tauri-apps/plugins-workspace#readme
+@tauri-apps/plugin-dialog@2.8.1 | MIT OR Apache-2.0 | https://github.com/tauri-apps/plugins-workspace#readme
 @types/d3-array@3.2.2 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/d3-array
 @types/d3-color@3.1.3 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/d3-color
 @types/d3-ease@3.0.2 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/d3-ease
@@ -205,7 +205,7 @@ eventemitter3@5.0.4 | MIT | https://github.com/primus/eventemitter3#readme
 get-nonce@1.0.1 | MIT | https://github.com/theKashey/get-nonce
 immer@11.1.16 | MIT | https://github.com/immerjs/immer#readme
 internmap@2.0.3 | ISC | https://github.com/mbostock/internmap/
-lucide-react@1.48.0 | ISC | https://lucide.dev
+lucide-react@1.52.0 | ISC | https://lucide.dev
 react-dom@19.3.0 | MIT | https://react.dev/
 react-is@17.0.2 | MIT | https://reactjs.org/
 react-redux@9.3.0 | MIT | https://github.com/reduxjs/react-redux
@@ -218,7 +218,7 @@ redux-thunk@3.1.0 | MIT | https://github.com/reduxjs/redux-thunk
 redux@5.0.1 | MIT | http://redux.js.org
 reselect@5.2.0 | MIT | https://github.com/reduxjs/reselect#readme
 scheduler@0.28.0 | MIT | https://react.dev/
-simple-icons@16.32.0 | CC0-1.0 | https://simpleicons.org
+simple-icons@16.34.0 | CC0-1.0 | https://simpleicons.org
 tiny-invariant@1.3.3 | MIT | https://github.com/alexreardon/tiny-invariant#readme
 tslib@2.8.1 | 0BSD | https://www.typescriptlang.org/
 use-callback-ref@1.3.3 | MIT | https://github.com/theKashey/use-callback-ref#readme
@@ -232,8 +232,8 @@ adler2@2.0.1 | 0BSD OR MIT OR Apache-2.0 | https://github.com/oyvindln/adler2
 aes@0.8.4 | MIT OR Apache-2.0 | https://github.com/RustCrypto/block-ciphers
 ahash@0.8.12 | MIT OR Apache-2.0 | https://github.com/tkaitchuck/ahash
 aho-corasick@1.1.5 | Unlicense OR MIT | https://github.com/BurntSushi/aho-corasick
-alloc-no-stdlib@2.0.4 | BSD-3-Clause | https://github.com/dropbox/rust-alloc-no-stdlib
-alloc-stdlib@0.2.4 | BSD-3-Clause | https://github.com/dropbox/rust-alloc-no-stdlib
+alloc-no-stdlib@3.0.0 | BSD-3-Clause | https://github.com/dropbox/rust-alloc-no-stdlib
+alloc-stdlib@0.3.0 | BSD-3-Clause | https://github.com/dropbox/rust-alloc-no-stdlib
 allocator-api2@0.2.21 | MIT OR Apache-2.0 | https://github.com/zakarumych/allocator-api2
 alsa-sys@0.4.0 | MIT | https://github.com/diwic/alsa-sys
 alsa@0.11.0 | Apache-2.0 OR MIT | https://github.com/diwic/alsa-rs
@@ -266,8 +266,8 @@ block-buffer@0.12.1 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils
 block-padding@0.3.3 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils
 block2@0.6.2 | MIT | https://github.com/madsmtm/objc2
 blocking@1.6.2 | Apache-2.0 OR MIT | https://github.com/smol-rs/blocking
-brotli-decompressor@5.0.3 | BSD-3-Clause OR MIT | https://github.com/dropbox/rust-brotli-decompressor
-brotli@8.0.4 | BSD-3-Clause AND MIT | https://github.com/dropbox/rust-brotli
+brotli-decompressor@6.0.1 | BSD-3-Clause OR MIT | https://github.com/dropbox/rust-brotli-decompressor
+brotli@9.0.0 | BSD-3-Clause AND MIT | https://github.com/dropbox/rust-brotli
 bytemuck@1.25.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/Lokathor/bytemuck
 byteorder-lite@0.1.0 | Unlicense OR MIT | https://github.com/image-rs/byteorder-lite
 byteorder@1.5.0 | Unlicense OR MIT | https://github.com/BurntSushi/byteorder
@@ -277,10 +277,10 @@ cairo-sys-rs@0.18.2 | MIT | https://github.com/gtk-rs/gtk-rs-core
 camino@1.2.5 | MIT OR Apache-2.0 | https://github.com/camino-rs/camino
 cargo-platform@0.1.9 | MIT OR Apache-2.0 | https://github.com/rust-lang/cargo
 cargo_metadata@0.19.2 | MIT | https://github.com/oli-obk/cargo_metadata
-cargo_toml@0.22.3 | Apache-2.0 OR MIT | https://gitlab.com/lib.rs/cargo_toml
+cargo_toml@1.0.1 | Apache-2.0 OR MIT | https://gitlab.com/lib.rs/cargo_toml
 cbc@0.1.2 | MIT OR Apache-2.0 | https://github.com/RustCrypto/block-modes
 cc@1.4.2 | MIT OR Apache-2.0 | https://github.com/rust-lang/cc-rs
-cfb@0.7.3 | MIT | https://github.com/mdsteele/rust-cfb
+cfb@0.14.0 | MIT | https://github.com/mdsteele/rust-cfb
 cfg-expr@0.15.8 | MIT OR Apache-2.0 | https://github.com/EmbarkStudios/cfg-expr
 cfg-expr@0.20.9 | MIT OR Apache-2.0 | https://github.com/EmbarkStudios/cfg-expr
 cfg-if@1.0.4 | MIT OR Apache-2.0 | https://github.com/rust-lang/cfg-if
@@ -306,10 +306,9 @@ crossbeam-channel@0.5.17 | MIT OR Apache-2.0 | https://github.com/crossbeam-rs/c
 crossbeam-utils@0.8.22 | MIT OR Apache-2.0 | https://github.com/crossbeam-rs/crossbeam
 crypto-common@0.1.7 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits
 crypto-common@0.2.2 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits
-cssparser-macros@0.6.1 | MPL-2.0 | https://github.com/servo/rust-cssparser
-cssparser@0.36.0 | MPL-2.0 | https://github.com/servo/rust-cssparser
-ctor-proc-macro@0.0.7 | Apache-2.0 OR MIT | https://github.com/mmastrac/rust-ctor
-ctor@0.8.0 | Apache-2.0 OR MIT | https://github.com/mmastrac/rust-ctor
+cssparser-macros@0.7.1 | MPL-2.0 | https://github.com/servo/rust-cssparser
+cssparser@0.37.0 | MPL-2.0 | https://github.com/servo/rust-cssparser
+ctor@1.0.13 | Apache-2.0 OR MIT | https://github.com/mmastrac/linktime
 ctutils@0.4.2 | Apache-2.0 OR MIT | https://github.com/RustCrypto/utils
 darling@0.23.0 | MIT | https://github.com/TedDriggs/darling
 darling_core@0.23.0 | MIT | https://github.com/TedDriggs/darling
@@ -323,13 +322,12 @@ derive_more@2.1.1 | MIT | https://github.com/JelteF/derive_more
 digest@0.10.7 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits
 digest@0.11.3 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits
 dirs-sys@0.5.0 | MIT OR Apache-2.0 | https://github.com/dirs-dev/dirs-sys-rs
-dirs@6.0.0 | MIT OR Apache-2.0 | https://github.com/soc/dirs-rs
 dirs@7.0.0 | MIT OR Apache-2.0 | https://codeberg.org/dirs/dirs-rs
 dispatch2@0.3.1 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2
 displaydoc@0.2.7 | MIT OR Apache-2.0 | https://github.com/yaahc/displaydoc
 dlopen2@0.8.2 | MIT | https://github.com/OpenByteDev/dlopen2
 dlopen2_derive@0.4.3 | MIT | https://github.com/OpenByteDev/dlopen2
-dom_query@0.27.0 | MIT | https://github.com/niklak/dom_query
+dom_query@0.28.0 | MIT | https://github.com/niklak/dom_query
 downcast-rs@1.2.1 | MIT OR Apache-2.0 | https://github.com/marcianx/downcast-rs
 dpi@0.1.2 | Apache-2.0 AND MIT | https://github.com/rust-windowing/winit
 dtoa-short@0.3.5 | MPL-2.0 | https://github.com/upsuper/dtoa-short
@@ -424,7 +422,7 @@ hex@0.4.3 | MIT OR Apache-2.0 | https://github.com/KokaKiwi/rust-hex
 hkdf@0.12.4 | MIT OR Apache-2.0 | https://github.com/RustCrypto/KDFs/
 hmac@0.12.1 | MIT OR Apache-2.0 | https://github.com/RustCrypto/MACs
 hmac@0.13.0 | MIT OR Apache-2.0 | https://github.com/RustCrypto/MACs
-html5ever@0.38.0 | MIT OR Apache-2.0 | https://github.com/servo/html5ever
+html5ever@0.39.0 | MIT OR Apache-2.0 | https://github.com/servo/html5ever
 http-body-util@0.1.5 | MIT | https://github.com/hyperium/http-body
 http-body@1.1.0 | MIT | https://github.com/hyperium/http-body
 http@1.5.0 | MIT OR Apache-2.0 | https://github.com/hyperium/http
@@ -447,7 +445,7 @@ idna_adapter@1.2.2 | Apache-2.0 OR MIT | https://github.com/hsivonen/idna_adapte
 image@0.25.10 | MIT OR Apache-2.0 | https://github.com/image-rs/image
 indexmap@1.9.3 | Apache-2.0 OR MIT | https://github.com/bluss/indexmap
 indexmap@2.14.0 | Apache-2.0 OR MIT | https://github.com/indexmap-rs/indexmap
-infer@0.19.0 | MIT | https://github.com/bojand/infer
+infer@0.22.0 | MIT | https://github.com/bojand/infer
 inotify-sys@0.1.8 | ISC | https://github.com/hannobraun/inotify-sys
 inotify@0.11.5 | ISC | https://github.com/hannobraun/inotify-rs
 inout@0.1.4 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils
@@ -462,14 +460,14 @@ jiff-core@0.1.0 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
 jiff-tzdb-platform@0.1.3 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
 jiff-tzdb@0.1.8 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
 jiff@0.2.37 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
-json-patch@3.0.1 | MIT OR Apache-2.0 | https://github.com/idubrov/json-patch
-jsonptr@0.6.3 | MIT OR Apache-2.0 | https://github.com/chanced/jsonptr
-keyboard-types@0.7.0 | MIT OR Apache-2.0 | https://github.com/pyfisch/keyboard-types
+json-patch@4.2.0 | MIT OR Apache-2.0 | https://github.com/idubrov/json-patch
+jsonptr@0.7.1 | MIT OR Apache-2.0 | https://github.com/chanced/jsonptr
+keyboard-types@0.8.3 | MIT OR Apache-2.0 | https://github.com/rust-windowing/keyboard-types
 keyring@3.6.3 | MIT OR Apache-2.0 | https://github.com/hwchen/keyring-rs.git
 lazy_static@1.5.0 | MIT OR Apache-2.0 | https://github.com/rust-lang-nursery/lazy-static.rs
 libappindicator-sys@0.9.0 | Apache-2.0 OR MIT | https://crates.io/crates/libappindicator-sys/0.9.0
 libappindicator@0.9.0 | Apache-2.0 OR MIT | https://crates.io/crates/libappindicator/0.9.0
-libc@0.2.189 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc
+libc@0.2.190 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc
 libdbus-sys@0.2.7 | Apache-2.0 OR MIT | https://github.com/diwic/dbus-rs
 libloading@0.7.4 | ISC | https://github.com/nagisa/rust_libloading/
 libm@0.2.16 | MIT | https://github.com/rust-lang/compiler-builtins
@@ -479,7 +477,7 @@ litemap@0.8.2 | Unicode-3.0 | https://github.com/unicode-org/icu4x
 lock_api@0.4.14 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot
 log@0.4.33 | MIT OR Apache-2.0 | https://github.com/rust-lang/log
 mach2@0.5.0 | BSD-2-Clause OR MIT OR Apache-2.0 | https://github.com/JohnTitor/mach2
-markup5ever@0.38.0 | MIT OR Apache-2.0 | https://github.com/servo/html5ever
+markup5ever@0.39.0 | MIT OR Apache-2.0 | https://github.com/servo/html5ever
 matchers@0.2.0 | MIT | https://github.com/hawkw/matchers
 memchr@2.8.3 | Unlicense OR MIT | https://github.com/BurntSushi/memchr
 memoffset@0.9.1 | MIT | https://github.com/Gilnaa/memoffset
@@ -489,7 +487,7 @@ minisign-verify@0.2.5 | MIT | https://github.com/jedisct1/rust-minisign-verify
 miniz_oxide@0.8.9 | MIT OR Zlib OR Apache-2.0 | https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
 mio@1.2.2 | MIT | https://github.com/tokio-rs/mio
 moxcms@0.8.1 | BSD-3-Clause OR Apache-2.0 | https://github.com/awxkee/moxcms.git
-muda@0.19.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/muda
+muda@0.20.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/muda
 new_debug_unreachable@1.0.6 | MIT | https://github.com/mbrubeck/rust-debug-unreachable
 nix@0.28.0 | MIT | https://github.com/nix-rust/nix
 nom@8.0.0 | MIT | https://github.com/rust-bakery/nom
@@ -607,7 +605,7 @@ schemars_derive@0.8.22 | MIT | https://github.com/GREsau/schemars
 scopeguard@1.2.0 | MIT OR Apache-2.0 | https://github.com/bluss/scopeguard
 security-framework-sys@2.17.0 | MIT OR Apache-2.0 | https://github.com/kornelski/rust-security-framework
 security-framework@3.7.0 | MIT OR Apache-2.0 | https://github.com/kornelski/rust-security-framework
-selectors@0.36.1 | MPL-2.0 | https://github.com/servo/stylo
+selectors@0.38.0 | MPL-2.0 | https://github.com/servo/stylo
 semver@1.0.28 | MIT OR Apache-2.0 | https://github.com/dtolnay/semver
 serde-untagged@0.1.9 | MIT OR Apache-2.0 | https://github.com/dtolnay/serde-untagged
 serde@1.0.229 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde
@@ -621,6 +619,7 @@ serde_spanned@1.1.1 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
 serde_urlencoded@0.7.1 | MIT OR Apache-2.0 | https://github.com/nox/serde_urlencoded
 serde_with@3.22.0 | MIT OR Apache-2.0 | https://github.com/jonasbb/serde_with/
 serde_with_macros@3.22.0 | MIT OR Apache-2.0 | https://github.com/jonasbb/serde_with/
+serde_yaml_ng@0.10.0 | MIT | https://github.com/acatton/serde-yaml-ng
 serial2@0.2.38 | BSD-2-Clause OR Apache-2.0 | https://github.com/de-vri-es/serial2-rs
 serialize-to-javascript-impl@0.1.2 | MIT OR Apache-2.0 | https://github.com/chippers/serialize-to-javascript
 serialize-to-javascript@0.1.2 | MIT OR Apache-2.0 | https://github.com/chippers/serialize-to-javascript
@@ -650,7 +649,7 @@ strsim@0.11.1 | MIT | https://github.com/rapidfuzz/strsim-rs
 strum@0.28.0 | MIT | https://github.com/Peternator7/strum
 strum_macros@0.28.0 | MIT | https://github.com/Peternator7/strum
 subtle@2.6.1 | BSD-3-Clause | https://github.com/dalek-cryptography/subtle
-swift-rs@1.0.7 | MIT OR Apache-2.0 | https://github.com/Brendonovich/swift-rs
+swift-rs@1.0.8 | MIT OR Apache-2.0 | https://github.com/Brendonovich/swift-rs
 symphonia-bundle-flac@0.5.5 | MPL-2.0 | https://github.com/pdeljanov/Symphonia
 symphonia-bundle-mp3@0.5.5 | MPL-2.0 | https://github.com/pdeljanov/Symphonia
 symphonia-codec-aac@0.5.5 | MPL-2.0 | https://github.com/pdeljanov/Symphonia
@@ -676,27 +675,27 @@ system-configuration-sys@0.6.0 | MIT OR Apache-2.0 | https://github.com/mullvad/
 system-configuration@0.7.0 | MIT OR Apache-2.0 | https://github.com/mullvad/system-configuration-rs
 system-deps@6.2.2 | MIT OR Apache-2.0 | https://github.com/gdesmott/system-deps
 system-deps@9.0.0 | MIT OR Apache-2.0 | https://github.com/gdesmott/system-deps
-tao@0.35.3 | Apache-2.0 | https://github.com/tauri-apps/tao
+tao@0.37.1 | Apache-2.0 | https://github.com/tauri-apps/tao
 tar@0.4.46 | MIT OR Apache-2.0 | https://github.com/composefs/tar-rs
 target-lexicon@0.12.16 | Apache-2.0 WITH LLVM-exception | https://github.com/bytecodealliance/target-lexicon
 target-lexicon@0.13.5 | Apache-2.0 WITH LLVM-exception | https://github.com/bytecodealliance/target-lexicon
-tauri-build@2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
-tauri-codegen@2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
-tauri-macros@2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
+tauri-build@2.7.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
+tauri-codegen@2.7.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
+tauri-macros@2.7.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
 tauri-nspanel@2.1.0 | MIT OR Apache-2.0 | https://crates.io/crates/tauri-nspanel/2.1.0
-tauri-plugin-clipboard-manager@2.3.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
-tauri-plugin-dialog@2.7.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
-tauri-plugin-fs@2.5.2 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
-tauri-plugin-opener@2.5.5 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
-tauri-plugin-prevent-default@5.0.2 | MIT | https://github.com/ferreira-tb/tauri-plugin-prevent-default
-tauri-plugin-single-instance@2.4.5 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
-tauri-plugin-updater@2.12.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
-tauri-plugin@2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
-tauri-runtime-wry@2.11.4 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
-tauri-runtime@2.11.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
-tauri-utils@2.9.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
+tauri-plugin-clipboard-manager@2.4.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
+tauri-plugin-dialog@2.8.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
+tauri-plugin-fs@2.6.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
+tauri-plugin-opener@2.7.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
+tauri-plugin-prevent-default@6.0.0 | MIT | https://github.com/ferreira-tb/tauri-plugin-prevent-default
+tauri-plugin-single-instance@2.5.2 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
+tauri-plugin-updater@2.13.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
+tauri-plugin@2.7.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
+tauri-runtime-wry@2.12.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
+tauri-runtime@2.12.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
+tauri-utils@2.10.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
 tauri-winres@0.3.6 | MIT | https://github.com/tauri-apps/winres
-tauri@2.11.6 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
+tauri@2.12.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
 tempfile@3.27.0 | MIT OR Apache-2.0 | https://github.com/Stebalien/tempfile
 tendril@0.5.1 | MIT OR Apache-2.0 | https://github.com/servo/html5ever
 thingbuf@0.1.6 | MIT | https://github.com/hawkw/thingbuf
@@ -715,12 +714,10 @@ tinyvec_macros@0.1.1 | MIT OR Apache-2.0 OR Zlib | https://github.com/Soveu/tiny
 tokio-macros@2.7.2 | MIT | https://github.com/tokio-rs/tokio
 tokio-rustls@0.26.4 | MIT OR Apache-2.0 | https://github.com/rustls/tokio-rustls
 tokio-util@0.7.19 | MIT | https://github.com/tokio-rs/tokio
-tokio@1.53.1 | MIT | https://github.com/tokio-rs/tokio
+tokio@1.53.2 | MIT | https://github.com/tokio-rs/tokio
 toml@0.8.2 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
-toml@0.9.12+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
-toml@1.1.4+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
+toml@1.1.6+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
 toml_datetime@0.6.3 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
-toml_datetime@0.7.5+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
 toml_datetime@1.1.1+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
 toml_edit@0.19.15 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
 toml_edit@0.20.2 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
@@ -737,24 +734,20 @@ tracing-serde@0.2.0 | MIT | https://github.com/tokio-rs/tracing
 tracing-subscriber@0.3.23 | MIT | https://github.com/tokio-rs/tracing
 tracing@0.1.44 | MIT | https://github.com/tokio-rs/tracing
 transpose@0.2.3 | MIT OR Apache-2.0 | https://github.com/ejmahler/transpose
-tray-icon@0.24.2 | MIT OR Apache-2.0 | https://github.com/tauri-apps/tray-icon
+tray-icon@0.25.1 | MIT OR Apache-2.0 | https://github.com/tauri-apps/tray-icon
 tree_magic_mini@3.2.2 | MIT | https://github.com/mbrubeck/tree_magic/
 try-lock@0.2.5 | MIT | https://github.com/seanmonstar/try-lock
 typeid@1.0.3 | MIT OR Apache-2.0 | https://github.com/dtolnay/typeid
 typenum@1.20.1 | MIT OR Apache-2.0 | https://github.com/paholg/typenum
 uds_windows@1.2.1 | MIT | https://github.com/haraldh/rust_uds_windows
-unic-char-property@0.9.0 | MIT OR Apache-2.0 | https://github.com/open-i18n/rust-unic/
-unic-char-range@0.9.0 | MIT OR Apache-2.0 | https://github.com/open-i18n/rust-unic/
-unic-common@0.9.0 | MIT OR Apache-2.0 | https://github.com/open-i18n/rust-unic/
-unic-ucd-ident@0.9.0 | MIT OR Apache-2.0 | https://github.com/open-i18n/rust-unic/
-unic-ucd-version@0.9.0 | MIT OR Apache-2.0 | https://github.com/open-i18n/rust-unic/
 unicode-ident@1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 | https://github.com/dtolnay/unicode-ident
 unicode-segmentation@1.13.3 | MIT OR Apache-2.0 | https://github.com/unicode-rs/unicode-segmentation
+unsafe-libyaml@0.2.11 | MIT | https://github.com/dtolnay/unsafe-libyaml
 untrusted@0.9.0 | ISC | https://github.com/briansmith/untrusted
 url@2.5.8 | MIT OR Apache-2.0 | https://github.com/servo/rust-url
-urlpattern@0.3.0 | MIT | https://github.com/denoland/rust-urlpattern
+urlpattern@0.6.0 | MIT | https://github.com/denoland/rust-urlpattern
 utf8_iter@1.0.4 | Apache-2.0 OR MIT | https://github.com/hsivonen/utf8_iter
-uuid@1.26.1 | Apache-2.0 OR MIT | https://github.com/uuid-rs/uuid
+uuid@1.27.0 | Apache-2.0 OR MIT | https://github.com/uuid-rs/uuid
 vcpkg@0.2.15 | MIT OR Apache-2.0 | https://github.com/mcgoo/vcpkg-rs
 version-compare@0.2.1 | MIT | https://gitlab.com/timvisee/version-compare
 version_check@0.9.5 | MIT OR Apache-2.0 | https://github.com/SergioBenitez/version_check
@@ -768,61 +761,55 @@ wayland-protocols-wlr@0.3.12 | MIT | https://github.com/smithay/wayland-rs
 wayland-protocols@0.32.13 | MIT | https://github.com/smithay/wayland-rs
 wayland-scanner@0.31.11 | MIT | https://github.com/smithay/wayland-rs
 wayland-sys@0.31.11 | MIT | https://github.com/smithay/wayland-rs
+web-time@1.1.0 | MIT OR Apache-2.0 | https://github.com/daxpedda/web-time
 web_atoms@0.2.6 | MIT OR Apache-2.0 | https://github.com/servo/html5ever
 webkit2gtk-sys@2.0.2 | MIT | https://github.com/tauri-apps/webkit2gtk-rs
 webkit2gtk@2.0.2 | MIT | https://github.com/tauri-apps/webkit2gtk-rs
 webview2-com-macros@0.8.1 | MIT | https://github.com/wravery/webview2-rs
-webview2-com-sys@0.38.2 | MIT | https://github.com/wravery/webview2-rs
-webview2-com@0.38.2 | MIT | https://github.com/wravery/webview2-rs
+webview2-com-sys@0.39.1 | MIT | https://github.com/wravery/webview2-rs
+webview2-com@0.39.1 | MIT | https://github.com/wravery/webview2-rs
 weezl@0.1.12 | MIT OR Apache-2.0 | https://github.com/image-rs/weezl
 wide@1.6.1 | Zlib OR Apache-2.0 OR MIT | https://github.com/Lokathor/wide
 winapi-util@0.1.11 | Unlicense OR MIT | https://github.com/BurntSushi/winapi-util
 winapi@0.3.9 | MIT OR Apache-2.0 | https://github.com/retep998/winapi-rs
-window-vibrancy@0.6.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri-plugin-vibrancy
 window-vibrancy@0.8.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri-plugin-vibrancy
-windows-collections@0.2.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-collections@0.3.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
-windows-core@0.61.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-core@0.62.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
-windows-future@0.2.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-future@0.3.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-implement@0.60.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-interface@0.59.3 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
-windows-link@0.1.3 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-link@0.2.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
-windows-numerics@0.2.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-numerics@0.3.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-registry@0.6.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
-windows-result@0.3.4 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-result@0.4.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
-windows-strings@0.4.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-strings@0.5.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
+windows-sys@0.45.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-sys@0.52.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-sys@0.59.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-sys@0.60.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-sys@0.61.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
+windows-targets@0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-targets@0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-targets@0.53.5 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
-windows-threading@0.1.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-threading@0.2.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-version@0.1.7 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
-windows@0.61.3 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows@0.62.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
+windows_aarch64_msvc@0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows_aarch64_msvc@0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows_aarch64_msvc@0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows_x86_64_gnu@0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows_x86_64_gnu@0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
+windows_x86_64_msvc@0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows_x86_64_msvc@0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows_x86_64_msvc@0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 winnow@0.5.40 | MIT | https://github.com/winnow-rs/winnow
-winnow@0.7.15 | MIT | https://github.com/winnow-rs/winnow
 winnow@1.0.4 | MIT | https://github.com/winnow-rs/winnow
 winreg@0.10.1 | MIT | https://github.com/gentoo90/winreg-rs
 winreg@0.55.0 | MIT | https://github.com/gentoo90/winreg-rs
 winreg@0.56.0 | MIT | https://github.com/gentoo90/winreg-rs
 wl-clipboard-rs@0.9.3 | MIT OR Apache-2.0 | https://github.com/YaLTeR/wl-clipboard-rs
 writeable@0.6.3 | Unicode-3.0 | https://github.com/unicode-org/icu4x
-wry@0.55.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/wry
+wry@0.57.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/wry
 x11-dl@2.21.0 | MIT | https://github.com/AltF02/x11-rs.git
 x11@2.21.0 | MIT | https://github.com/AltF02/x11-rs.git
 x11rb-protocol@0.13.2 | MIT OR Apache-2.0 | https://github.com/psychon/x11rb
@@ -1149,7 +1136,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  @tauri-apps/api@2.11.1
+  @tauri-apps/api@2.12.1
 
 Apache License
                            Version 2.0, January 2004
@@ -1331,7 +1318,40 @@ Apache License
 ========================================
 
 Used by:
-  @tauri-apps/api@2.11.1
+  @tauri-apps/api@2.12.1
+
+SPDXVersion: SPDX-2.1
+DataLicense: CC0-1.0
+PackageName: tauri
+DataFormat: SPDXRef-1
+PackageSupplier: Organization: The Tauri Programme in the Commons Conservancy
+PackageHomePage: https://tauri.app
+PackageLicenseDeclared: Apache-2.0
+PackageLicenseDeclared: MIT
+PackageCopyrightText: 2019-2025, The Tauri Programme in the Commons Conservancy
+PackageSummary: <text>Tauri is a rust project that enables developers to make secure
+and small desktop applications using a web frontend.
+                </text>
+PackageComment: <text>The package includes the following libraries; see
+Relationship information.
+                </text>
+Created: 2019-05-20T09:00:00Z
+PackageDownloadLocation: git://github.com/tauri-apps/tauri
+PackageDownloadLocation: git+https://github.com/tauri-apps/tauri.git
+PackageDownloadLocation: git+ssh://github.com/tauri-apps/tauri.git
+Creator: Person: Daniel Thompson-Yvetot
+
+========================================
+
+Used by:
+  @tauri-apps/api@2.12.1
+  tauri-build@2.7.1
+  tauri-codegen@2.7.1
+  tauri-macros@2.7.1
+  tauri-runtime-wry@2.12.1
+  tauri-runtime@2.12.1
+  tauri-utils@2.10.1
+  tauri@2.12.1
 
 MIT License
 
@@ -1358,8 +1378,8 @@ SOFTWARE.
 ========================================
 
 Used by:
-  @tauri-apps/plugin-clipboard-manager@2.3.3
-  @tauri-apps/plugin-dialog@2.7.3
+  @tauri-apps/plugin-clipboard-manager@2.4.1
+  @tauri-apps/plugin-dialog@2.8.1
 
 SPDXVersion: SPDX-2.1
 DataLicense: CC0-1.0
@@ -1492,6 +1512,7 @@ Used by:
   thiserror@2.0.21
   typeid@1.0.3
   unicode-ident@1.0.24
+  unsafe-libyaml@0.2.11
   x11-dl@2.21.0
   x11@2.21.0
   zmij@1.0.23
@@ -1621,8 +1642,8 @@ THE SOFTWARE.
 ========================================
 
 Used by:
-  alloc-no-stdlib@2.0.4
-  brotli@8.0.4
+  alloc-no-stdlib@3.0.0
+  brotli@9.0.0
 
 Copyright (c) 2016 Dropbox, Inc.
 All rights reserved.
@@ -1640,7 +1661,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 ========================================
 
 Used by:
-  alloc-stdlib@0.2.4
+  alloc-stdlib@0.3.0
 
 Copyright (c) <year> <owner>.
 
@@ -2155,8 +2176,8 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
   block2@0.6.2
-  brotli-decompressor@5.0.3
-  cargo_toml@0.22.3
+  brotli-decompressor@6.0.1
+  cargo_toml@1.0.1
   dasp_sample@0.11.0
   dispatch2@0.3.1
   dlopen2@0.8.2
@@ -2190,60 +2211,43 @@ Used by:
   objc2@0.6.4
   realfft@3.5.0
   siphasher@1.0.3
-  tauri-build@2.6.3
-  tauri-codegen@2.6.3
-  tauri-macros@2.6.3
-  tauri-plugin-clipboard-manager@2.3.3
-  tauri-plugin-dialog@2.7.3
-  tauri-plugin-fs@2.5.2
-  tauri-plugin-opener@2.5.5
-  tauri-plugin-single-instance@2.4.5
-  tauri-plugin-updater@2.12.0
-  tauri-plugin@2.6.3
-  tauri-runtime-wry@2.11.4
-  tauri-runtime@2.11.3
-  tauri-utils@2.9.3
-  tauri@2.11.6
-  unic-char-property@0.9.0
-  unic-char-range@0.9.0
-  unic-common@0.9.0
-  unic-ucd-ident@0.9.0
-  unic-ucd-version@0.9.0
+  tauri-plugin-clipboard-manager@2.4.1
+  tauri-plugin-dialog@2.8.1
+  tauri-plugin-fs@2.6.0
+  tauri-plugin-opener@2.7.0
+  tauri-plugin-single-instance@2.5.2
+  tauri-plugin-updater@2.13.1
+  tauri-plugin@2.7.1
   webview2-com-macros@0.8.1
-  webview2-com-sys@0.38.2
-  webview2-com@0.38.2
-  windows-collections@0.2.0
+  webview2-com-sys@0.39.1
+  webview2-com@0.39.1
   windows-collections@0.3.2
-  windows-core@0.61.2
   windows-core@0.62.2
-  windows-future@0.2.1
   windows-future@0.3.2
   windows-implement@0.60.2
   windows-interface@0.59.3
-  windows-link@0.1.3
   windows-link@0.2.1
-  windows-numerics@0.2.0
   windows-numerics@0.3.1
   windows-registry@0.6.1
-  windows-result@0.3.4
   windows-result@0.4.1
-  windows-strings@0.4.2
   windows-strings@0.5.1
+  windows-sys@0.45.0
   windows-sys@0.52.0
   windows-sys@0.59.0
   windows-sys@0.60.2
   windows-sys@0.61.2
+  windows-targets@0.42.2
   windows-targets@0.52.6
   windows-targets@0.53.5
-  windows-threading@0.1.0
   windows-threading@0.2.1
   windows-version@0.1.7
-  windows@0.61.3
   windows@0.62.2
+  windows_aarch64_msvc@0.42.2
   windows_aarch64_msvc@0.52.6
   windows_aarch64_msvc@0.53.1
   windows_x86_64_gnu@0.52.6
   windows_x86_64_gnu@0.53.1
+  windows_x86_64_msvc@0.42.2
   windows_x86_64_msvc@0.52.6
   windows_x86_64_msvc@0.53.1
 
@@ -2269,7 +2273,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 ========================================
 
 Used by:
-  brotli@8.0.4
+  brotli@9.0.0
 
 Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.
 
@@ -2410,7 +2414,7 @@ DEALINGS IN THE SOFTWARE.
 ========================================
 
 Used by:
-  cfb@0.7.3
+  cfb@0.14.0
 
 MIT License
 
@@ -3133,8 +3137,8 @@ DEALINGS IN THE SOFTWARE.
 ========================================
 
 Used by:
-  cssparser-macros@0.6.1
-  cssparser@0.36.0
+  cssparser-macros@0.7.1
+  cssparser@0.37.0
   dtoa-short@0.3.5
 
 Mozilla Public License Version 2.0
@@ -3539,8 +3543,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  ctor-proc-macro@0.0.7
-  ctor@0.8.0
+  ctor@1.0.13
   tinyvec@1.12.0
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
@@ -3980,7 +3983,6 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
   dirs-sys@0.5.0
-  dirs@6.0.0
   dirs@7.0.0
 
 Copyright (c) 2018-2019 dirs-rs contributors
@@ -4006,7 +4008,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  dom_query@0.27.0
+  dom_query@0.28.0
 
 MIT License
 
@@ -4071,7 +4073,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
   dpi@0.1.2
-  tao@0.35.3
+  tao@0.37.1
 
 Apache License
                            Version 2.0, January 2004
@@ -5737,8 +5739,8 @@ DEALINGS IN THE SOFTWARE.
 ========================================
 
 Used by:
-  html5ever@0.38.0
-  markup5ever@0.38.0
+  html5ever@0.39.0
+  markup5ever@0.39.0
   web_atoms@0.2.6
 
 Copyright (c) 2014 The html5ever Project Developers
@@ -6161,7 +6163,7 @@ DEALINGS IN THE SOFTWARE.
 ========================================
 
 Used by:
-  infer@0.19.0
+  infer@0.22.0
 
 MIT License
 
@@ -6358,7 +6360,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  json-patch@3.0.1
+  json-patch@4.2.0
 
 MIT License
 
@@ -6385,7 +6387,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  jsonptr@0.6.3
+  jsonptr@0.7.1
 
 MIT License
 
@@ -6412,7 +6414,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  keyboard-types@0.7.0
+  keyboard-types@0.8.3
 
 Copyright (c) 2017 Pyfisch
 
@@ -6527,7 +6529,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  libc@0.2.189
+  libc@0.2.190
 
 Copyright (c) The Rust Project Developers
 
@@ -6679,7 +6681,7 @@ DEALINGS IN THE SOFTWARE.
 ========================================
 
 Used by:
-  lucide-react@1.48.0
+  lucide-react@1.52.0
 
 ISC License
 
@@ -7155,8 +7157,8 @@ Apache License
 ========================================
 
 Used by:
-  muda@0.19.3
-  tray-icon@0.24.2
+  muda@0.20.0
+  tray-icon@0.25.1
 
 MIT License
 
@@ -7455,7 +7457,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 
 Used by:
   option-ext@0.2.0
-  selectors@0.36.1
+  selectors@0.38.0
   symphonia-bundle-flac@0.5.5
   symphonia-bundle-mp3@0.5.5
   symphonia-codec-aac@0.5.5
@@ -9570,9 +9572,7 @@ Used by:
   serde_spanned@0.6.9
   serde_spanned@1.1.1
   toml@0.8.2
-  toml@0.9.12+spec-1.1.0
-  toml@1.1.4+spec-1.1.0
-  toml_datetime@0.7.5+spec-1.1.0
+  toml@1.1.6+spec-1.1.0
   toml_datetime@1.1.1+spec-1.1.0
   toml_edit@0.19.15
   toml_edit@0.20.2
@@ -9630,6 +9630,34 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+========================================
+
+Used by:
+  serde_yaml_ng@0.10.0
+
+MIT License
+
+Copyright 2024 Antoine Catton
+Copyright 2016-2024 David Tolnay
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the “Software”), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ========================================
 
@@ -9901,7 +9929,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  simple-icons@16.32.0
+  simple-icons@16.34.0
 
 # CC0 1.0 Universal
 
@@ -10201,7 +10229,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ========================================
 
 Used by:
-  swift-rs@1.0.7
+  swift-rs@1.0.8
 
 Copyright (c) 2023 The swift-rs Developers
 
@@ -10554,7 +10582,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  tauri-plugin-prevent-default@5.0.2
+  tauri-plugin-prevent-default@6.0.0
 
 MIT License
 
@@ -10873,7 +10901,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
   tokio-util@0.7.19
-  tokio@1.53.1
+  tokio@1.53.2
 
 MIT License
 
@@ -11246,7 +11274,7 @@ Used by:
 ========================================
 
 Used by:
-  urlpattern@0.3.0
+  urlpattern@0.6.0
 
 MIT License
 
@@ -11273,7 +11301,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  uuid@1.26.1
+  uuid@1.27.0
 
 Copyright (c) 2014 The Rust Project Developers
 Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon
@@ -11583,6 +11611,33 @@ The above is the version of the MIT "Expat" License used by X.org:
 ========================================
 
 Used by:
+  web-time@1.1.0
+
+MIT License
+
+Copyright (c) 2023 dAxpeDDa
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+========================================
+
+Used by:
   webkit2gtk-sys@2.0.2
 
 Copyright (c) 2016 Boucher, Antoni <bouanto@zoho.com>
@@ -11712,7 +11767,6 @@ SOFTWARE.
 ========================================
 
 Used by:
-  window-vibrancy@0.6.0
   window-vibrancy@0.8.1
 
 MIT License
@@ -11741,7 +11795,6 @@ SOFTWARE.
 
 Used by:
   winnow@0.5.40
-  winnow@0.7.15
   winnow@1.0.4
 
 Permission is hereby granted, free of charge, to any person obtaining
@@ -11824,7 +11877,7 @@ DEALINGS IN THE SOFTWARE.
 ========================================
 
 Used by:
-  wry@0.55.1
+  wry@0.57.0
 
 MIT License
 

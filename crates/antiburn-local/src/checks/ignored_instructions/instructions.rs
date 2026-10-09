@@ -8,6 +8,7 @@ pub const MAX_RULE_SECTION_BYTES: usize = MAX_INSTRUCTION_BYTES;
 const MAX_SPLIT_LIST_ITEMS: usize = 256;
 const MAX_CHUNK_BYTES: usize = 8 * 1024;
 const CHUNK_OVERLAP_BYTES: usize = 512;
+const MAX_CONTEXT_BYTES: usize = 32 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -46,6 +47,22 @@ pub struct InstructionRuleSection {
     pub start_line: u32,
     pub end_line: u32,
     pub evaluable: bool,
+    #[serde(default)]
+    pub context: Vec<InstructionContextRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstructionContextRange {
+    pub text: String,
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub source_bytes: usize,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub enclosing_start_byte: usize,
+    pub enclosing_end_byte: usize,
+    pub enclosing_section_complete: bool,
+    pub context_clipped: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,7 +114,10 @@ pub enum MarkdownLimit {
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
+    digest_hex(Sha256::digest(bytes).as_slice())
+}
+
+pub(crate) fn digest_hex(digest: &[u8]) -> String {
     let mut output = String::with_capacity(digest.len() * 2);
     for byte in digest {
         use std::fmt::Write as _;
@@ -207,6 +227,7 @@ pub fn segment_markdown(
                 start_line: item_start,
                 end_line: item_end,
                 evaluable,
+                context: Vec::new(),
             });
         }
         Ok(())
@@ -294,7 +315,174 @@ pub fn segment_markdown(
         start_line,
         line_offset.saturating_add(lines.len() as u32),
     )?;
+    attach_section_context(markdown, &mut sections);
     Ok(sections)
+}
+
+fn attach_section_context(markdown: &str, sections: &mut [InstructionRuleSection]) {
+    let mut offsets = vec![0];
+    offsets.extend(markdown.match_indices('\n').map(|(offset, _)| offset + 1));
+    let headings = context_headings(markdown);
+    let mut regions: Vec<(usize, usize, Option<usize>)> = Vec::new();
+    let mut ancestors: Vec<usize> = Vec::new();
+    for (index, &(start, level)) in headings.iter().enumerate() {
+        while ancestors
+            .last()
+            .is_some_and(|parent| headings[*parent].1 >= level)
+        {
+            let parent = ancestors
+                .pop()
+                .expect("the current heading has an ancestor");
+            regions[parent].1 = start;
+        }
+        regions.push((start, markdown.len(), ancestors.last().copied()));
+        ancestors.push(index);
+    }
+    for section in sections {
+        let target_start = offsets[(section.start_line - 1) as usize];
+        let target_end = offsets
+            .get(section.end_line as usize)
+            .copied()
+            .unwrap_or(markdown.len());
+        let mut ranges = Vec::new();
+        let mut enclosing_start = target_start;
+        let mut enclosing_end = target_end;
+        let mut context_clipped = false;
+        let mut ancestor = regions
+            .partition_point(|(start, _, _)| *start <= target_start)
+            .checked_sub(1);
+        while let Some(position) = ancestor {
+            let (start, end, parent) = regions[position];
+            ancestor = parent;
+            if end < target_end {
+                continue;
+            }
+            if ranges.is_empty() {
+                enclosing_start = start;
+                enclosing_end = end;
+            }
+            if end - start <= MAX_CHUNK_BYTES {
+                ranges.retain(|(first, last)| *first < start || *last > end);
+                ranges.push((start, end));
+            } else if ranges.is_empty() {
+                context_clipped = true;
+                ranges.extend(adjacent_context_ranges(markdown, start, end, target_start));
+            } else {
+                let prelude_end = headings.get(position + 1).map_or(end, |(start, _)| *start);
+                context_clipped |= prelude_end - start > MAX_CHUNK_BYTES;
+                let prelude = chunk_text_with_ranges(&markdown[start..prelude_end]);
+                if let Some(&(first, last)) = prelude.last() {
+                    ranges.push((start + first, start + last));
+                }
+                if prelude.len() > 1 {
+                    let (first, last) = prelude[0];
+                    ranges.push((start + first, start + last));
+                }
+            }
+        }
+        if ranges.is_empty() {
+            ranges = adjacent_context_ranges(markdown, 0, markdown.len(), target_start);
+            enclosing_start = 0;
+            enclosing_end = markdown.len();
+            context_clipped = markdown.len() > MAX_CHUNK_BYTES;
+        }
+        let mut remaining = MAX_CONTEXT_BYTES;
+        ranges.retain(|(start, end)| {
+            if end - start > remaining {
+                context_clipped = true;
+                false
+            } else {
+                remaining -= end - start;
+                true
+            }
+        });
+        ranges.sort_unstable();
+        let mut merged: Vec<(usize, usize)> = Vec::new();
+        for (start, end) in ranges {
+            if let Some(last) = merged.last_mut().filter(|last| start <= last.1) {
+                last.1 = last.1.max(end);
+            } else {
+                merged.push((start, end));
+            }
+        }
+        let enclosing_section_complete = merged
+            .iter()
+            .any(|(start, end)| *start <= enclosing_start && *end >= enclosing_end);
+        section.context = merged
+            .into_iter()
+            .map(|(start, end)| InstructionContextRange {
+                text: markdown[start..end].to_owned(),
+                start_byte: start,
+                end_byte: end,
+                source_bytes: markdown.len(),
+                start_line: offsets.partition_point(|offset| *offset <= start) as u32,
+                end_line: offsets.partition_point(|offset| *offset < end) as u32,
+                enclosing_start_byte: enclosing_start,
+                enclosing_end_byte: enclosing_end,
+                enclosing_section_complete,
+                context_clipped,
+            })
+            .collect();
+    }
+}
+
+fn context_headings(markdown: &str) -> Vec<(usize, usize)> {
+    let mut headings = Vec::new();
+    let lines = markdown.lines().collect::<Vec<_>>();
+    let mut offset = 0;
+    let mut in_fence = false;
+    let frontmatter = yaml_frontmatter_line_count(&lines).unwrap_or_default();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+        }
+        if !in_fence && index >= frontmatter {
+            let level = markdown_heading(trimmed)
+                .map(|(level, _)| level)
+                .or_else(|| {
+                    let underline = lines.get(index + 1)?.trim();
+                    if trimmed.is_empty() || underline.is_empty() {
+                        None
+                    } else if underline.chars().all(|c| c == '=') {
+                        Some(1)
+                    } else if underline.chars().all(|c| c == '-') {
+                        Some(2)
+                    } else {
+                        None
+                    }
+                });
+            if let Some(level) = level {
+                headings.push((offset, level));
+            }
+        }
+        offset += line.len()
+            + if markdown.as_bytes().get(offset + line.len()) == Some(&b'\r') {
+                2
+            } else {
+                1
+            };
+    }
+    headings
+}
+
+fn adjacent_context_ranges(
+    markdown: &str,
+    start: usize,
+    end: usize,
+    target: usize,
+) -> Vec<(usize, usize)> {
+    let chunks = chunk_text_with_ranges(&markdown[start..end]);
+    let nearest = chunks
+        .iter()
+        .position(|(first, last)| start + *first <= target && start + *last > target)
+        .unwrap_or(0);
+    chunks
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| index.abs_diff(nearest) <= 1)
+        .map(|(_, (first, last))| (start + first, start + last))
+        .collect()
 }
 
 fn background_heading(heading: &str) -> bool {
@@ -363,7 +551,7 @@ pub fn chunk_text_with_ranges(text: &str) -> Vec<(usize, usize)> {
         if end == text.len() {
             break;
         }
-        let overlap_target = end.saturating_sub(CHUNK_OVERLAP_BYTES);
+        let overlap_target = text.ceil_char_boundary(end.saturating_sub(CHUNK_OVERLAP_BYTES));
         let next = text[overlap_target..end]
             .char_indices()
             .find(|(_, character)| *character == '\n')
@@ -374,7 +562,7 @@ pub fn chunk_text_with_ranges(text: &str) -> Vec<(usize, usize)> {
                     .next()
                     .map_or(end, |(offset, _)| overlap_target + offset)
             });
-        start = next.max(start + 1);
+        start = if next > start { next } else { end };
     }
     chunks
 }
@@ -481,6 +669,137 @@ fn markdown_heading(line: &str) -> Option<(usize, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn small_enclosing_section_keeps_nonprefix_siblings_without_changing_target_lines() {
+        let text = "# Checks\nOnly during release work.\n\n- Run all tests.\n- Documentation-only work needs no test run.\n- Keep results private.";
+        let sections = segment_markdown("AGENTS.md", text).unwrap();
+        assert_eq!(sections.len(), 3);
+        assert_eq!((sections[0].start_line, sections[0].end_line), (4, 4));
+        assert!(!sections[0].text.contains("Documentation-only"));
+        for section in sections {
+            assert_eq!(section.context.len(), 1);
+            assert_eq!(section.context[0].text, text);
+            assert!(section.context[0].enclosing_section_complete);
+            assert_eq!(
+                &text[section.context[0].start_byte..section.context[0].end_byte],
+                section.context[0].text
+            );
+        }
+    }
+
+    #[test]
+    fn descendant_context_keeps_small_parent_exceptions_after_child_headings() {
+        let text = "# Release\nOnly when publishing.\n\n## Tests\nRun the release tests.\n\n## Permitted cases\nDocumentation-only releases need no tests.";
+        let sections = segment_markdown("AGENTS.md", text).unwrap();
+        let tests = sections
+            .iter()
+            .find(|section| section.heading == "Release / Tests")
+            .unwrap();
+        assert!(
+            tests
+                .context
+                .iter()
+                .any(|range| range.text.contains("Documentation-only releases"))
+        );
+        assert!(
+            tests
+                .context
+                .iter()
+                .any(|range| range.text.contains("Only when publishing"))
+        );
+    }
+
+    #[test]
+    fn large_section_samples_adjacent_middle_blocks_with_exact_ranges_and_limits() {
+        let text = format!(
+            "# Checks\n{}\n- Run the release tests.\n- Documentation-only work needs no test run.\n{}",
+            "Background é line.\n".repeat(2000),
+            "Other background line.\n".repeat(2000)
+        );
+        let sections = segment_markdown("AGENTS.md", &text).unwrap();
+        let target = sections
+            .iter()
+            .find(|section| section.text.contains("Run the release tests"))
+            .unwrap();
+        assert!(
+            target
+                .context
+                .iter()
+                .any(|range| range.text.contains("Documentation-only work"))
+        );
+        assert!(
+            target
+                .context
+                .iter()
+                .all(|range| !range.enclosing_section_complete)
+        );
+        assert!(
+            target
+                .context
+                .iter()
+                .map(|range| range.text.len())
+                .sum::<usize>()
+                <= MAX_CONTEXT_BYTES
+        );
+        for range in &target.context {
+            assert_eq!(&text[range.start_byte..range.end_byte], range.text);
+            assert_eq!(range.source_bytes, text.len());
+            assert_eq!(
+                range.start_line,
+                text[..range.start_byte]
+                    .bytes()
+                    .filter(|byte| *byte == b'\n')
+                    .count() as u32
+                    + 1
+            );
+        }
+    }
+
+    #[test]
+    fn large_parent_context_keeps_the_late_condition_instead_of_only_a_prefix() {
+        let text = format!(
+            "# Release\nOnly when publishing.\n{}\nDocumentation-only releases need no tests.\n\n## Tests\nRun the release tests.",
+            "Background line.\n".repeat(3000)
+        );
+        let sections = segment_markdown("AGENTS.md", &text).unwrap();
+        let tests = sections
+            .iter()
+            .find(|section| section.heading == "Release / Tests")
+            .unwrap();
+        assert!(
+            tests
+                .context
+                .iter()
+                .any(|range| range.text.contains("Only when publishing"))
+        );
+        assert!(tests.context.iter().any(|range| {
+            range
+                .text
+                .contains("Documentation-only releases need no tests")
+        }));
+        assert!(tests.context.iter().any(|range| range.context_clipped));
+        assert!(
+            tests
+                .context
+                .iter()
+                .map(|range| range.text.len())
+                .sum::<usize>()
+                <= MAX_CONTEXT_BYTES
+        );
+    }
+
+    #[test]
+    fn context_heading_ranges_handle_crlf_setext_and_fenced_headings() {
+        let text = "Rules\r\n=====\r\n- Run tests.\r\n```md\r\n# Example\r\n```\r\n- Docs-only work needs no tests.\r\n";
+        let sections = segment_markdown("AGENTS.md", text).unwrap();
+        assert_eq!(sections.len(), 2);
+        assert!(
+            sections
+                .iter()
+                .all(|section| section.context[0].text == text)
+        );
+    }
 
     #[test]
     fn segmentation_keeps_nested_conditions_and_exceptions_together() {

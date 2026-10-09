@@ -127,7 +127,7 @@ export const SETTINGS_SEARCH_TARGETS = {
   },
   ignoredInstructions: {
     pane: "checks",
-    label: "Ignored Instructions",
+    label: "Ignored instructions",
     aliases: ["missed project instructions", "instruction conflicts"],
   },
   checkHistory: {
@@ -138,7 +138,52 @@ export const SETTINGS_SEARCH_TARGETS = {
   typeSafeApiKey: {
     pane: "checks",
     label: "API key",
-    aliases: ["TypeSafe API key", "Jev", "enable checks", "usage charges"],
+    aliases: [
+      "TypeSafe API key",
+      "Cloudflare API token",
+      "provider credential",
+      "Jev",
+      "enable checks",
+      "usage charges",
+    ],
+  },
+  skillOpportunitiesCheck: {
+    pane: "checks",
+    label: "Enable skill opportunities",
+    aliases: ["enable skill opportunities", "skill check preference"],
+  },
+  overExploringCheck: {
+    pane: "checks",
+    label: "Enable over-exploring",
+    aliases: ["enable over-exploring", "reading check preference"],
+  },
+  scopeCreepCheck: {
+    pane: "checks",
+    label: "Enable scope creep",
+    aliases: ["enable scope creep", "task scope preference"],
+  },
+  smartCheckProvider: {
+    pane: "checks",
+    label: "Provider",
+    aliases: [
+      "smart check provider",
+      "Use Ollama or another provider",
+      "decision model",
+      "Ollama",
+      "Cloudflare",
+      "custom endpoint",
+      "saved connections",
+    ],
+  },
+  smartCheckLimits: {
+    pane: "checks",
+    label: "Model limits",
+    aliases: ["capabilities", "context tokens", "refresh model", "manual limits"],
+  },
+  smartChecksEnabled: {
+    pane: "checks",
+    label: "Enable smart burn checks",
+    aliases: ["pause smart checks", "Jev checks"],
   },
   theme: {
     pane: "appearance",

@@ -69,9 +69,21 @@ vi.mock("./main-window/overview/ProgressNav", () => ({
   ),
 }))
 vi.mock("./main-window/MainActivityView", () => ({
-  MainActivityView: ({ onOpenRangeSettings }: { onOpenRangeSettings: () => void }) => (
+  MainActivityView: ({
+    onOpenRangeSettings,
+    onOpenMemory,
+  }: {
+    onOpenRangeSettings: () => void
+    onOpenMemory?: (target: { slug: string; path: string }) => void
+  }) => (
     <>
       <p>Sessions</p>
+      <button
+        type="button"
+        onClick={() => onOpenMemory?.({ slug: "-p", path: "/p/memory/a.md" })}
+      >
+        Open memory
+      </button>
       <button type="button" onClick={onOpenRangeSettings}>
         Range settings
       </button>
@@ -94,6 +106,10 @@ vi.mock("./main-window/OverviewView", () => ({
       </button>
     </div>
   ),
+}))
+
+vi.mock("./main-window/memories/MemoriesView", () => ({
+  MemoriesView: () => <h1>Memories</h1>,
 }))
 
 vi.mock("./main-window/quota/QuotaView", () => ({
@@ -455,7 +471,7 @@ describe("MainWindowView", () => {
   it("opens Overview by default and keeps Checks and Sessions in the sidebar", () => {
     setWindowWidth(1000)
     render(<MainWindowView />)
-    expect(screen.getAllByRole("tab")).toHaveLength(4)
+    expect(screen.getAllByRole("tab")).toHaveLength(5)
     expect(screen.getByRole("tab", { name: "Limits" })).toBeVisible()
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute(
       "aria-selected",
@@ -600,7 +616,7 @@ describe("MainWindowView", () => {
   describe("Sessions navigation", () => {
     it("keeps filters out of the sidebar before and after entries load", () => {
       render(<MainWindowView />)
-      const expected = ["Overview", "Limits", "Checks", "Sessions"]
+      const expected = ["Overview", "Limits", "Checks", "Sessions", "Memories"]
       expect(screen.getAllByRole("tab").map((item) => item.textContent)).toEqual(expected)
       act(() =>
         activitySession().setEntries([
@@ -731,6 +747,18 @@ describe("MainWindowView", () => {
       })
       fireEvent.click(screen.getByRole("button", { name: "Back" }))
       expect(screen.getByRole("tabpanel", { name: "Limits" })).toBeVisible()
+    })
+
+    it("opens a session's memory in the Memories view and measures it", () => {
+      render(<MainWindowView />)
+      fireEvent.click(tab("Sessions"))
+      fireEvent.click(screen.getByRole("button", { name: "Open memory" }))
+      expect(screen.getByRole("tabpanel", { name: "Memories" })).toBeVisible()
+      expect(noteInteraction).toHaveBeenCalledWith({
+        kind: "memoryAction",
+        action: "open_from_session",
+        outcome: "succeeded",
+      })
     })
 
     it("keeps Limits mounted after navigating away, instead of unmounting it", () => {

@@ -104,7 +104,7 @@ export function SettingsView() {
         title="Checks"
         description="antiburn checks each session for anti-patterns in the context window, caching, and unused tools or skills."
       >
-        <ChecksStepSettings />
+        <ChecksStepSettings control={control} targetRevision={targetRevision} />
       </Pane>
     ),
     appearance: () => <AppearancePane {...controller} />,

@@ -135,7 +135,7 @@ describe("ProgressNav's row visibility", () => {
         checks: selected.map((check) => ({ ...check, enabled: true })),
       }),
     )
-    expect(navValue(/^Checks/)).toBe("10")
+    expect(navValue(/^Checks/)).toBe("13")
     act(() =>
       checkAvailabilityStore.set({
         ...emptyCheckAvailability,
@@ -147,7 +147,7 @@ describe("ProgressNav's row visibility", () => {
         })),
       }),
     )
-    expect(navValue(/^Checks/)).toBe("8")
+    expect(navValue(/^Checks/)).toBe("11")
   })
 
   it("shows the failing count on the To fix row", () => {

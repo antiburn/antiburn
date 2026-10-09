@@ -1225,7 +1225,10 @@ fn v52_widens_the_lane_check_and_resets_the_model_lane_cursor() {
 
     let store = Store::from_connection(connection, Path::new("/tmp/antiburn-v52-test").into())
         .expect("migration reaches the head");
-    assert_eq!(store.schema_version().unwrap(), 71);
+    assert_eq!(
+        store.schema_version().unwrap(),
+        crate::store::schema::MIGRATIONS.len() as i64
+    );
 
     let connection = store.lock();
     let samples: i64 = connection

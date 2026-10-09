@@ -400,3 +400,58 @@ fn updating_settings_merges_against_the_latest_stored_value() {
     assert!(saved.onboarding_completed);
     assert_eq!(store.settings().unwrap(), saved);
 }
+
+/// Open a store at v71, run `seed` on its connection, and migrate to v72.
+fn migrate_to_v72(seed: &str) -> Store {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..71] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection.pragma_update(None, "user_version", 71).unwrap();
+    connection.execute_batch(seed).unwrap();
+    Store::from_connection(
+        connection,
+        std::path::Path::new("/tmp/antiburn-v72-disabled-agents").to_path_buf(),
+    )
+    .unwrap()
+}
+
+const V72_SESSIONS: &str = "INSERT INTO session (environment_key, agent, session_id, source_kind,
+        source_label, first_seen_at, last_seen_at, incarnation)
+    VALUES ('native', 'codex', 'a', 'file', 'a', 'now', 'now', 1),
+           ('native', 'cursor', 'b', 'file', 'b', 'now', 'now', 1);";
+
+#[test]
+fn v72_keeps_only_disabled_agents_that_have_sessions() {
+    let store = migrate_to_v72(&format!(
+        "{V72_SESSIONS}
+         INSERT INTO setting (key, value)
+         VALUES ('disabledAgents', 'amp-code, Cursor,,codex,pi,cursor');"
+    ));
+
+    assert_eq!(store.schema_version().unwrap(), 74);
+    assert_eq!(
+        store.settings().unwrap().disabled_agents.as_str(),
+        "codex,cursor"
+    );
+}
+
+#[test]
+fn v72_clears_a_disabled_list_with_no_session_agents() {
+    let store = migrate_to_v72(
+        "INSERT INTO setting (key, value) VALUES ('disabledAgents', 'amp-code,pi');",
+    );
+
+    assert_eq!(store.schema_version().unwrap(), 74);
+    assert!(!store.settings().unwrap().disabled_agents.any());
+}
+
+#[test]
+fn v72_leaves_an_empty_or_missing_disabled_list_alone() {
+    let empty = migrate_to_v72("INSERT INTO setting (key, value) VALUES ('disabledAgents', '');");
+    assert!(!empty.settings().unwrap().disabled_agents.any());
+
+    let missing = migrate_to_v72(V72_SESSIONS);
+    assert_eq!(missing.internal_value("disabledAgents"), None);
+    assert!(!missing.settings().unwrap().disabled_agents.any());
+}

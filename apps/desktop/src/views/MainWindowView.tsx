@@ -1,4 +1,4 @@
-import { Flame, Gauge, House, MessagesSquare, Settings } from "lucide-react"
+import { Brain, Flame, Gauge, House, MessagesSquare, Settings } from "lucide-react"
 import { useState, useSyncExternalStore, type ReactNode } from "react"
 import { flushSync } from "react-dom"
 
@@ -23,6 +23,8 @@ import {
   subscribeOverviewProgress,
 } from "./main-window/overview/overviewProgressStore"
 import { ProgressNav } from "./main-window/overview/ProgressNav"
+import { MemoriesSession } from "./main-window/memories/MemoriesSession"
+import { MemoriesView } from "./main-window/memories/MemoriesView"
 import { QuotaSession } from "./main-window/quota/QuotaSession"
 import { QuotaView } from "./main-window/quota/QuotaView"
 
@@ -71,6 +73,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   )
   const [overviewSession] = useState(() => new MainOverviewSession(activitySession))
   const [quotaSession] = useState(() => new QuotaSession())
+  const [memoriesSession] = useState(() => new MemoriesSession())
   const navigation = useSyncExternalStore(
     navigationSession.subscribe,
     navigationSession.getSnapshot,
@@ -161,8 +164,21 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
             )
             selectSection("quota")
           }}
+          onOpenMemory={(target) => {
+            noteInteraction({
+              kind: "memoryAction",
+              action: "open_from_session",
+              outcome: "succeeded",
+            })
+            memoriesSession.focus(target.slug, target.path)
+            selectSection("memories")
+          }}
         />
       ),
+    },
+    memories: {
+      icon: Brain,
+      render: ({ active }) => <MemoriesView active={active} session={memoriesSession} />,
     },
   }
   const availableSections: readonly MainWindowSection[] =

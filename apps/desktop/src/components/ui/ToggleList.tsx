@@ -20,7 +20,8 @@ export function ToggleList({ children }: { children: ReactNode }) {
 /**
  * One row of a `ToggleList`: an icon, a name with an optional `detail` after
  * it, short `facts`, and the controls on the right. `children` shows under the
- * name.
+ * name. `status` is a short text that takes the place of both `facts` and
+ * `controls`. It spans both columns and aligns to the right edge.
  */
 export function ToggleListRow({
   icon,
@@ -28,13 +29,15 @@ export function ToggleListRow({
   detail,
   facts,
   controls,
+  status,
   children,
 }: {
   icon: ReactNode
   name: ReactNode
   detail?: ReactNode
   facts?: ReactNode
-  controls: ReactNode
+  controls?: ReactNode
+  status?: ReactNode
   children?: ReactNode
 }) {
   return (
@@ -48,9 +51,16 @@ export function ToggleListRow({
         {detail}
       </span>
 
-      <span className="type-footnote text-label-tertiary">{facts}</span>
-
-      <span className="flex items-center gap-1.5">{controls}</span>
+      {status ? (
+        <span className="col-span-2 justify-self-end type-footnote text-label-tertiary">
+          {status}
+        </span>
+      ) : (
+        <>
+          <span className="type-footnote text-label-tertiary">{facts}</span>
+          <span className="flex items-center gap-1.5">{controls}</span>
+        </>
+      )}
 
       {children && <div className="col-span-2 col-start-2 min-w-0">{children}</div>}
     </div>

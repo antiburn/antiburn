@@ -39,7 +39,7 @@ for (const theme of ["light", "dark"] as const) {
       await expect(
         pane.getByRole("switch", { name: "Model overthinking", exact: true }),
       ).toBeChecked()
-      const smart = pane.getByRole("switch", { name: "Ignored Instructions", exact: true })
+      const smart = pane.getByRole("switch", { name: "Ignored instructions", exact: true })
       await smart.scrollIntoViewIfNeeded()
       await expect(smart).toBeEnabled()
       await expect(smart).toBeChecked()

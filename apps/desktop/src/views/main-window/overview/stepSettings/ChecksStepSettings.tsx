@@ -2,21 +2,17 @@ import { LoaderCircle } from "lucide-react"
 import { useState, useSyncExternalStore } from "react"
 
 import { Card } from "../../../../components/ui/Card"
-import { Disclosure, DisclosureGroup } from "../../../../components/ui/Disclosure"
 import { PushButton } from "../../../../components/ui/PushButton"
 import { SegmentedControl } from "../../../../components/ui/SegmentedControl"
 import { SectionGroup } from "../../../../components/ui/SectionGroup"
 import { StatusText } from "../../../../components/ui/StatusText"
-import { ToggleSwitch } from "../../../../components/ui/ToggleSwitch"
 import {
   emptyCheckAvailability,
   getCheckAvailability,
   onCheckAvailabilityChanged,
-  removeTypeSafeApiKey,
   runCheckBackfill,
   setCheckEnabled,
   setCheckHistoryDays,
-  setTypeSafeApiKey,
   setSmartBurnChecksEnabled,
   type CheckAvailability,
   type CheckAvailabilityEvent,
@@ -26,10 +22,8 @@ import { CHECK_DEFINITIONS } from "../../../../lib/presentation/checkDefinitions
 import type { SettingsControlId } from "../../../../lib/settingsSearchTargets"
 import { SettingsRow, SettingsToggleRow } from "../../../settings/SettingsSearchRows"
 
-/**
- * The Checks step's settings: Ignored Instructions, the check history
- * window, and the TypeSafe account.
- */
+import { CheckProviderSettings } from "../../../settings/CheckProviderSettings"
+import { providerErrorMessage } from "../../../settings/ProviderSettingsSession"
 
 const initial = emptyCheckAvailability
 let snapshot = initial
@@ -106,7 +100,7 @@ function historyStatus(state: CheckAvailability): string | null {
     backfill.waitingForData === 0 &&
     backfill.waitingForIdle === 0
   if (finished) {
-    return `Finished checking ${backfill.completed.toLocaleString()} ${backfill.completed === 1 ? "session" : "sessions"}`
+    return `Finished ${backfill.completed.toLocaleString()} ${backfill.completed === 1 ? "check job" : "check jobs"}`
   }
   const parts = [
     waiting > 0 ? `${waiting} waiting to be checked` : null,
@@ -116,20 +110,25 @@ function historyStatus(state: CheckAvailability): string | null {
     backfill.waitingForIdle > 0
       ? `${backfill.waitingForIdle} waiting for session to be idle`
       : null,
-    backfill.completed > 0 ? `${backfill.completed} sessions checked` : null,
+    backfill.completed > 0 ? `${backfill.completed} check jobs complete` : null,
     backfill.skipped > 0 ? `${backfill.skipped} not eligible` : null,
     backfill.failed > 0 ? `${backfill.failed} failed` : null,
   ].filter((part): part is string => part !== null)
   return parts.length > 0 ? parts.join(" · ") : null
 }
 
-export function ChecksStepSettings() {
+export function ChecksStepSettings({
+  control,
+  targetRevision,
+}: {
+  control?: string | null | undefined
+  targetRevision?: number | undefined
+}) {
   const state = useSyncExternalStore(
     subscribe,
     () => snapshot,
     () => initial,
   )
-  const [key, setKey] = useState("")
   const [busy, setBusy] = useState(false)
   const [pendingChecks, setPendingChecks] = useState<ReadonlySet<BurnCheckDetectorId>>(
     new Set(),
@@ -155,32 +154,7 @@ export function ChecksStepSettings() {
       const result = await runCheckBackfill()
       publish(result.availability)
     } catch {
-      setError("Could not start checks. Check the TypeSafe API key and try again.")
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function save() {
-    setBusy(true)
-    setError(null)
-    try {
-      publish(await setTypeSafeApiKey(key))
-      setKey("")
-    } catch {
-      setError("Could not save the key in secure storage.")
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function remove() {
-    setBusy(true)
-    setError(null)
-    try {
-      publish(await removeTypeSafeApiKey())
-    } catch {
-      setError("Could not remove the key from secure storage.")
+      setError("Could not start checks. Check the active provider connection and try again.")
     } finally {
       setBusy(false)
     }
@@ -192,7 +166,12 @@ export function ChecksStepSettings() {
     try {
       publish(await setSmartBurnChecksEnabled(enabled))
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not update Smart Burn Checks.")
+      setError(
+        providerErrorMessage(
+          reason,
+          "Could not update Smart Burn Checks. Check the active provider connection.",
+        ),
+      )
     } finally {
       setBusy(false)
     }
@@ -216,10 +195,6 @@ export function ChecksStepSettings() {
     }
   }
 
-  const usage =
-    state.usage.inputTokens > 0 || state.usage.confirmedCalls > 0
-      ? `${state.usage.inputTokens.toLocaleString()} input tokens · ${state.usage.estimatedUsd ?? "cost unavailable"} estimated · ${state.usage.confirmedCalls.toLocaleString()} requests`
-      : "No TypeSafe requests yet."
   const historyValue = String(state.historyDays)
   const progress = historyStatus(state)
   const historyRunning = state.backfill.queued + state.backfill.running > 0
@@ -237,18 +212,14 @@ export function ChecksStepSettings() {
     searchId: SettingsControlId
   }) {
     const definition = CHECK_DEFINITIONS[id]
-    const needsSetup = definition.kind === "smart" && !state.savedKey
-    const isPaused = definition.kind === "smart" && state.savedKey && !state.configured
-    const availability = needsSetup
-      ? " Set up TypeSafe below before this check can run."
-      : isPaused
-        ? " Smart Burn Checks are paused."
+    const availability =
+      definition.kind === "smart" && !state.configured
+        ? " Enable Smart Burn Checks with an active provider connection below before this check can run."
         : ""
     return (
       <SettingsToggleRow
         key={id}
         searchId={searchId}
-        label={definition.label}
         description={`${definition.description}${availability}`}
         checked={enabledById.get(id) === true}
         disabled={pendingChecks.has(id)}
@@ -269,8 +240,22 @@ export function ChecksStepSettings() {
       </SectionGroup>
 
       <SectionGroup title="Smart Burn Checks">
-        <Card>{smartChecks.map(renderCheck)}</Card>
+        <Card>
+          <SettingsToggleRow
+            searchId="smartChecksEnabled"
+            description="Run smart burn checks using the decision model below."
+            checked={state.configured}
+            disabled={busy}
+            onChange={(enabled) => void toggleChecks(enabled)}
+          />
+          {smartChecks.map(renderCheck)}
+        </Card>
       </SectionGroup>
+      {(error || state.error) && (
+        <p role="alert" className="type-footnote text-system-red-text">
+          {error || state.error}
+        </p>
+      )}
 
       <SectionGroup title="Past sessions">
         <Card>
@@ -311,14 +296,14 @@ export function ChecksStepSettings() {
               >
                 Check past sessions
               </PushButton>
-              <StatusText tone="secondary">TypeSafe charges may apply.</StatusText>
+              <StatusText tone="secondary">Provider charges may apply.</StatusText>
             </div>
             {(progress || historyRunning || state.backfill.ready > 0) && (
               <div className="mt-3 space-y-1" role="status" aria-live="polite">
                 {historyRunning && (
                   <StatusText icon={LoaderCircle} iconClassName="animate-spin" tone="secondary">
-                    Checking sessions; {state.backfill.completed.toLocaleString()}/
-                    {historyTotal.toLocaleString()} sessions checked so far
+                    Running checks; {state.backfill.completed.toLocaleString()}/
+                    {historyTotal.toLocaleString()} check jobs complete
                   </StatusText>
                 )}
                 {!historyRunning && progress && (
@@ -330,70 +315,12 @@ export function ChecksStepSettings() {
         </Card>
       </SectionGroup>
 
-      <SectionGroup title="TypeSafe account">
-        <Card>
-          <SettingsRow
-            searchId="typeSafeApiKey"
-            label="API key"
-            description="Enter your TypeSafe API key to enable Smart Burn Checks. TypeSafe usage charges may apply."
-          >
-            <input
-              id="typesafe-key"
-              aria-label="TypeSafe API key"
-              type="password"
-              autoComplete="off"
-              placeholder={state.savedKey ? "••••••••••••" : undefined}
-              value={key}
-              onChange={(event) => setKey(event.target.value)}
-              className="mt-2 min-h-[var(--control-height-regular)] w-full rounded-control border border-separator bg-input-fill px-3 type-body text-label"
-            />
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              {state.savedKey && (
-                <ToggleSwitch
-                  aria-label="Smart Burn Checks"
-                  checked={state.configured}
-                  disabled={busy || Boolean(state.error)}
-                  onCheckedChange={(enabled) => void toggleChecks(enabled)}
-                />
-              )}
-              <PushButton disabled={busy || !key.trim()} onClick={() => void save()}>
-                {state.savedKey ? "Replace key" : "Save key and enable"}
-              </PushButton>
-              {(state.configured || state.savedKey) && (
-                <PushButton disabled={busy} onClick={() => void remove()}>
-                  Remove key
-                </PushButton>
-              )}
-            </div>
-            {(error || state.error) && (
-              <p role="alert" className="mt-2 type-footnote text-system-red-text">
-                {error || state.error}
-              </p>
-            )}
-          </SettingsRow>
-        </Card>
-        <DisclosureGroup className="mt-2 px-1">
-          <Disclosure label="Privacy and usage">
-            <p>
-              Ignored Instructions sends selected project instructions and these session fields
-              to TypeSafe using your key: assistant messages, Bash command input (including
-              inline scripts, heredocs, and patches), file edit paths, read file paths, search
-              queries and explicit request constraints, and other tool input. User messages,
-              tool output, dedicated edit bodies, and private thinking are excluded. Current
-              global and project instruction snapshots and selected paths also leave this
-              device. API usage can cost money; local totals count confirmed requests and
-              tokens.
-            </p>
-            <p className="mt-2">{usage}</p>
-            {state.usage.unknownOutcomes > 0 && (
-              <p className="mt-1">
-                {state.usage.unknownOutcomes.toLocaleString()} request outcomes are unknown and
-                are not included in the estimate.
-              </p>
-            )}
-          </Disclosure>
-        </DisclosureGroup>
-      </SectionGroup>
+      <CheckProviderSettings
+        control={control}
+        targetRevision={targetRevision}
+        legacyKeySaved={state.savedKey}
+        usage={state.usage}
+      />
     </div>
   )
 }
@@ -409,6 +336,9 @@ const CHECK_SEARCH_IDS: Record<BurnCheckDetectorId, SettingsControlId> = {
   overuseOfFastMode: "overuseOfFastModeCheck",
   cacheChurn: "cacheChurnCheck",
   ignoredInstructions: "ignoredInstructions",
+  skillOpportunities: "skillOpportunitiesCheck",
+  overExploring: "overExploringCheck",
+  scopeCreep: "scopeCreepCheck",
 }
 
 function checkRows(kind: "local" | "smart") {

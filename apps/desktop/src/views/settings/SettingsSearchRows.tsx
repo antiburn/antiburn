@@ -1,3 +1,4 @@
+import { Disclosure } from "../../components/ui/Disclosure"
 import type { ComponentProps } from "react"
 import { Row } from "../../components/ui/Row"
 import { ToggleRow } from "../../components/ui/ToggleRow"
@@ -52,5 +53,24 @@ export function SettingsSectionGroup({
       data-settings-control={searchId}
       tabIndex={-1}
     />
+  )
+}
+
+export function SettingsDisclosure({
+  searchId,
+  label,
+  ...props
+}: Omit<ComponentProps<typeof Disclosure>, "label"> & SearchRowProps) {
+  return (
+    <div
+      data-settings-control={searchId}
+      tabIndex={-1}
+      className="border-b border-separator px-3"
+    >
+      <Disclosure
+        {...props}
+        label={label ?? settingsControlLabel(searchId, detectPlatform())}
+      />
+    </div>
   )
 }

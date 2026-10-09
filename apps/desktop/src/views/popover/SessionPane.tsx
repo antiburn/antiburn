@@ -3,6 +3,7 @@ import { confirm } from "@tauri-apps/plugin-dialog"
 import { useCallback, useSyncExternalStore } from "react"
 
 import { SessionDetailPresentation } from "../../components/session/SessionDetailPresentation"
+import type { SessionMemoriesPayload } from "../../lib/memoriesIpc"
 import type { SessionQuotaOpenTarget } from "../../components/session/SessionQuotaSection"
 import type { TokensCostSplit } from "../../components/session/tokensCard"
 import { renderAgentIcon } from "../../lib/agentIcon"
@@ -66,6 +67,8 @@ export interface SessionPaneProps {
   /** Open one quota window on the Quota screen. Omitted where there is no
    *  Quota screen to open, such as the popover. */
   onOpenQuota?: (target: SessionQuotaOpenTarget) => void
+  sessionMemories?: SessionMemoriesPayload | null
+  onOpenMemory?: (target: { slug: string; path: string }) => void
   /** The session's local records were deleted, so it can no longer be shown. */
   onDeleted: () => void
   /** Remove popover-only chrome when the pane sits in another window. */
@@ -226,6 +229,8 @@ export function SessionPane({
   onOpenSession,
   sessionQuota = null,
   onOpenQuota,
+  sessionMemories = null,
+  onOpenMemory,
   onDeleted,
   embedded = false,
   active = true,
@@ -404,6 +409,8 @@ export function SessionPane({
       relations={relations}
       sessionQuota={subject.remoteHostId ? null : sessionQuota}
       {...(onOpenQuota ? { onOpenQuota } : {})}
+      sessionMemories={subject.remoteHostId ? null : sessionMemories}
+      {...(onOpenMemory ? { onOpenMemory } : {})}
       {...(onBack ? { onBack } : {})}
       {...(onPrev ? { onPrev } : {})}
       {...(onNext ? { onNext } : {})}

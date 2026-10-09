@@ -2,77 +2,6 @@ use super::super::tests::{event, input};
 use super::*;
 use crate::analysis::jev::JevUsage;
 
-fn response(
-    comparison: &CandidateComparison,
-    relationship: &str,
-    basis: &str,
-    completion: &str,
-) -> JevWorkItemResult {
-    let answers = [
-        (
-            QUESTION_APPLICABILITY,
-            "applies",
-            vec!["applies", "not_applicable", "uncertain"],
-        ),
-        (
-            QUESTION_RELATIONSHIP,
-            relationship,
-            vec!["conflict", "follows", "unrelated", "insufficient_evidence"],
-        ),
-        (
-            QUESTION_EVIDENCE_BASIS,
-            basis,
-            vec!["self_contained", "evidence_incomplete", "uncertain"],
-        ),
-        (
-            QUESTION_COMPLETION,
-            completion,
-            vec![
-                "not_completion_obligation",
-                "completion_not_observed",
-                "completion_observed",
-                "uncertain",
-            ],
-        ),
-    ]
-    .into_iter()
-    .map(|(id, choice, options)| {
-        let probabilities = options
-            .iter()
-            .map(|option| {
-                (
-                    (*option).to_owned(),
-                    if *option == choice {
-                        0.97
-                    } else {
-                        0.03 / (options.len() - 1) as f64
-                    },
-                )
-            })
-            .collect();
-        (
-            id.to_owned(),
-            JevAnswer::Choice {
-                choice: choice.to_owned(),
-                probabilities,
-                confidence: 0.97,
-            },
-        )
-    })
-    .collect();
-    JevWorkItemResult {
-        request_id: "synthetic-request".to_owned(),
-        work_item_id: comparison.id.clone(),
-        answers,
-        evidence: Vec::new(),
-        model: ASSESSMENT_MODEL.to_owned(),
-        usage: JevUsage {
-            input_tokens: 0,
-            output_tokens: 0,
-        },
-    }
-}
-
 fn assessment() -> AssessmentPlan {
     build_assessment_plan(input(
         vec![event(
@@ -86,8 +15,340 @@ fn assessment() -> AssessmentPlan {
     ))
 }
 
+fn response(comparison: &CandidateComparison, choice: &str, probability: f64) -> JevWorkItemResult {
+    JevWorkItemResult {
+        request_id: "synthetic-request".to_owned(),
+        work_item_id: comparison.id.clone(),
+        answers: BTreeMap::from([(
+            QUESTION_DECISION.to_owned(),
+            JevAnswer::Choice {
+                choice: choice.to_owned(),
+                probabilities: ["conflict", "no_issue", "pending_completion", "uncertain"]
+                    .into_iter()
+                    .map(|option| {
+                        (
+                            option.to_owned(),
+                            if option == choice {
+                                probability
+                            } else {
+                                (1.0 - probability) / 3.0
+                            },
+                        )
+                    })
+                    .collect(),
+                confidence: probability,
+            },
+        )]),
+        evidence: Vec::new(),
+        model: ASSESSMENT_MODEL.to_owned(),
+        usage: JevUsage {
+            input_tokens: 10,
+            output_tokens: 2,
+        },
+    }
+}
+
+fn reduce(plan: &AssessmentPlan, choice: &str, probability: f64) -> AssessmentResult {
+    let comparison = &plan.comparisons[0];
+    reduce_assessment(
+        plan,
+        &BTreeMap::from([(
+            comparison.id.clone(),
+            response(comparison, choice, probability),
+        )]),
+        true,
+    )
+}
+
 #[test]
-fn partial_response_and_rule_ranges_cannot_clear_a_whole_response_finding() {
+fn composite_probability_has_one_publication_threshold() {
+    let plan = assessment();
+    for probability in [0.74, 0.75, 0.80, 0.97] {
+        let result = reduce(&plan, "conflict", probability);
+        assert_eq!(result.findings.len(), usize::from(probability >= 0.75));
+        if let Some(finding) = result.findings.first() {
+            assert_eq!(finding.composite_probability, probability);
+            let json = serde_json::to_value(finding).unwrap();
+            assert!(json.get("applicability_probability").is_none());
+            assert!(json.get("evidence_basis_probability").is_none());
+            assert!(json.get("conflict_probability").is_none());
+        }
+        assert_eq!(
+            result.coverage.reassessed_comparison_ids,
+            [plan.comparisons[0].id.clone()]
+        );
+    }
+}
+
+#[test]
+fn low_probability_no_issue_resolves_only_its_target_on_partial_input() {
+    let mut plan = assessment();
+    plan.complete_input = false;
+    plan.comparisons[0].prior_history_complete = false;
+    let resolved = plan.comparisons[0].clone();
+    let mut missing = resolved.clone();
+    missing.id = "missing-pair".to_owned();
+    missing.reference.rule_id = "missing-rule".to_owned();
+    plan.comparisons.push(missing.clone());
+    let result = reduce_assessment(
+        &plan,
+        &BTreeMap::from([(resolved.id.clone(), response(&resolved, "no_issue", 0.53))]),
+        true,
+    );
+    assert!(result.findings.is_empty());
+    assert!(result.pending_rules.is_empty());
+    assert_eq!(
+        result.coverage.reassessed_comparison_ids,
+        std::slice::from_ref(&resolved.id)
+    );
+    assert_eq!(
+        result.coverage.reassessed_rule_ids,
+        std::slice::from_ref(&resolved.reference.rule_id)
+    );
+    assert_eq!(
+        result.coverage.reassessed_finding_ids,
+        [finding_id_for_reference(&resolved.reference)]
+    );
+    assert_eq!(result.unassessed_comparisons, [missing.id]);
+    assert!(
+        result
+            .coverage
+            .limitations
+            .contains(&"source_evidence_is_partial".to_owned())
+    );
+    assert!(
+        result
+            .coverage
+            .limitations
+            .contains(&"some_comparisons_unassessed".to_owned())
+    );
+    assert!(
+        !result
+            .coverage
+            .limitations
+            .contains(&"semantic_decision_uncertain".to_owned())
+    );
+}
+
+#[test]
+fn low_probability_pending_completion_is_processed_terminal() {
+    let plan = assessment();
+    let result = reduce(&plan, "pending_completion", 0.40);
+    assert!(result.findings.is_empty());
+    assert!(result.unassessed_comparisons.is_empty());
+    assert_eq!(result.pending_rules.len(), 1);
+    assert_eq!(result.pending_rules[0].reason, "completion_not_observed");
+    assert_eq!(
+        result.coverage.reassessed_comparison_ids,
+        std::slice::from_ref(&plan.comparisons[0].id)
+    );
+    assert!(result.coverage.reassessed_finding_ids.is_empty());
+    assert!(!result.coverage.processing_limit_reached);
+    assert!(
+        !result
+            .coverage
+            .limitations
+            .contains(&"semantic_decision_uncertain".to_owned())
+    );
+}
+
+#[test]
+fn pending_and_uncertain_are_processed_terminal_answers() {
+    let plan = assessment();
+    for (choice, probability) in [
+        ("pending_completion", 0.97),
+        ("uncertain", 0.97),
+        ("uncertain", 0.40),
+    ] {
+        let result = reduce(&plan, choice, probability);
+        assert!(result.findings.is_empty());
+        assert_eq!(
+            result.coverage.reassessed_comparison_ids,
+            [plan.comparisons[0].id.clone()]
+        );
+        assert_eq!(
+            result.pending_rules.len(),
+            usize::from(choice == "pending_completion")
+        );
+        assert_eq!(
+            result.unassessed_comparisons.len(),
+            usize::from(choice == "uncertain")
+        );
+        assert!(result.coverage.reassessed_finding_ids.is_empty());
+        assert!(!result.coverage.processing_limit_reached);
+    }
+}
+
+#[test]
+fn missing_and_invalid_answers_are_not_processed() {
+    let plan = assessment();
+    let comparison = &plan.comparisons[0];
+    for invalid in [
+        "missing",
+        "old_schema",
+        "unknown_choice",
+        "nan",
+        "missing_option",
+        "bad_sum",
+    ] {
+        let mut answer = response(comparison, "conflict", 0.97);
+        match invalid {
+            "missing" => answer.answers.clear(),
+            "old_schema" => {
+                let choice = answer.answers.remove(QUESTION_DECISION).unwrap();
+                answer.answers.insert("relationship".to_owned(), choice);
+            }
+            _ => {
+                let JevAnswer::Choice {
+                    choice,
+                    probabilities,
+                    ..
+                } = answer.answers.get_mut(QUESTION_DECISION).unwrap()
+                else {
+                    unreachable!()
+                };
+                match invalid {
+                    "unknown_choice" => *choice = "applies".to_owned(),
+                    "nan" => {
+                        probabilities.insert("conflict".to_owned(), f64::NAN);
+                    }
+                    "missing_option" => {
+                        probabilities.remove("uncertain");
+                    }
+                    "bad_sum" => {
+                        probabilities.insert("conflict".to_owned(), 0.5);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        let result = reduce_assessment(&plan, &[(comparison.id.clone(), answer)].into(), true);
+        assert!(result.findings.is_empty(), "{invalid}");
+        assert!(
+            result.coverage.reassessed_comparison_ids.is_empty(),
+            "{invalid}"
+        );
+        assert_eq!(
+            result.unassessed_comparisons,
+            std::slice::from_ref(&comparison.id)
+        );
+    }
+}
+
+#[test]
+fn partial_input_supports_direct_advisory_without_exact_history() {
+    let mut source = input(
+        vec![event(
+            "report",
+            10,
+            "assistant",
+            "main",
+            "I ran the banned command.",
+        )],
+        "Do not run the banned command.",
+    );
+    source.content.complete = false;
+    source.prior_history_complete = false;
+    let plan = build_assessment_plan(source);
+    let result = reduce(&plan, "conflict", 0.80);
+    assert_eq!(result.findings.len(), 1);
+    assert!(result.findings[0].decision_record().is_some());
+    assert!(
+        result.findings[0]
+            .limitations
+            .contains(&"prior_history_incomplete".to_owned())
+    );
+    assert!(
+        result.findings[0]
+            .limitations
+            .contains(&"source_evidence_is_partial".to_owned())
+    );
+}
+
+#[test]
+fn incomplete_episode_does_not_assert_an_unseen_prerequisite_absence() {
+    let source = input(
+        vec![
+            event(
+                "earlier",
+                1,
+                "assistant",
+                "main",
+                "Requested the first check.",
+            ),
+            event(
+                "publish",
+                2,
+                "assistant",
+                "main",
+                "Reported skipping the second check.",
+            ),
+        ],
+        "Request both checks before publication.",
+    );
+    let mut plan = build_assessment_plan(source.clone());
+    plan.comparisons
+        .retain(|comparison| comparison.reference.action_id == "publish");
+    let comparison = &mut plan.comparisons[0];
+    comparison.prerequisite_episode =
+        Some(crate::checks::ignored_instructions::decisions::episode(
+            comparison,
+            &source.content.actions,
+            &crate::analysis::jev::capabilities::ModelCapabilities::jev_default(),
+            false,
+        ));
+    let result = reduce(&plan, "conflict", 0.97);
+    assert_eq!(result.findings.len(), 1);
+    let decision = result.findings[0].decision_record().unwrap();
+    assert_eq!(
+        decision.prerequisite,
+        crate::checks::ignored_instructions::PrerequisiteOutcome::NotRequired
+    );
+    assert!(!decision.coverage.selected_history_complete);
+    assert_eq!(decision.selected_evidence[0].source.id, "earlier");
+    assert!(!decision.citations.iter().any(|citation| citation.claim
+        == crate::checks::ignored_instructions::CitationClaim::PrerequisiteContrast));
+}
+
+#[test]
+fn observed_completion_keeps_the_exact_local_rule_and_action_binding() {
+    let plan = assessment();
+    let result = reduce(&plan, "conflict", 0.97);
+    let finding = &result.findings[0];
+    assert_eq!(finding.reference, plan.comparisons[0].reference);
+    assert_eq!(
+        finding.instruction_excerpt,
+        rule_text_fragment(&plan.comparisons[0])
+    );
+    assert_eq!(finding.action_excerpt, plan.comparisons[0].action.text);
+    let saved = serde_json::to_value(finding).unwrap();
+    let restored: AssessmentFinding = serde_json::from_value(saved.clone()).unwrap();
+    assert_eq!(&restored, finding);
+    assert!(restored.decision_record().is_some());
+    let mut mismatch = restored;
+    mismatch.reference.action_id = "different-anchor".to_owned();
+    assert!(mismatch.decision_record().is_none());
+    let mut legacy = saved;
+    legacy.as_object_mut().unwrap().remove("decision");
+    let legacy: AssessmentFinding = serde_json::from_value(legacy).unwrap();
+    assert!(legacy.decision.is_none());
+}
+
+#[test]
+fn complete_records_do_not_override_semantic_uncertainty() {
+    let plan = assessment();
+    assert!(plan.complete_input);
+    let result = reduce(&plan, "uncertain", 0.97);
+    assert!(result.findings.is_empty());
+    assert_eq!(
+        result.unassessed_comparisons,
+        [plan.comparisons[0].id.clone()]
+    );
+    assert!(result.coverage.reassessed_finding_ids.is_empty());
+}
+
+#[test]
+fn direct_no_issue_can_use_partial_rule_and_action_ranges() {
     let mut plan = build_assessment_plan(input(
         vec![event(
             "reply",
@@ -99,510 +360,67 @@ fn partial_response_and_rule_ranges_cannot_clear_a_whole_response_finding() {
         "Include `required` in every response.",
     ));
     assert!(plan.comparisons.len() > 1);
-    let comparison = plan.comparisons[0].clone();
-    let mut answer = response(
-        &comparison,
-        "unrelated",
-        "self_contained",
-        "not_completion_obligation",
-    );
-    answer
-        .answers
-        .retain(|question, _| question == QUESTION_APPLICABILITY);
-    set_probability(&mut answer, QUESTION_APPLICABILITY, "not_applicable", 0.97);
-    plan.comparisons = vec![comparison.clone()];
-    let result = reduce_assessment(
-        &plan,
-        &BTreeMap::from([(comparison.id.clone(), answer.clone())]),
-        true,
-    );
-    assert_eq!(
-        result.unassessed_comparisons,
-        std::slice::from_ref(&comparison.id)
-    );
-    assert!(result.coverage.reassessed_finding_ids.is_empty());
-
-    let mut partial_rule = comparison;
-    partial_rule.action.truncated = false;
-    partial_rule.rule_text_end = partial_rule.rule_text.len() - 1;
-    plan.comparisons = vec![partial_rule.clone()];
-    let result = reduce_assessment(
-        &plan,
-        &BTreeMap::from([(partial_rule.id.clone(), answer)]),
-        true,
-    );
-    assert!(result.coverage.reassessed_finding_ids.is_empty());
-}
-
-#[test]
-fn observable_development_scenarios_require_decisive_candidate_answers() {
-    for (rule, action, relationship, expected_findings) in [
-        (
-            "Answer the user's question with one file path.",
-            "Done.",
-            "conflict",
-            1,
-        ),
-        (
-            "Do not run destructive commands.",
-            "Example only: `wipe-cache --all`. I did not run it.",
-            "follows",
-            0,
-        ),
-    ] {
-        let plan = build_assessment_plan(input(
-            vec![event("reply", 10, "assistant", "main", action)],
-            rule,
-        ));
-        let comparison = &plan.comparisons[0];
-        let answer = response(
-            comparison,
-            relationship,
-            "self_contained",
-            "not_completion_obligation",
-        );
-        let result = reduce_assessment(
-            &plan,
-            &BTreeMap::from([(comparison.id.clone(), answer.clone())]),
-            true,
-        );
-        assert_eq!(result.findings.len(), expected_findings, "{rule}");
-        assert!(result.unassessed_comparisons.is_empty(), "{rule}");
-
-        let mut uncertain = answer;
-        set_probability(&mut uncertain, QUESTION_RELATIONSHIP, relationship, 0.80);
-        let result = reduce_assessment(
-            &plan,
-            &BTreeMap::from([(comparison.id.clone(), uncertain)]),
-            true,
-        );
-        assert!(result.findings.is_empty(), "{rule}");
-        assert_eq!(result.unassessed_comparisons.len(), 1, "{rule}");
-        assert_eq!(result.unassessed_comparisons[0], comparison.id, "{rule}");
-    }
-}
-
-#[test]
-fn reassessment_finding_identity_requires_a_conclusive_judgment() {
-    let plan = assessment();
-    let comparison = &plan.comparisons[0];
-    let expected_id = finding_id_for_reference(&comparison.reference);
-    let compliant = reduce_assessment(
-        &plan,
-        &BTreeMap::from([(
-            comparison.id.clone(),
-            response(
-                comparison,
-                "follows",
-                "self_contained",
-                "not_completion_obligation",
-            ),
-        )]),
-        true,
-    );
-    assert_eq!(compliant.coverage.reassessed_finding_ids, [expected_id]);
-
-    let uncertain = reduce_assessment(
-        &plan,
-        &BTreeMap::from([(
-            comparison.id.clone(),
-            response(
-                comparison,
-                "insufficient_evidence",
-                "evidence_incomplete",
-                "uncertain",
-            ),
-        )]),
-        true,
-    );
-    assert!(uncertain.coverage.reassessed_finding_ids.is_empty());
-}
-
-#[test]
-fn authority_gate_rejects_confident_conflicts_and_confident_clean_answers() {
-    use crate::analysis::jev::obligations::PermissionRequirement;
-    for permission in [
-        PermissionRequirement::AuthoritativeApproval,
-        PermissionRequirement::Unknown,
-        PermissionRequirement::ApprovalClaim,
-    ] {
-        for relationship in ["conflict", "follows"] {
-            let mut plan = assessment();
-            let id = plan.comparisons[0].id.clone();
-            plan.observable_obligations.insert(
-                id.clone(),
-                ObservableObligation {
-                    literal_policies: Vec::new(),
-                    condition_evidence:
-                        crate::analysis::jev::obligations::ConditionEvidence::Selected,
-                    prerequisite_required: false,
-                    permission,
-                    read_request_order: None,
-                    read_order_required: false,
-                    read_order_unknown: false,
-                    read_success_required: false,
-                    read_prerequisite_absent: false,
-                    candidate_family: "assistant".to_owned(),
-                    edit_scope_matches: None,
-                    recorded_edit_only: false,
-                    edit_scope_unknown: false,
-                },
-            );
-            let answer = response(
-                &plan.comparisons[0],
-                relationship,
-                "self_contained",
-                "not_completion_obligation",
-            );
-            let result = reduce_assessment(&plan, &BTreeMap::from([(id, answer)]), true);
-            if permission == PermissionRequirement::ApprovalClaim {
-                assert!(result.unassessed_comparisons.is_empty());
-                assert_eq!(
-                    result.findings.len(),
-                    usize::from(relationship == "conflict")
-                );
-            } else {
-                assert!(result.findings.is_empty());
-                assert_eq!(result.unassessed_comparisons.len(), 1);
-            }
-        }
-    }
-}
-
-#[test]
-fn unavailable_condition_blocks_conflict_and_clean_independently_of_model_answers() {
-    use crate::analysis::jev::obligations::{ConditionEvidence, PermissionRequirement};
-    for condition in [
-        ConditionEvidence::Result,
-        ConditionEvidence::Undefined,
-        ConditionEvidence::Unknown,
-    ] {
-        for relationship in ["conflict", "follows", "unrelated"] {
-            let mut plan = assessment();
-            let id = plan.comparisons[0].id.clone();
-            plan.observable_obligations.insert(
-                id.clone(),
-                ObservableObligation {
-                    literal_policies: Vec::new(),
-                    condition_evidence: condition,
-                    prerequisite_required: false,
-                    permission: PermissionRequirement::Independent,
-                    read_request_order: None,
-                    read_order_required: false,
-                    read_order_unknown: false,
-                    read_success_required: false,
-                    read_prerequisite_absent: false,
-                    candidate_family: "assistant".to_owned(),
-                    edit_scope_matches: None,
-                    recorded_edit_only: false,
-                    edit_scope_unknown: false,
-                },
-            );
-            let answer = response(
-                &plan.comparisons[0],
-                relationship,
-                "self_contained",
-                "not_completion_obligation",
-            );
-            let result = reduce_assessment(&plan, &BTreeMap::from([(id, answer)]), true);
-            assert!(result.findings.is_empty());
-            assert_eq!(result.unassessed_comparisons.len(), 1);
-        }
-    }
-}
-
-#[test]
-fn exact_request_order_overrides_model_order_but_never_missing_history() {
-    use crate::analysis::jev::obligations::{PermissionRequirement, ReadRequestOrder};
-    for (earlier, history_complete, paths_known, expected_finding, expected_unassessed) in [
-        (false, true, true, 1, 0),
-        (true, true, true, 0, 0),
-        (false, false, true, 0, 1),
-        (false, true, false, 0, 1),
-        (true, false, true, 0, 0),
-    ] {
-        for relationship in ["follows", "conflict", "insufficient_evidence"] {
-            let mut plan = assessment();
-            let id = plan.comparisons[0].id.clone();
-            plan.observable_obligations.insert(
-                id.clone(),
-                ObservableObligation {
-                    literal_policies: Vec::new(),
-                    condition_evidence:
-                        crate::analysis::jev::obligations::ConditionEvidence::Selected,
-                    prerequisite_required: true,
-                    permission: PermissionRequirement::Independent,
-                    read_request_order: Some(ReadRequestOrder {
-                        required_path: "docs/policy.md".to_owned(),
-                        earlier_request_id: earlier.then(|| "earlier-read-call".to_owned()),
-                        later_request_id: Some("later-read-call".to_owned()),
-                        history_complete,
-                        paths_known,
-                    }),
-                    read_order_required: true,
-                    read_order_unknown: false,
-                    read_success_required: false,
-                    read_prerequisite_absent: false,
-                    candidate_family: "edit".to_owned(),
-                    edit_scope_matches: None,
-                    recorded_edit_only: false,
-                    edit_scope_unknown: false,
-                },
-            );
-            let answer = response(
-                &plan.comparisons[0],
-                relationship,
-                "evidence_incomplete",
-                "not_completion_obligation",
-            );
-            let result = reduce_assessment(&plan, &BTreeMap::from([(id, answer)]), true);
-            assert_eq!(result.findings.len(), expected_finding);
-            assert_eq!(result.unassessed_comparisons.len(), expected_unassessed);
-            if expected_finding == 1 {
-                assert!(
-                    result.findings[0]
-                        .limitations
-                        .contains(&"recorded_read_request_order_only".to_owned())
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn selected_record_completeness_does_not_override_missing_semantic_evidence() {
-    let plan = assessment();
-    assert!(plan.complete_input);
-    for relationship in ["conflict", "follows", "unrelated"] {
-        for basis in ["evidence_incomplete", "uncertain"] {
-            let answer = response(
-                &plan.comparisons[0],
-                relationship,
-                basis,
-                "not_completion_obligation",
-            );
-            let result = reduce_assessment(
-                &plan,
-                &BTreeMap::from([(answer.work_item_id.clone(), answer)]),
-                true,
-            );
-            assert!(result.findings.is_empty(), "{relationship}/{basis}");
-            assert_eq!(
-                result.unassessed_comparisons,
-                vec![plan.comparisons[0].id.clone()]
-            );
-        }
-    }
-}
-
-#[test]
-fn unresolved_completion_cannot_publish_a_finding_or_clean_comparison() {
-    let plan = assessment();
-    for relationship in ["conflict", "follows", "unrelated"] {
-        for completion in ["completion_not_observed", "uncertain"] {
-            let answer = response(
-                &plan.comparisons[0],
-                relationship,
-                "self_contained",
-                completion,
-            );
-            let result = reduce_assessment(
-                &plan,
-                &BTreeMap::from([(answer.work_item_id.clone(), answer)]),
-                true,
-            );
-            assert!(result.findings.is_empty(), "{relationship}/{completion}");
-            assert_eq!(result.unassessed_comparisons.len(), 1);
-            assert_eq!(
-                result.pending_rules.len(),
-                usize::from(completion == "completion_not_observed")
-            );
-        }
-    }
-}
-
-#[test]
-fn observed_completion_keeps_the_exact_local_rule_and_action_binding() {
-    let plan = assessment();
-    let comparison = &plan.comparisons[0];
-    let answer = response(
-        comparison,
-        "conflict",
-        "self_contained",
-        "completion_observed",
-    );
-    let result = reduce_assessment(
-        &plan,
-        &BTreeMap::from([(answer.work_item_id.clone(), answer)]),
-        true,
-    );
-    assert_eq!(result.findings.len(), 1);
-    assert_eq!(result.findings[0].reference, comparison.reference);
-    assert_eq!(
-        result.findings[0].instruction_excerpt,
-        super::super::super::planning::rule_text_fragment(comparison)
-    );
-    assert_eq!(
-        result.findings[0].action_excerpt,
-        comparison
-            .action
-            .text
-            .get(comparison.action_text_start..comparison.action_text_end)
-            .unwrap()
-    );
+    plan.comparisons.truncate(1);
+    let result = reduce(&plan, "no_issue", 0.97);
     assert!(result.unassessed_comparisons.is_empty());
-    assert!(result.pending_rules.is_empty());
+    assert_eq!(result.coverage.reassessed_finding_ids.len(), 1);
 }
 
 #[test]
-fn classified_action_obligation_does_not_need_a_repeated_completion_answer() {
-    let plan = assessment();
-    let comparison = &plan.comparisons[0];
-    let mut answer = response(
-        comparison,
-        "conflict",
-        "self_contained",
-        "not_completion_obligation",
-    );
-    answer.answers.remove(QUESTION_COMPLETION);
-    let answers = BTreeMap::from([(answer.work_item_id.clone(), answer)]);
-    let completion = BTreeMap::from([(comparison.id.clone(), CompletionCoverage::NotObligation)]);
-    let result = reduce_with_completion(&plan, &answers, true, &completion);
-    assert_eq!(result.findings.len(), 1);
-    assert_eq!(result.findings[0].reference, comparison.reference);
-}
-
-fn set_probability(answer: &mut JevWorkItemResult, question: &str, option: &str, probability: f64) {
-    let JevAnswer::Choice { probabilities, .. } = answer.answers.get_mut(question).unwrap() else {
-        panic!("expected Choice")
-    };
-    let remaining = (1.0 - probability) / (probabilities.len() - 1) as f64;
-    for (key, value) in probabilities {
-        *value = if key == option {
-            probability
-        } else {
-            remaining
-        };
-    }
-}
-
-#[test]
-fn supplied_missing_evidence_cannot_be_overridden_by_not_applicable() {
-    let plan = assessment();
-    let mut answer = response(
-        &plan.comparisons[0],
-        "unrelated",
-        "evidence_incomplete",
-        "not_completion_obligation",
-    );
-    set_probability(&mut answer, QUESTION_APPLICABILITY, "not_applicable", 0.97);
-    let result = reduce_assessment(
-        &plan,
-        &BTreeMap::from([(answer.work_item_id.clone(), answer)]),
-        true,
-    );
-    assert!(result.findings.is_empty());
-    assert_eq!(result.unassessed_comparisons.len(), 1);
-}
-
-#[test]
-fn clean_requires_independent_relationship_and_complete_evidence() {
-    let plan = assessment();
-    for relationship in ["unrelated", "follows", "conflict", "insufficient_evidence"] {
-        for missing_question in [
-            None,
-            Some(QUESTION_RELATIONSHIP),
-            Some(QUESTION_EVIDENCE_BASIS),
-        ] {
-            let mut answer = response(
-                &plan.comparisons[0],
-                relationship,
-                "self_contained",
-                "not_completion_obligation",
-            );
-            set_probability(&mut answer, QUESTION_APPLICABILITY, "not_applicable", 0.97);
-            if let Some(question) = missing_question {
-                answer.answers.remove(question);
-            }
-            let result = reduce_assessment(
-                &plan,
-                &BTreeMap::from([(answer.work_item_id.clone(), answer)]),
-                true,
-            );
-            assert!(result.findings.is_empty());
-            assert_eq!(
-                result.unassessed_comparisons.len(),
-                usize::from(
-                    !matches!(relationship, "unrelated" | "follows") || missing_question.is_some()
-                ),
-                "{relationship}/{missing_question:?}",
-            );
-        }
-    }
-}
-
-#[test]
-fn every_publication_gate_limits_finding_certainty() {
-    let plan = assessment();
-    for (question, option) in [
-        (QUESTION_EVIDENCE_BASIS, "self_contained"),
-        (QUESTION_COMPLETION, "completion_observed"),
-    ] {
-        let mut answer = response(
-            &plan.comparisons[0],
-            "conflict",
-            "self_contained",
-            "completion_observed",
-        );
-        set_probability(&mut answer, question, option, 0.87);
-        let result = reduce_assessment(
-            &plan,
-            &BTreeMap::from([(answer.work_item_id.clone(), answer)]),
-            true,
-        );
-        assert_eq!(result.findings.len(), 1);
-        assert_eq!(result.findings[0].certainty, FindingCertainty::Possible);
-    }
-}
-
-#[test]
-fn stronger_overlapping_finding_keeps_its_probabilities_and_context_together() {
+fn stronger_overlapping_finding_keeps_probability_and_context_together() {
     let mut plan = assessment();
     let mut stronger = plan.comparisons[0].clone();
     stronger.id = "second-range".to_owned();
     stronger.context.clear();
-    let mut weaker = response(
-        &plan.comparisons[0],
-        "conflict",
-        "self_contained",
-        "not_completion_obligation",
-    );
-    set_probability(&mut weaker, QUESTION_RELATIONSHIP, "conflict", 0.87);
-    let mut stronger_answer = response(
-        &stronger,
-        "conflict",
-        "self_contained",
-        "not_completion_obligation",
-    );
-    set_probability(
-        &mut stronger_answer,
-        QUESTION_RELATIONSHIP,
-        "conflict",
-        0.99,
-    );
+    let weaker_answer = response(&plan.comparisons[0], "conflict", 0.80);
+    let stronger_answer = response(&stronger, "conflict", 0.99);
     plan.comparisons.push(stronger.clone());
     let answers = BTreeMap::from([
-        (weaker.work_item_id.clone(), weaker),
+        (weaker_answer.work_item_id.clone(), weaker_answer),
         (stronger_answer.work_item_id.clone(), stronger_answer),
     ]);
     let result = reduce_assessment(&plan, &answers, true);
     assert_eq!(result.findings.len(), 1);
-    assert_eq!(result.findings[0].certainty, FindingCertainty::Likely);
-    assert_eq!(result.findings[0].conflict_probability, 0.99);
+    assert_eq!(result.findings[0].composite_probability, 0.99);
     assert_eq!(result.findings[0].reference, stronger.reference);
     plan.comparisons.reverse();
     assert_eq!(
         reduce_assessment(&plan, &answers, true).findings,
         result.findings
     );
+}
+
+#[test]
+fn current_file_advisory_keeps_its_provenance_limit() {
+    let mut plan = assessment();
+    plan.comparisons[0].reference.provenance = InstructionProvenance::CurrentFileComparison;
+    let result = reduce(&plan, "conflict", 0.97);
+    assert_eq!(result.findings[0].certainty, FindingCertainty::Possible);
+    assert!(
+        result.findings[0]
+            .limitations
+            .contains(&"current_file_not_historical_proof".to_owned())
+    );
+}
+
+#[test]
+fn shared_requests_count_usage_once() {
+    let mut plan = assessment();
+    let mut second = plan.comparisons[0].clone();
+    second.id = "second-pair".to_owned();
+    let first = response(&plan.comparisons[0], "no_issue", 0.97);
+    let second_answer = response(&second, "no_issue", 0.97);
+    plan.comparisons.push(second);
+    let result = reduce_assessment(
+        &plan,
+        &[
+            (first.work_item_id.clone(), first),
+            (second_answer.work_item_id.clone(), second_answer),
+        ]
+        .into(),
+        true,
+    );
+    assert_eq!(result.request_count, 1);
+    assert_eq!(result.input_tokens, 10);
+    assert_eq!(result.output_tokens, 2);
 }

@@ -1,0 +1,8 @@
+{"role":"user","id":"request-1","content":"Fix only the failing test."}
+{"role":"assistant","id":"unknown-question","content":[{"type":"tool-call","toolCallId":"question-1","toolName":"AskQuestion","args":{"prompt":"Invented shape is not a producer contract","options":[{"label":"Yes","description":"Do extra work"}]}}]}
+{"role":"tool","id":"unknown-answer","content":[{"type":"tool-result","toolCallId":"question-1","result":"approved"}],"providerOptions":{"cursor":{"highLevelToolCallResult":{"answer":"Yes","status":"submitted"}}}}
+{"role":"assistant","id":"unknown-plan","content":[{"type":"tool-call","toolCallId":"plan-1","toolName":"createPlan","args":{"text":"# Extra work","uri":"file:///synthetic/project/.cursor/plans/task.plan.md"}}]}
+{"role":"tool","id":"unknown-plan-result","content":[{"type":"tool-result","toolCallId":"plan-1","result":{"success":true,"approved":true}}]}
+{"role":"assistant","id":"pending-question","content":[{"type":"tool-call","toolCallId":"question-2","toolName":"AskQuestion","args":{}}]}
+{"role":"tool","id":"orphan-result","content":[{"type":"tool-result","toolCallId":"unrelated","result":"Build approved"}]}
+{"role":"user","id":"correction-1","content":"No. Do not implement extra work."}

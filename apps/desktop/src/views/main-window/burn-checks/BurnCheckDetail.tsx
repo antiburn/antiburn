@@ -3,7 +3,7 @@ import { useCallback, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 
 import { cn } from "../../../lib/cn"
-import { noteInteraction } from "../../../lib/ipc"
+import { noteInteraction, smartCheckForDetector } from "../../../lib/ipc"
 import { writeClipboardText } from "../../../lib/clipboard"
 import {
   copyPromptFixBurnCheckTargets,
@@ -24,6 +24,9 @@ export const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
   unusedMcpServers: "Some MCP servers were loaded but not used.",
   unusedBuiltInTools: "Some built-in tools were loaded but not used.",
   unusedSkills: "Some skills were loaded but not used.",
+  skillOpportunities: "This work matches a skill you have installed.",
+  overExploring: "Some assessed reads went beyond what the work needed.",
+  scopeCreep: "Some assessed work went outside the agreed task.",
   oldModelUsage: "Some sessions used an older model when a newer one was available.",
   overuseOfFastMode: "Some work paid for speed it did not need.",
   cacheChurn: "Some sessions kept paying to reload the same context.",
@@ -72,6 +75,8 @@ export function CheckPromptAction({
     if (status !== CLICK_AGAIN_STATUS) setStatus(null)
   }
   const key = useRef("")
+  const copyReported = useRef(false)
+  const check = smartCheckForDetector(detector)
   const copiedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scheduleCopiedReset = (startedKey: string) => {
     if (copiedTimeout.current) clearTimeout(copiedTimeout.current)
@@ -103,6 +108,7 @@ export function CheckPromptAction({
     let nextPrompt = prompt
     try {
       if (nextPrompt === null) {
+        copyReported.current = false
         const outcome =
           promptTargets.length > 0
             ? await copyPromptFixBurnCheckTargets(
@@ -111,6 +117,7 @@ export function CheckPromptAction({
             : await copyPromptFixBurnCheck(detector)
         noteInteraction({
           kind: "burnCheckPromptPrepared",
+          ...(check ? { check } : {}),
           outcome:
             outcome?.outcome === "promptReady"
               ? "ready"
@@ -118,12 +125,6 @@ export function CheckPromptAction({
                 ? "unavailable"
                 : "failed",
         })
-        if (detector === "ignoredInstructions" && outcome?.outcome !== "promptReady")
-          noteInteraction({
-            kind: "ignoredInstructionObserved",
-            stage: "prompt",
-            outcome: outcome?.outcome === "unavailable" ? "unavailable" : "failed",
-          })
         if (key.current !== startedKey) return
         if (outcome?.outcome !== "promptReady") {
           setBusy(false)
@@ -140,13 +141,10 @@ export function CheckPromptAction({
         )
       }
       if (key.current !== startedKey) return
-      noteInteraction({ kind: "burnCheckPromptCopied" })
-      if (detector === "ignoredInstructions")
-        noteInteraction({
-          kind: "ignoredInstructionObserved",
-          stage: "prompt",
-          outcome: "copied",
-        })
+      if (!copyReported.current) {
+        noteInteraction({ kind: "burnCheckPromptCopied", ...(check ? { check } : {}) })
+        copyReported.current = true
+      }
       setPrompt(nextPrompt)
       setCopied(true)
       setBusy(false)
@@ -154,12 +152,10 @@ export function CheckPromptAction({
     } catch {
       const preparationFailed = nextPrompt === null
       if (preparationFailed)
-        noteInteraction({ kind: "burnCheckPromptPrepared", outcome: "failed" })
-      if (preparationFailed && detector === "ignoredInstructions")
         noteInteraction({
-          kind: "ignoredInstructionObserved",
-          stage: "prompt",
+          kind: "burnCheckPromptPrepared",
           outcome: "failed",
+          ...(check ? { check } : {}),
         })
       if (key.current !== startedKey) return
       setPrompt(nextPrompt)

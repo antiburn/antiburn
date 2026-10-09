@@ -45,7 +45,7 @@ use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, Usage};
 use crate::analysis::records::{parse_ts, parse_usage, tool_call_from_input};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
 use crate::discovery::agents::antigravity::{
-    combine_db_fingerprint, db_fingerprint_connection, sibling_brain_transcript,
+    combine_db_fingerprint, db_fingerprint, db_fingerprint_connection, sibling_brain_transcript,
 };
 use crate::discovery::source_version::{
     FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of, provider_db_fingerprint,
@@ -205,16 +205,7 @@ impl SessionReader for AntigravitySessionReader {
         connection.execute_batch("COMMIT")?;
         // Reopen after the transaction to detect a commit that landed during
         // the snapshot read. SQLite exposes uncheckpointed WAL rows here.
-        let verification = open_database(path)?;
-        let observed = db_fingerprint_connection(&verification)
-            .map(|database| {
-                combine_db_fingerprint(
-                    database,
-                    transcript_claim
-                        .as_ref()
-                        .map(|(_, claim)| claim.fingerprint.as_str()),
-                )
-            })
+        let observed = db_fingerprint(path, &input.session_id)
             .map(|(latest, rows)| provider_db_fingerprint(latest, rows));
         if observed.as_deref() != Some(claimed_fingerprint) {
             return Ok(VisitOutcome::SourceChanged(
@@ -572,6 +563,11 @@ impl AntigravityStreamState {
             self.started_at_ms = event.ts_ms;
         }
         let mut content = step_content_parts(value, content_role);
+        self.attribution_incomplete |= content_role == Role::User
+            && (content.is_empty()
+                || content
+                    .iter()
+                    .any(|part| part.authority != ContentAuthority::User));
         if value
             .get("truncated_fields")
             .and_then(Value::as_array)
@@ -1480,7 +1476,8 @@ impl<'de> Visitor<'de> for StepsVisitor<'_> {
             }
             if let Some(event) = step.into_event(self.0.state) {
                 self.0.state.attribution_incomplete |= event.ts_ms.is_none()
-                    || (event.role == Role::Assistant && event.model.is_none());
+                    || (event.role == Role::Assistant && event.model.is_none())
+                    || event.role == Role::User;
                 if self.0.state.started_at_ms.is_none() {
                     self.0.state.started_at_ms = event.ts_ms;
                 }
@@ -2016,7 +2013,7 @@ fn cascade_content_parts(
             if !text.is_empty() {
                 parts.push(
                     ContentPart::new(ContentKind::UserText, text)
-                        .with_authority(ContentAuthority::User),
+                        .with_authority(ContentAuthority::Unknown),
                 );
             }
         }
@@ -2787,7 +2784,13 @@ fn step_content_parts(step: &Value, role: Role) -> Vec<ContentPart> {
         return Vec::new();
     };
     let authority = match role {
-        Role::User => ContentAuthority::User,
+        Role::User
+            if object.get("type").and_then(Value::as_str) == Some("USER_INPUT")
+                && object.get("source").and_then(Value::as_str) == Some("USER_EXPLICIT") =>
+        {
+            ContentAuthority::User
+        }
+        Role::User => ContentAuthority::Unknown,
         Role::Assistant => ContentAuthority::Assistant,
         Role::System => ContentAuthority::System,
         Role::Tool => ContentAuthority::Tool,
@@ -2796,11 +2799,20 @@ fn step_content_parts(step: &Value, role: Role) -> Vec<ContentPart> {
 
     if role == Role::User {
         let user_input = object.get("userInput");
-        let text = user_input
+        let response = user_input
             .and_then(|value| value.get("userResponse"))
+            .and_then(Value::as_str);
+        if let Some(text) = response.filter(|text| !text.is_empty()) {
+            parts.push(
+                ContentPart::new(ContentKind::UserText, text)
+                    .with_authority(ContentAuthority::Unknown),
+            );
+        }
+        if let Some(text) = object
+            .get("content")
             .and_then(Value::as_str)
-            .or_else(|| object.get("content").and_then(Value::as_str));
-        if let Some(text) = text.filter(|text| !text.is_empty()) {
+            .filter(|text| !text.is_empty())
+        {
             parts.push(ContentPart::new(ContentKind::UserText, text).with_authority(authority));
         }
         if let Some(items) = user_input
@@ -2810,7 +2822,8 @@ fn step_content_parts(step: &Value, role: Role) -> Vec<ContentPart> {
             for item in items {
                 if let Some(text) = item.get("text").and_then(Value::as_str) {
                     parts.push(
-                        ContentPart::new(ContentKind::UserText, text).with_authority(authority),
+                        ContentPart::new(ContentKind::UserText, text)
+                            .with_authority(ContentAuthority::Unknown),
                     );
                 }
             }
@@ -2842,7 +2855,10 @@ fn step_content_parts(step: &Value, role: Role) -> Vec<ContentPart> {
                 if let Some(input) = input {
                     parts.push(
                         ContentPart::new(ContentKind::ToolInput, input)
-                            .with_tool_identity(name, None)
+                            .with_tool_identity(
+                                name,
+                                call.get("id").and_then(Value::as_str).map(str::to_owned),
+                            )
                             .with_native_input_fields(
                                 call.get("args")
                                     .or_else(|| call.get("arguments"))
@@ -3059,6 +3075,7 @@ mod tests {
             {
                 let mut file = std::fs::OpenOptions::new()
                     .append(true)
+                    .create(true)
                     .open(&self.transcript)
                     .unwrap();
                 std::io::Write::write_all(&mut file, b"{}\n").unwrap();
@@ -4027,6 +4044,49 @@ mod tests {
         assert_eq!(summary.tokens_in_total, 37);
         assert_eq!(summary.tokens_out_total, 50);
         assert_eq!(summary.peak_context_tokens, 837);
+    }
+
+    #[test]
+    fn claimed_database_rejects_missing_changed_or_new_companions() {
+        for mutation in ["remove", "replace", "create"] {
+            let usage = usage_blob(11, "response-1", 30, Some(50), 40, 10);
+            let generation = generation_blob(1, Some(b"gemini-3.6-flash"), None, &usage, &[]);
+            let step = step_blob(1, 100, &usage, &[]);
+            let (_directory, input) =
+                sqlite_session("antigravity-ide", &[generation], &[step], false, false);
+            let RawSource::Sqlite(path) = &input.source else {
+                unreachable!();
+            };
+            let transcript = sibling_brain_transcript(path, &input.session_id).unwrap();
+            if mutation == "create" {
+                std::fs::remove_file(&transcript).unwrap();
+            }
+            let (latest, rows) = db_fingerprint(path, &input.session_id).unwrap();
+            let fingerprint = provider_db_fingerprint(latest, rows);
+            if mutation == "remove" {
+                std::fs::remove_file(&transcript).unwrap();
+            } else if mutation == "replace" {
+                std::fs::write(
+                    &transcript,
+                    "{\"type\":\"USER_INPUT\",\"content\":\"different version\"}\n",
+                )
+                .unwrap();
+            }
+            let mut sink = TranscriptMutatingSink {
+                collector: SessionCollector::new(&input.agent, &input.session_id),
+                transcript,
+                mutated: false,
+            };
+            let outcome = AntigravitySessionReader
+                .visit_db_claimed(&input, &fingerprint, &|| false, &mut sink)
+                .unwrap();
+            assert!(
+                matches!(outcome, VisitOutcome::SourceChanged(_)),
+                "{mutation}"
+            );
+            assert!(sink.collector.into_session().is_err(), "{mutation}");
+            assert_eq!(sink.mutated, mutation == "create");
+        }
     }
 
     #[test]

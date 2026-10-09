@@ -1132,6 +1132,7 @@ fn only_a_clean_provider_snapshot_upgrades_detection() {
                         provider,
                         error: ProviderUsageError::Unavailable,
                         detail: None,
+                        plan: None,
                     })
                     .into_iter()
                     .collect(),
@@ -1203,6 +1204,57 @@ fn collection_and_summary_preserve_optional_error_details() {
     }
     assert_eq!(SourceOutcome::absent().detail, None);
     assert_eq!(SourceOutcome::found(vec![]).detail, None);
+}
+
+#[test]
+fn only_a_desktop_only_failure_names_the_local_plan() {
+    use super::SourceErrorDetail;
+
+    // The local file can name another account's plan. Only a Desktop-only
+    // failure proves no other login is in play.
+    struct PlannedFailure(ProviderUsageError, Option<SourceErrorDetail>);
+    impl LiveUsageSource for PlannedFailure {
+        fn id(&self) -> &'static str {
+            "plan-fixture"
+        }
+        fn provider(&self) -> &'static str {
+            "anthropic"
+        }
+        fn fetch(&self, _: std::time::Duration) -> SourceOutcome {
+            match self.1 {
+                Some(detail) => SourceOutcome::failed_with_detail(self.0, detail),
+                None => SourceOutcome::failed(self.0),
+            }
+        }
+        fn local_plan(&self) -> Option<crate::dto::LiveProviderPlan> {
+            Some(crate::dto::LiveProviderPlan {
+                name: "max".into(),
+                tier: None,
+            })
+        }
+    }
+
+    for (error, detail, named) in [
+        (
+            ProviderUsageError::Authentication,
+            Some(SourceErrorDetail::DesktopOnly),
+            true,
+        ),
+        (ProviderUsageError::RateLimited, None, false),
+        (
+            ProviderUsageError::Authentication,
+            Some(SourceErrorDetail::RefreshPending),
+            false,
+        ),
+    ] {
+        let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(PlannedFailure(error, detail))];
+        let collected = sources::collect(&sources, true, &HiddenMeters::default(), MAX_AGE);
+        assert_eq!(
+            collected.errors[0].plan.is_some(),
+            named,
+            "{error:?} {detail:?}"
+        );
+    }
 }
 
 /// The period rules the payload's `elapsed_fraction` rests on.

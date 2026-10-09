@@ -991,8 +991,16 @@ pub struct SessionQuotaPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ChecksCategoryPayload {
     pub id: BurnCheckDetectorId,
-    /// True only for a published, sampled Ignored Instructions assessment.
+    /// True when the check reviews selected evidence.
     pub sampled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checking: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checking_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial_context: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_coverage: Option<ChecksReviewCoveragePayload>,
     /// The current remediation state. `None` means the category has no complete assessment.
     pub lifecycle: Option<ChecksCategoryLifecyclePayload>,
     pub finding: u64,
@@ -1002,6 +1010,23 @@ pub struct ChecksCategoryPayload {
     pub unavailable: u64,
     /// Hundredths of one percent, bounded to `0..=10000`.
     pub estimated_token_burn_basis_points: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChecksReviewCoveragePayload {
+    /// Terminal review targets, including uncertain answers.
+    pub reviewed: u64,
+    /// All review targets. Unknown when any applicable session has a missing or capped inventory.
+    pub total: Option<u64>,
+    /// Reviewed targets with an uncertain answer. This count is a subset of `reviewed`.
+    pub uncertain: Option<u64>,
+    /// Targets without a terminal answer. This count does not promise another review.
+    pub pending: Option<u64>,
+    /// Reviewed targets that wait for task completion, not for a review answer.
+    pub pending_completion: Option<u64>,
+    /// True when queued, running, or resumable work has runnable targets.
+    pub continuing: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1016,6 +1041,7 @@ pub enum ChecksCategoryLifecyclePayload {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChecksReportPayload {
+    pub smart_checks_available: bool,
     pub evidence_settled: bool,
     /// Sessions the report window's denominator counts, regardless of
     /// evidence state. `pending_evidence` is the subset of this total that is
@@ -1047,6 +1073,9 @@ pub enum BurnCheckDetectorId {
     OveruseOfFastMode,
     CacheChurn,
     IgnoredInstructions,
+    SkillOpportunities,
+    OverExploring,
+    ScopeCreep,
 }
 
 /// A reader-owned suppression for one entire burn check.
@@ -1079,6 +1108,9 @@ impl From<BurnCheckDetectorId> for DetectorId {
             BurnCheckDetectorId::OveruseOfFastMode => Self::OveruseOfFastMode,
             BurnCheckDetectorId::CacheChurn => Self::CacheChurn,
             BurnCheckDetectorId::IgnoredInstructions => Self::IgnoredInstructions,
+            BurnCheckDetectorId::SkillOpportunities => Self::SkillOpportunities,
+            BurnCheckDetectorId::OverExploring => Self::OverExploring,
+            BurnCheckDetectorId::ScopeCreep => Self::ScopeCreep,
         }
     }
 }
@@ -1164,6 +1196,10 @@ impl From<SourceFormat> for BurnCheckSourceFormat {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BurnCheckFindingPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub over_exploring_reason: Option<antiburn_local::checks::over_exploring::Reason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_proof: Option<crate::remediation::IgnoredInstructionDecisionProof>,
     pub detector: BurnCheckDetectorId,
     pub agent: String,
     pub source_format: BurnCheckSourceFormat,
@@ -2193,6 +2229,9 @@ impl From<DetectorId> for BurnCheckDetectorId {
             DetectorId::OveruseOfFastMode => Self::OveruseOfFastMode,
             DetectorId::CacheChurn => Self::CacheChurn,
             DetectorId::IgnoredInstructions => Self::IgnoredInstructions,
+            DetectorId::SkillOpportunities => Self::SkillOpportunities,
+            DetectorId::OverExploring => Self::OverExploring,
+            DetectorId::ScopeCreep => Self::ScopeCreep,
         }
     }
 }
@@ -2498,6 +2537,8 @@ impl From<crate::remediation::BurnCheckTarget> for BurnCheckTargetPayload {
             finding_id: value.finding_id,
             action_id: value.action_id,
             finding: BurnCheckFindingPayload {
+                over_exploring_reason: value.over_exploring_reason,
+                decision_proof: value.decision_proof,
                 detector: finding.detector.into(),
                 agent: finding.agent.slug().to_owned(),
                 source_format: finding.source_format.into(),
@@ -2806,6 +2847,10 @@ impl ChecksReportPayload {
                 ChecksCategoryPayload {
                     id: id.into(),
                     sampled: false,
+                    checking: None,
+                    checking_count: None,
+                    partial_context: None,
+                    review_coverage: None,
                     lifecycle: None,
                     finding: counts.finding,
                     agents: if counts.finding > 0 {
@@ -2831,6 +2876,7 @@ impl ChecksReportPayload {
             .flatten();
         Self {
             evidence_settled,
+            smart_checks_available: true,
             window_sessions: report.context.coverage.discovered,
             pending_evidence,
             deferred_evidence,
@@ -3132,6 +3178,10 @@ pub struct LiveUsageSourceError {
     pub category: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<SourceErrorDetail>,
+    /// The plan named in a local file, when the failed source has no reading
+    /// to carry it. For example Claude Desktop's `~/.claude.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<LiveProviderPlan>,
 }
 
 /// One provider antiburn can meter, and whether the reader shows it.
@@ -3157,6 +3207,10 @@ pub struct LiveUsageMeter {
     /// `carrier`'s display name, so the views never restate the enum.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carrier_label: Option<String>,
+    /// The provider's desktop app by name, when it is installed, whatever
+    /// login was found. For example "Claude Desktop".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_app_label: Option<String>,
 }
 
 /// Live provider usage, as one snapshot.
@@ -3182,6 +3236,159 @@ pub struct LiveUsageSummary {
     pub meters: Vec<LiveUsageMeter>,
     /// ISO-8601 stamp of the moment this snapshot was collected.
     pub generated_at: String,
+}
+
+/// Every Claude Code auto-memory project, for the Memories view.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMemoriesReport {
+    pub generated_at_ms: i64,
+    /// False where the memory editor cannot write (Windows).
+    pub writes_supported: bool,
+    pub projects: Vec<MemoryProjectDto>,
+}
+
+/// Request for `get_session_memories`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMemoriesRequest {
+    pub agent: String,
+    pub session_id: String,
+    pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
+}
+
+/// The memories that one session read or wrote.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMemoriesPayload {
+    pub entries: Vec<SessionMemoryTouchDto>,
+}
+
+/// One memory file and one way a session touched it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMemoryTouchDto {
+    pub slug: String,
+    pub path: String,
+    pub file_name: String,
+    pub title: String,
+    /// `referenced` or `written`.
+    pub action: String,
+    pub count: u32,
+    pub last_ms: Option<i64>,
+    /// The file is still on disk.
+    pub exists: bool,
+}
+
+/// The result of one memory edit. `Archived`, `Restored` and `IndexLineRemoved`
+/// are the only outcomes that changed a file. Every other outcome left the
+/// memory directory untouched. Only `Unavailable` exists where memory edits
+/// are not supported.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "outcome",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum MemoryEditOutcome {
+    #[cfg(not(windows))]
+    Archived {
+        archive_id: String,
+        index_line_removed: bool,
+    },
+    #[cfg(not(windows))]
+    Restored {
+        index_line_restored: bool,
+    },
+    #[cfg(not(windows))]
+    IndexLineRemoved,
+    /// A precondition failed.
+    #[cfg(not(windows))]
+    ChangedOnDisk,
+    /// The file or the index line is already gone.
+    #[cfg(not(windows))]
+    Missing,
+    /// The restore target exists.
+    #[cfg(not(windows))]
+    AlreadyExists,
+    Unavailable {
+        reason: String,
+    },
+}
+
+/// One project folder with a memory directory.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryProjectDto {
+    /// The agent that owns the memory folder (`claude-code` today).
+    pub agent: String,
+    pub slug: String,
+    pub display_path: String,
+    /// The project folder exists on disk now.
+    pub folder_exists: bool,
+    pub memory_dir: String,
+    pub index_path: Option<String>,
+    pub session_count: u32,
+    pub last_session_ms: Option<i64>,
+    pub dangling: Vec<DanglingIndexEntryDto>,
+    pub memories: Vec<MemoryEntryDto>,
+}
+
+/// An index line whose target file is missing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DanglingIndexEntryDto {
+    pub title: String,
+    pub target: String,
+    pub line_number: u32,
+}
+
+/// One memory file with its usage facts.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEntryDto {
+    pub path: String,
+    pub file_name: String,
+    pub title: String,
+    pub kind: Option<String>,
+    pub hook: Option<String>,
+    /// `index`, `frontmatter`, or `body`.
+    pub hook_source: String,
+    /// The `MEMORY.md` line that names this file. `None` for an orphan.
+    pub index_entry: Option<MemoryIndexEntryDto>,
+    /// The raw text between the frontmatter fences. `None` without closed
+    /// frontmatter.
+    pub frontmatter: Option<String>,
+    /// The text after the frontmatter, or the whole text without frontmatter.
+    pub body: String,
+    pub truncated: bool,
+    pub size_bytes: u64,
+    pub modified_ms: Option<i64>,
+    pub in_index: bool,
+    pub facts: MemoryFactsDto,
+}
+
+/// The `MEMORY.md` line that names one memory file.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryIndexEntryDto {
+    pub title: String,
+    pub hook: Option<String>,
+    pub line_number: u32,
+}
+
+/// What the stored tool calls say about one memory file. No history means
+/// unknown, not never.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryFactsDto {
+    pub last_referenced_ms: Option<i64>,
+    pub last_written_ms: Option<i64>,
+    pub reference_count: u32,
+    pub write_count: u32,
+    pub sessions_since_written: Option<u32>,
+    pub has_history: bool,
 }
 
 #[cfg(test)]

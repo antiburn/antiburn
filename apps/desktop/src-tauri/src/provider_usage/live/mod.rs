@@ -137,6 +137,13 @@ pub trait LiveUsageSource: Send + Sync {
     /// there for a cooldown to gate.
     fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome;
 
+    /// The plan the provider's own tools wrote to a local file, for a failure
+    /// with no reading to carry it. Asked only after a `DesktopOnly` failure,
+    /// when no other login can own a different plan. Never reads a secret.
+    fn local_plan(&self) -> Option<crate::dto::LiveProviderPlan> {
+        None
+    }
+
     /// Collect a provider-specific diagnostic for anonymised analytics.
     ///
     /// The default keeps sources out of analytics unless they explicitly
@@ -301,6 +308,9 @@ pub fn roster(
                 carrier_label: presence
                     .carrier
                     .map(|carrier| carrier.display_name().to_string()),
+                desktop_app_label: presence
+                    .desktop_app
+                    .map(|app| app.display_name().to_string()),
             }
         })
         .collect();
@@ -487,6 +497,7 @@ pub fn summarize_collected(
                 display_name: super::providers::display_name(failure.provider).to_string(),
                 category: failure.error.category().to_string(),
                 detail: failure.detail,
+                plan: failure.plan,
             })
             .collect(),
         meters,

@@ -24,6 +24,7 @@ import type {
   LiveProviderUsagePayload,
   LiveUsageDetection,
   LiveUsageFreshness,
+  LiveUsageMeterPayload,
   LiveUsagePlanPayload,
   LiveUsageSourceErrorPayload,
   LiveUsageSummaryPayload,
@@ -38,6 +39,8 @@ export interface UnavailableLiveProvider {
   /** `authentication` | `rateLimited` | `schema` | `unavailable`. */
   category: string
   detail?: LiveUsageSourceErrorPayload["detail"]
+  /** The plan, in words, when a local file named one. */
+  planLabel?: string
 }
 import { modelMatchesScope } from "./models"
 import { relativeTime } from "./relativeTime"
@@ -560,14 +563,24 @@ export function liveUnavailableProviders(
   for (const error of summary.errors) {
     if (!error.provider || showing.has(error.provider) || seen.has(error.provider)) continue
     seen.add(error.provider)
+    const plan = planLabel(error.provider, error.plan ?? null)
     unavailable.push({
       provider: error.provider,
       displayName: error.displayName || error.provider,
       category: error.category,
       ...(error.detail ? { detail: error.detail } : {}),
+      ...(plan ? { planLabel: plan } : {}),
     })
   }
   return unavailable
+}
+
+/**
+ * Whether a failure has a docs page to explain it. Only a Claude Desktop-only
+ * install does: nothing in antiburn can fix it, so the note links out.
+ */
+export function liveErrorHasDocs(detail?: LiveUsageSourceErrorDetail): boolean {
+  return detail === "desktopOnly"
 }
 
 /** A failure category as two or three words, for a row with no room. */
@@ -577,6 +590,7 @@ export function liveUnavailableReason(
 ): string {
   if (detail === "refreshPending") return "update pending"
   if (detail === "cliMissing") return "tool unavailable"
+  if (detail === "desktopOnly") return "not available for Claude Desktop"
   switch (category) {
     case "authentication":
       return "sign-in needed"
@@ -616,6 +630,21 @@ const LIVE_TOOLS: Readonly<Record<string, LiveTool>> = {
   [OPENAI]: { tool: "Codex" },
 }
 
+/** A provider group's accessible name: the provider, then its plan when known. */
+export function providerGroupLabel(
+  displayName: string,
+  plan: string | null | undefined,
+): string {
+  return plan ? `${displayName}, ${plan} plan` : displayName
+}
+
+/** The meter's login tool, e.g. "Claude Code", or the meter's own display name. */
+export function liveToolName(
+  meter: Pick<LiveUsageMeterPayload, "provider" | "displayName">,
+): string {
+  return LIVE_TOOLS[meter.provider]?.tool ?? meter.displayName
+}
+
 /**
  * The one line a meter with no reading needs: found and signed in, found
  * but not signed in, or not found. Signing in happens in the tool, so the
@@ -626,9 +655,19 @@ export function liveDetectionNote(
   detection: LiveUsageDetection | undefined,
   shown: boolean,
   carrierLabel?: string,
+  desktopAppLabel?: string,
 ): string {
   if (!shown) return "Turn the switch above back on to ask for current plan limits."
   const tool = LIVE_TOOLS[provider]?.tool ?? "this tool"
+  // The desktop app keeps its own sign-in, which antiburn does not read.
+  // Name what was found, and the login the limits need.
+  if (
+    desktopAppLabel &&
+    carrierLabel !== "Pi" &&
+    (detection === "notInstalled" || detection === "installedNotSignedIn")
+  ) {
+    return `Found ${desktopAppLabel}. Limits need ${tool} signed in on this computer.`
+  }
   switch (detection) {
     case "signedIn":
       return carrierLabel ? `Signed in through ${carrierLabel}.` : "Signed in."
@@ -650,6 +689,9 @@ export function liveErrorNote(
   detail?: LiveUsageSourceErrorDetail,
 ): string {
   if (category === "authentication" && provider === ANTHROPIC) {
+    if (detail === "desktopOnly") {
+      return "Usage limits not available for Claude Desktop."
+    }
     if (detail === "cliMissing") {
       return "Couldn't update Claude usage. Open Claude Code to check your sign-in."
     }

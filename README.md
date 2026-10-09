@@ -32,6 +32,17 @@ antiburn supports Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode, K
 - Unused MCP servers - MCPs are usually situational, just turn them on when you need them.
 - Unused skills - most of us have skills installed that cost tokens every session, but that we never use any more.
 
+Optional [Smart Burn Checks](docs/smart-burn-checks.md) review Ignored Instructions,
+Scope Creep, Over-exploring, and Skill Opportunities through Jev, Ollama,
+Cloudflare, or Custom. Each initially targets 50% of eligible targets, then
+continues the remaining work. This percentage is a target fraction, not model
+confidence. One scheduler rotates across all four checks, with target limits of
+8/4/3/4 per turn, respectively, and at most two provider dispatch attempts per
+turn including retries. Finite attempt limits persist across turns and restarts.
+Compatible answers require the exact decision context. Private thinking stays
+excluded; missing evidence and failed requests cannot produce a clean result.
+Hosted requests can incur charges.
+
 ## Install
 
 macOS 13 or later, with Homebrew (Apple silicon and Intel):
@@ -80,7 +91,7 @@ Run the engine checks:
 cd crates/antiburn-local
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo nextest run
 ```
 
 See the [desktop guide](apps/desktop/README.md) for app commands and the

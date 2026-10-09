@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-restore-agent-memory"
+description = "Enables the restore_agent_memory command without any pre-configured scope."
+commands.allow = ["restore_agent_memory"]
+
+[[permission]]
+identifier = "deny-restore-agent-memory"
+description = "Denies the restore_agent_memory command without any pre-configured scope."
+commands.deny = ["restore_agent_memory"]

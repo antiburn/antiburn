@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-agent-memories"
+description = "Enables the list_agent_memories command without any pre-configured scope."
+commands.allow = ["list_agent_memories"]
+
+[[permission]]
+identifier = "deny-list-agent-memories"
+description = "Denies the list_agent_memories command without any pre-configured scope."
+commands.deny = ["list_agent_memories"]
