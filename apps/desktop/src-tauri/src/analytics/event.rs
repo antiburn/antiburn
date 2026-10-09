@@ -1062,6 +1062,8 @@ pub enum LiveUsageState {
     Fresh,
     Stale,
     Authentication,
+    /// The login expired, but it can recover without a new sign-in.
+    LoginRecovering,
     RateLimited,
     Unavailable,
     NoCredentials,
@@ -1685,6 +1687,7 @@ wire_values!(LiveUsageState, {
     LiveUsageState::Fresh => "fresh",
     LiveUsageState::Stale => "stale",
     LiveUsageState::Authentication => "authentication",
+    LiveUsageState::LoginRecovering => "login_recovering",
     LiveUsageState::RateLimited => "rate_limited",
     LiveUsageState::Unavailable => "unavailable",
     LiveUsageState::NoCredentials => "no_credentials",
@@ -2995,6 +2998,15 @@ mod tests {
         assert_eq!(facts.label, Some("google"));
         assert_eq!(facts.detail, Some("rate_limited"));
         assert_eq!(facts.origin, None);
+
+        let (_, facts) = Interaction::LiveUsageStateObserved {
+            provider: LiveUsageProvider::Anthropic,
+            state: LiveUsageState::LoginRecovering,
+            origin: Origin::User,
+        }
+        .resolve();
+        assert_eq!(facts.label, Some("anthropic"));
+        assert_eq!(facts.detail, Some("login_recovering"));
 
         let (name, facts) = Interaction::BurnCheckAutoFixCompleted {
             outcome: AutoFixOutcome::RecoveryNeeded,
