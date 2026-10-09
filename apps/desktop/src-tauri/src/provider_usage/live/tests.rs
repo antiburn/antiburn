@@ -1061,6 +1061,7 @@ fn detection_keeps_the_strongest_evidence_in_either_source_order() {
         Detection::Unknown,
         Detection::NotInstalled,
         Detection::InstalledNotSignedIn,
+        Detection::SignInRequired,
         Detection::SignedIn,
     ];
     for (index, &weaker) in values.iter().enumerate() {
@@ -1369,5 +1370,106 @@ mod elapsed_marker {
         window.starts_at = Some(at(3_600));
         window.resets_at = Some(at(-3_600));
         assert_eq!(elapsed_fraction(&window, at(0), clock()), None);
+    }
+}
+
+/// A source that finds `detection` and fetches no reading and no error.
+struct SilentlyAbsent(Detection);
+
+impl LiveUsageSource for SilentlyAbsent {
+    fn id(&self) -> &'static str {
+        "absent-fixture"
+    }
+    fn provider(&self) -> &'static str {
+        "anthropic"
+    }
+    fn detect(&self, _online: bool) -> Presence {
+        Presence::new(self.0)
+    }
+    fn fetch(&self, _max_age: std::time::Duration) -> SourceOutcome {
+        SourceOutcome::absent()
+    }
+}
+
+#[test]
+fn an_installed_provider_never_vanishes_without_an_error() {
+    use super::SourceErrorDetail;
+
+    for (detection, expected, meter_detection) in [
+        (
+            Detection::SignedIn,
+            Some(SourceErrorDetail::SignInRequired),
+            Detection::SignInRequired,
+        ),
+        (
+            Detection::SignInRequired,
+            Some(SourceErrorDetail::SignInRequired),
+            Detection::SignInRequired,
+        ),
+        (
+            Detection::InstalledNotSignedIn,
+            Some(SourceErrorDetail::NotSignedIn),
+            Detection::InstalledNotSignedIn,
+        ),
+        (Detection::NotInstalled, None, Detection::NotInstalled),
+        (Detection::Unknown, None, Detection::Unknown),
+    ] {
+        let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(SilentlyAbsent(detection))];
+        let collected = sources::collect(&sources, true, &HiddenMeters::default(), MAX_AGE);
+        assert!(collected.snapshots.is_empty());
+        assert_eq!(
+            collected.errors.first().and_then(|failure| failure.detail),
+            expected,
+            "{detection:?}"
+        );
+        if expected.is_some() {
+            assert_eq!(
+                collected.errors[0].error,
+                ProviderUsageError::Authentication
+            );
+        }
+        // The meter stays on the roster with the proved login state, so a
+        // view can grey it and say why.
+        let detected = DetectionMap::from([("anthropic".into(), Presence::new(detection))]);
+        let meters = roster(&sources, &HiddenMeters::default(), &detected);
+        let summary = summarize_collected(collected, meters, None, None, NOW, 0);
+        assert_eq!(summary.meters.len(), 1);
+        assert!(summary.meters[0].shown);
+        assert_eq!(summary.meters[0].detection, meter_detection);
+    }
+}
+
+#[test]
+fn a_sign_in_failure_sets_the_meter_state() {
+    use super::SourceErrorDetail;
+
+    struct Failing(SourceErrorDetail);
+    impl LiveUsageSource for Failing {
+        fn id(&self) -> &'static str {
+            "failing-fixture"
+        }
+        fn provider(&self) -> &'static str {
+            "anthropic"
+        }
+        fn fetch(&self, _: std::time::Duration) -> SourceOutcome {
+            SourceOutcome::failed_with_detail(ProviderUsageError::Authentication, self.0)
+        }
+    }
+
+    for (detail, expected) in [
+        (SourceErrorDetail::SignInRequired, Detection::SignInRequired),
+        (SourceErrorDetail::CliMissing, Detection::SignInRequired),
+        (SourceErrorDetail::RefreshPending, Detection::SignedIn),
+    ] {
+        let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Failing(detail))];
+        let collected = sources::collect(&sources, true, &HiddenMeters::default(), MAX_AGE);
+        let detected = DetectionMap::from([(
+            "anthropic".into(),
+            Presence::via(Detection::SignedIn, LoginCarrier::ClaudeKeychain),
+        )]);
+        let meters = roster(&sources, &HiddenMeters::default(), &detected);
+        let summary = summarize_collected(collected, meters, None, None, NOW, 0);
+        assert_eq!(summary.meters[0].detection, expected, "{detail:?}");
+        assert_eq!(summary.errors[0].detail, Some(detail));
     }
 }

@@ -9,8 +9,8 @@
 //! [`anthropic_fetch`] first reads the Claude CLI's own cached reading of its
 //! usage endpoint — see [`claude_config_cache`] — before asking that endpoint
 //! itself with the credential the CLI already keeps on this machine — and,
-//! on a user-initiated refresh that finds every credential expired, delegates
-//! the refresh to the reader's own `claude` CLI via [`claude_touch`];
+//! when every credential has expired or expires soon, delegates the refresh
+//! to the reader's own `claude` CLI via [`claude_touch`];
 //! [`codex_fetch`] asks the analogous endpoint for Codex directly, retrying
 //! once with a token it refreshes itself before
 //! falling back to [`codex_app_server`] — the Codex CLI's own process, asked
@@ -47,6 +47,7 @@ pub mod anthropic_fetch;
 pub mod antigravity_fetch;
 mod antigravity_local;
 mod claude_config_cache;
+mod claude_login;
 mod claude_touch;
 mod cli_locator;
 mod codex_app_server;
@@ -125,15 +126,21 @@ pub fn collect(
         if hidden.contains(source.provider()) {
             continue;
         }
-        let outcome = source.fetch(max_age);
+        let mut outcome = source.fetch(max_age);
         // No reading and no error removes the provider from every usage
-        // surface. Log it so that the state is visible.
+        // surface. When the tool is installed, report why instead.
         if outcome.error.is_none() && outcome.snapshots.is_empty() {
+            let detail = silent_absence_detail(source.detect(online).detection);
             ::tracing::debug!(
                 event = "live_source_absent",
                 source = source.id(),
-                provider = source.provider()
+                provider = source.provider(),
+                reported = ?detail
             );
+            if let Some(detail) = detail {
+                outcome.error = Some(super::model::ProviderUsageError::Authentication);
+                outcome.detail = Some(detail);
+            }
         }
         if let Some(error) = outcome.error {
             ::tracing::warn!(
@@ -165,6 +172,26 @@ pub fn collect(
         }
     }
     collected
+}
+
+/// The error detail for a source that returned no reading and no error,
+/// from what its detection found.
+///
+/// An install without a login is "not signed in". A login that gave no
+/// reading cannot be used, so only a new sign-in can fix it. With nothing
+/// installed, or nothing known, the provider has nothing to report.
+///
+/// The source detects again here, after its fetch, because the fetch can
+/// correct what an earlier detection guessed (for example a Keychain item
+/// that holds no Claude login). Detection reads metadata and cached state
+/// only.
+fn silent_absence_detail(detection: super::model::Detection) -> Option<SourceErrorDetail> {
+    use super::model::Detection;
+    match detection {
+        Detection::SignedIn | Detection::SignInRequired => Some(SourceErrorDetail::SignInRequired),
+        Detection::InstalledNotSignedIn => Some(SourceErrorDetail::NotSignedIn),
+        Detection::NotInstalled | Detection::Unknown => None,
+    }
 }
 
 /// The result of one collection pass across every source.

@@ -220,6 +220,24 @@ fn live_error_details_use_closed_camel_case_values() {
             "google",
             "authentication",
         ),
+        (
+            SourceErrorDetail::SignInRequired,
+            "signInRequired",
+            "anthropic",
+            "authentication",
+        ),
+        (
+            SourceErrorDetail::CliMissing,
+            "cliMissing",
+            "anthropic",
+            "authentication",
+        ),
+        (
+            SourceErrorDetail::NotSignedIn,
+            "notSignedIn",
+            "anthropic",
+            "authentication",
+        ),
     ] {
         let json = serde_json::json!({
             "source": "fixture", "provider": provider, "displayName": "Fixture",
@@ -252,6 +270,7 @@ fn live_detection_uses_camel_case_wire_values() {
         (Detection::Unknown, "unknown"),
         (Detection::NotInstalled, "notInstalled"),
         (Detection::InstalledNotSignedIn, "installedNotSignedIn"),
+        (Detection::SignInRequired, "signInRequired"),
         (Detection::SignedIn, "signedIn"),
     ] {
         let json = serde_json::to_value(detection).unwrap();
