@@ -862,9 +862,8 @@ Notes for what isn't expressible as a token:
 - **Last-known limits** — a provider limit reading that is kept after its check failed for a
   recoverable reason, past the ten-minute grace period, draws its rings and meters at 60%
   opacity. It carries no warning text and no failure color. Its tooltip gives only the age
-  ("Last updated 2 hr ago."), plus when the owning tool refreshes the login if the reading
-  waits for that. A window whose period reset since the reading shows "—" instead of the old
-  figure.
+  ("Last updated 2 hr ago."), and never an instruction. A window whose period reset since the
+  reading shows "—" instead of the old figure.
 - **Chart color** — color only where it means a category: blue for context, the token series
   colors for in/out, `cost-cache-read` and `cost-cache-write` for the cache layers, yellow and
   pink for cache marks, brand orange for a compaction or carry, and the `measure` blue wherever

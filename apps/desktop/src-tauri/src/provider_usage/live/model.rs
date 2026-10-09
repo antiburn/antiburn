@@ -190,9 +190,9 @@ pub enum SourceErrorDetail {
     SignInRequired,
     /// The token expired and a delegated refresh has not run or settled yet.
     RefreshPending,
-    /// Every token expired, and the tool that owns the login keeps a refresh
-    /// token. antiburn cannot refresh it; the tool does when the reader next
-    /// uses it. No sign-in is needed.
+    /// Every token expired. The tool that owns the login keeps a refresh
+    /// token, and antiburn does not use it. The last reading stays while the
+    /// tool can still refresh the login. No sign-in is needed yet.
     CredentialExpired,
     /// Only the provider's desktop app is installed. Its sign-in is its own,
     /// and antiburn does not read it, so no limits can be checked.

@@ -448,8 +448,7 @@ export type LiveProviderStatus =
 
 /**
  * Whether a failed check leaves the last reading worth keeping: the failure
- * passes by itself or when the reader next uses the tool that owns the
- * login. A sign-in the provider rejected, and a reply antiburn cannot read,
+ * can pass without an action from the reader. A sign-in the provider rejected, and a reply antiburn cannot read,
  * are not: the reader must act, so the reading gives way to that action.
  */
 export function liveFailureIsRecoverable(
@@ -554,25 +553,12 @@ function formatGraceAge(ageMs: number): string {
 }
 
 /**
- * The tooltip of a dimmed, last-known reading: its age, and when the owning
- * tool refreshes the login if that is what the reading waits for. The
- * dimming shows the state; the words give the age, not a failure.
+ * The tooltip of a dimmed, last-known reading: its age only. The dimming
+ * shows the state. antiburn checks again by itself, so the words give no
+ * instruction.
  */
-export function liveStaleNote(
-  provider: string | undefined,
-  ageMs: number,
-  detail?: LiveUsageSourceErrorDetail,
-): string {
-  const updated = `Last updated ${formatGraceAge(ageMs)} ago.`
-  if (
-    detail === "credentialExpired" ||
-    detail === "refreshPending" ||
-    detail === "cliMissing"
-  ) {
-    const tool = liveProviderToolName(provider)
-    return tool ? `${updated} Updates the next time you use ${tool}.` : updated
-  }
-  return updated
+export function liveStaleNote(ageMs: number): string {
+  return `Last updated ${formatGraceAge(ageMs)} ago.`
 }
 
 /**
@@ -588,21 +574,10 @@ export function liveStatusNote(
     case "grace":
       return liveGraceNote(status.category, provider, status.ageMs, status.detail)
     case "stale":
-      return liveStaleNote(provider, status.ageMs, status.detail)
+      return liveStaleNote(status.ageMs)
     default:
       return null
   }
-}
-
-/** The tool whose next use refreshes the provider's login. */
-function liveProviderToolName(provider?: string): string | null {
-  return provider === ANTHROPIC
-    ? "Claude"
-    : provider === OPENAI
-      ? "Codex"
-      : provider === GOOGLE
-        ? "Antigravity"
-        : null
 }
 
 /**
@@ -808,11 +783,11 @@ export function liveErrorNote(
       return "Couldn't update Claude usage. Try again shortly."
     }
   }
+  // The login can still recover without the reader, and antiburn checks
+  // again by itself. Give no instruction.
   if (category === "authentication" && detail === "credentialExpired") {
-    const tool = liveProviderToolName(provider)
-    return tool
-      ? `The login has expired. It refreshes the next time you use ${tool}.`
-      : "The login has expired. It refreshes the next time you use your coding tool."
+    const name = liveProviderDisplayName(provider)
+    return name ? `No ${name} usage reading yet.` : "No usage reading yet."
   }
   if (category === "unavailable" && detail === "keychainUnreadable") {
     return "Couldn't read Claude Code's login from the Keychain. If a prompt appears, choose Always Allow."

@@ -902,7 +902,7 @@ describe("the grace period", () => {
   })
 
   it("keeps a login waiting for its tool's refresh as a stale reading", () => {
-    // Nine hours old, overnight: the login refreshes when the reader next uses Claude.
+    // Nine hours old, overnight. The tooltip gives only the age, no instruction.
     const reading = provider({ observedAt: "2027-01-15T03:00:00Z" })
     for (const detail of ["refreshPending", "credentialExpired", "cliMissing"] as const) {
       const error = sourceError({ category: "authentication", detail })
@@ -913,15 +913,16 @@ describe("the grace period", () => {
         ageMs: 9 * 3_600_000,
         detail,
       })
-      expect(liveStatusNote(status, "anthropic")).toBe(
-        "Last updated 9 hr ago. Updates the next time you use Claude.",
-      )
+      expect(liveStatusNote(status, "anthropic")).toBe("Last updated 9 hr ago.")
     }
   })
 
-  it("tells a reader with no reading yet that the login refreshes on its own", () => {
+  it("gives a reader with no reading yet a neutral line with no instruction", () => {
     expect(liveErrorNote("authentication", "anthropic", "credentialExpired")).toBe(
-      "The login has expired. It refreshes the next time you use Claude.",
+      "No Claude usage reading yet.",
+    )
+    expect(liveErrorNote("authentication", undefined, "credentialExpired")).toBe(
+      "No usage reading yet.",
     )
     expect(liveUnavailableReason("authentication", "credentialExpired")).toBe("update pending")
   })
@@ -937,10 +938,8 @@ describe("the grace period", () => {
   })
 
   it("gives the age of an old reading in hours or days", () => {
-    expect(liveStaleNote("openai", 3 * 86_400_000)).toBe("Last updated 3 days ago.")
-    expect(liveStaleNote(undefined, 90 * 60_000, "credentialExpired")).toBe(
-      "Last updated 1 hr ago.",
-    )
+    expect(liveStaleNote(3 * 86_400_000)).toBe("Last updated 3 days ago.")
+    expect(liveStaleNote(90 * 60_000)).toBe("Last updated 1 hr ago.")
   })
 
   it("drops the figure of a window whose period reset since the reading", () => {
