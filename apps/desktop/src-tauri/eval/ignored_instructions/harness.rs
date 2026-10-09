@@ -32,17 +32,29 @@ async fn evaluate(
     usage: &Arc<Mutex<RunUsage>>,
 ) -> Value {
     let started = Instant::now();
+    let input_started = Instant::now();
     let input = evidence::input(case);
     let capabilities = &support::provider::configuration().capabilities;
     let context =
         build_jev_context_with_capabilities(&input, &SamplingLedger::default(), capabilities)
             .expect("runtime fixture builds production context");
+    let input_context_ms = input_started.elapsed().as_millis();
+    let preparation_started = Instant::now();
     let permit = admit_jev_orchestration()
         .await
         .expect("Admit evaluation preparation");
     let mut plan = IgnoredInstructionsCheck
         .prepare_with_capabilities(&context, capabilities)
         .expect("Synthetic instruction evidence prepares");
+    let preparation_ms = preparation_started.elapsed().as_millis();
+    let work_item_count = plan.work_items.len();
+    let eligible_count = plan
+        .work_items
+        .iter()
+        .map(|item| item.questions.len())
+        .sum::<usize>();
+    let request_start = usage.lock().expect("usage mutex is not poisoned").requests;
+    let runner_started = Instant::now();
     let execution = run_jev_check_prepared(
         &IgnoredInstructionsCheck,
         &context,
@@ -59,8 +71,55 @@ async fn evaluate(
         |_| Ok(()),
     )
     .await;
+    let runner_ms = runner_started.elapsed().as_millis();
+    let request_end = usage.lock().expect("usage mutex is not poisoned").requests;
+    let call_metrics = {
+        let usage = usage.lock().expect("usage mutex is not poisoned");
+        let calls = usage
+            .calls
+            .iter()
+            .filter(|call| call["case_id"] == case.id)
+            .collect::<Vec<_>>();
+        (
+            calls.len(),
+            calls
+                .iter()
+                .filter_map(|call| call["elapsed_ms"].as_u64())
+                .sum::<u64>(),
+        )
+    };
     let mut row = empty_row(case);
-    row["elapsed_ms"] = json!(started.elapsed().as_millis());
+    if let Some(baseline) =
+        crate::baseline::result(&IgnoredInstructionsCheck, &plan, usage, &case.id)
+    {
+        match baseline {
+            Ok(result) => {
+                row["baseline_observed"] = json!(outcome(&result, true));
+                row["baseline_result"] = json!(result);
+                row["baseline_evidence_valid"] = json!(evidence::findings_valid(&result, &input));
+                row["baseline_observed_references"] = json!(
+                    result
+                        .findings
+                        .iter()
+                        .map(|finding| evidence::reference(&finding.reference))
+                        .collect::<BTreeSet<_>>()
+                );
+            }
+            Err(error) => row["baseline_failure"] = json!(error),
+        }
+    }
+    row["stage_timing_ms"] = json!({
+        "synthetic_input_context": input_context_ms,
+        "check_preparation": preparation_ms,
+        "execution_runner_including_packing_and_reduction": runner_ms,
+    });
+    row["stage_counts"] = json!({
+        "work_items": work_item_count,
+        "eligible_questions": eligible_count,
+        "requests": request_end.saturating_sub(request_start),
+        "measured_assessment_calls": call_metrics.0,
+        "request_elapsed_ms": call_metrics.1,
+    });
     match execution {
         Ok(execution) => {
             let missing = plan
@@ -105,6 +164,15 @@ async fn evaluate(
             row["missing_answers"] = json!(plan.work_items.len());
         }
     }
+    row["stage_timing_ms"]["post_runner_result_and_reporting"] = json!(
+        started
+            .elapsed()
+            .as_millis()
+            .saturating_sub(input_context_ms)
+            .saturating_sub(preparation_ms)
+            .saturating_sub(runner_ms)
+    );
+    row["elapsed_ms"] = json!(started.elapsed().as_millis());
     row
 }
 
@@ -122,6 +190,14 @@ fn empty_row(case: &Case) -> Value {
 }
 
 pub(crate) async fn run() -> Result<(), String> {
+    run_with_benchmark_policy(false).await
+}
+
+pub(crate) async fn run_benchmark() -> Result<(), String> {
+    run_with_benchmark_policy(true).await
+}
+
+async fn run_with_benchmark_policy(benchmark: bool) -> Result<(), String> {
     let suite = support::selection::suite();
     let cases = support::selection::select(fixtures::cases(&suite), |case| &case.id);
     let client = match support::provider::EvalClient::from_environment().await {
@@ -141,9 +217,11 @@ pub(crate) async fn run() -> Result<(), String> {
     let mut stopped = None;
     for case in &cases {
         let row = evaluate(case, &client, &usage).await;
-        let unsafe_publication = case.scenario.authority_control
-            && matches!(row["observed"].as_str(), Some("finding" | "no_finding"))
-            || (row["observed"] == "finding" && row["evidence_valid"] != true);
+        let invalid_evidence = row["observed"] == "finding" && row["evidence_valid"] != true;
+        let unsafe_publication = invalid_evidence
+            || (!benchmark
+                && case.scenario.authority_control
+                && matches!(row["observed"].as_str(), Some("finding" | "no_finding")));
         stopped = support::run::stop_reason(
             unsafe_publication,
             row["observed"].is_null()
@@ -165,8 +243,17 @@ pub(crate) async fn run() -> Result<(), String> {
     let metrics = scoring::report(&inventory, &rows);
     println!("Ignored Instructions: {}", metrics["overall"]);
     let report = json!({"check":"ignored_instructions","suite":suite,"provider":support::provider::configuration().identity(),
+        "revisions":IgnoredInstructionsCheck.revisions(),"production_runner":true,
         "cases":inventory,"metrics":metrics,"stopped":stopped,"measurements":support::run::measurements(&rows,&usage.lock().expect("Usage lock")),"rows":rows});
     let path = support::capture::report("ignored_instructions", &suite, &report);
+    if benchmark && stopped.is_none() && rows.len() != cases.len() {
+        return Err(format!(
+            "Benchmark did not complete all selected cases: completed={} selected={}; report={}",
+            rows.len(),
+            cases.len(),
+            path.display()
+        ));
+    }
     match stopped {
         Some(reason) => Err(format!(
             "Diagnostic stopped: {reason}; report={}",

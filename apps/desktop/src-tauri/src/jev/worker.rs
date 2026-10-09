@@ -36,14 +36,24 @@ const GLOBAL_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) async fn run_blocking_preparation<T: Send + 'static>(
     prepare: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
 ) -> anyhow::Result<T> {
+    let waiting = std::time::Instant::now();
     static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
     let permit = SLOTS
         .get_or_init(|| tokio::sync::Semaphore::new(CANDIDATE_WORKERS))
         .acquire()
         .await?;
+    let slot_wait_ms = waiting.elapsed().as_millis();
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        prepare()
+        let started = std::time::Instant::now();
+        let result = prepare();
+        ::tracing::debug!(
+            event = "burn_check_blocking_preparation",
+            slot_wait_ms,
+            elapsed_ms = started.elapsed().as_millis(),
+            succeeded = result.is_ok(),
+        );
+        result
     })
     .await?
 }
@@ -883,11 +893,14 @@ fn select_turn_excluding(
     now: i64,
     in_flight: &std::collections::BTreeSet<(&'static str, SessionKey)>,
 ) -> anyhow::Result<Option<(usize, BurnCheckCandidate)>> {
+    let started = std::time::Instant::now();
+    let mut query_count = 0;
     let continuation = cursor.turn % 5 == 4;
     for lane in [continuation, !continuation] {
         for offset in 0..checks.len() {
             let index = (cursor.next_check + offset) % checks.len();
             let check = checks[index];
+            query_count += 1;
             let candidates = store.burn_check_candidates_in_lane(
                 check.id(),
                 &check.evaluator_revision(),
@@ -900,10 +913,22 @@ fn select_turn_excluding(
                 .into_iter()
                 .find(|candidate| !in_flight.contains(&(check.id(), candidate.session.key.clone())))
             {
+                ::tracing::debug!(
+                    event = "burn_check_candidate_selection",
+                    query_count,
+                    selected_check = check.id(),
+                    elapsed_ms = started.elapsed().as_millis(),
+                );
                 return Ok(Some((index, candidate)));
             }
         }
     }
+    ::tracing::debug!(
+        event = "burn_check_candidate_selection",
+        query_count,
+        selected_check = "none",
+        elapsed_ms = started.elapsed().as_millis(),
+    );
     Ok(None)
 }
 
@@ -1433,6 +1458,9 @@ async fn execute_batch_inner(
                             crate::jev_ollama::OllamaError::ResponseDecode => {
                                 JevError::ResponseDecode
                             }
+                            crate::jev_ollama::OllamaError::ContextRejected => {
+                                JevError::ContextRejected
+                            }
                             crate::jev_ollama::OllamaError::InvalidRequest
                             | crate::jev_ollama::OllamaError::RequestBodyTooLarge => {
                                 JevError::InvalidRequestSchema
@@ -1545,9 +1573,18 @@ async fn execute_batch_inner(
                     .unwrap_or_else(|error| error.into_inner());
                 apply_provider_cooldown(&mut pacing, &error, tokio::time::Instant::now());
                 drop(pacing);
-                let retry_at = retry_delay(&error, attempt).map(|delay| {
-                    unix_now().saturating_add(i64::try_from(delay.as_secs()).unwrap_or(i64::MAX))
-                });
+                let retry_at = if error == JevError::ContextRejected
+                    && batch.work_item_ids.len() > 1
+                    && attempt == 0
+                {
+                    // Leave one attempt for smaller independent comparisons.
+                    Some(unix_now())
+                } else {
+                    retry_delay(&error, attempt).map(|delay| {
+                        unix_now()
+                            .saturating_add(i64::try_from(delay.as_secs()).unwrap_or(i64::MAX))
+                    })
+                };
                 store
                     .defer_burn_check_dispatch(input, &request_identities, retry_at)
                     .map_err(|_| JevError::ProgressStorageFailure)?;
@@ -1683,11 +1720,29 @@ fn request_was_rejected(error: &JevError) -> bool {
     matches!(
         error,
         JevError::AuthenticationRejected
+            | JevError::ContextRejected
             | JevError::InvalidRequestSchema
             | JevError::RateLimited { .. }
             | JevError::ProviderOverloaded { .. }
             | JevError::ProviderUnavailable
     )
+}
+
+#[cfg(test)]
+mod context_rejection_tests {
+    use super::*;
+
+    #[test]
+    fn actual_context_rejection_releases_usage_and_never_retries_unchanged() {
+        assert!(request_was_rejected(&JevError::ContextRejected));
+        assert_eq!(
+            error_category(&JevError::ContextRejected),
+            "context_rejected"
+        );
+        for attempt in 0..RETRY_ATTEMPTS {
+            assert_eq!(retry_delay(&JevError::ContextRejected, attempt), None);
+        }
+    }
 }
 
 async fn acquire_budget<T>(
@@ -1751,6 +1806,7 @@ fn session_is_active(events: &SessionEvents, key: &SessionKey) -> bool {
 pub(crate) fn error_category(error: &JevError) -> &'static str {
     match error {
         JevError::AuthenticationRejected => "authentication_rejected",
+        JevError::ContextRejected => "context_rejected",
         JevError::InvalidRequestSchema => "invalid_request_schema",
         JevError::RateLimited { .. } => "rate_limited",
         JevError::ProviderOverloaded { .. } => "provider_overloaded",

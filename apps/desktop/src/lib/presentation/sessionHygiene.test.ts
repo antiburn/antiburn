@@ -28,6 +28,26 @@ const PAYLOAD: SessionHygienePayload = {
 }
 
 describe("sessionHygieneChecks", () => {
+  it.each([
+    "ignoredInstructions",
+    "scopeCreep",
+    "overExploring",
+    "skillOpportunities",
+  ] as const)("presents terminal %s noCandidates as neutral empty work", (id) => {
+    const checks = sessionHygieneChecks({
+      ...PAYLOAD,
+      badges: [{ id, status: "noCandidates", notAssessedReason: null }],
+    })
+    const check = checks.find((check) => check.id === id)!
+    expect(check.title).toContain("No matching work")
+    expect(check.ink).toBe("label-tertiary")
+    expect(sessionHygieneDocumentation(check).guidance).toEqual([])
+    expect(sessionBurnCheckPresentation([check], "ready").counts).toEqual({
+      failed: 0,
+      passed: 0,
+      unassessed: 1,
+    })
+  })
   it.each(["skillOpportunities", "overExploring", "scopeCreep"] as const)(
     "uses only published %s badges",
     (id) => {
@@ -70,9 +90,9 @@ describe("sessionHygieneChecks", () => {
   })
 
   it.each([
-    ["unrelated_files", "The assessed reads included files unrelated to the work."],
-    ["excessive_file_breadth", "The assessed work read more files than it needed."],
-    ["excessive_within_file_reading", "The assessed work read more of a file than it needed."],
+    ["unrelated_files", "Some files read were not related to the task."],
+    ["excessive_file_breadth", "The work read more files than it needed."],
+    ["excessive_within_file_reading", "The work read more of a file than it needed."],
     ["unknown_reason", null],
   ] as const)("bounds Over-exploring detail for %s", (checkReason, detail) => {
     const checks = sessionHygieneChecks({
@@ -96,7 +116,7 @@ describe("sessionHygieneChecks", () => {
       ],
     })
     const ignored = checks.find((check) => check.id === "ignoredInstructions")!
-    expect(ignored.title).toBe("Instructions ignored")
+    expect(ignored.title).toBe("Instruction conflict found")
     expect(sessionHygieneDocumentation(ignored).guidance).toEqual([
       "Follow the cited instruction and correct the affected work.",
     ])

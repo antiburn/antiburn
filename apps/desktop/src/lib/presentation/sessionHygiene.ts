@@ -80,7 +80,7 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
     "No scope creep in assessed work",
     "Scope creep found",
     "Scope creep not assessed",
-    "Some assessed work went outside the agreed task.",
+    "Selected proposed or attempted work adds a separate objective.",
     ["Keep future work within the agreed task. Ask for approval before adding work."],
     "Finds extra work outside the agreed task using recorded scope and approval evidence from accepted OpenCode, Codex, Claude Code, and Pi sessions. Incomplete or unproven scope cannot establish approval.",
     true,
@@ -158,12 +158,12 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
   defineHygieneCheck(
     "ignoredInstructions",
     "Ignored instructions",
-    "Instructions followed",
-    "Instructions ignored",
+    "No instruction conflict in assessed work",
+    "Instruction conflict found",
     "Instructions not assessed",
-    "Instructions were ignored in this session.",
+    "A selected action conflicts with an instruction.",
     ["Follow the cited instruction and correct the affected work."],
-    "Some sessions didn't follow your agent instruction files properly.",
+    "Compares selected actions with current or recorded instruction text.",
     true,
   ),
   defineHygieneCheck(
@@ -262,6 +262,15 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
         ink: "system-green" as const,
       }
     }
+    if (badge.status === "noCandidates") {
+      return {
+        ...badge,
+        title: `${definition.name} · No matching work`,
+        name: definition.name,
+        detail: null,
+        ink: "label-tertiary" as const,
+      }
+    }
     if (badge.status === "checking" || badge.status === "couldntCheck") {
       return {
         ...badge,
@@ -298,6 +307,13 @@ export function sessionHygieneDocumentation(
   check: SessionHygieneCheck,
 ): SessionHygieneDocumentation {
   const definition = CHECKS.find((candidate) => candidate.id === check.id)!
+  if (check.status === "noCandidates") {
+    return {
+      summary: "No comparisons are available for this check in the recorded work.",
+      findingDetails: [],
+      guidance: [],
+    }
+  }
   const guidance = check.detail ? [check.detail, ...definition.guidance] : definition.guidance
   return {
     summary: definition.summary,

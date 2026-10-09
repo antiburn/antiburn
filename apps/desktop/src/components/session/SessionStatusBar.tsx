@@ -25,6 +25,12 @@ interface StatusMark extends BurnCheckMark {
 }
 
 const STATUS_MARK: Record<SessionHygieneCheck["status"], StatusMark> = {
+  noCandidates: {
+    ...BURN_CHECK_MARKS.notAssessed,
+    label: "No matching work",
+    headingClass: "text-label-tertiary",
+    textClass: "text-label-secondary",
+  },
   finding: {
     ...BURN_CHECK_MARKS.finding,
     label: "Failed",
@@ -64,7 +70,9 @@ function tooltipCheckTitle(check: SessionHygieneCheck): string {
 }
 
 function renderTooltip(checks: SessionHygieneCheck[]) {
-  const groups = (["finding", "clean", "checking", "couldntCheck", "notAssessed"] as const)
+  const groups = (
+    ["finding", "clean", "checking", "couldntCheck", "noCandidates", "notAssessed"] as const
+  )
     .map((status) => checks.filter((check) => check.status === status))
     .filter((group) => group.length > 0)
   return (

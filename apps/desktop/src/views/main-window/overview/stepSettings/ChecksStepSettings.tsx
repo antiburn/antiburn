@@ -300,10 +300,21 @@ export function ChecksStepSettings({
             {(progress || historyRunning || state.backfill.ready > 0) && (
               <div className="mt-3 space-y-1" role="status" aria-live="polite">
                 {historyRunning && (
-                  <StatusText icon={LoaderCircle} iconClassName="animate-spin" tone="secondary">
-                    Running checks; {state.backfill.completed.toLocaleString()}/
-                    {historyTotal.toLocaleString()} check jobs complete
-                  </StatusText>
+                  <div>
+                    <StatusText
+                      icon={LoaderCircle}
+                      iconClassName="animate-spin"
+                      tone="secondary"
+                    >
+                      Reviewing past sessions · {state.backfill.completed.toLocaleString()} of{" "}
+                      {historyTotal.toLocaleString()} session checks finished
+                    </StatusText>
+                    {state.backfill.reviewed > 0 && (
+                      <p className="ml-5 type-footnote tabular-nums text-label-tertiary">
+                        {state.backfill.reviewed.toLocaleString()} items reviewed so far
+                      </p>
+                    )}
+                  </div>
                 )}
                 {!historyRunning && progress && (
                   <p className="type-footnote text-label-secondary">{progress}</p>

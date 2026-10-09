@@ -3,7 +3,7 @@ use crate::support::scoring::{inventory_errors, ratio};
 use antiburn_local::analysis::jev::JevWorkItem;
 use antiburn_local::checks::skill_opportunities::{
     SkillOpportunitiesResult, SkillOpportunityFinding, SkillOpportunityLimit,
-    SkillOpportunityOutcome,
+    SkillOpportunityOutcome, SkillRelationship,
 };
 use serde_json::{Value, json};
 
@@ -86,7 +86,23 @@ fn has_current_advisory_claim(finding: &SkillOpportunityFinding) -> bool {
     {
         expected.push_str(" Task or known-use context is partial.");
     }
-    finding.message == "This current skill could help with the observed work."
+    let message = format!(
+        "{} offers {} for the recorded operation: {}",
+        finding.comparison.skill.name,
+        finding.comparison.skill.description,
+        finding
+            .comparison
+            .work
+            .first()
+            .map_or("", |work| work.text.as_str()),
+    );
+    finding.explanation_basis.as_ref().is_some_and(|basis| {
+        basis.version == 1
+            && matches!(
+                basis.relationship,
+                SkillRelationship::UsefulProcedure | SkillRelationship::SpecialistCheck
+            )
+    }) && finding.message == message
         && finding.absence_limit == expected
 }
 
@@ -184,6 +200,8 @@ fn saved_choice_result(
                         probabilities: BTreeMap::from([
                             ("useful_opportunity".into(), probability),
                             ("no_opportunity".into(), 0.99 - probability),
+                            ("specialist_check".into(), 0.0),
+                            ("already_covered".into(), 0.0),
                             ("uncertain".into(), 0.01),
                         ]),
                     },

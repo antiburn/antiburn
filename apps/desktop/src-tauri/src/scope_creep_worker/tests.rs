@@ -1434,8 +1434,15 @@ impl NativeFixture {
             .unwrap()
     }
     pub(crate) fn publish_finding(&self) -> BurnCheckCandidate {
+        self.publish_finding_with_capabilities(ModelCapabilities::jev_default())
+    }
+
+    pub(crate) fn publish_finding_with_capabilities(
+        &self,
+        capabilities: ModelCapabilities,
+    ) -> BurnCheckCandidate {
         let candidate = self.publish();
-        let input = load_input(&self.store, &candidate, &ModelCapabilities::jev_default()).unwrap();
+        let input = load_input(&self.store, &candidate, &capabilities).unwrap();
         let result = input
             .check
             .reduce(&input.plan, &results(&input, false), true)
@@ -1723,7 +1730,7 @@ fn oversized_atomic_target_has_typed_limitation_and_no_dispatch_work() {
         Some("work_context_too_large")
     );
     assert!(input.plan.work_items.is_empty());
-    assert_eq!(ScopeCreepCheck::sampling_candidates(&input.plan).len(), 1);
+    assert!(ScopeCreepCheck::sampling_candidates(&input.plan).is_empty());
     let result = input.check.reduce(&input.plan, &[], true).unwrap();
     assert!(!publication_has_clean_coverage(&result));
     let mut cursor = complete_cursor(&input, 7);
@@ -1800,7 +1807,10 @@ fn publication_gate_rejects_partial_clean_and_changed_revisions_or_work_bindings
     assert!(!valid_publication(&saved));
     assert_eq!(
         CHECK.evaluator_revision(),
-        "scope-creep-adapter-v4:8:5:24:13"
+        format!(
+            "scope-creep-adapter-v{CURSOR_REVISION}:{}:{}:{}:{}",
+            REVISIONS.projection, REVISIONS.chunking, REVISIONS.questions, REVISIONS.reducer
+        )
     );
 }
 
@@ -2365,4 +2375,123 @@ fn accepted_positive_survives_a_failed_sibling_and_remains_non_clean_after_resta
             .unwrap()
             .is_some()
     );
+    cursor.sampling.as_mut().unwrap().begin_run();
+    let blocked = cursor.sampling.as_mut().unwrap().choose_job().unwrap();
+    mark_terminal_scope_decision(&mut cursor, &blocked, "work_context_too_large");
+    cursor
+        .sampling
+        .as_mut()
+        .unwrap()
+        .terminate_candidate(&blocked)
+        .unwrap();
+    update_result_counts(&mut cursor, &input);
+    let result = cursor.result.as_ref().unwrap();
+    assert_eq!(result.assessed_candidates, 1);
+    assert_eq!(result.remaining_candidates, 0);
+    assert_eq!(result.coverage.skipped_items, 1);
+    assert_eq!(result.coverage.not_selected_items, 0);
+    assert!(valid_publication(&publication(&input, result.clone())));
+    fixture
+        .store
+        .queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)
+        .unwrap();
+    fixture
+        .store
+        .claim_burn_check_assessment(
+            &input.durable,
+            unix_now(),
+            POLICY.lease_secs,
+            POLICY.idle_secs,
+        )
+        .unwrap();
+    assert!(save_failure(&fixture.store, &input, &cursor, "sampling_incomplete", None).unwrap());
+    let saved = current_publication(&reopened.lock(), &SourceFence::from(&candidate))
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.assessment.findings.len(), 1);
+    assert!(!publication_has_clean_coverage(&saved.assessment));
+    assert!(
+        saved_finding_citations(&reopened.lock(), &SourceFence::from(&candidate), &id)
+            .unwrap()
+            .is_some()
+    );
+}
+#[test]
+fn scope_explanation_requires_exact_prepared_refs_digests_ranges_and_authority() {
+    let fixture = NativeFixture::new(1);
+    let candidate = fixture.publish();
+    let capabilities = ModelCapabilities::jev_default();
+    let input = load_input(&fixture.store, &candidate, &capabilities).unwrap();
+    let result = input
+        .check
+        .reduce(&input.plan, &results(&input, false), true)
+        .unwrap();
+    let publication = publication(&input, result);
+    let finding = publication
+        .assessment
+        .findings
+        .first()
+        .expect("source-bound positive reaches publication");
+    assert!(publishable_finding(finding, &publication));
+    assert!(
+        !finding
+            .explanation_basis
+            .as_ref()
+            .unwrap()
+            .excerpts
+            .is_empty()
+    );
+    for mutation in 0..12 {
+        let mut changed = finding.clone();
+        let basis = changed.explanation_basis.as_mut().unwrap();
+        let excerpt = &mut basis.excerpts[0];
+        match mutation {
+            0 => excerpt.source.id.push_str("-wrong"),
+            1 => excerpt.source.turn_index += 1,
+            2 => excerpt.content_digest.push_str("-wrong"),
+            3 => excerpt.start_byte += 1,
+            4 => excerpt.end_byte += 1,
+            5 => excerpt.authority.push_str("-wrong"),
+            6 => excerpt.text.push_str("wrong"),
+            7 => excerpt.range_source.push_str("-wrong"),
+            8 => excerpt.source.source_key_digest.push_str("-wrong"),
+            9 => excerpt.scope_field = Some(antiburn_local::analysis::jev::JevInputField::UserAnswer),
+            10 => excerpt.native_source = Some(antiburn_local::analysis::jev_evidence::JevScopeEvidenceSource {
+                source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+                role: antiburn_local::analysis::jev_evidence::JevScopeEvidenceRole::User,
+                native_record_id: Some("wrong-record".into()), call_id: None, question_id: None,
+                order: 0, acceptance_order: None,
+                provenance: antiburn_local::analysis::jev_evidence::JevScopeEvidenceProvenance::RecordedUser,
+                producer_revision: "wrong-producer".into(), normalization_revision: 1,
+                bindings: Vec::new(), truncated: false,
+            }),
+            11 => excerpt.source.native_record_id = Some("wrong-record".into()),
+            _ => unreachable!(),
+        }
+        assert!(
+            !publishable_finding(&changed, &publication),
+            "mutation {mutation}"
+        );
+    }
+}
+
+#[test]
+fn unchanged_request_fit_failures_are_terminal_before_dispatch_readiness() {
+    for error in [
+        JevError::RequestTooLarge {
+            bytes: 4096,
+            maximum: 1024,
+        },
+        JevError::RequestTokenLimitExceeded {
+            tokens: 4096,
+            maximum: 2050,
+        },
+    ] {
+        assert!(
+            target_failure_is_terminal(&error, || panic!(
+                "fit failure must not retry unchanged input"
+            ))
+            .unwrap()
+        );
+    }
 }

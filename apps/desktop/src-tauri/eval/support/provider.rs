@@ -18,6 +18,7 @@ pub(crate) enum ProviderPreset {
     Jev,
     OllamaNimble,
     OllamaClefFlash,
+    OllamaTevSmall,
     CloudflareClef,
     CloudflareClefFlash,
     CustomJevDirect,
@@ -38,6 +39,7 @@ impl ProviderPreset {
             self,
             Self::OllamaNimble
                 | Self::OllamaClefFlash
+                | Self::OllamaTevSmall
                 | Self::CustomOllamaNimbleDirect
                 | Self::CustomOllamaClefFlashDirect
         )
@@ -58,6 +60,7 @@ impl ProviderPreset {
             Self::Jev | Self::CustomJevDirect => antiburn_local::analysis::jev::PINNED_MODEL,
             Self::OllamaNimble | Self::CustomOllamaNimbleDirect => "nimble:latest",
             Self::OllamaClefFlash | Self::CustomOllamaClefFlashDirect => "clef-flash:latest",
+            Self::OllamaTevSmall => "tev1:0.8b",
             Self::CloudflareClef | Self::CustomCloudflareClefEnvelope => "clef",
             Self::CloudflareClefFlash | Self::CustomCloudflareClefFlashEnvelope => "clef-flash",
         }
@@ -69,7 +72,7 @@ impl ProviderPreset {
         connection.credential = None;
         match self {
             Self::Jev => {}
-            Self::OllamaNimble | Self::OllamaClefFlash => {
+            Self::OllamaNimble | Self::OllamaClefFlash | Self::OllamaTevSmall => {
                 connection.provider = SystemOneProvider::Ollama;
                 connection.endpoint = SystemOneEndpoint::BaseUrl(LOCAL_BASE.into());
             }
@@ -207,6 +210,10 @@ fn credential(name: &str) -> Result<String, JevError> {
 }
 
 impl EvalClient {
+    pub(crate) fn capabilities(&self) -> &ModelCapabilities {
+        &self.configuration.capabilities
+    }
+
     pub(crate) async fn from_environment() -> Result<Self, JevError> {
         let configuration = configuration().clone();
         let transport = match configuration.connection.provider {
@@ -304,6 +311,7 @@ fn ollama_error(error: jev_ollama::OllamaError) -> JevError {
         OllamaError::RequestOutcomeUnknown => JevError::RequestOutcomeUnknown,
         OllamaError::ResponseTooLarge => JevError::ResponseTooLarge,
         OllamaError::ResponseDecode => JevError::ResponseDecode,
+        OllamaError::ContextRejected => JevError::ContextRejected,
         OllamaError::InvalidRequest | OllamaError::RequestBodyTooLarge => {
             JevError::InvalidRequestSchema
         }

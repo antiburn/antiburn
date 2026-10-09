@@ -569,9 +569,9 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         let candidate = &preparation_candidate;
         let mut input = match load_descriptor_input(store, candidate, &preparation_capabilities) {
             Ok(input) => input,
+            Err(error) if error.is_stale() => return Ok(None),
             Err(error) => {
-                tracing::debug!(event = "scope_creep_input_unavailable", error = ?error);
-                store.record_burn_check_candidate_issue_for_check(
+                store.record_burn_check_candidate_failure_for_check(
                     CHECK_ID,
                     candidate,
                     candidate.session.key.environment_key != "native"
@@ -579,6 +579,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                             candidate.session.key.agent.as_str(),
                             "opencode" | "codex" | "claude" | "claude-code" | "pi"
                         ),
+                    error.failure_category(),
                     unix_now().saturating_add(POLICY.retry_delay_secs),
                     unix_now(),
                 )?;
@@ -601,6 +602,29 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     let Some((mut input, mut cursor, checkpoint)) = prepared else {
         return Ok(());
     };
+    if cursor.inventory.complete
+        && cursor.inventory.groups.is_empty()
+        && cursor
+            .sampling
+            .as_ref()
+            .and_then(|sampling| sampling.coverage(ScopeCreepCheck::check_identity()))
+            .is_some_and(|coverage| coverage.eligible == 0)
+    {
+        if handle
+            .admit_if_current(key_generation, CHECK_ID, check_generation, || {
+                store.record_burn_check_no_candidates(
+                    &input.durable,
+                    &checkpoint,
+                    unix_now(),
+                    POLICY.idle_secs,
+                )
+            })?
+            .unwrap_or(false)
+        {
+            let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
+        }
+        return Ok(());
+    }
     let claimed = handle
         .admit_if_current(key_generation, CHECK_ID, check_generation, || {
             if !store.queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)?
@@ -702,6 +726,15 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         )? {
             crate::store::BurnCheckRequestAdmission::Exhausted
             | crate::store::BurnCheckRequestAdmission::Unresolved => {
+                mark_terminal_scope_decision(
+                    &mut cursor,
+                    &job,
+                    if plan.work_items.is_empty() {
+                        "work_context_too_large"
+                    } else {
+                        "provider_attempt_exhausted"
+                    },
+                );
                 cursor
                     .sampling
                     .as_mut()
@@ -710,6 +743,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                     .map_err(|error| anyhow::anyhow!("scope termination rejected: {error:?}"))?;
                 cursor.active_job = None;
                 cursor.run_progress = JevRunProgress::default();
+                update_result_counts(&mut cursor, &input);
                 save_cursor(store, &input.durable, &cursor)?;
                 save_scheduling(store, &input, &cursor)?;
                 continue;
@@ -815,6 +849,19 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 .completed_ids(ScopeCreepCheck::check_identity())
                 .contains(&job.candidate)
             {
+                mark_terminal_scope_decision(
+                    &mut cursor,
+                    &job,
+                    if matches!(
+                        error,
+                        JevError::RequestTooLarge { .. }
+                            | JevError::RequestTokenLimitExceeded { .. }
+                    ) {
+                        "work_context_too_large"
+                    } else {
+                        "provider_attempt_exhausted"
+                    },
+                );
                 cursor
                     .sampling
                     .as_mut()
@@ -823,6 +870,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                     .map_err(|error| anyhow::anyhow!("scope termination rejected: {error:?}"))?;
                 cursor.active_job = None;
                 cursor.run_progress = JevRunProgress::default();
+                update_result_counts(&mut cursor, &input);
                 save_cursor(store, &input.durable, &cursor)?;
                 save_scheduling(store, &input, &cursor)?;
                 continue;
@@ -955,6 +1003,15 @@ fn scope_target_fits_storage(
             revisions: REVISIONS,
             source_generation: input.durable.source_generation,
             publication_fence: input.durable.published_fence,
+            explanation_basis: (!group.selected_excerpts.is_empty()).then(|| {
+                antiburn_local::checks::scope_creep::ScopeExplanationBasis {
+                    schema_revision: 1,
+                    relationship:
+                        antiburn_local::checks::scope_creep::ScopeRelationship::SeparateObjective,
+                    observation_kind: group.observation_kind,
+                    excerpts: group.selected_excerpts.clone(),
+                }
+            }),
         });
     }
     let publication_bytes = serde_json::to_vec(&publication(input, result.clone()))?.len();
@@ -994,6 +1051,29 @@ fn stop_scope_storage(
     enumerate_scope_turn(input, cursor)
 }
 
+fn scope_decision_skipped(
+    decision: &antiburn_local::checks::scope_creep::ScopeCreepDecision,
+    group: &antiburn_local::checks::scope_creep::WorkGroup,
+) -> bool {
+    decision.outcome.is_none()
+        && ((group.window_ids.is_empty() && group.limitation.is_some())
+            || matches!(
+                decision.limitation.as_deref(),
+                Some("work_context_too_large" | "provider_attempt_exhausted")
+            ))
+}
+
+fn mark_terminal_scope_decision(cursor: &mut AssessmentCursor, job: &SamplingJob, reason: &str) {
+    if let Some(decision) = cursor.result.as_mut().and_then(|result| {
+        result.decisions.iter_mut().find(|decision| {
+            StableId::new("scope_work", &[decision.group_id.as_bytes()]) == job.candidate
+        })
+    }) && decision.outcome.is_none()
+    {
+        decision.limitation = Some(reason.into());
+    }
+}
+
 fn update_result_counts(cursor: &mut AssessmentCursor, input: &PreparedInput) {
     let groups: BTreeSet<_> = input
         .plan
@@ -1009,7 +1089,13 @@ fn update_result_counts(cursor: &mut AssessmentCursor, input: &PreparedInput) {
         .prepared
         .groups
         .iter()
-        .filter(|group| group.window_ids.is_empty() && group.limitation.is_some())
+        .filter(|group| {
+            result
+                .decisions
+                .iter()
+                .find(|decision| decision.group_id == group.id)
+                .is_some_and(|decision| scope_decision_skipped(decision, group))
+        })
         .count();
     result.coverage.limitations.extend(
         input
@@ -1018,6 +1104,13 @@ fn update_result_counts(cursor: &mut AssessmentCursor, input: &PreparedInput) {
             .groups
             .iter()
             .filter_map(|group| group.limitation.clone()),
+    );
+    result.coverage.limitations.extend(
+        result
+            .decisions
+            .iter()
+            .filter(|decision| decision.outcome.is_none())
+            .filter_map(|decision| decision.limitation.clone()),
     );
     if result
         .decisions
@@ -1039,7 +1132,7 @@ fn update_result_counts(cursor: &mut AssessmentCursor, input: &PreparedInput) {
         .prepared
         .groups
         .len()
-        .saturating_sub(result.assessed_candidates);
+        .saturating_sub(result.assessed_candidates + result.coverage.skipped_items);
     result.coverage.selected_items = result.assessed_candidates;
     result.coverage.not_selected_items = result.remaining_candidates;
     result.coverage.processing_limit_reached |= !cursor.inventory.complete;
@@ -1453,6 +1546,12 @@ pub(crate) fn target_failure_is_terminal(
     if matches!(error, JevError::AuthenticationRejected) {
         return Ok(false);
     }
+    if matches!(
+        error,
+        JevError::RequestTooLarge { .. } | JevError::RequestTokenLimitExceeded { .. }
+    ) {
+        return Ok(true);
+    }
     Ok(matches!(
         readiness()?,
         crate::store::BurnCheckRequestAdmission::Exhausted
@@ -1743,6 +1842,12 @@ pub(crate) fn publication(input: &PreparedInput, assessment: ScopeCreepResult) -
                 .iter()
                 .map(|item| &item.source_id)
                 .chain(finding.work.iter().map(|work| &work.reference.id))
+                .chain(
+                    finding
+                        .explanation_basis
+                        .iter()
+                        .flat_map(|basis| basis.excerpts.iter().map(|excerpt| &excerpt.source.id)),
+                )
         })
         .collect();
     Publication {
@@ -1850,7 +1955,13 @@ fn valid_publication(publication: &Publication) -> bool {
             == prepared
                 .groups
                 .len()
-                .saturating_sub(result.assessed_candidates)
+                .saturating_sub(result.assessed_candidates + result.coverage.skipped_items)
+        && result.coverage.skipped_items
+            == result
+                .decisions
+                .iter()
+                .filter(|decision| scope_decision_skipped(decision, by_group[&decision.group_id]))
+                .count()
         && result.decisions.iter().all(|decision| {
             let group = by_group[&decision.group_id];
             valid_decision(decision, group, prepared)
@@ -1957,6 +2068,24 @@ fn publishable_finding_bound(
         && !finding.work.is_empty()
         && finding.task_scope == group.task_scope
         && finding.observation_kind == group.observation_kind
+        && finding
+            .explanation_basis
+            .as_ref()
+            .map_or(group.selected_excerpts.is_empty(), |basis| {
+                basis.schema_revision == 1
+                    && basis.relationship
+                        == antiburn_local::checks::scope_creep::ScopeRelationship::SeparateObjective
+                    && basis.observation_kind == group.observation_kind
+                    && !basis.excerpts.is_empty()
+                    && basis.excerpts == group.selected_excerpts
+                    && basis.excerpts.iter().all(|excerpt| {
+                        excerpt.source.stable
+                            && !excerpt.content_digest.is_empty()
+                            && excerpt.start_byte < excerpt.end_byte
+                            && excerpt.end_byte - excerpt.start_byte == excerpt.text.len()
+                            && publication.citations.contains_key(&excerpt.source.id)
+                    })
+            })
         && finding.decision_probability.is_finite()
         && finding.decision_probability >= DECISION_THRESHOLD
         && finding.decision_probability <= 1.0
@@ -2043,7 +2172,7 @@ pub(crate) fn current_publication(
     Ok((complete || partial).then_some(publication))
 }
 
-/// Retrieve saved citation text only after the current publication passes its gate.
+#[cfg(test)]
 pub(crate) fn saved_finding_citations(
     connection: &rusqlite::Connection,
     fence: &SourceFence<'_>,

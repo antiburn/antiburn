@@ -217,6 +217,16 @@ fn semantic_results<P>(
     choice: &str,
     choices: &[&str],
 ) -> Vec<antiburn_local::analysis::jev::JevWorkItemResult> {
+    let choices = choices
+        .iter()
+        .copied()
+        .chain(
+            (plan.check_id == "skill_opportunities")
+                .then_some(["specialist_check", "already_covered"])
+                .into_iter()
+                .flatten(),
+        )
+        .collect::<BTreeSet<_>>();
     let packing = match &plan.shared_context {
         Some(shared) => {
             pack_work_items_with_shared_context(&plan.work_items, &plan.capabilities, shared)
@@ -436,7 +446,7 @@ fn selected_large_skill_work_retains_parts_and_partial_citations_without_clean_n
         .unwrap();
     assert_eq!(plan.work_items.len(), 1);
     let comparison = &plan.prepared.comparisons[0];
-    assert_eq!(comparison.work.len(), 4);
+    assert_eq!(comparison.work.len(), 2);
     assert!(!comparison.work_context_assessable);
     for (index, citation) in comparison.work.iter().enumerate() {
         let action = selected_source
@@ -483,7 +493,11 @@ fn selected_large_skill_work_retains_parts_and_partial_citations_without_clean_n
     check
         .record_sampling_result(&mut sampling, &job, &reduced)
         .unwrap();
-    assert_eq!(sampling.runnable_count(check.sampling_identity()), 0);
+    assert!(
+        sampling
+            .completed_ids(check.sampling_identity())
+            .contains(&job.candidate)
+    );
 }
 
 #[test]
@@ -704,7 +718,9 @@ fn skill_descriptor_resume_preserves_product_and_source_chronology() {
                                 confidence: 1.0,
                                 probabilities: [
                                     ("useful_opportunity".into(), 0.0),
+                                    ("specialist_check".into(), 0.0),
                                     ("no_opportunity".into(), 0.0),
+                                    ("already_covered".into(), 0.0),
                                     ("uncertain".into(), 1.0),
                                 ]
                                 .into(),

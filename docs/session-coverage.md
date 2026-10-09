@@ -1,6 +1,6 @@
 # Session Parsing Coverage
 
-Audit date: 2026-10-08.
+Audit date: 2026-10-09.
 
 This document records how Antiburn discovers and parses local session sources.
 It covers source identity, framing, companion data, normalized facts, and
@@ -65,8 +65,11 @@ does not prove returned content, file versions, or wasted tokens.
 
 These are bounded accepted shapes, not historical release ranges. The desktop
 validates the entire publication, source/session identity, order, scope, ranges,
-generation, and fence. Forks, conflicting root identities, invalid authority
-bindings, unsupported attachments, and stale publications remain unavailable.
+generation, and fence. Forks, unresolved branches, conflicting root identities,
+invalid session/source identities, and stale publications remain unavailable.
+Untrusted user parts and unknown context do not reject independent intact work;
+the scope loader omits unusable authority records and marks coverage partial.
+Unsupported attachments cannot supply authority or missing text.
 Accepted prefixes, detected compaction, missing retained history, child-attribution
 loss, and collection limits can retain intact root context with explicit limits.
 Truncated scope parts are omitted; their loss remains visible. Qualified
@@ -93,6 +96,12 @@ has exact UTF-8 byte offsets and the observed total byte length. Coordinates ref
 to check-selected action text or the named normalized field, not bytes in native
 transcript JSON. Skill work citations bind the selected ranges to the full
 selected-action digest, so changes outside those ranges invalidate old citations.
+Compact requests can further select short task, operation, skill, and read
+passages according to available model capacity. These selected passages do not
+represent complete approval history or a complete source body. Task text is
+optional for an interpretable Skill Opportunities operation; Over-exploring and
+compact Scope Creep targets still require their selected task evidence. Missing
+read extents remove affected extent targets, not independent characterized reads.
 This provider-window sampling does not widen the accepted parser shapes or
 native source-format support listed above. It does not restore omitted records.
 
@@ -237,9 +246,10 @@ or unknown recorded-use absence. It binds current inventory and use revisions
 and does not infer completed work, past availability, or unused skills. A failed
 assessment can retain validated positive siblings without a clean result.
 Scope Creep labels selected work as an attempt or proposal and compares it with
-retained task context, including recorded approvals. Empty retained task context
-does not block a positive by itself and does not establish complete approval
-history or completed execution. These rules do not widen the accepted source
+selected retained task context, including recorded approvals. Its compact path
+requires selected earlier user context; its larger-window path can admit empty
+task context. Neither path establishes complete approval history or completed
+execution. These rules do not widen the accepted source
 shapes or versions.
 
 Current skill discovery retains semantic YAML frontmatter and selected reference

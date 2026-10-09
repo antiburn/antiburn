@@ -338,6 +338,13 @@ fn saved_decision_requires_complete_exact_citations_and_legacy_has_no_record() {
     )]);
     let record = record(&plan, &comparison, None, Vec::new()).unwrap();
     assert!(record.contrast_template().is_some());
+    let basis = record.explanation_basis.as_ref().unwrap();
+    assert_eq!(basis.relationship, InstructionMismatch::RequirementConflict);
+    assert_eq!(
+        basis.instruction,
+        super::super::planning::rule_text_fragment(&comparison)
+    );
+    assert_eq!(basis.action, comparison.action.text);
     let saved = serde_json::to_string(&record).unwrap();
     assert_eq!(
         serde_json::from_str::<DecisionRecord>(&saved).unwrap(),

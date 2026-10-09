@@ -24,11 +24,17 @@ pub(super) fn assessment_work_items(
                 ))
                 .expect("serialize window target identities"),
             );
-            let item = JevWorkItem {
+            let mut item = JevWorkItem {
                 id,
                 window: window_with_facts(&targets, context),
                 questions: window_questions(&targets),
             };
+            if capabilities
+                .usable_state_tokens()
+                .is_some_and(|tokens| tokens <= 8192)
+            {
+                item.window.fields = compact_window_fields(&item.window.fields);
+            }
             let packed = crate::analysis::jev::pack_work_items_with_capabilities(
                 std::slice::from_ref(&item),
                 capabilities,
@@ -43,6 +49,28 @@ pub(super) fn assessment_work_items(
         }
     }
     output
+}
+
+fn compact_window_fields(fields: &Value) -> Value {
+    let compact_event = |event: &Value| {
+        json!({
+            "role": event["role"], "kind": event["kind"], "text": event["text"],
+            "recorded_order": event["recorded_order"], "truncated": event["truncated"],
+        })
+    };
+    let targets = fields["instruction_targets"].as_array().expect("instruction targets").iter().map(|target| {
+        let instruction = &target["instruction"];
+        let text = instruction["text"].as_str().expect("instruction text");
+        let surrounding = instruction["surrounding_context"].as_array().expect("instruction context").iter().filter_map(|range| {
+            let context = range["text"].as_str()?;
+            let remainder = context.replace(text, "");
+            (!remainder.trim().is_empty()).then_some(remainder)
+        }).collect::<Vec<_>>();
+        json!({"instruction": {"text": text, "surrounding_context": surrounding},
+            "earlier_counterevidence": target["earlier_counterevidence"].as_array().expect("earlier evidence").iter().map(&compact_event).collect::<Vec<_>>()})
+    }).collect::<Vec<_>>();
+    json!({"instruction_targets": targets, "candidate_action": compact_event(&fields["candidate_action"]),
+        "command_input_context": fields["command_input_context"]})
 }
 
 pub(super) fn window_with_facts(
@@ -96,10 +124,58 @@ pub(super) fn select_context(
             .map_err(|_| JevError::InvalidCheckContext)?;
     let policy = super::super::PrerequisiteContextPolicy::from_context(context)?;
     for comparison in &mut plan.comparisons {
-        comparison.prerequisite_episode =
-            Some(policy.select(comparison, &actions, capabilities, plan.complete_input));
+        comparison.prerequisite_episode = Some(select_comparison_episode(
+            comparison,
+            &actions,
+            capabilities,
+            plan.complete_input,
+            policy,
+        ));
     }
     Ok(())
+}
+
+pub(in crate::checks::ignored_instructions) fn select_comparison_episode(
+    comparison: &CandidateComparison,
+    actions: &[super::super::ContentAction],
+    capabilities: &ModelCapabilities,
+    complete: bool,
+    policy: super::super::PrerequisiteContextPolicy,
+) -> super::super::PrerequisiteEpisode {
+    let mut selected = comparison.clone();
+    selected.prerequisite_episode =
+        Some(policy.select(comparison, actions, capabilities, complete));
+    if capabilities
+        .usable_state_tokens()
+        .is_some_and(|tokens| tokens <= 8192)
+    {
+        for reserve in [768, 896, 1024] {
+            let item = JevWorkItem {
+                id: comparison.id.clone(),
+                window: JevInputWindow {
+                    fields: compact_window_fields(&window_fields(&[&selected])),
+                    evidence: window_evidence(&[&selected]),
+                },
+                questions: window_questions(&[&selected]),
+            };
+            if !crate::analysis::jev::pack_work_items_with_capabilities(
+                std::slice::from_ref(&item),
+                capabilities,
+            )
+            .batches
+            .is_empty()
+            {
+                break;
+            }
+            let mut smaller = capabilities.clone();
+            smaller.rendering_reserve_tokens = smaller
+                .rendering_reserve_tokens
+                .saturating_add(reserve - 640);
+            selected.prerequisite_episode =
+                Some(policy.select(comparison, actions, &smaller, complete));
+        }
+    }
+    selected.prerequisite_episode.expect("selected episode")
 }
 
 pub(super) fn earlier_read_only_actions(

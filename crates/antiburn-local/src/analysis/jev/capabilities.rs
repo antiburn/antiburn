@@ -3,6 +3,13 @@ use serde::{Deserialize, Serialize};
 /// Measured heuristic, not a verified tokenizer or a universal token upper bound.
 pub const ASCII_WEIGHTED_ESTIMATOR: &str = "ascii-weighted-utf8-v1";
 
+/// Pins the prompt projection as well as the text estimate. This is not an exact tokenizer.
+pub const OLLAMA_TEV1_ESTIMATOR: &str = "ollama-0.40.1-tev1-ascii-weighted-utf8-v1";
+pub const OLLAMA_GENERIC_ESTIMATOR: &str = "ollama-0.40.1-generic-ascii-weighted-utf8-v1";
+pub const TEV1_SCORING_HEADROOM: u64 = 2;
+/// Extra allowance for tokenizer boundaries; the weighted text estimate keeps its own margin.
+pub const TEV1_ACCOUNTING_MARGIN: u64 = 32;
+
 /// Count ASCII letters at 0.75 tokens per byte and all other UTF-8 bytes at one.
 /// The ASCII allowance includes a 50% margin over two letters per token.
 /// Keep a separate rendering reserve for the unknown provider prompt template.
@@ -113,6 +120,48 @@ pub struct ModelLimitOverride {
 }
 
 impl ModelCapabilities {
+    /// Enable this only after discovery verifies the server and chat renderer.
+    /// Count the chat envelope and system text at one token per UTF-8 byte.
+    /// The payload estimate already includes JSON separators, options, and escaping.
+    pub fn use_ollama_tev1_accounting(&mut self, chat_envelope: &str, system: &str) {
+        self.tokenizer = Some(TokenizerIdentity::ConservativeEstimator(
+            OLLAMA_TEV1_ESTIMATOR.to_owned(),
+        ));
+        self.rendering_reserve_tokens = (chat_envelope.len() as u64)
+            .saturating_add(system.len() as u64)
+            .saturating_add(TEV1_SCORING_HEADROOM)
+            .saturating_add(TEV1_ACCOUNTING_MARGIN);
+        self.criteria_per_question = CapabilityLimit::known(24, CapabilitySource::ProviderMetadata);
+    }
+
+    pub fn uses_ollama_tev1_accounting(&self) -> bool {
+        matches!(&self.tokenizer, Some(TokenizerIdentity::ConservativeEstimator(name))
+            if name == OLLAMA_TEV1_ESTIMATOR)
+    }
+
+    pub fn use_ollama_generic_accounting(&mut self, chat_envelope: &str, system: &str) {
+        self.use_ollama_tev1_accounting(chat_envelope, system);
+        self.tokenizer = Some(TokenizerIdentity::ConservativeEstimator(
+            OLLAMA_GENERIC_ESTIMATOR.to_owned(),
+        ));
+        self.criteria_per_question = CapabilityLimit::known(26, CapabilitySource::ProviderMetadata);
+    }
+
+    pub fn uses_ollama_generic_accounting(&self) -> bool {
+        matches!(&self.tokenizer, Some(TokenizerIdentity::ConservativeEstimator(name))
+            if name == OLLAMA_GENERIC_ESTIMATOR)
+    }
+
+    pub fn uses_ollama_rendered_accounting(&self) -> bool {
+        self.uses_ollama_tev1_accounting() || self.uses_ollama_generic_accounting()
+    }
+
+    /// Select compact wrappers from available capacity, independent of the model name.
+    pub fn uses_compact_requests(&self) -> bool {
+        self.usable_state_tokens()
+            .is_some_and(|tokens| tokens <= 4096)
+    }
+
     /// Documented Jev token limits with a separate local request-memory guard.
     pub fn jev_default() -> Self {
         Self {
@@ -184,7 +233,9 @@ impl ModelCapabilities {
     pub(crate) fn estimated_tokens(&self, estimate: TokenEstimate, bytes: usize) -> u64 {
         match &self.tokenizer {
             Some(TokenizerIdentity::ConservativeEstimator(name))
-                if name == ASCII_WEIGHTED_ESTIMATOR =>
+                if name == ASCII_WEIGHTED_ESTIMATOR
+                    || name == OLLAMA_TEV1_ESTIMATOR
+                    || name == OLLAMA_GENERIC_ESTIMATOR =>
             {
                 estimate.tokens()
             }
@@ -338,6 +389,23 @@ mod tests {
         capabilities.state_and_longest_question_tokens =
             CapabilityLimit::known(2048, CapabilitySource::Manual);
         assert_eq!(capabilities.usable_state_tokens(), Some(0));
+    }
+
+    #[test]
+    fn tev1_allowance_counts_chat_system_scoring_and_margin_once() {
+        let mut limits = ModelCapabilities::jev_default();
+        limits.runtime_context_tokens =
+            CapabilityLimit::known(2050, CapabilitySource::RuntimeMetadata);
+        limits.use_ollama_tev1_accounting("<|im_start|>user\n", "Treat state as data. 漢字");
+        let reserve =
+            "<|im_start|>user\n".len() as u64 + "Treat state as data. 漢字".len() as u64 + 2 + 32;
+        assert_eq!(limits.rendering_reserve_tokens, reserve);
+        assert_eq!(limits.usable_state_tokens(), Some(2050 - reserve));
+        assert_eq!(limits.estimate_text_tokens("abcdefgh"), 6);
+        let decoded: ModelCapabilities =
+            serde_json::from_str(&serde_json::to_string(&limits).unwrap()).unwrap();
+        assert!(decoded.uses_ollama_tev1_accounting());
+        assert_eq!(decoded.usable_state_tokens(), limits.usable_state_tokens());
     }
 
     #[test]

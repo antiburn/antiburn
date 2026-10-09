@@ -1506,7 +1506,10 @@ async fn build_eval_harness(shapes: Vec<EvalShape>) -> EvalHarness {
         {
             PrepareInputOutcome::Ready(input) => *input,
             PrepareInputOutcome::Unsupported => panic!("synthetic source is supported"),
-            PrepareInputOutcome::Unavailable => panic!("synthetic source is published"),
+            PrepareInputOutcome::Unavailable(reason) => {
+                panic!("synthetic source is published: {reason:?}")
+            }
+            PrepareInputOutcome::Stale => panic!("synthetic source remains current"),
         };
         if id == "questionable" {
             first_page.prior_history_complete = false;
@@ -1569,7 +1572,10 @@ async fn build_eval_harness(shapes: Vec<EvalShape>) -> EvalHarness {
             {
                 PrepareInputOutcome::Ready(input) => *input,
                 PrepareInputOutcome::Unsupported => panic!("synthetic source is supported"),
-                PrepareInputOutcome::Unavailable => panic!("synthetic source is published"),
+                PrepareInputOutcome::Unavailable(reason) => {
+                    panic!("synthetic source is published: {reason:?}")
+                }
+                PrepareInputOutcome::Stale => panic!("synthetic source remains current"),
             };
             offset = page.next_content_offset;
             later_pages.push(page);

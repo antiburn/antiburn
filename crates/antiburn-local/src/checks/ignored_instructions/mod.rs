@@ -30,7 +30,8 @@ pub use planning::build_jev_context_with_context_policy;
 
 pub use decisions::{
     ActionExcerptBinding, ActionSourceBinding, CitationClaim, CitationProof, DecisionCoverage,
-    DecisionRecord, EvidenceIdentity, PrerequisiteEpisode, PrerequisiteOutcome,
+    DecisionRecord, EvidenceIdentity, InstructionExplanationBasis, InstructionMismatch,
+    PrerequisiteEpisode, PrerequisiteOutcome,
 };
 
 pub use evidence::{

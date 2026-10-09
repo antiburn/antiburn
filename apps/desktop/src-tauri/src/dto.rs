@@ -1015,6 +1015,10 @@ pub struct ChecksCategoryPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChecksReviewCoveragePayload {
+    /// Targets that cannot run again for the current input.
+    pub skipped: Option<u64>,
+    /// Skipped targets whose meaningful request cannot fit. This is a subset of skipped.
+    pub context_blocked: Option<u64>,
     /// Terminal review targets, including uncertain answers.
     pub reviewed: u64,
     /// All review targets. Unknown when any applicable session has a missing or capped inventory.
@@ -1724,6 +1728,7 @@ pub struct SessionHygieneRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionHygieneStatus {
+    NoCandidates,
     Finding,
     Clean,
     Checking,

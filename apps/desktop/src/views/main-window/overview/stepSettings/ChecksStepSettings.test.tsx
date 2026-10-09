@@ -58,6 +58,8 @@ const emptyAvailability = vi.hoisted(() => ({
     completed: 0,
     skipped: 0,
     failed: 0,
+    reviewed: 0,
+    eligibleItems: 0,
   },
   usage: {
     inputTokens: 0,
@@ -482,7 +484,7 @@ it("explains the selected and excluded fields and gives the API key a full-width
   render(<ChecksStepSettings />)
   expect(screen.getByRole("heading", { name: "Smart Burn Checks" })).toBeInTheDocument()
   expect(
-    screen.getByText(/Finds project instructions a session did not follow/),
+    screen.getByText(/Finds recorded work that conflicts with project instructions/),
   ).toBeInTheDocument()
   expect(
     screen.getByText(
@@ -552,7 +554,7 @@ it.each(["ignoredInstructions", "skillOpportunities", "overExploring", "scopeCre
     await waitFor(() => expect(setHistory).toHaveBeenCalledWith(30))
     fireEvent.click(screen.getByRole("button", { name: "Check past sessions" }))
     await waitFor(() => expect(runBackfill).toHaveBeenCalledOnce())
-    expect(screen.getByText("Running checks; 0/4 check jobs complete")).toBeInTheDocument()
+    expect(screen.getByText(/0 of 4 session checks finished/)).toBeInTheDocument()
     expect(screen.queryByText(/added .* to the queue/i)).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Check past sessions" })).toBeDisabled()
     expect(screen.queryByText(/running,.*waiting/)).not.toBeInTheDocument()
@@ -573,7 +575,7 @@ it("keeps the checking denominator stable while sessions change status", async (
     },
   })
   render(<ChecksStepSettings />)
-  await screen.findByText("Running checks; 0/14 check jobs complete")
+  await screen.findByText(/0 of 14 session checks finished/)
 })
 
 it("confirms when every session in the history run finished", async () => {

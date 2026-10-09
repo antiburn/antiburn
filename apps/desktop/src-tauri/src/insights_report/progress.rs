@@ -18,6 +18,57 @@ struct JoinedReviewCounts {
     runnable: usize,
 }
 
+fn context_blocked_count(
+    check_id: &str,
+    json: Option<&str>,
+    error: Option<&str>,
+    skipped: u64,
+) -> Option<u64> {
+    if skipped == 0 {
+        return Some(0);
+    }
+    if matches!(
+        error,
+        Some(
+            "scope_context_too_large"
+                | "work_context_too_large"
+                | "input_context_too_large"
+                | "input_request_too_large"
+        )
+    ) {
+        return Some(skipped);
+    }
+    let saved: serde_json::Value = serde_json::from_str(json?).ok()?;
+    let assessment = saved.get("assessment").unwrap_or(&saved);
+    let (items, field, id) = match check_id {
+        "over_exploring" => (
+            assessment.get("unassessed")?.as_array()?,
+            "limitation",
+            "work_item_id",
+        ),
+        "scope_creep" => (
+            assessment.get("decisions")?.as_array()?,
+            "limitation",
+            "group_id",
+        ),
+        "skill_opportunities" => return None,
+        "ignored_instructions" => return None,
+        _ => return None,
+    };
+    let blocked = items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.get(field).and_then(serde_json::Value::as_str),
+                Some("context_too_large" | "work_context_too_large" | "scope_context_too_large")
+            )
+        })
+        .filter_map(|item| item.get(id).and_then(serde_json::Value::as_str))
+        .collect::<BTreeSet<_>>()
+        .len() as u64;
+    (blocked <= skipped).then_some(blocked)
+}
+
 #[cfg(test)]
 fn all_check_report_progress_with_home(
     data_dir: &Path,
@@ -66,7 +117,11 @@ pub(super) fn check_report_progress_in(
                    checks.check_id,
                    a.input_revision IS NOT NULL AND a.scheduling_revision = a.input_revision
                      AND a.status IN ('queued', 'running', 'completed', 'failed'),
-                   a.eligible_targets, a.reviewed_targets, a.runnable_targets
+                    a.eligible_targets, a.reviewed_targets, a.runnable_targets,
+                    CASE WHEN json_valid(a.progress_json) THEN json_extract(a.progress_json, '$.context_blocked_ids') END,
+                    CASE WHEN json_valid(a.progress_json) THEN json_extract(a.progress_json, '$.context_blocked_before_page') END,
+                    CASE WHEN json_valid(a.progress_json) THEN json_extract(a.progress_json, '$.uncertain_before_page') END,
+                    CASE WHEN json_valid(a.progress_json) THEN json_extract(a.progress_json, '$.reviewed_before_page') END
            FROM session s CROSS JOIN checks
          LEFT JOIN session_evidence e ON e.environment_key = s.environment_key AND e.agent = s.agent
            AND e.session_id = s.session_id
@@ -225,19 +280,38 @@ pub(super) fn check_report_progress_in(
         } else {
             None
         };
+        let uncertain_before_page = row.get::<_, Option<u64>>(22)?.unwrap_or(0);
+        let reviewed_before_page = row.get::<_, Option<u64>>(23)?.unwrap_or(0);
         let mut coverage = match counts {
             Some(counts) => {
-                let outcomes = publication
-                    .as_ref()
-                    .map(|(coverage, _)| coverage)
-                    .filter(|coverage| coverage.reviewed == counts.reviewed as u64);
+                let outcomes =
+                    publication
+                        .as_ref()
+                        .map(|(coverage, _)| coverage)
+                        .filter(|coverage| {
+                            coverage.reviewed == counts.reviewed as u64
+                                || (check_id == "skill_opportunities"
+                                    && reviewed_before_page > 0
+                                    && coverage.reviewed <= counts.reviewed as u64)
+                        });
                 ChecksReviewCoveragePayload {
+                    skipped: counts.eligible.map(|total| {
+                        total.saturating_sub(counts.reviewed + counts.runnable) as u64
+                    }),
+                    context_blocked: counts.eligible.and_then(|total| {
+                        context_blocked_count(
+                            check_id,
+                            json.as_deref(),
+                            error.as_deref(),
+                            total.saturating_sub(counts.reviewed + counts.runnable) as u64,
+                        )
+                    }),
                     reviewed: counts.reviewed as u64,
                     total: counts.eligible.map(|total| total as u64),
                     uncertain: if counts.reviewed == 0 {
                         Some(0)
                     } else {
-                        outcomes.map(|coverage| coverage.uncertain)
+                        outcomes.map(|coverage| coverage.uncertain + uncertain_before_page)
                     },
                     pending: counts
                         .eligible
@@ -258,6 +332,17 @@ pub(super) fn check_report_progress_in(
                 }
             },
         };
+        if let Some(skipped) = coverage.skipped
+            && let Some(ids) = row.get::<_, Option<String>>(20)?
+        {
+            let ids: BTreeSet<String> =
+                serde_json::from_str(&ids).context("stored context-blocked targets are invalid")?;
+            let blocked = ids.len() as u64 + row.get::<_, Option<u64>>(21)?.unwrap_or(0);
+            if blocked > skipped {
+                anyhow::bail!("Burn Check context-blocked count exceeds skipped count");
+            }
+            coverage.context_blocked = Some(blocked);
+        }
         if check_id == "ignored_instructions" {
             let compact: Option<String> = row.get(14)?;
             if let Some((uncertain, pending_completion)) = compact
@@ -271,7 +356,29 @@ pub(super) fn check_report_progress_in(
                 coverage.pending_completion = Some(pending_completion);
             }
         }
+        if coverage
+            .uncertain
+            .is_some_and(|uncertain| uncertain > coverage.reviewed)
+            || coverage
+                .context_blocked
+                .zip(coverage.skipped)
+                .is_some_and(|(blocked, skipped)| blocked > skipped)
+            || coverage
+                .total
+                .zip(coverage.skipped)
+                .is_some_and(|(total, skipped)| coverage.reviewed + skipped > total)
+        {
+            anyhow::bail!("Burn Check review outcome counts are invalid");
+        }
         if let Some(total) = &mut progress.coverage {
+            total.skipped = total
+                .skipped
+                .zip(coverage.skipped)
+                .map(|(left, right)| left + right);
+            total.context_blocked = total
+                .context_blocked
+                .zip(coverage.context_blocked)
+                .map(|(left, right)| left + right);
             total.reviewed += coverage.reviewed;
             total.total = total
                 .total
@@ -433,6 +540,8 @@ fn source_is_partial(json: &str, retained_records: u64, first_role: Option<&str>
 }
 
 pub(super) struct PublishedReviewCoverage {
+    pub skipped: u64,
+    pub context_blocked: Option<u64>,
     pub reviewed: u64,
     pub total: Option<u64>,
     pub uncertain: u64,
@@ -444,6 +553,8 @@ pub(super) struct PublishedReviewCoverage {
 impl From<PublishedReviewCoverage> for ChecksReviewCoveragePayload {
     fn from(coverage: PublishedReviewCoverage) -> Self {
         Self {
+            skipped: Some(coverage.skipped),
+            context_blocked: coverage.context_blocked,
             reviewed: coverage.reviewed,
             total: coverage.total,
             uncertain: Some(coverage.uncertain),
@@ -473,6 +584,8 @@ pub(super) fn published_coverage(
         let partial = ignored_instruction_partial_context(&result.coverage);
         return Some((
             PublishedReviewCoverage {
+                skipped: 0,
+                context_blocked: Some(0),
                 reviewed: result.coverage.selected_comparisons as u64,
                 total: (!result.coverage.processing_limit_reached
                     && result.coverage.skipped_rules.is_empty()
@@ -588,14 +701,26 @@ pub(super) fn published_coverage(
             .len();
         return Some((
             PublishedReviewCoverage {
+                skipped: coverage.skipped_items as u64,
+                context_blocked: context_blocked_count(
+                    check_id,
+                    Some(json),
+                    None,
+                    coverage.skipped_items as u64,
+                ),
                 reviewed: reviewed as u64,
                 total: (!coverage
                     .limitations
                     .iter()
                     .any(|limit| limit == "sampling_inventory_limit"))
-                .then_some((coverage.selected_items + coverage.not_selected_items) as u64),
+                .then_some(
+                    (coverage.selected_items + coverage.not_selected_items + coverage.skipped_items)
+                        as u64,
+                ),
                 uncertain: uncertain as u64,
-                pending: (coverage.selected_items + coverage.not_selected_items)
+                pending: (coverage.selected_items
+                    + coverage.not_selected_items
+                    + coverage.skipped_items)
                     .saturating_sub(reviewed) as u64,
                 pending_completion: Some(0),
                 continuing: false,
@@ -612,6 +737,13 @@ pub(super) fn published_coverage(
         });
     Some((
         PublishedReviewCoverage {
+            skipped: coverage.skipped_items as u64,
+            context_blocked: context_blocked_count(
+                check_id,
+                Some(json),
+                None,
+                coverage.skipped_items as u64,
+            ),
             reviewed: reviewed as u64,
             total: (!coverage
                 .limitations
@@ -645,6 +777,147 @@ mod tests {
     ) -> Result<CheckReportProgress> {
         let home = antiburn_local::paths::home_dir();
         check_report_progress_with_home(data_dir, request, check_id, home.as_deref())
+    }
+
+    #[test]
+    fn native_report_serializes_terminal_counts_and_empty_session_states_for_all_checks() {
+        let directory = tempfile::tempdir().unwrap();
+        let (store, candidate) = fixture(Some(directory.path()), "user");
+        let base = crate::smart_check_inputs::cache::source_fence(
+            &candidate,
+            "over_exploring",
+            crate::over_exploring_worker::CHECK.evaluator_revision(),
+        );
+        for check in crate::jev::worker::registered_checks() {
+            let detector = DetectorId::from_key(check.id()).unwrap();
+            store.set_check_enabled(detector, true).unwrap();
+            store
+                .capture_burn_check_boundaries(&[check.id()], 0)
+                .unwrap();
+            let mut input = base.clone();
+            input.check_id = check.id().into();
+            input.evaluator_revision = check.evaluator_revision();
+            input.input_revision = format!("terminal-{}", check.id());
+            assert!(
+                store
+                    .queue_burn_check_assessment(&input, 1000, 180)
+                    .unwrap()
+            );
+            assert!(
+                store
+                    .claim_burn_check_assessment(&input, 1000, 300, 180)
+                    .unwrap()
+            );
+            store
+                .save_burn_check_scheduling(&input, Some(6), 2, 0)
+                .unwrap();
+            store
+                .fail_burn_check_assessment_with_result(
+                    &input,
+                    &crate::store::BurnCheckFailure {
+                        error_category: "sampling_incomplete",
+                        result_json: "{}",
+                        progress_json: r#"{"context_blocked_ids":["fit-a","fit-b"]}"#,
+                        retry_at_epoch: None,
+                    },
+                    1001,
+                    180,
+                )
+                .unwrap();
+            let request = ReportRequest {
+                environment_key: "native".into(),
+                window: ReportWindow {
+                    start_epoch: 0,
+                    end_epoch: i64::MAX,
+                },
+                computed_at_epoch: 1002,
+            };
+            let progress =
+                check_report_progress_with_home(directory.path(), &request, check.id(), None)
+                    .unwrap();
+            assert!(!progress.checking, "{}", check.id());
+            let wire = serde_json::to_value(progress.coverage.unwrap()).unwrap();
+            assert_eq!(wire["reviewed"], 2);
+            assert_eq!(wire["total"], 6);
+            assert_eq!(wire["pending"], 4);
+            assert_eq!(wire["skipped"], 4);
+            assert_eq!(wire["contextBlocked"], 2);
+            assert_eq!(wire["continuing"], false);
+            store
+                .lock()
+                .execute(
+                    "UPDATE burn_check_assessment SET progress_json = ?1 WHERE check_id = ?2",
+                    params![
+                        r#"{"context_blocked_ids":["a","b","c","d","e"]}"#,
+                        check.id()
+                    ],
+                )
+                .unwrap();
+            assert!(
+                check_report_progress_with_home(directory.path(), &request, check.id(), None)
+                    .is_err()
+            );
+            input.input_revision.push_str("-empty");
+            assert!(
+                store
+                    .record_burn_check_no_candidates(&input, "{}", 1002, 180)
+                    .unwrap()
+            );
+            let progress =
+                check_report_progress_with_home(directory.path(), &request, check.id(), None)
+                    .unwrap();
+            let wire = serde_json::to_value(progress.coverage.unwrap()).unwrap();
+            for key in [
+                "reviewed",
+                "total",
+                "pending",
+                "skipped",
+                "contextBlocked",
+                "uncertain",
+            ] {
+                assert_eq!(wire[key], 0, "{}: {key}", check.id());
+            }
+            let statuses = if detector == DetectorId::IgnoredInstructions {
+                super::super::ignored_instructions::ignored_instruction_session_statuses(
+                    directory.path(),
+                    std::slice::from_ref(&candidate.session.key),
+                )
+                .unwrap()
+            } else {
+                super::super::findings::smart_session_statuses(
+                    directory.path(),
+                    std::slice::from_ref(&candidate.session.key),
+                    detector,
+                    false,
+                )
+                .unwrap()
+            };
+            assert_eq!(
+                serde_json::to_value(statuses[0].status).unwrap(),
+                "noCandidates",
+                "{}",
+                check.id()
+            );
+            assert_eq!(statuses[0].reason, Some("no_candidates"));
+            let badge = crate::dto::SessionHygieneBadgePayload {
+                id: match detector {
+                    DetectorId::IgnoredInstructions => "ignoredInstructions",
+                    DetectorId::ScopeCreep => "scopeCreep",
+                    DetectorId::OverExploring => "overExploring",
+                    DetectorId::SkillOpportunities => "skillOpportunities",
+                    _ => unreachable!(),
+                },
+                status: statuses[0].status,
+                not_assessed_reason: None,
+                check_reason: statuses[0].reason,
+                accounting: None,
+                finding_evidence: None,
+            };
+            let wire = serde_json::to_value(badge).unwrap();
+            assert_eq!(wire["status"], "noCandidates");
+            assert_eq!(wire["checkReason"], "no_candidates");
+            assert!(wire.get("findingEvidence").is_none());
+        }
     }
 
     #[test]
@@ -962,6 +1235,7 @@ mod tests {
             ("failed", Some("continuing"), 3, 2),
             ("failed", Some("sampling_incomplete"), 3, 2),
             ("failed", Some("continuing"), 0, 0),
+            ("failed", Some("no_candidates"), 0, 0),
             ("failed", Some("provider_unavailable"), 3, 0),
             ("failed", Some("delivery_unknown"), 3, 0),
             ("completed", None, 3, 0),
@@ -1177,6 +1451,39 @@ mod tests {
             .unassessed_comparisons
             .push("ambiguous-answer".into());
         assert!(read(&result).is_none());
+    }
+
+    #[test]
+    fn terminal_over_exploring_gaps_count_as_unreviewed_without_continuation() {
+        let (store, candidate) = fixture(None, "user");
+        let input = prepare(
+            &candidate,
+            store
+                .load_smart_check_inputs(
+                    &candidate.session.key,
+                    candidate.published_fence,
+                    candidate.source_generation,
+                    DetectorInput::OverExploring,
+                )
+                .unwrap(),
+            &ModelCapabilities::jev_default(),
+        )
+        .unwrap();
+        let mut result = OverExploringCheck.reduce(&input.plan, &[], false).unwrap();
+        let skipped = input.plan.prepared.candidates.len();
+        assert!(skipped > 0);
+        result.coverage.selected_items = 0;
+        result.coverage.not_selected_items = 0;
+        result.coverage.skipped_items = skipped;
+        assert!(!crate::over_exploring_worker::publication_has_clean_coverage(&result));
+        let json = serde_json::to_string(&publication(&input, result)).unwrap();
+        let (coverage, _) =
+            published_coverage("over_exploring", &input.durable.input_revision, &json, None)
+                .unwrap();
+        assert_eq!(coverage.reviewed, 0);
+        assert_eq!(coverage.total, Some(skipped as u64));
+        assert_eq!(coverage.pending, skipped as u64);
+        assert!(!coverage.continuing);
     }
 
     #[test]

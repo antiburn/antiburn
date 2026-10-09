@@ -316,15 +316,24 @@ pub(crate) fn smart_session_statuses(
                 }),
                 _ => None,
             })),
-            _ if !available => (SessionHygieneStatus::CouldntCheck, Some("The model provider is unavailable. Check Settings.")),
             _ => {
+                use crate::jev::worker::JevCheckDescriptor;
+                let evaluator_revision = match detector {
+                    DetectorId::ScopeCreep => crate::scope_creep_worker::CHECK.evaluator_revision(),
+                    DetectorId::OverExploring => crate::over_exploring_worker::CHECK.evaluator_revision(),
+                    DetectorId::SkillOpportunities => crate::skill_opportunities_worker::CHECK.evaluator_revision(),
+                    _ => antiburn_local::analysis::ignored_instructions::evaluator_revision(),
+                };
                 let stored_status: Option<(String, Option<String>)> = transaction.query_row(
                     "SELECT status, last_error_category FROM burn_check_assessment WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND check_id = ?4
-                        AND incarnation = ?5 AND source_generation = ?6 AND published_fence = ?7",
-                    params![key.environment_key, key.agent, key.session_id, detector.key(), session.incarnation, session.source_generation, session.published_fence],
+                        AND incarnation = ?5 AND source_generation = ?6 AND published_fence = ?7
+                        AND source_fingerprint IS ?8 AND evaluator_revision = ?9",
+                    params![key.environment_key, key.agent, key.session_id, detector.key(), session.incarnation, session.source_generation, session.published_fence, session.source_fingerprint, evaluator_revision],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 ).optional()?;
                 match stored_status.as_ref().map(|(status, error)| (status.as_str(), error.as_deref())) {
+                    Some(("failed", Some("no_candidates"))) => (SessionHygieneStatus::NoCandidates, Some("no_candidates")),
+                    _ if !available => (SessionHygieneStatus::CouldntCheck, Some("The model provider is unavailable. Check Settings.")),
                     Some((_, Some("scope_context_too_large"))) => (SessionHygieneStatus::CouldntCheck, Some("scope_context_too_large")),
                     Some(("queued" | "running", _)) => (SessionHygieneStatus::Checking, None),
                     Some(("failed", _)) => (SessionHygieneStatus::CouldntCheck, Some("The assessment could not finish.")),

@@ -4,6 +4,7 @@ import type {
   SessionHygieneEvidenceState,
 } from "../insightsIpc"
 import type { SessionHygieneCheck } from "./sessionHygiene"
+import { smartCheckReviewPresentation } from "./smartCheckReview"
 
 type BurnCheckLifecycle =
   | "pending"
@@ -16,6 +17,7 @@ type BurnCheckLifecycle =
 
 export function checkHasProvisionalResult(category: ChecksCategoryPayload): boolean {
   return (
+    !smartCheckReviewPresentation(category).terminal &&
     category.checking === true &&
     category.finding === 0 &&
     category.lifecycle !== "failing" &&
@@ -282,7 +284,8 @@ export function aggregateBurnCheckPresentation(
 ): BurnCheckPresentation {
   const counts = report.categories.reduce<BurnCheckCounts>(
     (result, category) => {
-      if (category.lifecycle === "failing") result.failed += 1
+      if (smartCheckReviewPresentation(category).terminalLabel != null) result.unassessed += 1
+      else if (category.lifecycle === "failing") result.failed += 1
       else if (category.lifecycle === "passing") result.passed += 1
       else result.unassessed += 1
       return result

@@ -179,10 +179,7 @@ impl CloudflareAdapter {
             return Err(JevError::UnsupportedModel);
         }
         validate_jev_request_with_capabilities(request, capabilities)?;
-        let mut value =
-            serde_json::to_value(request).map_err(|_| JevError::RequestSerialization)?;
-        value["model"] = serde_json::Value::String(route_model.to_owned());
-        serde_json::to_vec(&value).map_err(|_| JevError::RequestSerialization)
+        serde_json::to_vec(request).map_err(|_| JevError::RequestSerialization)
     }
 
     pub(crate) fn decode_response(
@@ -291,6 +288,7 @@ mod tests {
                     .unwrap();
             let value: Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(value["model"], model);
+            assert_eq!(body, serde_json::to_vec(&request).unwrap());
             assert_eq!(
                 account_endpoint("account_123", model).unwrap(),
                 format!(

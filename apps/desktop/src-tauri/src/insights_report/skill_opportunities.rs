@@ -356,11 +356,18 @@ mod tests {
                             JevAnswer::Choice {
                                 choice: choice.into(),
                                 confidence: 1.0,
-                                probabilities: std::collections::BTreeMap::from([
-                                    ("useful_opportunity".into(), 1.0),
-                                    ("no_opportunity".into(), 0.0),
-                                    ("uncertain".into(), 0.0),
-                                ]),
+                                probabilities: match &item.questions[question] {
+                                    antiburn_local::analysis::jev::JevQuestion::Choice {
+                                        criteria,
+                                        ..
+                                    } => criteria
+                                        .keys()
+                                        .map(|key| {
+                                            (key.clone(), if key == choice { 1.0 } else { 0.0 })
+                                        })
+                                        .collect(),
+                                    _ => unreachable!("skill opportunity question is a choice"),
+                                },
                             },
                         )
                     })

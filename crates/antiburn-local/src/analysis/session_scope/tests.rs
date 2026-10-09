@@ -138,7 +138,7 @@ fn qualified_generated_context_is_retained_as_an_action_without_scope_authority(
 }
 
 #[test]
-fn invalid_generated_context_proof_fails_closed_and_stays_failed() {
+fn invalid_generated_context_proof_does_not_remove_authoritative_siblings() {
     for skill in [false, true] {
         for mutation in 0..5 {
             let mut record = generated_context(skill);
@@ -161,22 +161,29 @@ fn invalid_generated_context_proof_fails_closed_and_stays_failed() {
                 }
             }
             let mut scope = builder_for_source(1, SourceFormat::CodexRolloutJsonl);
-            let expected = SessionScopeError::Missing(ScopeMissingReason::InvalidEvidence);
-            assert_eq!(
-                scope.push_page(
+            scope
+                .push_page(
                     page(
                         vec![
                             part(0, ContentKind::UserText, "Keep billing unchanged."),
-                            record
+                            record,
                         ],
-                        false
+                        false,
                     ),
-                    false
-                ),
-                Err(expected.clone()),
+                    false,
+                )
+                .unwrap();
+            let snapshot = scope.finish().unwrap();
+            assert_eq!(
+                snapshot.values(),
+                &[json!("Keep billing unchanged.")],
                 "skill={skill}, mutation={mutation}"
             );
-            assert_eq!(scope.finish(), Err(expected));
+            assert!(
+                snapshot
+                    .limitations()
+                    .contains(&ScopeMissingReason::UnresolvedInfluence)
+            );
         }
     }
 }
@@ -187,11 +194,13 @@ fn generated_context_cannot_bypass_raw_truncation_or_replay_action_identity() {
         let mut record = generated_context(skill);
         record.part.truncated = true;
         let mut scope = builder_for_source(1, SourceFormat::CodexRolloutJsonl);
-        assert_eq!(
-            scope.push_page(page(vec![record], false), false),
-            Err(SessionScopeError::Missing(
-                ScopeMissingReason::TruncatedEvidence
-            ))
+        scope.push_page(page(vec![record], false), false).unwrap();
+        let snapshot = scope.finish().unwrap();
+        assert!(snapshot.values().is_empty());
+        assert!(
+            snapshot
+                .limitations()
+                .contains(&ScopeMissingReason::TruncatedEvidence)
         );
     }
     let mut record = generated_context(false);
@@ -224,11 +233,13 @@ fn generated_context_cannot_bypass_raw_truncation_or_replay_action_identity() {
     );
     record.turn_index = 2;
     let mut scope = builder_for_source(2, SourceFormat::CodexRolloutJsonl);
-    assert_eq!(
-        scope.push_page(page(vec![record], false), false),
-        Err(SessionScopeError::Missing(
-            ScopeMissingReason::InvalidEvidence
-        ))
+    scope.push_page(page(vec![record], false), false).unwrap();
+    let snapshot = scope.finish().unwrap();
+    assert!(snapshot.values().is_empty());
+    assert!(
+        snapshot
+            .limitations()
+            .contains(&ScopeMissingReason::UnresolvedInfluence)
     );
 }
 
@@ -396,11 +407,17 @@ fn unknown_answers_and_mutable_plans_remain_unknown_not_approved() {
         )
         .unwrap();
     let snapshot = scope.finish().unwrap();
-    assert_eq!(
-        snapshot.scope_creep_context(),
-        Err(SessionScopeError::Missing(
-            ScopeMissingReason::UnresolvedInfluence
-        ))
+    assert!(snapshot.scope_creep_context().is_ok());
+    assert!(
+        snapshot
+            .occurrences()
+            .iter()
+            .any(|item| item.authority == ScopeAuthority::UnknownInfluence)
+    );
+    assert!(
+        snapshot
+            .limitations()
+            .contains(&ScopeMissingReason::UnresolvedInfluence)
     );
     assert!(snapshot.values().contains(&scope_value(&answer).unwrap()));
     assert!(snapshot.values().contains(&scope_value(&plan).unwrap()));
@@ -501,17 +518,18 @@ fn truncated_scope_never_becomes_complete() {
     let mut record = part(0, ContentKind::UserText, "partial scope");
     record.part.truncated = true;
     let mut scope = builder(0);
-    assert_eq!(
-        scope.push_page(page(vec![record], false), false),
-        Err(SessionScopeError::Missing(
-            ScopeMissingReason::TruncatedEvidence
-        ))
+    scope.push_page(page(vec![record], false), false).unwrap();
+    let snapshot = scope.finish().unwrap();
+    assert!(snapshot.values().is_empty());
+    assert!(
+        snapshot
+            .limitations()
+            .contains(&ScopeMissingReason::TruncatedEvidence)
     );
-    assert_eq!(
-        scope.finish(),
-        Err(SessionScopeError::Missing(
-            ScopeMissingReason::TruncatedEvidence
-        ))
+    assert!(
+        snapshot
+            .limitations()
+            .contains(&ScopeMissingReason::NoUserContext)
     );
 }
 
@@ -568,11 +586,18 @@ fn recorded_proposal_is_context_and_mismatched_approval_or_companion_is_unknown(
                 false,
             )
             .unwrap();
-        assert_eq!(
-            scope.finish().unwrap().scope_creep_context(),
-            Err(SessionScopeError::Missing(
-                ScopeMissingReason::UnresolvedInfluence
-            ))
+        let snapshot = scope.finish().unwrap();
+        assert!(snapshot.scope_creep_context().is_ok());
+        assert!(
+            snapshot
+                .occurrences()
+                .iter()
+                .any(|item| item.authority == ScopeAuthority::UnknownInfluence)
+        );
+        assert!(
+            snapshot
+                .limitations()
+                .contains(&ScopeMissingReason::UnresolvedInfluence)
         );
     }
     let mut plan = scope_plan_fixture();
@@ -711,11 +736,18 @@ fn submitted_unknown_origin_and_pending_unknown_answers_stay_unresolved() {
                 false,
             )
             .unwrap();
-        assert_eq!(
-            scope.finish().unwrap().scope_creep_context(),
-            Err(SessionScopeError::Missing(
-                ScopeMissingReason::UnresolvedInfluence
-            ))
+        let snapshot = scope.finish().unwrap();
+        assert!(snapshot.scope_creep_context().is_ok());
+        assert!(
+            snapshot
+                .occurrences()
+                .iter()
+                .any(|item| item.authority == ScopeAuthority::UnknownInfluence)
+        );
+        assert!(
+            snapshot
+                .limitations()
+                .contains(&ScopeMissingReason::UnresolvedInfluence)
         );
     }
 }

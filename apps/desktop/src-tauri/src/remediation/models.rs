@@ -69,6 +69,8 @@ pub struct BurnCheckEvidenceItem {
 #[serde(rename_all = "camelCase")]
 pub struct BurnCheckTargetEvidence {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<BurnCheckEvidenceComparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub decision_proof: Option<IgnoredInstructionDecisionProof>,
     pub status: BurnCheckEvidenceStatus,
     pub items: Vec<BurnCheckEvidenceItem>,
@@ -80,10 +82,63 @@ pub struct BurnCheckTargetEvidence {
 #[serde(rename_all = "camelCase")]
 pub struct BurnCheckEvidenceOccurrence {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<BurnCheckEvidenceComparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub decision_proof: Option<IgnoredInstructionDecisionProof>,
     pub finding_id: String,
     pub status: BurnCheckEvidenceStatus,
     pub items: Vec<BurnCheckEvidenceItem>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckEvidenceComparison {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observation_kind: Option<BurnCheckObservationKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<BurnCheckExplanation>,
+    pub reads: Vec<BurnCheckReadEvidence>,
+    pub source_ranges: Vec<BurnCheckSourceRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckSourceRange {
+    pub reference: String,
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub range_source: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckObservationKind {
+    Proposal,
+    Attempt,
+    Recorded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckExplanation {
+    pub version: u32,
+    pub relationship: String,
+    pub text: String,
+    pub references: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckReadEvidence {
+    pub request_reference: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_reference: Option<String>,
+    pub paths: Vec<String>,
+    pub requested_extent: antiburn_local::analysis::jev_evidence::JevReadExtent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub returned_extent: Option<antiburn_local::analysis::jev_evidence::JevReadExtent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_status: Option<antiburn_local::analysis::jev_evidence::JevReadStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

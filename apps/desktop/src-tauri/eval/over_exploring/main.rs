@@ -5,6 +5,8 @@ pub(crate) mod jev {
     pub(crate) use crate::support::config;
 }
 
+#[path = "../support/baseline.rs"]
+mod baseline;
 mod controls;
 mod development;
 mod development_extents;
@@ -17,4 +19,10 @@ mod scoring;
 #[ignore = "Authorized live diagnostic through the selected production provider"]
 async fn live() -> Result<(), String> {
     harness::run().await
+}
+
+#[tokio::test]
+#[ignore = "Authorized live full-suite session benchmark through the selected production provider"]
+async fn benchmark_session() -> Result<(), String> {
+    harness::run_benchmark_session().await
 }

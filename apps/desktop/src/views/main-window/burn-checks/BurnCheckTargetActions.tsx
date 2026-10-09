@@ -218,7 +218,7 @@ export function BurnCheckTargetActions({
             busy: null,
             review: null,
             status: verificationUnavailable
-              ? "Change applied. Verification is unavailable for this check."
+              ? "The change was made, but a later session could not confirm the result."
               : null,
           }))
         })
@@ -236,9 +236,9 @@ export function BurnCheckTargetActions({
         reviewBlocked: true,
         status:
           outcome?.outcome === "conflict"
-            ? "Another change now conflicts with this operation. Close this review and check the setting."
+            ? "The setting changed during this review. Close it and check the current setting."
             : outcome?.outcome === "unavailable"
-              ? "The current setting no longer passes the write safety check."
+              ? "The current setting changed, so this edit was not made."
               : null,
       }))
       if (outcome?.outcome === "recoveryNeeded") refresh()
@@ -253,7 +253,7 @@ export function BurnCheckTargetActions({
         ...value,
         busy: null,
         reviewBlocked: true,
-        status: "Could not confirm the result. Check the setting before you try again.",
+        status: "The result could not be confirmed. Check the setting before trying again.",
       }))
     }
   }
@@ -286,7 +286,7 @@ export function BurnCheckTargetActions({
             status:
               outcome?.outcome === "expired" || outcome?.outcome === "stale"
                 ? "Checking the current change."
-                : "A prompt fix is unavailable for this finding.",
+                : "A fix prompt is not available for this finding.",
           }))
           if (outcome?.outcome === "expired" || outcome?.outcome === "stale") refresh()
           return
@@ -329,8 +329,8 @@ export function BurnCheckTargetActions({
         busy: null,
         prompt,
         status: preparationFailed
-          ? "Could not prepare the prompt. Try again."
-          : "Could not copy the prompt. Try again.",
+          ? "The fix prompt could not be prepared. Try again."
+          : "The fix prompt could not be copied. Try again.",
       }))
     }
   }

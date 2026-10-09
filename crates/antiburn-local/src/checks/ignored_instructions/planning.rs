@@ -40,6 +40,23 @@ impl EvidenceTextLimits {
     };
 
     fn from_capabilities(capabilities: &ModelCapabilities) -> Self {
+        if capabilities
+            .usable_state_tokens()
+            .is_some_and(|tokens| tokens <= 8192)
+        {
+            let budget = capabilities
+                .usable_state_tokens()
+                .unwrap_or(0)
+                .saturating_sub(768);
+            let unit = usize::try_from(budget / 4)
+                .unwrap_or(usize::MAX)
+                .clamp(64, 512);
+            return Self {
+                rule: unit,
+                action: unit.saturating_mul(2),
+                context: unit,
+            };
+        }
         // Use one UTF-8 byte per token for this allocation bound. The packer
         // checks the serialized request with the selected token estimator.
         let budget = [
@@ -202,13 +219,13 @@ impl PreparedAssessmentInput {
         );
         plan.model_version.clone_from(&capabilities.model);
         for comparison in &mut plan.comparisons {
-            comparison.prerequisite_episode =
-                Some(super::PrerequisiteContextPolicy::CoherentEpisode.select(
-                    comparison,
-                    &self.input.content.actions,
-                    capabilities,
-                    plan.complete_input,
-                ));
+            comparison.prerequisite_episode = Some(super::assessment::select_comparison_episode(
+                comparison,
+                &self.input.content.actions,
+                capabilities,
+                plan.complete_input,
+                super::PrerequisiteContextPolicy::CoherentEpisode,
+            ));
         }
         plan
     }

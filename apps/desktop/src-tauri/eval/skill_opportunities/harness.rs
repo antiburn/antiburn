@@ -11,27 +11,54 @@ async fn evaluate(
     client: &support::provider::EvalClient,
     usage: &Arc<Mutex<support::run::RunUsage>>,
 ) -> Value {
+    let total_started = Instant::now();
+    let context_started = Instant::now();
     let context = case.check.session_context();
+    let context_construction_ms = context_started.elapsed().as_millis();
     let permit = admit_jev_orchestration()
         .await
         .expect("Admit evaluation preparation");
+    let preparation_started = Instant::now();
     let mut plan = case
         .check
         .prepare_with_capabilities(&context, &support::provider::configuration().capabilities)
         .expect("Synthetic skill work prepares");
-    let started = Instant::now();
+    let preparation_ms = preparation_started.elapsed().as_millis();
+    let work_item_count = plan.work_items.len();
+    let request_count_before = usage.lock().expect("Usage lock").requests;
+    let request_elapsed = Arc::new(Mutex::new(std::time::Duration::ZERO));
+    let measured_request_elapsed = Arc::clone(&request_elapsed);
+    let runner_started = Instant::now();
     let outcome = run_jev_check_prepared(
         &case.check,
         &context,
         &mut plan,
         JevRunProgress::default(),
         permit,
-        |batch| async move {
-            support::run::evaluate_batch(client, usage, &case.id, "assessment", &batch).await
+        |batch| {
+            let request_elapsed = Arc::clone(&measured_request_elapsed);
+            async move {
+                let started = Instant::now();
+                let result =
+                    support::run::evaluate_batch(client, usage, &case.id, "assessment", &batch)
+                        .await;
+                *request_elapsed.lock().expect("Request timing lock") += started.elapsed();
+                result
+            }
         },
         |_| Ok(()),
     )
     .await;
+    let runner_ms = runner_started.elapsed().as_millis();
+    let request_execution_ms = request_elapsed
+        .lock()
+        .expect("Request timing lock")
+        .as_millis();
+    let request_count = usage
+        .lock()
+        .expect("Usage lock")
+        .requests
+        .saturating_sub(request_count_before);
     let mut row = match outcome {
         Ok(outcome) => {
             json!({"score":scoring::score(case, &outcome.result, &plan.work_items, plan.skipped_item_ids.len()),
@@ -42,13 +69,43 @@ async fn evaluate(
         }
     };
     row["id"] = json!(case.id);
+    if let Some(baseline) = crate::baseline::result(&case.check, &plan, usage, &case.id) {
+        match baseline {
+            Ok(result) => {
+                row["baseline_score"] =
+                    scoring::score(case, &result, &plan.work_items, plan.skipped_item_ids.len());
+                row["baseline_result"] = json!(result);
+            }
+            Err(error) => row["baseline_failure"] = json!(error),
+        }
+    }
     row["family"] = json!(case.family);
     row["expected"] = json!(case.label);
-    row["elapsed_ms"] = json!(started.elapsed().as_millis());
+    let total_ms = total_started.elapsed().as_millis();
+    row["elapsed_ms"] = json!(total_ms);
+    row["timing"] = json!({
+        "context_construction_ms":context_construction_ms,
+        "preparation_ms":preparation_ms,
+        "runner_ms":runner_ms,
+        "request_execution_ms":request_execution_ms,
+        "packing_ms":null,
+        "reduction_ms":null,
+        "total_ms":total_ms,
+        "work_items":work_item_count,
+        "requests":request_count,
+    });
     row
 }
 
 pub(crate) async fn run() -> Result<(), String> {
+    run_selected(false).await
+}
+
+pub(crate) async fn benchmark_session() -> Result<(), String> {
+    run_selected(true).await
+}
+
+async fn run_selected(benchmark: bool) -> Result<(), String> {
     let suite = support::selection::suite();
     let cases = support::selection::select(fixtures::cases(&suite), |case| &case.id);
     let client = match support::provider::EvalClient::from_environment().await {
@@ -69,12 +126,13 @@ pub(crate) async fn run() -> Result<(), String> {
     for case in &cases {
         let row = evaluate(case, &client, &usage).await;
         stopped = support::run::stop_reason(
-            row["score"]["unsafe_publications"]
-                .as_u64()
-                .is_some_and(|count| count > 0)
-                || row["score"]["historical_claims"]
+            !benchmark
+                && (row["score"]["unsafe_publications"]
                     .as_u64()
-                    .is_some_and(|count| count > 0),
+                    .is_some_and(|count| count > 0)
+                    || row["score"]["historical_claims"]
+                        .as_u64()
+                        .is_some_and(|count| count > 0)),
             row["score"]["missing"]
                 .as_u64()
                 .is_some_and(|count| count > 0),
@@ -88,6 +146,7 @@ pub(crate) async fn run() -> Result<(), String> {
     let metrics = scoring::metrics(&cases, &rows);
     println!("Skill Opportunities: {metrics}");
     let report = json!({"check":"skill_opportunities","suite":suite,"provider":support::provider::configuration().identity(),
+        "revisions":antiburn_local::checks::skill_opportunities::SKILL_OPPORTUNITIES_REVISIONS,"production_runner":true,
         "metrics":metrics,"stopped":stopped,"measurements":support::run::measurements(&rows,&usage.lock().expect("Usage lock")),"rows":rows});
     let path = support::capture::report("skill_opportunities", &suite, &report);
     match stopped {
@@ -165,6 +224,8 @@ fn single_pair_choices_preserve_partial_findings_and_complete_uncertainty_sampli
                     probabilities: std::collections::BTreeMap::from([
                         ("useful_opportunity".into(), 0.05),
                         ("no_opportunity".into(), 0.05),
+                        ("specialist_check".into(), 0.0),
+                        ("already_covered".into(), 0.0),
                         ("uncertain".into(), 0.9),
                     ]),
                     confidence: 0.1,
@@ -223,6 +284,8 @@ fn single_pair_choices_preserve_partial_findings_and_complete_uncertainty_sampli
                     probabilities: std::collections::BTreeMap::from([
                         ("useful_opportunity".into(), probability),
                         ("no_opportunity".into(), (1.0 - probability) / 2.0),
+                        ("specialist_check".into(), 0.0),
+                        ("already_covered".into(), 0.0),
                         ("uncertain".into(), (1.0 - probability) / 2.0),
                     ]),
                     confidence: 0.1,

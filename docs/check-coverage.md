@@ -1,6 +1,6 @@
 # Burn Check Source Coverage
 
-Audit date: 2026-10-08.
+Audit date: 2026-10-09.
 
 This document covers local passive session evidence and the desktop's read-only
 current resource inventory. Session evidence supports historical claims. Current
@@ -29,8 +29,10 @@ recorded-use identity and creation after the relevant work timestamp remain
 advisory limits, not candidate exclusions; missing time stays explicit. This current-data
 heuristic does not prove historical availability or contents.
 
-Each selected skill/work comparison uses one choice: useful opportunity, no
-opportunity, or uncertain. A validated positive can use partial selected work
+Each selected skill/work comparison uses one choice: useful procedure,
+specialist check, already covered, unrelated or adequate work, or uncertain.
+Useful procedure and specialist check choices can support a finding at the
+0.75 probability threshold. A validated positive can use partial selected work
 or unknown recorded-use absence. It does not prove that the skill was unused or
 that the work completed. Current source, inventory, use, and evaluator revisions
 must match. A failed assessment can retain validated positive siblings; partial
@@ -46,10 +48,13 @@ same-length change in an omitted range invalidates the saved citation.
 
 Scope Creep uses one choice per selected work group. Findings require a finite
 decision probability from 0.75 through 1.0 and distinguish recorded attempts
-from proposals. Retained task context can be empty; it does not prove complete
-approval history. Findings do not prove completed execution. Recorded approvals
-still constrain the decision. Uncertain and unassessed groups count separately
-from reviewed clean outcomes.
+from proposals. The compact path requires selected earlier user task context;
+a group without it remains unassessed. The larger-window path can admit empty
+retained task context. Compact evidence labels user-authority records as task
+instructions and keeps other supporting records separate. Neither path proves
+complete approval history. Findings do not prove completed execution. Recorded
+approvals still constrain the decision. Uncertain and unassessed groups count
+separately from reviewed clean outcomes.
 
 Scope Creep and Skill Opportunities retain large selected work, including edit
 inputs, commands, and tool results, as bounded sampled content. Each large value
@@ -65,8 +70,9 @@ Sampled negative decisions are Uncertain, not Clean or complete no-opportunity
 results. Accepted semantic answers still complete their selected sampling jobs;
 review completion does not mean all source bytes were reviewed. Validated positive
 decisions can support bounded findings and recommendations with the content and
-selected-window limits. No exhaustive subrange review is implemented. These
-limits do not change parser or native source-format support.
+selected-window limits. No exhaustive subrange review is implemented. Compact
+requests can select fewer and shorter passages than this large-value projection.
+These limits do not change parser or native source-format support.
 
 The native skill-use adapter is fixture-characterized for `ClaudeJsonl`,
 `OpenCodeSqliteV2`, `CodexRolloutJsonl`, and `PiV3Jsonl` under the
@@ -191,10 +197,14 @@ supporting work, not shared task authority. Work windows retain at most 16
 supporting events and 8 KiB of text, with exact target bindings and explicit
 partial flags. Sampled task or work text cannot establish Clean.
 
-Skill Opportunities uses the same task boundary for selected work. Both checks
-mark task context partial when the selection omits an earlier user task. A short
-approval such as "Yes, continue" cannot establish the antecedent task or proposal.
-Missing prior task evidence leaves the comparison unassessed and sends no request.
+Skill Opportunities groups each operation with its uniquely matched result when
+available and selects optional task context at that operation's boundary. Both
+checks mark task context partial when the selection omits an earlier user task.
+A short approval such as "Yes, continue" cannot establish the antecedent task
+or proposal. Over-exploring skips only targets without required task evidence;
+other investigations can continue. Skill Opportunities can assess an interpretable
+operation without task text and retain a bounded positive, but cannot establish
+complete no-opportunity coverage from that missing context.
 Skill-use snapshots bind the same enrollment projection as the selected work;
 pre-enrollment uses remain context and do not enroll old work as a target. Settled
 comparisons leave both the work inventory and its shared context before the
@@ -340,6 +350,37 @@ in this matrix.
 | `Uncharacterized` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unsupported | Unsupported | Unsupported |
 
 ## Smart Check Review Coverage
+
+Small-window preparation uses capability-based compact requests and short
+check-specific questions. Scope Creep, Over-exploring, and Skill Opportunities
+select compact passages with 8,192 usable estimated tokens or fewer. Shared
+request wrappers use their compact form with 4,096 or fewer. Fit checks shrink
+passages within finite budgets before skipping a comparison. These are bounded selected comparisons,
+not exhaustive semantic subrange review. Partial or compact sampled negatives
+cannot establish complete Clean. Provider fit uses an estimate, not an exact
+tokenizer, and does not establish small-model accuracy or live latency.
+
+Native input loading omits malformed selected tool inputs and untrusted user
+parts while retaining independent valid work with partial coverage. Exact source,
+branch, publication, and selected dependency bindings remain required. Unknown
+authority cannot become approval. Empty candidate inventories are stored as
+terminal `no_candidates` work, distinct from Clean and unavailable evidence.
+Loader failures retain specific internal categories; stale publications do not
+publish replacement results. Skipped targets remain unreviewed and do not imply
+active continuation. Normal candidate enumeration excludes terminal empty work
+with unchanged source, publication, and evaluator identities.
+
+Skill Opportunities bounds operation/skill enumeration to 4,096 comparisons.
+Omitted comparisons remain explicit partial coverage and cannot establish Clean.
+Continuation reviews retained candidates; it does not exhaustively enumerate
+comparisons omitted by that cap.
+
+Findings can retain a versioned comparison basis with the selected passages and
+typed relationship. The evidence endpoint validates source bindings and provides
+paired read requests/results with separate requested and observed extents. Skill
+task citations belong to the comparison, not the request batch. Older findings
+can expose available excerpts without a fabricated explanation. None of these
+contracts proves complete history, execution success, or historical skill visibility.
 
 All four production descriptors target an initial review of 50% of eligible
 targets, then continue remaining work. The percentage measures the target
@@ -622,7 +663,7 @@ limits; they do not establish complete history outside the selected window.
 | Antigravity | OverExploring | N | N | N | N | N | Complete task history and observed-result support are unavailable. |
 | Claude Code | ScopeCreep | Y | Y | N | N | N | Native CLI 2.1.278 retained root with explicit human markers; SDK/meta/synthetic text and tool permission do not authorize scope; original retention not proved. |
 | Codex | ScopeCreep | Y | Y | N | N | N | Native 0.160.1 pinned retained root; qualified single-local environment context is non-authorizing; unknown-origin answers and skill selections cannot approve scope. |
-| OpenCode | ScopeCreep | Y | Y | N | N | N | Native `OpenCodeSqliteV2` current retained root scope only. Requests use intact latest compact scope with explicit partial-history limits when needed; later recorded approval withdraws stale findings. Missing influence or scope fit is unassessed. Original historical retention is not proved. |
+| OpenCode | ScopeCreep | Y | Y | N | N | N | Native `OpenCodeSqliteV2` current retained root scope only. Requests use selected task/scope passages with explicit partial limits; compact requests need earlier user task context. Later recorded approval invalidates stale findings. Invalid selected dependencies or work that cannot fit remain unassessed. Original historical retention is not proved. |
 | Pi | ScopeCreep | Y | Y | N | N | N | Native 0.84.4 core V3 linear retained root; exact user argument ranges stay separate from skill documents; extension answers do not prove human origin. |
 | Cursor | ScopeCreep | N | N | N | N | N | Current retained root scope proof is unavailable. |
 | Antigravity | ScopeCreep | N | N | N | N | N | Current retained root scope proof is unavailable. |

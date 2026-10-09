@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 #[path = "matching.rs"]
 mod matching;
+pub(super) use matching::select_comparison_episode;
 use matching::*;
 #[path = "reduction.rs"]
 mod reduction;
@@ -39,10 +40,10 @@ use crate::analysis::jev::{
 };
 
 pub const ASSESSMENT_MODEL: &str = crate::analysis::jev::PINNED_MODEL;
-pub const ASSESSMENT_PROJECTION_REVISION: u32 = 16;
-pub const ASSESSMENT_CHUNKING_REVISION: u32 = 30;
-pub const ASSESSMENT_QUESTION_REVISION: u32 = 51;
-pub const ASSESSMENT_REDUCER_REVISION: u32 = 42;
+pub const ASSESSMENT_PROJECTION_REVISION: u32 = 17;
+pub const ASSESSMENT_CHUNKING_REVISION: u32 = 32;
+pub const ASSESSMENT_QUESTION_REVISION: u32 = 54;
+pub const ASSESSMENT_REDUCER_REVISION: u32 = 44;
 pub const MAX_ASSESSMENT_CANDIDATES: usize = 256;
 pub const MAX_SAMPLED_COMPARISONS_PER_PASS: usize = 1024;
 pub const INPUT_SELECTION: JevInputSelection = JevInputSelection::from_fields(&[
@@ -282,7 +283,13 @@ pub struct AssessmentFinding {
 impl AssessmentFinding {
     pub fn decision_record(&self) -> Option<&super::decisions::DecisionRecord> {
         self.decision.as_ref().filter(|decision| {
-            decision.rule_action == self.reference && decision.has_citation_proof()
+            decision.rule_action == self.reference
+                && decision.has_citation_proof()
+                && decision.explanation_basis.as_ref().is_none_or(|basis| {
+                    basis.schema_revision == 1
+                        && basis.instruction == self.instruction_excerpt
+                        && basis.action == self.action_excerpt
+                })
         })
     }
 }

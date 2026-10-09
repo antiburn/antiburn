@@ -81,6 +81,66 @@ pub enum InputLoadError {
     Serialization(serde_json::Error),
 }
 
+impl InputLoadError {
+    pub(crate) fn failure_category(&self) -> &'static str {
+        match self {
+            Self::Unavailable(reason) => match reason {
+                InputUnavailable::PublicationChanged => "publication_changed",
+                InputUnavailable::BoundaryMissing => "boundary_missing",
+                InputUnavailable::AssemblyLimitReached => "input_assembly_limit",
+                InputUnavailable::IncompleteEvidence => "input_evidence_incomplete",
+                InputUnavailable::InvalidEventOrder => "input_event_order_invalid",
+                InputUnavailable::WrongDetector => "input_detector_mismatch",
+                InputUnavailable::UnsupportedInventoryEnvironment => {
+                    "inventory_environment_unsupported"
+                }
+                InputUnavailable::InventoryContextMismatch => "inventory_context_mismatch",
+                InputUnavailable::InventoryIncomplete => "inventory_incomplete",
+            },
+            Self::Scope(ScopeLoadError::Scope(error)) => match error {
+                antiburn_local::analysis::session_scope::SessionScopeError::Missing(reason) => {
+                    use antiburn_local::analysis::session_scope::ScopeMissingReason;
+                    match reason {
+                        ScopeMissingReason::PublicationChanged => "publication_changed",
+                        ScopeMissingReason::BoundaryMissing => "scope_boundary_missing",
+                        ScopeMissingReason::BranchUnresolved => "scope_branch_unresolved",
+                        ScopeMissingReason::NoUserContext => "scope_task_missing",
+                        ScopeMissingReason::TruncatedEvidence => "scope_evidence_truncated",
+                        ScopeMissingReason::InvalidEvidence => "scope_evidence_invalid",
+                        ScopeMissingReason::IncompleteSource => "scope_source_incomplete",
+                        ScopeMissingReason::IncompletePaging => "scope_paging_incomplete",
+                        ScopeMissingReason::UnsupportedSource => "scope_source_unsupported",
+                        ScopeMissingReason::UnresolvedInfluence => "scope_influence_unresolved",
+                        ScopeMissingReason::MissingCapabilities => "scope_capabilities_missing",
+                        ScopeMissingReason::AssemblyLimitReached => "scope_assembly_limit",
+                    }
+                }
+                antiburn_local::analysis::session_scope::SessionScopeError::ScopeTooLarge => {
+                    "scope_context_too_large"
+                }
+            },
+            Self::Scope(ScopeLoadError::Query(_)) | Self::Query(_) => "input_query_failed",
+            Self::Preparation(JevError::RequestTokenLimitExceeded { .. }) => {
+                "input_context_too_large"
+            }
+            Self::Preparation(JevError::RequestTooLarge { .. }) => "input_request_too_large",
+            Self::Preparation(error) => crate::jev::worker::error_category(error),
+            Self::Inventory(_) => "skill_inventory_unavailable",
+            Self::SkillUse(_) => "skill_use_invalid",
+            Self::Storage(_) => "input_storage_failed",
+            Self::Serialization(_) => "input_serialization_failed",
+        }
+    }
+
+    pub(crate) fn is_stale(&self) -> bool {
+        matches!(self, Self::Unavailable(InputUnavailable::PublicationChanged)
+            | Self::Scope(ScopeLoadError::Scope(antiburn_local::analysis::session_scope::SessionScopeError::Missing(
+                antiburn_local::analysis::session_scope::ScopeMissingReason::PublicationChanged)))
+            | Self::Query(SelectedContentQueryError::StaleCursor)
+            | Self::Scope(ScopeLoadError::Query(SelectedContentQueryError::StaleCursor)))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SmartCheckInputSnapshot {
     key: SessionKey,
@@ -203,6 +263,7 @@ impl Store {
         source_generation: i64,
         detector: DetectorInput,
     ) -> Result<SmartCheckInputSnapshot, InputLoadError> {
+        let started = std::time::Instant::now();
         #[cfg(test)]
         INPUT_LOAD_COUNT.set(INPUT_LOAD_COUNT.get() + 1);
         let request = self
@@ -242,11 +303,10 @@ impl Store {
             })
             .map(|occurrence| occurrence.reference.id.as_str())
             .collect::<BTreeSet<_>>();
-        // Scope omits truncated user text. Do not use that text as authorization.
+        // Only source-bound scope text can supply user authority.
         prepared.actions.retain(|action| {
             !(action.kind == "user"
                 && action.authority == "user"
-                && action.truncated
                 && !scope_user_ids.contains(action.reference.id.as_str()))
         });
         prepared
@@ -293,7 +353,7 @@ impl Store {
             source_generation,
             &boundary,
         )?;
-        Ok(SmartCheckInputSnapshot {
+        let snapshot = SmartCheckInputSnapshot {
             key: key.clone(),
             detector,
             scope,
@@ -301,7 +361,16 @@ impl Store {
             content,
             revision,
             investigation_spans,
-        })
+        };
+        ::tracing::debug!(
+            event = "smart_check_input_loaded",
+            detector = ?detector,
+            scope_occurrences = snapshot.scope.occurrences().len(),
+            selected_actions = snapshot.content.actions.len(),
+            limitations = snapshot.content.limitations.len(),
+            elapsed_ms = started.elapsed().as_millis(),
+        );
+        Ok(snapshot)
     }
 
     fn collect_smart_check_activity(
@@ -383,6 +452,7 @@ impl Store {
                         .is_some_and(|fields| fields.malformed || fields.values.is_empty())
                 {
                     limitations.push("malformed_selected_tool_input".to_owned());
+                    continue;
                 }
                 let part_bytes = retained_part_bytes(&part)?;
                 if collected.parts.len() == detector.max_events() {

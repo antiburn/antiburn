@@ -113,6 +113,8 @@ pub struct BurnCheckHistoryStatus {
     pub completed: usize,
     pub skipped: usize,
     pub failed: usize,
+    pub reviewed: usize,
+    pub eligible_items: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -707,7 +709,9 @@ impl Store {
                         AND COALESCE(e.status, '') <> 'unsupported'
                          AND ((a.progress_status = 'failed' AND a.last_error_category IS NOT 'continuing')
                              OR e.status = 'failed')),
-                    count(*)
+                     count(*),
+                     coalesce(sum(a.reviewed_targets) FILTER (WHERE a.progress_status <> 'idle'), 0),
+                     coalesce(sum(a.eligible_targets) FILTER (WHERE a.progress_status <> 'idle'), 0)
                 FROM current_assessments a
                 JOIN json_each(:checks) AS registered ON a.check_id = json_extract(registered.value, '$[0]')
                 JOIN session s USING (environment_key, agent, session_id)
@@ -742,6 +746,8 @@ impl Store {
                         skipped: row.get(6)?,
                         failed: row.get(7)?,
                         total: row.get(8)?,
+                        reviewed: row.get(9)?,
+                        eligible_items: row.get(10)?,
                     })
                 },
             )
@@ -953,7 +959,14 @@ impl Store {
                            AND assessment.boundary_generation <> -2
                              AND assessment.evaluator_revision IS NOT :evaluator_revision)
                )
-                AND (assessment.status IS NULL
+                 AND (assessment.status IS NULL OR NOT (assessment.status = 'failed'
+                     AND assessment.last_error_category IS 'no_candidates'
+                     AND assessment.incarnation = s.incarnation
+                     AND assessment.source_generation IS s.source_generation
+                     AND assessment.source_fingerprint IS s.source_fingerprint
+                     AND assessment.published_fence IS evidence.published_fence
+                     AND assessment.evaluator_revision IS :evaluator_revision))
+                 AND (assessment.status IS NULL
                      OR assessment.status <> 'running'
                        OR COALESCE(assessment.lease_expires_at_epoch, 0) <= :now_epoch)
                  AND (assessment.next_attempt_at_epoch IS NULL
@@ -1243,12 +1256,31 @@ impl Store {
         retry_at_epoch: i64,
         now_epoch: i64,
     ) -> anyhow::Result<()> {
-        let status = if unsupported { "superseded" } else { "failed" };
         let category = if unsupported {
             "unsupported_format"
         } else {
             "evidence_unavailable"
         };
+        self.record_burn_check_candidate_failure_for_check(
+            check_id,
+            candidate,
+            unsupported,
+            category,
+            retry_at_epoch,
+            now_epoch,
+        )
+    }
+
+    pub(crate) fn record_burn_check_candidate_failure_for_check(
+        &self,
+        check_id: &str,
+        candidate: &BurnCheckCandidate,
+        unsupported: bool,
+        category: &str,
+        retry_at_epoch: i64,
+        now_epoch: i64,
+    ) -> anyhow::Result<()> {
+        let status = if unsupported { "superseded" } else { "failed" };
         let positions = serde_json::to_string(&candidate.boundary_positions)?;
         let boundary_generation = if candidate.historical {
             -2
@@ -1333,6 +1365,32 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    pub(crate) fn record_burn_check_no_candidates(
+        &self,
+        input: &BurnCheckInput,
+        progress_json: &str,
+        now_epoch: i64,
+        idle_secs: i64,
+    ) -> anyhow::Result<bool> {
+        if !self.queue_burn_check_assessment(input, now_epoch, idle_secs)?
+            || !self.claim_burn_check_assessment(input, now_epoch, 300, idle_secs)?
+        {
+            return Ok(false);
+        }
+        self.save_burn_check_scheduling(input, Some(0), 0, 0)?;
+        self.fail_burn_check_assessment_with_result(
+            input,
+            &BurnCheckFailure {
+                error_category: "no_candidates",
+                result_json: "{}",
+                progress_json,
+                retry_at_epoch: None,
+            },
+            now_epoch,
+            idle_secs,
+        )
     }
 
     /// Queue a fresh immutable input, preserving only progress for that exact revision.
@@ -1426,7 +1484,10 @@ impl Store {
 
         let old: Option<ExistingAssessmentState> = transaction
             .query_row(
-                "SELECT input_revision, status, next_attempt_at_epoch, lease_expires_at_epoch
+                "SELECT input_revision,
+                    CASE WHEN status = 'failed' AND last_error_category = 'no_candidates'
+                         THEN 'completed' ELSE status END,
+                    next_attempt_at_epoch, lease_expires_at_epoch
                    FROM burn_check_assessment
                   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND check_id = ?4",
                 rusqlite::params![

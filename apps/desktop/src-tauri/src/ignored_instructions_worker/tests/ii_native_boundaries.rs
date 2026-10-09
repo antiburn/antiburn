@@ -163,6 +163,144 @@ fn findings(directory: &Path) -> crate::insights_report::CurrentFindingsPage {
     .unwrap()
 }
 
+#[test]
+fn preparation_distinguishes_missing_malformed_stale_and_empty_inputs() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    for (sql, expected) in [
+        (
+            "DELETE FROM session_evidence",
+            Some(PreparationUnavailable::EvidenceMissing),
+        ),
+        (
+            "UPDATE session_evidence SET evidence_json = NULL",
+            Some(PreparationUnavailable::EvidenceMissing),
+        ),
+        (
+            "UPDATE session_evidence SET evidence_json = '{bad'",
+            Some(PreparationUnavailable::EvidenceMalformed),
+        ),
+        (
+            "UPDATE session_evidence SET status = 'pending'",
+            Some(PreparationUnavailable::EvidenceNotPublished),
+        ),
+        (
+            "UPDATE session_evidence SET published_fence = published_fence + 1",
+            None,
+        ),
+    ] {
+        let fixture = crate::scope_creep_worker::tests::NativeFixture::new(1);
+        let candidate = fixture.publish();
+        let home = tempfile::tempdir().unwrap();
+        let origin = fixture
+            .store
+            .observe_burn_check_sample_origin(&candidate, CHECK_ID)
+            .unwrap();
+        fixture.store.lock().execute_batch(sql).unwrap();
+        let outcome = runtime
+            .block_on(prepare_selected_input_with_home(
+                &fixture.store,
+                &candidate,
+                None,
+                None,
+                home.path(),
+                &mut InstructionDiscoveryCache::default(),
+                SamplingPass {
+                    pairs: &[],
+                    round: 0,
+                    backlog: false,
+                    origin: &origin,
+                    capabilities: &ModelCapabilities::jev_default(),
+                    legacy_fixture: false,
+                },
+            ))
+            .unwrap();
+        match (expected, outcome) {
+            (Some(expected), PrepareInputOutcome::Unavailable(reason)) => {
+                assert_eq!(reason, expected);
+                assert_ne!(reason.category(), "evidence_unavailable");
+            }
+            (None, PrepareInputOutcome::Stale) => {}
+            _ => panic!("unexpected preparation outcome for {sql}"),
+        }
+    }
+    let fixture = crate::scope_creep_worker::tests::NativeFixture::new(1);
+    let candidate = fixture.publish();
+    let home = tempfile::tempdir().unwrap();
+    let origin = fixture
+        .store
+        .observe_burn_check_sample_origin(&candidate, CHECK_ID)
+        .unwrap();
+    let outcome = runtime
+        .block_on(prepare_selected_input_with_home(
+            &fixture.store,
+            &candidate,
+            None,
+            None,
+            home.path(),
+            &mut InstructionDiscoveryCache::default(),
+            SamplingPass {
+                pairs: &[],
+                round: 0,
+                backlog: false,
+                origin: &origin,
+                capabilities: &ModelCapabilities::jev_default(),
+                legacy_fixture: false,
+            },
+        ))
+        .unwrap();
+    let PrepareInputOutcome::Ready(input) = outcome else {
+        panic!("empty comparison inventory must remain ready")
+    };
+    let plan = ignored_instructions::IgnoredInstructionsCheck
+        .prepare_with_capabilities(&input.context, &ModelCapabilities::jev_default())
+        .unwrap();
+    assert_eq!(plan.prepared.coverage.candidate_pairs, 0);
+    assert!(!input.more_content);
+}
+
+#[test]
+fn readable_instruction_enrolls_when_a_sibling_file_is_invalid_utf8() {
+    let fixture = crate::scope_creep_worker::tests::NativeFixture::new(1);
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("AGENTS.md"), [0xff]).unwrap();
+    std::fs::write(
+        fixture.directory.path().join("AGENTS.md"),
+        "Do not change billing.\n",
+    )
+    .unwrap();
+    fixture
+        .store
+        .set_check_enabled(DetectorId::IgnoredInstructions, true)
+        .unwrap();
+    fixture
+        .store
+        .capture_burn_check_boundaries(&[CHECK_ID], 0)
+        .unwrap();
+    let mut candidate = fixture.publish();
+    candidate.session.cwd = Some(fixture.directory.path().to_str().unwrap().to_owned());
+    fixture
+        .store
+        .lock()
+        .execute("UPDATE session SET cwd = ?1", [&candidate.session.cwd])
+        .unwrap();
+    let page = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(prepare_native(
+            &fixture.store,
+            &candidate,
+            home.path(),
+            &ModelCapabilities::jev_default(),
+        ));
+    assert!(page.future_only);
+    assert_eq!(page.content.instructions.len(), 1);
+    assert!(
+        page.content.instructions[0]
+            .text
+            .contains("Do not change billing.")
+    );
+    assert!(!page.content.complete);
+}
+
 #[tokio::test]
 async fn four_native_agents_prepare_publish_and_report_without_invented_authority() {
     for (agent, id, format, records) in native_sources().into_iter().chain([(

@@ -64,8 +64,10 @@ impl Store {
                 params![key.environment_key, key.agent, key.session_id],
                 |row| row.get(0),
             )?;
-            if forked
-                || coverage.coverage_schema_revision != COVERAGE_SCHEMA_REVISION
+            if forked || coverage.thread_parent_unresolved {
+                return Ok(Err(missing(ScopeMissingReason::BranchUnresolved)));
+            }
+            if coverage.coverage_schema_revision != COVERAGE_SCHEMA_REVISION
                 || !matches!(coverage.source_acceptance, SourceAcceptance::AcceptedFull | SourceAcceptance::AcceptedPrefix { .. })
                 || coverage.ordering != OrderingObservation::Monotonic
                 || coverage.diagnostics.duplicate_turn_identities != 0
@@ -90,34 +92,12 @@ impl Store {
             }
 
             // Check unselected rows too. Selection excludes unknown user authority.
-            if !known_context::validate(connection, key, fence, format)? {
-                return Ok(Err(missing(ScopeMissingReason::IncompleteSource)));
-            }
+            let known_context_complete = known_context::validate(connection, key, fence, format)?;
             let (rows, invalid): (i64, i64) = connection.query_row(
                 "SELECT COUNT(*), COALESCE(SUM(CASE WHEN
                      (scope = 'main' AND source_key != ?3)
                       OR (scope = 'main' AND ?5 = 'open_code_sqlite_v2' AND (uuid IS NULL OR uuid = ''))
                       OR (scope = 'main' AND thread_id != ?6)
-                     OR (scope = 'main' AND EXISTS (
-                         SELECT 1 FROM turn_content c WHERE c.turn_rowid = turn.rowid
-                          AND c.kind = 'user' AND c.authority = 'user' AND (
-                              json_extract(c.normalized_fields_json, '$.metadata.user_text_history.source_format') IS NOT ?5
-                             OR json_extract(c.normalized_fields_json, '$.metadata.user_text_history.session_id') IS NOT ?3
-                              OR json_extract(c.normalized_fields_json, '$.metadata.user_text_history.message_id') IS NOT COALESCE(turn.uuid, turn.message_id)
-                              OR json_extract(c.normalized_fields_json, '$.metadata.user_text_history.revision') IS NOT 1
-                              OR (?5 != 'open_code_sqlite_v2' AND NOT EXISTS (
-                                  SELECT 1 FROM json_each(c.normalized_fields_json, '$.metadata.bindings') b
-                                  WHERE json_extract(b.value, '$.field') = 'user_message'
-                                  AND json_extract(b.value, '$.container') = 'record'
-                                  AND json_extract(b.value, '$.native_record_id') = COALESCE(turn.uuid, turn.message_id)
-                                  AND ((?5 = 'codex_rollout_jsonl' AND json_extract(b.value, '$.pointer') LIKE '/payload/content/%/text')
-                                      OR (?5 IN ('claude_jsonl', 'pi_v3_jsonl') AND (
-                                          json_extract(b.value, '$.pointer') = '/message/content'
-                                          OR json_extract(b.value, '$.pointer') LIKE '/message/content/%/text')))
-                                  AND json_extract(b.value, '$.start') >= 0
-                                  AND json_extract(b.value, '$.end') <= 16777216
-                                  AND json_extract(b.value, '$.end') - json_extract(b.value, '$.start') = length(c.content)
-                              )))))
                      THEN 1 ELSE 0 END), 0)
                  FROM turn WHERE environment_key = ?1 AND agent = ?2
                       AND session_id = ?3 AND claim_fence = ?4 AND scope = 'main'",
@@ -143,7 +123,8 @@ impl Store {
                     antiburn_local::analysis::MAX_CONTENT_PART_BYTES],
                 |row| row.get(0),
             )?;
-            let source_complete = !retained_context_loss
+            let untrusted_user_parts = known_context::untrusted_user_parts(connection, key, fence, format)?;
+            let source_complete = untrusted_user_parts.is_empty() && known_context_complete && !retained_context_loss
                 && (!matches!(format, SourceFormat::OpenCodeSqliteV2 | SourceFormat::ClaudeJsonl) || first_role == "user")
                 && coverage.source_acceptance == SourceAcceptance::AcceptedFull
                 && coverage.summary_observed
@@ -187,6 +168,7 @@ impl Store {
                 publication_fence: fence,
                 source_generation,
                 source_complete,
+                untrusted_user_parts,
             }))
         })
         .map_err(ScopeLoadError::Query)?

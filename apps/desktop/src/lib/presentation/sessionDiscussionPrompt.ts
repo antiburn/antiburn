@@ -88,6 +88,8 @@ export function sessionDiscussionPrompt({
     const badge = hygiene.badges.find((item) => item.id === check.id)
     if (!badge) {
       otherChecks.push(`- Not assessed — ${check.name} (no result available).`)
+    } else if (badge.status === "noCandidates") {
+      otherChecks.push(`- Nothing to assess — ${check.name}.`)
     } else if (badge.status === "notAssessed") {
       const reason = badge.notAssessedReason
         ? notAssessedReasonLabel(badge.notAssessedReason)
