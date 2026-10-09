@@ -153,6 +153,7 @@ fn decision_proof_serializers_and_expanded_context_require_exact_bindings() {
         action_stable: true,
     };
     evidence.decision = Some(DecisionRecord {
+        explanation_basis: None,
         schema_revision: 1,
         source_generation: 2,
         source_fingerprint: Some("fingerprint".into()),
@@ -233,6 +234,7 @@ fn decision_proof_serializers_and_expanded_context_require_exact_bindings() {
     );
     assert!(!json.to_string().contains("native_record_id"));
     let occurrence = BurnCheckEvidenceOccurrence {
+        comparison: None,
         finding_id: "finding".into(),
         status: saved.status,
         decision_proof: saved.decision_proof.clone(),
@@ -1957,6 +1959,13 @@ fn recorded_read_findings_reach_evidence_and_future_prompts_without_watches() {
             .map(|item| item.source_id.as_str())
             .chain(expected.iter().flat_map(|read| {
                 std::iter::once(read.request_id.as_str()).chain(read.result_id.as_deref())
+            }))
+            .chain(finding.explanation.iter().flat_map(|basis| {
+                basis
+                    .compared
+                    .evidence
+                    .iter()
+                    .map(|reference| reference.source_id.as_str())
             }))
             .collect();
         let actual_ids: BTreeSet<_> = evidence

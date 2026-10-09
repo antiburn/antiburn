@@ -569,6 +569,54 @@ fn mock_results_for_plan(
 }
 
 #[test]
+fn merges_preserve_unanswered_positives_and_recompute_latest_episode_outcomes() {
+    let (store, candidate) = fixture(None, "user");
+    let input = load_input(&store, &candidate, &ModelCapabilities::jev_default()).unwrap();
+    let mut accepted = reduced(&input, Reason::UnrelatedFiles);
+    let positive = accepted.findings.clone();
+    let gap = OverExploringCheck.reduce(&input.plan, &[], false).unwrap();
+    merge_result(&mut accepted, gap, &input.plan);
+    assert_eq!(accepted.findings, positive);
+    let mut clean = reduced(&input, Reason::UnrelatedFiles);
+    clean.findings.clear();
+    merge_result(&mut accepted, clean, &input.plan);
+    assert!(accepted.findings.is_empty());
+    assert!(!accepted.clean_episode_ids.is_empty());
+    let positive = reduced(&input, Reason::UnrelatedFiles);
+    merge_result(&mut accepted, positive, &input.plan);
+    assert!(!accepted.findings.is_empty());
+    assert!(accepted.clean_episode_ids.is_empty());
+}
+
+#[test]
+fn compact_task_locations_publish_only_source_bound_task_references() {
+    let (store, candidate) = fixture(None, "user");
+    let input = load_input(&store, &candidate, &ModelCapabilities::jev_default()).unwrap();
+    let mut assessment = reduced(&input, Reason::UnrelatedFiles);
+    for finding in &mut assessment.findings {
+        for (index, reference) in finding.task_evidence.iter_mut().enumerate() {
+            reference.part_id = format!("task[{index}]");
+        }
+    }
+    let saved = publication(&input, assessment);
+    assert!(!saved.assessment.findings.is_empty());
+    assert!(
+        saved
+            .assessment
+            .findings
+            .iter()
+            .all(|finding| publishable_finding(finding, &saved))
+    );
+    let mut invalid = saved.assessment.clone();
+    invalid.findings[0].task_evidence[0].source_id = "unbound-task".into();
+    let invalid = publication(&input, invalid);
+    assert!(!publishable_finding(
+        &invalid.assessment.findings[0],
+        &invalid
+    ));
+}
+
+#[test]
 fn future_work_keeps_old_scope_and_reads_without_enrolling_old_targets() {
     let (store, mut candidate) = fixture(None, "user");
     let snapshot = store
@@ -778,17 +826,25 @@ fn durable_sampling_reopens_without_replenishing_and_rejects_provider_and_revisi
 }
 
 #[test]
-fn accepted_128_path_inventory_queues_all_257_targets() {
+fn accepted_128_path_inventory_queues_supported_targets_with_a_breadth_gap() {
     let paths = (0..128)
         .map(|index| format!("/synthetic/file_{index}.rs"))
         .collect::<Vec<_>>();
     let (store, candidate) = fixture_with_paths(None, "user", &paths);
     let input = load_input(&store, &candidate, &ModelCapabilities::jev_default()).unwrap();
-    assert_eq!(input.plan.prepared.candidates.len(), 257);
+    assert_eq!(input.plan.prepared.candidates.len(), 256);
+    let result = OverExploringCheck.reduce(&input.plan, &[], false).unwrap();
+    assert!(
+        result
+            .unassessed
+            .iter()
+            .any(|item| item.reason == Some(Reason::ExcessiveFileBreadth)
+                && item.limitation == over_exploring::Abstention::SampledEvidence)
+    );
     assert_eq!(input.sampling_overflow, 0);
     let mut sampling = new_sampling().unwrap();
     over_exploring::synchronize_sampling(&input.plan, &mut sampling).unwrap();
-    assert_eq!(sampling.coverage(check_identity()).unwrap().eligible, 257);
+    assert_eq!(sampling.coverage(check_identity()).unwrap().eligible, 256);
     assert!(
         store
             .queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)
@@ -819,7 +875,7 @@ fn accepted_128_path_inventory_queues_all_257_targets() {
             .coverage(check_identity())
             .unwrap()
             .eligible,
-        257
+        256
     );
 }
 

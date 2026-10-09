@@ -87,7 +87,7 @@ describe("check row presentation", () => {
   it("provides one short recommendation with its reason", () => {
     expect(CHECK_UI.oldModelUsage).toMatchObject({
       recommendation:
-        "Use the reviewed replacement for new sessions to support the same work at a lower API-equivalent cost.",
+        "Use the reviewed replacement for new sessions to do similar work at a lower estimated API cost.",
     })
     expect(CHECK_UI.oldModelUsage).not.toHaveProperty("why")
     expect(CHECK_UI.skillOpportunities.recommendation).toBe(

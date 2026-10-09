@@ -126,6 +126,11 @@ impl JevCheckDescriptor for SkillOpportunitiesDescriptor {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct SkillCursor {
+    reviewed_before_page: usize,
+    uncertain_before_page: usize,
+    skipped_before_page: usize,
+    context_blocked_before_page: usize,
+    context_blocked_ids: std::collections::BTreeSet<String>,
     revision: u32,
     engine_revisions: antiburn_local::analysis::jev::JevCheckRevisions,
     input_revision: String,
@@ -145,6 +150,11 @@ struct SkillCursor {
 impl Default for SkillCursor {
     fn default() -> Self {
         Self {
+            reviewed_before_page: 0,
+            uncertain_before_page: 0,
+            skipped_before_page: 0,
+            context_blocked_before_page: 0,
+            context_blocked_ids: Default::default(),
             revision: CURSOR_REVISION,
             engine_revisions: SKILL_OPPORTUNITIES_REVISIONS,
             input_revision: String::new(),
@@ -174,11 +184,17 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     let enrolled = store.enrolled_burn_check_candidate(candidate, SKILL_OPPORTUNITIES_CHECK_ID)?;
     let candidate = &enrolled;
     let Some(home) = antiburn_local::paths::home_dir() else {
-        unavailable(store, candidate, false, handle, key_generation)?;
+        unavailable(store, candidate, "home_unavailable", handle, key_generation)?;
         return Ok(());
     };
     let Some(agent) = AgentKind::from_slug(&candidate.session.key.agent) else {
-        unavailable(store, candidate, true, handle, key_generation)?;
+        unavailable(
+            store,
+            candidate,
+            "unsupported_format",
+            handle,
+            key_generation,
+        )?;
         return Ok(());
     };
     if !matches!(
@@ -186,7 +202,13 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         AgentKind::OpenCode | AgentKind::Codex | AgentKind::Claude | AgentKind::Pi
     ) || candidate.session.key.environment_key != "native"
     {
-        unavailable(store, candidate, true, handle, key_generation)?;
+        unavailable(
+            store,
+            candidate,
+            "unsupported_format",
+            handle,
+            key_generation,
+        )?;
         return Ok(());
     }
     let cwd = candidate
@@ -197,17 +219,19 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         .map(std::path::Path::canonicalize)
         .transpose();
     let cwd = match cwd {
-        Ok(Some(cwd)) => cwd,
-        Ok(None) => {
-            unavailable(store, candidate, false, handle, key_generation)?;
-            return Ok(());
-        }
+        Ok(cwd) => cwd,
         Err(_) => {
-            unavailable(store, candidate, false, handle, key_generation)?;
+            unavailable(
+                store,
+                candidate,
+                "workspace_unavailable",
+                handle,
+                key_generation,
+            )?;
             return Ok(());
         }
     };
-    let config = crate::agent_config::ConfigContext::native(agent, home, Some(cwd));
+    let config = crate::agent_config::ConfigContext::native(agent, home, cwd);
     let preparation = admit_jev_orchestration().await?;
     let input_store = store.clone();
     let input_candidate = candidate.clone();
@@ -222,17 +246,17 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     .await?;
     let input = match loaded {
         Ok(input) => input,
-        Err(
-            InputLoadError::Unavailable(_)
-            | InputLoadError::Inventory(_)
-            | InputLoadError::SkillUse(_)
-            | InputLoadError::Query(_)
-            | InputLoadError::Scope(_),
-        ) => {
-            unavailable(store, candidate, false, handle, key_generation)?;
+        Err(error) if error.is_stale() => return Ok(()),
+        Err(error) => {
+            unavailable(
+                store,
+                candidate,
+                error.failure_category(),
+                handle,
+                key_generation,
+            )?;
             return Ok(());
         }
-        Err(error) => return Err(anyhow::anyhow!("skill input preparation failed: {error:?}")),
     };
     let Some(observation) = observe_skill_input(
         store,
@@ -293,9 +317,13 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             .sampling
             .as_ref()
             .and_then(|sampling| sampling.coverage(input.check.sampling_identity()))
-            .is_some_and(|coverage| coverage.eligible > 0)
+            .is_some_and(|coverage| {
+                coverage.eligible > 0
+                    || cursor.reviewed_before_page + cursor.skipped_before_page > 0
+            })
     {
-        unavailable(store, candidate, false, handle, key_generation)?;
+        write_fence.commit(|| record_no_candidates(store, &input, &cursor))?;
+        let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
         return Ok(());
     }
     if !write_fence
@@ -418,6 +446,18 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             )? {
                 crate::store::BurnCheckRequestAdmission::Exhausted
                 | crate::store::BurnCheckRequestAdmission::Unresolved => {
+                    if target.work_items.is_empty()
+                        || !antiburn_local::analysis::jev::pack_work_items_with_capabilities(
+                            &target.work_items,
+                            &capabilities,
+                        )
+                        .skipped_item_ids
+                        .is_empty()
+                    {
+                        cursor
+                            .context_blocked_ids
+                            .insert(serde_json::to_string(&job.candidate)?);
+                    }
                     cursor
                         .sampling
                         .as_mut()
@@ -437,6 +477,10 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         cursor.active_job = jobs.first().cloned();
         cursor.batch_jobs = jobs.iter().skip(1).cloned().collect();
         input.check.retain_plan_jobs(&mut plan, &jobs)?;
+        cursor
+            .run_progress
+            .results
+            .retain(|id, _| plan.work_items.iter().any(|item| &item.id == id));
         cursor.active_plan = Some(plan.clone());
         write_fence.commit(|| {
             save_scheduling(store, &input, &cursor)?;
@@ -576,6 +620,15 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                         &cursor.run_progress,
                     )
                 })? {
+                    if matches!(
+                        error,
+                        JevError::RequestTooLarge { .. }
+                            | JevError::RequestTokenLimitExceeded { .. }
+                    ) {
+                        cursor
+                            .context_blocked_ids
+                            .insert(serde_json::to_string(&job.candidate)?);
+                    }
                     cursor
                         .sampling
                         .as_mut()
@@ -592,6 +645,10 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 cursor.active_job = jobs.first().cloned();
                 cursor.batch_jobs = jobs.iter().skip(1).cloned().collect();
                 input.check.retain_plan_jobs(&mut plan, &jobs)?;
+                cursor
+                    .run_progress
+                    .results
+                    .retain(|id, _| plan.work_items.iter().any(|item| &item.id == id));
                 cursor.active_plan = (!jobs.is_empty()).then_some(plan);
                 if jobs.is_empty() {
                     cursor.run_progress = JevRunProgress::default();
@@ -723,7 +780,14 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             .sampling
             .as_ref()
             .and_then(|sampling| sampling.coverage(input.check.sampling_identity()))
-            .is_some_and(|coverage| coverage.remaining == 0);
+            .is_some_and(|_| {
+                cursor
+                    .sampling
+                    .as_ref()
+                    .expect("sampling initialized")
+                    .runnable_count(input.check.sampling_identity())
+                    == 0
+            });
     let mut result = cursor
         .result
         .clone()
@@ -733,7 +797,9 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             coverage: antiburn_local::analysis::jev::JevCoverage::default(),
             complete: false,
         });
-    retain_skill_inventory(&mut result, &cursor.inventory);
+    if cursor.reviewed_before_page + cursor.skipped_before_page == 0 {
+        retain_skill_inventory(&mut result, &cursor.inventory);
+    }
     result
         .coverage
         .limitations
@@ -752,13 +818,26 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         .as_ref()
         .and_then(|sampling| sampling.coverage(input.check.sampling_identity()))
     {
-        result.coverage.selected_items = coverage.completed;
-        result.coverage.not_selected_items = coverage.remaining;
-        result.coverage.skipped_items = coverage
-            .eligible
-            .saturating_sub(coverage.completed + coverage.remaining);
+        result.coverage.selected_items = cursor.reviewed_before_page + coverage.completed;
+        let runnable = cursor
+            .sampling
+            .as_ref()
+            .expect("sampling initialized")
+            .runnable_count(input.check.sampling_identity());
+        result.coverage.not_selected_items = runnable
+            + input
+                .check
+                .descriptor_count()
+                .saturating_sub(cursor.inventory.next_comparison);
+        result.coverage.skipped_items = cursor.skipped_before_page
+            + coverage
+                .eligible
+                .saturating_sub(coverage.completed + runnable);
     }
     // No completion claim is made for an empty or interrupted sampled run.
+    result.complete &= result.coverage.skipped_items == 0
+        && result.coverage.not_selected_items == 0
+        && cursor.uncertain_before_page == 0;
     if sampled_pairs.is_empty() && !complete && cursor.active_job.is_some() {
         let progress_json = serde_json::to_string(&cursor)?;
         write_fence.commit(|| {
@@ -1005,13 +1084,18 @@ fn candidate_config(candidate: &BurnCheckCandidate) -> Option<crate::agent_confi
         return None;
     }
     let home = antiburn_local::paths::home_dir()?;
-    let cwd = std::path::Path::new(candidate.session.cwd.as_deref()?)
-        .canonicalize()
+    let cwd = candidate
+        .session
+        .cwd
+        .as_deref()
+        .map(std::path::Path::new)
+        .map(std::path::Path::canonicalize)
+        .transpose()
         .ok()?;
     Some(crate::agent_config::ConfigContext::native(
         AgentKind::from_slug(&candidate.session.key.agent)?,
         home,
-        Some(cwd),
+        cwd,
     ))
 }
 
@@ -1143,6 +1227,11 @@ fn restore_cursor(
         .unwrap_or_default();
     cursor.provider_generation = provider_generation;
     if cursor.input_revision != input_revision {
+        cursor.context_blocked_ids.clear();
+        cursor.reviewed_before_page = 0;
+        cursor.uncertain_before_page = 0;
+        cursor.skipped_before_page = 0;
+        cursor.context_blocked_before_page = 0;
         cursor.input_revision = input_revision.to_owned();
         cursor.active_job = None;
         cursor.batch_jobs.clear();
@@ -1163,11 +1252,13 @@ fn save_scheduling(
         .expect("synchronized");
     store.save_burn_check_scheduling(
         &input.durable,
-        cursor.inventory.complete.then_some(coverage.eligible),
-        coverage.completed,
-        sampling
-            .runnable_count(input.check.sampling_identity())
-            .max(usize::from(!cursor.inventory.complete)),
+        Some(input.check.descriptor_count()),
+        cursor.reviewed_before_page + coverage.completed,
+        sampling.runnable_count(input.check.sampling_identity())
+            + input
+                .check
+                .descriptor_count()
+                .saturating_sub(cursor.inventory.next_comparison),
     )
 }
 
@@ -1175,6 +1266,37 @@ fn enumerate_skill_turn(
     input: &PreparedSkillOpportunityInput,
     cursor: &mut SkillCursor,
 ) -> anyhow::Result<()> {
+    if !cursor.inventory.complete
+        && cursor.inventory.descriptors.len() == MAX_SAMPLE_CANDIDATES
+        && cursor.active_job.is_none()
+        && cursor.batch_jobs.is_empty()
+        && cursor.sampling.as_ref().is_some_and(|sampling| {
+            sampling.coverage(input.check.sampling_identity()).is_some()
+                && sampling.runnable_count(input.check.sampling_identity()) == 0
+        })
+    {
+        let coverage = cursor
+            .sampling
+            .as_ref()
+            .expect("sampling initialized")
+            .coverage(input.check.sampling_identity())
+            .expect("inventory synchronized");
+        cursor.reviewed_before_page += coverage.completed;
+        cursor.skipped_before_page += coverage.eligible.saturating_sub(coverage.completed);
+        cursor.context_blocked_before_page += cursor.context_blocked_ids.len();
+        cursor.context_blocked_ids.clear();
+        input.check.advance_descriptor_page(&mut cursor.inventory)?;
+        cursor.sampling = Some(new_sampling_progress()?);
+        if let Some(result) = &mut cursor.result {
+            cursor.uncertain_before_page += result.decisions.iter().filter(|decision| decision.outcome == antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome::Uncertain && decision.judgments.is_some()).count();
+            result.decisions.retain(|decision| {
+                result
+                    .findings
+                    .iter()
+                    .any(|finding| finding.comparison == decision.comparison)
+            });
+        }
+    }
     input.check.enumerate_descriptors(&mut cursor.inventory)?;
     cursor
         .sampling
@@ -1188,6 +1310,7 @@ fn enumerate_skill_turn(
         )
         .map_err(|error| anyhow::anyhow!("sampling inventory rejected: {error:?}"))?;
     if cursor.inventory.complete
+        && cursor.reviewed_before_page + cursor.skipped_before_page == 0
         && let Some(result) = &mut cursor.result
     {
         retain_skill_inventory(result, &cursor.inventory);
@@ -1252,18 +1375,32 @@ fn new_sampling_progress() -> anyhow::Result<SamplingProgress> {
     .map_err(|error| anyhow::anyhow!("sampling limits are invalid: {error:?}"))
 }
 
+fn record_no_candidates(
+    store: &Store,
+    input: &PreparedSkillOpportunityInput,
+    cursor: &SkillCursor,
+) -> anyhow::Result<bool> {
+    store.record_burn_check_no_candidates(
+        &input.durable,
+        &serde_json::to_string(cursor)?,
+        unix_now(),
+        POLICY.idle_secs,
+    )
+}
+
 fn unavailable(
     store: &Store,
     candidate: &BurnCheckCandidate,
-    unsupported: bool,
+    category: &str,
     handle: &WorkerHandle,
     provider_generation: u64,
 ) -> anyhow::Result<()> {
     if let Some(result) = handle.with_current_generation(provider_generation, || {
-        store.record_burn_check_candidate_issue_for_check(
+        store.record_burn_check_candidate_failure_for_check(
             SKILL_OPPORTUNITIES_CHECK_ID,
             candidate,
-            unsupported,
+            category == "unsupported_format",
+            category,
             unix_now().saturating_add(POLICY.retry_delay_secs),
             unix_now(),
         )
@@ -1328,13 +1465,22 @@ fn sampled_pairs_for_job(
 }
 
 fn merge_skill_result(target: &mut SkillOpportunitiesResult, page: SkillOpportunitiesResult) {
+    let judged: std::collections::BTreeSet<_> = page
+        .decisions
+        .iter()
+        .filter(|decision| decision.judgments.is_some())
+        .map(|decision| decision.comparison.id.clone())
+        .collect();
+    target
+        .findings
+        .retain(|finding| !judged.contains(&finding.comparison.id));
     for decision in page.decisions {
         if let Some(existing) = target
             .decisions
             .iter_mut()
             .find(|existing| existing.comparison.id == decision.comparison.id)
         {
-            if existing.judgments.is_none() && decision.judgments.is_some() {
+            if decision.judgments.is_some() {
                 *existing = decision;
             }
         } else {
@@ -1342,6 +1488,9 @@ fn merge_skill_result(target: &mut SkillOpportunitiesResult, page: SkillOpportun
         }
     }
     for finding in page.findings {
+        if !judged.contains(&finding.comparison.id) {
+            continue;
+        }
         if !target
             .findings
             .iter()

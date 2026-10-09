@@ -62,6 +62,7 @@ fn load(
     store.load_session_scope(
         &SessionKey::new(environment, "claude-code", "scope"),
         ScopeLoadRequest {
+            untrusted_user_parts: Default::default(),
             source_format: SourceFormat::ClaudeJsonl,
             boundary: SessionScopeBoundary {
                 source_key: "transcript".into(),
@@ -199,6 +200,7 @@ fn scoped_query_excludes_oversized_siblings_and_post_boundary_before_coverage() 
         .load_session_scope(
             &SessionKey::new("native", "claude-code", "scope"),
             ScopeLoadRequest {
+                untrusted_user_parts: Default::default(),
                 source_format: SourceFormat::ClaudeJsonl,
                 boundary,
                 publication_fence: 4,
@@ -215,13 +217,13 @@ fn scoped_query_excludes_oversized_siblings_and_post_boundary_before_coverage() 
             .iter()
             .all(|value| value.as_str().unwrap().len() < 100)
     );
-    // In-branch oversized evidence still fails. Counters are not discarded.
-    assert!(matches!(
-        load(&store, "native", 4, 3, true),
-        Err(ScopeLoadError::Scope(SessionScopeError::Missing(
-            ScopeMissingReason::TruncatedEvidence
-        )))
-    ));
+    let partial = load(&store, "native", 4, 3, true).unwrap();
+    assert!(
+        partial
+            .limitations()
+            .contains(&ScopeMissingReason::TruncatedEvidence)
+    );
+    assert_eq!(partial.occurrences().len(), 597);
 }
 
 #[test]

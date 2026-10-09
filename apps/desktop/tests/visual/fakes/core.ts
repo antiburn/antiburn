@@ -3,6 +3,8 @@ import { emitFixtureEvent } from "./event"
 import { fixtureDetailMap, fixtureIsland, fixtureTokenMap } from "./hud"
 import { hasRemoteFixture, remoteFixtureCommand, remoteFixtureIds } from "./remote"
 import { fixtureCheckAvailability, fixtureChecksReport, setFixtureCheckEnabled } from "./checks"
+import { hasSmartCheckFixture, smartCheckEvidence, smartCheckTarget } from "./smartChecks"
+import type { BurnCheckDetectorId } from "../../../src/lib/insightsIpc"
 
 declare global {
   interface Window {
@@ -454,6 +456,25 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
           ]
     case "get_checks_report":
       return fixtureChecksReport()
+    case "list_burn_check_targets": {
+      if (!hasSmartCheckFixture()) return { targets: [], samples: [], truncated: false }
+      const detector = args?.detector
+      if (
+        detector !== "ignoredInstructions" &&
+        detector !== "overExploring" &&
+        detector !== "scopeCreep" &&
+        detector !== "skillOpportunities"
+      )
+        throw new Error("Unknown smart-check fixture")
+      const target = smartCheckTarget(detector satisfies BurnCheckDetectorId)
+      return { targets: [target], samples: target.samples, truncated: false }
+    }
+    case "get_burn_check_target_evidence":
+      return smartCheckEvidence(args?.actionId)
+    case "get_burn_check_aggregate_wins":
+      return { wins: [] }
+    case "get_burn_check_remediation_progress":
+      return { attempts: [] }
     case "get_check_availability":
       return fixtureCheckAvailability()
     case "set_check_enabled":

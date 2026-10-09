@@ -48,7 +48,6 @@ pub(super) fn window_fields(comparisons: &[&CandidateComparison]) -> Value {
         .expect("assessment windows contain at least one target");
     let initial = initial_context(first);
     let targets = comparisons.iter().map(|comparison| json!({
-        "comparison_id": &comparison.id,
         "instruction": instruction_fields(comparison),
         "earlier_counterevidence": ordered_request_counter_evidence(comparison.prerequisite_episode.as_ref().map(|episode| episode.events.as_slice()).unwrap_or(&comparison.counterevidence), comparison),
         "assessment_limits": {

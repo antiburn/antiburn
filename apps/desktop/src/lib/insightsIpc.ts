@@ -41,6 +41,8 @@ export interface ChecksCategoryPayload {
   /** True when the assessment uses incomplete context. */
   partialContext?: boolean
   reviewCoverage?: {
+    skipped?: number | null
+    contextBlocked?: number | null
     /** Terminal review targets, including uncertain answers. */
     reviewed: number
     /** Null when any applicable session has a missing or capped target inventory. */
@@ -325,13 +327,46 @@ export interface IgnoredInstructionDecisionProofPayload {
 export interface BurnCheckTargetEvidencePayload {
   status: "available" | "unavailable"
   items: BurnCheckEvidenceItemPayload[]
+  comparison?: BurnCheckEvidenceComparisonPayload
   decisionProof?: IgnoredInstructionDecisionProofPayload
   occurrences?: {
     findingId: string
     status: "available" | "unavailable"
     items: BurnCheckEvidenceItemPayload[]
+    comparison?: BurnCheckEvidenceComparisonPayload
     decisionProof?: IgnoredInstructionDecisionProofPayload
   }[]
+}
+
+export interface BurnCheckEvidenceComparisonPayload {
+  sourceRanges?: {
+    reference: string
+    startByte: number
+    endByte: number
+    rangeSource: string
+  }[]
+  observationKind?: "proposal" | "attempt" | "recorded"
+  explanation?: {
+    version: 1
+    relationship: string
+    text: string
+    references: string[]
+  }
+  reads: {
+    requestReference: string
+    resultReference?: string
+    paths: string[]
+    requestedExtent: BurnCheckReadExtentPayload
+    returnedExtent?: BurnCheckReadExtentPayload
+    resultStatus?: "success" | "failed" | "unknown"
+  }[]
+}
+
+export interface BurnCheckReadExtentPayload {
+  unit: "lines" | "bytes" | "unknown"
+  offset: number | null
+  limit: number | null
+  end_inclusive: number | null
 }
 
 /** Bounded display metadata plus an opaque, expiring route to one local session. */
@@ -528,7 +563,7 @@ export type SessionHygieneFindingEvidence =
 
 export interface SessionHygieneBadgePayload {
   id: SessionHygieneBadgeId
-  status: "finding" | "clean" | "checking" | "couldntCheck" | "notAssessed"
+  status: "finding" | "clean" | "checking" | "couldntCheck" | "notAssessed" | "noCandidates"
   notAssessedReason: InsightsNotAssessedReason | null
   checkReason?: string
   /** Which vendor billing mechanism backs an `excessCacheRehydration`

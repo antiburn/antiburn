@@ -5,6 +5,8 @@ pub(crate) mod jev {
     pub(crate) use crate::support::config;
 }
 
+#[path = "../support/baseline.rs"]
+mod baseline;
 mod evidence;
 mod fixtures;
 mod harness;

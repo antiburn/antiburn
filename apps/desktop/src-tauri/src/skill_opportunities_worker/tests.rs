@@ -301,6 +301,67 @@ fn unchanged_freshness_reads_reuse_source_preparation_and_inventory_edits_invali
     );
 }
 
+fn skill_advisory_answers(
+    plan: &antiburn_local::analysis::jev::JevCheckPlan<
+        antiburn_local::checks::skill_opportunities::PreparedSkillOpportunities,
+    >,
+) -> Vec<antiburn_local::analysis::jev::JevWorkItemResult> {
+    use antiburn_local::analysis::jev::{JevAnswer, JevQuestion, JevUsage, JevWorkItemResult};
+    plan.work_items
+        .iter()
+        .map(|item| {
+            let comparison = plan
+                .prepared
+                .comparisons
+                .iter()
+                .find(|comparison| comparison.id == item.id)
+                .unwrap();
+            let choice = if comparison.skill.name == "unused-review" {
+                "useful_opportunity"
+            } else {
+                "uncertain"
+            };
+            JevWorkItemResult {
+                request_id: item.id.clone(),
+                work_item_id: item.id.clone(),
+                model: plan.capabilities.model.clone(),
+                answers: item
+                    .questions
+                    .iter()
+                    .map(|(key, question)| {
+                        let JevQuestion::Choice { criteria, .. } = question else {
+                            panic!("expected a skill choice")
+                        };
+                        assert!(criteria.contains_key(choice));
+                        (
+                            key.clone(),
+                            JevAnswer::Choice {
+                                choice: choice.into(),
+                                confidence: 1.0,
+                                probabilities: criteria
+                                    .keys()
+                                    .map(|key| (key.clone(), if key == choice { 1.0 } else { 0.0 }))
+                                    .collect(),
+                            },
+                        )
+                    })
+                    .collect(),
+                evidence: plan
+                    .shared_context
+                    .iter()
+                    .flat_map(|context| context.evidence.iter())
+                    .chain(&item.window.evidence)
+                    .cloned()
+                    .collect(),
+                usage: JevUsage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                },
+            }
+        })
+        .collect()
+}
+
 fn native_skill_fixture(
     groups: usize,
     skills_count: usize,
@@ -319,6 +380,7 @@ fn native_skill_fixture(
         .unwrap();
     let home = fixture.directory.path().join("home");
     let workspace = fixture.directory.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&workspace).unwrap();
     for index in 0..skills_count {
         let path = home.join(format!(".opencode/skills/review-{index}/SKILL.md"));
@@ -359,6 +421,222 @@ fn native_skill_fixture(
         .unwrap();
     let input = super::prepare(&candidate, skills, super::CHECK.evaluator_revision()).unwrap();
     (fixture, input)
+}
+
+#[test]
+fn judged_skill_reassessment_retracts_stale_findings_but_unassessed_keeps_them() {
+    let (_fixture, input) = native_skill_fixture(1, 1);
+    let plan = input
+        .check
+        .prepare_with_capabilities(
+            &input.check.session_context(),
+            &super::ModelCapabilities::jev_default(),
+        )
+        .unwrap();
+    let mut answers = skill_advisory_answers(&plan);
+    for answer in &mut answers {
+        for value in answer.answers.values_mut() {
+            let antiburn_local::analysis::jev::JevAnswer::Choice {
+                choice,
+                probabilities,
+                ..
+            } = value
+            else {
+                panic!("expected choice")
+            };
+            *choice = "useful_opportunity".into();
+            for (key, probability) in probabilities {
+                *probability = if key == "useful_opportunity" {
+                    1.0
+                } else {
+                    0.0
+                };
+            }
+        }
+    }
+    let positive = input.check.reduce(&plan, &answers, true).unwrap();
+    assert!(!positive.findings.is_empty());
+    let mut saved = positive.clone();
+    super::merge_skill_result(&mut saved, input.check.reduce(&plan, &[], false).unwrap());
+    assert_eq!(saved.findings, positive.findings);
+    for answer in &mut answers {
+        for value in answer.answers.values_mut() {
+            let antiburn_local::analysis::jev::JevAnswer::Choice {
+                choice,
+                probabilities,
+                ..
+            } = value
+            else {
+                panic!("expected choice")
+            };
+            *choice = "no_opportunity".into();
+            for (key, probability) in probabilities {
+                *probability = if key == "no_opportunity" { 1.0 } else { 0.0 };
+            }
+        }
+    }
+    let negative = input.check.reduce(&plan, &answers, true).unwrap();
+    super::merge_skill_result(&mut saved, negative.clone());
+    assert!(saved.findings.is_empty());
+    assert_eq!(saved.decisions, negative.decisions);
+}
+
+#[test]
+fn descriptor_continuation_reopens_beyond_4096_without_retrying_terminal_page() {
+    let (fixture, input) = native_skill_fixture(260, 64);
+    assert!(
+        input.check.descriptor_count() > super::MAX_SAMPLE_CANDIDATES,
+        "count={}",
+        input.check.descriptor_count()
+    );
+    let mut cursor = super::SkillCursor {
+        input_revision: input.durable.input_revision.clone(),
+        sampling: Some(super::new_sampling_progress().unwrap()),
+        ..Default::default()
+    };
+    while cursor.inventory.descriptors.len() < super::MAX_SAMPLE_CANDIDATES {
+        super::enumerate_skill_turn(&input, &mut cursor).unwrap();
+    }
+    let first_page: std::collections::BTreeSet<_> = input
+        .check
+        .descriptor_candidates(&cursor.inventory)
+        .unwrap()
+        .into_iter()
+        .map(|candidate| candidate.id)
+        .collect();
+    let sampling = cursor.sampling.as_mut().unwrap();
+    while sampling.runnable_count(input.check.sampling_identity()) > 0 {
+        sampling.begin_run();
+        while let Some(job) = sampling.choose_job() {
+            sampling.terminate_candidate(&job).unwrap();
+        }
+    }
+    cursor.context_blocked_ids.insert("first-page-fit".into());
+    assert_eq!(
+        cursor
+            .sampling
+            .as_ref()
+            .unwrap()
+            .coverage(input.check.sampling_identity())
+            .unwrap()
+            .remaining,
+        4096
+    );
+    assert_eq!(
+        cursor
+            .sampling
+            .as_ref()
+            .unwrap()
+            .runnable_count(input.check.sampling_identity()),
+        0
+    );
+    assert!(
+        fixture
+            .store
+            .queue_burn_check_assessment(&input.durable, super::unix_now(), super::POLICY.idle_secs)
+            .unwrap()
+    );
+    assert!(
+        fixture
+            .store
+            .claim_burn_check_assessment(
+                &input.durable,
+                super::unix_now(),
+                super::POLICY.lease_secs,
+                super::POLICY.idle_secs
+            )
+            .unwrap()
+    );
+    super::save_scheduling(&fixture.store, &input, &cursor).unwrap();
+    fixture
+        .store
+        .save_burn_check_checkpoint(
+            &input.durable,
+            &serde_json::to_string(&cursor).unwrap(),
+            None,
+            super::unix_now(),
+            super::POLICY.lease_secs,
+            super::POLICY.idle_secs,
+        )
+        .unwrap();
+    let reopened = crate::store::Store::open(fixture.directory.path()).unwrap();
+    let saved = reopened
+        .burn_check_assessment(&input.durable.key, super::SKILL_OPPORTUNITIES_CHECK_ID)
+        .unwrap()
+        .unwrap();
+    let mut restored = super::restore_cursor(Some(&saved), &input.durable.input_revision, 99);
+    super::enumerate_skill_turn(&input, &mut restored).unwrap();
+    assert_eq!(restored.inventory.page_start, 4096);
+    assert!(restored.inventory.next_comparison > 4096);
+    assert_eq!(restored.skipped_before_page, 4096);
+    assert_eq!(restored.context_blocked_before_page, 1);
+    assert!(restored.context_blocked_ids.is_empty());
+    assert!(
+        input
+            .check
+            .descriptor_candidates(&restored.inventory)
+            .unwrap()
+            .iter()
+            .all(|candidate| !first_page.contains(&candidate.id))
+    );
+    super::save_scheduling(&reopened, &input, &restored).unwrap();
+    let (total, reviewed, runnable): (usize, usize, usize) = reopened.lock().query_row("SELECT eligible_targets, reviewed_targets, runnable_targets FROM burn_check_assessment WHERE check_id = ?1", [super::SKILL_OPPORTUNITIES_CHECK_ID], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+    assert_eq!(total, input.check.descriptor_count());
+    assert_eq!(reviewed, 0);
+    assert_eq!(runnable, total - 4096);
+}
+
+#[test]
+fn empty_skill_inputs_are_terminal_without_model_review() {
+    for (groups, skills) in [(2, 0), (0, 2)] {
+        let (fixture, input) = native_skill_fixture(groups, skills);
+        let mut cursor = super::SkillCursor {
+            input_revision: input.durable.input_revision.clone(),
+            sampling: Some(super::new_sampling_progress().unwrap()),
+            ..Default::default()
+        };
+        super::enumerate_skill_turn(&input, &mut cursor).unwrap();
+        assert!(cursor.inventory.complete);
+        assert_eq!(
+            cursor
+                .sampling
+                .as_ref()
+                .unwrap()
+                .coverage(input.check.sampling_identity())
+                .unwrap()
+                .eligible,
+            0
+        );
+        assert!(super::record_no_candidates(&fixture.store, &input, &cursor).unwrap());
+        let (category, retry): (Option<String>, Option<i64>) = fixture.store.lock().query_row(
+            "SELECT last_error_category, next_attempt_at_epoch FROM burn_check_assessment WHERE check_id = ?1",
+            [super::SKILL_OPPORTUNITIES_CHECK_ID], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(category.as_deref(), Some("no_candidates"));
+        assert_eq!(retry, None);
+        assert!(
+            !fixture
+                .store
+                .queue_burn_check_assessment(
+                    &input.durable,
+                    super::unix_now() + 1000,
+                    super::POLICY.idle_secs
+                )
+                .unwrap()
+        );
+        let mut changed = input.durable.clone();
+        changed.input_revision.push_str("-changed");
+        assert!(
+            fixture
+                .store
+                .queue_burn_check_assessment(
+                    &changed,
+                    super::unix_now() + 1000,
+                    super::POLICY.idle_secs
+                )
+                .unwrap()
+        );
+    }
 }
 
 #[test]
@@ -443,7 +721,14 @@ fn skill_descriptor_pages_persist_chronology_and_terminal_jobs_without_review() 
     let counts: (Option<usize>, usize, usize) = reopened.lock().query_row(
         "SELECT eligible_targets, reviewed_targets, runnable_targets FROM burn_check_assessment WHERE check_id = ?1",
         [super::SKILL_OPPORTUNITIES_CHECK_ID], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
-    assert_eq!(counts, (None, 0, cursor.inventory.descriptors.len() - 4));
+    assert_eq!(
+        counts,
+        (
+            Some(input.check.descriptor_count()),
+            0,
+            input.check.descriptor_count() - 4
+        )
+    );
     let saved = reopened
         .burn_check_assessment(&input.durable.key, super::SKILL_OPPORTUNITIES_CHECK_ID)
         .unwrap()
@@ -516,7 +801,14 @@ fn skill_descriptor_pages_persist_chronology_and_terminal_jobs_without_review() 
     let counts: (Option<usize>, usize, usize) = reopened.lock().query_row(
         "SELECT eligible_targets, reviewed_targets, runnable_targets FROM burn_check_assessment WHERE check_id = ?1",
         [super::SKILL_OPPORTUNITIES_CHECK_ID], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
-    assert_eq!(counts, (None, 0, 1));
+    assert_eq!(
+        counts,
+        (
+            Some(input.check.descriptor_count()),
+            0,
+            input.check.descriptor_count()
+        )
+    );
 }
 
 #[test]
@@ -890,6 +1182,8 @@ fn native_skill_requests_and_document_selections_prepare_without_asserting_succe
                                 confidence: 1.0,
                                 probabilities: std::collections::BTreeMap::from([
                                     ("useful_opportunity".into(), 0.0),
+                                    ("specialist_check".into(), 0.0),
+                                    ("already_covered".into(), 0.0),
                                     ("no_opportunity".into(), 1.0),
                                     ("uncertain".into(), 0.0),
                                 ]),
@@ -926,34 +1220,10 @@ fn native_skill_requests_and_document_selections_prepare_without_asserting_succe
         let jobs: Vec<_> = std::iter::from_fn(|| sampling.choose_job()).collect();
         let sampled = super::prepare_sampled(&first, &plan.capabilities, &jobs).unwrap();
         assert_eq!(sampled.work_items.len(), jobs.len());
-        let mut partial_answers = answers.clone();
-        for answer in &mut partial_answers {
-            let comparison = plan
-                .prepared
-                .comparisons
-                .iter()
-                .find(|comparison| comparison.id == answer.work_item_id)
-                .unwrap();
-            let choice = if comparison.skill.name == "unused-review" {
-                "useful_opportunity"
-            } else {
-                "uncertain"
-            };
-            answer.answers.insert(
-                "opportunity".into(),
-                antiburn_local::analysis::jev::JevAnswer::Choice {
-                    choice: choice.into(),
-                    confidence: 0.1,
-                    probabilities: ["useful_opportunity", "no_opportunity", "uncertain"]
-                        .into_iter()
-                        .map(|key| (key.into(), if key == choice { 1.0 } else { 0.0 }))
-                        .collect(),
-                },
-            );
-        }
+        let sampled_answers = skill_advisory_answers(&sampled);
         let partial = first
             .check
-            .reduce(&sampled, &partial_answers, true)
+            .reduce(&sampled, &sampled_answers, true)
             .unwrap();
         assert!(!partial.complete);
         assert!(!partial.findings.is_empty());
@@ -981,7 +1251,17 @@ fn native_skill_requests_and_document_selections_prepare_without_asserting_succe
             jobs.len()
         );
         sampling.begin_run();
-        assert!(sampling.choose_job().is_none());
+        let remaining = sampling
+            .coverage(first.check.sampling_identity())
+            .unwrap()
+            .remaining;
+        match sampling.choose_job() {
+            Some(next) => {
+                assert!(remaining > 0);
+                assert!(jobs.iter().all(|job| job.candidate != next.candidate));
+            }
+            None => assert_eq!(remaining, 0),
+        }
         let mut finding = partial.findings[0].clone();
         finding.comparison.absence_assessable = false;
         finding.comparison.work_context_assessable = false;
@@ -990,11 +1270,13 @@ fn native_skill_requests_and_document_selections_prepare_without_asserting_succe
         assert!(super::publishable_finding(&finding));
         let mut merged = first.check.reduce(&plan, &[], false).unwrap();
         super::merge_skill_result(&mut merged, partial.clone());
-        assert!(
+        assert_eq!(
             merged
                 .decisions
                 .iter()
-                .all(|decision| decision.judgments.is_some())
+                .filter(|decision| decision.judgments.is_some())
+                .count(),
+            jobs.len(),
         );
         assert_eq!(merged.findings, partial.findings);
         let mut unassessed = result.clone();
@@ -1034,7 +1316,8 @@ fn native_skill_requests_and_document_selections_prepare_without_asserting_succe
             std::iter::from_fn(|| interrupted_sampling.choose_job()).collect();
         let interrupted_plan =
             super::prepare_sampled(&first, &plan.capabilities, &interrupted_jobs).unwrap();
-        let selected_answer = partial_answers
+        let interrupted_answers = skill_advisory_answers(&interrupted_plan);
+        let selected_answer = interrupted_answers
             .iter()
             .find(|answer| {
                 StableId::new("skill-opportunities", &[answer.work_item_id.as_bytes()])
@@ -1118,12 +1401,19 @@ fn native_skill_requests_and_document_selections_prepare_without_asserting_succe
                 .as_ref()
                 .unwrap()
                 .runnable_count(first.check.sampling_identity()),
-            jobs.len() - 1
+            first.check.descriptor_count() - 1
         );
         let counts = reopened.lock().query_row(
             "SELECT eligible_targets, reviewed_targets, runnable_targets FROM burn_check_assessment WHERE check_id = ?1",
             [super::SKILL_OPPORTUNITIES_CHECK_ID], |row| Ok((row.get::<_, usize>(0)?, row.get::<_, usize>(1)?, row.get::<_, usize>(2)?))).unwrap();
-        assert_eq!(counts, (jobs.len(), 1, jobs.len() - 1));
+        assert_eq!(
+            counts,
+            (
+                first.check.descriptor_count(),
+                1,
+                first.check.descriptor_count() - 1
+            )
+        );
         assert!(
             store
                 .queue_burn_check_assessment(&first.durable, 1002, 180)

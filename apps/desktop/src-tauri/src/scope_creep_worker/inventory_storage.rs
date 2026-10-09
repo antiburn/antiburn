@@ -17,6 +17,7 @@ struct Group(
     Option<String>,
     Vec<JevEvidenceReference>,
     WorkObservationKind,
+    #[serde(default)] Vec<antiburn_local::checks::scope_creep::ScopeExcerpt>,
 );
 
 #[derive(Serialize, Deserialize)]
@@ -85,6 +86,7 @@ pub(super) fn serialize<S: Serializer>(
                 group.limitation.clone(),
                 group.task_scope.clone(),
                 group.observation_kind,
+                group.selected_excerpts.clone(),
             ))
         })
         .collect::<Result<_, S::Error>>()?;
@@ -165,6 +167,7 @@ pub(super) fn deserialize<'de, D: Deserializer<'de>>(
                 limitation,
                 task_scope,
                 observation_kind,
+                selected_excerpts,
             )| {
                 Ok(WorkGroup {
                     id,
@@ -175,6 +178,7 @@ pub(super) fn deserialize<'de, D: Deserializer<'de>>(
                     limitation,
                     task_scope,
                     observation_kind,
+                    selected_excerpts,
                 })
             },
         )

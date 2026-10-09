@@ -34,6 +34,26 @@ a local or remote base URL serving `/v1/systemone`; an ordinary chat endpoint
 does not establish this protocol. Cloudflare accepts Clef or Clef Flash with an
 account ID and credential. Custom uses the exact endpoint with direct System One
 or Cloudflare-envelope response decoding.
+
+Small-window requests use short questions and capability-based compact evidence,
+not a model-name rule. Ollama connection tests discover live capabilities before
+admission. For Ollama 0.40.1, verified `tev1` metadata and either a passthrough
+template or the pinned Qwen3.5 template enable renderer-specific accounting.
+That path estimates each rendered question with its state and options, reserves
+the chat envelope and system-text bytes, and adds two scoring positions plus a
+32-token margin. It remains a heuristic, not an exact tokenizer. Unknown server,
+encoding, or template contracts retain conservative accounting. Request-body
+byte limits remain separate from rendered-question context limits. Offline
+2,048- and 2,050-token fixtures do not prove live model accuracy or latency.
+
+The bounded local evaluation used `tev1:0.8b` with a configured 2,050-token
+context. All 48 requests fit the estimated 1,746-token input budget and were
+accepted by the production runner. The model missed all six selected positive
+cases across the four checks and returned no unsafe findings. This confirms
+request fit, not useful finding recall. The installed environment did not have
+`tev1:0.9b`, so its behavior is unverified. A successful connection or fitting
+request does not show that a model can make useful judgments.
+
 You can choose future sessions or start a 7- or 30-day
 history review there. A history request includes only enabled eligible Smart
 Checks. Enabling a check does not silently add the disabled interval to a
@@ -66,12 +86,17 @@ They use individual enabled preferences, the same master setting, provider
 connection, history controls, and Checks views. Four descriptors use
 one worker, including Ignored Instructions.
 
-Scope Creep compares substantial optional performed work with the full latest
-recorded scope. It includes recorded user messages, supported answers and plan
-evidence, and required proposal context. Every initial and follow-up request
-includes the complete compact scope. Later recorded approval withdraws stale
-findings and prompt actions. Task context that exceeds the model limit remains
-unassessed; the check does not split, summarize, or silently truncate approvals.
+Scope Creep compares substantial optional proposed or attempted work with selected
+recorded scope. It can include recorded user messages, supported answers and plan
+evidence, and proposal context. It validates dependencies for the selected group,
+not every unrelated activity record. With 8,192 usable estimated tokens or fewer,
+the compact path selects nearby scope records and short semantic passages. It
+keeps a short approval with an immediately preceding recorded assistant proposal
+when available. Typed scope records remain intact; text passages can be partial.
+Compact groups require selected earlier user task context. Missing dependencies
+or a minimum request that cannot fit leave the affected group unassessed.
+Later recorded approval invalidates stale findings and prompt actions. Selected
+context does not prove complete approval history.
 
 Large selected work and supporting activity stay eligible through bounded sampled
 excerpts. A sampled work entry carries child chunks instead of a complete text
@@ -94,14 +119,22 @@ review but never establishes Clean.
 The provider receives recorded task context, read requests, available matched
 results, and earlier and later retained activity. No later edit is required for
 a useful read. Requests alone can support unrelated-file or file-breadth findings;
-within-file findings require supported observed extents. A request alone does not
+within-file findings require supported observed extents for the selected reads,
+not every read of the same path. A request alone does not
 prove returned content. Each event supplies at most three representative 4 KiB
-UTF-8 byte ranges within a 48 KiB target text budget. Range boundaries and partial
+UTF-8 byte ranges within an 8 KiB work-window text budget. Range boundaries and partial
 flags identify omitted text; the provider does not receive complete large outputs.
 Source gaps, unfinished sibling operations, and provider failures do not erase
 independent positive targets. They cannot establish a complete clean result.
 Review counts use targets, not episodes. Observed lines do not prove whole-file
 access, file versions, or wasted tokens.
+
+With 8,192 usable estimated tokens or fewer, Over-exploring selects shorter task and
+read passages and checks their fit with the question. Repetition comparisons
+retain an earlier/later pair; whole-output digest equality stays distinct from
+sampled-passage equality. Breadth uses distinct files and a direct set-level
+question. One investigation without required task context does not veto another
+with usable task evidence. Compact sampled negatives remain Uncertain.
 
 Skill Opportunities compares recorded work with current installed skill
 descriptions and typed selected skill-use evidence. It sends selected task/work
@@ -113,6 +146,12 @@ Fallback requests select at most four structural 4 KiB chunks with byte ranges,
 total source bytes, and an explicit partial flag. Invalid YAML and non-string
 descriptions remain unsupported. Known used skills follow the same rule and
 share their reference text across comparisons in a request.
+Each operation forms its own work comparison, with a uniquely matched result
+when available. Missing task text or output does not block an interpretable
+operation-local recommendation. Task context remains optional and unknown use
+does not mean unused. Candidate enumeration uses pages of at most 4,096
+comparisons. Later pages continue after the current page is resolved; work not
+yet reached remains unreviewed and cannot establish a clean result.
 OpenCode result proof needs selected
 `OtherToolOutput`; input-only projections cannot carry result text. Codex and Pi
 document selections and Claude requests/failures remain distinct facts, not
@@ -132,11 +171,41 @@ can still support a bounded recommendation. An accepted semantic answer complete
 the selected sampling job without claiming review of every source byte. There is
 no exhaustive subrange scheduler.
 
+With 8,192 usable estimated tokens or fewer, Skill Opportunities chooses shorter
+skill, operation, optional task, and known-use passages. It reduces the passage
+budget through finite fit attempts. The single Choice question distinguishes a
+useful procedure, a specialist check, already-covered work, unrelated or adequate
+work, and uncertainty. A positive needs at least 0.75 probability. Partial work
+negatives cannot establish complete no-opportunity coverage. Saved task and skill
+passages bind to that comparison; validation uses their actual persisted ranges.
+
 All four checks preserve exact source citations and exclude private thinking.
 Prompts suggest better instructions for future work. They do not repair the
 reviewed session, offer Auto Fix, create verification watches, or estimate savings.
 Changed source evidence, provider configuration, or skill inputs invalidate stale work.
 History progress counts check-session jobs, not distinct sessions.
+
+### Finding evidence
+
+Smart Check target cards load evidence automatically and keep it visible. Long
+excerpts and returned file contents retain their own expansion controls. Read
+results appear under their exact paired request in one **Files read** section;
+requested limits and observed returned extents have separate labels. Scope Creep
+uses **Proposed work**, **Attempted work**, or **Recorded work** from typed evidence.
+
+New findings can store a versioned comparison basis. The evidence endpoint
+validates the saved relationship and compared passages before displaying a
+specific explanation. It does not run another model to explain a card. Older
+findings can show their available excerpts without an invented explanation.
+Explanation and evidence use the same selected occurrence. A background refresh
+retains the previous snapshot until its replacement is available; a failed
+refresh retains it with Retry. A successful unavailable response replaces stale
+excerpts. Target-list refresh errors remain visible with cached targets.
+
+Empty candidate inventories finish as terminal `no_candidates` work, separate
+from Clean or unreadable evidence. Internal loader errors retain specific causes.
+This storage outcome does not promise a dedicated **Nothing to assess** UI label.
+Skipped or unclear work does not count as model review or imply an active request.
 
 ### Incremental review and scheduling
 

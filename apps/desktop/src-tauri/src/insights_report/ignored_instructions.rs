@@ -206,6 +206,12 @@ fn ignored_instruction_session_statuses_in(
                 && assessment_evaluator_revision.as_deref()
                     == Some(current_evaluator_revision.as_str());
             if current_assessment && assessment_status.as_deref() == Some("failed") {
+                if assessment_error_category.as_deref() == Some("no_candidates") {
+                    return Ok(ignored_session_status(
+                        crate::dto::SessionHygieneStatus::NoCandidates,
+                        Some("no_candidates"),
+                    ));
+                }
                 if assessment_error_category.as_deref() == Some("continuing") {
                     return Ok(ignored_session_status(
                         crate::dto::SessionHygieneStatus::Checking,

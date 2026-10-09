@@ -88,6 +88,7 @@ struct AssessmentCursor {
     inventory_counts: BTreeMap<String, usize>,
     reviewed_ids: std::collections::BTreeSet<String>,
     terminal_ids: std::collections::BTreeSet<String>,
+    context_blocked_ids: std::collections::BTreeSet<String>,
     input_revision: Option<String>,
     round: u32,
     backlog: bool,
@@ -129,6 +130,7 @@ struct StoredAssessmentCursor {
     inventory_counts: BTreeMap<String, usize>,
     reviewed_ids: std::collections::BTreeSet<String>,
     terminal_ids: std::collections::BTreeSet<String>,
+    context_blocked_ids: std::collections::BTreeSet<String>,
     input_revision: Option<String>,
     round: u32,
     backlog: bool,
@@ -182,6 +184,7 @@ fn parse_checkpoint(
             inventory_counts: stored.inventory_counts,
             reviewed_ids: stored.reviewed_ids,
             terminal_ids: stored.terminal_ids,
+            context_blocked_ids: stored.context_blocked_ids,
             input_revision: stored.input_revision,
             round: stored.round,
             backlog: stored.backlog,
@@ -243,6 +246,7 @@ fn serialize_selected_cursor_progress(
         inventory_counts: &'a BTreeMap<String, usize>,
         reviewed_ids: &'a std::collections::BTreeSet<String>,
         terminal_ids: &'a std::collections::BTreeSet<String>,
+        context_blocked_ids: &'a std::collections::BTreeSet<String>,
         input_revision: &'a Option<String>,
         round: u32,
         backlog: bool,
@@ -266,6 +270,7 @@ fn serialize_selected_cursor_progress(
         inventory_counts: &cursor.inventory_counts,
         reviewed_ids: &cursor.reviewed_ids,
         terminal_ids: &cursor.terminal_ids,
+        context_blocked_ids: &cursor.context_blocked_ids,
         input_revision: &cursor.input_revision,
         round: cursor.round,
         backlog: cursor.backlog,
@@ -467,14 +472,8 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         pass(resumed_backlog),
     )
     .await;
-    let stale_cursor = saved_position.is_some()
-        && matches!(
-            preparation
-                .as_ref()
-                .err()
-                .and_then(|error| error.downcast_ref::<SelectedContentQueryError>()),
-            Some(SelectedContentQueryError::StaleCursor)
-        );
+    let stale_cursor =
+        saved_position.is_some() && matches!(preparation.as_ref(), Ok(PrepareInputOutcome::Stale));
     let preparation = if stale_cursor {
         prepare_input(
             store,
@@ -509,17 +508,19 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             }
             return Ok(());
         }
-        PrepareInputOutcome::Unavailable => {
+        PrepareInputOutcome::Stale => return Ok(()),
+        PrepareInputOutcome::Unavailable(reason) => {
             ::tracing::debug!(
                 event = "ignored_instruction_candidate_skipped",
                 agent = %candidate.session.key.agent,
                 historical = candidate.historical,
-                reason = "evidence_unavailable",
+                reason = reason.category(),
             );
-            store.record_burn_check_candidate_issue_for_check(
+            store.record_burn_check_candidate_failure_for_check(
                 CHECK_ID,
                 candidate,
                 false,
+                reason.category(),
                 unix_now().saturating_add(RETRY_DELAY_SECS),
                 unix_now(),
             )?;
@@ -599,6 +600,17 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     let plan = &prepared_plan.prepared;
     cursor.round = round;
     let work_items = &prepared_plan.work_items;
+    if !input.more_content
+        && plan.coverage.candidate_pairs == 0
+        && cursor.result.is_none()
+        && cursor.reviewed_ids.is_empty()
+        && cursor.prior_findings.is_empty()
+    {
+        if store.record_burn_check_no_candidates(&input, "{}", unix_now(), IDLE_SECS)? {
+            let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
+        }
+        return Ok(());
+    }
     if let Some(compact) = compact_progress
         && !compact.is_empty()
     {
@@ -695,6 +707,9 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                         .iter()
                         .find(|job| job.candidate == comparison_identity(&comparison.id))
                 {
+                    if !packed.skipped_item_ids.is_empty() {
+                        cursor.context_blocked_ids.insert(comparison.id.clone());
+                    }
                     cursor
                         .sampling
                         .as_mut()
@@ -881,7 +896,14 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 std::slice::from_ref(item),
                 capabilities,
             );
-            let mut blocked = !packed.skipped_item_ids.is_empty();
+            let mut blocked = !packed.skipped_item_ids.is_empty()
+                || matches!(
+                    outcome.failure,
+                    Some(
+                        JevError::RequestTooLarge { .. }
+                            | JevError::RequestTokenLimitExceeded { .. }
+                    )
+                );
             for batch in packed.batches {
                 let identities =
                     crate::jev::worker::batch_request_identities(&connection, &input, &batch);
@@ -905,6 +927,15 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                         .iter()
                         .find(|job| job.candidate == comparison_identity(&comparison.id))
                 {
+                    if matches!(
+                        outcome.failure,
+                        Some(
+                            JevError::RequestTooLarge { .. }
+                                | JevError::RequestTokenLimitExceeded { .. }
+                        )
+                    ) {
+                        cursor.context_blocked_ids.insert(comparison.id.clone());
+                    }
                     cursor
                         .sampling
                         .as_mut()
@@ -1900,7 +1931,27 @@ struct PreparationTimings {
 enum PrepareInputOutcome {
     Ready(Box<PreparedInput>),
     Unsupported,
-    Unavailable,
+    Stale,
+    Unavailable(PreparationUnavailable),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreparationUnavailable {
+    HomeMissing,
+    EvidenceMissing,
+    EvidenceMalformed,
+    EvidenceNotPublished,
+}
+
+impl PreparationUnavailable {
+    fn category(self) -> &'static str {
+        match self {
+            Self::HomeMissing => "home_unavailable",
+            Self::EvidenceMissing => "input_evidence_missing",
+            Self::EvidenceMalformed => "input_evidence_malformed",
+            Self::EvidenceNotPublished => "input_evidence_not_published",
+        }
+    }
 }
 
 impl std::ops::Deref for PreparedInput {
@@ -1919,7 +1970,11 @@ async fn prepare_input(
     discovery_cache: &mut InstructionDiscoveryCache,
     pass: SamplingPass<'_>,
 ) -> anyhow::Result<PrepareInputOutcome> {
-    let home = home_directory().unwrap_or_else(|| PathBuf::from("."));
+    let Some(home) = home_directory() else {
+        return Ok(PrepareInputOutcome::Unavailable(
+            PreparationUnavailable::HomeMissing,
+        ));
+    };
     prepare_selected_input_with_home(
         store,
         candidate,
@@ -1946,14 +2001,44 @@ async fn prepare_selected_input_with_home(
     #[cfg(test)]
     let stage_started = Instant::now();
     let Some(evidence_row) = store.evidence(&candidate.session.key)? else {
-        return Ok(PrepareInputOutcome::Unavailable);
+        return Ok(PrepareInputOutcome::Unavailable(
+            PreparationUnavailable::EvidenceMissing,
+        ));
     };
+    let source_matches: bool = store.lock().query_row(
+        "SELECT EXISTS(SELECT 1 FROM session WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND incarnation = ?4 AND source_generation = ?5 AND source_fingerprint IS ?6 AND activity_cursor = ?7)",
+        rusqlite::params![candidate.session.key.environment_key, candidate.session.key.agent, candidate.session.key.session_id, candidate.incarnation, candidate.source_generation, candidate.source_fingerprint, candidate.activity_cursor],
+        |row| row.get(0),
+    )?;
+    if !source_matches {
+        return Ok(PrepareInputOutcome::Stale);
+    }
+    if evidence_row
+        .analyzed_generation
+        .is_some_and(|generation| generation != candidate.source_generation)
+        || evidence_row
+            .published_fence
+            .is_some_and(|fence| fence != candidate.published_fence)
+    {
+        return Ok(PrepareInputOutcome::Stale);
+    }
+    if evidence_row.status.as_str() != "ready" {
+        return Ok(PrepareInputOutcome::Unavailable(
+            PreparationUnavailable::EvidenceNotPublished,
+        ));
+    }
     let Some(evidence_json) = evidence_row.evidence_json else {
-        return Ok(PrepareInputOutcome::Unavailable);
+        return Ok(PrepareInputOutcome::Unavailable(
+            PreparationUnavailable::EvidenceMissing,
+        ));
     };
     let evidence: SessionEvidence = match serde_json::from_str(&evidence_json) {
         Ok(evidence) => evidence,
-        Err(_) => return Ok(PrepareInputOutcome::Unavailable),
+        Err(_) => {
+            return Ok(PrepareInputOutcome::Unavailable(
+                PreparationUnavailable::EvidenceMalformed,
+            ));
+        }
     };
     let format = evidence.capabilities.source_format;
     if !ignored_instructions::source_supported(format) {
@@ -2004,8 +2089,7 @@ async fn prepare_selected_input_with_home(
     } else if !candidate.historical
         && !pass.origin.historical
         && !legacy_fixture
-        && discovery.scan_complete
-        && discovery.limitations.is_empty()
+        && !discovery.snapshots.is_empty()
     {
         let digest = ignored_instructions::sha256_hex(&serde_json::to_vec(
             &discovery
@@ -2065,16 +2149,19 @@ async fn prepare_selected_input_with_home(
         },
     ) {
         Ok(page) => page,
+        Err(SelectedContentQueryError::StaleCursor) => return Ok(PrepareInputOutcome::Stale),
         Err(error) => return Err(error.into()),
     };
     let Some(page) = page else {
-        return Ok(PrepareInputOutcome::Unavailable);
+        return Ok(PrepareInputOutcome::Unavailable(
+            PreparationUnavailable::EvidenceNotPublished,
+        ));
     };
     let mut published = page.content;
     if published.source_generation != Some(candidate.source_generation)
         || published.publication_fence != candidate.published_fence
     {
-        return Ok(PrepareInputOutcome::Unavailable);
+        return Ok(PrepareInputOutcome::Stale);
     }
     let more_content = published.coverage.more_parts;
     let next_content_cursor = page.next_cursor;

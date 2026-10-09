@@ -60,6 +60,25 @@ async fn evaluate(
     )
     .await;
     let mut row = empty_row(case);
+    if let Some(baseline) =
+        crate::baseline::result(&IgnoredInstructionsCheck, &plan, usage, &case.id)
+    {
+        match baseline {
+            Ok(result) => {
+                row["baseline_observed"] = json!(outcome(&result, true));
+                row["baseline_result"] = json!(result);
+                row["baseline_evidence_valid"] = json!(evidence::findings_valid(&result, &input));
+                row["baseline_observed_references"] = json!(
+                    result
+                        .findings
+                        .iter()
+                        .map(|finding| evidence::reference(&finding.reference))
+                        .collect::<BTreeSet<_>>()
+                );
+            }
+            Err(error) => row["baseline_failure"] = json!(error),
+        }
+    }
     row["elapsed_ms"] = json!(started.elapsed().as_millis());
     match execution {
         Ok(execution) => {
@@ -165,6 +184,7 @@ pub(crate) async fn run() -> Result<(), String> {
     let metrics = scoring::report(&inventory, &rows);
     println!("Ignored Instructions: {}", metrics["overall"]);
     let report = json!({"check":"ignored_instructions","suite":suite,"provider":support::provider::configuration().identity(),
+        "revisions":IgnoredInstructionsCheck.revisions(),"production_runner":true,
         "cases":inventory,"metrics":metrics,"stopped":stopped,"measurements":support::run::measurements(&rows,&usage.lock().expect("Usage lock")),"rows":rows});
     let path = support::capture::report("ignored_instructions", &suite, &report);
     match stopped {

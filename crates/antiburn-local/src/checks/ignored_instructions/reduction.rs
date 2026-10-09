@@ -58,9 +58,21 @@ pub(super) fn reduce_traced(
                     .as_ref()
                     .is_none_or(|episode| episode.has_source_bindings(binding))
         }) && comparison.reference.scope != InstructionScope::Unknown;
+        let authority_evidence_valid = !requires_recorded_user_approval(comparison)
+            || comparison
+                .prerequisite_episode
+                .as_ref()
+                .is_some_and(|episode| {
+                    episode
+                        .selected_actions
+                        .iter()
+                        .any(crate::checks::ignored_instructions::selected_context::human_text)
+                });
         let decision = response.and_then(valid_decision);
         let reason = if !binding_valid {
             "source_binding_invalid"
+        } else if !authority_evidence_valid {
+            "required_user_authority_unavailable"
         } else if let Some((choice, probability)) = decision {
             coverage
                 .reassessed_comparison_ids
@@ -144,7 +156,9 @@ pub(super) fn reduce_traced(
         };
         if matches!(
             reason,
-            "source_binding_invalid" | "decision_missing_or_invalid"
+            "source_binding_invalid"
+                | "decision_missing_or_invalid"
+                | "required_user_authority_unavailable"
         ) {
             unassessed_comparisons.push(comparison.id.clone());
         }
@@ -231,6 +245,25 @@ pub(super) fn reduce_traced(
         input_tokens,
         output_tokens,
     }
+}
+
+fn requires_recorded_user_approval(comparison: &CandidateComparison) -> bool {
+    let rule = format!(
+        "{} {}",
+        rule_text_fragment(comparison),
+        comparison.reference.rule_heading
+    )
+    .to_ascii_lowercase();
+    [
+        "user explicitly approves",
+        "user explicitly authorizes",
+        "user explicitly authorises",
+        "user approval",
+        "user's approval",
+        "approval from the user",
+    ]
+    .iter()
+    .any(|term| rule.contains(term))
 }
 
 fn valid_decision(result: &JevWorkItemResult) -> Option<(&str, f64)> {

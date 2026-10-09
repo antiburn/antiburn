@@ -6,6 +6,8 @@ pub(crate) mod jev {
 }
 
 mod adapters;
+#[path = "../support/baseline.rs"]
+mod baseline;
 mod contents;
 mod episodes;
 

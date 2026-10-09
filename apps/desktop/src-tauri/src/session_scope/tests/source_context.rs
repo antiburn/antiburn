@@ -6,6 +6,28 @@ const CODEX_ENVIRONMENT: &str = include_str!(concat!(
     "/../../../crates/antiburn-local/tests/fixtures/codex_characterization/environment_context.jsonl"
 ));
 
+pub(super) fn partial_scope(
+    store: &Store,
+    key: &SessionKey,
+    fence: i64,
+    generation: i64,
+) -> SessionScopeSnapshot {
+    let request = store.session_scope_request(key, fence, generation).unwrap();
+    assert!(!request.source_complete);
+    let scope = store.load_session_scope(key, request).unwrap();
+    assert!(
+        scope
+            .limitations()
+            .contains(&ScopeMissingReason::IncompleteSource)
+    );
+    assert!(scope.values().iter().all(|value| {
+        !value
+            .as_str()
+            .is_some_and(|text| text.contains("<environment_context>") || text.contains("<skill"))
+    }));
+    scope
+}
+
 #[test]
 fn codex_environment_context_is_omitted_without_human_authority() {
     let (store, key, fence, generation) = publish_jsonl(
@@ -51,14 +73,9 @@ fn codex_environment_requires_bound_complete_source_qualified_proof() {
         );
         assert!(store.session_scope_request(&key, fence, generation).is_ok());
         assert!(store.lock().execute(mutation, []).unwrap() > 0);
-        assert!(
-            matches!(
-                store.session_scope_request(&key, fence, generation),
-                Err(ScopeLoadError::Scope(SessionScopeError::Missing(
-                    ScopeMissingReason::IncompleteSource
-                )))
-            ),
-            "{mutation}"
+        assert_eq!(
+            partial_scope(&store, &key, fence, generation).values(),
+            &[serde_json::json!("Review the sample. Do not publish.")]
         );
     }
 }
@@ -80,12 +97,7 @@ fn unqualified_or_clipped_codex_environment_text_cannot_supply_scope() {
             SourceFormat::CodexRolloutJsonl,
             &text,
         );
-        assert!(matches!(
-            store.session_scope_request(&key, fence, generation),
-            Err(ScopeLoadError::Scope(SessionScopeError::Missing(
-                ScopeMissingReason::IncompleteSource
-            )))
-        ));
+        partial_scope(&store, &key, fence, generation);
     }
 }
 
@@ -125,12 +137,7 @@ fn environment_proof_cannot_replay_into_another_published_session() {
             .unwrap(),
         1
     );
-    assert!(matches!(
-        store.session_scope_request(&key, fence, generation),
-        Err(ScopeLoadError::Scope(SessionScopeError::Missing(
-            ScopeMissingReason::IncompleteSource
-        )))
-    ));
+    partial_scope(&store, &key, fence, generation);
 }
 
 #[test]
@@ -146,12 +153,14 @@ fn pi_retained_human_root_does_not_promote_extension_answers_to_user_authority()
         .unwrap();
     let scope = store.load_session_scope(&key, request).unwrap();
     assert_eq!(scope.values()[0], "Keep billing unchanged.");
-    assert!(matches!(
-        scope.scope_creep_context(),
-        Err(SessionScopeError::Missing(
-            ScopeMissingReason::UnresolvedInfluence
-        ))
-    ));
+    assert!(scope.scope_creep_context().is_ok());
+    assert!(
+        scope
+            .limitations()
+            .contains(&ScopeMissingReason::UnresolvedInfluence)
+    );
+    assert!(scope.occurrences().iter().any(|item| item.authority
+        == antiburn_local::analysis::session_scope::ScopeAuthority::UnknownInfluence));
 }
 
 #[test]
@@ -208,20 +217,12 @@ fn stored_skill_text_must_match_shared_normalized_context_proof() {
             "UPDATE turn_content SET content = zeroblob(length(content)) WHERE kind = 'user' AND authority != 'user'", [],
         ).unwrap();
         assert!(changed > 0, "{agent}");
-        assert!(
-            matches!(
-                store.session_scope_request(&key, fence, generation),
-                Err(ScopeLoadError::Scope(SessionScopeError::Missing(
-                    ScopeMissingReason::IncompleteSource
-                )))
-            ),
-            "{agent}"
-        );
+        partial_scope(&store, &key, fence, generation);
     }
 }
 
 #[test]
-fn codex_unknown_environment_context_blocks_scope_even_with_proven_human_history() {
+fn codex_unknown_environment_context_keeps_proven_human_history() {
     let fixture = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../crates/antiburn-local/tests/fixtures/codex_characterization/paginated_completed.jsonl"
@@ -242,10 +243,8 @@ fn codex_unknown_environment_context_blocks_scope_even_with_proven_human_history
         SourceFormat::CodexRolloutJsonl,
         &text,
     );
-    assert!(matches!(
-        store.session_scope_request(&key, fence, generation),
-        Err(ScopeLoadError::Scope(SessionScopeError::Missing(
-            ScopeMissingReason::IncompleteSource
-        )))
-    ));
+    assert_eq!(
+        partial_scope(&store, &key, fence, generation).values(),
+        &[serde_json::json!("Review the sample. Do not publish.")]
+    );
 }

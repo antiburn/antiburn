@@ -84,7 +84,9 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     expect(dialog).toHaveTextContent("~/.claude/settings.json · model")
     expect(dialog).toHaveTextContent("claude-opus-4-6 → claude-sonnet-5")
     expect(dialog).toHaveTextContent("Responses can change")
-    expect(dialog).toHaveTextContent("previous content in a sibling .bak file")
+    expect(dialog).toHaveTextContent(
+      "A backup file keeps the current contents so you can restore them.",
+    )
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
     await act(async () => undefined)
     expect(screen.getByRole("button", { name: "Change applied" })).toBeDisabled()
@@ -421,7 +423,9 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     render(<CheckPromptAction detector="oldModelUsage" targets={[target]} refresh={vi.fn()} />)
     const copy = await screen.findByRole("button", { name: "Copy fix prompt" })
     fireEvent.click(copy)
-    expect(await screen.findByRole("alert")).toHaveTextContent("Could not copy")
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The fix prompt could not be copied",
+    )
     fireEvent.click(copy)
     await screen.findByRole("button", { name: "Copied" })
     expect(commands.copyBatch).toHaveBeenCalledOnce()
@@ -459,7 +463,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
 
     await waitFor(() =>
       expect(within(dialog).getByRole("alert")).toHaveTextContent(
-        "Could not confirm the result. Check the setting before you try again.",
+        "The result could not be confirmed. Check the setting before trying again.",
       ),
     )
     expect(screen.getByRole("dialog", { name: "Review change" })).toBeVisible()

@@ -42,6 +42,16 @@ async fn evaluate(
         }
     };
     row["id"] = json!(case.id);
+    if let Some(baseline) = crate::baseline::result(&case.check, &plan, usage, &case.id) {
+        match baseline {
+            Ok(result) => {
+                row["baseline_score"] =
+                    scoring::score(case, &result, &plan.work_items, plan.skipped_item_ids.len());
+                row["baseline_result"] = json!(result);
+            }
+            Err(error) => row["baseline_failure"] = json!(error),
+        }
+    }
     row["family"] = json!(case.family);
     row["expected"] = json!(case.label);
     row["elapsed_ms"] = json!(started.elapsed().as_millis());
@@ -88,6 +98,7 @@ pub(crate) async fn run() -> Result<(), String> {
     let metrics = scoring::metrics(&cases, &rows);
     println!("Skill Opportunities: {metrics}");
     let report = json!({"check":"skill_opportunities","suite":suite,"provider":support::provider::configuration().identity(),
+        "revisions":antiburn_local::checks::skill_opportunities::SKILL_OPPORTUNITIES_REVISIONS,"production_runner":true,
         "metrics":metrics,"stopped":stopped,"measurements":support::run::measurements(&rows,&usage.lock().expect("Usage lock")),"rows":rows});
     let path = support::capture::report("skill_opportunities", &suite, &report);
     match stopped {
@@ -165,6 +176,8 @@ fn single_pair_choices_preserve_partial_findings_and_complete_uncertainty_sampli
                     probabilities: std::collections::BTreeMap::from([
                         ("useful_opportunity".into(), 0.05),
                         ("no_opportunity".into(), 0.05),
+                        ("specialist_check".into(), 0.0),
+                        ("already_covered".into(), 0.0),
                         ("uncertain".into(), 0.9),
                     ]),
                     confidence: 0.1,
@@ -223,6 +236,8 @@ fn single_pair_choices_preserve_partial_findings_and_complete_uncertainty_sampli
                     probabilities: std::collections::BTreeMap::from([
                         ("useful_opportunity".into(), probability),
                         ("no_opportunity".into(), (1.0 - probability) / 2.0),
+                        ("specialist_check".into(), 0.0),
+                        ("already_covered".into(), 0.0),
                         ("uncertain".into(), (1.0 - probability) / 2.0),
                     ]),
                     confidence: 0.1,

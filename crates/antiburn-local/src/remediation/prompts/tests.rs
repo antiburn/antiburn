@@ -100,6 +100,7 @@ fn causes() -> Vec<FindingCause> {
             },
         )),
         FindingCause::ScopeCreep(Box::new(crate::checks::scope_creep::ScopeCreepFinding {
+            explanation_basis: None,
             id: "scope-finding".into(),
             group_id: "work-group".into(),
             work: Vec::new(),
@@ -131,6 +132,7 @@ fn causes() -> Vec<FindingCause> {
             ),
             outcome: crate::checks::over_exploring::SemanticOutcome::LikelyExcess,
             probability: 0.9,
+            explanation: None,
         })),
     ]
 }

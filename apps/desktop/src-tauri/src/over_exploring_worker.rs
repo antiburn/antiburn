@@ -67,6 +67,8 @@ impl JevCheckDescriptor for OverExploringDescriptor {
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct AssessmentCursor {
+    #[serde(default)]
+    context_blocked_ids: BTreeSet<String>,
     revision: u32,
     input_revision: String,
     provider_generation: u64,
@@ -264,12 +266,13 @@ fn restore_cursor(
 fn unavailable(
     store: &Store,
     candidate: &BurnCheckCandidate,
-    unsupported: bool,
+    category: &str,
 ) -> anyhow::Result<()> {
-    store.record_burn_check_candidate_issue_for_check(
+    store.record_burn_check_candidate_failure_for_check(
         CHECK_ID,
         candidate,
-        unsupported,
+        category == "unsupported_format",
+        category,
         unix_now().saturating_add(POLICY.retry_delay_secs),
         unix_now(),
     )?;
@@ -292,7 +295,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             "opencode" | "codex" | "claude" | "claude-code" | "pi"
         )
     {
-        return unavailable(store, candidate, true);
+        return unavailable(store, candidate, "unsupported_format");
     }
     let capabilities = handle.resolve_capabilities(key_generation).await?;
     let preparation = admit_jev_orchestration().await?;
@@ -306,13 +309,21 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     .await?;
     let input = match loaded {
         Ok(input) => input,
+        Err(error) if error.is_stale() => return Ok(()),
         Err(error) => {
-            ::tracing::debug!(event = "over_exploring_input_unavailable", error = ?error);
-            return unavailable(store, candidate, false);
+            return unavailable(store, candidate, error.failure_category());
         }
     };
     if input.plan.prepared.candidates.is_empty() {
-        return unavailable(store, candidate, false);
+        if store.record_burn_check_no_candidates(
+            &input.durable,
+            "{}",
+            unix_now(),
+            POLICY.idle_secs,
+        )? {
+            let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
+        }
+        return Ok(());
     }
     let stored = store.burn_check_assessment(&candidate.session.key, CHECK_ID)?;
     let mut cursor = restore_cursor(stored.as_ref(), &input.durable, key_generation);
@@ -378,37 +389,29 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             Ok::<_, JevError>((selected_plan.clone(), selected_plan))
         })
         .await??;
-        let mut connection = handle.system_one_connection();
-        connection
-            .model_revision
-            .clone_from(&capabilities.model_revision);
-        let mut terminal = plan.work_items.is_empty();
-        let mut deferred = false;
-        for item in &plan.work_items {
-            if cursor.run_progress.results.contains_key(&item.id) {
-                continue;
-            }
-            let packed = antiburn_local::analysis::jev::pack_work_items_with_shared_context(
-                std::slice::from_ref(item),
-                &capabilities,
-                plan.shared_context.as_ref().expect("prepared task context"),
-            );
-            for batch in packed.batches {
-                let identities = crate::jev::worker::batch_request_identities(
-                    &connection,
-                    &input.durable,
-                    &batch,
-                );
-                match store.burn_check_dispatch_readiness(&identities, unix_now())? {
-                    crate::store::BurnCheckRequestAdmission::Admitted => {}
-                    crate::store::BurnCheckRequestAdmission::Exhausted
-                    | crate::store::BurnCheckRequestAdmission::Unresolved => terminal = true,
-                    crate::store::BurnCheckRequestAdmission::Deferred => deferred = true,
-                    crate::store::BurnCheckRequestAdmission::Stale => return Ok(()),
-                }
-            }
+        let readiness = crate::scope_creep_worker::dispatch_readiness(
+            store,
+            handle,
+            &input.durable,
+            &capabilities,
+            &plan,
+            &cursor.run_progress,
+        )?;
+        if readiness == crate::store::BurnCheckRequestAdmission::Stale {
+            return Ok(());
         }
+        let terminal = matches!(
+            readiness,
+            crate::store::BurnCheckRequestAdmission::Exhausted
+                | crate::store::BurnCheckRequestAdmission::Unresolved
+        );
+        let deferred = readiness == crate::store::BurnCheckRequestAdmission::Deferred;
         if terminal {
+            if !plan.skipped_item_ids.is_empty() {
+                cursor
+                    .context_blocked_ids
+                    .extend(plan.skipped_item_ids.iter().cloned());
+            }
             let reviewed = OverExploringCheck.reduce(&plan, &[], false)?;
             merge_result(
                 cursor.result.as_mut().expect("initialized"),
@@ -520,6 +523,14 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                     | "response_usage_exceeded"
                     | "invalid_request"
             ) {
+                if matches!(
+                    error,
+                    JevError::RequestTooLarge { .. } | JevError::RequestTokenLimitExceeded { .. }
+                ) {
+                    cursor
+                        .context_blocked_ids
+                        .extend(plan.work_items.iter().map(|item| item.id.clone()));
+                }
                 let sampling = cursor.sampling.as_mut().expect("initialized");
                 if !sampling
                     .completed_ids(check_identity())
@@ -608,15 +619,18 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         .expect("synchronized");
     let result = cursor.result.as_mut().expect("initialized");
     result.coverage.selected_items = coverage.completed;
-    result.coverage.not_selected_items = coverage.remaining
+    let runnable = cursor
+        .sampling
+        .as_ref()
+        .expect("initialized")
+        .runnable_count(check_identity());
+    result.coverage.not_selected_items = runnable
         + cursor
             .inventory_total
             .saturating_sub(cursor.inventory_count);
-    result.coverage.skipped_items = result
-        .unassessed
-        .iter()
-        .filter(|item| item.limitation == over_exploring::Abstention::ContextTooLarge)
-        .count();
+    result.coverage.skipped_items = coverage
+        .eligible
+        .saturating_sub(coverage.completed + runnable);
     result.coverage.limitations = result
         .unassessed
         .iter()
@@ -851,38 +865,71 @@ fn merge_result(
         .map(|item| item.id.as_str())
         .chain(plan.skipped_item_ids.iter().map(String::as_str))
         .collect();
+    let accepted: BTreeSet<_> = page
+        .completed_work_item_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
     target
         .findings
-        .retain(|finding| !selected.contains(finding.work_item_id.as_str()));
+        .retain(|finding| !accepted.contains(finding.work_item_id.as_str()));
     target.findings.extend(page.findings);
     target.unassessed.retain(|item| {
-        item.work_item_id
-            .as_deref()
-            .is_none_or(|id| !selected.contains(id))
+        item.work_item_id.as_deref().is_none_or(|id| {
+            !accepted.contains(id)
+                && (!selected.contains(id)
+                    || target
+                        .completed_work_item_ids
+                        .iter()
+                        .any(|saved| saved == id))
+        })
     });
     target
         .unassessed
         .extend(page.unassessed.into_iter().filter(|item| {
-            item.work_item_id
-                .as_deref()
-                .is_some_and(|id| selected.contains(id))
+            item.work_item_id.as_deref().is_some_and(|id| {
+                selected.contains(id)
+                    && (accepted.contains(id)
+                        || !target
+                            .completed_work_item_ids
+                            .iter()
+                            .any(|saved| saved == id))
+            })
         }));
-    for (saved, incoming) in [
-        (&mut target.clean_episode_ids, page.clean_episode_ids),
-        (
-            &mut target.completed_episode_ids,
-            page.completed_episode_ids,
-        ),
-    ] {
-        saved.extend(incoming);
-        saved.sort();
-        saved.dedup();
-    }
     target
         .completed_work_item_ids
         .extend(page.completed_work_item_ids);
     target.completed_work_item_ids.sort();
     target.completed_work_item_ids.dedup();
+    target.completed_episode_ids.clear();
+    target.clean_episode_ids.clear();
+    for episode in plan.prepared.episodes.iter() {
+        let ids: Vec<_> = plan
+            .prepared
+            .targets
+            .iter()
+            .filter(|(_, item)| item.episode_id == episode.id)
+            .map(|(id, _)| id)
+            .collect();
+        if !ids.is_empty()
+            && ids
+                .iter()
+                .all(|id| target.completed_work_item_ids.contains(id))
+        {
+            target.completed_episode_ids.push(episode.id);
+            if !target
+                .findings
+                .iter()
+                .any(|item| item.episode_id == episode.id)
+                && !target
+                    .unassessed
+                    .iter()
+                    .any(|item| item.episode_id == episode.id)
+            {
+                target.clean_episode_ids.push(episode.id);
+            }
+        }
+    }
 }
 
 pub(crate) fn publication(input: &PreparedInput, mut assessment: Assessment) -> Publication {
@@ -894,13 +941,74 @@ pub(crate) fn publication(input: &PreparedInput, mut assessment: Assessment) -> 
             .limitations
             .push("sampling_inventory_limit".into());
     }
-    let mut task_evidence = input
+    let original_task_evidence = input
         .plan
         .prepared
         .task_contexts
         .values()
         .flat_map(|context| context.evidence.clone())
         .collect::<Vec<_>>();
+    let valid_task = |finding: &Decision, reference: &JevEvidenceReference| {
+        if original_task_evidence.iter().any(|original| {
+            original.source_id == reference.source_id
+                && original.content_kind == reference.content_kind
+                && original.role == reference.role
+        }) {
+            return true;
+        }
+        let Some(index) = reference
+            .part_id
+            .strip_prefix("task[")
+            .and_then(|value| value.strip_suffix(']'))
+            .and_then(|value| value.parse::<usize>().ok())
+        else {
+            return false;
+        };
+        if reference.part_id != format!("task[{index}]") {
+            return false;
+        }
+        let Some(original) = input
+            .plan
+            .prepared
+            .task_contexts
+            .get(&finding.episode_id)
+            .and_then(|context| {
+                context.evidence.iter().find(|original| {
+                    original.source_id == reference.source_id && original.role == reference.role
+                })
+            })
+        else {
+            return false;
+        };
+        original.role == antiburn_local::analysis::jev::JevEvidenceRole::Instruction
+            && reference.role == original.role
+            && finding.explanation.as_ref().is_some_and(|basis| {
+                basis.version == 1
+                    && basis.task.evidence.iter().any(|task| {
+                        task.source_id == original.source_id && task.role == original.role
+                    })
+                    && basis.snippets.iter().any(|snippet| {
+                        snippet.reference.id == reference.source_id
+                            && snippet.reference.stable
+                            && !snippet.source_digest.is_empty()
+                            && snippet.range.0 < snippet.range.1
+                            && snippet.range.1 - snippet.range.0 == snippet.text.len()
+                    })
+            })
+    };
+    let mut task_evidence = original_task_evidence.clone();
+    task_evidence.extend(
+        assessment
+            .findings
+            .iter()
+            .flat_map(|finding| finding.task_evidence.iter())
+            .filter(|reference| {
+                assessment.findings.iter().any(|finding| {
+                    finding.task_evidence.contains(reference) && valid_task(finding, reference)
+                })
+            })
+            .cloned(),
+    );
     task_evidence.sort_by(|left, right| left.source_id.cmp(&right.source_id));
     task_evidence.dedup();
     Publication {
@@ -915,9 +1023,27 @@ pub(crate) fn publication(input: &PreparedInput, mut assessment: Assessment) -> 
             .map(|finding| {
                 (
                     finding.work_item_id.clone(),
-                    input.plan.prepared.task_contexts[&finding.episode_id]
-                        .evidence
-                        .clone(),
+                    finding
+                        .task_evidence
+                        .iter()
+                        .filter(|reference| {
+                            input
+                                .plan
+                                .prepared
+                                .task_contexts
+                                .get(&finding.episode_id)
+                                .is_some_and(|context| {
+                                    context.evidence.iter().any(|original| {
+                                        original.source_id == reference.source_id
+                                            && original.role == reference.role
+                                            && (original.content_kind == reference.content_kind
+                                                || (reference.part_id.starts_with("task[")
+                                                    && original.role == antiburn_local::analysis::jev::JevEvidenceRole::Instruction))
+                                    })
+                                })
+                        })
+                        .cloned()
+                        .collect(),
                 )
             })
             .collect(),

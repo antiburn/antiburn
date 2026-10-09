@@ -9,6 +9,8 @@ fn check_progress_serializes_optional_notices_and_unknown_total() {
         checking_count: Some(2),
         partial_context: Some(true),
         review_coverage: Some(ChecksReviewCoveragePayload {
+            skipped: Some(2),
+            context_blocked: Some(1),
             reviewed: 5,
             total: None,
             uncertain: Some(2),
@@ -31,6 +33,7 @@ fn check_progress_serializes_optional_notices_and_unknown_total() {
         value["reviewCoverage"],
         serde_json::json!({
             "reviewed": 5, "total": null, "uncertain": 2, "pending": 3, "pendingCompletion": null, "continuing": true,
+            "skipped": 2, "contextBlocked": 1,
         })
     );
     assert_eq!(value["lifecycle"], serde_json::Value::Null);
@@ -40,6 +43,8 @@ fn check_progress_serializes_optional_notices_and_unknown_total() {
 #[test]
 fn review_coverage_serializes_terminal_uncertainty_and_known_total() {
     let coverage = ChecksReviewCoveragePayload {
+        skipped: Some(1),
+        context_blocked: Some(1),
         reviewed: 2,
         total: Some(3),
         uncertain: Some(1),
@@ -51,6 +56,7 @@ fn review_coverage_serializes_terminal_uncertainty_and_known_total() {
         serde_json::to_value(coverage).unwrap(),
         serde_json::json!({
             "reviewed": 2, "total": 3, "uncertain": 1, "pending": 1, "pendingCompletion": 0, "continuing": false,
+            "skipped": 1, "contextBlocked": 1,
         })
     );
 }

@@ -738,6 +738,33 @@ Notes for what isn't expressible as a token:
   Initial evidence loads use the shared `Skeleton`: a 64px comparison block,
   two compact metadata lines, a 64px instruction block, and an 80px action block.
   The evidence body reserves a 288px minimum height while loading and after load.
+  All four Smart Checks load evidence when the target mounts. Do not add Show
+  evidence or Hide details controls to these cards. Put a source-specific saved
+  explanation in normal body text before the excerpts. Keep old findings
+  evidence-only when no accepted relationship and selected passages are saved.
+  Bind the explanation, excerpts, and citation destinations to one occurrence.
+  Retain that occurrence after a list reorder; replace the complete snapshot
+  when the occurrence disappears.
+  Keep loaded details mounted when a check or window section becomes inactive.
+  Pause new evidence requests while hidden. Returning from a session card keeps
+  the retained occurrence. Hidden evidence responses do not emit reader events.
+  Keep the complete snapshot after a refresh error and show Retry. A successful
+  unavailable response replaces old excerpts.
+  Show task context and decisive earlier events with their source labels.
+  Show review counts once at check level. Keep skipped comparisons separate from
+  reviewed answers. Terminal zero-target work uses Nothing to assess in neutral
+  ink and stays outside Passed checks. A context-blocked review shows the model
+  context message and recorded counts without retrying unchanged inputs.
+  Stop Checking when runnable work ends. Keep partial findings visible after
+  review stops; unanswered or skipped work does not become a clean result.
+  Over-exploring uses one Files read section. Nest each result under its explicit
+  request binding. Show each path and request time once, even for repeated reads.
+  Label requested limits and returned ranges separately. Keep returned contents
+  collapsed behind Show file contents / Hide file contents. Expansion controls
+  expose their expanded state. Scope Creep uses Proposed work or Attempted work
+  from typed evidence, with Recorded work for older findings. Skill Opportunities
+  uses Relevant skill and Recorded work. Paths, commands, and timestamps wrap
+  within the reading column at narrow widths and large interface scales.
   Excerpts can grow beyond this minimum. Background refreshes keep the loaded
   content and pause stale citation navigation instead of showing a skeleton.
   Session-card rows use a 2px interline gap inside unchanged 12px vertical card padding. A zero-failure result with at least one assessed check uses an outlined ring and tick, even
@@ -1180,14 +1207,14 @@ Every finding explanation appears below the header metrics.
 All check actions sit at the header’s right edge. Named resource cards contain evidence only.
 Do not repeat explanations or check-level actions in the body.
 An Ignored Instructions finding shows the same two sections in every detail state: “Instruction”
-and “Where it was ignored”. Load bounded saved excerpts when the detail opens, without another
+and “What happened”. Load bounded saved excerpts when the detail opens, without another
 disclosure. Include the instruction source and line range, plus the cited action and its available
-time. Show each complete bounded excerpt with its source and a short explanation. Keep surrounding
-events chronological behind “Show context”. Keep the finding summary visible while excerpts load
+time. Show each complete bounded excerpt with its source. Show selected supporting
+events in chronological order. Keep the finding summary visible while excerpts load
 or fail; offer Retry after a failed read. New assessments save the compared excerpts with the finding so later session changes
 do not hide the example. For older findings without saved excerpts, show the instruction location
 and action summary, then state that exact text was not saved. Closing or changing the selected
-detail discards late responses. Other session findings may load bounded evidence on demand.
+detail discards late responses. All four Smart Checks load bounded evidence automatically.
 The collection and detail panes start at the top of the workspace. The collection docks directly to
 the sidebar and uses the same `--main-window-collection-width` geometry as Sessions. Its 340px width
 does not change by breakpoint. The detail pane remains flexible, and both panes own independent scroll

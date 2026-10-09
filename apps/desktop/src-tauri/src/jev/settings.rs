@@ -592,8 +592,16 @@ async fn test_connection(draft: SystemOneDraft) -> Result<(), String> {
             let SystemOneEndpoint::BaseUrl(base) = &draft.connection.endpoint else {
                 return Err("Connection settings are invalid.".to_owned());
             };
-            crate::jev_ollama::OllamaClient::new(base, draft.credential)
-                .map_err(|error| error.to_string())?
+            let client = crate::jev_ollama::OllamaClient::new(base, draft.credential)
+                .map_err(|error| error.to_string())?;
+            let discovered = client
+                .discover(&draft.connection.model)
+                .await
+                .map_err(|error| error.to_string())?;
+            let limits = draft
+                .connection
+                .apply_capability_overrides(discovered.capabilities);
+            client
                 .evaluate(&request, &limits)
                 .await
                 .map_err(|error| match error {
@@ -2227,11 +2235,7 @@ mod tests {
                 ..custom_connection()
             };
             let server = tokio::spawn(async move {
-                for (route, body) in [
-                    (
-                        "/v1/systemone",
-                        serde_json::json!({"model":"clef-flash", "answers":{"validation":{"type":"noul","noul":0.9}}, "usage":{"input_tokens":4,"output_tokens":1}}),
-                    ),
+                let discovery = [
                     ("/api/version", serde_json::json!({"version":"0.35.0"})),
                     (
                         "/api/tags",
@@ -2245,7 +2249,11 @@ mod tests {
                         "/api/ps",
                         serde_json::json!({"models":[{"name":"clef-flash:latest","digest":"synthetic-digest","context_length":8192}]}),
                     ),
-                ] {
+                ];
+                for (route, body) in discovery.clone().into_iter().chain([(
+                    "/v1/systemone",
+                    serde_json::json!({"model":"clef-flash", "answers":{"validation":{"type":"noul","noul":0.9}}, "usage":{"input_tokens":4,"output_tokens":1}}),
+                )]).chain(discovery) {
                     let (mut socket, _) = listener.accept().await.unwrap();
                     let mut request = Vec::new();
                     loop {

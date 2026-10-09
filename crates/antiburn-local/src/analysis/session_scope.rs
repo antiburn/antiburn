@@ -143,18 +143,8 @@ impl SessionScopeSnapshot {
         &self.limitations
     }
 
-    /// Partial inputs keep unknown influences visible without treating them as approvals.
+    /// Keep unknown influences visible without treating them as approvals.
     pub fn scope_creep_context(&self) -> Result<JevSharedRequestContext, SessionScopeError> {
-        if self.source_complete
-            && self
-                .occurrences
-                .iter()
-                .any(|item| item.authority == ScopeAuthority::UnknownInfluence)
-        {
-            return Err(SessionScopeError::Missing(
-                ScopeMissingReason::UnresolvedInfluence,
-            ));
-        }
         Ok(self.user_context())
     }
 
@@ -384,11 +374,7 @@ impl SessionScopeBuilder {
             ));
         }
         if !has_next && (content.coverage.parts_capped || content.coverage.bytes_capped) {
-            if self.source_complete {
-                return Err(SessionScopeError::Missing(
-                    ScopeMissingReason::IncompletePaging,
-                ));
-            }
+            self.source_complete = false;
             if !self
                 .limitations
                 .contains(&ScopeMissingReason::IncompletePaging)
@@ -400,11 +386,7 @@ impl SessionScopeBuilder {
             || content.coverage.stored_truncated_parts > 0
             || content.coverage.context_capped
         {
-            if self.source_complete {
-                return Err(SessionScopeError::Missing(
-                    ScopeMissingReason::TruncatedEvidence,
-                ));
-            }
+            self.source_complete = false;
             if !self
                 .limitations
                 .contains(&ScopeMissingReason::TruncatedEvidence)
@@ -429,7 +411,10 @@ impl SessionScopeBuilder {
                     <= (self.boundary.turn_index, self.boundary.part_index)
         });
         content.parts.retain(|item| {
-            if !self.source_complete && (item.context_only || item.part.truncated) {
+            self.boundary_seen |= (item.turn_index, item.part_index)
+                == (self.boundary.turn_index, self.boundary.part_index);
+            if item.context_only || item.part.truncated {
+                self.source_complete = false;
                 if !self
                     .limitations
                     .contains(&ScopeMissingReason::TruncatedEvidence)
@@ -441,15 +426,8 @@ impl SessionScopeBuilder {
             true
         });
         for item in &content.parts {
-            self.boundary_seen |= (item.turn_index, item.part_index)
-                == (self.boundary.turn_index, self.boundary.part_index);
             if item.part.kind == ContentKind::Thinking {
                 continue;
-            }
-            if item.context_only || item.part.truncated {
-                return Err(SessionScopeError::Missing(
-                    ScopeMissingReason::TruncatedEvidence,
-                ));
             }
             let size = item.part.text.len().saturating_add(
                 serde_json::to_vec(&item.part.metadata)
@@ -466,8 +444,9 @@ impl SessionScopeBuilder {
             }
         }
         // This conversion preserves user and assistant text and native scope metadata.
-        let normalized = prepare_session_content("scope", self.source_format, content, Vec::new());
-        for action in &normalized.actions {
+        let mut normalized =
+            prepare_session_content("scope", self.source_format, content, Vec::new());
+        normalized.actions.retain(|action| {
             if matches!(action.kind.as_str(), "user" | "user_text")
                 && action.authority != "user"
                 && !is_recorded_skill_selection(action)
@@ -477,11 +456,18 @@ impl SessionScopeBuilder {
                     .as_ref()
                     .is_some_and(|fact| fact.matches_action(action, self.source_format))
             {
-                return Err(SessionScopeError::Missing(
-                    ScopeMissingReason::InvalidEvidence,
-                ));
+                self.source_complete = false;
+                if !self
+                    .limitations
+                    .contains(&ScopeMissingReason::UnresolvedInfluence)
+                {
+                    self.limitations
+                        .push(ScopeMissingReason::UnresolvedInfluence);
+                }
+                return false;
             }
-        }
+            true
+        });
         self.actions.extend(normalized.actions);
         self.ended = !has_next;
         Ok(())
@@ -672,11 +658,7 @@ impl SessionScopeBuilder {
             .iter()
             .any(|item| item.authority == ScopeAuthority::User)
         {
-            if snapshot.source_complete {
-                return Err(SessionScopeError::Missing(
-                    ScopeMissingReason::NoUserContext,
-                ));
-            }
+            snapshot.source_complete = false;
             snapshot.limitations.push(ScopeMissingReason::NoUserContext);
         }
         Ok(snapshot)

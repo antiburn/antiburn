@@ -22,6 +22,530 @@ fn scope() -> SkillScope {
     }
 }
 
+fn small_capabilities(tokens: u64) -> ModelCapabilities {
+    use crate::analysis::jev::capabilities::{CapabilityLimit, CapabilitySource};
+    let mut capabilities = ModelCapabilities::jev_default();
+    capabilities.runtime_context_tokens =
+        CapabilityLimit::known(tokens, CapabilitySource::RuntimeMetadata);
+    capabilities.rendering_reserve_tokens = 1024;
+    capabilities
+}
+
+#[test]
+fn small_windows_persist_exact_comparison_owned_task_and_skill_passages() {
+    for tokens in [2048, 2050] {
+        let check = check(parts(), 1, false);
+        let capabilities = small_capabilities(tokens);
+        let plan = check
+            .prepare_with_capabilities(&check.session_context(), &capabilities)
+            .unwrap();
+        assert_eq!(
+            plan.work_items.len(),
+            1,
+            "{tokens}: {:?}",
+            plan.skipped_item_ids
+        );
+        let result = check
+            .reduce(&plan, &results(&plan, "specialist_check", 0.9), false)
+            .unwrap();
+        let finding = &result.findings[0];
+        let source = prepare_session_content(
+            "session",
+            SourceFormat::ClaudeJsonl,
+            PublishedContent {
+                publication_fence: 4,
+                source_generation: Some(3),
+                parts: parts(),
+                ..Default::default()
+            },
+            vec![],
+        );
+        let source = select_session_content(&source, SKILL_OPPORTUNITIES_INPUT_SELECTION);
+        assert_eq!(
+            finding.explanation_basis.as_ref().unwrap().relationship,
+            SkillRelationship::SpecialistCheck
+        );
+        assert!(!finding.comparison.task.is_empty());
+        assert!(finding.comparison.skill.matches_definition(&skill(0)));
+        for citation in finding
+            .comparison
+            .work
+            .iter()
+            .chain(&finding.comparison.task)
+        {
+            assert!(
+                finding
+                    .evidence
+                    .iter()
+                    .any(|reference| reference.source_id == citation.reference.id)
+            );
+            let action = source
+                .actions
+                .iter()
+                .find(|action| action.reference == citation.reference)
+                .unwrap();
+            assert!(citation.matches_action(action));
+        }
+        let persisted: SkillOpportunityFinding = serde_json::from_value(json!(finding)).unwrap();
+        assert_eq!(&persisted, finding);
+        assert!(!result.complete);
+    }
+}
+
+#[test]
+fn small_skill_request_fits_escaped_unicode_work_without_duplicate_bodies() {
+    let source = vec![part(
+        1,
+        ContentKind::ToolInput,
+        r#"{"command":"cargo test worker_shutdown -- \"quoted\" 🦀"}"#,
+        Some("Bash"),
+        Some("test"),
+    )];
+    let check = check(source, 1, false);
+    for tokens in [2048, 2050] {
+        let plan = check
+            .prepare_with_capabilities(&check.session_context(), &small_capabilities(tokens))
+            .unwrap();
+        assert_eq!(plan.work_items.len(), 1);
+        let packing = crate::analysis::jev::pack_work_items_with_capabilities(
+            &plan.work_items,
+            &plan.capabilities,
+        );
+        assert!(packing.skipped_item_ids.is_empty());
+        for batch in packing.batches {
+            crate::analysis::jev::validate_jev_request_with_capabilities(
+                &batch.request,
+                &plan.capabilities,
+            )
+            .unwrap();
+            let state = batch.request.state.to_string();
+            assert_eq!(state.matches("worker_shutdown").count(), 1);
+        }
+    }
+}
+
+#[test]
+fn missing_task_and_result_keep_small_window_positive_but_not_clean() {
+    let source = vec![part(
+        1,
+        ContentKind::ToolInput,
+        r#"{"command":"cargo test worker_shutdown"}"#,
+        Some("Bash"),
+        Some("test"),
+    )];
+    let check = check(source, 1, true);
+    let plan = check
+        .prepare_with_capabilities(&check.session_context(), &small_capabilities(2048))
+        .unwrap();
+    assert_eq!(plan.work_items.len(), 1);
+    let positive = check
+        .reduce(&plan, &results(&plan, "useful_opportunity", 0.9), false)
+        .unwrap();
+    assert_eq!(positive.findings.len(), 1);
+    assert!(!positive.complete);
+    let negative = check
+        .reduce(&plan, &results(&plan, "no_opportunity", 0.9), true)
+        .unwrap();
+    assert!(negative.findings.is_empty());
+    assert!(!negative.complete);
+}
+
+#[test]
+fn invalid_sibling_does_not_remove_independent_skill_operation() {
+    let mut source = parts();
+    let mut sibling = part(
+        3,
+        ContentKind::ToolInput,
+        r#"{"command":"cargo test unrelated"}"#,
+        Some("Bash"),
+        Some("other"),
+    );
+    sibling.stable_event_identity = false;
+    source.push(sibling);
+    let check = check(source, 1, false);
+    let plan = check
+        .prepare_with_capabilities(&check.session_context(), &small_capabilities(2050))
+        .unwrap();
+    assert!(!plan.work_items.is_empty());
+    assert_eq!(
+        check
+            .reduce(&plan, &results(&plan, "useful_opportunity", 0.9), false)
+            .unwrap()
+            .findings
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn task_citations_are_bound_to_their_own_operation_not_the_batch() {
+    let mut source = parts();
+    source.extend([
+        part(
+            3,
+            ContentKind::UserText,
+            "Review cancellation after lock release.",
+            None,
+            None,
+        ),
+        part(
+            4,
+            ContentKind::ToolInput,
+            r#"{"command":"cargo test cancellation"}"#,
+            Some("Bash"),
+            Some("cancel"),
+        ),
+    ]);
+    let check = check(source, 1, false);
+    let plan = check.prepare(&check.session_context()).unwrap();
+    let result = check
+        .reduce(&plan, &results(&plan, "useful_opportunity", 0.9), false)
+        .unwrap();
+    assert_eq!(result.findings.len(), 2);
+    for (index, finding) in result.findings.iter().enumerate() {
+        let own_task = &finding.comparison.task[0];
+        let other_task = &result.findings[1 - index].comparison.task[0];
+        assert_ne!(own_task.reference.id, other_task.reference.id);
+        assert!(
+            finding
+                .evidence
+                .iter()
+                .any(|reference| reference.source_id == own_task.reference.id)
+        );
+        assert!(
+            !finding
+                .evidence
+                .iter()
+                .any(|reference| reference.source_id == other_task.reference.id)
+        );
+    }
+}
+
+#[test]
+fn fresh_reduction_retracts_a_prior_skill_positive() {
+    let check = check(parts(), 1, false);
+    let plan = check.prepare(&check.session_context()).unwrap();
+    let prior = check
+        .reduce(&plan, &results(&plan, "useful_opportunity", 0.9), true)
+        .unwrap();
+    assert_eq!(prior.findings.len(), 1);
+    let latest = check
+        .reduce(&plan, &results(&plan, "no_opportunity", 0.9), true)
+        .unwrap();
+    assert!(latest.findings.is_empty());
+    assert_eq!(
+        latest.decisions[0].comparison.id,
+        prior.decisions[0].comparison.id
+    );
+    assert_eq!(
+        latest.decisions[0].outcome,
+        SkillOpportunityOutcome::NoOpportunity
+    );
+    assert_eq!(
+        latest.decisions[0].judgments.as_ref().unwrap().relationship,
+        Some(SkillRelationship::Unrelated)
+    );
+}
+
+#[test]
+fn mutually_exclusive_useful_relations_publish_the_bound_specialist_check() {
+    let check = check(parts(), 2, false);
+    let plan = check
+        .prepare_with_capabilities(&check.session_context(), &small_capabilities(2050))
+        .unwrap();
+    let mut answers = results(&plan, "specialist_check", 0.48);
+    for answer in &mut answers {
+        if let JevAnswer::Choice { probabilities, .. } =
+            answer.answers.get_mut("opportunity").unwrap()
+        {
+            *probabilities = BTreeMap::from([
+                ("useful_opportunity".into(), 0.43),
+                ("specialist_check".into(), 0.48),
+                ("no_opportunity".into(), 0.03),
+                ("already_covered".into(), 0.02),
+                ("uncertain".into(), 0.04),
+            ]);
+        }
+    }
+    let result = check.reduce(&plan, &answers, false).unwrap();
+    assert_eq!(result.findings.len(), 2);
+    for finding in &result.findings {
+        assert_eq!(
+            finding.explanation_basis.as_ref().unwrap().relationship,
+            SkillRelationship::SpecialistCheck
+        );
+        assert_eq!(
+            finding.comparison,
+            plan.prepared
+                .comparisons
+                .iter()
+                .find(|comparison| comparison.id == finding.comparison.id)
+                .unwrap()
+                .clone()
+        );
+        assert!(finding.comparison.skill.matches_definition(&skill(
+            if finding.comparison.skill.identity == "skill-0" {
+                0
+            } else {
+                1
+            }
+        )));
+    }
+    assert!(
+        (result.decisions[0]
+            .judgments
+            .as_ref()
+            .unwrap()
+            .decision
+            .useful_opportunity_probability
+            - 0.91)
+            .abs()
+            < 1e-9
+    );
+    let mut weak = answers;
+    for answer in &mut weak {
+        if let JevAnswer::Choice { probabilities, .. } =
+            answer.answers.get_mut("opportunity").unwrap()
+        {
+            *probabilities = BTreeMap::from([
+                ("useful_opportunity".into(), 0.25),
+                ("specialist_check".into(), 0.48),
+                ("no_opportunity".into(), 0.12),
+                ("already_covered".into(), 0.05),
+                ("uncertain".into(), 0.10),
+            ]);
+        }
+    }
+    assert!(
+        check
+            .reduce(&plan, &weak, false)
+            .unwrap()
+            .findings
+            .is_empty()
+    );
+}
+
+#[test]
+fn selected_skill_ranges_validate_actual_passages_not_a_fixed_preview() {
+    let mut definition = skill(0);
+    definition.description = format!(
+        "{}\nReview Rust cancellation and lock order.\n{}",
+        "Plant garden seedlings.\n".repeat(40),
+        "Arrange flowers.\n".repeat(40)
+    );
+    let reference = CurrentSkillCitation::from_definition(&definition, "reference".into(), 4096);
+    let (description, ranges) = selected_passage(
+        &reference.description,
+        &reference.reference.ranges,
+        64,
+        &["cancellation".into()],
+    );
+    let selected = CurrentSkillCitation {
+        description,
+        reference: SkillReferenceCoverage {
+            source: reference.reference.source,
+            ranges,
+            total_bytes: definition.description.len(),
+            partial: true,
+        },
+        ..reference
+    };
+    assert!(selected.description.contains("cancellation"));
+    assert!(selected.reference.ranges[0].0 > 0);
+    assert!(selected.matches_definition(&definition));
+    let mut corrupted = selected.clone();
+    corrupted.reference.ranges[0].0 += 1;
+    assert!(!corrupted.matches_definition(&definition));
+}
+
+#[test]
+fn compact_selection_reaches_matching_sections_outside_legacy_samples() {
+    let mut definition = skill(0);
+    definition.frontmatter = json!({});
+    definition.description = format!(
+        "{}\nReview worker_shutdown lock order and cancellation.\n{}",
+        "Garden seedlings and flowers.\n".repeat(240),
+        "Garden seedlings and flowers.\n".repeat(2400)
+    );
+    let check = check_with_skills(parts(), vec![definition.clone()], false);
+    for tokens in [2048, 2050] {
+        let plan = check
+            .prepare_with_capabilities(&check.session_context(), &small_capabilities(tokens))
+            .unwrap();
+        assert_eq!(plan.work_items.len(), 1);
+        let selected = &plan.prepared.comparisons[0].skill;
+        assert!(
+            selected.description.contains("worker_shutdown"),
+            "{}",
+            selected.description
+        );
+        assert!(selected.matches_definition(&definition));
+        let positive = check
+            .reduce(&plan, &results(&plan, "specialist_check", 0.9), true)
+            .unwrap();
+        assert_eq!(positive.findings.len(), 1);
+        assert!(!positive.complete);
+    }
+}
+
+#[tokio::test]
+async fn compact_skill_comparison_uses_the_production_runner_without_task() {
+    let check = check(
+        vec![part(
+            1,
+            ContentKind::ToolInput,
+            r#"{"command":"cargo test worker_shutdown"}"#,
+            Some("Bash"),
+            Some("test"),
+        )],
+        1,
+        true,
+    );
+    for tokens in [2048, 2050] {
+        let outcome = crate::analysis::jev::run_jev_check_with_capabilities(
+            &check,
+            &check.session_context(),
+            JevRunProgress::default(),
+            small_capabilities(tokens),
+            |batch| async move {
+                let probabilities = BTreeMap::from([
+                    ("useful_opportunity".into(), 0.02),
+                    ("specialist_check".into(), 0.92),
+                    ("already_covered".into(), 0.02),
+                    ("no_opportunity".into(), 0.02),
+                    ("uncertain".into(), 0.02),
+                ]);
+                Ok(JevResponse {
+                    model: batch.request.model.clone(),
+                    answers: batch
+                        .request
+                        .questions
+                        .keys()
+                        .map(|id| {
+                            (
+                                id.clone(),
+                                JevAnswer::Choice {
+                                    choice: "specialist_check".into(),
+                                    probabilities: probabilities.clone(),
+                                    confidence: 0.92,
+                                },
+                            )
+                        })
+                        .collect(),
+                    usage: JevUsage {
+                        input_tokens: 10,
+                        output_tokens: 1,
+                    },
+                })
+            },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert!(outcome.complete, "{:?}", outcome.failure);
+        assert_eq!(outcome.result.findings.len(), 1);
+        assert!(outcome.result.findings[0].comparison.task.is_empty());
+        assert!(!outcome.result.complete);
+    }
+}
+
+#[test]
+fn candidate_product_is_bounded_without_rejecting_valid_operations() {
+    let source = (0..33)
+        .flat_map(|index| {
+            [
+                part(
+                    index * 2,
+                    ContentKind::UserText,
+                    &format!("Run test operation {index}."),
+                    None,
+                    None,
+                ),
+                part(
+                    index * 2 + 1,
+                    ContentKind::ToolInput,
+                    &format!(r#"{{"command":"cargo test worker_shutdown_{index}"}}"#),
+                    Some("Bash"),
+                    Some(&format!("test-{index}")),
+                ),
+            ]
+        })
+        .collect();
+    let check = check(source, 128, false);
+    assert_eq!(
+        check.descriptor_count(),
+        SKILL_OPPORTUNITIES_MAX_COMPARISONS + 128
+    );
+    assert_eq!(check.omitted_comparison_count(), 0);
+    let mut inventory = SkillDescriptorInventory::default();
+    check.enumerate_descriptors(&mut inventory).unwrap();
+    assert!(!inventory.complete);
+    let saved: SkillDescriptorInventory = serde_json::from_value(json!(&inventory)).unwrap();
+    inventory = saved;
+    check.enumerate_descriptors(&mut inventory).unwrap();
+    assert_eq!(inventory.next_comparison, 512);
+    let plan = check
+        .prepare_with_capabilities(&check.session_context(), &small_capabilities(2048))
+        .unwrap();
+    assert!(!plan.work_items.is_empty());
+    assert_eq!(plan.coverage.not_selected_items, 4220);
+    while inventory.descriptors.len() < SKILL_OPPORTUNITIES_MAX_COMPARISONS {
+        check.enumerate_descriptors(&mut inventory).unwrap();
+    }
+    assert!(!inventory.complete);
+    let previous_ids = inventory
+        .descriptors
+        .iter()
+        .map(|descriptor| descriptor.0.clone())
+        .collect::<BTreeSet<_>>();
+    assert!(check.advance_descriptor_page(&mut inventory).unwrap());
+    let saved: SkillDescriptorInventory = serde_json::from_value(json!(&inventory)).unwrap();
+    inventory = saved;
+    check.enumerate_descriptors(&mut inventory).unwrap();
+    assert!(inventory.complete);
+    assert_eq!(inventory.page_start, 4096);
+    assert_eq!(inventory.descriptors.len(), 128);
+    assert!(
+        inventory
+            .descriptors
+            .iter()
+            .all(|descriptor| !previous_ids.contains(&descriptor.0))
+    );
+    let mut sampling = SamplingProgress::new(SamplingLimits {
+        checks: 1,
+        candidates_per_check: 4096,
+        answers_per_candidate: 1,
+        judgments_per_run: 4,
+    })
+    .unwrap();
+    sampling
+        .synchronize_ordered(
+            check.sampling_identity(),
+            check.sampling_epoch(),
+            &check.descriptor_candidates(&inventory).unwrap(),
+            &check.descriptor_chronology(&inventory).unwrap(),
+        )
+        .unwrap();
+    sampling.begin_run();
+    let jobs = vec![sampling.choose_job().unwrap()];
+    for capabilities in [small_capabilities(2048), ModelCapabilities::jev_default()] {
+        let plan = check
+            .prepare_inventory_sampled(&inventory, &check.session_context(), &capabilities, &jobs)
+            .unwrap();
+        assert_eq!(plan.work_items.len(), 1);
+        let result = check
+            .reduce(&plan, &results(&plan, "specialist_check", 0.9), false)
+            .unwrap();
+        assert_eq!(result.findings.len(), 1);
+        assert!(
+            inventory
+                .descriptors
+                .iter()
+                .any(|descriptor| descriptor.0 == result.findings[0].comparison.id)
+        );
+    }
+}
+
 #[test]
 fn short_approval_does_not_establish_complete_task_context() {
     let source = vec![
@@ -112,33 +636,22 @@ fn settled_targets_preserve_the_plan_inventory_invariant() {
     ));
 }
 
-#[tokio::test]
-async fn missing_task_is_unassessed_without_invalid_plan_or_dispatch() {
+#[test]
+fn missing_task_keeps_interpretable_operations_assessable() {
     let mut source = parts();
     source[0].turn_index = 3;
     source[0].uuid = Some("later-task".into());
     source.sort_by_key(|part| part.turn_index);
     let check = check(source, 1, false);
     let plan = check.prepare(&check.session_context()).unwrap();
-    assert!(plan.work_items.is_empty());
-    assert_eq!(plan.skipped_item_ids.len(), 1);
-    let outcome = run_jev_check(
-        &check,
-        &check.session_context(),
-        JevRunProgress::default(),
-        |_| async { panic!("missing task must not dispatch") },
-        |_| Ok(()),
-    )
-    .await
-    .unwrap();
-    assert!(!outcome.result.complete);
-    assert!(
-        outcome
-            .result
-            .decisions
-            .iter()
-            .all(|decision| decision.judgments.is_none())
-    );
+    assert_eq!(plan.work_items.len(), 1);
+    assert!(plan.skipped_item_ids.is_empty());
+    let result = check
+        .reduce(&plan, &results(&plan, "useful_opportunity", 0.9), false)
+        .unwrap();
+    assert_eq!(result.findings.len(), 1);
+    assert!(result.findings[0].comparison.task.is_empty());
+    assert!(!result.complete);
 }
 fn skill(index: usize) -> SkillDefinition {
     SkillDefinition {
@@ -274,30 +787,39 @@ fn results(
     choice: &str,
     probability: f64,
 ) -> Vec<JevWorkItemResult> {
-    pack_work_items_with_shared_context(
-        &plan.work_items,
-        &plan.capabilities,
-        plan.shared_context.as_ref().unwrap(),
-    )
-    .batches
-    .iter()
-    .flat_map(|batch| {
-        let response = JevResponse {
-            model: batch.request.model.clone(),
-            usage: JevUsage {
-                input_tokens: 10,
-                output_tokens: 5,
+    plan.shared_context
+        .as_ref()
+        .map_or_else(
+            || pack_work_items_with_capabilities(&plan.work_items, &plan.capabilities),
+            |shared| {
+                pack_work_items_with_shared_context(&plan.work_items, &plan.capabilities, shared)
             },
-            answers: batch
-                .request
-                .questions
-                .keys()
-                .map(|id| {
-                    (
-                        id.clone(),
-                        JevAnswer::Choice {
-                            choice: choice.into(),
-                            probabilities: ["useful_opportunity", "no_opportunity", "uncertain"]
+        )
+        .batches
+        .iter()
+        .flat_map(|batch| {
+            let response = JevResponse {
+                model: batch.request.model.clone(),
+                usage: JevUsage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                },
+                answers: batch
+                    .request
+                    .questions
+                    .keys()
+                    .map(|id| {
+                        (
+                            id.clone(),
+                            JevAnswer::Choice {
+                                choice: choice.into(),
+                                probabilities: [
+                                    "useful_opportunity",
+                                    "specialist_check",
+                                    "no_opportunity",
+                                    "already_covered",
+                                    "uncertain",
+                                ]
                                 .into_iter()
                                 .map(|key| {
                                     (
@@ -305,24 +827,24 @@ fn results(
                                         if key == choice {
                                             probability
                                         } else {
-                                            (1.0 - probability) / 2.0
+                                            (1.0 - probability) / 4.0
                                         },
                                     )
                                 })
                                 .collect(),
-                            confidence: 0.1,
-                        },
-                    )
-                })
-                .collect(),
-        };
-        unpack_jev_response(batch, &response).unwrap()
-    })
-    .collect()
+                                confidence: 0.1,
+                            },
+                        )
+                    })
+                    .collect(),
+            };
+            unpack_jev_response(batch, &response).unwrap()
+        })
+        .collect()
 }
 
 #[test]
-fn one_decision_uses_selected_choice_and_positive_threshold() {
+fn one_decision_uses_grouped_probability_and_positive_threshold() {
     let check = check(parts(), 1, false);
     let plan = check.prepare(&check.session_context()).unwrap();
     assert_eq!(plan.work_items[0].questions.len(), 1);
@@ -334,14 +856,10 @@ fn one_decision_uses_selected_choice_and_positive_threshold() {
         ),
         (
             "useful_opportunity",
-            0.74,
+            0.65,
             SkillOpportunityOutcome::Uncertain,
         ),
-        (
-            "no_opportunity",
-            0.6,
-            SkillOpportunityOutcome::NoOpportunity,
-        ),
+        ("no_opportunity", 0.6, SkillOpportunityOutcome::Uncertain),
         ("uncertain", 0.8, SkillOpportunityOutcome::Uncertain),
     ] {
         let result = check
@@ -388,8 +906,9 @@ fn partial_work_and_unknown_use_reach_model_with_bound_attempts() {
     ]);
     let check = check(activity, 1, true);
     let plan = check.prepare(&check.session_context()).unwrap();
-    assert_eq!(plan.work_items.len(), 1);
-    assert_eq!(plan.prepared.comparisons[0].work.len(), 3);
+    assert_eq!(plan.work_items.len(), 2);
+    assert_eq!(plan.prepared.comparisons[0].work.len(), 1);
+    assert_eq!(plan.prepared.comparisons[1].work.len(), 2);
     assert!(!plan.prepared.comparisons[0].absence_assessable);
     let payload = plan.work_items[0].window.fields.to_string();
     assert!(payload.contains("cargo test worker_shutdown"));
@@ -397,7 +916,7 @@ fn partial_work_and_unknown_use_reach_model_with_bound_attempts() {
     let result = check
         .reduce(&plan, &results(&plan, "useful_opportunity", 0.9), true)
         .unwrap();
-    assert_eq!(result.findings.len(), 1);
+    assert_eq!(result.findings.len(), 2);
     assert!(!result.complete);
     assert!(!result.findings[0].absence_limit.contains("No matching use"));
     for work in &result.findings[0].comparison.work {
@@ -807,7 +1326,7 @@ fn choice_must_have_a_highest_probability_and_ties_remain_valid() {
     let check = check(parts(), 1, false);
     let plan = check.prepare(&check.session_context()).unwrap();
     for choice in ["useful_opportunity", "no_opportunity", "uncertain"] {
-        let answers = results(&plan, choice, 0.2);
+        let answers = results(&plan, choice, 0.1);
         assert_eq!(
             check.reduce(&plan, &answers, true).unwrap_err(),
             JevError::InvalidChoiceDistribution
@@ -819,6 +1338,8 @@ fn choice_must_have_a_highest_probability_and_ties_remain_valid() {
     {
         probabilities.insert("useful_opportunity".into(), 0.4);
         probabilities.insert("uncertain".into(), 0.2);
+        probabilities.insert("specialist_check".into(), 0.0);
+        probabilities.insert("already_covered".into(), 0.0);
     }
     assert!(check.reduce(&plan, &answers, true).is_ok());
 }
@@ -994,6 +1515,8 @@ async fn runner_dispatches_one_question_per_pair_without_followup() {
                                 probabilities: BTreeMap::from([
                                     ("useful_opportunity".into(), 0.9),
                                     ("no_opportunity".into(), 0.05),
+                                    ("specialist_check".into(), 0.0),
+                                    ("already_covered".into(), 0.0),
                                     ("uncertain".into(), 0.05),
                                 ]),
                                 confidence: 0.1,

@@ -20,17 +20,17 @@ import { BurnCheckTargetChooserDialog } from "./BurnCheckTargetChooserDialog"
 export const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
   sessionsOverDepth: "Some sessions carried context after it stopped helping.",
   modelOverthinking: "Some work used more reasoning than it needed.",
-  overpoweredSubagents: "Some helper work used more model power than it needed.",
-  unusedMcpServers: "Some MCP servers were loaded but not used.",
+  overpoweredSubagents: "Some helper work used a stronger model than it needed.",
+  unusedMcpServers: "Some connected tool servers loaded tools that were not used.",
   unusedBuiltInTools: "Some built-in tools were loaded but not used.",
   unusedSkills: "Some skills were loaded but not used.",
-  skillOpportunities: "This work matches a skill you have installed.",
-  overExploring: "Some assessed reads went beyond what the work needed.",
-  scopeCreep: "Some assessed work went outside the agreed task.",
+  skillOpportunities: "This work matches a skill that may help with similar tasks.",
+  overExploring: "Some files or sections read were not needed for the task.",
+  scopeCreep: "Some proposed or attempted work went beyond the agreed task.",
   oldModelUsage: "Some sessions used an older model when a newer one was available.",
   overuseOfFastMode: "Some work paid for speed it did not need.",
   cacheChurn: "Some sessions kept paying to reload the same context.",
-  ignoredInstructions: "Some sessions didn't follow your agent instruction files properly.",
+  ignoredInstructions: "Selected actions conflict with current or recorded instruction text.",
 }
 
 function isUnusedResourceDetector(detector: BurnCheckDetectorId) {
@@ -162,8 +162,8 @@ export function CheckPromptAction({
       setBusy(false)
       setStatus(
         preparationFailed
-          ? "Could not prepare the prompt. Try again."
-          : "Could not copy the prompt. Try again.",
+          ? "The fix prompt could not be prepared. Try again."
+          : "The fix prompt could not be copied. Try again.",
       )
     }
   }

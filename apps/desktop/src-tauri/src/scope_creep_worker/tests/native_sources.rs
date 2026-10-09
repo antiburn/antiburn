@@ -405,11 +405,13 @@ fn assert_native_scope_source((agent, session, format, records): (&str, &str, So
         .reduce(&changed_input.plan, &results(&changed_input, true), true)
         .unwrap();
     assert!(accepted.findings.is_empty(), "{agent}");
+    let clean = publication_has_clean_coverage(&accepted);
     persist(&store, &changed_input, accepted);
-    assert!(
+    assert_eq!(
         current_publication(&store.lock(), &SourceFence::from(&current))
             .unwrap()
             .is_some(),
+        clean,
         "{agent}"
     );
     store

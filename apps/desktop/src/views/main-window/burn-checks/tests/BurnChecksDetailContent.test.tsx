@@ -59,6 +59,7 @@ vi.mock("../../../../lib/clipboard", async (importOriginal) => ({
 
 beforeEach(() => {
   installBurnChecksCommandMocks(commands)
+  commands.evidence.mockReset().mockResolvedValue(null)
 })
 
 afterEach(() => {
@@ -157,7 +158,7 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
         )
         fireEvent.click(screen.getByRole("button", { name: "Copy fix prompt" }))
         expect(await screen.findByRole("alert")).toHaveTextContent(
-          "Could not copy the prompt. Try again.",
+          "The fix prompt could not be copied. Try again.",
         )
         expect(commands.noteInteraction.mock.calls).toEqual([
           [{ kind: "burnCheckPromptPrepared", check, outcome: "ready" }],
@@ -408,8 +409,8 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
     ).toBeTruthy()
     expect(screen.queryByRole("button", { name: "Show evidence" })).not.toBeInTheDocument()
     expect(screen.queryByText("Supporting events")).not.toBeInTheDocument()
-    expect(screen.queryByText("Earlier event")).not.toBeInTheDocument()
-    expect(screen.queryByText("Later context")).not.toBeInTheDocument()
+    expect(screen.getAllByText("Earlier event")).toHaveLength(2)
+    expect(screen.getAllByText("Later context")).toHaveLength(2)
     expect(commands.evidence).toHaveBeenCalledWith("first-action")
     expect(commands.evidence).toHaveBeenCalledWith("second-action")
     expect(
@@ -437,7 +438,59 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
     expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
   })
 
-  it("retries evidence reads and discards responses after leaving the selected check", async () => {
+  it("keeps the selected occurrence mounted while the Checks section is inactive", async () => {
+    const item = (id: string) => ({
+      findingId: id,
+      status: "available" as const,
+      items: [
+        {
+          label: "observedAction" as const,
+          sourceLabel: "Recorded work",
+          reference: id,
+          observedAtMs: null,
+          startLine: null,
+          endLine: null,
+          excerpt: `Occurrence ${id}`,
+          explanation: "",
+          limitation: null,
+        },
+      ],
+    })
+    commands.evidence
+      .mockResolvedValueOnce({ status: "available", items: [], occurrences: [item("A")] })
+      .mockResolvedValueOnce({
+        status: "available",
+        items: [],
+        occurrences: [item("B"), item("A")],
+      })
+    const current = {
+      ...target,
+      finding: { ...target.finding, detector: "scopeCreep" as const },
+      evidenceAvailable: true,
+    }
+    const { adapter, session, view } = setup(current, false, aggregate, {
+      ...report,
+      categories: [{ ...report.categories[0]!, id: "scopeCreep", clean: 0 }],
+    })
+    const excerpt = await screen.findByText("Occurrence A")
+    view.rerender(<BurnChecksView active={false} session={session} />)
+    expect(screen.getByText("Occurrence A")).toBe(excerpt)
+    expect(excerpt).not.toBeVisible()
+    vi.mocked(adapter.getTargets).mockResolvedValue({
+      targets: [{ ...current, actionId: "revised-action" }],
+      samples: current.samples,
+      truncated: false,
+    })
+    expect(commands.evidence).toHaveBeenCalledOnce()
+    view.rerender(<BurnChecksView active session={session} />)
+    await waitFor(() => expect(session.getSnapshot().active).toBe(true))
+    await act(async () => session.loadTargets("scopeCreep", true))
+    await waitFor(() => expect(commands.evidence).toHaveBeenCalledTimes(2))
+    expect(screen.getByText("Occurrence A")).toBeVisible()
+    expect(screen.queryByText("Occurrence B")).not.toBeInTheDocument()
+  })
+
+  it("retains current evidence after leaving the check without reporting hidden outcomes", async () => {
     let resolveLate!: (evidence: BurnCheckTargetEvidencePayload) => void
     commands.evidence.mockRejectedValueOnce(new Error("offline")).mockImplementationOnce(
       () =>
@@ -461,9 +514,7 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
         ],
       },
     )
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Could not load the saved excerpts.",
-    )
+    expect(await screen.findByRole("alert")).toHaveTextContent("The details did not load.")
     fireEvent.click(screen.getByRole("button", { name: "Retry" }))
     fireEvent.click(screen.getByRole("button", { name: /Unused skills, Passed/ }))
     await act(async () =>
@@ -484,7 +535,12 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
         ],
       }),
     )
-    expect(screen.queryByText("private late action")).not.toBeInTheDocument()
+    const retained = screen.getByText("private late action")
+    expect(retained).not.toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: /^Ignored instructions,/ }))
+    expect(screen.getByText("private late action")).toBe(retained)
+    expect(retained).toBeVisible()
+    expect(commands.evidence).toHaveBeenCalledTimes(2)
     expect(
       screen.queryByRole("alert", { name: "Could not load the saved excerpts." }),
     ).not.toBeInTheDocument()
@@ -786,14 +842,14 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
       "subagentModel",
       "workerModelSelection",
       "workerBehaviorMayChange",
-      "Subagent model",
+      "Helper model",
       "Future worker responses can change",
     ],
     [
       "mcpServer",
       "mcpAvailability",
       "serverWillNotBeAvailable",
-      "MCP server",
+      "Tool server",
       "This server will not be available",
     ],
     [

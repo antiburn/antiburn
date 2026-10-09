@@ -51,6 +51,8 @@ async fn evaluate(
     let mut result = OverExploringCheck
         .reduce(&plan, &[], false)
         .expect("Empty reduction succeeds");
+    let mut baseline_result = result.clone();
+    let mut baseline_failure = None;
     result.unassessed = plan.prepared.unassessed.clone();
     let mut failure = None;
     let mut missing = 0;
@@ -68,7 +70,7 @@ async fn evaluate(
             let permit = admit_jev_orchestration()
                 .await
                 .expect("Admit selected evaluation target");
-            let outcome = match run_jev_check_prepared(
+            let execution = run_jev_check_prepared(
                 &OverExploringCheck,
                 &context,
                 &mut selected,
@@ -80,14 +82,33 @@ async fn evaluate(
                 },
                 |_| Ok(()),
             )
-            .await
-            {
+            .await;
+            let outcome = match execution {
                 Ok(outcome) => outcome,
                 Err(error) => {
                     failure = Some(error.to_string());
                     break 'runs;
                 }
             };
+            if let Some(baseline) =
+                crate::baseline::result(&OverExploringCheck, &selected, usage, &case.id)
+            {
+                match baseline {
+                    Ok(result) => {
+                        baseline_result.findings.extend(result.findings);
+                        baseline_result
+                            .completed_work_item_ids
+                            .extend(result.completed_work_item_ids);
+                        baseline_result.unassessed.extend(
+                            result
+                                .unassessed
+                                .into_iter()
+                                .filter(|item| item.work_item_id.is_some()),
+                        );
+                    }
+                    Err(error) => baseline_failure = Some(error),
+                }
+            }
             missing += selected
                 .work_items
                 .iter()
@@ -154,6 +175,16 @@ async fn evaluate(
     );
     row["missing_answers"] = json!(missing);
     row["elapsed_ms"] = json!(started.elapsed().as_millis());
+    row["production_runner"] = json!(true);
+    if std::env::var_os("ANTIBURN_EVAL_BASELINE_QUESTIONS").is_some() {
+        baseline_result.coverage = result.coverage.clone();
+        row["baseline_row"] = scoring::row(
+            case,
+            Some(&baseline_result),
+            coverage.remaining == 0 && baseline_failure.is_none(),
+            baseline_failure,
+        );
+    }
     row
 }
 
@@ -192,6 +223,7 @@ pub(crate) async fn run() -> Result<(), String> {
     let metrics = scoring::report(&cases, &rows);
     println!("Over Exploring: {}", metrics["overall"]);
     let report = json!({"check":"over_exploring","suite":suite,"provider":support::provider::configuration().identity(),
+        "revisions":OverExploringCheck.revisions(),"production_runner":true,
         "metrics":metrics,"stopped":stopped,"measurements":support::run::measurements(&rows,&usage.lock().expect("Usage lock"))});
     let path = support::capture::report("over_exploring", &suite, &report);
     match stopped {
@@ -229,11 +261,12 @@ fn labels_bind_to_prepared_read_targets_and_missing_answers_stay_unassessed() {
             }
             for expected in &case.expected {
                 assert!(
-                    plan.prepared
+                    expected.reads.iter().all(|read| plan
+                        .prepared
                         .targets
                         .values()
                         .any(|target| target.reason == expected.reason
-                            && target.bindings == expected.reads),
+                            && target.bindings.contains(read))),
                     "{}",
                     case.id
                 );

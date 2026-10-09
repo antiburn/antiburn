@@ -18,6 +18,34 @@ use crate::store::{
 
 const OUTPUT: &str = "<path>/synthetic/parser.rs</path>\n<type>file</type>\n<content>\n1: parser\n\n(End of file - total 1 lines)\n</content>";
 
+#[test]
+fn input_failure_categories_keep_loading_and_stale_reasons() {
+    for (reason, category) in [
+        (InputUnavailable::PublicationChanged, "publication_changed"),
+        (
+            InputUnavailable::InventoryContextMismatch,
+            "inventory_context_mismatch",
+        ),
+        (InputUnavailable::BoundaryMissing, "boundary_missing"),
+        (
+            InputUnavailable::AssemblyLimitReached,
+            "input_assembly_limit",
+        ),
+    ] {
+        let error = InputLoadError::Unavailable(reason);
+        assert_eq!(error.failure_category(), category);
+        assert_eq!(
+            error.is_stale(),
+            reason == InputUnavailable::PublicationChanged
+        );
+    }
+    assert!(InputLoadError::Query(SelectedContentQueryError::StaleCursor).is_stale());
+    assert_eq!(
+        InputLoadError::Preparation(JevError::InvalidCheckContext).failure_category(),
+        crate::jev::worker::error_category(&JevError::InvalidCheckContext)
+    );
+}
+
 fn read_output<'a>(
     input: &'a over_exploring::OverExploringInput,
     read: &over_exploring::ReadObservation,
@@ -439,10 +467,19 @@ fn selected_evidence_gaps_preserve_retained_activity() {
             OUTPUT
         );
         let input = snapshot.over_exploring_input().unwrap();
-        assert_eq!(
-            read_output(&input, &input.episodes[0].reads[0]),
-            Some(OUTPUT)
-        );
+        if mutation.contains("malformed") {
+            assert!(
+                input
+                    .episodes
+                    .iter()
+                    .all(|episode| episode.reads.is_empty())
+            );
+        } else {
+            assert_eq!(
+                read_output(&input, &input.episodes[0].reads[0]),
+                Some(OUTPUT)
+            );
+        }
     }
 }
 
@@ -624,6 +661,93 @@ fn page_losses_merge_without_counting_drained_boundaries_as_loss() {
     assert!(coverage.parts_capped);
     assert!(coverage.bytes_capped);
     assert!(coverage.more_parts);
+}
+
+#[test]
+fn skill_loader_keeps_request_only_operations_without_task_text() {
+    let (store, key, fence, generation) = publish_tool(
+        "native",
+        0,
+        "edit",
+        "bash",
+        json!({"command":"cargo test"}),
+        "Tests passed.",
+    );
+    store
+        .lock()
+        .execute(
+            "DELETE FROM turn_content WHERE kind IN ('user', 'tool_result')",
+            [],
+        )
+        .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let skill = home.path().join(".opencode/skills/review/SKILL.md");
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::write(
+        skill,
+        "---\nname: review\ndescription: Review code and tests.\n---\n",
+    )
+    .unwrap();
+    let snapshot = store
+        .load_smart_check_inputs(&key, fence, generation, DetectorInput::SkillOpportunities)
+        .unwrap();
+    assert!(!snapshot.content().complete);
+    assert!(snapshot.scope().occurrences().is_empty());
+    assert!(
+        snapshot
+            .content()
+            .actions
+            .iter()
+            .any(|action| action.kind == "tool_input")
+    );
+    assert!(
+        snapshot
+            .content()
+            .actions
+            .iter()
+            .all(|action| action.kind != "user" && action.kind != "tool_result")
+    );
+    let inputs = store
+        .load_smart_check_skill_inputs(
+            snapshot,
+            &ConfigContext::native(AgentKind::OpenCode, home.path(), None),
+        )
+        .unwrap();
+    assert!(inputs.check().unwrap().descriptor_count() > 0);
+}
+
+#[test]
+fn malformed_tool_sibling_does_not_remove_a_valid_operation() {
+    let (store, key, fence, generation) = publish_tool(
+        "native",
+        0,
+        "edit",
+        "bash",
+        json!({"command":"cargo test"}),
+        "Tests passed.",
+    );
+    store.lock().execute("UPDATE turn_content SET normalized_fields_json = json_set(normalized_fields_json, '$.malformed', json('true')) WHERE kind = 'tool_input' AND tool_name = 'bash'", []).unwrap();
+    let snapshot = store
+        .load_smart_check_inputs(&key, fence, generation, DetectorInput::SkillOpportunities)
+        .unwrap();
+    assert!(!snapshot.content().complete);
+    assert!(
+        snapshot
+            .content()
+            .limitations
+            .iter()
+            .any(|limit| limit == "malformed_selected_tool_input")
+    );
+    assert!(
+        snapshot.content().actions.iter().any(
+            |action| action.kind == "tool_input" && action.tool_name.as_deref() == Some("edit")
+        )
+    );
+    assert!(
+        snapshot.content().actions.iter().all(
+            |action| action.kind != "tool_input" || action.tool_name.as_deref() != Some("bash")
+        )
+    );
 }
 
 #[test]

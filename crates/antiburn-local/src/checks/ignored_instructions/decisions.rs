@@ -267,6 +267,24 @@ pub struct DecisionRecord {
     pub context_revision: String,
     pub evaluator_revision: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation_basis: Option<InstructionExplanationBasis>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstructionExplanationBasis {
+    pub schema_revision: u32,
+    pub relationship: InstructionMismatch,
+    pub instruction: String,
+    pub action: String,
+    pub instruction_context: Vec<super::instructions::InstructionContextRange>,
+    pub earlier_events: Vec<CounterEvidence>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstructionMismatch {
+    RequirementConflict,
 }
 
 impl DecisionRecord {
@@ -380,7 +398,7 @@ pub(super) fn episode_with_witnesses(
     source_complete: bool,
     witnesses: &[String],
 ) -> PrerequisiteEpisode {
-    let budget = [
+    let available = [
         capabilities.usable_state_tokens(),
         capabilities.request_body_bytes.value,
         capabilities.state_and_longest_question_bytes.value,
@@ -388,10 +406,12 @@ pub(super) fn episode_with_witnesses(
     .into_iter()
     .flatten()
     .min()
-    .unwrap_or(16 * 1024)
-    .saturating_sub(4096)
-    .saturating_div(4)
-    .min(4096) as usize;
+    .unwrap_or(16 * 1024);
+    let budget = if available <= 8192 {
+        available.saturating_sub(640).min(2048) as usize
+    } else {
+        available.saturating_sub(4096).saturating_div(4).min(4096) as usize
+    };
     let mut earlier = actions
         .iter()
         .filter(|action| {
@@ -611,6 +631,16 @@ pub(super) fn record(
         ),
         evaluator_revision: super::evaluator_revision(),
         model: plan.model_version.clone(),
+        explanation_basis: Some(InstructionExplanationBasis {
+            schema_revision: 1,
+            relationship: InstructionMismatch::RequirementConflict,
+            instruction: super::planning::rule_text_fragment(comparison).to_owned(),
+            action: comparison.action.text.clone(),
+            instruction_context: comparison.instruction_context.clone(),
+            earlier_events: episode
+                .map(|episode| episode.events.clone())
+                .unwrap_or_default(),
+        }),
     };
     record.has_citation_proof().then_some(record)
 }

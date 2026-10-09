@@ -1433,6 +1433,9 @@ async fn execute_batch_inner(
                             crate::jev_ollama::OllamaError::ResponseDecode => {
                                 JevError::ResponseDecode
                             }
+                            crate::jev_ollama::OllamaError::ContextRejected => {
+                                JevError::ContextRejected
+                            }
                             crate::jev_ollama::OllamaError::InvalidRequest
                             | crate::jev_ollama::OllamaError::RequestBodyTooLarge => {
                                 JevError::InvalidRequestSchema
@@ -1545,9 +1548,18 @@ async fn execute_batch_inner(
                     .unwrap_or_else(|error| error.into_inner());
                 apply_provider_cooldown(&mut pacing, &error, tokio::time::Instant::now());
                 drop(pacing);
-                let retry_at = retry_delay(&error, attempt).map(|delay| {
-                    unix_now().saturating_add(i64::try_from(delay.as_secs()).unwrap_or(i64::MAX))
-                });
+                let retry_at = if error == JevError::ContextRejected
+                    && batch.work_item_ids.len() > 1
+                    && attempt == 0
+                {
+                    // Leave one attempt for smaller independent comparisons.
+                    Some(unix_now())
+                } else {
+                    retry_delay(&error, attempt).map(|delay| {
+                        unix_now()
+                            .saturating_add(i64::try_from(delay.as_secs()).unwrap_or(i64::MAX))
+                    })
+                };
                 store
                     .defer_burn_check_dispatch(input, &request_identities, retry_at)
                     .map_err(|_| JevError::ProgressStorageFailure)?;
@@ -1683,11 +1695,29 @@ fn request_was_rejected(error: &JevError) -> bool {
     matches!(
         error,
         JevError::AuthenticationRejected
+            | JevError::ContextRejected
             | JevError::InvalidRequestSchema
             | JevError::RateLimited { .. }
             | JevError::ProviderOverloaded { .. }
             | JevError::ProviderUnavailable
     )
+}
+
+#[cfg(test)]
+mod context_rejection_tests {
+    use super::*;
+
+    #[test]
+    fn actual_context_rejection_releases_usage_and_never_retries_unchanged() {
+        assert!(request_was_rejected(&JevError::ContextRejected));
+        assert_eq!(
+            error_category(&JevError::ContextRejected),
+            "context_rejected"
+        );
+        for attempt in 0..RETRY_ATTEMPTS {
+            assert_eq!(retry_delay(&JevError::ContextRejected, attempt), None);
+        }
+    }
 }
 
 async fn acquire_budget<T>(
@@ -1751,6 +1781,7 @@ fn session_is_active(events: &SessionEvents, key: &SessionKey) -> bool {
 pub(crate) fn error_category(error: &JevError) -> &'static str {
     match error {
         JevError::AuthenticationRejected => "authentication_rejected",
+        JevError::ContextRejected => "context_rejected",
         JevError::InvalidRequestSchema => "invalid_request_schema",
         JevError::RateLimited { .. } => "rate_limited",
         JevError::ProviderOverloaded { .. } => "provider_overloaded",

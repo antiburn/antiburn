@@ -83,14 +83,14 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
       fireEvent.click(info)
       expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
       fireEvent.pointerMove(info, { pointerType: "mouse" })
-      expect(await screen.findByText(/This check assesses selected evidence/)).toBeVisible()
-      expect(screen.getByText(/The review percentage is unknown/)).toBeVisible()
-      expect(screen.getByText(/The review target is 50%/)).toBeVisible()
+      expect(
+        await screen.findByText(/This check reviews a sample of matching items/),
+      ).toBeVisible()
+      expect(screen.getByText(/The full number of matching items is not known/)).toBeVisible()
+      expect(screen.getByText(/The check aims to review half of matching items/)).toBeVisible()
       fireEvent.pointerLeave(info)
       fireEvent.focus(info)
-      expect(
-        await screen.findByText(/does not establish that all work has been assessed/),
-      ).toBeVisible()
+      expect(await screen.findByText(/does not mean every item is clear/)).toBeVisible()
       first.view.unmount()
 
       const second = setup(null, false, aggregate, {
@@ -159,7 +159,7 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
     const row = await screen.findByRole("button", { name: /Ignored instructions, 1 failed/ })
     fireEvent.click(row)
     expect(
-      screen.getByText("Some sessions didn't follow your agent instruction files properly."),
+      screen.getByText("Selected actions conflict with current or recorded instruction text."),
     ).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /Copy fix prompt/ })).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Show evidence" })).not.toBeInTheDocument()
@@ -264,9 +264,7 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
       "aria-expanded",
       "true",
     )
-    expect(
-      screen.getByText("This check has not been assessed for the available sessions."),
-    ).toBeVisible()
+    expect(screen.getByText("This check has not reviewed any sessions yet.")).toBeVisible()
     expect(screen.getByRole("button", { name: /Excess cache rehydration/ })).toHaveFocus()
     view.rerender(
       <BurnChecksView
@@ -283,9 +281,7 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
       "aria-pressed",
       "true",
     )
-    expect(
-      screen.getByText("This check has not been assessed for the available sessions."),
-    ).toBeVisible()
+    expect(screen.getByText("This check has not reviewed any sessions yet.")).toBeVisible()
   })
 
   it("allows ordinary selection after searching for an absent check", async () => {
@@ -299,12 +295,10 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
     view.rerender(
       <BurnChecksView active session={session} focusedCheck="cacheChurn" focusRevision={1} />,
     )
-    expect(
-      screen.getByText("This check has not been assessed for the available sessions."),
-    ).toBeVisible()
+    expect(screen.getByText("This check has not reviewed any sessions yet.")).toBeVisible()
     fireEvent.click(screen.getByRole("button", { name: /Old model usage/ }))
     expect(
-      screen.queryByText("This check has not been assessed for the available sessions."),
+      screen.queryByText("This check has not reviewed any sessions yet."),
     ).not.toBeInTheDocument()
     expect(screen.getByRole("heading", { name: "Old model usage" })).toBeVisible()
   })
@@ -333,7 +327,7 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
     expect(row).toHaveAttribute("aria-pressed", "true")
     expect(row).toHaveFocus()
     expect(
-      screen.queryByText("This check has not been assessed for the available sessions."),
+      screen.queryByText("This check has not reviewed any sessions yet."),
     ).not.toBeInTheDocument()
   })
 })

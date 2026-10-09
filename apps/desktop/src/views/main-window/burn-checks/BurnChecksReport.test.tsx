@@ -133,6 +133,147 @@ describe("smart check report integration", () => {
     expect(screen.getByRole("button", { name: /Unused skills, Passed/ })).toBeVisible()
   })
 
+  it("finishes zero-candidate work as Nothing to assess without counting it as clean", async () => {
+    const { adapter } = setup(null, false, aggregate, {
+      ...report,
+      categories: [
+        {
+          ...report.categories[2]!,
+          id: "skillOpportunities",
+          lifecycle: null,
+          checking: true,
+          finding: 0,
+          clean: 0,
+          reviewCoverage: {
+            reviewed: 0,
+            total: 0,
+            uncertain: 0,
+            pending: 0,
+            continuing: false,
+          },
+        },
+      ],
+    })
+    fireEvent.click(await screen.findByRole("button", { name: "Not assessed (1)" }))
+    const row = await screen.findByRole("button", {
+      name: "Skill opportunities, No matching work",
+    })
+    fireEvent.click(row)
+    expect(within(row).getByText("No matching work")).toBeVisible()
+    expect(screen.getByText("No matching work and skills were found to review.")).toBeVisible()
+    expect(screen.queryByText("Checking")).not.toBeInTheDocument()
+    expect(screen.queryByText("Passed")).not.toBeInTheDocument()
+    expect(adapter.getTargets).not.toHaveBeenCalled()
+  })
+
+  it("keeps unknown skipped coverage separate from Nothing to assess", async () => {
+    setup(null, false, aggregate, {
+      ...report,
+      categories: [
+        {
+          ...report.categories[2]!,
+          id: "skillOpportunities",
+          lifecycle: null,
+          checking: false,
+          finding: 0,
+          clean: 0,
+          reviewCoverage: {
+            reviewed: 0,
+            total: 0,
+            uncertain: 0,
+            pending: 0,
+            continuing: false,
+            skipped: null,
+            contextBlocked: null,
+          },
+        },
+      ],
+    })
+    fireEvent.click(await screen.findByRole("button", { name: "Not assessed (1)" }))
+    const row = await screen.findByRole("button", { name: "Skill opportunities, Not assessed" })
+    fireEvent.click(row)
+    expect(screen.queryByText("Nothing to assess")).not.toBeInTheDocument()
+    expect(screen.queryByText("Passed")).not.toBeInTheDocument()
+  })
+
+  it.each([false, true])(
+    "shows terminal context blocking with checking=%s without an unchanged-input retry",
+    async (checking) => {
+      const { adapter } = setup(null, false, aggregate, {
+        ...report,
+        categories: [
+          {
+            ...report.categories[2]!,
+            id: "overExploring",
+            lifecycle: null,
+            checking,
+            finding: 0,
+            clean: 0,
+            reviewCoverage: {
+              reviewed: 0,
+              total: 4,
+              uncertain: 0,
+              pending: 4,
+              skipped: 4,
+              contextBlocked: 4,
+              continuing: false,
+            },
+          },
+        ],
+      })
+      fireEvent.click(await screen.findByRole("button", { name: "Not assessed (1)" }))
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Over-exploring, Review stopped" }),
+      )
+      expect(
+        screen.getByText("0 of 4 reviewed · 4 not reviewed · 4 too large for this model"),
+      ).toBeVisible()
+      expect(
+        screen.getByText("Some items were too large for the selected model to review."),
+      ).toBeVisible()
+      expect(screen.queryByText("Checking")).not.toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
+      expect(adapter.getTargets).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each([false, true])(
+    "keeps partial findings visible after review stops with checking=%s",
+    async (checking) => {
+      setup(null, false, aggregate, {
+        ...report,
+        categories: [
+          {
+            ...report.categories[0]!,
+            id: "scopeCreep",
+            checking,
+            sampled: true,
+            reviewCoverage: {
+              reviewed: 2,
+              total: 5,
+              uncertain: 0,
+              pending: 3,
+              skipped: 3,
+              contextBlocked: 1,
+              continuing: false,
+            },
+          },
+        ],
+      })
+      const row = await screen.findByRole("button", { name: /^Scope creep, .*failed/ })
+      fireEvent.click(row)
+      expect(
+        screen.getByText("2 of 5 reviewed · 3 not reviewed · 1 too large for this model"),
+      ).toBeVisible()
+      expect(
+        screen.getByText("Some items were too large for the selected model to review."),
+      ).toBeVisible()
+      expect(screen.queryByText("Checking")).not.toBeInTheDocument()
+      expect(within(row).queryByText(/checking/i)).not.toBeInTheDocument()
+      expect(within(row).getByText(/failed/)).toBeVisible()
+    },
+  )
+
   it("keeps terminal uncertainty and pending completion separate from unanswered targets", async () => {
     setup(null, false, aggregate, {
       ...report,
@@ -165,7 +306,9 @@ describe("smart check report integration", () => {
     expect(screen.queryByText("Checking")).not.toBeInTheDocument()
     fireEvent.focus(screen.getByLabelText("This check has been sampled"))
     const tooltip = await screen.findByRole("tooltip")
-    expect(within(tooltip).getByText(/Pending completion is a reviewed answer/)).toBeVisible()
+    expect(
+      within(tooltip).getByText(/Waiting means the answer depends on the task finishing/),
+    ).toBeVisible()
     expect(within(tooltip).queryByText("Review is continuing.")).not.toBeInTheDocument()
   })
 
@@ -228,11 +371,13 @@ describe("smart check report integration", () => {
       fireEvent.focus(notice)
       const tooltip = await screen.findByRole("tooltip")
       expect(
-        within(tooltip).getByText("67% of review targets have been reviewed."),
+        within(tooltip).getByText("67% of matching items have been reviewed."),
       ).toBeVisible()
       expect(
-        within(tooltip).getByText(/The review target is 50% of eligible targets/),
-      ).toHaveTextContent("not a confidence score or a guarantee that no issues remain")
+        within(tooltip).getByText(
+          "The check aims to review half of matching items. This is a sample, not proof that the rest are clear.",
+        ),
+      ).toBeVisible()
       fireEvent.blur(notice)
       await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument())
     }
@@ -272,8 +417,8 @@ describe("smart check report integration", () => {
     const partial = screen.getByLabelText("This check used partial context")
     expect(partial).toHaveAttribute("tabindex", "0")
     fireEvent.focus(partial)
-    expect(await screen.findByText(/Missing context can limit the assessment/)).toBeVisible()
-    expect(screen.getByText(/The review percentage is unknown/)).toBeVisible()
+    expect(await screen.findByText(/Some task or session details were missing/)).toBeVisible()
+    expect(screen.getByText(/The full number of matching items is not known/)).toBeVisible()
     fireEvent.blur(partial)
     vi.mocked(adapter.getReport).mockResolvedValue({
       ...report,
@@ -309,7 +454,7 @@ describe("smart check report integration", () => {
     const loading = await screen.findByRole("region", { name: "Loading finding details" })
     expect(loading).toHaveAttribute("aria-busy", "true")
     expect(within(loading).getAllByRole("status")).toHaveLength(1)
-    const evidence = within(loading).getByRole("status", { name: "Loading evidence" })
+    const evidence = within(loading).getByRole("status", { name: "Loading source details" })
     expect(evidence.parentElement).toHaveClass("min-h-72")
     expect(evidence.querySelectorAll("[data-placeholder]")).toHaveLength(6)
     await act(async () => pending.resolve(null))
@@ -446,7 +591,7 @@ describe("smart check report integration", () => {
       })
       expect(
         await screen.findByText(
-          "No finding in the assessed sample across 3 sessions. Unassessed work may remain.",
+          "No issue was found in the reviewed sample across 3 sessions. Other work may not have been checked.",
         ),
       ).toBeVisible()
       const info = screen.getByLabelText("This check has been sampled")

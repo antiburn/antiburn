@@ -13,6 +13,7 @@ Set `ANTIBURN_EVAL_PROVIDER` to one of these values:
 | `jev`                                   | Pinned Jev          | TypeSafe native           |
 | `ollama-nimble`                         | `nimble:latest`     | Local Ollama native       |
 | `ollama-clef-flash`                     | `clef-flash:latest` | Local Ollama native       |
+| `ollama-tev-small`                      | `tev1:0.8b`         | Local Ollama native       |
 | `cloudflare-clef`                       | `clef`              | Cloudflare native         |
 | `cloudflare-clef-flash`                 | `clef-flash`        | Cloudflare native         |
 | `custom-jev-direct`                     | Pinned Jev          | Exact TypeSafe direct     |
@@ -62,3 +63,33 @@ transport modules use those paths.
 No evaluation hash, snapshot, freeze, accuracy threshold, or previous capture
 controls execution. Credentials stay in memory. Imported production validators
 still reject invalid requests and responses.
+
+## Baseline question comparisons
+
+Set `ANTIBURN_EVAL_BASELINE_QUESTIONS` to a local JSON map of production
+`JevQuestion` values to compare old questions on the same selected state. Use a
+`default` key for a single question, or `unrelated`, `breadth`, and `extent` for
+Over-exploring. This diagnostic requires a native Jev or Ollama preset. Jev
+baseline dispatch requires explicit authorization for the extra hosted calls.
+Each new batch gets one baseline preflight and at most one extra dispatch.
+Requests that exceed the discovered limits remain undispatched. Baseline answers do not enter
+the new execution. Captures retain separate baseline reductions through the
+current reducer. Old choices map to the current schema with zero probability
+for added choices. This compares question changes, not old reducer behavior.
+Raw captures record fit errors, baseline responses, request sizes, estimated
+payload tokens, and per-call latency. These estimates differ
+from provider-reported input tokens and do not include the rendering reserve.
+Question substitution preserves request state, question IDs, context routes,
+and the selected instruction-target index. Usage keeps new and baseline totals
+separate. Provider-call latency excludes baseline preflight and the other call;
+case latency includes both executions.
+Read baseline selection uses the routed state's typed reason, so prompt wording
+changes do not select the wrong old question. Check captures record the actual
+projection, chunking, question, and reducer revisions used for that execution.
+
+All four harnesses use the production runner. Over-exploring rows record
+`production_runner` so new captures can be distinguished from earlier local
+compact-prompt diagnostics that bypassed the empty-shared-evidence defect.
+The Ollama adapter preserves `ContextRejected` so the shared runner can split
+independent work items through its bounded context-replan path. Captures retain
+the rejected call with unknown usage, plus each subsequent child dispatch.

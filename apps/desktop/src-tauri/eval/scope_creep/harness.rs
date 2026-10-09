@@ -89,10 +89,18 @@ async fn evaluate(
             "missing_scheduled_answers":plan.work_items.len(),"failure":error.to_string()}),
     };
     let mut row = row;
+    if let Some(baseline) = crate::baseline::result(&check, &plan, usage, &case.id) {
+        match baseline {
+            Ok(result) => row["baseline_result"] = json!(result),
+            Err(error) => row["baseline_failure"] = json!(error),
+        }
+    }
     row["id"] = json!(case.id);
     row["expected"] = json!(case.expected);
     row["scenario"] = json!(case.scenario);
     row["source"] = json!(case.format);
+    row["unsafe_authority_publication"] =
+        json!(case.authority_fixture && row["observed"] != "unassessed");
     row["eligible"] = json!(!plan.work_items.is_empty());
     row["elapsed_ms"] = json!(started.elapsed().as_millis());
     row
@@ -119,7 +127,7 @@ pub(crate) async fn run() -> Result<(), String> {
     for case in &cases {
         let row = evaluate(case, &client, &usage).await;
         stopped = support::run::stop_reason(
-            false,
+            row["unsafe_authority_publication"] == true,
             row["missing_scheduled_answers"]
                 .as_u64()
                 .is_some_and(|count| count > 0),
@@ -134,6 +142,7 @@ pub(crate) async fn run() -> Result<(), String> {
     let metrics = scoring::score(&schedule, &rows);
     println!("Scope Creep: {metrics}");
     let report = json!({"check":"scope_creep","suite":suite,"provider":support::provider::configuration().identity(),
+        "revisions":antiburn_local::checks::scope_creep::REVISIONS,"production_runner":true,
         "metrics":metrics,"stopped":stopped,"measurements":support::run::measurements(&rows,&usage.lock().expect("Usage lock")),"rows":rows});
     let path = support::capture::report("scope_creep", &suite, &report);
     match stopped {
@@ -228,7 +237,8 @@ fn live_regression_cases_bind_one_operation_and_keep_approval_and_failure_contex
             assert!(
                 fields["bound_work"]
                     .to_string()
-                    .contains("The write failed before any file changed")
+                    .contains("The write failed before any file changed"),
+                "{scenario}: {fields:#}"
             );
         }
     }

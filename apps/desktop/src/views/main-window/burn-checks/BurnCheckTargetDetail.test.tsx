@@ -14,6 +14,7 @@ import {
   openBurnCheckSample,
 } from "../../../lib/insightsIpc"
 import { writeClipboardText } from "../../../lib/clipboard"
+import { skillOpportunityEvidence } from "./fixtures/skillOpportunityEvidence"
 
 vi.mock("../../../lib/insightsIpc", () => ({
   getBurnCheckTargetEvidence: vi.fn(),
@@ -74,6 +75,11 @@ function target(overrides: Partial<BurnCheckTargetPayload> = {}): BurnCheckTarge
   }
 }
 
+function openManualEvidence() {
+  const button = screen.queryByRole("button", { name: "Show source details" })
+  if (button) fireEvent.click(button)
+}
+
 describe("target cost line", () => {
   it("uses the distinct affected-session count instead of the occurrence count", () => {
     expect(
@@ -87,7 +93,7 @@ describe("target cost line", () => {
           },
         }),
       ),
-    ).toBe("Estimated ~$8.20 in cache reads across 1 session, including sub-agent requests.")
+    ).toBe("Estimated ~$8.20 in cache reads across 1 session, including helper requests.")
   })
 
   it("falls back to occurrence wording when the affected-session count is unavailable", () => {
@@ -100,9 +106,7 @@ describe("target cost line", () => {
           },
         }),
       ),
-    ).toBe(
-      "Estimated ~$1.00 in cache reads across 2 occurrences, including sub-agent requests.",
-    )
+    ).toBe("Estimated ~$1.00 in cache reads across 2 occurrences, including helper requests.")
   })
 
   it("omits the line when there is no estimate", () => {
@@ -124,6 +128,328 @@ describe("target cost line", () => {
 })
 
 describe("BurnCheckTargetDetail", () => {
+  it("clears unavailable excerpts while retaining the occurrence for a later validated refresh", async () => {
+    const occurrence = (id: string) => ({
+      findingId: id,
+      status: "available" as const,
+      items: [evidenceItem("observedAction", id)],
+    })
+    vi.mocked(getBurnCheckTargetEvidence)
+      .mockResolvedValueOnce({ status: "available", items: [], occurrences: [occurrence("A")] })
+      .mockResolvedValueOnce({ status: "unavailable", items: [] })
+      .mockResolvedValueOnce({
+        status: "available",
+        items: [],
+        occurrences: [occurrence("B"), occurrence("A")],
+      })
+    const current = target({
+      finding: { ...target().finding, detector: "scopeCreep" },
+      evidenceAvailable: true,
+    })
+    const view = render(
+      <BurnCheckTargetDetail
+        target={current}
+        reportRow
+        openEvidence
+        refresh={() => undefined}
+      />,
+    )
+    await screen.findByText("Text A")
+    view.rerender(
+      <BurnCheckTargetDetail
+        target={{ ...current, actionId: "unavailable" }}
+        reportRow
+        openEvidence
+        refresh={() => undefined}
+      />,
+    )
+    await screen.findByText("The saved source excerpts are no longer available.")
+    expect(screen.queryByText("Text A")).not.toBeInTheDocument()
+    view.rerender(
+      <BurnCheckTargetDetail
+        target={{ ...current, actionId: "validated" }}
+        reportRow
+        openEvidence
+        refresh={() => undefined}
+      />,
+    )
+    expect(await screen.findByText("Text A")).toBeVisible()
+    expect(screen.queryByText("Text B")).not.toBeInTheDocument()
+  })
+  it("retains the occurrence while hidden and pauses revised evidence until the view resumes", async () => {
+    const occurrence = (id: string) => ({
+      findingId: id,
+      status: "available" as const,
+      items: [evidenceItem("observedAction", id)],
+    })
+    vi.mocked(getBurnCheckTargetEvidence)
+      .mockResolvedValueOnce({ status: "available", items: [], occurrences: [occurrence("A")] })
+      .mockResolvedValueOnce({
+        status: "available",
+        items: [],
+        occurrences: [occurrence("B"), occurrence("A")],
+      })
+    const current = target({
+      finding: { ...target().finding, detector: "scopeCreep" },
+      evidenceAvailable: true,
+    })
+    const view = render(
+      <BurnCheckTargetDetail
+        target={current}
+        reportRow
+        openEvidence
+        refresh={() => undefined}
+      />,
+    )
+    const excerpt = await screen.findByText("Text A")
+    view.rerender(
+      <BurnCheckTargetDetail
+        target={{ ...current, actionId: "revised" }}
+        reportRow
+        openEvidence
+        evidenceActive={false}
+        refresh={() => undefined}
+      />,
+    )
+    expect(screen.getByText("Text A")).toBe(excerpt)
+    expect(getBurnCheckTargetEvidence).toHaveBeenCalledOnce()
+    view.rerender(
+      <BurnCheckTargetDetail
+        target={{ ...current, actionId: "revised" }}
+        reportRow
+        openEvidence
+        refresh={() => undefined}
+      />,
+    )
+    await act(async () => undefined)
+    expect(screen.getByText("Text A")).toBeVisible()
+    expect(screen.queryByText("Text B")).not.toBeInTheDocument()
+    expect(getBurnCheckTargetEvidence).toHaveBeenCalledTimes(2)
+  })
+  it("renders the published skill contract with selected work and comparison-owned task evidence", async () => {
+    vi.mocked(getBurnCheckTargetEvidence).mockResolvedValue(skillOpportunityEvidence)
+    render(
+      <BurnCheckTargetDetail
+        target={target({
+          finding: { ...target().finding, detector: "skillOpportunities" },
+          evidenceAvailable: true,
+        })}
+        reportRow
+        openEvidence
+        refresh={() => undefined}
+      />,
+    )
+    expect(
+      await screen.findByText(skillOpportunityEvidence.comparison.explanation.text),
+    ).toBeVisible()
+    expect(
+      screen.getByText("Review parser boundaries and test malformed records."),
+    ).toBeVisible()
+    expect(screen.getByText("pnpm test parser-boundaries")).toBeVisible()
+    expect(screen.getByText("Parser boundary tests passed.")).toBeVisible()
+    expect(screen.getByText("Requested task")).toBeVisible()
+    expect(screen.getByText("Explain the parser fix.")).toBeVisible()
+    expect(
+      screen.queryByRole("button", { name: "Show source details" }),
+    ).not.toBeInTheDocument()
+  })
+  it.each([
+    "ignoredInstructions",
+    "scopeCreep",
+    "overExploring",
+    "skillOpportunities",
+  ] as const)(
+    "automatically opens report evidence for %s without a disclosure",
+    async (detector) => {
+      vi.mocked(getBurnCheckTargetEvidence).mockResolvedValue({
+        status: "available",
+        items: [evidenceItem("observedAction", "work")],
+      })
+      render(
+        <BurnCheckTargetDetail
+          target={target({
+            finding: { ...target().finding, detector },
+            evidenceAvailable: true,
+          })}
+          reportRow
+          openEvidence
+          refresh={() => undefined}
+        />,
+      )
+      const excerpt = await screen.findByText("Text work")
+      expect(excerpt.closest("[data-snapshot-action-id]")).toHaveClass("min-h-72")
+      expect(
+        screen.queryByRole("button", { name: "Show source details" }),
+      ).not.toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: "Hide details" })).not.toBeInTheDocument()
+      expect(getBurnCheckTargetEvidence).toHaveBeenCalledOnce()
+    },
+  )
+
+  it("renders repeated paths as independent paired reads with requested and returned extents", async () => {
+    const items = [
+      evidenceItem("context", "task", { excerpt: "Fix the login timeout." }),
+      evidenceItem("observedAction", "request-1", { observedAtMs: 1000 }),
+      evidenceItem("observedAction", "result-1", { excerpt: "Selected file contents" }),
+      evidenceItem("observedAction", "request-2"),
+    ]
+    vi.mocked(getBurnCheckTargetEvidence).mockResolvedValue({
+      status: "available",
+      items,
+      comparison: {
+        reads: [
+          {
+            requestReference: "request-1",
+            resultReference: "result-1",
+            paths: ["src/login.ts"],
+            requestedExtent: { unit: "lines", offset: 10, limit: 20, end_inclusive: null },
+            returnedExtent: { unit: "lines", offset: 10, limit: null, end_inclusive: 18 },
+            resultStatus: "success",
+          },
+          {
+            requestReference: "request-2",
+            paths: ["src/login.ts"],
+            requestedExtent: {
+              unit: "unknown",
+              offset: null,
+              limit: null,
+              end_inclusive: null,
+            },
+          },
+        ],
+      },
+    })
+    const view = render(
+      <BurnCheckTargetDetail
+        target={target({
+          finding: { ...target().finding, detector: "overExploring" },
+          evidenceAvailable: true,
+        })}
+        reportRow
+        openEvidence
+        refresh={() => undefined}
+      />,
+    )
+    expect(await screen.findByText("Fix the login timeout.")).toBeVisible()
+    expect(screen.getAllByRole("heading", { name: "Files read" })).toHaveLength(1)
+    const reads = screen.getByRole("region", { name: "Files read" })
+    expect(within(reads).getAllByText("src/login.ts")).toHaveLength(2)
+    expect(view.container.querySelectorAll("time")).toHaveLength(1)
+    expect(screen.getByText("Requested: line 10 · limit 20 lines")).toBeVisible()
+    expect(screen.getByText("Returned: line 10–18")).toBeVisible()
+    expect(screen.getByText("Read request")).toBeVisible()
+    const content = screen.getByText("Selected file contents")
+    expect(content).not.toBeVisible()
+    const button = screen.getByRole("button", { name: "Show file contents" })
+    expect(button).toHaveAttribute("aria-expanded", "false")
+    act(() => button.focus())
+    fireEvent.click(button)
+    expect(content).toBeVisible()
+    expect(screen.getByRole("button", { name: "Hide file contents" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Hide file contents" }))
+    expect(content).not.toBeVisible()
+  })
+
+  it.each(["proposal", "attempt", "recorded"] as const)(
+    "labels %s work from the occurrence contract",
+    async (observationKind) => {
+      vi.mocked(getBurnCheckTargetEvidence).mockResolvedValue({
+        status: "available",
+        items: [evidenceItem("observedAction", "work")],
+        comparison: { observationKind, reads: [] },
+      })
+      render(
+        <BurnCheckTargetDetail
+          target={target({
+            finding: { ...target().finding, detector: "scopeCreep" },
+            evidenceAvailable: true,
+          })}
+          reportRow
+          openEvidence
+          refresh={() => undefined}
+        />,
+      )
+      expect(
+        await screen.findByText(
+          observationKind === "proposal"
+            ? "Proposed work"
+            : observationKind === "attempt"
+              ? "Attempted work"
+              : "Recorded work",
+        ),
+      ).toBeVisible()
+      expect(screen.queryByText("Work performed")).not.toBeInTheDocument()
+    },
+  )
+
+  it("refreshes explanation and excerpts atomically when occurrences reorder or disappear", async () => {
+    const occurrence = (id: string) => ({
+      findingId: id,
+      status: "available" as const,
+      items: [
+        evidenceItem("instruction", `${id}-task`),
+        evidenceItem("observedAction", `${id}-work`),
+      ],
+      comparison: {
+        reads: [],
+        explanation: {
+          version: 1 as const,
+          relationship: "separateObjective",
+          text: `Specific ${id} explanation.`,
+          references: [`${id}-task`, `${id}-work`],
+        },
+      },
+    })
+    vi.mocked(getBurnCheckTargetEvidence)
+      .mockResolvedValueOnce({ status: "available", items: [], occurrences: [occurrence("A")] })
+      .mockResolvedValueOnce({
+        status: "available",
+        items: [],
+        occurrences: [occurrence("B"), occurrence("A")],
+      })
+      .mockResolvedValueOnce({ status: "available", items: [], occurrences: [occurrence("B")] })
+    const current = target({
+      finding: { ...target().finding, detector: "scopeCreep" },
+      evidenceAvailable: true,
+    })
+    const view = render(
+      <BurnCheckTargetDetail
+        target={current}
+        reportRow
+        openEvidence
+        refresh={() => undefined}
+      />,
+    )
+    expect(await screen.findByText("Specific A explanation.")).toBeVisible()
+    view.rerender(
+      <BurnCheckTargetDetail
+        target={{ ...current, actionId: "second" }}
+        reportRow
+        openEvidence
+        refresh={() => undefined}
+      />,
+    )
+    await act(async () => undefined)
+    expect(screen.getByText("Specific A explanation.")).toBeVisible()
+    expect(screen.getByText("Text A-work")).toBeVisible()
+    expect(screen.queryByText("Specific B explanation.")).not.toBeInTheDocument()
+    view.rerender(
+      <BurnCheckTargetDetail
+        target={{ ...current, actionId: "third" }}
+        reportRow
+        openEvidence
+        refresh={() => undefined}
+      />,
+    )
+    expect(await screen.findByText("Specific B explanation.")).toBeVisible()
+    expect(screen.getByText("Text B-work")).toBeVisible()
+    expect(screen.queryByText("Specific A explanation.")).not.toBeInTheDocument()
+    expect(screen.queryByText("Text A-work")).not.toBeInTheDocument()
+  })
+
   const evidenceItem = (
     label: BurnCheckTargetEvidencePayload["items"][number]["label"],
     reference: string,
@@ -194,7 +520,7 @@ describe("BurnCheckTargetDetail", () => {
       const view = render(
         <BurnCheckTargetDetail target={current} refresh={() => undefined} openEvidence />,
       )
-      const skeleton = screen.getByRole("status", { name: "Loading evidence" })
+      const skeleton = screen.getByRole("status", { name: "Loading source details" })
       expect(skeleton.parentElement).toHaveAttribute("aria-busy", "true")
       expect(skeleton.querySelectorAll("[data-placeholder]")).toHaveLength(6)
       expect(skeleton.querySelectorAll(".h-16")).toHaveLength(2)
@@ -229,7 +555,9 @@ describe("BurnCheckTargetDetail", () => {
       )
       const excerpt = screen.getByText("Text action")
       expect(excerpt.closest("[data-snapshot-action-id]")).not.toBeNull()
-      expect(screen.queryByRole("status", { name: "Loading evidence" })).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole("status", { name: "Loading source details" }),
+      ).not.toBeInTheDocument()
       expect(view.container.querySelector("[data-placeholder]")).toBeNull()
       expect(screen.queryByLabelText("About this evidence")).not.toBeInTheDocument()
       expect(
@@ -275,7 +603,7 @@ describe("BurnCheckTargetDetail", () => {
     expect(
       screen.queryByRole("region", { name: "Assessment decision" }),
     ).not.toBeInTheDocument()
-    expect(screen.queryByText("Text context")).not.toBeInTheDocument()
+    expect(screen.getByText("Text context")).toBeVisible()
     expect(screen.queryByText("private-revision")).not.toBeInTheDocument()
   })
 
@@ -368,7 +696,7 @@ describe("BurnCheckTargetDetail", () => {
       evidenceAvailable: true,
     })
     const view = render(<BurnCheckTargetDetail target={current} refresh={() => undefined} />)
-    fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
+    openManualEvidence()
     const oldExcerpt = await screen.findByText("Text action")
     view.rerender(
       <BurnCheckTargetDetail
@@ -379,16 +707,14 @@ describe("BurnCheckTargetDetail", () => {
     expect(getBurnCheckTargetEvidence).toHaveBeenLastCalledWith("refreshed-action")
     expect(screen.getByText("Text action")).toBe(oldExcerpt)
     await act(async () => rejectRefresh(new Error("offline")))
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Could not refresh evidence. Showing the previous snapshot.",
-    )
+    expect(screen.getByRole("alert")).toHaveTextContent("The latest details did not load.")
     expect(screen.getByText("Text action")).toBe(oldExcerpt)
     expect(screen.queryAllByRole("link")).toHaveLength(0)
     fireEvent.click(screen.getByRole("button", { name: "Retry" }))
     expect(screen.getByText("Text action")).toBe(oldExcerpt)
     await act(async () => resolveRetry({ status: "unavailable", items: [] }))
     expect(screen.queryByText("Text action")).not.toBeInTheDocument()
-    expect(screen.getByText("Saved excerpts aren’t available.")).toBeVisible()
+    expect(screen.getByText("The saved excerpts are no longer available.")).toBeVisible()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(screen.queryByText(/Showing previous evidence/)).not.toBeInTheDocument()
   })
@@ -699,7 +1025,7 @@ describe("BurnCheckTargetDetail", () => {
       expect(
         screen.queryByRole("region", { name: "Assessment decision" }),
       ).not.toBeInTheDocument()
-      expect(await screen.findByText("Work performed")).toBeVisible()
+      expect(await screen.findByText("Recorded work")).toBeVisible()
       expect(screen.queryByText("Suggestion")).not.toBeInTheDocument()
       expect(screen.queryAllByRole("link")).toHaveLength(0)
       expect(screen.queryByText(/chain.of.thought/i)).not.toBeInTheDocument()
@@ -749,6 +1075,11 @@ describe("BurnCheckTargetDetail", () => {
         />,
       )
       expect(await screen.findByText("Text work")).toBeVisible()
+      expect(
+        screen.getByText(
+          "The excerpts below show the recorded task or work used for this finding.",
+        ),
+      ).toBeVisible()
       expect(
         screen.queryByRole("region", { name: "Assessment decision" }),
       ).not.toBeInTheDocument()
@@ -840,7 +1171,7 @@ describe("BurnCheckTargetDetail", () => {
     )
     expect(await screen.findByText("Fix the login timeout.")).toBeVisible()
     expect(screen.getByText("Requested task · Recorded user task")).toBeVisible()
-    expect(screen.getByText("Work performed")).toBeVisible()
+    expect(screen.getByText("Recorded work")).toBeVisible()
     expect(screen.getByText("Added an unrelated dashboard.")).toBeVisible()
     expect(screen.queryByText("Work outside the agreed task")).not.toBeInTheDocument()
     expect(
@@ -896,7 +1227,7 @@ describe("BurnCheckTargetDetail", () => {
       />,
     )
     expect(
-      await screen.findByText("The original evidence is no longer available."),
+      await screen.findByText("The saved source excerpts are no longer available."),
     ).toBeVisible()
     await act(async () =>
       resolveOld({
@@ -985,12 +1316,12 @@ describe("BurnCheckTargetDetail", () => {
       screen.queryByText("Use matching skills for similar future work."),
     ).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Fix" })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
+    openManualEvidence()
     expect(
       await screen.findByText("Review parser boundaries and test malformed records."),
     ).toBeVisible()
     expect(screen.getByText("Relevant skill · parser-review")).toBeVisible()
-    expect(screen.getByText("Work performed")).toBeVisible()
+    expect(screen.getByText("Recorded work")).toBeVisible()
     expect(screen.getByText("Added malformed-record parser tests.")).toBeVisible()
     expect(view.container.querySelector("time")).toBeNull()
     expect(screen.queryByText(limit)).not.toBeInTheDocument()
@@ -1027,7 +1358,7 @@ describe("BurnCheckTargetDetail", () => {
       />,
     )
     expect(
-      await screen.findByText("The original evidence is no longer available."),
+      await screen.findByText("The saved source excerpts are no longer available."),
     ).toBeVisible()
     fireEvent.click(screen.getByRole("button", { name: "Copy fix prompt" }))
     expect(await screen.findByRole("alert")).toHaveTextContent("Checking the current change.")
@@ -1102,7 +1433,7 @@ describe("BurnCheckTargetDetail", () => {
         refresh={() => undefined}
       />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
+    openManualEvidence()
     expect(await screen.findByText("What happened")).toBeVisible()
     expect(
       screen.queryByRole("region", { name: "Assessment decision" }),
@@ -1114,7 +1445,7 @@ describe("BurnCheckTargetDetail", () => {
     expect(screen.getByText("Published without validation.")).toBeInTheDocument()
     expect(screen.queryByText("revision-digest")).not.toBeInTheDocument()
     expect(screen.queryByText("earlier-event")).not.toBeInTheDocument()
-    expect(screen.queryByText("Request the required validation.")).not.toBeInTheDocument()
+    expect(screen.getByText("Request the required validation.")).toBeVisible()
   })
 
   it("keeps legacy evidence rendering when no decision proof is saved", async () => {
@@ -1143,7 +1474,7 @@ describe("BurnCheckTargetDetail", () => {
         refresh={() => undefined}
       />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
+    openManualEvidence()
     expect(await screen.findByText("Used a blocked command.")).toBeInTheDocument()
     expect(
       screen.queryByText(/Saved action text that Antiburn compared/),
@@ -1199,14 +1530,18 @@ describe("BurnCheckTargetDetail", () => {
       />,
     )
     await screen.findByText("command --flag", { exact: false })
-    const evidence = screen.getByRole("region", { name: "Evidence" })
+    const evidence = screen.getByRole("region", { name: "Source details" })
     expect(screen.queryByRole("region", { name: "Occurrences" })).not.toBeInTheDocument()
     expect(screen.queryByText(/Occurrence \d/)).not.toBeInTheDocument()
     expect(screen.queryByText("different action")).not.toBeInTheDocument()
     expect(within(evidence).getByText("What happened")).toBeVisible()
     expect(within(evidence).queryAllByRole("link")).toHaveLength(0)
     const excerpts = evidence.querySelectorAll("pre")
-    expect([...excerpts].map((node) => node.textContent)).toEqual(["command\n  --flag"])
+    expect([...excerpts].map((node) => node.textContent)).toEqual([
+      "command\n  --flag",
+      "first\n  event",
+      "second\n  event",
+    ])
     expect(within(evidence).queryByText(/Saved action text/)).not.toBeInTheDocument()
     expect(
       within(evidence).queryByText("Some nearby context is no longer available."),
@@ -1268,9 +1603,9 @@ describe("BurnCheckTargetDetail", () => {
         refresh={() => undefined}
       />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
+    openManualEvidence()
     expect(
-      await screen.findByText("Unavailable or changed since this assessment."),
+      await screen.findByText("This instruction has changed or is no longer in the source."),
     ).toBeInTheDocument()
     expect(screen.queryByText("Instruction text unavailable.")).not.toBeInTheDocument()
     expect(screen.queryByText("The instruction file changed.")).not.toBeInTheDocument()
@@ -1335,16 +1670,16 @@ describe("BurnCheckTargetDetail", () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
+    openManualEvidence()
     expect(
       await screen.findByText("Do not use broad searches when exploring a codebase."),
     ).toBeInTheDocument()
     expect(screen.getByText("Instruction")).toBeInTheDocument()
     expect(screen.getByText(".config/opencode/AGENTS.md · line 45")).toBeInTheDocument()
     expect(screen.getAllByText(/\.config\/opencode\/AGENTS\.md/)).toHaveLength(1)
-    expect(screen.getByRole("region", { name: "Evidence" })).not.toHaveClass("border-t")
+    expect(screen.getByRole("region", { name: "Source details" })).not.toHaveClass("border-t")
     expect(screen.getByText("Command: rg -n 'long search string' .")).toBeInTheDocument()
-    expect(screen.queryByText("Unneeded surrounding event")).not.toBeInTheDocument()
+    expect(screen.getByText("Unneeded surrounding event")).toBeVisible()
     expect(screen.queryByRole("button", { name: "Show context" })).not.toBeInTheDocument()
   })
 
@@ -1371,7 +1706,7 @@ describe("BurnCheckTargetDetail", () => {
         refresh={() => undefined}
       />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
+    openManualEvidence()
     expect(
       await screen.findByText(
         (_, element) =>
@@ -1424,7 +1759,7 @@ describe("BurnCheckTargetDetail", () => {
         refresh={() => undefined}
       />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
+    openManualEvidence()
     expect(await screen.findByText("Current instruction")).toBeInTheDocument()
     expect(screen.queryByText(limitation)).not.toBeInTheDocument()
     expect(screen.queryByLabelText("About this evidence")).not.toBeInTheDocument()
@@ -1475,14 +1810,14 @@ describe("BurnCheckTargetDetail", () => {
         refresh={() => undefined}
       />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
+    openManualEvidence()
     expect(
       await screen.findByText("Do not run the shell command without approval."),
     ).toBeInTheDocument()
     expect(screen.getByText("Ran the shell command without approval.")).toBeInTheDocument()
   })
 
-  it("retries failed requests and ignores a response after closing evidence", async () => {
+  it("retries failed requests and keeps the evidence section open", async () => {
     let resolveLate!: (value: Awaited<ReturnType<typeof getBurnCheckTargetEvidence>>) => void
     vi.mocked(getBurnCheckTargetEvidence)
       .mockRejectedValueOnce(new Error("offline"))
@@ -1498,16 +1833,12 @@ describe("BurnCheckTargetDetail", () => {
         refresh={() => undefined}
       />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
-    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load evidence.")
+    openManualEvidence()
+    expect(await screen.findByRole("alert")).toHaveTextContent("The details did not load.")
     fireEvent.click(screen.getByRole("button", { name: "Retry" }))
-    fireEvent.click(screen.getByRole("button", { name: "Hide details" }))
     await act(async () => resolveLate({ status: "available", items: [] }))
-    expect(screen.queryByText("Could not load evidence.")).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Show evidence" })).toHaveAttribute(
-      "aria-expanded",
-      "false",
-    )
+    expect(screen.queryByText("The details did not load.")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Hide details" })).not.toBeInTheDocument()
   })
 
   it("ignores evidence from a replaced target", async () => {
@@ -1522,7 +1853,7 @@ describe("BurnCheckTargetDetail", () => {
       .mockResolvedValueOnce({ status: "unavailable", items: [] })
     const first = target({ evidenceAvailable: true })
     const view = render(<BurnCheckTargetDetail target={first} refresh={() => undefined} />)
-    fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
+    openManualEvidence()
     view.rerender(
       <BurnCheckTargetDetail
         target={{
@@ -1535,13 +1866,19 @@ describe("BurnCheckTargetDetail", () => {
         refresh={() => undefined}
       />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
+    openManualEvidence()
     expect(getBurnCheckTargetEvidence).toHaveBeenCalledTimes(2)
     expect(await screen.findAllByText("Quality Review")).not.toHaveLength(0)
-    expect(screen.getByText("What happened")).toBeInTheDocument()
+    expect(
+      await screen.findByText(
+        "The check still has this finding, but its saved excerpts are no longer available.",
+      ),
+    ).toBeVisible()
     expect(screen.queryByText("The Workflow tool was never invoked.")).not.toBeInTheDocument()
-    expect(screen.getByText("The cited session action is unavailable.")).toBeInTheDocument()
-    expect(screen.getByText("Saved excerpts aren’t available.")).toBeInTheDocument()
+    expect(
+      screen.getByText("No action excerpt was returned for this finding."),
+    ).toBeInTheDocument()
+    expect(screen.getByText("The saved excerpts are no longer available.")).toBeInTheDocument()
     await act(async () =>
       resolveOld({
         status: "available",
@@ -1614,9 +1951,7 @@ describe("BurnCheckTargetDetail", () => {
     render(<BurnCheckTargetDetail target={currentTarget} refresh={() => undefined} />)
     expect(screen.getByRole("region", { name: "Failed sessions" })).toBeInTheDocument()
 
-    await act(async () =>
-      fireEvent.click(screen.getByRole("button", { name: "Show evidence" })),
-    )
+    await act(async () => openManualEvidence())
     expect(await screen.findByText("git push --force")).toBeInTheDocument()
     expect(screen.queryByText("Observed session action")).not.toBeInTheDocument()
     expect(
@@ -1845,9 +2180,9 @@ describe("BurnCheckTargetDetail", () => {
   it("shows compact headings for all four smart checks", async () => {
     const cases = [
       ["ignoredInstructions", "What happened"],
-      ["scopeCreep", "Work performed"],
+      ["scopeCreep", "Recorded work"],
       ["overExploring", "Files read"],
-      ["skillOpportunities", "Work performed"],
+      ["skillOpportunities", "Recorded work"],
     ] as const
     for (const [detector, heading] of cases) {
       vi.mocked(getBurnCheckTargetEvidence).mockResolvedValueOnce({
@@ -1939,28 +2274,40 @@ describe("BurnCheckTargetDetail", () => {
     ).not.toBeInTheDocument()
   })
 
-  it("hides loaded evidence when Hide details is pressed", async () => {
+  it("keeps report evidence visible across rerenders without a detail disclosure", async () => {
     vi.mocked(getBurnCheckTargetEvidence).mockResolvedValue({
       status: "available",
       items: [evidenceItem("observedAction", "action")],
     })
-    render(
+    const view = render(
       <BurnCheckTargetDetail
         target={target({
           finding: { ...target().finding, detector: "scopeCreep" },
           evidenceAvailable: true,
         })}
+        reportRow
+        openEvidence
         refresh={() => undefined}
       />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
     expect(await screen.findByText("Text action")).toBeVisible()
-    fireEvent.click(screen.getByRole("button", { name: "Hide details" }))
-    expect(screen.queryByText("Text action")).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Show evidence" })).toHaveAttribute(
-      "aria-expanded",
-      "false",
+    expect(screen.queryByRole("button", { name: "Hide details" })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Show source details" }),
+    ).not.toBeInTheDocument()
+    view.rerender(
+      <BurnCheckTargetDetail
+        target={target({
+          finding: { ...target().finding, detector: "scopeCreep" },
+          evidenceAvailable: true,
+        })}
+        reportRow
+        openEvidence
+        refresh={() => undefined}
+      />,
     )
+    expect(screen.getByText("Text action")).toBeVisible()
+    expect(getBurnCheckTargetEvidence).toHaveBeenCalledOnce()
   })
 
   it("does not show a generic evidence disclaimer", async () => {

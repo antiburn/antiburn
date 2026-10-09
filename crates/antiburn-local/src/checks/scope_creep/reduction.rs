@@ -41,6 +41,36 @@ pub struct ScopeCreepFinding {
     pub revisions: JevCheckRevisions,
     pub source_generation: i64,
     pub publication_fence: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation_basis: Option<ScopeExplanationBasis>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopeExplanationBasis {
+    pub schema_revision: u32,
+    pub relationship: ScopeRelationship,
+    pub observation_kind: WorkObservationKind,
+    pub excerpts: Vec<ScopeExcerpt>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeRelationship {
+    SeparateObjective,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopeExcerpt {
+    pub source: crate::analysis::jev_evidence::ContentEventReference,
+    pub content_digest: String,
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub text: String,
+    pub authority: String,
+    pub kind: String,
+    pub range_source: String,
+    pub scope_field: Option<JevInputField>,
+    pub native_source: Option<crate::analysis::jev_evidence::JevScopeEvidenceSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -153,6 +183,11 @@ pub(super) fn reduce(
             limitation: group.limitation.clone(),
             reduced_answer_ids: Vec::new(),
         };
+        if check.has_untrusted_authority_control(group) {
+            decision.limitation = Some("untrusted_authority_control".into());
+            decisions.push(decision);
+            continue;
+        }
         if let Some(window) = group.window_ids.first()
             && let Some(result) = by_id.get(window.as_str())
         {
@@ -204,6 +239,14 @@ pub(super) fn reduce(
                     revisions: REVISIONS,
                     source_generation: plan.prepared.source_generation,
                     publication_fence: plan.prepared.publication_fence,
+                    explanation_basis: (!group.selected_excerpts.is_empty()).then(|| {
+                        ScopeExplanationBasis {
+                            schema_revision: 1,
+                            relationship: ScopeRelationship::SeparateObjective,
+                            observation_kind: group.observation_kind,
+                            excerpts: group.selected_excerpts.clone(),
+                        }
+                    }),
                 });
             }
         }
@@ -220,7 +263,12 @@ pub(super) fn reduce(
     if uncertain {
         coverage.limitations.push("uncertain_decision".into());
     }
-    let remaining_candidates = coverage.not_selected_items + decisions.len() - assessed_candidates;
+    let remaining_candidates = coverage.not_selected_items
+        + decisions
+            .iter()
+            .zip(&plan.prepared.groups)
+            .filter(|(decision, group)| decision.outcome.is_none() && !group.window_ids.is_empty())
+            .count();
     if remaining_candidates > 0 {
         coverage.limitations.push("assessment_incomplete".into());
     }

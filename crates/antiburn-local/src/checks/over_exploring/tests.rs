@@ -373,7 +373,10 @@ fn results(
     plan.work_items
         .iter()
         .map(|item| {
-            let mut evidence = plan.shared_context.as_ref().unwrap().evidence.clone();
+            let mut evidence = plan
+                .shared_context
+                .as_ref()
+                .map_or_else(Vec::new, |shared| shared.evidence.clone());
             evidence.extend(item.window.evidence.clone());
             JevWorkItemResult {
                 request_id: "request".into(),
@@ -440,11 +443,931 @@ fn native_bindings_keep_observed_extent_separate_from_request() {
     assert_eq!(
         plan.revisions,
         JevCheckRevisions {
-            projection: 5,
-            chunking: 6,
-            questions: 11,
-            reducer: 7
+            projection: 9,
+            chunking: 8,
+            questions: 19,
+            reducer: 8
         }
+    );
+}
+
+fn small_capabilities(tokens: u64) -> ModelCapabilities {
+    let mut capabilities = ModelCapabilities::jev_default();
+    capabilities.runtime_context_tokens.value = Some(tokens);
+    capabilities.rendering_reserve_tokens = 1024;
+    capabilities
+}
+
+#[tokio::test]
+async fn compact_selected_pairs_run_through_the_production_boundary() {
+    for tokens in [2048, 2050] {
+        let input = input(&["parser.rs", "parser.rs"]);
+        let context = build_jev_context(&input).unwrap();
+        let capabilities = small_capabilities(tokens);
+        let orchestration = admit_jev_orchestration().await.unwrap();
+        let mut plan = OverExploringCheck
+            .prepare_with_capabilities(&context, &capabilities)
+            .unwrap();
+        let pair_id = plan
+            .prepared
+            .targets
+            .iter()
+            .find(|(_, target)| {
+                target.reason == Reason::ExcessiveWithinFileReading && target.bindings.len() == 2
+            })
+            .unwrap()
+            .0
+            .clone();
+        let mut progress = SamplingProgress::new(SamplingLimits {
+            checks: 1,
+            candidates_per_check: MAX_SAMPLING_CANDIDATES,
+            answers_per_candidate: 1,
+            judgments_per_run: 8,
+        })
+        .unwrap();
+        synchronize_sampling(&plan, &mut progress).unwrap();
+        progress.begin_run();
+        while let Some(job) = progress.choose_job() {
+            if plan
+                .prepared
+                .candidates
+                .iter()
+                .find(|candidate| candidate.candidate_id == job.candidate)
+                .unwrap()
+                .work_item_ids
+                .contains(&pair_id)
+            {
+                PreparedAssessment::select_jobs(&mut plan, &[job]).unwrap();
+                break;
+            }
+        }
+        assert!(plan.shared_context.is_none());
+        let outcome = run_jev_check_prepared(
+            &OverExploringCheck,
+            &context,
+            &mut plan,
+            JevRunProgress::default(),
+            orchestration,
+            |batch| async move {
+                assert!(batch.request.state.get("shared_context").is_none());
+                Ok(JevResponse {
+                    model: batch.request.model.clone(),
+                    answers: batch
+                        .request
+                        .questions
+                        .keys()
+                        .map(|id| (id.clone(), answer("likely_excess", 0.98)))
+                        .collect(),
+                    usage: JevUsage {
+                        input_tokens: 10,
+                        output_tokens: 1,
+                    },
+                })
+            },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert!(outcome.complete, "{:?}", outcome.failure);
+        for finding in &outcome.result.findings {
+            for binding in &finding.reads {
+                assert!(
+                    finding
+                        .source_evidence
+                        .iter()
+                        .any(|reference| reference.source_id == binding.request_id)
+                );
+                assert!(
+                    finding
+                        .source_evidence
+                        .iter()
+                        .any(|reference| Some(&reference.source_id) == binding.result_id.as_ref())
+                );
+            }
+            for snippet in &finding.explanation.as_ref().unwrap().snippets {
+                assert!(
+                    snippet.matches_action(
+                        input
+                            .events
+                            .iter()
+                            .find(|action| action.reference == snippet.reference)
+                            .unwrap()
+                    )
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn compact_relevance_extent_and_breadth_use_the_production_runner() {
+    for tokens in [2048, 2050] {
+        for paths in [vec!["parser.rs"], vec!["parser.rs", "library.rs"]] {
+            let input = input(&paths);
+            let outcome = run_jev_check_with_capabilities(
+                &OverExploringCheck,
+                &build_jev_context(&input).unwrap(),
+                JevRunProgress::default(),
+                small_capabilities(tokens),
+                |batch| async move {
+                    Ok(JevResponse {
+                        model: batch.request.model.clone(),
+                        answers: batch
+                            .request
+                            .questions
+                            .keys()
+                            .map(|id| (id.clone(), answer("likely_excess", 0.98)))
+                            .collect(),
+                        usage: JevUsage {
+                            input_tokens: 10,
+                            output_tokens: 1,
+                        },
+                    })
+                },
+                |_| Ok(()),
+            )
+            .await
+            .unwrap();
+            assert!(outcome.complete, "{:?}", outcome.failure);
+            if paths.len() > 1 {
+                assert!(
+                    outcome
+                        .result
+                        .findings
+                        .iter()
+                        .any(|finding| finding.reason == Reason::UnrelatedFiles)
+                );
+            }
+            assert!(
+                outcome
+                    .result
+                    .findings
+                    .iter()
+                    .any(|finding| finding.reason == Reason::ExcessiveWithinFileReading)
+            );
+            if paths.len() > 1 {
+                assert!(
+                    outcome
+                        .result
+                        .findings
+                        .iter()
+                        .any(|finding| finding.reason == Reason::ExcessiveFileBreadth)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn initial_requested_seven_line_source_stays_separate_from_later_read_targets() {
+    let text = "fn accepts(value: u32, maximum: u32) -> bool {\n    value < maximum\n}\n#[test]\nfn boundary() {\n    assert!(accepts(10, 10));\n}";
+    let (mut content, task, span) = fixture(
+        "Fix src/cache_age.rs so accepts(10, 10) is true.",
+        &["src/cache_age.rs"; 3],
+        text,
+        "Correct the comparison after diagnosis.",
+    );
+    let mut diagnosis = content.actions[1].clone();
+    diagnosis.reference.id = "diagnosis-after-first-read".into();
+    diagnosis.text = "Diagnosis: change < to <=.".into();
+    content.actions.insert(4, diagnosis);
+    for (index, action) in content.actions.iter_mut().enumerate() {
+        action.reference.turn_index = index as u64;
+    }
+    let input = build_episodes(&content, &task, &[span]).unwrap();
+    let mut capabilities = small_capabilities(2048);
+    capabilities.use_ollama_generic_accounting("", "");
+    capabilities.rendering_reserve_tokens = 302;
+    capabilities.runtime_context_tokens.value = Some(2200);
+    let plan = OverExploringCheck
+        .prepare_with_capabilities(&build_jev_context(&input).unwrap(), &capabilities)
+        .unwrap();
+    {
+        let reason = Reason::ExcessiveWithinFileReading;
+        let initial = plan
+            .prepared
+            .targets
+            .iter()
+            .find(|(_, target)| target.reason == reason && target.read_indexes == vec![0])
+            .unwrap();
+        let item = plan
+            .work_items
+            .iter()
+            .find(|item| item.id == *initial.0)
+            .unwrap();
+        assert_eq!(item.window.fields["reads"].as_array().unwrap().len(), 1);
+        assert!(item.window.fields.to_string().contains("fn accepts"));
+        let question = serde_json::to_string(&item.questions).unwrap();
+        assert!(question.contains("task objective") || question.contains("requested extent"));
+        assert!(
+            question.contains("no diagnosis hindsight") || reason == Reason::ExcessiveFileBreadth
+        );
+    }
+    let repeat_id = plan
+        .prepared
+        .targets
+        .iter()
+        .find(|(_, target)| {
+            target.reason == Reason::ExcessiveWithinFileReading && target.read_indexes.len() == 2
+        })
+        .unwrap()
+        .0
+        .clone();
+    let mut progress = SamplingProgress::new(SamplingLimits {
+        checks: 1,
+        candidates_per_check: MAX_SAMPLING_CANDIDATES,
+        answers_per_candidate: 1,
+        judgments_per_run: 32,
+    })
+    .unwrap();
+    synchronize_sampling(&plan, &mut progress).unwrap();
+    progress.begin_run();
+    let mut plan = plan;
+    while let Some(job) = progress.choose_job() {
+        if plan
+            .prepared
+            .candidates
+            .iter()
+            .find(|candidate| candidate.candidate_id == job.candidate)
+            .unwrap()
+            .work_item_ids
+            .contains(&repeat_id)
+        {
+            PreparedAssessment::select_jobs(&mut plan, &[job]).unwrap();
+            break;
+        }
+    }
+    let item = plan
+        .work_items
+        .iter()
+        .find(|item| item.id == repeat_id)
+        .unwrap();
+    assert!(
+        item.window.fields["intervening"]
+            .to_string()
+            .contains("Diagnosis")
+    );
+    assert!(
+        serde_json::to_string(&item.questions)
+            .unwrap()
+            .contains("LATER read")
+    );
+}
+
+#[test]
+fn every_read_reason_uses_the_explicit_task_objective_without_blanket_first_read_protection() {
+    let input = input(&[
+        "src/cache_age.rs",
+        "docs/unrelated-guide.md",
+        "src/cache_age.rs",
+    ]);
+    let plan = OverExploringCheck
+        .prepare(&build_jev_context(&input).unwrap())
+        .unwrap();
+    for reason in [
+        Reason::UnrelatedFiles,
+        Reason::ExcessiveFileBreadth,
+        Reason::ExcessiveWithinFileReading,
+    ] {
+        let target = plan
+            .prepared
+            .targets
+            .iter()
+            .find(|(_, target)| target.reason == reason)
+            .expect("reason has a selected target");
+        let item = plan.work_items.iter().find(|item| item.id == *target.0);
+        if reason == Reason::ExcessiveFileBreadth && item.is_none() {
+            continue;
+        }
+        let Some(item) = item else {
+            continue;
+        };
+        let prompt = serde_json::to_string(&item.questions).unwrap();
+        assert!(
+            prompt.contains("relevance baseline") || reason == Reason::ExcessiveFileBreadth,
+            "{reason:?}: {prompt}"
+        );
+        assert!(
+            prompt.contains("not every first read") || reason == Reason::ExcessiveFileBreadth,
+            "{reason:?}: {prompt}"
+        );
+        assert!(
+            prompt.contains("Never infer scope") || reason == Reason::ExcessiveFileBreadth,
+            "{reason:?}: {prompt}"
+        );
+        if reason == Reason::UnrelatedFiles {
+            let first = plan
+                .prepared
+                .targets
+                .iter()
+                .find(|(_, candidate)| {
+                    candidate.reason == reason && candidate.read_indexes == vec![0]
+                })
+                .unwrap();
+            let first_item = plan.work_items.iter().find(|item| item.id == *first.0);
+            if let Some(first_item) = first_item {
+                assert!(
+                    serde_json::to_string(&first_item.window.fields)
+                        .unwrap()
+                        .contains("src/cache_age.rs")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn task_named_initial_cache_age_read_cannot_be_unrelated_but_detours_and_extent_remain_assessable()
+{
+    let source = "fn accepts_age(value: u32, maximum: u32) -> bool {\n    value < maximum\n}\n#[test]\nfn equal_age_is_accepted() {\n    assert!(accepts_age(10, 10));\n}";
+    let (content, task, span) = fixture(
+        "Fix src/cache_age.rs so accepts_age(10, 10) returns true.",
+        &[
+            "src/cache_age.rs",
+            "docs/unrelated-guide.md",
+            "src/cache_age.rs",
+        ],
+        source,
+        "Change the boundary comparison after diagnosis.",
+    );
+    let input = build_episodes(&content, &task, &[span]).unwrap();
+    let context = build_jev_context(&input).unwrap();
+    let plan = OverExploringCheck
+        .prepare_with_capabilities(&context, &small_capabilities(2050))
+        .unwrap();
+    let first_named = plan
+        .prepared
+        .targets
+        .iter()
+        .find(|(_, target)| {
+            target.reason == Reason::ExcessiveWithinFileReading && target.read_indexes == vec![0]
+        })
+        .unwrap();
+    let first_named_id = first_named.0.clone();
+    let mut plan = plan;
+    let mut progress = SamplingProgress::new(SamplingLimits {
+        checks: 1,
+        candidates_per_check: MAX_SAMPLING_CANDIDATES,
+        answers_per_candidate: 1,
+        judgments_per_run: 16,
+    })
+    .unwrap();
+    synchronize_sampling(&plan, &mut progress).unwrap();
+    progress.begin_run();
+    while let Some(job) = progress.choose_job() {
+        if plan
+            .prepared
+            .candidates
+            .iter()
+            .find(|candidate| candidate.candidate_id == job.candidate)
+            .unwrap()
+            .work_item_ids
+            .contains(&first_named_id)
+        {
+            PreparedAssessment::select_jobs(&mut plan, &[job]).unwrap();
+            break;
+        }
+    }
+    assert!(plan.work_items.iter().any(|item| item.id == first_named_id));
+    assert!(!plan.prepared.targets.values().any(|target| target.reason == Reason::UnrelatedFiles && target.read_indexes == vec![0]));
+    assert!(plan.prepared.targets.values().any(|target| target.reason == Reason::UnrelatedFiles && target.read_indexes == vec![1]));
+    let first_item = plan
+        .work_items
+        .iter()
+        .find(|item| item.id == first_named_id)
+        .unwrap();
+    assert_eq!(
+        first_item.window.fields["reads"][0]["task_named_path"],
+        json!(true)
+    );
+    let repeat = plan
+        .prepared
+        .targets
+        .iter()
+        .find(|(_, target)| {
+            target.reason == Reason::ExcessiveWithinFileReading && target.read_indexes == vec![0, 2]
+        })
+        .unwrap();
+    assert_eq!(repeat.1.bindings.len(), 2);
+    let mut answers = results(&plan, "likely_excess", 0.98);
+    let named_extent = answers
+        .iter_mut()
+        .find(|answer| answer.work_item_id == first_named_id)
+        .unwrap();
+    named_extent
+        .answers
+        .insert(QUESTION_ID.into(), answer("likely_excess", 0.89));
+    let findings = OverExploringCheck
+        .reduce(&plan, &answers, false)
+        .unwrap()
+        .findings;
+    assert!(
+        findings
+            .iter()
+            .all(|finding| !(finding.reason == Reason::UnrelatedFiles
+                && finding.reads[0].request_id == input.episodes[0].reads[0].request.reference_id))
+    );
+    assert!(
+        findings
+            .iter()
+            .all(|finding| finding.work_item_id != first_named_id)
+    );
+    let strong = OverExploringCheck
+        .reduce(&plan, &results(&plan, "likely_excess", 0.98), false)
+        .unwrap();
+    assert!(
+        strong
+            .findings
+            .iter()
+            .any(|finding| finding.work_item_id == first_named_id
+                && finding.reason == Reason::ExcessiveWithinFileReading)
+    );
+}
+
+#[test]
+fn intervening_edit_references_address_filtered_entries_and_reconstruct_exact_source() {
+    let (mut content, task, span) = fixture(
+        "Fix parser.rs.",
+        &["parser.rs", "parser.rs"],
+        "fn parse() {}",
+        "Verify the edit.",
+    );
+    let mut edit = content.actions[2].clone();
+    edit.reference.id = "intervening-parser-edit".into();
+    edit.metadata.read_request = None;
+    edit.text = r#"{"filePath":"parser.rs","oldString":"fn parse() {}","newString":"fn parse() { validate(); }"}"#.into();
+    let edit_reference = edit.reference.id.clone();
+    content.actions.insert(4, edit);
+    for (index, action) in content.actions.iter_mut().enumerate() {
+        action.reference.turn_index = index as u64;
+    }
+    let input = build_episodes(&content, &task, &[span]).unwrap();
+    let mut capabilities = small_capabilities(2050);
+    capabilities.use_ollama_generic_accounting("", "");
+    capabilities.rendering_reserve_tokens = 302;
+    capabilities.runtime_context_tokens.value = Some(2200);
+    let mut plan = OverExploringCheck
+        .prepare_with_capabilities(&build_jev_context(&input).unwrap(), &capabilities)
+        .unwrap();
+    let pair_id = plan
+        .prepared
+        .targets
+        .iter()
+        .find(|(_, target)| {
+            target.reason == Reason::ExcessiveWithinFileReading && target.read_indexes == vec![0, 1]
+        })
+        .unwrap()
+        .0
+        .clone();
+    let mut progress = SamplingProgress::new(SamplingLimits {
+        checks: 1,
+        candidates_per_check: MAX_SAMPLING_CANDIDATES,
+        answers_per_candidate: 1,
+        judgments_per_run: 8,
+    })
+    .unwrap();
+    synchronize_sampling(&plan, &mut progress).unwrap();
+    progress.begin_run();
+    while let Some(job) = progress.choose_job() {
+        if plan
+            .prepared
+            .candidates
+            .iter()
+            .find(|candidate| candidate.candidate_id == job.candidate)
+            .unwrap()
+            .work_item_ids
+            .contains(&pair_id)
+        {
+            PreparedAssessment::select_jobs(&mut plan, &[job]).unwrap();
+            break;
+        }
+    }
+    let restored: JevCheckPlan<PreparedAssessment> = serde_json::from_value(json!(&plan)).unwrap();
+    let item = restored
+        .work_items
+        .iter()
+        .find(|item| item.id == pair_id)
+        .unwrap();
+    let reference = item
+        .window
+        .evidence
+        .iter()
+        .find(|reference| reference.source_id == edit_reference)
+        .unwrap();
+    assert_eq!(reference.part_id, "intervening[0]");
+    let selected = &item.window.fields["intervening"][0];
+    assert_eq!(selected["at"], json!(4));
+    let start = selected["range"][0].as_u64().unwrap() as usize;
+    let end = selected["range"][1].as_u64().unwrap() as usize;
+    assert_eq!(selected["text"], json!(&input.events[4].text[start..end]));
+    let assessment = OverExploringCheck
+        .reduce(&restored, &results(&restored, "likely_excess", 0.9), false)
+        .unwrap();
+    let finding = &assessment.findings[0];
+    assert!(finding.source_evidence.contains(reference));
+    let snippet = finding
+        .explanation
+        .as_ref()
+        .unwrap()
+        .snippets
+        .iter()
+        .find(|snippet| snippet.reference.id == edit_reference)
+        .unwrap();
+    assert!(snippet.matches_action(&input.events[4]));
+    assert_eq!(snippet.range, (start, end));
+    assert_eq!(finding.reads.len(), 2);
+}
+
+#[test]
+fn small_windows_dispatch_and_persist_paired_exact_excerpts() {
+    for tokens in [2048, 2050] {
+        let input = input(&["parser.rs"]);
+        let plan = OverExploringCheck
+            .prepare_with_capabilities(
+                &build_jev_context(&input).unwrap(),
+                &small_capabilities(tokens),
+            )
+            .unwrap();
+        assert_eq!(
+            plan.work_items.len(),
+            2,
+            "{tokens}: {:?}",
+            plan.skipped_item_ids
+        );
+        let assessment = OverExploringCheck
+            .reduce(&plan, &results(&plan, "likely_excess", 0.9), false)
+            .unwrap();
+        assert_eq!(assessment.findings.len(), 2);
+        for decision in &assessment.findings {
+            let explanation = decision.explanation.as_ref().unwrap();
+            for snippet in &explanation.snippets {
+                let action = input
+                    .events
+                    .iter()
+                    .find(|action| action.reference == snippet.reference)
+                    .unwrap();
+                assert!(snippet.matches_action(action));
+            }
+            assert_eq!(explanation.reads.len(), 1);
+            assert_eq!(
+                explanation.reads[0].request.reference_id,
+                decision.reads[0].request_id
+            );
+            assert!(!decision.task_evidence.is_empty());
+            let result = &explanation.compared.fields["reads"][0]["result"];
+            let source_index = result["at"].as_u64().unwrap() as usize;
+            let start = result["range"][0].as_u64().unwrap() as usize;
+            let end = result["range"][1].as_u64().unwrap() as usize;
+            assert_eq!(
+                result["text"],
+                json!(&input.events[source_index].text[start..end])
+            );
+            let persisted: Decision = serde_json::from_value(json!(decision)).unwrap();
+            assert_eq!(&persisted, decision);
+        }
+        assert!(assessment.clean_episode_ids.is_empty());
+    }
+}
+
+#[test]
+fn known_extent_sibling_and_pair_survive_an_unknown_extent() {
+    let mut input = input(&["parser.rs", "parser.rs", "parser.rs"]);
+    let last = input.episodes[0].reads[2].result.as_mut().unwrap();
+    last.returned_extent = None;
+    let id = last.reference_id.clone();
+    input
+        .events
+        .iter_mut()
+        .find(|event| event.reference.id == id)
+        .unwrap()
+        .metadata
+        .read_result = Some(last.clone());
+    let plan = plan(&input);
+    let extents = plan
+        .prepared
+        .targets
+        .values()
+        .filter(|target| target.reason == Reason::ExcessiveWithinFileReading)
+        .collect::<Vec<_>>();
+    assert_eq!(extents.len(), 3);
+    assert!(
+        extents
+            .iter()
+            .all(|target| !target.read_indexes.contains(&2))
+    );
+    assert!(
+        extents
+            .iter()
+            .any(|target| target.read_indexes == vec![0, 1])
+    );
+}
+
+#[test]
+fn small_window_pair_keeps_whole_output_equality_separate_from_samples() {
+    for tokens in [2048, 2050] {
+        let input = input(&["parser.rs", "parser.rs"]);
+        let mut plan = OverExploringCheck
+            .prepare_with_capabilities(
+                &build_jev_context(&input).unwrap(),
+                &small_capabilities(tokens),
+            )
+            .unwrap();
+        let pair_id = plan
+            .prepared
+            .targets
+            .iter()
+            .find(|(_, target)| {
+                target.reason == Reason::ExcessiveWithinFileReading && target.bindings.len() == 2
+            })
+            .unwrap()
+            .0
+            .clone();
+        let mut progress = SamplingProgress::new(SamplingLimits {
+            checks: 1,
+            candidates_per_check: MAX_SAMPLING_CANDIDATES,
+            answers_per_candidate: 1,
+            judgments_per_run: 8,
+        })
+        .unwrap();
+        synchronize_sampling(&plan, &mut progress).unwrap();
+        progress.begin_run();
+        while let Some(job) = progress.choose_job() {
+            let candidate = plan
+                .prepared
+                .candidates
+                .iter()
+                .find(|candidate| candidate.candidate_id == job.candidate)
+                .unwrap();
+            if candidate.work_item_ids.contains(&pair_id) {
+                PreparedAssessment::select_jobs(&mut plan, &[job]).unwrap();
+                break;
+            }
+        }
+        if plan.work_items.is_empty() {
+            assert_eq!(plan.skipped_item_ids, vec![pair_id]);
+            continue;
+        }
+        let result = OverExploringCheck
+            .reduce(&plan, &results(&plan, "likely_excess", 0.9), false)
+            .unwrap();
+        let basis = result.findings[0].explanation.as_ref().unwrap();
+        assert_eq!(
+            basis.relationship,
+            ReadRelationship::LaterReadRepeatsEarlier
+        );
+        assert_eq!(basis.whole_output_equal, Some(true));
+        assert_eq!(basis.reads.len(), 2);
+    }
+}
+
+#[test]
+fn small_breadth_uses_distinct_files_and_a_direct_set_judgment() {
+    let input = input(&["parser.rs", "library.rs", "parser.rs"]);
+    let plan = OverExploringCheck
+        .prepare_with_capabilities(
+            &build_jev_context(&input).unwrap(),
+            &small_capabilities(2048),
+        )
+        .unwrap();
+    let breadth = plan
+        .prepared
+        .targets
+        .iter()
+        .find(|(_, target)| target.reason == Reason::ExcessiveFileBreadth)
+        .unwrap();
+    assert_eq!(breadth.1.bindings.len(), 2);
+    assert!(
+        plan.work_items.iter().any(|item| item.id == *breadth.0),
+        "{:?}",
+        plan.skipped_item_ids
+    );
+}
+
+#[test]
+fn bounded_eight_file_breadth_fits_without_repeating_returned_bodies() {
+    let paths = [
+        "parser.rs",
+        "lexer.rs",
+        "tokens.rs",
+        "errors.rs",
+        "types.rs",
+        "format.rs",
+        "config.rs",
+        "tests.rs",
+    ];
+    let input = input(&paths);
+    for tokens in [2048, 2050] {
+        let plan = OverExploringCheck
+            .prepare_with_capabilities(
+                &build_jev_context(&input).unwrap(),
+                &small_capabilities(tokens),
+            )
+            .unwrap();
+        let breadth_id = plan
+            .prepared
+            .targets
+            .iter()
+            .find(|(_, target)| target.reason == Reason::ExcessiveFileBreadth)
+            .unwrap()
+            .0
+            .clone();
+        let mut plan = plan;
+        let mut progress = SamplingProgress::new(SamplingLimits {
+            checks: 1,
+            candidates_per_check: MAX_SAMPLING_CANDIDATES,
+            answers_per_candidate: 1,
+            judgments_per_run: 16,
+        })
+        .unwrap();
+        synchronize_sampling(&plan, &mut progress).unwrap();
+        progress.begin_run();
+        while let Some(job) = progress.choose_job() {
+            if plan
+                .prepared
+                .candidates
+                .iter()
+                .find(|candidate| candidate.candidate_id == job.candidate)
+                .unwrap()
+                .work_item_ids
+                .contains(&breadth_id)
+            {
+                PreparedAssessment::select_jobs(&mut plan, &[job]).unwrap();
+                break;
+            }
+        }
+        let item = plan.work_items.iter().find(|item| item.id == breadth_id);
+        let Some(item) = item else {
+            assert!(
+                plan.skipped_item_ids.contains(&breadth_id) || plan.coverage.not_selected_items > 0
+            );
+            continue;
+        };
+        assert_eq!(item.window.fields["reads"].as_array().unwrap().len(), 8);
+        assert!(!item.window.fields.to_string().contains("recorded content"));
+        let result = OverExploringCheck
+            .reduce(&plan, &results(&plan, "likely_excess", 0.9), false)
+            .unwrap();
+        let finding = result
+            .findings
+            .iter()
+            .find(|finding| finding.reason == Reason::ExcessiveFileBreadth)
+            .unwrap();
+        assert_eq!(
+            finding.explanation.as_ref().unwrap().relationship,
+            ReadRelationship::DistinctFileSetTooBroad
+        );
+        assert!(
+            finding
+                .explanation
+                .as_ref()
+                .unwrap()
+                .whole_output_equal
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn small_read_request_fits_escaped_unicode_and_retains_content_not_its_wrapper() {
+    for tokens in [2048, 2050] {
+        let (content, task, span) = fixture(
+            "Fix parser encoding. Preserve UTF-8 input.",
+            &["src/escaped \"folder\"/parser-🦀.rs"],
+            "quoted \"text\" and \\slashes 🦀\nValidate Unicode.",
+            "Done.",
+        );
+        let input = build_episodes(&content, &task, &[span]).unwrap();
+        let plan = OverExploringCheck
+            .prepare_with_capabilities(
+                &build_jev_context(&input).unwrap(),
+                &small_capabilities(tokens),
+            )
+            .unwrap();
+        assert_eq!(plan.work_items.len(), 2);
+        let packing = pack_work_items_with_capabilities(&plan.work_items, &plan.capabilities);
+        assert!(packing.skipped_item_ids.is_empty());
+        for batch in packing.batches {
+            validate_jev_request_with_capabilities(&batch.request, &plan.capabilities).unwrap();
+        }
+        for item in &plan.work_items {
+            let text = item.window.fields["reads"][0]["result"]["text"]
+                .as_str()
+                .unwrap();
+            assert!(text.contains("quoted"));
+            assert!(!text.contains("<path>"));
+        }
+    }
+}
+
+#[test]
+fn missing_first_task_does_not_veto_later_episode() {
+    let (content, task, _) = fixture(
+        "Fix the parser.",
+        &["parser.rs", "library.rs"],
+        "code",
+        "Done.",
+    );
+    let spans = [
+        EpisodeSpan {
+            first_event_id: content.actions[1].reference.id.clone(),
+            last_event_id: content.actions[3].reference.id.clone(),
+            state: EpisodeState::Complete,
+        },
+        EpisodeSpan {
+            first_event_id: content.actions[4].reference.id.clone(),
+            last_event_id: content.actions[5].reference.id.clone(),
+            state: EpisodeState::Complete,
+        },
+    ];
+    let mut input = build_episodes(&content, &task, &spans).unwrap();
+    let unavailable = JevSharedRequestContext {
+        fields: json!({}),
+        evidence: vec![],
+    };
+    input.task_context = unavailable.clone();
+    input
+        .task_contexts
+        .insert(input.episodes[0].id, unavailable);
+    let plan = OverExploringCheck
+        .prepare_with_capabilities(
+            &build_jev_context(&input).unwrap(),
+            &small_capabilities(2050),
+        )
+        .unwrap();
+    assert!(!plan.work_items.is_empty());
+    assert!(
+        plan.work_items
+            .iter()
+            .all(|item| plan.prepared.targets[&item.id].episode_id == input.episodes[1].id)
+    );
+}
+
+#[test]
+fn local_positive_does_not_override_negative_distinct_file_set() {
+    let input = input(&["parser.rs", "library.rs"]);
+    let plan = plan(&input);
+    let mut judgments = results(&plan, "likely_excess", 0.9);
+    let negative = results(&plan, "justified_or_minor", 0.9);
+    for result in &mut judgments {
+        if plan.prepared.targets[&result.work_item_id].reason == Reason::ExcessiveFileBreadth {
+            *result = negative
+                .iter()
+                .find(|other| other.work_item_id == result.work_item_id)
+                .unwrap()
+                .clone();
+        }
+    }
+    let assessment = OverExploringCheck.reduce(&plan, &judgments, true).unwrap();
+    assert!(!assessment.findings.is_empty());
+    assert!(
+        assessment
+            .findings
+            .iter()
+            .all(|finding| finding.reason != Reason::ExcessiveFileBreadth)
+    );
+}
+
+#[test]
+fn fresh_reduction_retracts_breadth_after_accepted_counterevidence() {
+    let plan = plan(&input(&["parser.rs", "library.rs"]));
+    let prior = OverExploringCheck
+        .reduce(&plan, &results(&plan, "likely_excess", 0.9), true)
+        .unwrap();
+    assert!(
+        prior
+            .findings
+            .iter()
+            .any(|finding| finding.reason == Reason::ExcessiveFileBreadth)
+    );
+    let mut latest_answers = results(&plan, "likely_excess", 0.9);
+    let negatives = results(&plan, "justified_or_minor", 0.9);
+    for result in &mut latest_answers {
+        if plan.prepared.targets[&result.work_item_id].reason == Reason::ExcessiveFileBreadth {
+            *result = negatives
+                .iter()
+                .find(|negative| negative.work_item_id == result.work_item_id)
+                .unwrap()
+                .clone();
+        }
+    }
+    let latest = OverExploringCheck
+        .reduce(&plan, &latest_answers, true)
+        .unwrap();
+    assert!(
+        latest
+            .findings
+            .iter()
+            .any(|finding| finding.reason != Reason::ExcessiveFileBreadth)
+    );
+    assert!(
+        latest
+            .findings
+            .iter()
+            .all(|finding| finding.reason != Reason::ExcessiveFileBreadth)
+    );
+    assert_eq!(
+        latest.completed_work_item_ids,
+        prior.completed_work_item_ids
     );
 }
 
@@ -698,19 +1621,63 @@ fn a_thousand_events_pack_with_bounded_support_and_exact_target_indexes() {
 }
 
 #[test]
-fn a_128_path_inventory_synchronizes_all_257_targets_with_the_engine_bound() {
+fn a_128_path_inventory_keeps_local_targets_and_bounds_breadth() {
     let paths = (0..128)
         .map(|index| format!("file-{index}.rs"))
         .collect::<Vec<_>>();
     let input = input(&paths.iter().map(String::as_str).collect::<Vec<_>>());
     let plan = plan(&input);
-    assert_eq!(plan.prepared.targets.len(), 257);
-    assert_eq!(plan.prepared.candidates.len(), 257);
+    assert_eq!(plan.prepared.targets.len(), 256);
+    assert_eq!(plan.prepared.candidates.len(), 256);
     let mut progress = progress();
     synchronize_sampling(&plan, &mut progress).unwrap();
     let check = crate::checks::sampling::StableId::new("smart-check", &[b"over_exploring"]);
-    assert_eq!(progress.coverage(check).unwrap().eligible, 257);
-    assert_eq!(progress.coverage(check).unwrap().remaining, 257);
+    assert_eq!(progress.coverage(check).unwrap().eligible, 256);
+    assert_eq!(progress.coverage(check).unwrap().remaining, 256);
+}
+
+#[test]
+fn selected_jobs_preserve_the_set_level_breadth_gap_without_duplicates() {
+    let paths = (0..128)
+        .map(|index| format!("file-{index}.rs"))
+        .collect::<Vec<_>>();
+    let input = input(&paths.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut plan = plan(&input);
+    let mut progress = progress();
+    synchronize_sampling(&plan, &mut progress).unwrap();
+    progress.begin_run();
+    let job = progress.choose_job().unwrap();
+    for _ in 0..2 {
+        PreparedAssessment::select_jobs(&mut plan, std::slice::from_ref(&job)).unwrap();
+        let gaps = plan
+            .prepared
+            .unassessed
+            .iter()
+            .filter(|item| {
+                item.work_item_id.is_none()
+                    && item.reason == Some(Reason::ExcessiveFileBreadth)
+                    && item.limitation == Abstention::SampledEvidence
+            })
+            .count();
+        assert_eq!(gaps, 1);
+        assert!(
+            plan.coverage
+                .limitations
+                .contains(&"SampledEvidence".into())
+        );
+        let reduced = OverExploringCheck
+            .reduce(&plan, &results(&plan, "justified_or_minor", 0.98), true)
+            .unwrap();
+        assert!(reduced.clean_episode_ids.is_empty());
+        assert!(
+            reduced
+                .unassessed
+                .iter()
+                .any(|item| item.work_item_id.is_none()
+                    && item.reason == Some(Reason::ExcessiveFileBreadth)
+                    && item.limitation == Abstention::SampledEvidence)
+        );
+    }
 }
 
 #[test]
@@ -946,7 +1913,7 @@ fn source_text_is_retained_once_across_many_episode_descriptors() {
 }
 
 #[test]
-fn source_binding_and_projection_corruption_are_rejected() {
+fn source_identity_corruption_is_rejected_and_read_dependencies_are_isolated() {
     for variant in [
         "branch",
         "order",
@@ -1009,11 +1976,21 @@ fn source_binding_and_projection_corruption_are_rejected() {
             "overlap" => spans.push(span),
             _ => unreachable!(),
         }
-        assert_eq!(
-            build_episodes(&content, &task, &spans),
-            Err(JevError::InvalidCheckContext),
-            "{variant}"
-        );
+        let result = build_episodes(&content, &task, &spans);
+        match variant {
+            "request_id" | "unstable" => assert!(result.unwrap().episodes.is_empty(), "{variant}"),
+            "call" | "digest" | "bytes" | "result_id" => {
+                let input = result.unwrap();
+                assert_eq!(input.episodes[0].reads.len(), 1);
+                assert!(input.episodes[0].reads[0].result.is_none(), "{variant}");
+                assert!(
+                    input
+                        .limitations
+                        .contains(&"read_result_binding_invalid".into())
+                );
+            }
+            _ => assert_eq!(result, Err(JevError::InvalidCheckContext), "{variant}"),
+        }
     }
     let mut input = input(&["parser.rs"]);
     input.episodes[0].reads[0]
@@ -1188,20 +2165,18 @@ fn production_payload_keeps_the_explicit_audit_request_for_each_named_reason() {
                 panic!("Expected Choice");
             };
             assert!(
-                instructions["question"]["requested_coverage"]
+                instructions["question"]["rules"]
                     .as_str()
                     .unwrap()
-                    .contains("Diagnosis does not cancel the audit.")
+                    .contains("Task")
             );
-            assert!(instructions["question"]["reason_boundary"].as_str().unwrap().contains(
-                "A task-relevant file with excessive regions or repeats is not an unrelated file"
-            ));
+            assert!(instructions["question"]["question"].as_str().is_some());
             assert_eq!(criteria.len(), 3);
         }
     }
     assert_eq!(
         reasons,
-        BTreeSet::from([Reason::UnrelatedFiles, Reason::ExcessiveWithinFileReading])
+        BTreeSet::from([Reason::ExcessiveWithinFileReading])
     );
     assert!(
         plan.shared_context
@@ -1268,7 +2243,7 @@ async fn mock_payload_separates_initial_diagnosis_from_later_repeat_targets() {
             })
             .unwrap();
         assert_eq!(initial.bindings.len(), 1);
-        assert_eq!(later.bindings.len(), 4);
+        assert!((1..=2).contains(&later.bindings.len()));
         assert_eq!(
             initial.bindings[0].output_digest,
             later.bindings[0].output_digest
@@ -1377,10 +2352,10 @@ async fn mock_payload_separates_initial_diagnosis_from_later_repeat_targets() {
                 panic!("Expected Choice");
             };
             assert!(
-                instructions["question"]["temporal_scope"]
+                instructions["question"]["rules"]
                     .as_str()
                     .unwrap()
-                    .contains("Do not borrow later repetition")
+                    .contains("no diagnosis hindsight")
             );
         }
     }
@@ -1417,7 +2392,7 @@ fn legitimate_investigation_context_and_proportionality_rules_reach_the_question
             .reduce(&plan, &results(&plan, "justified_or_minor", 0.98), true)
             .unwrap();
         assert!(reduced.findings.is_empty());
-        assert_eq!(reduced.clean_episode_ids.len(), 1);
+        assert!(reduced.clean_episode_ids.is_empty());
         assert!(
             serde_json::to_string(&plan.shared_context)
                 .unwrap()
@@ -1426,8 +2401,8 @@ fn legitimate_investigation_context_and_proportionality_rules_reach_the_question
         let fields = serde_json::to_string(&plan.work_items[0].window.fields).unwrap();
         assert!(fields.contains(later));
         let question = serde_json::to_string(&plan.work_items[0].questions).unwrap();
-        assert!(question.contains("proportionality"));
-        assert!(question.contains("reasonable hypothesis elimination"));
+        assert!(question.contains("against the objective"));
+        assert!(question.contains("dependencies") || question.contains("objective"));
     }
 }
 

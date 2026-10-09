@@ -11,6 +11,7 @@ import {
   getBurnCheckTargetEvidence,
   type BurnCheckTargetEvidencePayload,
   type BurnCheckTargetPayload,
+  type BurnCheckReadExtentPayload,
 } from "../../../lib/insightsIpc"
 import { renderAgentIcon } from "../../../lib/agentIcon"
 import { formatApiEquivalentUsd } from "../../../lib/presentation/checkReport"
@@ -28,10 +29,10 @@ export function targetCostLine(target: BurnCheckTargetPayload): string | null {
   if (!opportunity || opportunity.unit !== "apiEquivalentUsd") return null
   if (target.affectedSessionCount != null) {
     const sessions = target.affectedSessionCount
-    return `Estimated ${formatApiEquivalentUsd(opportunity.value)} in cache reads across ${sessions} session${sessions === 1 ? "" : "s"}, including sub-agent requests.`
+    return `Estimated ${formatApiEquivalentUsd(opportunity.value)} in cache reads across ${sessions} session${sessions === 1 ? "" : "s"}, including helper requests.`
   }
   const occurrences = target.occurrenceCount
-  return `Estimated ${formatApiEquivalentUsd(opportunity.value)} in cache reads across ${occurrences} occurrence${occurrences === 1 ? "" : "s"}, including sub-agent requests.`
+  return `Estimated ${formatApiEquivalentUsd(opportunity.value)} in cache reads across ${occurrences} occurrence${occurrences === 1 ? "" : "s"}, including helper requests.`
 }
 
 function EvidenceExcerpt({
@@ -47,23 +48,24 @@ function EvidenceExcerpt({
   citationPrefix?: string
   collapseLong?: boolean
 }) {
+  const [expanded, setExpanded] = useState(false)
   const fullText = item.excerpt
   const display = item.label === "observedAction" ? actionDisplay(item) : null
   const shownText = display?.text ?? fullText
   const preview = shownText.length > 360 ? `${shownText.slice(0, 360).trimEnd()}…` : shownText
   const excerpt = (text: string) => (
-    <pre
-      id={
-        citationPrefix ? `${citationPrefix}-${encodeURIComponent(item.reference)}` : undefined
-      }
-      tabIndex={citationPrefix ? -1 : undefined}
-      className="whitespace-pre-wrap break-words rounded-control bg-surface-card px-3 py-2 type-callout text-label"
-    >
+    <pre className="min-w-0 whitespace-pre-wrap wrap-anywhere rounded-control bg-surface-card px-3 py-2 type-callout text-label">
       {text}
     </pre>
   )
   return (
-    <div className="space-y-1">
+    <div
+      className="min-w-0 space-y-1"
+      id={
+        citationPrefix ? `${citationPrefix}-${encodeURIComponent(item.reference)}` : undefined
+      }
+      tabIndex={citationPrefix ? -1 : undefined}
+    >
       {showMetadata && (
         <p className="type-caption text-label-tertiary">
           {item.sourceLabel}
@@ -74,9 +76,15 @@ function EvidenceExcerpt({
       (display?.alwaysCollapse || ((display?.collapse ?? true) && shownText.length > 360)) ? (
         <>
           {excerpt(preview)}
-          <details>
-            <summary className="burn-check-action type-caption">
-              {display?.alwaysCollapse ? "Show file contents" : "Show full details"}
+          <details onToggle={(event) => setExpanded(event.currentTarget.open)}>
+            <summary className="burn-check-action type-caption" aria-expanded={expanded}>
+              {display?.alwaysCollapse
+                ? expanded
+                  ? "Hide file contents"
+                  : "Show file contents"
+                : expanded
+                  ? "Hide full details"
+                  : "Show full details"}
             </summary>
             {excerpt(display?.detail ?? shownText)}
           </details>
@@ -192,16 +200,175 @@ function orderedEvidence(items: BurnCheckTargetEvidencePayload["items"]) {
   )
 }
 
+function readExtent(extent: BurnCheckReadExtentPayload, kind: "Requested" | "Returned") {
+  if (extent.unit === "unknown") return null
+  const unit = extent.unit === "lines" ? "line" : "byte"
+  const range =
+    extent.offset == null
+      ? null
+      : `${unit} ${extent.offset}${extent.end_inclusive == null ? "" : `–${extent.end_inclusive}`}`
+  const limit = extent.limit == null ? null : `limit ${extent.limit} ${extent.unit}`
+  const details = [range, limit].filter(Boolean).join(" · ")
+  return details ? `${kind}: ${details}` : null
+}
+
+function ReadResult({ item }: { item: BurnCheckTargetEvidencePayload["items"][number] }) {
+  const [expanded, setExpanded] = useState(false)
+  const contentId = useId()
+  return (
+    <div className="min-w-0 space-y-1">
+      <button
+        type="button"
+        className="burn-check-action type-caption"
+        aria-expanded={expanded}
+        aria-controls={contentId}
+        onClick={() => setExpanded(!expanded)}
+      >
+        {expanded ? "Hide file contents" : "Show file contents"}
+      </button>
+      <pre
+        id={contentId}
+        hidden={!expanded}
+        className="min-w-0 whitespace-pre-wrap wrap-anywhere rounded-control bg-surface-card px-3 py-2 type-callout text-label"
+      >
+        {item.excerpt}
+      </pre>
+    </div>
+  )
+}
+
+function ReadEvidence({
+  evidence,
+  citationPrefix,
+}: {
+  evidence: BurnCheckTargetEvidencePayload
+  citationPrefix: string
+}) {
+  const reads = evidence.comparison?.reads ?? []
+  const pairedReferences = new Set(
+    reads.flatMap((read) => [
+      read.requestReference,
+      ...(read.resultReference ? [read.resultReference] : []),
+    ]),
+  )
+  const otherActions = evidence.items.filter(
+    (item) => item.label === "observedAction" && !pairedReferences.has(item.reference),
+  )
+  return (
+    <div className="min-w-0 space-y-3">
+      {orderedEvidence(evidence.items.filter((item) => item.label !== "observedAction")).map(
+        (item) => (
+          <div key={item.reference} className="min-w-0 space-y-1">
+            <p className="type-callout font-medium! text-label">
+              {item.sourceLabel === "Earlier recorded event"
+                ? item.sourceLabel
+                : "Requested task"}
+            </p>
+            <EvidenceExcerpt
+              item={item}
+              showMetadata={false}
+              showExplanation={false}
+              citationPrefix={citationPrefix}
+              collapseLong
+            />
+          </div>
+        ),
+      )}
+      <section aria-label="Files read" className="min-w-0 space-y-2">
+        <h4 className="type-callout font-medium! text-label">Files read</h4>
+        <ol className="min-w-0 space-y-3">
+          {reads.map((read, index) => {
+            const request = evidence.items.find(
+              (item) => item.reference === read.requestReference,
+            )
+            const result = evidence.items.find(
+              (item) => item.reference === read.resultReference,
+            )
+            if (!request) return null
+            const requested = readExtent(read.requestedExtent, "Requested")
+            const returned = read.returnedExtent
+              ? readExtent(read.returnedExtent, "Returned")
+              : null
+            return (
+              <li
+                key={read.requestReference}
+                className="min-w-0 space-y-1"
+                id={`${citationPrefix}-${encodeURIComponent(read.requestReference)}`}
+                tabIndex={-1}
+              >
+                {evidence.comparison?.explanation?.relationship ===
+                  "laterReadRepeatsEarlier" && (
+                  <p className="type-caption text-label-secondary">
+                    {index === 0 ? "Earlier read" : "Later read"}
+                  </p>
+                )}
+                <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                  <p className="min-w-0 wrap-anywhere type-callout text-label">
+                    {read.paths.length ? read.paths.join(", ") : "Read request"}
+                  </p>
+                  {request.observedAtMs != null && (
+                    <time
+                      className="type-caption text-label-tertiary"
+                      dateTime={new Date(request.observedAtMs).toISOString()}
+                    >
+                      {new Date(request.observedAtMs).toLocaleString()}
+                    </time>
+                  )}
+                </div>
+                {requested && <p className="type-caption text-label-secondary">{requested}</p>}
+                {returned && <p className="type-caption text-label-secondary">{returned}</p>}
+                {!result ? (
+                  <p className="type-caption text-label-secondary">Read request</p>
+                ) : (
+                  <div
+                    id={`${citationPrefix}-${encodeURIComponent(result.reference)}`}
+                    tabIndex={-1}
+                  >
+                    {read.resultStatus === "failed" && (
+                      <p className="type-caption text-label-secondary">Read failed</p>
+                    )}
+                    <ReadResult item={result} />
+                  </div>
+                )}
+              </li>
+            )
+          })}
+          {orderedEvidence(otherActions).map((item) => (
+            <li key={item.reference} className="min-w-0">
+              <EvidenceExcerpt
+                item={item}
+                showMetadata={false}
+                showExplanation={false}
+                citationPrefix={citationPrefix}
+                collapseLong
+              />
+            </li>
+          ))}
+        </ol>
+      </section>
+    </div>
+  )
+}
+
 function evidenceHeading(
   detector: BurnCheckTargetPayload["finding"]["detector"],
   item: BurnCheckTargetEvidencePayload["items"][number],
+  observationKind?: "proposal" | "attempt" | "recorded",
 ) {
   if (item.label === "observedAction") {
     if (detector === "ignoredInstructions") return "What happened"
     if (detector === "overExploring") return "Files read"
-    return "Work performed"
+    if (detector === "scopeCreep") {
+      return observationKind === "proposal"
+        ? "Proposed work"
+        : observationKind === "attempt"
+          ? "Attempted work"
+          : "Recorded work"
+    }
+    return "Recorded work"
   }
-  if (item.label === "context") return "Recorded task scope"
+  if (item.label === "context")
+    return detector === "overExploring" ? "Requested task" : item.sourceLabel
   const kind =
     detector === "scopeCreep"
       ? "Requested task"
@@ -246,8 +413,8 @@ export function EvidenceLimitsIcon({
 
 export function SmartCheckEvidenceSkeleton() {
   return (
-    <div role="status" aria-label="Loading evidence" className="space-y-3">
-      <span className="sr-only">Loading evidence…</span>
+    <div role="status" aria-label="Loading source details" className="space-y-3">
+      <span className="sr-only">Loading the source details for this finding…</span>
       <Skeleton className="h-16 w-full" />
       <div className="space-y-2">
         <Skeleton className="h-3 w-24" />
@@ -278,12 +445,10 @@ function IgnoredInstructionEvidence({
   target,
   state,
   sourcePath,
-  retry,
 }: {
   target: BurnCheckTargetPayload
   state: EvidenceState
   sourcePath: string | null
-  retry: () => void
 }) {
   const citationId = useId()
   const citationPrefix = `${citationId}-${encodeURIComponent(state.actionId)}`
@@ -342,25 +507,25 @@ function IgnoredInstructionEvidence({
           </>
         ) : (
           <p className="type-callout text-label-secondary">
-            {state.status === "loaded" && state.evidence?.status === "unavailable"
-              ? "The cited session action is unavailable."
-              : target.finding.observation}
+            No action excerpt was returned for this finding.
           </p>
         )}
       </div>
-      {state.status === "failed" && (
-        <div>
-          <p role="alert" className="type-callout text-label-secondary">
-            Could not load the saved excerpts.
-          </p>
-          <button type="button" className="burn-check-action mt-2 type-callout" onClick={retry}>
-            Retry
-          </button>
+      {orderedEvidence(items.filter((item) => item.label === "context")).map((item) => (
+        <div key={item.reference} className="space-y-1">
+          <p className="type-callout font-medium! text-label">{item.sourceLabel}</p>
+          <EvidenceExcerpt
+            item={item}
+            showMetadata={false}
+            showExplanation={false}
+            citationPrefix={citationPrefix}
+            collapseLong
+          />
         </div>
-      )}
+      ))}
       {state.status === "loaded" && state.evidence?.status === "unavailable" && (
         <p role="status" className="type-callout text-label-tertiary">
-          Saved excerpts aren’t available.
+          The saved excerpts are no longer available.
         </p>
       )}
     </div>
@@ -378,16 +543,44 @@ function instructionSourcePath(target: BurnCheckTargetPayload): string | null {
   return source
 }
 
+function evidenceStateExplanation(
+  target: BurnCheckTargetPayload,
+  state: EvidenceState | undefined,
+  hasSnapshot: boolean,
+): string {
+  if (state?.status === "loading")
+    return hasSnapshot
+      ? "The earlier details stay visible while the latest details load."
+      : "The check is loading the task and work excerpts used for this finding."
+  if (state?.status === "failed")
+    return hasSnapshot
+      ? "The earlier details remain visible while the latest details are retried."
+      : "Try again to load the source details for this finding."
+  if (state?.status === "loaded" && state.evidence?.status === "unavailable")
+    return "The check still has this finding, but its saved excerpts are no longer available."
+  if (state?.status === "loaded" && state.evidence?.status === "available") {
+    const hasExcerpts = state.evidence.items.some((item) => item.excerpt.trim() !== "")
+    return hasExcerpts
+      ? "The excerpts below show the recorded task or work used for this finding."
+      : "This finding remains, but no source excerpts were returned."
+  }
+  if (!target.evidenceAvailable)
+    return "This finding remains, but its source details cannot be shown here."
+  return "Open the details to see the source excerpts for this finding."
+}
+
 export function BurnCheckTargetDetail({
   target,
   refresh,
   reportRow = false,
   openEvidence = false,
+  evidenceActive = true,
 }: {
   target: BurnCheckTargetPayload
   refresh: () => void
   reportRow?: boolean
   openEvidence?: boolean
+  evidenceActive?: boolean
 }) {
   const skillOpportunities = target.finding.detector === "skillOpportunities"
   const scopeCreep = target.finding.detector === "scopeCreep"
@@ -398,6 +591,7 @@ export function BurnCheckTargetDetail({
     target.finding.detector === "overExploring"
       ? target.actionId
       : null
+  const automaticEvidence = revisionEvidenceActionId != null || openEvidence
   const citationId = useId()
   const [evidenceState, setEvidenceState] = useState<EvidenceState | null>(null)
   const request = useRef(0)
@@ -425,7 +619,7 @@ export function BurnCheckTargetDetail({
         )
           return
         const check = smartCheckForDetector(detector)
-        if (check)
+        if (check && currentTargetElement.current?.dataset.evidenceActive === "true")
           noteInteraction({
             kind: "smartCheckObserved",
             check,
@@ -451,7 +645,11 @@ export function BurnCheckTargetDetail({
                   snapshot: {
                     target: snapshotTarget,
                     evidence: selectedEvidence,
-                    ...(occurrence ? { occurrenceId: occurrence.findingId } : {}),
+                    ...(occurrence
+                      ? { occurrenceId: occurrence.findingId }
+                      : selectedEvidence.status === "unavailable" && retained?.occurrenceId
+                        ? { occurrenceId: retained.occurrenceId }
+                        : {}),
                   },
                 }
               : retained
@@ -471,7 +669,7 @@ export function BurnCheckTargetDetail({
           currentTargetElement.current?.dataset.evidenceActionId === actionId
         ) {
           const check = smartCheckForDetector(detector)
-          if (check)
+          if (check && currentTargetElement.current?.dataset.evidenceActive === "true")
             noteInteraction({
               kind: "smartCheckObserved",
               check,
@@ -501,7 +699,8 @@ export function BurnCheckTargetDetail({
       const evidenceKey =
         revisionEvidenceActionId != null ? `${findingId}:${actionId}` : findingId
       if (
-        (openEvidence || node.dataset.evidenceOpen === "true") &&
+        evidenceActive &&
+        (automaticEvidence || node.dataset.evidenceOpen === "true") &&
         target.evidenceAvailable &&
         autoLoadedFinding.current !== evidenceKey &&
         loadedFinding.current !== evidenceKey
@@ -510,7 +709,7 @@ export function BurnCheckTargetDetail({
         loadEvidence(target)
       }
     },
-    [target, revisionEvidenceActionId, openEvidence, loadEvidence],
+    [target, revisionEvidenceActionId, automaticEvidence, evidenceActive, loadEvidence],
   )
   const ignoredInstructions = target.finding.detector === "ignoredInstructions"
   const snapshot =
@@ -541,11 +740,28 @@ export function BurnCheckTargetDetail({
   const initialEvidenceLoading =
     target.evidenceAvailable &&
     !snapshot &&
-    (hasEvidenceSelection ? displayedEvidenceState.status === "loading" : openEvidence)
+    (hasEvidenceSelection ? displayedEvidenceState.status === "loading" : automaticEvidence)
+  const selectedEvidence =
+    displayedEvidenceState?.findingId === target.findingId
+      ? displayedEvidenceState.evidence
+      : undefined
+  const explanation =
+    selectedEvidence?.status === "available"
+      ? selectedEvidence.comparison?.explanation
+      : undefined
+  const validExplanation =
+    explanation?.version === 1 &&
+    explanation.references.length >= 2 &&
+    explanation.references.every((reference) =>
+      selectedEvidence?.items.some(
+        (item) => item.reference === reference && item.excerpt.trim() !== "",
+      ),
+    )
   return (
     <article
       ref={mounted}
       data-evidence-action-id={target.actionId}
+      data-evidence-active={evidenceActive}
       data-evidence-open={hasEvidenceSelection}
       data-finding-id={target.findingId}
       data-detector={target.finding.detector}
@@ -603,23 +819,24 @@ export function BurnCheckTargetDetail({
           <p className="mt-1 type-callout tabular-nums text-label-secondary">{costLine}</p>
         )}
         {!reportRow && <BurnCheckTargetActions target={target} refresh={refresh} />}
-        {target.evidenceAvailable && (
-          <section className="mt-3" aria-label="Evidence">
-            {(!openEvidence || hasEvidenceSelection) && (
+        {(target.evidenceAvailable ||
+          smartCheckForDetector(target.finding.detector) != null) && (
+          <section className="mt-3" aria-label="Source details">
+            {!target.evidenceAvailable && !hasEvidenceSelection && (
+              <p className="type-callout text-label-secondary">
+                This is a saved finding. Source details were not kept with it.
+              </p>
+            )}
+            {!automaticEvidence && !hasEvidenceSelection && (
               <button
                 type="button"
                 className="burn-check-action type-callout"
-                aria-expanded={hasEvidenceSelection}
+                aria-expanded={false}
                 onClick={() => {
-                  if (hasEvidenceSelection) {
-                    request.current += 1
-                    setEvidenceState(null)
-                    return
-                  }
                   loadEvidence(target)
                 }}
               >
-                {hasEvidenceSelection ? "Hide details" : "Show evidence"}
+                Show source details
               </button>
             )}
             {initialEvidenceLoading && (
@@ -629,21 +846,21 @@ export function BurnCheckTargetDetail({
             )}
             {hasEvidenceSelection && !initialEvidenceLoading && (
               <div
-                className="mt-3 space-y-3"
+                className="mt-3 min-h-72 space-y-3"
                 aria-busy={staleEvidence && evidenceState?.status !== "failed"}
                 data-snapshot-action-id={displayedEvidenceState.actionId}
               >
                 {staleEvidence && evidenceState?.status !== "failed" && (
-                  <p role="status" className="sr-only">
-                    Showing previous evidence while the current snapshot loads.
+                  <p role="status" className="type-caption text-label-tertiary">
+                    Refreshing details…
                   </p>
                 )}
-                {(snapshot || !ignoredInstructions) && evidenceState?.status === "failed" && (
+                {evidenceState?.status === "failed" && (
                   <div>
                     <p role="alert" className="type-callout text-label-secondary">
                       {snapshot
-                        ? "Could not refresh evidence. Showing the previous snapshot."
-                        : "Could not load evidence."}
+                        ? "The latest details did not load. Earlier excerpts remain visible."
+                        : "The details did not load. Try again to see the source excerpts."}
                     </p>
                     <button
                       type="button"
@@ -654,19 +871,26 @@ export function BurnCheckTargetDetail({
                     </button>
                   </div>
                 )}
+                <p className="type-body text-label">
+                  {validExplanation
+                    ? explanation.text
+                    : evidenceStateExplanation(target, displayedEvidenceState, staleEvidence)}
+                </p>
                 {ignoredInstructions ? (
                   <IgnoredInstructionEvidence
                     target={snapshot?.target ?? target}
                     state={displayedEvidenceState}
                     sourcePath={sourcePath ?? null}
-                    retry={() => loadEvidence(target)}
                   />
+                ) : target.finding.detector === "overExploring" &&
+                  selectedEvidence?.status === "available" ? (
+                  <ReadEvidence evidence={selectedEvidence} citationPrefix={citationPrefix} />
                 ) : (
                   <>
                     {displayedEvidenceState.status === "loaded" &&
                       (displayedEvidenceState.evidence?.status === "unavailable" ? (
                         <p role="status" className="type-callout text-label-secondary">
-                          The original evidence is no longer available.
+                          The saved source excerpts are no longer available.
                         </p>
                       ) : (
                         <div>
@@ -674,16 +898,20 @@ export function BurnCheckTargetDetail({
                             {orderedEvidence(displayedEvidenceState.evidence?.items ?? []).map(
                               (item) =>
                                 (item.label !== "context" ||
-                                  target.finding.detector === "scopeCreep") && (
+                                  revisionEvidenceActionId != null) && (
                                   <li
                                     key={`${item.label}:${item.reference}`}
                                     id={`${citationPrefix}-${encodeURIComponent(item.reference)}`}
                                     tabIndex={-1}
                                     className="space-y-1"
                                   >
-                                    <div className="flex min-w-0 items-baseline justify-between gap-3">
+                                    <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-3">
                                       <p className="type-callout font-medium text-label">
-                                        {evidenceHeading(target.finding.detector, item)}
+                                        {evidenceHeading(
+                                          target.finding.detector,
+                                          item,
+                                          selectedEvidence?.comparison?.observationKind,
+                                        )}
                                       </p>
                                       {item.observedAtMs != null && (
                                         <time
@@ -697,12 +925,13 @@ export function BurnCheckTargetDetail({
                                     {item.label === "instruction" &&
                                     item.excerpt === "Instruction text unavailable." ? (
                                       <p className="type-callout text-label-secondary">
-                                        Unavailable or changed since this assessment.
+                                        This instruction has changed or is no longer in the
+                                        source.
                                       </p>
                                     ) : (
                                       <EvidenceExcerpt
                                         item={item}
-                                        showMetadata={item.label === "context"}
+                                        showMetadata={false}
                                         showExplanation={false}
                                         collapseLong={
                                           item.label === "observedAction" ||
@@ -734,6 +963,7 @@ export function BurnCheckTargetDetail({
             </p>
           )}
           <FailedSessions
+            active={evidenceActive}
             samples={target.samples}
             {...(target.affectedSessionCount != null
               ? { total: target.affectedSessionCount }
