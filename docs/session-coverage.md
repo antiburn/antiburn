@@ -339,6 +339,17 @@ transcript for ordinary Claude Desktop chat, so ordinary chat is not
 discovered. A Cowork session enters the local index only when its `cwd`
 resolves to a Git repository, like every other session.
 
+These local Cowork transcripts cover older sessions only. Since 16 Sep 2026,
+Claude Desktop chat and Cowork share one chat box, and a chat can become a
+Cowork session. From 6 Oct 2026, new Cowork tasks on Pro and Max plans run in
+the cloud. A cloud Cowork task writes no local transcript. Claude Desktop
+2.2553.1 wrote only
+`<app-config>/Claude/local-agent-mode-sessions/<org>/<account>/remote-session-spaces.json`,
+which holds a cloud session ID and the allowed folders but no messages or
+token usage. Discovery does not read this file, so cloud Cowork sessions are
+not discovered. Their usage appears only in the Claude provider limits. It is
+not confirmed whether Team and Enterprise Cowork tasks still run locally.
+
 The Claude API-error fixture also characterizes quota limit families and reset
 clocks in `isApiErrorMessage` text. Session-limit and weekly-limit messages
 retain their family, hour, minute, and named time zone without retaining the
