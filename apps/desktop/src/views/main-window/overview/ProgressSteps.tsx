@@ -355,6 +355,11 @@ export function ProgressStepCard({
           bodyAction={bodyAction}
           {...agentCopy}
           title={title}
+          body={
+            progress.agents.done
+              ? "Scanned the last 30 days of session logs for active coding agents."
+              : agentCopy.body
+          }
           childrenFirst
         >
           <AgentsStepRow snapshot={progress} />
