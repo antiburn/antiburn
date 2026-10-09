@@ -278,6 +278,7 @@ impl EventName {
             | EventName::RemoteHostConnectionChecked
             | EventName::RemoteHostChanged
             | EventName::ProjectFolderAction
+            | EventName::MemoryAction
             | EventName::NavigationHistoryMoved
             | EventName::AppSearchOpened
             | EventName::AppSearchResultOpened
@@ -288,8 +289,25 @@ impl EventName {
             | EventName::StepSettingsViewed => true,
             EventName::SurfaceViewed => facts.detail == Some("user"),
             EventName::RemoteSyncCompleted => facts.detail == Some("manual"),
-            EventName::FirstRunStepReached => facts.label != Some("started"),
-            EventName::IgnoredInstructionLifecycle => facts.label != Some("execution"),
+            // `started`, `found`, `read`, and `checked` are reported as the
+            // first-run work completes on its own. Only `result` follows a
+            // deliberate Next press.
+            EventName::FirstRunStepReached => facts.label == Some("result"),
+            // Enablement and provider setup or test outcomes come from settings
+            // commands. Assessment outcomes (`execution_*`, `backfill_*`) come
+            // from background workers, as would any detail not listed here.
+            EventName::IgnoredInstructionLifecycle => matches!(
+                facts.detail,
+                Some(
+                    "enabled"
+                        | "disabled"
+                        | "provider_saved"
+                        | "provider_switched"
+                        | "credential_removed"
+                        | "test_succeeded"
+                        | "test_failed"
+                )
+            ),
             EventName::AppLaunched
             | EventName::ScanCompleted
             | EventName::ErrorOccurred
@@ -2677,6 +2695,89 @@ mod tests {
             detail: Some("automatic"),
             ..Facts::default()
         }));
+        assert!(EventName::MemoryAction.is_user_oriented(&Facts::default()));
+    }
+
+    /// Only the step a Next press reveals is user activity; the others report
+    /// first-run work completing on its own.
+    #[test]
+    fn only_the_first_run_result_step_is_user_oriented() {
+        for (step, user) in [
+            (FirstRunStep::Started, false),
+            (FirstRunStep::Found, false),
+            (FirstRunStep::Read, false),
+            (FirstRunStep::Checked, false),
+            (FirstRunStep::Result, true),
+        ] {
+            let (name, facts) = Interaction::FirstRunStepReached {
+                step,
+                sessions: (step == FirstRunStep::Found).then_some(12),
+                result: (step == FirstRunStep::Result).then_some(FirstRunResult::Clean),
+            }
+            .resolve();
+            assert_eq!(name.is_user_oriented(&facts), user, "{step:?}");
+        }
+    }
+
+    /// Settings-driven Smart Check outcomes are user activity; assessments,
+    /// live or backfilled, are background work whatever the check.
+    #[test]
+    fn smart_check_assessments_never_refresh_the_session() {
+        let mut lifecycles = vec![
+            (SmartCheckLifecycle::Enablement { enabled: true }, true),
+            (SmartCheckLifecycle::Enablement { enabled: false }, true),
+        ];
+        for provider in [
+            SmartCheckProvider::Jev,
+            SmartCheckProvider::Cloudflare,
+            SmartCheckProvider::Ollama,
+            SmartCheckProvider::Custom,
+        ] {
+            for outcome in [
+                ProviderSetupOutcome::Saved,
+                ProviderSetupOutcome::Switched,
+                ProviderSetupOutcome::CredentialRemoved,
+            ] {
+                lifecycles.push((
+                    SmartCheckLifecycle::ProviderSetup { provider, outcome },
+                    true,
+                ));
+            }
+            for outcome in [ProviderTestOutcome::Succeeded, ProviderTestOutcome::Failed] {
+                lifecycles.push((
+                    SmartCheckLifecycle::ProviderTest { provider, outcome },
+                    true,
+                ));
+            }
+        }
+        for check in [
+            SmartCheck::IgnoredInstructions,
+            SmartCheck::ScopeCreep,
+            SmartCheck::OverExploring,
+            SmartCheck::SkillOpportunities,
+        ] {
+            for outcome in [
+                SmartCheckAssessmentOutcome::Finding,
+                SmartCheckAssessmentOutcome::Clean,
+                SmartCheckAssessmentOutcome::Abstained,
+                SmartCheckAssessmentOutcome::Failed,
+            ] {
+                for historical in [false, true] {
+                    lifecycles.push((
+                        SmartCheckLifecycle::Assessment {
+                            check,
+                            outcome,
+                            historical,
+                        },
+                        false,
+                    ));
+                }
+            }
+        }
+        for (lifecycle, user) in lifecycles {
+            let (name, facts) = lifecycle.resolve();
+            assert_eq!(name.is_user_oriented(&facts), user, "{lifecycle:?}");
+        }
     }
 
     /// The compiler, not a reviewer, keeps [`EVERY_EVENT`] complete.
