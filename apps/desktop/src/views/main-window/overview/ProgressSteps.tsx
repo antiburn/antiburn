@@ -64,7 +64,7 @@ function countWord(count: number): string {
   return COUNT_WORDS[count] ?? String(count)
 }
 
-export function FixesList({ failing }: { failing: FixCategory[] }) {
+function FixesList({ failing }: { failing: FixCategory[] }) {
   return (
     <ul className="mx-auto flex list-disc flex-col gap-(--space-sm) ps-6 text-start type-title-3 font-normal! text-label-secondary">
       {failing.map((category) => (
@@ -393,7 +393,7 @@ export function ProgressStepCard({
 }
 
 /** The Fixes step's title, and its body line when nothing needs a fix. */
-export function fixesSummary(progress: OverviewProgress): { title: string; body?: string } {
+function fixesSummary(progress: OverviewProgress): { title: string; body?: string } {
   if (progress.checks.windowSessions === 0) return { title: "No sessions in the last 30 days" }
   if (fixesFound(progress)) {
     return {
