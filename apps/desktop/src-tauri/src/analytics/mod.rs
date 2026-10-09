@@ -677,6 +677,42 @@ mod enabled {
         }
     }
 
+    /// Record each changed Claude login or refresh outcome, when analytics
+    /// allows it.
+    ///
+    /// An outcome equal to the last one queued during this run is dropped,
+    /// so a login that stays in one state reports once. A value outside the
+    /// closed vocabularies is dropped.
+    pub fn record_claude_login_observations(
+        app: &tauri::AppHandle,
+        observations: &[crate::provider_usage::live::LoginObservation],
+    ) {
+        if observations.is_empty() {
+            return;
+        }
+        let _lifecycle = lock_settings_transition();
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !allowed(app) {
+            return;
+        }
+        let mut last = LAST_CLAUDE_LOGIN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for &observation in observations {
+            if *last == Some(observation) {
+                continue;
+            }
+            let Some(facts) = event::claude_login_facts(observation) else {
+                continue;
+            };
+            if record_event_locked(app, EventName::ClaudeLoginObserved, facts) {
+                *last = Some(observation);
+            }
+        }
+    }
+
     /// Record a coarse usage band for every provider window an ordinary
     /// live-usage refresh just published, when analytics allows it.
     ///
@@ -1266,6 +1302,11 @@ mod enabled {
         Option<crate::provider_usage::live::anthropic::LimitResetDiagnostic>,
     > = std::sync::Mutex::new(None);
 
+    /// The last Claude login outcome queued during this run.
+    static LAST_CLAUDE_LOGIN: std::sync::Mutex<
+        Option<crate::provider_usage::live::LoginObservation>,
+    > = std::sync::Mutex::new(None);
+
     /// The last band reported for each `(provider, window role)` pair queued
     /// during this run. In memory only, for the same reason every other
     /// suppression hint here is: it is a dedup key, not a fact worth keeping
@@ -1672,6 +1713,9 @@ mod enabled {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
         *LAST_CLAUDE_LIMIT_RESET
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *LAST_CLAUDE_LOGIN
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         LAST_USAGE_OBSERVED

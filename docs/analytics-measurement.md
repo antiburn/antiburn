@@ -544,6 +544,26 @@ unconfigured-build, environment-disablement, queue, and delivery rules remain
 unchanged. Validation must exercise the actual operation boundaries and their
 failure/cancellation branches as well as the closed wire schema.
 
+### Claude login refresh (implemented 2026-10-09)
+
+Question: does delegating the Claude token refresh to the Claude CLI keep
+Claude usage readable, and how often must a reader sign in again? Decision: keep,
+change, or remove the background and pre-expiry refresh, and tune its
+cooldowns. Metric: the share of reporting installations with a
+`refreshed` outcome among those with any `antiburn.claude_login_observed`
+event, split by `detail`; and the share with `sign_in_required` or
+`cli_missing`. `keychain_metadata_failed` and `keychain_secret_missing` count
+installations where the macOS Keychain read was not reliable.
+
+The shell emits the event after a live-usage collection, from fixed outcome
+values the Claude source keeps. Only a changed `(label, detail)` pair is
+queued, so a stable state reports once per run. The values carry no token,
+path, account identifier, or CLI output; the Rust boundary drops any value
+outside the closed lists (`claude_login_observations_use_closed_vocabularies`).
+The existing `live_usage_state_observed` event also accepts the renderer
+states `sign_in_required` and `not_signed_in`. Owner: the live-usage
+maintainer. Review this diagnostic by 2027-01-31.
+
 ## Event review contract
 
 ### Four Smart Checks: closed extensions and runtime acceptance
