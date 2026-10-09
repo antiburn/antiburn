@@ -455,14 +455,10 @@ export function liveFailureIsRecoverable(
   category: string,
   detail?: LiveUsageSourceErrorDetail,
 ): boolean {
-  if (detail === "signInRequired") return false
-  if (
-    detail === "refreshPending" ||
-    detail === "credentialExpired" ||
-    detail === "cliMissing"
-  ) {
-    return true
+  if (detail === "signInRequired" || detail === "cliMissing" || detail === "notSignedIn") {
+    return false
   }
+  if (detail === "refreshPending" || detail === "credentialExpired") return true
   return category === "rateLimited" || category === "unavailable"
 }
 
@@ -597,8 +593,13 @@ export function liveGraceNote(
   // Another client on the same account can cause a rate limit. The reading
   // is still good; its age is the useful fact.
   if (category === "rateLimited") return updated
-  if (category === "authentication" && detail === "signInRequired") {
-    return `Sign in to ${name} again. ${updated}`
+  // The login can still recover, and antiburn checks again by itself.
+  if (detail === "refreshPending" || detail === "credentialExpired") return updated
+  if (
+    category === "authentication" &&
+    (detail === "signInRequired" || detail === "cliMissing")
+  ) {
+    return `Need to sign in again to ${name}. ${updated}`
   }
   return provider && liveProviderDisplayName(provider)
     ? `Couldn't update ${name} usage. ${updated}`
@@ -615,7 +616,7 @@ export function liveGraceNote(
 export function liveAuthNote(summary: LiveUsageSummaryPayload): string | null {
   const failed = summary.errors.some((error) => error.category === "authentication")
   if (!failed) return null
-  return "Sign in again with your coding tool, then retry."
+  return "Sign in again with your coding tool."
 }
 
 /**
@@ -670,7 +671,7 @@ export function liveUnavailableReason(
   detail?: LiveUsageSourceErrorDetail,
 ): string {
   if (detail === "refreshPending" || detail === "credentialExpired") return "update pending"
-  if (detail === "cliMissing") return "tool unavailable"
+  if (detail === "notSignedIn") return "not signed in"
   if (detail === "desktopOnly") return "not available for Claude Desktop"
   switch (category) {
     case "authentication":
@@ -727,9 +728,9 @@ export function liveToolName(
 }
 
 /**
- * The one line a meter with no reading needs: found and signed in, found
- * but not signed in, or not found. Signing in happens in the tool, so the
- * note never names a command.
+ * The one line a meter with no reading needs: signed in, a login that needs
+ * a new sign-in, found but not signed in, or not found. Only the sign-in
+ * step names a command, because the reader must run it.
  */
 export function liveDetectionNote(
   provider: string,
@@ -752,6 +753,10 @@ export function liveDetectionNote(
   switch (detection) {
     case "signedIn":
       return carrierLabel ? `Signed in through ${carrierLabel}.` : "Signed in."
+    case "signInRequired":
+      return provider === ANTHROPIC
+        ? "Need to sign in again. Run /login in Claude Code."
+        : `Need to sign in again. Sign in inside ${tool} again.`
     case "installedNotSignedIn":
       return carrierLabel === "Pi"
         ? `Found Pi, but it isn't signed in to ${tool}.`
@@ -774,18 +779,22 @@ export function liveErrorNote(
       return "Usage limits not available for Claude Desktop."
     }
     if (detail === "cliMissing") {
-      return "Couldn't update Claude usage. Open Claude Code to check your sign-in."
+      return "Need to sign in again. Install Claude Code and run /login."
     }
-    if (detail === "signInRequired") {
-      return "Sign in inside Claude Code again, then retry."
-    }
-    if (detail === "refreshPending") {
-      return "Couldn't update Claude usage. Try again shortly."
-    }
+    if (detail === "signInRequired") return "Need to sign in again. Run /login in Claude Code."
+  }
+  if (category === "authentication" && detail === "notSignedIn") {
+    const tool = (provider ? LIVE_TOOLS[provider]?.tool : undefined) ?? "your coding tool"
+    return provider === ANTHROPIC
+      ? "Not signed in to Claude Code. Run claude and /login to see usage limits."
+      : `Not signed in to ${tool}. Sign in to ${tool} to see usage limits.`
   }
   // The login can still recover without the reader, and antiburn checks
   // again by itself. Give no instruction.
-  if (category === "authentication" && detail === "credentialExpired") {
+  if (
+    category === "authentication" &&
+    (detail === "credentialExpired" || detail === "refreshPending")
+  ) {
     const name = liveProviderDisplayName(provider)
     return name ? `No ${name} usage reading yet.` : "No usage reading yet."
   }
@@ -799,8 +808,8 @@ export function liveErrorNote(
   switch (category) {
     case "authentication":
       return providerName
-        ? `${providerName} sign-in expired. Sign in again, then retry.`
-        : "Sign in again with your coding tool, then retry."
+        ? `${providerName} sign-in expired. Sign in again.`
+        : "Sign in again with your coding tool."
     case "rateLimited":
       // The provider limited the checks, not the reader's use; antiburn
       // retries by itself, so there is nothing for the reader to do.

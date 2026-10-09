@@ -592,7 +592,9 @@ describe("live detection notes", () => {
     ],
     ["anthropic", "installedNotSignedIn", "Found Claude Code, but it isn't signed in."],
     ["anthropic", "signedIn", "Signed in."],
+    ["anthropic", "signInRequired", "Need to sign in again. Run /login in Claude Code."],
     ["anthropic", "unknown", "Not checked yet."],
+    ["openai", "signInRequired", "Need to sign in again. Sign in inside Codex again."],
     [
       "google",
       "notInstalled",
@@ -728,7 +730,8 @@ describe("the failure surface", () => {
     expect(liveUnavailableReason("rateLimited")).toBe("checking again soon")
     expect(liveUnavailableReason("authentication")).toBe("sign-in needed")
     expect(liveUnavailableReason("authentication", "refreshPending")).toBe("update pending")
-    expect(liveUnavailableReason("authentication", "cliMissing")).toBe("tool unavailable")
+    expect(liveUnavailableReason("authentication", "cliMissing")).toBe("sign-in needed")
+    expect(liveUnavailableReason("authentication", "notSignedIn")).toBe("not signed in")
     expect(liveUnavailableReason("authentication", "desktopOnly")).toBe(
       "not available for Claude Desktop",
     )
@@ -756,19 +759,32 @@ describe("the failure surface", () => {
     },
     {
       error: sourceError({ category: "authentication", detail: "cliMissing" }),
-      note: "Couldn't update Claude usage. Open Claude Code to check your sign-in.",
+      note: "Need to sign in again. Install Claude Code and run /login.",
     },
     {
       error: sourceError({ category: "authentication", detail: "signInRequired" }),
-      note: "Sign in inside Claude Code again, then retry.",
+      note: "Need to sign in again. Run /login in Claude Code.",
     },
     {
       error: sourceError({ category: "authentication", detail: "refreshPending" }),
-      note: "Couldn't update Claude usage. Try again shortly.",
+      note: "No Claude usage reading yet.",
     },
     {
       error: sourceError({ category: "authentication", detail: "desktopOnly" }),
       note: "Usage limits not available for Claude Desktop.",
+    },
+    {
+      error: sourceError({ category: "authentication", detail: "notSignedIn" }),
+      note: "Not signed in to Claude Code. Run claude and /login to see usage limits.",
+    },
+    {
+      error: sourceError({
+        provider: "openai",
+        displayName: "Codex",
+        category: "authentication",
+        detail: "notSignedIn",
+      }),
+      note: "Not signed in to Codex. Sign in to Codex to see usage limits.",
     },
   ])("qualifies $error.detail and preserves it for the HUD", ({ error, note }) => {
     expect(liveErrorNote(error.category, error.provider, error.detail)).toBe(note)
@@ -810,6 +826,8 @@ describe("the failure surface", () => {
       for (const category of categories) {
         for (const detail of details) {
           if (category === "unavailable" && detail === "keychainUnreadable") continue
+          // A recovering login gives no instruction for any provider.
+          if (category === "authentication" && detail === "refreshPending") continue
           if (
             category === "authentication" &&
             provider === "anthropic" &&
@@ -835,7 +853,7 @@ describe("the failure surface", () => {
     ["openai", "Codex"],
   ])("preserves existing category-only wording for %s", (provider, name) => {
     expect(liveErrorNote("authentication", provider)).toBe(
-      `${name} sign-in expired. Sign in again, then retry.`,
+      `${name} sign-in expired. Sign in again.`,
     )
     expect(liveErrorNote("rateLimited", provider)).toBe(
       `Couldn't get ${name} usage yet. antiburn checks again shortly.`,
@@ -849,9 +867,7 @@ describe("the failure surface", () => {
   })
 
   it("preserves category-only wording without a known provider", () => {
-    expect(liveErrorNote("authentication")).toBe(
-      "Sign in again with your coding tool, then retry.",
-    )
+    expect(liveErrorNote("authentication")).toBe("Sign in again with your coding tool.")
     expect(liveErrorNote("rateLimited")).toBe(
       "Couldn't get provider usage yet. antiburn checks again shortly.",
     )
@@ -863,7 +879,7 @@ describe("the failure surface", () => {
 
   it("gives each Google failure one concise action", () => {
     expect(liveErrorNote("authentication", "google")).toBe(
-      "Google sign-in expired. Sign in again, then retry.",
+      "Google sign-in expired. Sign in again.",
     )
     expect(liveErrorNote("rateLimited", "google")).toBe(
       "Couldn't get Google usage yet. antiburn checks again shortly.",
@@ -904,7 +920,7 @@ describe("the grace period", () => {
   it("keeps a login waiting for its tool's refresh as a stale reading", () => {
     // Nine hours old, overnight. The tooltip gives only the age, no instruction.
     const reading = provider({ observedAt: "2027-01-15T03:00:00Z" })
-    for (const detail of ["refreshPending", "credentialExpired", "cliMissing"] as const) {
+    for (const detail of ["refreshPending", "credentialExpired"] as const) {
       const error = sourceError({ category: "authentication", detail })
       const status = liveProviderStatus({ errors: [error], generatedAt: GENERATED_AT }, reading)
       expect(status).toEqual({
@@ -915,6 +931,26 @@ describe("the grace period", () => {
       })
       expect(liveStatusNote(status, "anthropic")).toBe("Last updated 9 hr ago.")
     }
+  })
+
+  it("drops a reading that only a new sign-in can recover", () => {
+    const reading = provider({ observedAt: "2027-01-15T03:00:00Z" })
+    for (const detail of ["signInRequired", "cliMissing", "notSignedIn"] as const) {
+      const error = sourceError({ category: "authentication", detail })
+      const status = liveProviderStatus({ errors: [error], generatedAt: GENERATED_AT }, reading)
+      expect(status).toEqual({ kind: "failed", category: "authentication", detail })
+    }
+  })
+
+  it("gives a recovering login's grace note only the age", () => {
+    for (const detail of ["refreshPending", "credentialExpired"] as const) {
+      expect(liveGraceNote("authentication", "anthropic", 4 * 60_000, detail)).toBe(
+        "Last updated 4 min ago.",
+      )
+    }
+    expect(liveGraceNote("authentication", "anthropic", 4 * 60_000, "signInRequired")).toBe(
+      "Need to sign in again to Claude. Last updated 4 min ago.",
+    )
   })
 
   it("gives a reader with no reading yet a neutral line with no instruction", () => {

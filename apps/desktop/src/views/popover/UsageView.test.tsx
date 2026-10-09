@@ -1219,7 +1219,7 @@ describe("UsageView — the grace period", () => {
       within(card).queryByRole("region", { name: "Anthropic plan limits" }),
     ).not.toBeInTheDocument()
     expect(within(card).getByRole("status")).toHaveTextContent(
-      "Sign in inside Claude Code again, then retry.",
+      "Need to sign in again. Run /login in Claude Code.",
     )
   })
 

@@ -445,6 +445,8 @@ export type LiveUsageState =
   | "rate_limited"
   | "unavailable"
   | "no_credentials"
+  | "sign_in_required"
+  | "not_signed_in"
 export type AutoFixReviewAnalyticsOutcome =
   "ready" | "stale" | "expired" | "conflict" | "unavailable" | "failed"
 export type AutoFixAnalyticsOutcome =

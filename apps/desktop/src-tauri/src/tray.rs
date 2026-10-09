@@ -744,12 +744,15 @@ fn period_reset(window: &crate::dto::LiveUsageWindow, at: Option<time::OffsetDat
 fn failure_is_recoverable(error: &crate::dto::LiveUsageSourceError) -> bool {
     use crate::provider_usage::live::SourceErrorDetail;
     match error.detail {
-        Some(SourceErrorDetail::SignInRequired | SourceErrorDetail::DesktopOnly) => false,
+        // Only a new sign-in can recover these. The tray meter does not show
+        // the last reading.
         Some(
-            SourceErrorDetail::RefreshPending
-            | SourceErrorDetail::CredentialExpired
-            | SourceErrorDetail::CliMissing,
-        ) => true,
+            SourceErrorDetail::SignInRequired
+            | SourceErrorDetail::CliMissing
+            | SourceErrorDetail::NotSignedIn
+            | SourceErrorDetail::DesktopOnly,
+        ) => false,
+        Some(SourceErrorDetail::RefreshPending | SourceErrorDetail::CredentialExpired) => true,
         _ => matches!(error.category.as_str(), "rateLimited" | "unavailable"),
     }
 }
@@ -1512,6 +1515,29 @@ mod tests {
         };
         summary.providers[1].observed_at = "2026-09-04T12:10:00Z".to_string();
         assert_eq!(usage_used_percent(&summary), None);
+    }
+
+    #[test]
+    fn only_a_login_that_can_recover_keeps_its_reading_on_the_tray() {
+        use crate::provider_usage::live::SourceErrorDetail;
+        for (detail, keeps) in [
+            (SourceErrorDetail::RefreshPending, true),
+            (SourceErrorDetail::CredentialExpired, true),
+            (SourceErrorDetail::SignInRequired, false),
+            (SourceErrorDetail::CliMissing, false),
+            (SourceErrorDetail::NotSignedIn, false),
+            (SourceErrorDetail::DesktopOnly, false),
+        ] {
+            let error = LiveUsageSourceError {
+                source: "claude".to_string(),
+                provider: "anthropic".to_string(),
+                display_name: "Claude".to_string(),
+                category: "authentication".to_string(),
+                detail: Some(detail),
+                plan: None,
+            };
+            assert_eq!(failure_is_recoverable(&error), keeps, "{detail:?}");
+        }
     }
 
     fn provider(

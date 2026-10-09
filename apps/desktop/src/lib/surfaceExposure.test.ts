@@ -234,7 +234,12 @@ describe("liveUsageObservations", () => {
     ])
   })
 
-  it("keeps a terminal sign-in failure as an authentication state", () => {
+  it.each([
+    ["signInRequired", "sign_in_required"],
+    ["cliMissing", "sign_in_required"],
+    ["notSignedIn", "not_signed_in"],
+    [undefined, "authentication"],
+  ] as const)("reports the %s sign-in state as %s", (detail, state) => {
     const summary = liveUsage({
       providers: [],
       errors: [
@@ -243,14 +248,12 @@ describe("liveUsageObservations", () => {
           provider: "anthropic",
           displayName: "Claude",
           category: "authentication",
-          detail: "signInRequired",
+          ...(detail ? { detail } : {}),
         },
       ],
     })
 
-    expect(liveUsageObservations(summary)).toEqual([
-      { provider: "anthropic", state: "authentication" },
-    ])
+    expect(liveUsageObservations(summary)).toEqual([{ provider: "anthropic", state }])
   })
 
   it("reports Claude Desktop alone as missing credentials, not a failed sign-in", () => {

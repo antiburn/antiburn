@@ -724,6 +724,23 @@ describe("UsageLimitsBar — degraded state", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_claude_desktop_limits_docs"))
   })
 
+  it("keeps a greyed seat for a Claude Code install that is not signed in", () => {
+    const live = liveSummary({
+      providers: [liveProvider({ provider: "openai", displayName: "Codex" })],
+      errors: [sourceError({ category: "authentication", detail: "notSignedIn" })],
+    })
+    const { unmount } = bar({ live })
+    const seat = screen.getByTestId("usage-limits-unavailable")
+    expect(seat).toHaveAccessibleName("Claude, usage unavailable (not signed in)")
+    unmount()
+    bar({ live, expanded: true })
+    expect(screen.getByRole("group", { name: "Claude" })).toHaveTextContent(
+      "Not signed in to Claude Code. Run claude and /login to see usage limits.",
+    )
+    // Nothing antiburn can fix here needs the docs page.
+    expect(screen.queryByRole("button", { name: "Learn more" })).not.toBeInTheDocument()
+  })
+
   it("keeps a failed provider on the bar instead of dropping it", () => {
     // The cold-start failure: the first fetch 429s with nothing cached, so
     // the error is the provider's only trace. The bar must not read as "your
@@ -892,7 +909,7 @@ describe("UsageLimitsBar — grace period", () => {
     })
     expect(screen.queryByRole("img", { name: /Claude at 42 percent/ })).not.toBeInTheDocument()
     expect(screen.getByRole("group", { name: "Claude" })).toHaveTextContent(
-      "Sign in inside Claude Code again, then retry.",
+      "Need to sign in again. Run /login in Claude Code.",
     )
   })
 

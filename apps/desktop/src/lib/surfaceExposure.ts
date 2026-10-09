@@ -46,6 +46,10 @@ function failedState(category: string, detail?: string): LiveUsageState {
   // Claude Desktop alone has no login antiburn can read. That is a missing
   // credential, not a failed sign-in.
   if (detail === "desktopOnly") return "no_credentials"
+  // The tool is installed, but it holds no login.
+  if (detail === "notSignedIn") return "not_signed_in"
+  // A login exists, but only a new sign-in can make it usable.
+  if (detail === "signInRequired" || detail === "cliMissing") return "sign_in_required"
   // The login expired, but it can recover without a new sign-in. The surface
   // keeps the last reading and gives no instruction.
   if (
