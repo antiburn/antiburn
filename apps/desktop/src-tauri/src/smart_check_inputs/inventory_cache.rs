@@ -8,9 +8,23 @@ use crate::store::SessionKey;
 
 use super::{InputLoadError, InventoryRevisionObserver};
 
+// Keyed by home root so parallel tests, each with its own temporary home, do
+// not see each other's discoveries. Discovery can run on a blocking-pool
+// thread, so a thread-local counter would miss it.
 #[cfg(test)]
-pub(crate) static INVENTORY_DISCOVERY_COUNT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static INVENTORY_DISCOVERIES: LazyLock<
+    Mutex<std::collections::HashMap<std::path::PathBuf, usize>>,
+> = LazyLock::new(Default::default);
+
+#[cfg(test)]
+pub(crate) fn inventory_discovery_count(config: &ConfigContext) -> usize {
+    INVENTORY_DISCOVERIES
+        .lock()
+        .unwrap()
+        .get(&config.home_root)
+        .copied()
+        .unwrap_or(0)
+}
 
 struct ContextInventory {
     config: ConfigContext,
@@ -47,7 +61,13 @@ pub(crate) fn discover_inventory(
     config: &ConfigContext,
 ) -> Result<Arc<SkillOpportunitySnapshot>, SkillSnapshotError> {
     #[cfg(test)]
-    INVENTORY_DISCOVERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    {
+        *INVENTORY_DISCOVERIES
+            .lock()
+            .unwrap()
+            .entry(config.home_root.clone())
+            .or_default() += 1;
+    }
     skill_opportunity_snapshot(config).map(Arc::new)
 }
 
