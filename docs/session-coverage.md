@@ -742,7 +742,7 @@ is at most four directory levels below
 like `~/.claude/projects`: it reads the top-level `*.jsonl` files of each
 project directory, and `<session>/subagents/agent-*.jsonl` files only promote
 their parent. A desktop manifest `cliSessionId` also resolves against these
-roots. Without an `entrypoint` marker, the path gives the IDE/Desktop surface.
+roots. The path gives the IDE/Desktop surface, whatever the `entrypoint` marker says.
 Discovery never reads `audit*.jsonl`. The Cowork audit log repeats the
 transcript's `message.usage` objects and is not a token ledger. For the
 desktop watcher, a nested transcript write is session activity; audit logs,
@@ -753,6 +753,17 @@ characterize these shapes from a key-only observation of Claude Desktop
 transcript for ordinary Claude Desktop chat, so ordinary chat is not
 discovered. A Cowork session enters the local index only when its `cwd`
 resolves to a Git repository, like every other session.
+
+These local Cowork transcripts cover older sessions only. Since 16 Sep 2026,
+Claude Desktop chat and Cowork share one chat box, and a chat can become a
+Cowork session. From 6 Oct 2026, new Cowork tasks on Pro and Max plans run in
+the cloud. A cloud Cowork task writes no local transcript. Claude Desktop
+2.2553.1 wrote only
+`<app-config>/Claude/local-agent-mode-sessions/<org>/<account>/remote-session-spaces.json`,
+which holds a cloud session ID and the allowed folders but no messages or
+token usage. Discovery does not read this file, so cloud Cowork sessions are
+not discovered. Their usage appears only in the Claude provider limits. It is
+not confirmed whether Team and Enterprise Cowork tasks still run locally.
 
 The Claude API-error fixture also characterizes quota limit families and reset
 clocks in `isApiErrorMessage` text. Session-limit and weekly-limit messages
@@ -821,6 +832,15 @@ source descriptor. Readers use that metadata rather than reclassifying a raw
 path after discovery. SQLite readers fingerprint rows visible through the live
 connection, including uncheckpointed WAL rows, and compare again after a
 transaction snapshot completes.
+
+Claude Code, the VS Code extension, and the Claude Desktop Code tab all write
+`~/.claude/projects`. The scan reads the Claude surface from the first
+`entrypoint` marker in the first eight transcript lines. `claude-desktop`,
+`claude-vscode`, other IDE markers, and Cowork's `local-agent` markers give
+`ide_desktop`; other markers give `cli`. A transcript without a marker uses
+the path, which gives `cli`. A transcript in a Claude Desktop session tree is
+always `ide_desktop`, because Desktop's embedded Claude Code can write an SDK
+or CLI marker.
 
 The evidence accumulator retains at most 16,384 distinct thread UUIDs. Each UUID
 must be at most 256 bytes. A new UUID after the set is full, or an oversized

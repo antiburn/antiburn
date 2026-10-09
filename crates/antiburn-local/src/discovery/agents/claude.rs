@@ -92,33 +92,36 @@ impl AgentExplorer for ClaudeExplorer {
 
     // Claude is bi-modal AND its CLI / VS Code extension / Desktop all
     // write transcripts under the same `~/.claude/projects/**` tree, so
-    // path alone is insufficient. Prefer the in-file `entrypoint` marker
-    // emitted on each user message (`claude-vscode`, `claude-desktop`,
-    // `claude-cli`, `sdk-ts`, …). When content is absent, defer to
-    // `surface_paths` for the desktop session trees, and also treat the inline
-    // `claude-desktop:` label produced by `desktop_manifest_session_log`
-    // as IDE/Desktop (that prefix is not itself a `surface_paths` root).
+    // path alone is insufficient there. Only Claude Desktop writes the
+    // desktop session trees, so a path in those trees (or the inline
+    // `claude-desktop:` label from `desktop_manifest_session_log`) gives
+    // IDE/Desktop, whatever the marker says. Desktop runs an embedded Claude
+    // Code that can write an SDK or CLI marker. For other paths, prefer the
+    // in-file `entrypoint` marker emitted on each user message
+    // (`claude-vscode`, `claude-desktop`, `claude-cli`, `sdk-ts`, …).
     fn session_surface_label(
         &self,
         log: &SessionLog,
         content: Option<&str>,
         home: &Path,
     ) -> &'static str {
+        let by_path = crate::discovery::classify_source_against_surface_paths(
+            &log.source,
+            &self.surface_paths(home),
+        );
+        let desktop_label = matches!(
+            &log.source,
+            SessionSource::Inline { label, .. } if label.starts_with("claude-desktop:")
+        );
+        if by_path == Some("ide_desktop") || desktop_label {
+            return "ide_desktop";
+        }
         if let Some(content) = content
             && let Some(label) = entrypoint_surface(content)
         {
             return label;
         }
-        if let SessionSource::Inline { label, .. } = &log.source
-            && label.starts_with("claude-desktop:")
-        {
-            return "ide_desktop";
-        }
-        crate::discovery::classify_source_against_surface_paths(
-            &log.source,
-            &self.surface_paths(home),
-        )
-        .unwrap_or_else(|| self.unmatched_surface())
+        by_path.unwrap_or_else(|| self.unmatched_surface())
     }
 
     // Pre-2.x Claude Code sessions don't carry an `entrypoint` and live
@@ -232,6 +235,8 @@ fn classify_entrypoint(entrypoint: &str) -> &'static str {
         || lower.contains("jetbrains")
         || lower.contains("intellij")
         || lower.contains("ide")
+        // Claude Desktop's Cowork agent mode.
+        || lower.starts_with("local-agent")
     {
         "ide_desktop"
     } else {
@@ -1569,6 +1574,30 @@ mod tests {
             ClaudeExplorer.session_surface_label(&log, None, &home),
             "ide_desktop"
         );
+    }
+
+    /// Desktop's embedded Claude Code can write an SDK or CLI marker. Only
+    /// Claude Desktop writes the desktop trees, so the path wins there.
+    #[test]
+    fn a_cli_marker_in_a_desktop_tree_stays_ide_desktop() {
+        let home = PathBuf::from("/home/avery");
+        let transcript = cowork_account_dir(&home)
+            .join("local_workspace-0001")
+            .join(".claude/projects/-home-avery-projects-demo-app/session.jsonl");
+        let log = SessionLog {
+            environment: Default::default(),
+            agent_type: AgentKind::Claude,
+            source: SessionSource::File(transcript),
+            updated_at: None,
+        };
+        for entrypoint in ["sdk-ts", "claude-cli", "cli"] {
+            let content = format!(r#"{{"type":"user","entrypoint":"{entrypoint}"}}"#);
+            assert_eq!(
+                ClaudeExplorer.session_surface_label(&log, Some(&content), &home),
+                "ide_desktop",
+                "{entrypoint}"
+            );
+        }
     }
 
     #[test]

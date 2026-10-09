@@ -85,6 +85,7 @@ pub const MIGRATIONS: &[&str] = &[
     V72,
     V73,
     V74,
+    V75,
 ];
 
 const V73: &str = r#"
@@ -1630,4 +1631,21 @@ UPDATE setting
                  ORDER BY slug)
        ), '')
  WHERE key = 'disabledAgents';
+"#;
+
+/// v75 makes the next scan describe Claude sessions labelled `cli` again.
+/// Earlier scans labelled every session under `~/.claude/projects` as `cli`,
+/// including Claude Desktop and VS Code sessions. An empty activity cursor
+/// stops the scan from reusing the old record, so the scan reads the
+/// transcript head and stores the correct surface.
+///
+/// Routine scans read only the current window. Older rows change only in the
+/// historical pass, so v75 also clears the historical pass's completion
+/// marker, as `scan::history::reset_done` does. The automatic historical pass
+/// then runs again once.
+const V75: &str = r#"
+UPDATE session SET activity_cursor = ''
+WHERE agent = 'claude-code' AND surface = 'cli';
+UPDATE setting SET value = ''
+WHERE key = 'internal:historyDoneForRetentionDays';
 "#;
