@@ -59,10 +59,15 @@ filter. For example, `RUST_LOG=trace pnpm --filter @antiburn/desktop dev`
 enables trace output. Logs can contain local diagnostic values. Check them
 before you share them.
 
-Claude usage recovery emits local `claude_credential_reread` and
-`claude_refresh_outcome` debug events. Their fixed outcome values distinguish
-changed credentials, deferred background recovery, cooldown, missing CLI,
-metadata failures, launch failures, verification timeouts, and settled refreshes.
+Claude usage recovery emits local `claude_credential_reread`,
+`claude_refresh_outcome`, and `claude_refresh_result` debug events. The
+outcome values distinguish changed credentials, cooldown, missing CLI,
+metadata failures, launch failures, verification timeouts, and settled
+refreshes. `claude_refresh_result` adds the trigger (`expired`, `pre_expiry`,
+or `cannot_refresh`), the origin (`user` or `background`), and the result
+(`refreshed`, `pending`, `sign_in_required`, `cli_missing`, `unchanged`,
+`gated`, or `retry_failed`). Background checks run the CLI refresh, too, with a
+longer cooldown.
 `live_source_failed` also includes the typed error detail. These events contain
 no credentials or CLI output. A settled refresh means the credential carrier
 changed; the subsequent usage request still determines whether recovery worked.
@@ -74,6 +79,24 @@ To test without Pi's logins, start a debug build with
 `ANTIBURN_IGNORE_PI_AUTH=1`. Live usage then ignores `~/.pi/agent/auth.json`
 for Claude and Codex, and logs `pi_auth_ignored`. Release builds ignore the
 variable.
+
+Each Claude check first reads the Keychain item's attributes, which raises no
+prompt. The secret is read only when the item's change marker (`mdat` and an
+attribute hash) changed since the last read. The `claude_keychain_read` debug
+event records each secret read as `absent`, `unreadable`, `found`, or
+`found_without_login`, with the `security` exit code when the process reports
+one. The `warn` event `claude_keychain_metadata_failed` means that the
+attribute read failed after all retries (`attempts` is the count); the check
+then keeps the cached login and does not read the secret. The `warn` event
+`claude_keychain_secret_missing` means that the secret read found no
+`Claude Code-credentials` item but the attribute read found it. The meter then
+shows a Keychain read failure, unless another credential carrier returns a
+reading. After a failed secret read, background checks do not read the secret
+again until the item changes. A check that the reader starts reads it again
+after 15 minutes. When no carrier holds a Claude login but the Claude Code
+config folder or CLI exists, the check reports `NotSignedIn`, so the meter
+stays visible. The debug event `live_source_absent` records any source that
+returned no reading and no error.
 
 At launch, the `info` event `cli_located` records where antiburn finds the
 `claude` CLI: `process_path`, `install_dir` (an install directory outside the

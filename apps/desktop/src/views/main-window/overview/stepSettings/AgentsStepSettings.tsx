@@ -19,6 +19,7 @@ import {
   EMPTY_LIVE_USAGE,
   getLiveUsage,
   onLiveUsageChanged,
+  refreshLiveUsage,
   type AgentSessionLocations,
 } from "../../../../lib/ipc"
 import {
@@ -49,12 +50,18 @@ export function AgentsStepSettings() {
     (locations ?? []).map((entry) => [entry.agent, entry.locations]),
   )
   // Login and desktop-app detection for each agent's status. Read the cached
-  // snapshot and follow updates; this pane makes no provider request.
+  // snapshot and follow updates. Opening the pane is a user action, so it
+  // asks for one check. That check can refresh an expired Claude login, and
+  // the login state here then agrees with the meter.
   const [liveStore] = useState(() =>
     createExternalStore({
       initial: EMPTY_LIVE_USAGE,
       load: () => getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
-      subscribe: onLiveUsageChanged,
+      subscribe: async (set) => {
+        const unlisten = await onLiveUsageChanged(set)
+        void refreshLiveUsage().catch(() => undefined)
+        return unlisten
+      },
     }),
   )
   const liveMeters = useSyncExternalStore(liveStore.subscribe, liveStore.getSnapshot).meters

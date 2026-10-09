@@ -144,7 +144,10 @@ impl Cooldown {
                     inner.last_attempt = Some((Instant::now(), true));
                 }
                 Err(failure) => {
-                    if failure.detail == Some(SourceErrorDetail::DesktopOnly) {
+                    if matches!(
+                        failure.detail,
+                        Some(SourceErrorDetail::DesktopOnly | SourceErrorDetail::NotSignedIn)
+                    ) {
                         // No login is left that antiburn can read, so an
                         // earlier reading no longer describes a live account.
                         // It goes, the same as after a negative answer.
@@ -386,21 +389,26 @@ mod tests {
     }
 
     #[test]
-    fn a_desktop_only_failure_drops_the_earlier_reading() {
-        let cooldown = Cooldown::new();
-        cooldown.poll(at(1_000), DEFAULT_MAX_AGE, || {
-            Ok(Some(snapshot(at(1_000), 40.0)))
-        });
-        cooldown.open_for_test();
-        let outcome = cooldown.poll(at(1_001), DEFAULT_MAX_AGE, || {
-            Err(FetchFailure {
-                error: ProviderUsageError::Authentication,
-                detail: Some(SourceErrorDetail::DesktopOnly),
-                last_known: None,
-            })
-        });
-        assert!(outcome.snapshots.is_empty());
-        assert_eq!(outcome.detail, Some(SourceErrorDetail::DesktopOnly));
+    fn a_failure_with_no_login_left_drops_the_earlier_reading() {
+        for detail in [
+            SourceErrorDetail::DesktopOnly,
+            SourceErrorDetail::NotSignedIn,
+        ] {
+            let cooldown = Cooldown::new();
+            cooldown.poll(at(1_000), DEFAULT_MAX_AGE, || {
+                Ok(Some(snapshot(at(1_000), 40.0)))
+            });
+            cooldown.open_for_test();
+            let outcome = cooldown.poll(at(1_001), DEFAULT_MAX_AGE, || {
+                Err(FetchFailure {
+                    error: ProviderUsageError::Authentication,
+                    detail: Some(detail),
+                    last_known: None,
+                })
+            });
+            assert!(outcome.snapshots.is_empty());
+            assert_eq!(outcome.detail, Some(detail));
+        }
     }
 
     #[test]

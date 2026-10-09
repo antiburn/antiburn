@@ -192,7 +192,7 @@ when the wire field count stays unchanged.
 | `settings_pane_viewed`                             | Requested pane is selected and visible. `label`: the six existing Settings pane IDs.                                                                                                                                                         | `SettingsWindowSession`, including first opening and external pane requests. One per visible pane transition, with duplicate requests suppressed.                                                                                                                              |
 | `step_settings_viewed`                             | A progress step's settings become visible: the first-run takeover's "Show settings" disclosure opens, or the step's modal opens after the first run. `label`: `agents`, `limits`, `sessions`, or `checks`; `detail`: `first_run` or `modal`. | `StepSettingsDisclosure` and `ProgressNav`'s step modal. One per exposure (one open), not per re-render. `limits` only ever reports `first_run`.                                                                                                                               |
 | `surface_state_observed`                           | Data state presented on a visible surface. Same surface vocabulary; `detail`: `ready`, `empty`, `error`, or `loading_timeout`. Ready means a usable payload, not merely a mounted component or successful IPC response.                      | Surface controllers after both visibility and data readiness. At most once per distinct state per surface exposure; ignore stale asynchronous results. Use a documented 10-second visible initial-load timeout, canceled when hidden; later ready data can still emit `ready`. |
-| `live_usage_state_observed`                        | A provider state is presented on Activity, a provider preview, or a user-opened HUD. `label`: `anthropic`, `openai`, or `google`; `detail`: `fresh`, `stale`, `authentication`, `rate_limited`, `unavailable`, or `no_credentials`.          | Map existing presentation states, without an analytics-only provider request. Deduplicate each provider/state within a deliberate visit. Report `no_credentials` only for the Claude Desktop-only state. No account, plan name, balance, quota value, or raw response.                                       |
+| `live_usage_state_observed`                        | A provider state is presented on Activity, a provider preview, or a user-opened HUD. `label`: `anthropic`, `openai`, or `google`; `detail`: `fresh`, `stale`, `authentication`, `login_recovering`, `rate_limited`, `unavailable`, or `no_credentials`. | Map existing presentation states, without an analytics-only provider request. Deduplicate each provider/state within a deliberate visit. Report `no_credentials` only for the Claude Desktop-only state. Report `login_recovering`, not `authentication`, for an expired login that recovers without a new sign-in. No account, plan name, balance, quota value, or raw response.                                       |
 | `onboarding_started`, extend `onboarding_finished` | Visible start or resume and committed completion of a setup flow. `label`: `new` or `restart`.                                                                                                                                               | Emit a start on the first visible start or resume in each app process. A quit and later resume emits another start with the persisted classification. Emit completion once per pending-to-complete transition. Preserve the four existing step events.                         |
 
 `surface_state_observed` also needs a closed `properties.origin` value of `user`
@@ -547,6 +547,26 @@ or raw error is serialized. No new envelope fields are added. Existing opt-out,
 unconfigured-build, environment-disablement, queue, and delivery rules remain
 unchanged. Validation must exercise the actual operation boundaries and their
 failure/cancellation branches as well as the closed wire schema.
+
+### Claude login refresh (implemented 2026-10-09)
+
+Question: does delegating the Claude token refresh to the Claude CLI keep
+Claude usage readable, and how often must a reader sign in again? Decision: keep,
+change, or remove the background and pre-expiry refresh, and tune its
+cooldowns. Metric: the share of reporting installations with a
+`refreshed` outcome among those with any `antiburn.claude_login_observed`
+event, split by `detail`; and the share with `sign_in_required` or
+`cli_missing`. `keychain_metadata_failed` and `keychain_secret_missing` count
+installations where the macOS Keychain read was not reliable.
+
+The shell emits the event after a live-usage collection, from fixed outcome
+values the Claude source keeps. Only a changed `(label, detail)` pair is
+queued, so a stable state reports once per run. The values carry no token,
+path, account identifier, or CLI output; the Rust boundary drops any value
+outside the closed lists (`claude_login_observations_use_closed_vocabularies`).
+The existing `live_usage_state_observed` event also accepts the renderer
+states `sign_in_required` and `not_signed_in`. Owner: the live-usage
+maintainer. Review this diagnostic by 2027-01-31.
 
 ## Event review contract
 

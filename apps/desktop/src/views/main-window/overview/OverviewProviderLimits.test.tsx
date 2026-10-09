@@ -146,8 +146,8 @@ describe("OverviewProviderLimits", () => {
   })
 
   it.each([
-    ["refreshPending", "Couldn't update Claude usage. Last updated 3 min ago."],
-    ["signInRequired", "Sign in to Claude again. Last updated 3 min ago."],
+    ["refreshPending", "Last updated 3 min ago."],
+    ["signInRequired", "Need to sign in again to Claude. Last updated 3 min ago."],
   ] as const)("preserves the %s detail in the visible reading", (detail, note) => {
     render(
       <OverviewProviderLimits
@@ -166,8 +166,9 @@ describe("OverviewProviderLimits", () => {
   })
 
   it.each([
-    ["refreshPending", "Couldn't update Claude usage. Try again shortly."],
-    ["cliMissing", "Couldn't update Claude usage. Open Claude Code to check your sign-in."],
+    ["refreshPending", "No Claude usage reading yet."],
+    ["cliMissing", "Need to sign in again. Install Claude Code and run /login."],
+    ["notSignedIn", "Not signed in to Claude Code. Run claude and /login to see usage limits."],
   ] as const)("keeps the %s detail when Claude has no reading to show", (detail, note) => {
     render(
       <OverviewProviderLimits
@@ -221,7 +222,7 @@ describe("OverviewProviderLimits", () => {
       />,
     )
     expect(screen.getByRole("group", { name: "Codex" })).toHaveTextContent(
-      "Codex sign-in expired. Sign in again, then retry.",
+      "Codex sign-in expired. Sign in again.",
     )
   })
 

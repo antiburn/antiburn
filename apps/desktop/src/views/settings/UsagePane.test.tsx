@@ -368,14 +368,50 @@ describe("UsagePane", () => {
     )
     pane()
     await waitFor(() =>
-      expect(
-        screen.getByText("Claude sign-in expired. Sign in again, then retry."),
-      ).toBeInTheDocument(),
+      expect(screen.getByText("Claude sign-in expired. Sign in again.")).toBeInTheDocument(),
     )
     // And it is not reported as "nothing found", which would send the reader
     // to use their coding tool when the problem is that they are signed out of it.
     expect(screen.getByText("Google")).toBeInTheDocument()
   })
+
+  it.each([
+    [
+      "notSignedIn",
+      "installedNotSignedIn",
+      "Not signed in to Claude Code. Run claude and /login to see usage limits.",
+    ],
+    ["signInRequired", "signInRequired", "Need to sign in again. Run /login in Claude Code."],
+    [
+      "cliMissing",
+      "signInRequired",
+      "Need to sign in again. Install Claude Code and run /login.",
+    ],
+  ] as const)(
+    "keeps the Claude row for a %s login and says what to do",
+    async (detail, detection, note) => {
+      getLiveUsage.mockResolvedValue(
+        summary({
+          errors: [
+            {
+              source: "claude",
+              provider: "anthropic",
+              displayName: "Claude",
+              category: "authentication",
+              detail,
+            },
+          ],
+          meters: [{ provider: "anthropic", displayName: "Claude", shown: true, detection }],
+        }),
+      )
+      pane({ liveUsageEnabled: true })
+      await waitFor(() => expect(screen.getByText(note)).toBeInTheDocument())
+      expect(screen.getByRole("switch", { name: "Show Claude meter" })).toBeChecked()
+      expect(screen.queryByText(/^Signed in/)).not.toBeInTheDocument()
+      // Opening the pane is a user action, so it asks for a check.
+      expect(refreshLiveUsage).toHaveBeenCalled()
+    },
+  )
 
   it("lists what each source can currently prove", async () => {
     getLiveUsage.mockResolvedValue(
@@ -610,7 +646,7 @@ describe("UsagePane — the grace period", () => {
       )
       await waitFor(() => expect(screen.getByText("Anthropic")).toBeInTheDocument())
       expect(
-        screen.getByText(/^Signed in · 0 limits tracked .* · rate limited$/),
+        screen.getByText(/^Signed in · 0 limits tracked .* · checking again soon$/),
       ).toBeInTheDocument()
       expect(screen.queryByText(/Wait, then retry/)).not.toBeInTheDocument()
       unmount()
@@ -635,7 +671,7 @@ describe("UsagePane — the grace period", () => {
     )
     pane({ liveUsageEnabled: true })
     await waitFor(() => expect(screen.getByText("Claude")).toBeInTheDocument())
-    expect(screen.getByText("Signed in · rate limited · retrying")).toBeInTheDocument()
+    expect(screen.getByText("Signed in · checking again soon")).toBeInTheDocument()
   })
 
   it("keeps the reading at the grace boundary too", async () => {

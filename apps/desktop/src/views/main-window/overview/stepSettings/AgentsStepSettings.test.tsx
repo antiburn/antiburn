@@ -236,8 +236,44 @@ describe("AgentsStepSettings coding agents", () => {
     expect(screen.getByRole("switch", { name: "Show Claude sessions" })).toBeInTheDocument()
     // Nothing found for Devin: its row says nothing beyond its name.
     expect(screen.queryByText("No sessions yet")).not.toBeInTheDocument()
-    // The list reads the cached snapshot; it never asks providers for usage.
-    expect(invoke.mock.calls.some(([command]) => command === "refresh_live_usage")).toBe(false)
+    // Opening the list asks for one user-initiated check.
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("refresh_live_usage", expect.anything()),
+    )
+  })
+
+  it("shows the same three login states as the meter", async () => {
+    snapshot = progress({
+      rows: [
+        { agent: "claude-code", label: "Claude Code", sessions: 2, done: true },
+        { agent: "codex", label: "Codex", sessions: 3, done: true },
+      ],
+    })
+    mockCommands({
+      get_live_usage: {
+        providers: [],
+        errors: [],
+        generatedAt: "",
+        meters: [
+          {
+            provider: "anthropic",
+            displayName: "Claude",
+            shown: true,
+            detection: "signInRequired",
+          },
+          {
+            provider: "openai",
+            displayName: "Codex",
+            shown: true,
+            detection: "installedNotSignedIn",
+          },
+        ],
+      },
+    })
+    render(<AgentsStepSettings />)
+
+    expect(await screen.findByText("Need to sign in again")).toBeInTheDocument()
+    expect(screen.getByText("Not signed in")).toBeInTheDocument()
   })
 
   it("ignores a login that only Pi holds", async () => {

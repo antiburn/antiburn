@@ -24,6 +24,10 @@ pub enum Detection {
     Unknown,
     NotInstalled,
     InstalledNotSignedIn,
+    /// A login exists, but it cannot be used. The owning tool tried to
+    /// refresh it and could not, or no tool exists to refresh it. Only a new
+    /// sign-in fixes this.
+    SignInRequired,
     /// A provider-specific login carrier is present. This does not verify the login.
     SignedIn,
 }
@@ -184,15 +188,22 @@ pub enum SourceErrorDetail {
     KeychainUnreadable,
     /// The token expired and this build cannot refresh it.
     RefreshUnsupported,
-    /// The token expired and no CLI exists to refresh it.
+    /// A login exists, but no CLI exists to refresh it. The reader must
+    /// install the CLI and sign in again.
     CliMissing,
     /// A refresh ran and the credential is still dead. Only a new sign-in fixes this.
     SignInRequired,
     /// The token expired and a delegated refresh has not run or settled yet.
     RefreshPending,
+    /// Every token expired. The tool that owns the login keeps a refresh
+    /// token, and antiburn does not use it. The last reading stays while the
+    /// tool can still refresh the login. No sign-in is needed yet.
+    CredentialExpired,
     /// Only the provider's desktop app is installed. Its sign-in is its own,
     /// and antiburn does not read it, so no limits can be checked.
     DesktopOnly,
+    /// The tool is installed, but it holds no login.
+    NotSignedIn,
 }
 
 /// Why a payload was rejected outright rather than partly believed.

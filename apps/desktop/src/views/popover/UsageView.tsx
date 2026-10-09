@@ -24,10 +24,11 @@ import {
   liveAuthNote,
   liveErrorHasDocs,
   liveErrorNote,
-  liveGraceNote,
   livePlanAccountLabel,
   livePlanLabel,
+  liveDisplayableProviders,
   liveProviderStatus,
+  liveStatusNote,
   liveWindows,
   orderedLiveAccounts,
 } from "../../lib/presentation/liveUsage"
@@ -208,7 +209,9 @@ function usageCards(
     cards.set(local.provider, card)
   }
 
-  for (const reading of live.providers) {
+  // The displayable readings, so a stale reading loses the figure of a
+  // period that reset since; a failed provider keeps its card through its error.
+  for (const reading of liveDisplayableProviders(live)) {
     const card = cards.get(reading.provider) ?? {
       local: [],
       live: [],
@@ -491,22 +494,41 @@ function ProviderCard({
                 : undefined
             const primaryWindow = liveWindows(reading)[0]
             const status = liveProviderStatus({ errors, generatedAt }, reading)
-            const graceNote =
-              status.kind === "grace"
-                ? liveGraceNote(status.category, reading.provider, status.ageMs, status.detail)
-                : null
+            const note = liveStatusNote(status, reading.provider)
+            const graceNote = status.kind === "grace" ? note : null
+            const staleNote = status.kind === "stale" ? note : null
             return (
-              <div key={key} className="space-y-1.5">
-                <LiveUsageDetail
-                  live={reading}
-                  now={now}
-                  accountCount={accounts.length}
-                  showPlan={
-                    showAccountPlans || (accounts.length > 1 && reading.accountEmail != null)
-                  }
-                  showRunway={!matchingLocal}
-                  {...(accountLabel ? { accountLabel } : {})}
-                />
+              <div
+                key={key}
+                className="space-y-1.5"
+                {...(staleNote ? { title: staleNote } : {})}
+              >
+                {staleNote ? (
+                  <div className="opacity-60">
+                    <LiveUsageDetail
+                      live={reading}
+                      now={now}
+                      accountCount={accounts.length}
+                      showPlan={
+                        showAccountPlans ||
+                        (accounts.length > 1 && reading.accountEmail != null)
+                      }
+                      showRunway={!matchingLocal}
+                      {...(accountLabel ? { accountLabel } : {})}
+                    />
+                  </div>
+                ) : (
+                  <LiveUsageDetail
+                    live={reading}
+                    now={now}
+                    accountCount={accounts.length}
+                    showPlan={
+                      showAccountPlans || (accounts.length > 1 && reading.accountEmail != null)
+                    }
+                    showRunway={!matchingLocal}
+                    {...(accountLabel ? { accountLabel } : {})}
+                  />
+                )}
                 {graceNote && <p className="type-caption text-label-tertiary">{graceNote}</p>}
                 {matchingLocal && (
                   <LocalUsageDetail
@@ -529,7 +551,7 @@ function ProviderCard({
                 !accounts.some(
                   ({ reading }) =>
                     reading.provider === error.provider &&
-                    liveProviderStatus({ errors, generatedAt }, reading).kind === "grace",
+                    liveProviderStatus({ errors, generatedAt }, reading).kind !== "failed",
                 ),
             )
             .map((error, index) => (

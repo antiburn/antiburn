@@ -471,6 +471,11 @@ pub(crate) fn refresh_publish_and_evaluate(
     let detection = provider_usage::live::detect_all(&live.sources, online);
     live.store_detection(detection.clone());
     let collected = provider_usage::live::sources::collect(&live.sources, online, &hidden, max_age);
+    // Take the outcomes on every pass, so that none waits for consent.
+    #[cfg(feature = "analytics")]
+    for source in &live.sources {
+        crate::analytics::record_claude_login_observations(app, &source.take_login_observations());
+    }
     // An unreadable preference counts every day, which is the behaviour before
     // this setting existed.
     let week = settings

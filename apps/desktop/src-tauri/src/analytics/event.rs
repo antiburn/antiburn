@@ -48,6 +48,9 @@ pub enum EventName {
     /// Claude's limit-reset diagnostic changed during this run.
     #[cfg(feature = "analytics")]
     ClaudeLimitResetObserved,
+    /// A Claude login check or CLI refresh reached a changed closed outcome.
+    #[cfg(feature = "analytics")]
+    ClaudeLoginObserved,
     /// A product surface became visible.
     #[cfg(feature = "analytics")]
     SurfaceViewed,
@@ -172,6 +175,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::ErrorOccurred,
     EventName::UnrecognizedRecordsObserved,
     EventName::ClaudeLimitResetObserved,
+    EventName::ClaudeLoginObserved,
     EventName::SurfaceViewed,
     EventName::SettingsPaneViewed,
     EventName::SurfaceStateObserved,
@@ -221,6 +225,7 @@ impl EventName {
             EventName::ErrorOccurred => "antiburn.error_occurred",
             EventName::UnrecognizedRecordsObserved => "antiburn.unrecognized_records_observed",
             EventName::ClaudeLimitResetObserved => "antiburn.claude_limit_reset_observed",
+            EventName::ClaudeLoginObserved => "antiburn.claude_login_observed",
             EventName::SurfaceViewed => "antiburn.surface_viewed",
             EventName::SettingsPaneViewed => "antiburn.settings_pane_viewed",
             EventName::SurfaceStateObserved => "antiburn.surface_state_observed",
@@ -313,6 +318,7 @@ impl EventName {
             | EventName::ErrorOccurred
             | EventName::UnrecognizedRecordsObserved
             | EventName::ClaudeLimitResetObserved
+            | EventName::ClaudeLoginObserved
             | EventName::SurfaceStateObserved
             | EventName::LiveUsageStateObserved
             | EventName::UsageObserved
@@ -1062,9 +1068,15 @@ pub enum LiveUsageState {
     Fresh,
     Stale,
     Authentication,
+    /// The login expired, but it can recover without a new sign-in.
+    LoginRecovering,
     RateLimited,
     Unavailable,
     NoCredentials,
+    /// A Claude login exists, but only a new sign-in can make it usable.
+    SignInRequired,
+    /// The tool is installed, but it holds no login.
+    NotSignedIn,
 }
 
 /// Where an agent ran. Two values, and neither names anything: a WSL
@@ -1685,10 +1697,55 @@ wire_values!(LiveUsageState, {
     LiveUsageState::Fresh => "fresh",
     LiveUsageState::Stale => "stale",
     LiveUsageState::Authentication => "authentication",
+    LiveUsageState::LoginRecovering => "login_recovering",
     LiveUsageState::RateLimited => "rate_limited",
     LiveUsageState::Unavailable => "unavailable",
     LiveUsageState::NoCredentials => "no_credentials",
+    LiveUsageState::SignInRequired => "sign_in_required",
+    LiveUsageState::NotSignedIn => "not_signed_in",
 });
+
+/// The closed outcomes `antiburn.claude_login_observed` may carry in
+/// `label`.
+#[cfg(feature = "analytics")]
+pub const CLAUDE_LOGIN_OUTCOMES: &[&str] = &[
+    "refreshed",
+    "unchanged",
+    "sign_in_required",
+    "cli_missing",
+    "gated",
+    "keychain_metadata_failed",
+    "keychain_secret_missing",
+];
+
+/// The closed refresh triggers `antiburn.claude_login_observed` may carry
+/// in `detail`.
+#[cfg(feature = "analytics")]
+pub const CLAUDE_LOGIN_TRIGGERS: &[&str] = &["expired", "pre_expiry", "cannot_refresh"];
+
+/// The facts of one Claude login observation, or `None` for a value outside
+/// the closed vocabularies.
+#[cfg(feature = "analytics")]
+pub fn claude_login_facts(
+    observation: crate::provider_usage::live::LoginObservation,
+) -> Option<Facts> {
+    let label = CLAUDE_LOGIN_OUTCOMES
+        .iter()
+        .find(|value| **value == observation.label)?;
+    let detail = match observation.detail {
+        Some(detail) => Some(
+            *CLAUDE_LOGIN_TRIGGERS
+                .iter()
+                .find(|value| **value == detail)?,
+        ),
+        None => None,
+    };
+    Some(Facts {
+        label: Some(label),
+        detail,
+        ..Facts::default()
+    })
+}
 
 #[cfg(feature = "analytics")]
 impl Environment {
@@ -2801,6 +2858,7 @@ mod tests {
                 | EventName::SurfaceStateObserved
                 | EventName::LiveUsageStateObserved
                 | EventName::ClaudeLimitResetObserved
+                | EventName::ClaudeLoginObserved
                 | EventName::UsageObserved
                 | EventName::LimitFactorObserved
                 | EventName::ResourceUsageObserved
@@ -2837,7 +2895,7 @@ mod tests {
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            43,
+            44,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -2995,6 +3053,15 @@ mod tests {
         assert_eq!(facts.label, Some("google"));
         assert_eq!(facts.detail, Some("rate_limited"));
         assert_eq!(facts.origin, None);
+
+        let (_, facts) = Interaction::LiveUsageStateObserved {
+            provider: LiveUsageProvider::Anthropic,
+            state: LiveUsageState::LoginRecovering,
+            origin: Origin::User,
+        }
+        .resolve();
+        assert_eq!(facts.label, Some("anthropic"));
+        assert_eq!(facts.detail, Some("login_recovering"));
 
         let (name, facts) = Interaction::BurnCheckAutoFixCompleted {
             outcome: AutoFixOutcome::RecoveryNeeded,
@@ -3439,6 +3506,60 @@ mod tests {
                 serde_json::from_value::<Interaction>(value.clone()).is_err(),
                 "{value}"
             );
+        }
+    }
+
+    #[test]
+    fn claude_login_observations_use_closed_vocabularies() {
+        use crate::provider_usage::live::LoginObservation;
+
+        let facts = claude_login_facts(LoginObservation {
+            label: "sign_in_required",
+            detail: Some("cannot_refresh"),
+        })
+        .expect("a closed value");
+        assert_eq!(facts.label, Some("sign_in_required"));
+        assert_eq!(facts.detail, Some("cannot_refresh"));
+        assert_eq!(facts.usage_band, None);
+
+        let facts = claude_login_facts(LoginObservation {
+            label: "keychain_metadata_failed",
+            detail: None,
+        })
+        .expect("a closed value");
+        assert_eq!(facts.detail, None);
+
+        for observation in [
+            LoginObservation {
+                label: "synthetic-token",
+                detail: None,
+            },
+            LoginObservation {
+                label: "refreshed",
+                detail: Some("/fixture/path"),
+            },
+        ] {
+            assert!(claude_login_facts(observation).is_none());
+        }
+    }
+
+    #[test]
+    fn sign_in_states_have_closed_wire_values() {
+        for (state, wire) in [
+            (LiveUsageState::SignInRequired, "sign_in_required"),
+            (LiveUsageState::NotSignedIn, "not_signed_in"),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<LiveUsageState>(serde_json::json!(wire)).unwrap(),
+                state
+            );
+            let (_, facts) = Interaction::LiveUsageStateObserved {
+                provider: LiveUsageProvider::Anthropic,
+                state,
+                origin: Origin::User,
+            }
+            .resolve();
+            assert_eq!(facts.detail, Some(wire));
         }
     }
 }
