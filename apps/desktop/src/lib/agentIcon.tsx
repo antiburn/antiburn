@@ -40,7 +40,13 @@ import {
   siWindsurf,
 } from "simple-icons"
 
-import { ANTIGRAVITY_MARK, fromSimpleIcons, OPENAI_MARK, type BrandMark } from "./brandMarks"
+import {
+  ANTIGRAVITY_MARK,
+  fromSimpleIcons,
+  OMP_MARK,
+  OPENAI_MARK,
+  type BrandMark,
+} from "./brandMarks"
 import {
   agentDisplayName,
   agentIconName,
@@ -60,7 +66,7 @@ export const BRAND_MARKS: Record<string, BrandMark> = {
   opencode: fromSimpleIcons(siOpencode),
   windsurf: fromSimpleIcons(siWindsurf),
   pi: fromSimpleIcons(siPi),
-  omp: fromSimpleIcons(siPi),
+  omp: OMP_MARK,
   codex: OPENAI_MARK,
   antigravity: ANTIGRAVITY_MARK,
 }
