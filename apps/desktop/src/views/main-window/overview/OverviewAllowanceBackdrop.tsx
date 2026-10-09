@@ -137,12 +137,16 @@ export function OverviewAllowanceBackdrop({
  * 5-hour window on that day. */
 function dayTip(account: AllowanceUsageAccountPayload, slot: AllowanceDaySlot) {
   const rolling = rollingAt(account.chart.rolling, slot.endEpoch)
-  let week: number | null = null
+  const weeklyLevels = new Map<string, { percent: number; atEpoch: number } | null>([
+    ["weekly", null],
+  ])
   for (const window of account.chart.weeklyWindows) {
-    if (window.lane !== "weekly") continue
     for (const point of window.points) {
-      if (point.atEpoch <= slot.endEpoch && point.atEpoch >= slot.startEpoch)
-        week = point.percent
+      if (point.atEpoch > slot.endEpoch || point.atEpoch < slot.startEpoch) continue
+      const previous = weeklyLevels.get(window.lane)
+      if (!previous || point.atEpoch >= previous.atEpoch) {
+        weeklyLevels.set(window.lane, point)
+      }
     }
   }
   const peaks = account.chart.shortWindows
@@ -159,13 +163,16 @@ function dayTip(account: AllowanceUsageAccountPayload, slot: AllowanceDaySlot) {
       title={dayHeadingLabel(slot)}
       figure={rolling == null ? "No average yet" : `${Math.round(rolling)}% average`}
       rows={[
-        {
-          key: "week",
-          label: "Week used by day end",
-          value: percent(week),
+        ...[...weeklyLevels].map(([lane, point]) => ({
+          key: lane,
+          label:
+            lane === "weekly"
+              ? "Overall week used by day end"
+              : `${lane.replace(/^model:/, "")} week used by day end`,
+          value: percent(point?.percent ?? null),
           swatch: LEGEND_ITEMS[1].swatch,
-          ...(week != null ? { share: week / 100 } : {}),
-        },
+          ...(point ? { share: point.percent / 100 } : {}),
+        })),
         ...(busiest == null
           ? []
           : [

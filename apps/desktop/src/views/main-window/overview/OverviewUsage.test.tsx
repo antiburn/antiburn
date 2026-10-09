@@ -80,6 +80,51 @@ afterEach(() => {
 })
 
 describe("OverviewUsage", () => {
+  it("distinguishes overall and model weekly readings in the daily tooltip", () => {
+    renderTotals({
+      allowance: summary([
+        account({
+          chart: {
+            shortWindows: [],
+            weeklyWindows: [
+              {
+                lane: "weekly",
+                startsAtEpoch: 0,
+                resetsAtEpoch: 7 * 86400,
+                points: [{ atEpoch: 100, percent: 35 }],
+              },
+              {
+                lane: "model:Fable",
+                startsAtEpoch: 0,
+                resetsAtEpoch: 7 * 86400,
+                points: [
+                  { atEpoch: 100, percent: 18 },
+                  { atEpoch: 200, percent: 23 },
+                ],
+              },
+            ],
+            rolling: [],
+          },
+        }),
+      ]),
+    })
+    fireEvent.focus(
+      within(
+        screen.getByRole("group", {
+          name: "Allowance for the past 30 days",
+        }),
+      ).getAllByRole("button")[0]!,
+    )
+    const tooltip = within(screen.getByRole("tooltip"))
+    expect(tooltip.getByText("Overall week used by day end").parentElement).toHaveTextContent(
+      "35%",
+    )
+    expect(tooltip.getByText("Fable week used by day end").parentElement).toHaveTextContent(
+      "23%",
+    )
+    expect(tooltip.queryByText("Busiest 5-hour window")).not.toBeInTheDocument()
+  })
+
   it.each([20, 100])("keeps a %s%% peak on the fixed allowance scale", (peakPercent) => {
     renderTotals({
       allowance: summary([
