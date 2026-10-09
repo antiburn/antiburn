@@ -113,6 +113,8 @@ pub struct BurnCheckHistoryStatus {
     pub completed: usize,
     pub skipped: usize,
     pub failed: usize,
+    pub reviewed: usize,
+    pub eligible_items: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -707,7 +709,9 @@ impl Store {
                         AND COALESCE(e.status, '') <> 'unsupported'
                          AND ((a.progress_status = 'failed' AND a.last_error_category IS NOT 'continuing')
                              OR e.status = 'failed')),
-                    count(*)
+                     count(*),
+                     coalesce(sum(a.reviewed_targets) FILTER (WHERE a.progress_status <> 'idle'), 0),
+                     coalesce(sum(a.eligible_targets) FILTER (WHERE a.progress_status <> 'idle'), 0)
                 FROM current_assessments a
                 JOIN json_each(:checks) AS registered ON a.check_id = json_extract(registered.value, '$[0]')
                 JOIN session s USING (environment_key, agent, session_id)
@@ -742,6 +746,8 @@ impl Store {
                         skipped: row.get(6)?,
                         failed: row.get(7)?,
                         total: row.get(8)?,
+                        reviewed: row.get(9)?,
+                        eligible_items: row.get(10)?,
                     })
                 },
             )

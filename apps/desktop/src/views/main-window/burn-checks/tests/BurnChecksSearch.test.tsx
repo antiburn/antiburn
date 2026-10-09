@@ -162,7 +162,7 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
       screen.getByText("Selected actions conflict with current or recorded instruction text."),
     ).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /Copy fix prompt/ })).toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: "Show evidence" })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Show instruction and action" }))
     expect(await screen.findByText("Run tests before release.")).toBeInTheDocument()
     expect(screen.getByText("Released without tests")).toBeInTheDocument()
     expect(commands.evidence).toHaveBeenCalledWith("action-fresh")

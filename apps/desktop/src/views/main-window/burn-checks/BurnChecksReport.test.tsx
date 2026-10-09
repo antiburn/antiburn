@@ -445,7 +445,7 @@ describe("smart check report integration", () => {
     "scopeCreep",
     "overExploring",
     "skillOpportunities",
-  ] as const)("reserves evidence space while %s target details load", async (id) => {
+  ] as const)("shows a compact loading state while %s targets load", async (id) => {
     const pending = deferred<null>()
     setup(pending.promise, false, aggregate, {
       ...report,
@@ -454,9 +454,8 @@ describe("smart check report integration", () => {
     const loading = await screen.findByRole("region", { name: "Loading finding details" })
     expect(loading).toHaveAttribute("aria-busy", "true")
     expect(within(loading).getAllByRole("status")).toHaveLength(1)
-    const evidence = within(loading).getByRole("status", { name: "Loading source details" })
-    expect(evidence.parentElement).toHaveClass("min-h-72")
-    expect(evidence.querySelectorAll("[data-placeholder]")).toHaveLength(6)
+    expect(within(loading).getByText("Loading findings…")).toBeVisible()
+    expect(loading.querySelector(".min-h-72")).toBeNull()
     await act(async () => pending.resolve(null))
     expect(
       screen.queryByRole("region", { name: "Loading finding details" }),

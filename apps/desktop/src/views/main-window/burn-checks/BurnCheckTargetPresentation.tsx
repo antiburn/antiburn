@@ -49,6 +49,17 @@ export function targetTitle(target: BurnCheckTargetPayload): string {
     const path = source?.startsWith("home:") ? `~/${source.slice("home:".length)}` : source
     return path?.split(/[\\/]/).at(-1) || "Instruction file"
   }
+  if (target.finding.detector === "overExploring") {
+    switch (target.finding.overExploringReason) {
+      case "unrelated_files":
+        return "Unrelated file read"
+      case "excessive_file_breadth":
+        return "File set broader than needed"
+      case "excessive_within_file_reading":
+        return "More file content than needed"
+    }
+  }
+  if (target.finding.detector === "scopeCreep") return "Extra work outside the task"
   return (
     target.display.resourceIdentity ??
     CHECK_LABELS[target.finding.detector] ??

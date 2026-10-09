@@ -11,27 +11,54 @@ async fn evaluate(
     client: &support::provider::EvalClient,
     usage: &Arc<Mutex<support::run::RunUsage>>,
 ) -> Value {
+    let total_started = Instant::now();
+    let context_started = Instant::now();
     let context = case.check.session_context();
+    let context_construction_ms = context_started.elapsed().as_millis();
     let permit = admit_jev_orchestration()
         .await
         .expect("Admit evaluation preparation");
+    let preparation_started = Instant::now();
     let mut plan = case
         .check
         .prepare_with_capabilities(&context, &support::provider::configuration().capabilities)
         .expect("Synthetic skill work prepares");
-    let started = Instant::now();
+    let preparation_ms = preparation_started.elapsed().as_millis();
+    let work_item_count = plan.work_items.len();
+    let request_count_before = usage.lock().expect("Usage lock").requests;
+    let request_elapsed = Arc::new(Mutex::new(std::time::Duration::ZERO));
+    let measured_request_elapsed = Arc::clone(&request_elapsed);
+    let runner_started = Instant::now();
     let outcome = run_jev_check_prepared(
         &case.check,
         &context,
         &mut plan,
         JevRunProgress::default(),
         permit,
-        |batch| async move {
-            support::run::evaluate_batch(client, usage, &case.id, "assessment", &batch).await
+        |batch| {
+            let request_elapsed = Arc::clone(&measured_request_elapsed);
+            async move {
+                let started = Instant::now();
+                let result =
+                    support::run::evaluate_batch(client, usage, &case.id, "assessment", &batch)
+                        .await;
+                *request_elapsed.lock().expect("Request timing lock") += started.elapsed();
+                result
+            }
         },
         |_| Ok(()),
     )
     .await;
+    let runner_ms = runner_started.elapsed().as_millis();
+    let request_execution_ms = request_elapsed
+        .lock()
+        .expect("Request timing lock")
+        .as_millis();
+    let request_count = usage
+        .lock()
+        .expect("Usage lock")
+        .requests
+        .saturating_sub(request_count_before);
     let mut row = match outcome {
         Ok(outcome) => {
             json!({"score":scoring::score(case, &outcome.result, &plan.work_items, plan.skipped_item_ids.len()),
@@ -54,11 +81,31 @@ async fn evaluate(
     }
     row["family"] = json!(case.family);
     row["expected"] = json!(case.label);
-    row["elapsed_ms"] = json!(started.elapsed().as_millis());
+    let total_ms = total_started.elapsed().as_millis();
+    row["elapsed_ms"] = json!(total_ms);
+    row["timing"] = json!({
+        "context_construction_ms":context_construction_ms,
+        "preparation_ms":preparation_ms,
+        "runner_ms":runner_ms,
+        "request_execution_ms":request_execution_ms,
+        "packing_ms":null,
+        "reduction_ms":null,
+        "total_ms":total_ms,
+        "work_items":work_item_count,
+        "requests":request_count,
+    });
     row
 }
 
 pub(crate) async fn run() -> Result<(), String> {
+    run_selected(false).await
+}
+
+pub(crate) async fn benchmark_session() -> Result<(), String> {
+    run_selected(true).await
+}
+
+async fn run_selected(benchmark: bool) -> Result<(), String> {
     let suite = support::selection::suite();
     let cases = support::selection::select(fixtures::cases(&suite), |case| &case.id);
     let client = match support::provider::EvalClient::from_environment().await {
@@ -79,12 +126,13 @@ pub(crate) async fn run() -> Result<(), String> {
     for case in &cases {
         let row = evaluate(case, &client, &usage).await;
         stopped = support::run::stop_reason(
-            row["score"]["unsafe_publications"]
-                .as_u64()
-                .is_some_and(|count| count > 0)
-                || row["score"]["historical_claims"]
+            !benchmark
+                && (row["score"]["unsafe_publications"]
                     .as_u64()
-                    .is_some_and(|count| count > 0),
+                    .is_some_and(|count| count > 0)
+                    || row["score"]["historical_claims"]
+                        .as_u64()
+                        .is_some_and(|count| count > 0)),
             row["score"]["missing"]
                 .as_u64()
                 .is_some_and(|count| count > 0),

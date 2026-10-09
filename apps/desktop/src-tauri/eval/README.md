@@ -18,6 +18,47 @@ Each check has one ignored `live` entry point. Run it explicitly:
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --offline --test scope_creep live -- --ignored --exact --nocapture --test-threads=1
 ```
 
+Each check also has an ignored `benchmark_session` entry point. It runs the
+selected synthetic suite through that check's production preparation, provider,
+continuation, and reduction path. Reports include per-case stage times and
+per-request latency. Cases are separate synthetic sessions; these benchmarks do
+not measure desktop source discovery, native parsing/publication, Store queries,
+or the desktop scheduler. Use the desktop profiler for those stages.
+
+Run the complete development suite for one check and provider at a time. Jev
+reads `TYPESAFE_API_KEY`. Cloudflare reads `CLOUDFLARE_ACCOUNT_ID` and
+`CLOUDFLARE_AUTH_TOKEN` from the shell environment:
+
+```sh
+ANTIBURN_EVAL_PROVIDER=jev cargo test --release --manifest-path apps/desktop/src-tauri/Cargo.toml --test ignored_instructions benchmark_session -- --ignored --exact --nocapture --test-threads=1
+ANTIBURN_EVAL_PROVIDER=jev cargo test --release --manifest-path apps/desktop/src-tauri/Cargo.toml --test scope_creep benchmark_session -- --ignored --exact --nocapture --test-threads=1
+ANTIBURN_EVAL_PROVIDER=jev cargo test --release --manifest-path apps/desktop/src-tauri/Cargo.toml --test over_exploring benchmark_session -- --ignored --exact --nocapture --test-threads=1
+ANTIBURN_EVAL_PROVIDER=jev cargo test --release --manifest-path apps/desktop/src-tauri/Cargo.toml --test skill_opportunities benchmark_session -- --ignored --exact --nocapture --test-threads=1
+```
+
+Set `ANTIBURN_EVAL_PROVIDER=cloudflare-clef` or
+`ANTIBURN_EVAL_PROVIDER=cloudflare-clef-flash` to benchmark either Cloudflare
+model. Run each check/model separately to keep reports attributable. Use the
+existing `ANTIBURN_EVAL_SUITE`, `ANTIBURN_EVAL_CASES`, and
+`ANTIBURN_EVAL_LIMIT` controls to repeat a focused case or select the broader
+`controls` suite. Do not run all ignored tests.
+
+For example, run one Cloudflare model across all four checks with:
+
+```sh
+source ~/dev/cloudflare-env
+ANTIBURN_EVAL_PROVIDER=cloudflare-clef cargo test --release --manifest-path apps/desktop/src-tauri/Cargo.toml --test ignored_instructions benchmark_session -- --ignored --exact --nocapture --test-threads=1
+ANTIBURN_EVAL_PROVIDER=cloudflare-clef cargo test --release --manifest-path apps/desktop/src-tauri/Cargo.toml --test scope_creep benchmark_session -- --ignored --exact --nocapture --test-threads=1
+ANTIBURN_EVAL_PROVIDER=cloudflare-clef cargo test --release --manifest-path apps/desktop/src-tauri/Cargo.toml --test over_exploring benchmark_session -- --ignored --exact --nocapture --test-threads=1
+ANTIBURN_EVAL_PROVIDER=cloudflare-clef cargo test --release --manifest-path apps/desktop/src-tauri/Cargo.toml --test skill_opportunities benchmark_session -- --ignored --exact --nocapture --test-threads=1
+```
+
+Use `cloudflare-clef-flash` in place of `cloudflare-clef` for Clef-flash.
+
+Compare successful runs with the same provider, model, suite, and case
+selection. Provider latency varies. Compare reviewed-work and missing-answer
+counts as well as elapsed time; an incomplete run is not a performance gain.
+
 Common selection variables:
 
 - `ANTIBURN_EVAL_PROVIDER`: one closed preset from `support/README.md`; defaults to Jev.

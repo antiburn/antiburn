@@ -33,6 +33,8 @@ const availability: CheckAvailability = {
     completed: 0,
     skipped: 0,
     failed: 0,
+    reviewed: 0,
+    eligibleItems: 0,
   },
 }
 

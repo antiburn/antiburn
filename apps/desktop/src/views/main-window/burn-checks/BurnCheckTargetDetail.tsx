@@ -3,7 +3,6 @@ import { Info } from "lucide-react"
 
 import { ProjectFolderActions } from "../../../components/session/ProjectFolderActions"
 import { Tooltip } from "../../../components/presentation/Tooltip"
-import { Skeleton } from "../../../components/ui/Skeleton"
 import { performProjectFolderAction } from "../../../lib/projectFolder"
 import { noteInteraction, smartCheckForDetector } from "../../../lib/ipc"
 import "../../../styles/session-detail.css"
@@ -49,10 +48,18 @@ function EvidenceExcerpt({
   collapseLong?: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
+  const disclosureId = useId()
   const fullText = item.excerpt
   const display = item.label === "observedAction" ? actionDisplay(item) : null
   const shownText = display?.text ?? fullText
   const preview = shownText.length > 360 ? `${shownText.slice(0, 360).trimEnd()}…` : shownText
+  const disclosureLabel = display?.alwaysCollapse
+    ? "returned content"
+    : display?.text.startsWith("Command:")
+      ? "command"
+      : display?.text.startsWith("Searched for:")
+        ? "search query"
+        : "full details"
   const excerpt = (text: string) => (
     <pre className="min-w-0 whitespace-pre-wrap wrap-anywhere rounded-control bg-surface-card px-3 py-2 type-callout text-label">
       {text}
@@ -75,19 +82,18 @@ function EvidenceExcerpt({
       {collapseLong &&
       (display?.alwaysCollapse || ((display?.collapse ?? true) && shownText.length > 360)) ? (
         <>
-          {excerpt(preview)}
-          <details onToggle={(event) => setExpanded(event.currentTarget.open)}>
-            <summary className="burn-check-action type-caption" aria-expanded={expanded}>
-              {display?.alwaysCollapse
-                ? expanded
-                  ? "Hide file contents"
-                  : "Show file contents"
-                : expanded
-                  ? "Hide full details"
-                  : "Show full details"}
-            </summary>
-            {excerpt(display?.detail ?? shownText)}
-          </details>
+          <button
+            type="button"
+            className="burn-check-action type-caption"
+            aria-expanded={expanded}
+            aria-controls={disclosureId}
+            onClick={() => setExpanded(!expanded)}
+          >
+            {expanded ? `Hide ${disclosureLabel}` : `Show ${disclosureLabel}`}
+          </button>
+          <div id={disclosureId}>
+            {expanded ? excerpt(display?.detail ?? shownText) : excerpt(preview)}
+          </div>
         </>
       ) : (
         excerpt(shownText)
@@ -224,8 +230,13 @@ function ReadResult({ item }: { item: BurnCheckTargetEvidencePayload["items"][nu
         aria-controls={contentId}
         onClick={() => setExpanded(!expanded)}
       >
-        {expanded ? "Hide file contents" : "Show file contents"}
+        {expanded ? "Hide returned content" : "Show returned content"}
       </button>
+      {!expanded && (
+        <pre className="min-w-0 whitespace-pre-wrap wrap-anywhere rounded-control bg-surface-card px-3 py-2 type-callout text-label">
+          …
+        </pre>
+      )}
       <pre
         id={contentId}
         hidden={!expanded}
@@ -240,111 +251,114 @@ function ReadResult({ item }: { item: BurnCheckTargetEvidencePayload["items"][nu
 function ReadEvidence({
   evidence,
   citationPrefix,
+  reason,
 }: {
   evidence: BurnCheckTargetEvidencePayload
   citationPrefix: string
+  reason?: BurnCheckTargetPayload["finding"]["overExploringReason"]
 }) {
   const reads = evidence.comparison?.reads ?? []
-  const pairedReferences = new Set(
-    reads.flatMap((read) => [
-      read.requestReference,
-      ...(read.resultReference ? [read.resultReference] : []),
-    ]),
-  )
-  const otherActions = evidence.items.filter(
-    (item) => item.label === "observedAction" && !pairedReferences.has(item.reference),
-  )
+  const readRecords = evidence.items.filter((item) => item.label === "observedAction")
+  const assessedReads = reads
+    .map((read, index) => ({ read, index }))
+    .filter(({ index }) =>
+      evidence.comparison?.explanation?.relationship === "laterReadRepeatsEarlier"
+        ? index === reads.length - 1
+        : true,
+    )
   return (
     <div className="min-w-0 space-y-3">
-      {orderedEvidence(evidence.items.filter((item) => item.label !== "observedAction")).map(
-        (item) => (
-          <div key={item.reference} className="min-w-0 space-y-1">
-            <p className="type-callout font-medium! text-label">
-              {item.sourceLabel === "Earlier recorded event"
-                ? item.sourceLabel
-                : "Requested task"}
-            </p>
-            <EvidenceExcerpt
-              item={item}
-              showMetadata={false}
-              showExplanation={false}
-              citationPrefix={citationPrefix}
-              collapseLong
-            />
-          </div>
-        ),
-      )}
-      <section aria-label="Files read" className="min-w-0 space-y-2">
-        <h4 className="type-callout font-medium! text-label">Files read</h4>
-        <ol className="min-w-0 space-y-3">
-          {reads.map((read, index) => {
-            const request = evidence.items.find(
-              (item) => item.reference === read.requestReference,
-            )
-            const result = evidence.items.find(
-              (item) => item.reference === read.resultReference,
-            )
-            if (!request) return null
-            const requested = readExtent(read.requestedExtent, "Requested")
-            const returned = read.returnedExtent
-              ? readExtent(read.returnedExtent, "Returned")
-              : null
-            return (
-              <li
-                key={read.requestReference}
-                className="min-w-0 space-y-1"
-                id={`${citationPrefix}-${encodeURIComponent(read.requestReference)}`}
-                tabIndex={-1}
-              >
-                {evidence.comparison?.explanation?.relationship ===
-                  "laterReadRepeatsEarlier" && (
-                  <p className="type-caption text-label-secondary">
-                    {index === 0 ? "Earlier read" : "Later read"}
-                  </p>
-                )}
-                <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-                  <p className="min-w-0 wrap-anywhere type-callout text-label">
-                    {read.paths.length ? read.paths.join(", ") : "Read request"}
-                  </p>
-                  {request.observedAtMs != null && (
-                    <time
-                      className="type-caption text-label-tertiary"
-                      dateTime={new Date(request.observedAtMs).toISOString()}
-                    >
-                      {new Date(request.observedAtMs).toLocaleString()}
-                    </time>
-                  )}
-                </div>
-                {requested && <p className="type-caption text-label-secondary">{requested}</p>}
-                {returned && <p className="type-caption text-label-secondary">{returned}</p>}
-                {!result ? (
-                  <p className="type-caption text-label-secondary">Read request</p>
+      <section
+        aria-label={
+          reason === "excessive_file_breadth"
+            ? "Assessed file set"
+            : reads.length === 0
+              ? "Recorded read evidence"
+              : "Reads under review"
+        }
+        className="min-w-0 space-y-2"
+      >
+        <h4 className="type-callout font-medium! text-label">
+          {reason === "excessive_file_breadth"
+            ? "Files assessed as a group"
+            : reads.length === 0
+              ? "Read records used for this finding"
+              : "Read under review"}
+        </h4>
+        {reads.length === 0 ? (
+          <ol className="min-w-0 space-y-2">
+            {readRecords.map((item) => (
+              <li key={item.reference} className="min-w-0 space-y-1">
+                {item.sourceLabel.toLowerCase().includes("result") ? (
+                  <ReadResult item={item} />
                 ) : (
-                  <div
-                    id={`${citationPrefix}-${encodeURIComponent(result.reference)}`}
-                    tabIndex={-1}
-                  >
-                    {read.resultStatus === "failed" && (
-                      <p className="type-caption text-label-secondary">Read failed</p>
-                    )}
-                    <ReadResult item={result} />
-                  </div>
+                  <EvidenceExcerpt
+                    item={item}
+                    showMetadata
+                    showExplanation={false}
+                    citationPrefix={citationPrefix}
+                    collapseLong
+                  />
                 )}
               </li>
-            )
-          })}
-          {orderedEvidence(otherActions).map((item) => (
-            <li key={item.reference} className="min-w-0">
-              <EvidenceExcerpt
-                item={item}
-                showMetadata={false}
-                showExplanation={false}
-                citationPrefix={citationPrefix}
-                collapseLong
-              />
-            </li>
-          ))}
-        </ol>
+            ))}
+          </ol>
+        ) : (
+          <ol className="min-w-0 space-y-3">
+            {assessedReads.map(({ read }) => {
+              const request = evidence.items.find(
+                (item) => item.reference === read.requestReference,
+              )
+              const result = evidence.items.find(
+                (item) => item.reference === read.resultReference,
+              )
+              if (!request) return null
+              const requested = readExtent(read.requestedExtent, "Requested")
+              const returned = read.returnedExtent
+                ? readExtent(read.returnedExtent, "Returned")
+                : null
+              return (
+                <li
+                  key={read.requestReference}
+                  className="min-w-0 space-y-1"
+                  id={`${citationPrefix}-${encodeURIComponent(read.requestReference)}`}
+                  tabIndex={-1}
+                >
+                  <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                    <p className="min-w-0 wrap-anywhere type-callout text-label">
+                      {read.paths.length ? read.paths.join(", ") : "Read request"}
+                    </p>
+                    {request.observedAtMs != null && (
+                      <time
+                        className="type-caption text-label-tertiary"
+                        dateTime={new Date(request.observedAtMs).toISOString()}
+                      >
+                        {new Date(request.observedAtMs).toLocaleString()}
+                      </time>
+                    )}
+                  </div>
+                  {requested && (
+                    <p className="type-caption text-label-secondary">{requested}</p>
+                  )}
+                  {returned && <p className="type-caption text-label-secondary">{returned}</p>}
+                  {!result ? (
+                    <p className="type-caption text-label-secondary">Read request</p>
+                  ) : (
+                    <div
+                      id={`${citationPrefix}-${encodeURIComponent(result.reference)}`}
+                      tabIndex={-1}
+                    >
+                      {read.resultStatus === "failed" && (
+                        <p className="type-caption text-label-secondary">Read failed</p>
+                      )}
+                      <ReadResult item={result} />
+                    </div>
+                  )}
+                </li>
+              )
+            })}
+          </ol>
+        )}
       </section>
     </div>
   )
@@ -411,24 +425,6 @@ export function EvidenceLimitsIcon({
   )
 }
 
-export function SmartCheckEvidenceSkeleton() {
-  return (
-    <div role="status" aria-label="Loading source details" className="space-y-3">
-      <span className="sr-only">Loading the source details for this finding…</span>
-      <Skeleton className="h-16 w-full" />
-      <div className="space-y-2">
-        <Skeleton className="h-3 w-24" />
-        <Skeleton className="h-3 w-48 max-w-full" />
-        <Skeleton className="h-16 w-full" />
-      </div>
-      <div className="space-y-2">
-        <Skeleton className="h-3 w-24" />
-        <Skeleton className="h-20 w-full" />
-      </div>
-    </div>
-  )
-}
-
 type EvidenceState = {
   findingId: string
   actionId: string
@@ -451,6 +447,13 @@ function IgnoredInstructionEvidence({
   sourcePath: string | null
 }) {
   const citationId = useId()
+  if (state.status === "loaded" && state.evidence?.status === "unavailable") {
+    return (
+      <p role="status" className="type-callout text-label-tertiary">
+        Source details could not be verified.
+      </p>
+    )
+  }
   const citationPrefix = `${citationId}-${encodeURIComponent(state.actionId)}`
   const items =
     state.status === "loaded" && state.evidence?.status === "available"
@@ -523,11 +526,6 @@ function IgnoredInstructionEvidence({
           />
         </div>
       ))}
-      {state.status === "loaded" && state.evidence?.status === "unavailable" && (
-        <p role="status" className="type-callout text-label-tertiary">
-          The saved excerpts are no longer available.
-        </p>
-      )}
     </div>
   )
 }
@@ -543,30 +541,19 @@ function instructionSourcePath(target: BurnCheckTargetPayload): string | null {
   return source
 }
 
-function evidenceStateExplanation(
-  target: BurnCheckTargetPayload,
-  state: EvidenceState | undefined,
-  hasSnapshot: boolean,
-): string {
-  if (state?.status === "loading")
-    return hasSnapshot
-      ? "The earlier details stay visible while the latest details load."
-      : "The check is loading the task and work excerpts used for this finding."
-  if (state?.status === "failed")
-    return hasSnapshot
-      ? "The earlier details remain visible while the latest details are retried."
-      : "Try again to load the source details for this finding."
-  if (state?.status === "loaded" && state.evidence?.status === "unavailable")
-    return "The check still has this finding, but its saved excerpts are no longer available."
-  if (state?.status === "loaded" && state.evidence?.status === "available") {
-    const hasExcerpts = state.evidence.items.some((item) => item.excerpt.trim() !== "")
-    return hasExcerpts
-      ? "The excerpts below show the recorded task or work used for this finding."
-      : "This finding remains, but no source excerpts were returned."
+function evidenceDisclosure(detector: BurnCheckTargetPayload["finding"]["detector"]): string {
+  switch (detector) {
+    case "ignoredInstructions":
+      return "instruction and action"
+    case "overExploring":
+      return "reads under review"
+    case "scopeCreep":
+      return "task and work"
+    case "skillOpportunities":
+      return "skill and related work"
+    default:
+      return "source details"
   }
-  if (!target.evidenceAvailable)
-    return "This finding remains, but its source details cannot be shown here."
-  return "Open the details to see the source excerpts for this finding."
 }
 
 export function BurnCheckTargetDetail({
@@ -582,6 +569,7 @@ export function BurnCheckTargetDetail({
   openEvidence?: boolean
   evidenceActive?: boolean
 }) {
+  const smartCheck = smartCheckForDetector(target.finding.detector)
   const skillOpportunities = target.finding.detector === "skillOpportunities"
   const scopeCreep = target.finding.detector === "scopeCreep"
   const revisionEvidenceActionId =
@@ -591,7 +579,9 @@ export function BurnCheckTargetDetail({
     target.finding.detector === "overExploring"
       ? target.actionId
       : null
-  const automaticEvidence = revisionEvidenceActionId != null || openEvidence
+  const automaticEvidence = openEvidence
+  const [evidenceOpen, setEvidenceOpen] = useState(openEvidence)
+  const evidenceOpenRef = useRef(evidenceOpen)
   const citationId = useId()
   const [evidenceState, setEvidenceState] = useState<EvidenceState | null>(null)
   const request = useRef(0)
@@ -700,7 +690,7 @@ export function BurnCheckTargetDetail({
         revisionEvidenceActionId != null ? `${findingId}:${actionId}` : findingId
       if (
         evidenceActive &&
-        (automaticEvidence || node.dataset.evidenceOpen === "true") &&
+        (automaticEvidence || evidenceOpenRef.current) &&
         target.evidenceAvailable &&
         autoLoadedFinding.current !== evidenceKey &&
         loadedFinding.current !== evidenceKey
@@ -762,7 +752,7 @@ export function BurnCheckTargetDetail({
       ref={mounted}
       data-evidence-action-id={target.actionId}
       data-evidence-active={evidenceActive}
-      data-evidence-open={hasEvidenceSelection}
+      data-evidence-open={evidenceOpen}
       data-finding-id={target.findingId}
       data-detector={target.finding.detector}
       className={
@@ -786,11 +776,13 @@ export function BurnCheckTargetDetail({
       <div className="burn-check-resource-metadata min-w-0">
         <div className="flex items-center gap-1.5 type-callout text-label-tertiary">
           <span className="min-w-0 wrap-anywhere">
-            {scopeLabel(target.display.scopeKind)}
+            {reportRow && smartCheck
+              ? (target.projectName ?? "")
+              : scopeLabel(target.display.scopeKind)}
             {sourcePath &&
               (!ignoredInstructions || !hasInstructionExcerpt) &&
               ` (${sourcePath})`}
-            {reportRow && target.projectName && (
+            {reportRow && target.projectName && !(reportRow && smartCheck) && (
               <span className="text-label"> · {target.projectName}</span>
             )}
           </span>
@@ -815,52 +807,55 @@ export function BurnCheckTargetDetail({
         </div>
       </div>
       <div className={reportRow ? "burn-check-resource-body" : undefined}>
+        {smartCheck && (
+          <p className="mt-2 type-callout text-label-secondary">{target.finding.observation}</p>
+        )}
         {costLine && (
           <p className="mt-1 type-callout tabular-nums text-label-secondary">{costLine}</p>
         )}
         {!reportRow && <BurnCheckTargetActions target={target} refresh={refresh} />}
-        {(target.evidenceAvailable ||
-          smartCheckForDetector(target.finding.detector) != null) && (
-          <section className="mt-3" aria-label="Source details">
-            {!target.evidenceAvailable && !hasEvidenceSelection && (
-              <p className="type-callout text-label-secondary">
-                This is a saved finding. Source details were not kept with it.
-              </p>
-            )}
-            {!automaticEvidence && !hasEvidenceSelection && (
-              <button
-                type="button"
-                className="burn-check-action type-callout"
-                aria-expanded={false}
-                onClick={() => {
-                  loadEvidence(target)
-                }}
-              >
-                Show source details
-              </button>
-            )}
-            {initialEvidenceLoading && (
-              <div className="mt-3 min-h-72" aria-busy="true">
-                <SmartCheckEvidenceSkeleton />
-              </div>
-            )}
-            {hasEvidenceSelection && !initialEvidenceLoading && (
+        {(smartCheck != null || target.evidenceAvailable) && (
+          <section className="mt-2" aria-label="Source details">
+            <button
+              type="button"
+              className="burn-check-action type-caption"
+              aria-expanded={evidenceOpen}
+              onClick={() => {
+                const next = !evidenceOpen
+                evidenceOpenRef.current = next
+                setEvidenceOpen(next)
+                if (next && (!hasEvidenceSelection || staleEvidence)) loadEvidence(target)
+              }}
+            >
+              {evidenceOpen
+                ? `Hide ${smartCheck ? evidenceDisclosure(target.finding.detector) : "source details"}`
+                : `Show ${smartCheck ? evidenceDisclosure(target.finding.detector) : "source details"}`}
+            </button>
+            {evidenceOpen && (
               <div
-                className="mt-3 min-h-72 space-y-3"
-                aria-busy={staleEvidence && evidenceState?.status !== "failed"}
-                data-snapshot-action-id={displayedEvidenceState.actionId}
+                className="mt-2 space-y-2"
+                aria-busy={
+                  initialEvidenceLoading ||
+                  (staleEvidence && evidenceState?.status !== "failed")
+                }
+                data-snapshot-action-id={displayedEvidenceState?.actionId}
               >
                 {staleEvidence && evidenceState?.status !== "failed" && (
                   <p role="status" className="type-caption text-label-tertiary">
-                    Refreshing details…
+                    Updating source details…
+                  </p>
+                )}
+                {initialEvidenceLoading && (
+                  <p role="status" className="type-caption text-label-tertiary">
+                    Loading source details…
                   </p>
                 )}
                 {evidenceState?.status === "failed" && (
                   <div>
                     <p role="alert" className="type-callout text-label-secondary">
                       {snapshot
-                        ? "The latest details did not load. Earlier excerpts remain visible."
-                        : "The details did not load. Try again to see the source excerpts."}
+                        ? "Could not update source details. Earlier details remain available."
+                        : "Could not load source details."}
                     </p>
                     <button
                       type="button"
@@ -871,26 +866,29 @@ export function BurnCheckTargetDetail({
                     </button>
                   </div>
                 )}
-                <p className="type-body text-label">
-                  {validExplanation
-                    ? explanation.text
-                    : evidenceStateExplanation(target, displayedEvidenceState, staleEvidence)}
-                </p>
-                {ignoredInstructions ? (
+                {validExplanation && (
+                  <p className="type-callout text-label">{explanation.text}</p>
+                )}
+                {displayedEvidenceState?.status === "loaded" && ignoredInstructions ? (
                   <IgnoredInstructionEvidence
                     target={snapshot?.target ?? target}
                     state={displayedEvidenceState}
                     sourcePath={sourcePath ?? null}
                   />
-                ) : target.finding.detector === "overExploring" &&
+                ) : displayedEvidenceState?.status === "loaded" &&
+                  target.finding.detector === "overExploring" &&
                   selectedEvidence?.status === "available" ? (
-                  <ReadEvidence evidence={selectedEvidence} citationPrefix={citationPrefix} />
+                  <ReadEvidence
+                    evidence={selectedEvidence}
+                    citationPrefix={citationPrefix}
+                    reason={target.finding.overExploringReason}
+                  />
                 ) : (
                   <>
-                    {displayedEvidenceState.status === "loaded" &&
+                    {displayedEvidenceState?.status === "loaded" &&
                       (displayedEvidenceState.evidence?.status === "unavailable" ? (
                         <p role="status" className="type-callout text-label-secondary">
-                          The saved source excerpts are no longer available.
+                          Source details could not be verified.
                         </p>
                       ) : (
                         <div>

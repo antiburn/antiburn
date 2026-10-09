@@ -114,6 +114,8 @@ struct BurnCheckBackfillSummary {
     completed: usize,
     skipped: usize,
     failed: usize,
+    reviewed: usize,
+    eligible_items: usize,
 }
 
 #[derive(Serialize)]
@@ -134,6 +136,7 @@ trait CredentialVault {
     fn write(&self, id: Option<&str>, value: &str) -> Result<(), Self::Error>;
     fn delete(&self, id: Option<&str>) -> Result<(), Self::Error>;
     fn is_missing(error: &Self::Error) -> bool;
+    fn write_failure(error: &Self::Error) -> &'static str;
 }
 
 struct SystemCredentialVault;
@@ -172,20 +175,34 @@ impl CredentialVault for SystemCredentialVault {
     fn is_missing(error: &Self::Error) -> bool {
         matches!(error, keyring::Error::NoEntry)
     }
+
+    fn write_failure(error: &Self::Error) -> &'static str {
+        match error {
+            keyring::Error::NoStorageAccess(_) => {
+                "Could not access secure storage. Unlock the system credential store and retry."
+            }
+            keyring::Error::PlatformFailure(_) => {
+                "Secure storage rejected the credential write. Check app access and retry."
+            }
+            _ => {
+                "Could not save the API token to secure storage. Check credential storage access and retry."
+            }
+        }
+    }
 }
 
 fn vault_entry_error(message: &'static str) -> keyring::Error {
     keyring::Error::PlatformFailure(Box::new(std::io::Error::other(message)))
 }
 
-fn write_credential(
-    vault: &impl CredentialVault,
+fn write_credential<V: CredentialVault>(
+    vault: &V,
     id: Option<&str>,
     value: &str,
 ) -> Result<(), &'static str> {
     vault
         .write(id, value)
-        .map_err(|_| "Could not save the connection credential.")
+        .map_err(|error| V::write_failure(&error))
 }
 
 fn delete_credential<V: CredentialVault>(vault: &V, id: Option<&str>) -> Result<(), &'static str> {
@@ -365,6 +382,18 @@ fn persist_connection_profile(
     } else {
         None
     };
+    let previous_connection = saved
+        .profiles
+        .get(&saved.active_id)
+        .cloned()
+        .ok_or("The active Smart Burn Checks connection is missing.")?;
+    let previous_credential = match previous_connection.credential.as_ref() {
+        Some(CredentialReference::LegacyTypeSafe) => vault.read(None),
+        Some(CredentialReference::Connection(previous_id)) => vault.read(Some(previous_id)),
+        None => Ok(None),
+    }
+    .map_err(|_| "Credential storage is unavailable.")?;
+    let checks_enabled = store.internal_value(ENABLED_AT_KEY).is_some();
     let replacing = credential.is_some();
     let credential_changed = replacing && previous_secret != credential;
     store
@@ -372,7 +401,42 @@ fn persist_connection_profile(
         .map_err(|_| "Could not protect the connection update state.")?;
     worker.suspend_system_one();
     if let Some(secret) = credential {
-        write_credential(vault, Some(id), &secret)?;
+        if let Err(error) = write_credential(vault, Some(id), &secret) {
+            let current_secret = vault
+                .read(Some(id))
+                .map_err(|_| {
+                    "Could not confirm the saved credential. Checks are paused. Retry the connection update in Settings → Checks."
+                })?;
+            if current_secret != previous_secret {
+                let rollback = match previous_secret.as_deref() {
+                    Some(previous) => write_credential(vault, Some(id), previous),
+                    None => delete_credential(vault, Some(id)),
+                };
+                if rollback.is_err() {
+                    return Err(
+                        "Could not restore the previous credential. Checks are paused. Retry the connection update in Settings → Checks.",
+                    );
+                }
+            }
+            if worker
+                .install_system_one_connection(
+                    previous_connection,
+                    previous_credential,
+                    checks_enabled,
+                )
+                .is_err()
+            {
+                return Err(
+                    "Could not restore the previous connection. Checks are paused. Retry the connection update in Settings → Checks.",
+                );
+            }
+            store
+                .set_internal_value_checked(CONNECTION_PENDING_KEY, "")
+                .map_err(|_| {
+                    "Could not restore the previous connection state. Retry the connection update in Settings → Checks."
+                })?;
+            return Err(error);
+        }
         connection.credential = Some(CredentialReference::Connection(id.to_owned()));
     }
     let mut updated = saved.clone();
@@ -707,6 +771,7 @@ fn save_connection(
     connection_entry(&id)?;
     let mut saved = profiles(store)?;
     ensure_no_pending_removal(store)?;
+    let checks_enabled = store.internal_value(ENABLED_AT_KEY).is_some();
     let (connection, credential, changed) = persist_connection_profile(
         store,
         &mut saved,
@@ -716,7 +781,6 @@ fn save_connection(
         vault,
         worker,
     )?;
-    let checks_enabled = store.internal_value(ENABLED_AT_KEY).is_some();
     if checks_enabled {
         enroll_registered_checks(store)?;
     }
@@ -1102,6 +1166,8 @@ impl From<BurnCheckHistoryStatus> for BurnCheckBackfillSummary {
             completed: status.completed,
             skipped: status.skipped,
             failed: status.failed,
+            reviewed: status.reviewed,
+            eligible_items: status.eligible_items,
         }
     }
 }
@@ -1677,6 +1743,10 @@ mod tests {
 
         fn is_missing(error: &Self::Error) -> bool {
             *error == "missing"
+        }
+
+        fn write_failure(_error: &Self::Error) -> &'static str {
+            "Could not save the API token to secure storage. Check credential storage access and retry."
         }
     }
 
@@ -2336,7 +2406,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_connection_secret_write_stays_pending_and_can_be_retried() {
+    fn failed_connection_secret_write_restores_the_previous_provider_and_allows_retry() {
         let store =
             Store::open_in_memory(Path::new("/tmp/antiburn-provider-save-retry")).expect("store");
         migrate_provider_state(&store).expect("migrate");
@@ -2360,7 +2430,7 @@ mod tests {
         vault.fail_write.set(true);
         let worker = WorkerHandle::default();
 
-        assert!(
+        assert_eq!(
             persist_connection_profile(
                 &store,
                 &mut saved,
@@ -2370,18 +2440,20 @@ mod tests {
                 &vault,
                 &worker,
             )
-            .is_err()
+            .unwrap_err(),
+            "Could not save the API token to secure storage. Check credential storage access and retry."
         );
         assert_eq!(
             store
                 .internal_value(super::CONNECTION_PENDING_KEY)
                 .as_deref(),
-            Some("proxy")
+            Some("")
         );
         assert_eq!(
             active_connection(&store).unwrap().provider,
             crate::jev::config::SystemOneProvider::Jev
         );
+        assert!(!worker.is_available());
 
         persist_connection_profile(
             &store,

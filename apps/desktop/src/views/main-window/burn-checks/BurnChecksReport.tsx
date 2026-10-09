@@ -32,11 +32,7 @@ import { checkRowPresentation as baseCheckRowPresentation } from "../../checks/c
 import type { BurnChecksController, BurnChecksControllerSnapshot } from "./BurnChecksController"
 import { BurnCheckCategoryIcon } from "./BurnCheckCategoryIcon"
 import { BurnCheckDetail, CheckDetailActions, CHECK_SENTENCES } from "./BurnCheckDetail"
-import {
-  BurnCheckTargetDetail,
-  EvidenceLimitsIcon,
-  SmartCheckEvidenceSkeleton,
-} from "./BurnCheckTargetDetail"
+import { BurnCheckTargetDetail, EvidenceLimitsIcon } from "./BurnCheckTargetDetail"
 import { BurnChecksHeader } from "./BurnChecksHeader"
 import { BurnChecksSavings } from "./BurnChecksSavings"
 import { BurnCheckDetailBody } from "./BurnCheckDetailBody"
@@ -118,12 +114,9 @@ function LoadingCheckDetail({ smart = false }: { smart?: boolean }) {
       )}
       <Skeleton className="h-4 w-72 max-w-full" />
       {smart ? (
-        <>
-          <Skeleton className="mt-3 h-3 w-48 max-w-full" />
-          <div className="mt-3 min-h-72">
-            <SmartCheckEvidenceSkeleton />
-          </div>
-        </>
+        <p role="status" className="mt-2 type-callout text-label-secondary">
+          Loading findings…
+        </p>
       ) : (
         <>
           <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -293,7 +286,6 @@ function CheckDetailBody({ check, session, state, evidenceActive }: CheckDetailC
       <TargetDetails
         targets={targets.data.targets}
         refresh={session.refresh}
-        openEvidence
         evidenceActive={evidenceActive}
       />
     )

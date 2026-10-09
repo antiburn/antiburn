@@ -50,10 +50,11 @@ Scope Creep uses one choice per selected work group. Findings require a finite
 decision probability from 0.75 through 1.0 and distinguish recorded attempts
 from proposals. The compact path requires selected earlier user task context;
 a group without it remains unassessed. The larger-window path can admit empty
-retained task context. Neither path proves complete approval history.
-Findings do not prove completed execution. Recorded approvals
-still constrain the decision. Uncertain and unassessed groups count separately
-from reviewed clean outcomes.
+retained task context. Compact evidence labels user-authority records as task
+instructions and keeps other supporting records separate. Neither path proves
+complete approval history. Findings do not prove completed execution. Recorded
+approvals still constrain the decision. Uncertain and unassessed groups count
+separately from reviewed clean outcomes.
 
 Scope Creep and Skill Opportunities retain large selected work, including edit
 inputs, commands, and tool results, as bounded sampled content. Each large value

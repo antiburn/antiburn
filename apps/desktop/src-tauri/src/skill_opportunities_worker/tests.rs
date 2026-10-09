@@ -6,6 +6,16 @@ use antiburn_local::checks::sampling::{Candidate, SamplingLimits, SamplingProgre
 use antiburn_local::checks::skill_opportunities::SkillUseLifecycle;
 
 #[test]
+fn invalid_published_skill_use_is_terminal_until_the_source_changes() {
+    assert!(super::unavailable_is_terminal("skill_use_invalid"));
+    assert!(super::unavailable_is_terminal("unsupported_format"));
+    assert!(!super::unavailable_is_terminal(
+        "skill_inventory_unavailable"
+    ));
+    assert!(!super::unavailable_is_terminal("input_query_failed"));
+}
+
+#[test]
 fn two_64_session_sweeps_reuse_source_inputs_and_discover_inventory_once_per_sweep() {
     use crate::scope_creep_worker::tests::native_sources;
     use crate::smart_check_inputs::inventory_cache::INVENTORY_DISCOVERY_COUNT;

@@ -1434,8 +1434,15 @@ impl NativeFixture {
             .unwrap()
     }
     pub(crate) fn publish_finding(&self) -> BurnCheckCandidate {
+        self.publish_finding_with_capabilities(ModelCapabilities::jev_default())
+    }
+
+    pub(crate) fn publish_finding_with_capabilities(
+        &self,
+        capabilities: ModelCapabilities,
+    ) -> BurnCheckCandidate {
         let candidate = self.publish();
-        let input = load_input(&self.store, &candidate, &ModelCapabilities::jev_default()).unwrap();
+        let input = load_input(&self.store, &candidate, &capabilities).unwrap();
         let result = input
             .check
             .reduce(&input.plan, &results(&input, false), true)

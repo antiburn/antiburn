@@ -263,6 +263,7 @@ impl Store {
         source_generation: i64,
         detector: DetectorInput,
     ) -> Result<SmartCheckInputSnapshot, InputLoadError> {
+        let started = std::time::Instant::now();
         #[cfg(test)]
         INPUT_LOAD_COUNT.set(INPUT_LOAD_COUNT.get() + 1);
         let request = self
@@ -352,7 +353,7 @@ impl Store {
             source_generation,
             &boundary,
         )?;
-        Ok(SmartCheckInputSnapshot {
+        let snapshot = SmartCheckInputSnapshot {
             key: key.clone(),
             detector,
             scope,
@@ -360,7 +361,16 @@ impl Store {
             content,
             revision,
             investigation_spans,
-        })
+        };
+        ::tracing::debug!(
+            event = "smart_check_input_loaded",
+            detector = ?detector,
+            scope_occurrences = snapshot.scope.occurrences().len(),
+            selected_actions = snapshot.content.actions.len(),
+            limitations = snapshot.content.limitations.len(),
+            elapsed_ms = started.elapsed().as_millis(),
+        );
+        Ok(snapshot)
     }
 
     fn collect_smart_check_activity(

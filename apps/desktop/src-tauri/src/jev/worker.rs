@@ -36,14 +36,24 @@ const GLOBAL_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) async fn run_blocking_preparation<T: Send + 'static>(
     prepare: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
 ) -> anyhow::Result<T> {
+    let waiting = std::time::Instant::now();
     static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
     let permit = SLOTS
         .get_or_init(|| tokio::sync::Semaphore::new(CANDIDATE_WORKERS))
         .acquire()
         .await?;
+    let slot_wait_ms = waiting.elapsed().as_millis();
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        prepare()
+        let started = std::time::Instant::now();
+        let result = prepare();
+        ::tracing::debug!(
+            event = "burn_check_blocking_preparation",
+            slot_wait_ms,
+            elapsed_ms = started.elapsed().as_millis(),
+            succeeded = result.is_ok(),
+        );
+        result
     })
     .await?
 }
@@ -883,11 +893,14 @@ fn select_turn_excluding(
     now: i64,
     in_flight: &std::collections::BTreeSet<(&'static str, SessionKey)>,
 ) -> anyhow::Result<Option<(usize, BurnCheckCandidate)>> {
+    let started = std::time::Instant::now();
+    let mut query_count = 0;
     let continuation = cursor.turn % 5 == 4;
     for lane in [continuation, !continuation] {
         for offset in 0..checks.len() {
             let index = (cursor.next_check + offset) % checks.len();
             let check = checks[index];
+            query_count += 1;
             let candidates = store.burn_check_candidates_in_lane(
                 check.id(),
                 &check.evaluator_revision(),
@@ -900,10 +913,22 @@ fn select_turn_excluding(
                 .into_iter()
                 .find(|candidate| !in_flight.contains(&(check.id(), candidate.session.key.clone())))
             {
+                ::tracing::debug!(
+                    event = "burn_check_candidate_selection",
+                    query_count,
+                    selected_check = check.id(),
+                    elapsed_ms = started.elapsed().as_millis(),
+                );
                 return Ok(Some((index, candidate)));
             }
         }
     }
+    ::tracing::debug!(
+        event = "burn_check_candidate_selection",
+        query_count,
+        selected_check = "none",
+        elapsed_ms = started.elapsed().as_millis(),
+    );
     Ok(None)
 }
 

@@ -395,6 +395,11 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
         ],
       },
     )
+    for (const button of await screen.findAllByRole("button", {
+      name: "Show instruction and action",
+    })) {
+      fireEvent.click(button)
+    }
     expect(await screen.findAllByText("Run tests before delivery.")).toHaveLength(2)
     expect(screen.getAllByText("Delivered without tests")).toHaveLength(2)
     expect(
@@ -472,6 +477,7 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
       ...report,
       categories: [{ ...report.categories[0]!, id: "scopeCreep", clean: 0 }],
     })
+    fireEvent.click(await screen.findByRole("button", { name: "Show task and work" }))
     const excerpt = await screen.findByText("Occurrence A")
     view.rerender(<BurnChecksView active={false} session={session} />)
     expect(screen.getByText("Occurrence A")).toBe(excerpt)
@@ -514,7 +520,8 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
         ],
       },
     )
-    expect(await screen.findByRole("alert")).toHaveTextContent("The details did not load.")
+    fireEvent.click(await screen.findByRole("button", { name: "Show instruction and action" }))
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load source details.")
     fireEvent.click(screen.getByRole("button", { name: "Retry" }))
     fireEvent.click(screen.getByRole("button", { name: /Unused skills, Passed/ }))
     await act(async () =>

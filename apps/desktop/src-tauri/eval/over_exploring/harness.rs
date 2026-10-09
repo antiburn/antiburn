@@ -17,19 +17,25 @@ async fn evaluate(
     usage: &Arc<Mutex<support::run::RunUsage>>,
 ) -> Value {
     let started = Instant::now();
+    let request_start = usage.lock().expect("Usage lock").requests;
     let Some(input) = &case.input else {
         let mut row = scoring::row(case, None, true, None);
         row["preparation_error"] = json!(case.preparation_error);
         row["elapsed_ms"] = json!(started.elapsed().as_millis());
+        row["stage_timings"] = json!({"total_ms":started.elapsed().as_millis()});
         return row;
     };
+    let context_started = Instant::now();
     let context = build_jev_context(input).expect("Synthetic read context builds");
+    let context_ms = context_started.elapsed().as_millis();
+    let preparation_started = Instant::now();
     let permit = admit_jev_orchestration()
         .await
         .expect("Admit evaluation preparation");
     let mut plan = OverExploringCheck
         .prepare_with_capabilities(&context, &support::provider::configuration().capabilities)
         .expect("Synthetic reads prepare");
+    let preparation_ms = preparation_started.elapsed().as_millis();
     drop(permit);
     let sampling_overflow = plan
         .prepared
@@ -39,6 +45,7 @@ async fn evaluate(
     plan.prepared
         .candidates
         .truncate(fixtures::MAX_SAMPLING_CANDIDATES);
+    let sampling_started = Instant::now();
     let check = StableId::new("smart-check", &[b"over_exploring"]);
     let mut sampling = SamplingProgress::new(SamplingLimits {
         checks: 1,
@@ -48,14 +55,19 @@ async fn evaluate(
     })
     .expect("Evaluation sampling limits are valid");
     synchronize_sampling(&plan, &mut sampling).expect("Evaluation targets synchronize");
+    let sampling_ms = sampling_started.elapsed().as_millis();
+    let reduction_started = Instant::now();
     let mut result = OverExploringCheck
         .reduce(&plan, &[], false)
         .expect("Empty reduction succeeds");
+    let initial_reduction_ms = reduction_started.elapsed().as_millis();
     let mut baseline_result = result.clone();
     let mut baseline_failure = None;
     result.unassessed = plan.prepared.unassessed.clone();
     let mut failure = None;
     let mut missing = 0;
+    let mut job_execution_ms = 0u128;
+    let mut selected_jobs = 0u64;
     'runs: while sampling
         .coverage(check)
         .expect("Synchronized check")
@@ -64,6 +76,8 @@ async fn evaluate(
     {
         sampling.begin_run();
         while let Some(job) = sampling.choose_job() {
+            let job_started = Instant::now();
+            selected_jobs += 1;
             let mut selected = plan.clone();
             PreparedAssessment::select_jobs(&mut selected, std::slice::from_ref(&job))
                 .expect("Selected evaluation target materializes");
@@ -83,6 +97,7 @@ async fn evaluate(
                 |_| Ok(()),
             )
             .await;
+            job_execution_ms += job_started.elapsed().as_millis();
             let outcome = match execution {
                 Ok(outcome) => outcome,
                 Err(error) => {
@@ -175,6 +190,16 @@ async fn evaluate(
     );
     row["missing_answers"] = json!(missing);
     row["elapsed_ms"] = json!(started.elapsed().as_millis());
+    row["stage_timings"] = json!({
+        "context_ms":context_ms,
+        "preparation_ms":preparation_ms,
+        "sampling_setup_ms":sampling_ms,
+        "selected_job_runner_ms":job_execution_ms,
+        "selected_jobs":selected_jobs,
+        "provider_requests":usage.lock().expect("Usage lock").requests.saturating_sub(request_start),
+        "initial_reduction_ms":initial_reduction_ms,
+        "total_ms":started.elapsed().as_millis()
+    });
     row["production_runner"] = json!(true);
     if std::env::var_os("ANTIBURN_EVAL_BASELINE_QUESTIONS").is_some() {
         baseline_result.coverage = result.coverage.clone();
@@ -189,6 +214,14 @@ async fn evaluate(
 }
 
 pub(crate) async fn run() -> Result<(), String> {
+    run_with_benchmark_policy(false).await
+}
+
+pub(crate) async fn run_benchmark_session() -> Result<(), String> {
+    run_with_benchmark_policy(true).await
+}
+
+async fn run_with_benchmark_policy(continue_after_quality: bool) -> Result<(), String> {
     let suite = support::selection::suite();
     let cases = support::selection::select(fixtures::cases(&suite), |case| &case.id);
     let client = match support::provider::EvalClient::from_environment().await {
@@ -208,13 +241,23 @@ pub(crate) async fn run() -> Result<(), String> {
     let mut stopped = None;
     for case in &cases {
         let row = evaluate(case, &client, &usage).await;
-        stopped = support::run::stop_reason(
-            row["unsafe_authority_publication"] == true,
-            row["missing_answers"]
-                .as_u64()
-                .is_some_and(|count| count > 0),
-            !row["failure"].is_null(),
-        );
+        stopped = if continue_after_quality {
+            support::run::stop_reason(
+                false,
+                row["missing_answers"]
+                    .as_u64()
+                    .is_some_and(|count| count > 0),
+                !row["failure"].is_null(),
+            )
+        } else {
+            support::run::stop_reason(
+                row["unsafe_authority_publication"] == true,
+                row["missing_answers"]
+                    .as_u64()
+                    .is_some_and(|count| count > 0),
+                !row["failure"].is_null(),
+            )
+        };
         rows.push(row);
         if stopped.is_some() {
             break;

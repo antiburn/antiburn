@@ -124,7 +124,9 @@ pub(super) fn build_window(
             evidence.push(JevEvidenceReference {
                 part_id: key,
                 source_id: action.reference.id.clone(),
-                content_kind: action.kind.clone(),
+                content_kind: scope_record
+                    .map(|record| format!("{:?}", record.field))
+                    .unwrap_or_else(|| action.kind.clone()),
                 role,
             });
             let chunks = ranges
@@ -158,11 +160,29 @@ pub(super) fn build_window(
             .iter()
             .enumerate()
             .map(|(index, (action, text, record))| {
+                let text = if matches!(
+                    record.field,
+                    JevInputField::BashCommandOutput
+                        | JevInputField::ReadFileOutput
+                        | JevInputField::SearchFilesOutput
+                        | JevInputField::OtherToolOutput
+                        | JevInputField::ReadFileResult
+                ) {
+                    ""
+                } else {
+                    text
+                };
                 render(
                     action,
                     text,
                     format!("task_scope[{index}]"),
-                    JevEvidenceRole::SupportingContext,
+                    if record.authority == crate::analysis::session_scope::ScopeAuthority::User
+                        && record.field == JevInputField::UserMessage
+                    {
+                        JevEvidenceRole::Instruction
+                    } else {
+                        JevEvidenceRole::SupportingContext
+                    },
                     match record.authority {
                         crate::analysis::session_scope::ScopeAuthority::User => "user",
                         crate::analysis::session_scope::ScopeAuthority::SupportingContext => {
@@ -178,6 +198,9 @@ pub(super) fn build_window(
             .iter()
             .enumerate()
             .map(|(index, action)| {
+                if action.kind == "tool_result" {
+                    return json!({"kind": action.kind, "authority": "non_authorizing", "excluded": true});
+                }
                 render(
                     action,
                     &action.text,

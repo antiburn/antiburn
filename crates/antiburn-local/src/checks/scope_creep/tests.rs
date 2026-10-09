@@ -384,6 +384,14 @@ fn compact_short_approval_keeps_complete_linked_proposal_or_skips() {
                 .iter()
                 .find(|item| &item.id == window)
                 .unwrap();
+            let task_evidence = item
+                .window
+                .evidence
+                .iter()
+                .find(|evidence| evidence.part_id == "task_scope[0]")
+                .unwrap();
+            assert_eq!(task_evidence.role, JevEvidenceRole::Instruction);
+            assert_eq!(task_evidence.content_kind, "UserMessage");
             assert!(
                 item.window.fields["task_scope"]
                     .as_array()

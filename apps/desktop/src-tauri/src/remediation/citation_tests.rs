@@ -1077,7 +1077,10 @@ fn legacy_excerpts_remain_available_without_decisive_proof() {
 #[test]
 fn scope_citations_cover_the_complete_latest_scope_and_bound_work() {
     let fixture = crate::scope_creep_worker::tests::NativeFixture::new(1);
-    let candidate = fixture.publish_finding();
+    let mut capabilities =
+        antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default();
+    capabilities.runtime_context_tokens.value = Some(8192);
+    let candidate = fixture.publish_finding_with_capabilities(capabilities);
     let controller = RemediationController::new(fixture.directory.path().to_owned());
     let targets = controller
         .list_burn_check_targets_at(

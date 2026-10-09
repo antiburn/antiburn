@@ -248,13 +248,8 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         Ok(input) => input,
         Err(error) if error.is_stale() => return Ok(()),
         Err(error) => {
-            unavailable(
-                store,
-                candidate,
-                error.failure_category(),
-                handle,
-                key_generation,
-            )?;
+            let category = error.failure_category();
+            unavailable(store, candidate, category, handle, key_generation)?;
             return Ok(());
         }
     };
@@ -1399,7 +1394,7 @@ fn unavailable(
         store.record_burn_check_candidate_failure_for_check(
             SKILL_OPPORTUNITIES_CHECK_ID,
             candidate,
-            category == "unsupported_format",
+            unavailable_is_terminal(category),
             category,
             unix_now().saturating_add(POLICY.retry_delay_secs),
             unix_now(),
@@ -1408,6 +1403,10 @@ fn unavailable(
         result?;
     }
     Ok(())
+}
+
+fn unavailable_is_terminal(category: &str) -> bool {
+    matches!(category, "unsupported_format" | "skill_use_invalid")
 }
 
 struct SampledSkillPair {

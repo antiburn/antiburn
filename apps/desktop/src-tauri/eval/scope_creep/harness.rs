@@ -11,20 +11,23 @@ async fn evaluate(
     client: &support::provider::EvalClient,
     usage: &Arc<Mutex<support::run::RunUsage>>,
 ) -> Value {
+    let total_started = Instant::now();
+    let input_started = Instant::now();
     let check = fixtures::check(case);
+    let context = check.context();
+    let input_context_ms = input_started.elapsed().as_millis();
+    let preparation_started = Instant::now();
     let permit = admit_jev_orchestration()
         .await
         .expect("Admit evaluation preparation");
     let mut plan = check
-        .prepare_with_capabilities(
-            check.context(),
-            &support::provider::configuration().capabilities,
-        )
+        .prepare_with_capabilities(context, &support::provider::configuration().capabilities)
         .expect("Synthetic scope prepares");
+    let check_preparation_ms = preparation_started.elapsed().as_millis();
     let started = Instant::now();
     let outcome = run_jev_check_prepared(
         &check,
-        check.context(),
+        context,
         &mut plan,
         JevRunProgress::default(),
         permit,
@@ -34,6 +37,20 @@ async fn evaluate(
         |_| Ok(()),
     )
     .await;
+    let runner_elapsed_ms = started.elapsed().as_millis();
+    let calls = usage
+        .lock()
+        .expect("usage mutex is not poisoned")
+        .calls
+        .iter()
+        .filter(|call| call["case_id"] == case.id && call["stage"] == "assessment")
+        .cloned()
+        .collect::<Vec<_>>();
+    let request_elapsed_ms = calls
+        .iter()
+        .filter_map(|call| call["elapsed_ms"].as_u64())
+        .sum::<u64>();
+    let request_count = calls.len();
     let row = match outcome {
         Ok(outcome) => {
             let result = &outcome.result;
@@ -80,7 +97,7 @@ async fn evaluate(
                         .count()
                 })
                 .sum::<usize>();
-            json!({"observed":observed,"finding_count":result.findings.len(),"binding_exact":exact,
+            json!({"observed":observed,"finding_count":result.findings.len(),"findings":result.findings,"binding_exact":exact,
                 "decision_binding_exact":result.decisions.iter().map(|decision| &decision.group_id).collect::<BTreeSet<_>>() == plan.prepared.groups.iter().map(|group| &group.id).collect::<BTreeSet<_>>(),
                 "missing_scheduled_answers":missing,"failure":outcome.failure.map(|error|error.to_string()),
                 "decisions":result.decisions,"limitation":result.session_limitation})
@@ -102,11 +119,27 @@ async fn evaluate(
     row["unsafe_authority_publication"] =
         json!(case.authority_fixture && row["observed"] != "unassessed");
     row["eligible"] = json!(!plan.work_items.is_empty());
-    row["elapsed_ms"] = json!(started.elapsed().as_millis());
+    row["elapsed_ms"] = json!(runner_elapsed_ms);
+    row["stage_metrics"] = json!({
+        "input_context_ms":input_context_ms,
+        "check_preparation_ms":check_preparation_ms,
+        "packing_request_execution_ms":request_elapsed_ms,
+        "request_count":request_count,
+        "reduction_and_runner_overhead_ms":runner_elapsed_ms.saturating_sub(request_elapsed_ms as u128),
+        "total_ms":total_started.elapsed().as_millis()
+    });
     row
 }
 
 pub(crate) async fn run() -> Result<(), String> {
+    run_session(false).await
+}
+
+pub(crate) async fn run_benchmark() -> Result<(), String> {
+    run_session(true).await
+}
+
+async fn run_session(continue_after_unsafe_publication: bool) -> Result<(), String> {
     let suite = support::selection::suite();
     let cases = support::selection::select(fixtures::cases(&suite), |case| &case.id);
     let client = match support::provider::EvalClient::from_environment().await {
@@ -127,7 +160,7 @@ pub(crate) async fn run() -> Result<(), String> {
     for case in &cases {
         let row = evaluate(case, &client, &usage).await;
         stopped = support::run::stop_reason(
-            row["unsafe_authority_publication"] == true,
+            !continue_after_unsafe_publication && row["unsafe_authority_publication"] == true,
             row["missing_scheduled_answers"]
                 .as_u64()
                 .is_some_and(|count| count > 0),

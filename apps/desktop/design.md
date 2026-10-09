@@ -735,22 +735,22 @@ Notes for what isn't expressible as a token:
   click toggle, control fill, or separate row. Keep source and historical-evidence
   limits readable in the tooltip. Show instruction path and line metadata once.
   Show the main occurrence inline without an occurrence picker or duplicate cards.
-  Initial evidence loads use the shared `Skeleton`: a 64px comparison block,
-  two compact metadata lines, a 64px instruction block, and an 80px action block.
-  The evidence body reserves a 288px minimum height while loading and after load.
-  All four Smart Checks load evidence when the target mounts. Do not add Show
-  evidence or Hide details controls to these cards. Put a source-specific saved
-  explanation in normal body text before the excerpts. Keep old findings
-  evidence-only when no accepted relationship and selected passages are saved.
-  Bind the explanation, excerpts, and citation destinations to one occurrence.
-  Retain that occurrence after a list reorder; replace the complete snapshot
-  when the occurrence disappears.
-  Keep loaded details mounted when a check or window section becomes inactive.
-  Pause new evidence requests while hidden. Returning from a session card keeps
-  the retained occurrence. Hidden evidence responses do not emit reader events.
-  Keep the complete snapshot after a refresh error and show Retry. A successful
-  unavailable response replaces old excerpts.
-  Show task context and decisive earlier events with their source labels.
+  Smart Check findings use a summary-first compact card. Show the saved finding
+  observation as soon as the target loads. Keep instruction and action, reads
+  under review, task and work, or skill and related work behind a matching
+  disclosure, collapsed by default. Do not show transcript
+  previews, large evidence skeletons, or a reserved evidence height. Request
+  evidence only when the user opens the disclosure. Loading and failure statuses
+  stay compact inside it; unavailable evidence never replaces the finding summary
+  or creates an empty evidence panel. Keep one useful status and a retry only for
+  request failures. Bind the summary, excerpts, and citation destinations to one
+  occurrence. Retain that occurrence after a list reorder; replace the complete
+  snapshot when the occurrence disappears. Keep loaded details mounted when a
+  check or window section becomes inactive. Pause new evidence requests while
+  hidden. Returning from a session card keeps the retained occurrence. Hidden
+  evidence responses do not emit reader events. Keep the complete snapshot after
+  a refresh error. Show task context and decisive earlier events with their source
+  labels only inside the disclosure.
   Show review counts once at check level. Keep skipped comparisons separate from
   reviewed answers. Terminal zero-target work uses Nothing to assess in neutral
   ink and stays outside Passed checks. A context-blocked review shows the model

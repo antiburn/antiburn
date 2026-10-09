@@ -145,13 +145,14 @@ pnpm --filter @antiburn/desktop build
 ### Smart Check diagnostics
 
 Use the [Rust eval guide](apps/desktop/src-tauri/eval/README.md). Each check has
-one ignored `live` entry point and shared provider/suite/case/limit/capture support.
-Credentials come only from the authorized shell environment. Select exact cases
-with `ANTIBURN_EVAL_CASES` and bound calls with `ANTIBURN_EVAL_LIMIT`. Reports
-retain errors, abstentions, binding diagnostics, accuracy, usage, and latency.
-Scores are diagnostics, not strict thresholds or delivery gates. No recipe,
-frozen hash, previous passing report, or Python tool is required. Do not run every
-ignored test; imported production transport probes can incur charges.
+an ignored `live` eval and an ignored `benchmark_session` run using shared
+provider/suite/case/limit/capture support. Credentials come only from the
+authorized shell environment. Select exact cases with `ANTIBURN_EVAL_CASES` and
+bound calls with `ANTIBURN_EVAL_LIMIT`. Reports retain errors, abstentions,
+binding diagnostics, accuracy, usage, and latency. Scores are diagnostics, not
+strict thresholds or delivery gates. No recipe, frozen hash, previous passing
+report, or Python tool is required. Do not run every ignored test; imported
+production transport probes can incur charges.
 
 After coverage edits, run from the repository root:
 
