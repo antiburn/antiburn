@@ -436,15 +436,39 @@ export function liveForProvider(
   return summary.providers.find((entry) => entry.provider === provider) ?? null
 }
 
-/** Whether a provider's reading is live, standing in during its grace period, or too old to show. */
+/**
+ * Whether a provider's reading is live, standing in during its grace period,
+ * kept as a dimmed last-known reading, or no longer shown.
+ */
 export type LiveProviderStatus =
   | { kind: "live" }
   | { kind: "grace"; category: string; ageMs: number; detail?: LiveUsageSourceErrorDetail }
+  | { kind: "stale"; category: string; ageMs: number; detail?: LiveUsageSourceErrorDetail }
   | { kind: "failed"; category: string; detail?: LiveUsageSourceErrorDetail }
 
 /**
- * A provider's live status: live, within grace after a failed check, or
- * failed past the grace.
+ * Whether a failed check leaves the last reading worth keeping: the failure
+ * can pass without an action from the reader. A sign-in the provider rejected, and a reply antiburn cannot read,
+ * are not: the reader must act, so the reading gives way to that action.
+ */
+export function liveFailureIsRecoverable(
+  category: string,
+  detail?: LiveUsageSourceErrorDetail,
+): boolean {
+  if (detail === "signInRequired") return false
+  if (
+    detail === "refreshPending" ||
+    detail === "credentialExpired" ||
+    detail === "cliMissing"
+  ) {
+    return true
+  }
+  return category === "rateLimited" || category === "unavailable"
+}
+
+/**
+ * A provider's live status: live, within grace after a failed check, stale
+ * past the grace when the failure is recoverable, or failed.
  *
  * Age is measured from `summary.generatedAt`, the snapshot's own moment,
  * never from `Date.now()` — a render must not read the clock. When either
@@ -459,19 +483,18 @@ export function liveProviderStatus(
   if (!error) return { kind: "live" }
   const detail = error.detail ? { detail: error.detail } : {}
   const ageMs = Date.parse(summary.generatedAt) - Date.parse(provider.observedAt)
-  // A pending delegated refresh is not a failure yet: the next check the
-  // reader starts runs it. Keep the reading in grace rather than fail it.
-  if (
-    Number.isNaN(ageMs) ||
-    ageMs <= LIVE_USAGE_GRACE_MS ||
-    error.detail === "refreshPending"
-  ) {
+  if (Number.isNaN(ageMs) || ageMs <= LIVE_USAGE_GRACE_MS) {
     return {
       kind: "grace",
       category: error.category,
       ageMs: Number.isNaN(ageMs) ? 0 : ageMs,
       ...detail,
     }
+  }
+  // A recoverable failure keeps the last reading, dimmed, however old it is.
+  // Its tooltip carries the age, so an old reading never passes for a new one.
+  if (liveFailureIsRecoverable(error.category, error.detail)) {
+    return { kind: "stale", category: error.category, ageMs, ...detail }
   }
   return { kind: "failed", category: error.category, ...detail }
 }
@@ -481,22 +504,80 @@ export function liveProviderStatus(
  * not `failed`.
  *
  * Every surface that lists live providers reads this instead of
- * `summary.providers` directly, so a provider past its grace period drops
- * out of all of them at once and appears only through
- * `liveUnavailableProviders`.
+ * `summary.providers` directly, so a failed provider drops out of all of
+ * them at once and appears only through `liveUnavailableProviders`.
+ *
+ * A reading that is not live loses the figure of every window whose reset
+ * time has passed: the old percentage belongs to the previous period, and
+ * the new period's usage is unknown. The window stays, without a figure.
  */
 export function liveDisplayableProviders(
   summary: LiveUsageSummaryPayload,
 ): LiveProviderUsagePayload[] {
-  return summary.providers.filter(
-    (provider) => liveProviderStatus(summary, provider).kind !== "failed",
-  )
+  const at = Date.parse(summary.generatedAt)
+  return summary.providers.flatMap((provider) => {
+    const status = liveProviderStatus(summary, provider)
+    if (status.kind === "failed") return []
+    if (status.kind === "live" && provider.freshness !== "stale") return [provider]
+    return [withoutPastPeriods(provider, at)]
+  })
 }
 
-/** `"4 min"` at a minute and above, `"under 1 min"` below. */
+/** `provider` with no figure on a window whose reset time is at or before `at`. */
+function withoutPastPeriods(
+  provider: LiveProviderUsagePayload,
+  at: number,
+): LiveProviderUsagePayload {
+  if (Number.isNaN(at)) return provider
+  const reset = (window: LiveUsageWindowPayload) => {
+    const resetsAt = window.resetsAt == null ? Number.NaN : Date.parse(window.resetsAt)
+    return !Number.isNaN(resetsAt) && resetsAt <= at
+  }
+  if (!provider.windows.some(reset)) return provider
+  return {
+    ...provider,
+    windows: provider.windows.map((window) =>
+      reset(window) ? { ...window, usedPercent: null, elapsedFraction: null } : window,
+    ),
+  }
+}
+
+/** `"4 min"`, `"3 hr"`, or `"2 days"`; `"under 1 min"` below a minute. */
 function formatGraceAge(ageMs: number): string {
   const minutes = Math.floor(ageMs / 60_000)
-  return minutes < 1 ? "under 1 min" : `${minutes} min`
+  if (minutes < 1) return "under 1 min"
+  if (minutes < 60) return `${minutes} min`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 48) return `${hours} hr`
+  return `${Math.floor(hours / 24)} days`
+}
+
+/**
+ * The tooltip of a dimmed, last-known reading: its age only. The dimming
+ * shows the state. antiburn checks again by itself, so the words give no
+ * instruction.
+ */
+export function liveStaleNote(ageMs: number): string {
+  return `Last updated ${formatGraceAge(ageMs)} ago.`
+}
+
+/**
+ * The note a shown reading carries for its status: the grace note beside a
+ * recent reading, the stale note in the tooltip of a dimmed one, or null for
+ * a live reading.
+ */
+export function liveStatusNote(
+  status: LiveProviderStatus,
+  provider: string | undefined,
+): string | null {
+  switch (status.kind) {
+    case "grace":
+      return liveGraceNote(status.category, provider, status.ageMs, status.detail)
+    case "stale":
+      return liveStaleNote(status.ageMs)
+    default:
+      return null
+  }
 }
 
 /**
@@ -513,9 +594,9 @@ export function liveGraceNote(
 ): string {
   const name = liveProviderDisplayName(provider) ?? "Your provider"
   const updated = `Last updated ${formatGraceAge(ageMs)} ago.`
-  if (category === "rateLimited") {
-    return `${name} is temporarily limiting usage checks. ${updated}`
-  }
+  // Another client on the same account can cause a rate limit. The reading
+  // is still good; its age is the useful fact.
+  if (category === "rateLimited") return updated
   if (category === "authentication" && detail === "signInRequired") {
     return `Sign in to ${name} again. ${updated}`
   }
@@ -588,14 +669,14 @@ export function liveUnavailableReason(
   category: string,
   detail?: LiveUsageSourceErrorDetail,
 ): string {
-  if (detail === "refreshPending") return "update pending"
+  if (detail === "refreshPending" || detail === "credentialExpired") return "update pending"
   if (detail === "cliMissing") return "tool unavailable"
   if (detail === "desktopOnly") return "not available for Claude Desktop"
   switch (category) {
     case "authentication":
       return "sign-in needed"
     case "rateLimited":
-      return "rate limited"
+      return "checking again soon"
     case "schema":
       return "unreadable reply"
     default:
@@ -702,6 +783,12 @@ export function liveErrorNote(
       return "Couldn't update Claude usage. Try again shortly."
     }
   }
+  // The login can still recover without the reader, and antiburn checks
+  // again by itself. Give no instruction.
+  if (category === "authentication" && detail === "credentialExpired") {
+    const name = liveProviderDisplayName(provider)
+    return name ? `No ${name} usage reading yet.` : "No usage reading yet."
+  }
   if (category === "unavailable" && detail === "keychainUnreadable") {
     return "Couldn't read Claude Code's login from the Keychain. If a prompt appears, choose Always Allow."
   }
@@ -715,7 +802,9 @@ export function liveErrorNote(
         ? `${providerName} sign-in expired. Sign in again, then retry.`
         : "Sign in again with your coding tool, then retry."
     case "rateLimited":
-      return `${providerName ?? "Your provider"} rate limited usage checks. Wait, then retry.`
+      // The provider limited the checks, not the reader's use; antiburn
+      // retries by itself, so there is nothing for the reader to do.
+      return `Couldn't get ${providerName ?? "provider"} usage yet. antiburn checks again shortly.`
     case "schema":
       return `${providerName ?? "Provider"} usage changed. Update antiburn, then retry.`
     default:
