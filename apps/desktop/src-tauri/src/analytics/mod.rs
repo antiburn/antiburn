@@ -349,11 +349,9 @@ mod enabled {
     /// How long an installation identifier lives before it is replaced.
     pub const IDENTITY_LIFETIME_DAYS: i64 = 30;
 
-    /// How long a run identifier survives without an analytics event.
+    /// How long a run identifier survives without a user-oriented event.
     ///
-    /// The collector's contract specifies this window, and matching it is the
-    /// point — a client that invented its own would make its rows incomparable
-    /// with every other surface reporting to the same place.
+    /// Background telemetry does not refresh this timeout.
     pub const SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
     /// How many failures a queued event survives before it is given up on.
@@ -434,7 +432,7 @@ mod enabled {
             platform: event::PLATFORM,
             message_id: random_identifier(),
             anonymous_id,
-            session_id: current_session_id(),
+            session_id: current_session_id(true),
             event: EventName::AnalyticsOptedOut.as_str().to_string(),
             original_timestamp: crate::store::now_rfc3339(),
             properties: event::Properties {
@@ -597,7 +595,8 @@ mod enabled {
         let Some(store) = app.try_state::<Store>() else {
             return false;
         };
-        let Some((install_id, session_id)) = current_identity_pair(&store) else {
+        let user_oriented = name.is_user_oriented(&facts);
+        let Some((install_id, session_id)) = current_identity_pair(&store, user_oriented) else {
             return false;
         };
         let payload = Event {
@@ -1748,11 +1747,14 @@ mod enabled {
     }
 
     /// Serialize the two identifiers so rotation cannot produce a mixed pair.
-    fn current_identity_pair(store: &Store) -> Option<(String, String)> {
+    fn current_identity_pair(store: &Store, user_oriented: bool) -> Option<(String, String)> {
         let _guard = IDENTITY_SESSION_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Some((current_install_id(store)?, current_session_id()))
+        Some((
+            current_install_id(store)?,
+            current_session_id(user_oriented),
+        ))
     }
 
     /// Whether a mint stamp is old enough that the identifier should roll over.
@@ -1769,12 +1771,17 @@ mod enabled {
         (time::OffsetDateTime::now_utc() - minted).whole_days() >= IDENTITY_LIFETIME_DAYS
     }
 
-    /// The current run identifier, and when it was last touched.
+    /// The current run identifier and the last user-oriented event time.
     ///
-    /// The generator state stays in memory. A restart mints a new value even
-    /// inside the window. Queued event payloads keep their captured value.
-    static SESSION: std::sync::Mutex<Option<(String, std::time::Instant)>> =
-        std::sync::Mutex::new(None);
+    /// Background-only events can have an identifier, but they never refresh a
+    /// user-oriented session. A restart mints new state.
+    #[derive(Clone)]
+    struct SessionState {
+        id: String,
+        last_user_activity: Option<std::time::Instant>,
+    }
+
+    static SESSION: std::sync::Mutex<Option<SessionState>> = std::sync::Mutex::new(None);
 
     static IDENTITY_SESSION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1785,8 +1792,11 @@ mod enabled {
     static FLUSH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// The run identifier to stamp on an event, minting or rolling it as needed.
-    fn current_session_id() -> String {
-        let now = std::time::Instant::now();
+    fn current_session_id(user_oriented: bool) -> String {
+        current_session_id_at(user_oriented, std::time::Instant::now())
+    }
+
+    fn current_session_id_at(user_oriented: bool, now: std::time::Instant) -> String {
         let mut guard = match SESSION.lock() {
             Ok(guard) => guard,
             // A poisoned lock means some earlier holder panicked. Taking the
@@ -1795,15 +1805,25 @@ mod enabled {
             // is strictly less harmful than dropping the event.
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some((id, last_activity)) = guard.as_ref()
-            && now.duration_since(*last_activity) < SESSION_TIMEOUT
-        {
-            let id = id.clone();
-            *guard = Some((id.clone(), now));
-            return id;
+        if let Some(session) = guard.as_mut() {
+            match session.last_user_activity {
+                Some(last_user_activity)
+                    if now.duration_since(last_user_activity) < SESSION_TIMEOUT =>
+                {
+                    if user_oriented {
+                        session.last_user_activity = Some(now);
+                    }
+                    return session.id.clone();
+                }
+                None if !user_oriented => return session.id.clone(),
+                _ => {}
+            }
         }
         let fresh = random_identifier();
-        *guard = Some((fresh.clone(), now));
+        *guard = Some(SessionState {
+            id: fresh.clone(),
+            last_user_activity: user_oriented.then_some(now),
+        });
         fresh
     }
 
@@ -2958,13 +2978,59 @@ mod enabled {
         fn a_run_identifier_is_stable_within_a_run_and_dropped_on_opt_out() {
             let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
             reset_session();
-            let first = current_session_id();
-            assert_eq!(first, current_session_id(), "stable inside one run");
+            let first = current_session_id(true);
+            assert_eq!(first, current_session_id(false), "stable inside one run");
             assert_eq!(first.len(), 36);
             assert_eq!(&first[14..15], "4");
 
             reset_session();
-            assert_ne!(first, current_session_id(), "withdrawn, not resumed");
+            assert_ne!(first, current_session_id(true), "withdrawn, not resumed");
+            reset_session();
+        }
+
+        #[test]
+        fn background_events_do_not_extend_the_user_session_timeout() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            reset_session();
+            let start = std::time::Instant::now();
+            let first = current_session_id_at(true, start);
+            let background = current_session_id_at(false, start + Duration::from_secs(25 * 60));
+            assert_eq!(
+                first, background,
+                "background event stays in active session"
+            );
+
+            let after_timeout = current_session_id_at(true, start + Duration::from_secs(31 * 60));
+            assert_ne!(
+                first, after_timeout,
+                "background event did not refresh timeout"
+            );
+            reset_session();
+        }
+
+        #[test]
+        fn user_events_refresh_the_timeout_but_background_events_do_not() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            reset_session();
+            let start = std::time::Instant::now();
+            let first = current_session_id_at(true, start);
+            let refreshed = current_session_id_at(true, start + Duration::from_secs(25 * 60));
+            assert_eq!(first, refreshed);
+            let still_active = current_session_id_at(false, start + Duration::from_secs(50 * 60));
+            assert_eq!(first, still_active, "user event refreshed the timeout");
+            let expired = current_session_id_at(false, start + Duration::from_secs(56 * 60));
+            assert_ne!(first, expired, "background event does not refresh timeout");
+            reset_session();
+        }
+
+        #[test]
+        fn background_only_session_is_not_adopted_by_a_later_user_event() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            reset_session();
+            let start = std::time::Instant::now();
+            let background = current_session_id_at(false, start);
+            let user = current_session_id_at(true, start + Duration::from_secs(5 * 60));
+            assert_ne!(background, user);
             reset_session();
         }
 
@@ -2982,7 +3048,7 @@ mod enabled {
                 .queue_analytics_event("antiburn.app_launched", old_payload)
                 .unwrap();
             reset_session();
-            let old_session = current_session_id();
+            let old_session = current_session_id(true);
 
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
             let workers: Vec<_> = (0..2)
@@ -2991,7 +3057,7 @@ mod enabled {
                     let barrier = barrier.clone();
                     std::thread::spawn(move || {
                         barrier.wait();
-                        current_identity_pair(&store).unwrap()
+                        current_identity_pair(&store, true).unwrap()
                     })
                 })
                 .collect();

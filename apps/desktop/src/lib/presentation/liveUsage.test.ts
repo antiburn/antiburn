@@ -18,6 +18,9 @@ import {
   liveForProvider,
   liveFreshnessToneClass,
   liveGraceNote,
+  liveFailureIsRecoverable,
+  liveStaleNote,
+  liveStatusNote,
   LIVE_USAGE_GRACE_MS,
   liveProviderStatus,
   liveResetLabel,
@@ -722,7 +725,7 @@ describe("the failure surface", () => {
   })
 
   it("phrases each failure category in a couple of words", () => {
-    expect(liveUnavailableReason("rateLimited")).toBe("rate limited")
+    expect(liveUnavailableReason("rateLimited")).toBe("checking again soon")
     expect(liveUnavailableReason("authentication")).toBe("sign-in needed")
     expect(liveUnavailableReason("authentication", "refreshPending")).toBe("update pending")
     expect(liveUnavailableReason("authentication", "cliMissing")).toBe("tool unavailable")
@@ -835,7 +838,7 @@ describe("the failure surface", () => {
       `${name} sign-in expired. Sign in again, then retry.`,
     )
     expect(liveErrorNote("rateLimited", provider)).toBe(
-      `${name} rate limited usage checks. Wait, then retry.`,
+      `Couldn't get ${name} usage yet. antiburn checks again shortly.`,
     )
     expect(liveErrorNote("schema", provider)).toBe(
       `${name} usage changed. Update antiburn, then retry.`,
@@ -850,7 +853,7 @@ describe("the failure surface", () => {
       "Sign in again with your coding tool, then retry.",
     )
     expect(liveErrorNote("rateLimited")).toBe(
-      "Your provider rate limited usage checks. Wait, then retry.",
+      "Couldn't get provider usage yet. antiburn checks again shortly.",
     )
     expect(liveErrorNote("schema")).toBe("Provider usage changed. Update antiburn, then retry.")
     expect(liveErrorNote("unavailable")).toBe(
@@ -863,7 +866,7 @@ describe("the failure surface", () => {
       "Google sign-in expired. Sign in again, then retry.",
     )
     expect(liveErrorNote("rateLimited", "google")).toBe(
-      "Google rate limited usage checks. Wait, then retry.",
+      "Couldn't get Google usage yet. antiburn checks again shortly.",
     )
     expect(liveErrorNote("schema", "google")).toBe(
       "Google usage changed. Update antiburn, then retry.",
@@ -887,30 +890,81 @@ describe("the grace period", () => {
     expect(status).toEqual({ kind: "grace", category: "rateLimited", ageMs: 4 * 60_000 })
   })
 
-  it("drops the reading once it is older than the grace window", () => {
-    // 11 minutes old.
-    const reading = provider({ observedAt: "2027-01-15T11:49:00Z" })
+  it("keeps a rate-limited reading as a stale reading past the grace window", () => {
+    // Two hours old, after repeated rate limits.
+    const reading = provider({ observedAt: "2027-01-15T10:00:00Z" })
     const status = liveProviderStatus(
       { errors: [sourceError()], generatedAt: GENERATED_AT },
       reading,
     )
-    expect(status).toEqual({ kind: "failed", category: "rateLimited" })
+    expect(status).toEqual({ kind: "stale", category: "rateLimited", ageMs: 2 * 3_600_000 })
+    expect(liveStatusNote(status, "anthropic")).toBe("Last updated 2 hr ago.")
   })
 
-  it("keeps a pending delegated refresh in grace past the window", () => {
-    // 11 minutes old — past the window — but the CLI has not been asked yet.
-    const reading = provider({ observedAt: "2027-01-15T11:49:00Z" })
-    const error = sourceError({ category: "authentication", detail: "refreshPending" })
-    const status = liveProviderStatus({ errors: [error], generatedAt: GENERATED_AT }, reading)
-    expect(status).toEqual({
-      kind: "grace",
-      category: "authentication",
-      ageMs: 11 * 60_000,
-      detail: "refreshPending",
-    })
-    expect(liveGraceNote("authentication", "anthropic", 11 * 60_000, "refreshPending")).toBe(
-      "Couldn't update Claude usage. Last updated 11 min ago.",
+  it("keeps a login waiting for its tool's refresh as a stale reading", () => {
+    // Nine hours old, overnight. The tooltip gives only the age, no instruction.
+    const reading = provider({ observedAt: "2027-01-15T03:00:00Z" })
+    for (const detail of ["refreshPending", "credentialExpired", "cliMissing"] as const) {
+      const error = sourceError({ category: "authentication", detail })
+      const status = liveProviderStatus({ errors: [error], generatedAt: GENERATED_AT }, reading)
+      expect(status).toEqual({
+        kind: "stale",
+        category: "authentication",
+        ageMs: 9 * 3_600_000,
+        detail,
+      })
+      expect(liveStatusNote(status, "anthropic")).toBe("Last updated 9 hr ago.")
+    }
+  })
+
+  it("gives a reader with no reading yet a neutral line with no instruction", () => {
+    expect(liveErrorNote("authentication", "anthropic", "credentialExpired")).toBe(
+      "No Claude usage reading yet.",
     )
+    expect(liveErrorNote("authentication", undefined, "credentialExpired")).toBe(
+      "No usage reading yet.",
+    )
+    expect(liveUnavailableReason("authentication", "credentialExpired")).toBe("update pending")
+  })
+
+  it("says only which failures keep a reading", () => {
+    expect(liveFailureIsRecoverable("rateLimited")).toBe(true)
+    expect(liveFailureIsRecoverable("unavailable")).toBe(true)
+    expect(liveFailureIsRecoverable("unavailable", "keychainUnreadable")).toBe(true)
+    expect(liveFailureIsRecoverable("authentication", "credentialExpired")).toBe(true)
+    expect(liveFailureIsRecoverable("authentication")).toBe(false)
+    expect(liveFailureIsRecoverable("authentication", "signInRequired")).toBe(false)
+    expect(liveFailureIsRecoverable("schema")).toBe(false)
+  })
+
+  it("gives the age of an old reading in hours or days", () => {
+    expect(liveStaleNote(3 * 86_400_000)).toBe("Last updated 3 days ago.")
+    expect(liveStaleNote(90 * 60_000)).toBe("Last updated 1 hr ago.")
+  })
+
+  it("drops the figure of a window whose period reset since the reading", () => {
+    // The five-hour window reset at 11:00; the weekly window resets later.
+    const reading = provider({
+      observedAt: "2027-01-15T08:00:00Z",
+      windows: [
+        window({ id: "five-hour", usedPercent: 80, resetsAt: "2027-01-15T11:00:00Z" }),
+        window({ id: "seven-day", usedPercent: 40, resetsAt: "2027-01-19T00:00:00Z" }),
+      ],
+    })
+    const stale = summary({
+      providers: [reading],
+      errors: [sourceError()],
+      generatedAt: GENERATED_AT,
+    })
+    const [shown] = liveDisplayableProviders(stale)
+    expect(shown?.windows.map((entry) => [entry.id, entry.usedPercent])).toEqual([
+      ["five-hour", null],
+      ["seven-day", 40],
+    ])
+
+    // A live reading is never rewritten.
+    const live = summary({ providers: [reading], errors: [], generatedAt: GENERATED_AT })
+    expect(liveDisplayableProviders(live)).toEqual([reading])
   })
 
   it("fails a settled-but-dead sign-in past the window and carries the detail", () => {
@@ -958,18 +1012,34 @@ describe("the grace period", () => {
     const reading = provider({ observedAt: "2027-01-15T11:49:00Z" })
     const failed = summary({
       providers: [reading],
-      errors: [sourceError()],
+      errors: [sourceError({ category: "authentication", detail: "signInRequired" })],
       generatedAt: GENERATED_AT,
     })
     expect(liveDisplayableProviders(failed)).toEqual([])
     expect(liveUnavailableProviders(failed)).toEqual([
-      { provider: "anthropic", displayName: "Claude", category: "rateLimited" },
+      {
+        provider: "anthropic",
+        displayName: "Claude",
+        category: "authentication",
+        detail: "signInRequired",
+      },
     ])
+  })
+
+  it("keeps a stale reading displayable and out of the unavailable list", () => {
+    const reading = provider({ observedAt: "2027-01-15T10:00:00Z" })
+    const stale = summary({
+      providers: [reading],
+      errors: [sourceError()],
+      generatedAt: GENERATED_AT,
+    })
+    expect(liveDisplayableProviders(stale)).toHaveLength(1)
+    expect(liveUnavailableProviders(stale)).toEqual([])
   })
 
   it("phrases the grace note per category, and the age in words", () => {
     expect(liveGraceNote("rateLimited", "anthropic", 4 * 60_000)).toBe(
-      "Claude is temporarily limiting usage checks. Last updated 4 min ago.",
+      "Last updated 4 min ago.",
     )
     expect(liveGraceNote("authentication", "google", 30_000)).toBe(
       "Couldn't update Google usage. Last updated under 1 min ago.",

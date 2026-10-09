@@ -97,11 +97,12 @@ Evidence: [event schema](../apps/desktop/src-tauri/src/analytics/event.rs),
    analysis. There is no general distinction between useful data, empty data,
    loading that stalls, and a failed view. Live provider failures, source access
    trouble, and analysis failures can make a feature appear simply unwanted.
-3. **The analytics session is an event-activity window.** Every queued event
-   calls `current_session_id`, including background scans and diagnostics.
-   Background changes can keep it alive; silence can split one process run.
-   Neither its count nor its first-to-last timestamp measures engaged visits or
-   time spent. Adding events would change these measures again.
+3. **The analytics session is an interaction-activity window.** User-oriented
+   events refresh its 30-minute timeout; background scans and diagnostics do
+   not. The exhaustive event classifier in `EventName::is_user_oriented` makes
+   each event's session effect explicit. Silence can split one process run,
+   while app restarts always start a new ID. Neither session count nor its
+   first-to-last timestamp measures engaged visits or time spent.
 4. **Feature adoption and intervention results are missing.** HUD enablement,
    notification actions, source setup, report refresh, session actions, and
    update actions have no complete measurement. Four setting keys without
@@ -167,9 +168,12 @@ exposure. Automatic HUD restoration can establish that the display works, but
 does not establish that the user has reached value through deliberate use.
 
 For visit frequency, group only deliberate interaction events by installation
-with a documented 30-minute inactivity gap in analysis. Ignore background events
-when constructing visits. Keep the existing wire `sessionId` unchanged initially
-and document its actual meaning. Do not infer attention duration from gaps.
+with a 30-minute inactivity gap. Background events do not refresh the wire
+`sessionId` timeout, but they can still appear inside an interaction session.
+Ignore background events when constructing visits. Segment `sessionId`-based
+reports at the first shipping app version with the user-oriented timeout;
+earlier builds refresh the timeout on every captured event.
+Do not infer attention duration from gaps.
 Neither tray visibility nor a persistent HUD proves that someone looked at it.
 
 ## Event additions and proposals
@@ -188,7 +192,7 @@ when the wire field count stays unchanged.
 | `settings_pane_viewed`                             | Requested pane is selected and visible. `label`: the six existing Settings pane IDs.                                                                                                                                                         | `SettingsWindowSession`, including first opening and external pane requests. One per visible pane transition, with duplicate requests suppressed.                                                                                                                              |
 | `step_settings_viewed`                             | A progress step's settings become visible: the first-run takeover's "Show settings" disclosure opens, or the step's modal opens after the first run. `label`: `agents`, `limits`, `sessions`, or `checks`; `detail`: `first_run` or `modal`. | `StepSettingsDisclosure` and `ProgressNav`'s step modal. One per exposure (one open), not per re-render. `limits` only ever reports `first_run`.                                                                                                                               |
 | `surface_state_observed`                           | Data state presented on a visible surface. Same surface vocabulary; `detail`: `ready`, `empty`, `error`, or `loading_timeout`. Ready means a usable payload, not merely a mounted component or successful IPC response.                      | Surface controllers after both visibility and data readiness. At most once per distinct state per surface exposure; ignore stale asynchronous results. Use a documented 10-second visible initial-load timeout, canceled when hidden; later ready data can still emit `ready`. |
-| `live_usage_state_observed`                        | A provider state is presented on Activity, a provider preview, or a user-opened HUD. `label`: `anthropic`, `openai`, or `google`; `detail`: `fresh`, `stale`, `authentication`, `rate_limited`, `unavailable`, or `no_credentials`.          | Map existing presentation states, without an analytics-only provider request. Deduplicate each provider/state within a deliberate visit. Report `no_credentials` only for the Claude Desktop-only state. No account, plan name, balance, quota value, or raw response.                                       |
+| `live_usage_state_observed`                        | A provider state is presented on Activity, a provider preview, or a user-opened HUD. `label`: `anthropic`, `openai`, or `google`; `detail`: `fresh`, `stale`, `authentication`, `login_recovering`, `rate_limited`, `unavailable`, or `no_credentials`. | Map existing presentation states, without an analytics-only provider request. Deduplicate each provider/state within a deliberate visit. Report `no_credentials` only for the Claude Desktop-only state. Report `login_recovering`, not `authentication`, for an expired login that recovers without a new sign-in. No account, plan name, balance, quota value, or raw response.                                       |
 | `onboarding_started`, extend `onboarding_finished` | Visible start or resume and committed completion of a setup flow. `label`: `new` or `restart`.                                                                                                                                               | Emit a start on the first visible start or resume in each app process. A quit and later resume emits another start with the persisted classification. Emit completion once per pending-to-complete transition. Preserve the four existing step events.                         |
 
 `surface_state_observed` also needs a closed `properties.origin` value of `user`

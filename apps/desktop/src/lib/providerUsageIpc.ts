@@ -485,6 +485,7 @@ export type LiveUsageSourceErrorDetail =
   | "cliMissing"
   | "signInRequired"
   | "refreshPending"
+  | "credentialExpired"
   | "desktopOnly"
   | "notSignedIn"
 

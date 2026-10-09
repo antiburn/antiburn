@@ -263,6 +263,76 @@ impl EventName {
             EventName::StepSettingsViewed => "antiburn.step_settings_viewed",
         }
     }
+
+    /// Whether this event represents deliberate UI use and refreshes the session timeout.
+    ///
+    /// Keep this match exhaustive. New events must make an explicit choice instead of
+    /// letting background telemetry extend an interaction session by default.
+    pub fn is_user_oriented(self, facts: &Facts) -> bool {
+        match self {
+            EventName::SettingToggled
+            | EventName::AnalyticsOptedOut
+            | EventName::SessionOpened
+            | EventName::SettingsPaneViewed
+            | EventName::BurnCheckAutoFixReviewed
+            | EventName::BurnCheckAutoFixConfirmed
+            | EventName::BurnCheckPromptPrepared
+            | EventName::BurnCheckPromptCopied
+            | EventName::SessionFilterSelected
+            | EventName::SessionFiltersChanged
+            | EventName::RemoteHostConnectionChecked
+            | EventName::RemoteHostChanged
+            | EventName::ProjectFolderAction
+            | EventName::MemoryAction
+            | EventName::NavigationHistoryMoved
+            | EventName::AppSearchOpened
+            | EventName::AppSearchResultOpened
+            | EventName::InterfaceScaleChanged
+            | EventName::FirstRunAction
+            | EventName::IgnoredInstructionObserved
+            | EventName::CheckEnablementSaved
+            | EventName::StepSettingsViewed => true,
+            EventName::SurfaceViewed => facts.detail == Some("user"),
+            EventName::RemoteSyncCompleted => facts.detail == Some("manual"),
+            // `started`, `found`, `read`, and `checked` are reported as the
+            // first-run work completes on its own. Only `result` follows a
+            // deliberate Next press.
+            EventName::FirstRunStepReached => facts.label == Some("result"),
+            // Enablement and provider setup or test outcomes come from settings
+            // commands. Assessment outcomes (`execution_*`, `backfill_*`) come
+            // from background workers, as would any detail not listed here.
+            EventName::IgnoredInstructionLifecycle => matches!(
+                facts.detail,
+                Some(
+                    "enabled"
+                        | "disabled"
+                        | "provider_saved"
+                        | "provider_switched"
+                        | "credential_removed"
+                        | "test_succeeded"
+                        | "test_failed"
+                )
+            ),
+            EventName::AppLaunched
+            | EventName::ScanCompleted
+            | EventName::ErrorOccurred
+            | EventName::UnrecognizedRecordsObserved
+            | EventName::ClaudeLimitResetObserved
+            | EventName::ClaudeLoginObserved
+            | EventName::SurfaceStateObserved
+            | EventName::LiveUsageStateObserved
+            | EventName::UsageObserved
+            | EventName::LimitFactorObserved
+            | EventName::ResourceUsageObserved
+            | EventName::BurnCheckAutoFixCompleted
+            | EventName::BurnCheckOutcomeObserved
+            | EventName::QuotaIncidentsObserved
+            | EventName::ProviderIncidentsObserved
+            | EventName::ProviderIncidentsIngested
+            | EventName::QuotaWindowClosed
+            | EventName::FirstRunFinished => false,
+        }
+    }
 }
 
 /// One event, in the collector's wire envelope.
@@ -298,9 +368,10 @@ pub struct Event {
     /// thing in the payload — its generator state lives in memory, is gone
     /// when the process exits, and is replaced after
     /// [`super::SESSION_TIMEOUT`] of inactivity. The generator cannot continue
-    /// into another run. Queued event payloads include the captured value until
-    /// delivery or withdrawal. The rotating [`Event::anonymous_id`] remains the
-    /// longest-lived generator state here.
+    /// into another run. It rolls after 30 minutes without a user-oriented event;
+    /// background telemetry does not refresh that timeout. Queued event payloads
+    /// include the captured value until delivery or withdrawal. The rotating
+    /// [`Event::anonymous_id`] remains the longest-lived generator state here.
     pub session_id: String,
     /// Event name, in antiburn's own namespace.
     pub event: String,
@@ -997,6 +1068,8 @@ pub enum LiveUsageState {
     Fresh,
     Stale,
     Authentication,
+    /// The login expired, but it can recover without a new sign-in.
+    LoginRecovering,
     RateLimited,
     Unavailable,
     NoCredentials,
@@ -1624,6 +1697,7 @@ wire_values!(LiveUsageState, {
     LiveUsageState::Fresh => "fresh",
     LiveUsageState::Stale => "stale",
     LiveUsageState::Authentication => "authentication",
+    LiveUsageState::LoginRecovering => "login_recovering",
     LiveUsageState::RateLimited => "rate_limited",
     LiveUsageState::Unavailable => "unavailable",
     LiveUsageState::NoCredentials => "no_credentials",
@@ -2650,6 +2724,119 @@ mod tests {
         assert_eq!(resource["writeRateAverage"], "unavailable");
     }
 
+    /// User-origin events refresh the timeout; automatic and background
+    /// telemetry does not.
+    #[test]
+    fn user_oriented_classification_excludes_automatic_events() {
+        assert!(EventName::SessionOpened.is_user_oriented(&Facts::default()));
+        assert!(EventName::SettingToggled.is_user_oriented(&Facts::default()));
+        assert!(EventName::SurfaceViewed.is_user_oriented(&Facts {
+            detail: Some("user"),
+            ..Facts::default()
+        }));
+        assert!(!EventName::SurfaceViewed.is_user_oriented(&Facts {
+            detail: Some("automatic"),
+            ..Facts::default()
+        }));
+        assert!(!EventName::SurfaceStateObserved.is_user_oriented(&Facts {
+            origin: Some("user"),
+            ..Facts::default()
+        }));
+        assert!(!EventName::ResourceUsageObserved.is_user_oriented(&Facts::default()));
+        assert!(!EventName::AppLaunched.is_user_oriented(&Facts::default()));
+        assert!(EventName::RemoteSyncCompleted.is_user_oriented(&Facts {
+            detail: Some("manual"),
+            ..Facts::default()
+        }));
+        assert!(!EventName::RemoteSyncCompleted.is_user_oriented(&Facts {
+            detail: Some("automatic"),
+            ..Facts::default()
+        }));
+        assert!(EventName::MemoryAction.is_user_oriented(&Facts::default()));
+    }
+
+    /// Only the step a Next press reveals is user activity; the others report
+    /// first-run work completing on its own.
+    #[test]
+    fn only_the_first_run_result_step_is_user_oriented() {
+        for (step, user) in [
+            (FirstRunStep::Started, false),
+            (FirstRunStep::Found, false),
+            (FirstRunStep::Read, false),
+            (FirstRunStep::Checked, false),
+            (FirstRunStep::Result, true),
+        ] {
+            let (name, facts) = Interaction::FirstRunStepReached {
+                step,
+                sessions: (step == FirstRunStep::Found).then_some(12),
+                result: (step == FirstRunStep::Result).then_some(FirstRunResult::Clean),
+            }
+            .resolve();
+            assert_eq!(name.is_user_oriented(&facts), user, "{step:?}");
+        }
+    }
+
+    /// Settings-driven Smart Check outcomes are user activity; assessments,
+    /// live or backfilled, are background work whatever the check.
+    #[test]
+    fn smart_check_assessments_never_refresh_the_session() {
+        let mut lifecycles = vec![
+            (SmartCheckLifecycle::Enablement { enabled: true }, true),
+            (SmartCheckLifecycle::Enablement { enabled: false }, true),
+        ];
+        for provider in [
+            SmartCheckProvider::Jev,
+            SmartCheckProvider::Cloudflare,
+            SmartCheckProvider::Ollama,
+            SmartCheckProvider::Custom,
+        ] {
+            for outcome in [
+                ProviderSetupOutcome::Saved,
+                ProviderSetupOutcome::Switched,
+                ProviderSetupOutcome::CredentialRemoved,
+            ] {
+                lifecycles.push((
+                    SmartCheckLifecycle::ProviderSetup { provider, outcome },
+                    true,
+                ));
+            }
+            for outcome in [ProviderTestOutcome::Succeeded, ProviderTestOutcome::Failed] {
+                lifecycles.push((
+                    SmartCheckLifecycle::ProviderTest { provider, outcome },
+                    true,
+                ));
+            }
+        }
+        for check in [
+            SmartCheck::IgnoredInstructions,
+            SmartCheck::ScopeCreep,
+            SmartCheck::OverExploring,
+            SmartCheck::SkillOpportunities,
+        ] {
+            for outcome in [
+                SmartCheckAssessmentOutcome::Finding,
+                SmartCheckAssessmentOutcome::Clean,
+                SmartCheckAssessmentOutcome::Abstained,
+                SmartCheckAssessmentOutcome::Failed,
+            ] {
+                for historical in [false, true] {
+                    lifecycles.push((
+                        SmartCheckLifecycle::Assessment {
+                            check,
+                            outcome,
+                            historical,
+                        },
+                        false,
+                    ));
+                }
+            }
+        }
+        for (lifecycle, user) in lifecycles {
+            let (name, facts) = lifecycle.resolve();
+            assert_eq!(name.is_user_oriented(&facts), user, "{lifecycle:?}");
+        }
+    }
+
     /// The compiler, not a reviewer, keeps [`EVERY_EVENT`] complete.
     ///
     /// A new variant makes this match non-exhaustive, which fails the build at
@@ -2866,6 +3053,15 @@ mod tests {
         assert_eq!(facts.label, Some("google"));
         assert_eq!(facts.detail, Some("rate_limited"));
         assert_eq!(facts.origin, None);
+
+        let (_, facts) = Interaction::LiveUsageStateObserved {
+            provider: LiveUsageProvider::Anthropic,
+            state: LiveUsageState::LoginRecovering,
+            origin: Origin::User,
+        }
+        .resolve();
+        assert_eq!(facts.label, Some("anthropic"));
+        assert_eq!(facts.detail, Some("login_recovering"));
 
         let (name, facts) = Interaction::BurnCheckAutoFixCompleted {
             outcome: AutoFixOutcome::RecoveryNeeded,

@@ -665,10 +665,19 @@ impl ClaudeDirectFetch {
 
     /// Read Pi's carrier. An expired entry first goes through Pi's own
     /// refresh — see `pi_refresh`.
-    fn read_pi_carrier(&self) -> Option<ClaudeCredentials> {
-        let path = self.pi_auth_path.as_deref()?;
-        let entry = pi_auth::read_entry(path, pi_auth::ANTHROPIC_KEY)
-            .filter(|entry| !entry.refresh_token.is_empty())?;
+    ///
+    /// The second value is true when Pi's own refresh rejected its expired
+    /// entry: that entry needs a new sign-in, not Pi's next run.
+    fn read_pi_carrier(&self) -> (Option<ClaudeCredentials>, bool) {
+        let Some(path) = self.pi_auth_path.as_deref() else {
+            return (None, false);
+        };
+        let Some(entry) = pi_auth::read_entry(path, pi_auth::ANTHROPIC_KEY)
+            .filter(|entry| !entry.refresh_token.is_empty())
+        else {
+            return (None, false);
+        };
+        let mut pi_rejected = false;
         // An expired entry's one recovery lever is Pi's own SDK — see
         // `pi_refresh`. Expiry is the only trigger: a network or 5xx
         // failure later in the fetch never reaches it.
@@ -683,16 +692,21 @@ impl ClaudeDirectFetch {
                 // `fetch_from_carriers` reports an all-expired set as
                 // an authentication failure, which is already the
                 // sign-in-again state a terminal rejection asks for.
-                Recovery::AlreadyValid | Recovery::SignInWithPi | Recovery::Unavailable => entry,
+                Recovery::SignInWithPi => {
+                    pi_rejected = true;
+                    entry
+                }
+                Recovery::AlreadyValid | Recovery::Unavailable => entry,
             }
         };
-        Some(ClaudeCredentials {
+        let carrier = ClaudeCredentials {
             access_token: entry.access_token,
             expires_at_ms: entry.expires_at_ms,
             has_refresh_token: true,
             subscription_type: None,
             rate_limit_tier: None,
-        })
+        };
+        (Some(carrier), pi_rejected)
     }
 
     /// Read all credential carriers in their documented order. A Keychain
@@ -700,7 +714,7 @@ impl ClaudeDirectFetch {
     #[cfg(feature = "analytics")]
     fn read_carriers(&self) -> (Vec<ClaudeCredentials>, Option<FetchFailure>) {
         let (mut carriers, error) = self.read_native_carriers();
-        carriers.extend(self.read_pi_carrier());
+        carriers.extend(self.read_pi_carrier().0);
         (carriers, error)
     }
 
@@ -1069,7 +1083,8 @@ impl LiveUsageSource for ClaudeDirectFetch {
                 carrier_error = error;
             }
             let mut carriers = native_carriers.clone();
-            carriers.extend(self.read_pi_carrier());
+            let (pi_carrier, pi_rejected) = self.read_pi_carrier();
+            carriers.extend(pi_carrier);
             // The touch below requires a *native* carrier: Pi's read-only
             // entry alone never triggers one — see the module doc's
             // "Delegating refresh to the CLI" section.
@@ -1093,6 +1108,11 @@ impl LiveUsageSource for ClaudeDirectFetch {
                 .iter()
                 .map(|carrier| carrier.access_token.clone())
                 .collect();
+            // Every carrier held a token and every token expired, so an
+            // authentication failure below is expiry, not a rejection.
+            let all_expired = !pi_rejected
+                && !carriers.is_empty()
+                && !carriers.iter().any(|carrier| carrier.is_live(now));
             let mut fetched = fetch_from_carriers(
                 self.transport.as_ref(),
                 carriers,
@@ -1150,6 +1170,11 @@ impl LiveUsageSource for ClaudeDirectFetch {
                         self.logins.set_sign_in_required(false);
                     }
                     Ok(Some(snapshot))
+                }
+                // Only Pi's entry is left, and Pi keeps a refresh token for
+                // it (see `read_pi_carrier`). Pi refreshes it on its next run.
+                Err(ProviderUsageError::Authentication) if all_expired => {
+                    Err(auth_failure(SourceErrorDetail::CredentialExpired))
                 }
                 other => other.map_err(FetchFailure::from),
             };
@@ -3069,8 +3094,39 @@ mod tests {
         let outcome = source.fetch(USER_MAX_AGE);
 
         assert_eq!(outcome.error, Some(ProviderUsageError::Authentication));
-        // No native carrier: nothing here can refresh it, and the plain
-        // sign-in-again copy is the true one.
+        // No native carrier, so no touch. Pi keeps a refresh token and
+        // refreshes the entry on its next run, so no sign-in is needed.
+        assert_eq!(outcome.detail, Some(SourceErrorDetail::CredentialExpired));
+    }
+
+    #[test]
+    fn a_pi_entry_whose_refresh_pi_rejected_needs_a_new_sign_in() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{"anthropic": {"type": "oauth", "access": "synthetic-access",
+              "refresh": "synthetic-refresh", "expires": 1000}}"#,
+        )
+        .expect("write pi auth");
+        struct RejectingRunner;
+        impl super::super::pi_refresh::RefreshRunner for RejectingRunner {
+            fn run(&self, _: &str) -> super::super::pi_refresh::RunOutcome {
+                super::super::pi_refresh::RunOutcome::Rejected
+            }
+            fn check(&self, _: &str) -> super::super::pi_refresh::RunOutcome {
+                super::super::pi_refresh::RunOutcome::Rejected
+            }
+        }
+        let source = ClaudeDirectFetch::with_pi(
+            path,
+            Box::new(UnreachableTransport),
+            PiRefresher::with_runner(Box::new(RejectingRunner)),
+        );
+
+        let outcome = source.fetch(TEST_MAX_AGE);
+
+        assert_eq!(outcome.error, Some(ProviderUsageError::Authentication));
         assert_eq!(outcome.detail, None);
     }
 
