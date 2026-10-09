@@ -53,7 +53,7 @@ anything else to be put.
 | `platform`                      | Constant. The surface class the collector partitions on.                                                                                                                                                                                                                                                                                                                                                                                                          | `desktop`                               |
 | `messageId`                     | Random per-event id, so a redelivered event is not counted twice.                                                                                                                                                                                                                                                                                                                                                                                                 | `9f2c…`                                 |
 | `anonymousId`                   | The rotating installation identifier.                                                                                                                                                                                                                                                                                                                                                                                                                             | `4b81…`                                 |
-| `sessionId`                     | Groups a window of captured analytics events. Its generator is held in memory, but the value is written into each event queued on disk. Replaced after 30 minutes without a captured analytics event, whenever antiburn restarts, and when the installation identifier rotates.                                                                                                                                                                                   | `7d10…`                                 |
+| `sessionId`                     | Groups a window of captured analytics events. Its generator is held in memory, but the value is written into each event queued on disk. Replaced after 30 minutes without a user-oriented event; background telemetry does not refresh the timeout. Also replaced whenever antiburn restarts or the installation identifier rotates.                                                                                                                                                                                   | `7d10…`                                 |
 | `event`                         | The event name, from the closed catalog below.                                                                                                                                                                                                                                                                                                                                                                                                                    | `antiburn.scan_completed`               |
 | `originalTimestamp`             | When it happened, UTC.                                                                                                                                                                                                                                                                                                                                                                                                                                            | `2026-08-19T09:14:02Z`                  |
 | `sentAt`                        | When it was delivered. Added at send, not at capture.                                                                                                                                                                                                                                                                                                                                                                                                             | `2026-08-19T09:15:02Z`                  |
@@ -87,12 +87,13 @@ anything else to be put.
 Each event is timestamped and the installation identifier lasts up to 30 days,
 so these events show roughly **when events were captured** within that window.
 The `sessionId` groups captured events separated by less than 30 minutes of
-analytics-event inactivity. Background events can keep it active, and a quiet
-app process can receive more than one, so it does not define a user visit or
-time spent. None of these fields can show the content or identity of what
-antiburn was used _on_. Resource ranges can indicate coarse work intensity and
-data volume. This is stated because an enumeration that lists fields without
-saying what they enable is not really an enumeration.
+user-oriented-event inactivity. User-origin UI events refresh that timeout;
+automatic and background telemetry do not. A quiet app process can receive more
+than one ID, so it does not define a user visit or time spent. None of these
+fields can show the content or identity of what antiburn was used _on_. Resource
+ranges can indicate coarse work intensity and data volume. This is stated
+because an enumeration that lists fields without saying what they enable is
+not really an enumeration.
 
 ### Why there are two identifiers
 

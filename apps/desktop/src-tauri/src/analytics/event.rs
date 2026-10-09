@@ -253,6 +253,57 @@ impl EventName {
             EventName::StepSettingsViewed => "antiburn.step_settings_viewed",
         }
     }
+
+    /// Whether this event represents deliberate UI use and refreshes the session timeout.
+    ///
+    /// Keep this match exhaustive. New events must make an explicit choice instead of
+    /// letting background telemetry extend an interaction session by default.
+    pub fn is_user_oriented(self, facts: &Facts) -> bool {
+        match self {
+            EventName::SettingToggled
+            | EventName::AnalyticsOptedOut
+            | EventName::SessionOpened
+            | EventName::SettingsPaneViewed
+            | EventName::BurnCheckAutoFixReviewed
+            | EventName::BurnCheckAutoFixConfirmed
+            | EventName::BurnCheckPromptPrepared
+            | EventName::BurnCheckPromptCopied
+            | EventName::SessionFilterSelected
+            | EventName::SessionFiltersChanged
+            | EventName::RemoteHostConnectionChecked
+            | EventName::RemoteHostChanged
+            | EventName::ProjectFolderAction
+            | EventName::NavigationHistoryMoved
+            | EventName::AppSearchOpened
+            | EventName::AppSearchResultOpened
+            | EventName::InterfaceScaleChanged
+            | EventName::FirstRunAction
+            | EventName::IgnoredInstructionObserved
+            | EventName::CheckEnablementSaved
+            | EventName::StepSettingsViewed => true,
+            EventName::SurfaceViewed => facts.detail == Some("user"),
+            EventName::RemoteSyncCompleted => facts.detail == Some("manual"),
+            EventName::FirstRunStepReached => facts.label != Some("started"),
+            EventName::IgnoredInstructionLifecycle => facts.label != Some("execution"),
+            EventName::AppLaunched
+            | EventName::ScanCompleted
+            | EventName::ErrorOccurred
+            | EventName::UnrecognizedRecordsObserved
+            | EventName::ClaudeLimitResetObserved
+            | EventName::SurfaceStateObserved
+            | EventName::LiveUsageStateObserved
+            | EventName::UsageObserved
+            | EventName::LimitFactorObserved
+            | EventName::ResourceUsageObserved
+            | EventName::BurnCheckAutoFixCompleted
+            | EventName::BurnCheckOutcomeObserved
+            | EventName::QuotaIncidentsObserved
+            | EventName::ProviderIncidentsObserved
+            | EventName::ProviderIncidentsIngested
+            | EventName::QuotaWindowClosed
+            | EventName::FirstRunFinished => false,
+        }
+    }
 }
 
 /// One event, in the collector's wire envelope.
@@ -288,9 +339,10 @@ pub struct Event {
     /// thing in the payload — its generator state lives in memory, is gone
     /// when the process exits, and is replaced after
     /// [`super::SESSION_TIMEOUT`] of inactivity. The generator cannot continue
-    /// into another run. Queued event payloads include the captured value until
-    /// delivery or withdrawal. The rotating [`Event::anonymous_id`] remains the
-    /// longest-lived generator state here.
+    /// into another run. It rolls after 30 minutes without a user-oriented event;
+    /// background telemetry does not refresh that timeout. Queued event payloads
+    /// include the captured value until delivery or withdrawal. The rotating
+    /// [`Event::anonymous_id`] remains the longest-lived generator state here.
     pub session_id: String,
     /// Event name, in antiburn's own namespace.
     pub event: String,
@@ -2035,6 +2087,36 @@ mod tests {
         assert_eq!(resource["cpuAverage"], "from10_to_under25_percent");
         assert_eq!(resource["readRateAverage"], "zero");
         assert_eq!(resource["writeRateAverage"], "unavailable");
+    }
+
+    /// User-origin events refresh the timeout; automatic and background
+    /// telemetry does not.
+    #[test]
+    fn user_oriented_classification_excludes_automatic_events() {
+        assert!(EventName::SessionOpened.is_user_oriented(&Facts::default()));
+        assert!(EventName::SettingToggled.is_user_oriented(&Facts::default()));
+        assert!(EventName::SurfaceViewed.is_user_oriented(&Facts {
+            detail: Some("user"),
+            ..Facts::default()
+        }));
+        assert!(!EventName::SurfaceViewed.is_user_oriented(&Facts {
+            detail: Some("automatic"),
+            ..Facts::default()
+        }));
+        assert!(!EventName::SurfaceStateObserved.is_user_oriented(&Facts {
+            origin: Some("user"),
+            ..Facts::default()
+        }));
+        assert!(!EventName::ResourceUsageObserved.is_user_oriented(&Facts::default()));
+        assert!(!EventName::AppLaunched.is_user_oriented(&Facts::default()));
+        assert!(EventName::RemoteSyncCompleted.is_user_oriented(&Facts {
+            detail: Some("manual"),
+            ..Facts::default()
+        }));
+        assert!(!EventName::RemoteSyncCompleted.is_user_oriented(&Facts {
+            detail: Some("automatic"),
+            ..Facts::default()
+        }));
     }
 
     /// The compiler, not a reviewer, keeps [`EVERY_EVENT`] complete.
