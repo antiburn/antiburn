@@ -170,6 +170,9 @@ does not establish that the user has reached value through deliberate use.
 For visit frequency, group only deliberate interaction events by installation
 with a 30-minute inactivity gap. Background events do not refresh the wire
 `sessionId` timeout, but they can still appear inside an interaction session.
+Ignore background events when constructing visits. Segment `sessionId`-based
+reports at the first shipping app version with the user-oriented timeout;
+earlier builds refresh the timeout on every captured event.
 Do not infer attention duration from gaps.
 Neither tray visibility nor a persistent HUD proves that someone looked at it.
 
