@@ -47,6 +47,11 @@ CI changes, and documentation that no user acts on stay out — see
 
 ### Fixed
 
+- Sessions no longer disappear when Git cannot run. On macOS, `git` stops
+  working after an Xcode update until you accept the new Xcode license, and
+  antiburn used to treat every session as outside a repository and remove it
+  from the list. antiburn now keeps the sessions it already has, waits for Git
+  to work again, and records the Git error in its log.
 - The Agents list shows "Not found" instead of a switch for an agent antiburn
   has not detected. Every agent is on by default. Agents that an older setup
   switched off because they had no sessions, and that still have none, are on
