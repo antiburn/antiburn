@@ -166,13 +166,17 @@ function dayTip(account: AllowanceUsageAccountPayload, slot: AllowanceDaySlot) {
           swatch: LEGEND_ITEMS[1].swatch,
           ...(week != null ? { share: week / 100 } : {}),
         },
-        {
-          key: "short",
-          label: "Busiest 5-hour window",
-          value: percent(busiest),
-          swatch: LEGEND_ITEMS[0].swatch,
-          ...(busiest != null ? { share: busiest / 100 } : {}),
-        },
+        ...(busiest == null
+          ? []
+          : [
+              {
+                key: "short",
+                label: "Busiest 5-hour window",
+                value: percent(busiest),
+                swatch: LEGEND_ITEMS[0].swatch,
+                share: busiest / 100,
+              },
+            ]),
       ]}
       footnote={peaks.length > 1 ? `${peaks.length} 5-hour windows this day` : undefined}
     />
