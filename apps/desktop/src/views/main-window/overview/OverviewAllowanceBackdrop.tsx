@@ -93,7 +93,7 @@ export function OverviewAllowanceBackdrop({
       name="allowance"
       plot={plot}
       keyItems={KEY_ITEMS}
-      valueAxis={GUIDE_PERCENTS.map((percent) => ({
+      valueAxis={GUIDE_PERCENTS.filter((percent) => percent < 100).map((percent) => ({
         text: `${percent}%`,
         at: y(percent) / 100,
       }))}

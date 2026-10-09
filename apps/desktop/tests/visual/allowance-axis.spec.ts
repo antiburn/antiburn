@@ -12,12 +12,16 @@ for (const theme of ["light", "dark"] as const) {
       await usage.getByRole("radio", { name: "Subscription" }).click()
       const tabs = await usage.getByRole("radiogroup", { name: "Usage unit" }).boundingBox()
       expect(tabs).not.toBeNull()
-      for (const label of ["100%", "75%", "50%", "25%", "0%"]) {
+      await expect(usage.getByText("100%", { exact: true })).toHaveCount(0)
+      const plot = await usage.locator('[data-usage-banner="allowance"]').boundingBox()
+      expect(plot).not.toBeNull()
+      for (const label of ["75%", "50%", "25%", "0%"]) {
         const tick = usage.getByText(label, { exact: true })
         await expect(tick).toBeVisible()
         const box = await tick.boundingBox()
         expect(box).not.toBeNull()
-        expect(box!.x + box!.width).toBeLessThanOrEqual(width)
+        expect(box!.x + box!.width).toBeLessThan(plot!.x + plot!.width)
+        expect(box!.x).toBeGreaterThan(plot!.x)
         expect(tabs!.x + tabs!.width).toBeLessThanOrEqual(box!.x)
       }
       await page.screenshot({

@@ -102,9 +102,10 @@ describe("OverviewUsage", () => {
         }),
       ]),
     })
-    for (const label of ["0%", "25%", "50%", "75%", "100%"]) {
+    for (const label of ["0%", "25%", "50%", "75%"]) {
       expect(screen.getByText(label, { exact: true })).toBeVisible()
     }
+    expect(screen.queryByText("100%", { exact: true })).not.toBeInTheDocument()
     const plot = document.querySelector('[data-usage-banner="allowance"] svg')!
     expect(plot.querySelector("rect")).toHaveAttribute("height", String(peakPercent))
     expect(plot.querySelector("rect")).toHaveAttribute("y", String(100 - peakPercent))

@@ -879,9 +879,10 @@ Notes for what isn't expressible as a token:
 - **Overview usage banner** — both Usage tabs draw their chart behind the figures, not under
   them: the Cost tab's daily spend by agent, and the Subscription tab's weekly fill and 5-hour
   peaks in `context-stroke` tints. Subscription uses a fixed 0–100% scale with guide lines
-  and right-side labels at 0%, 25%, 50%, 75%, and 100%. Reserve a 3rem value-axis gutter
-  (`--overview-banner-value-axis`); align the plot, dates, and hover targets before it,
-  and keep the header controls clear of the labels.
+  and labels at 0%, 25%, 50%, and 75% inside the plot's right edge, inset by `space-lg`.
+  Omit the 100% label but keep the top of the scale at 100%. The plot, dates, and hover
+  targets use the full width. Reserve 3rem (`--overview-banner-value-axis`) beside the
+  header controls to keep them clear of the labels.
   Axis labels use secondary caption ink and stay outside the plot's fade and entrance animation.
   Cost scales to its own peak and has no value axis. Both plots fade toward the top.
   The figures and the unit tabs share the top

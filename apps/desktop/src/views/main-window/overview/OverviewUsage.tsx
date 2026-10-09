@@ -99,7 +99,7 @@ export function OverviewUsage({
           metric === "allowance" &&
             selectedAccount &&
             !allowanceLoading &&
-            "pr-[calc(var(--overview-banner-value-axis)-var(--space-lg))]",
+            "pr-(--overview-banner-value-axis)",
         )}
       >
         <div

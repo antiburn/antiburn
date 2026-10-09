@@ -40,12 +40,7 @@ export function UsageBanner({
       <div
         aria-hidden="true"
         data-usage-banner={name}
-        className={cn(
-          "overview-usage-banner pointer-events-none absolute -left-(--space-lg) -top-(--space-lg) bottom-[calc(var(--overview-banner-dates)+var(--overview-banner-key))] -z-10 overflow-hidden rounded-t-(--radius-popover)",
-          valueAxis
-            ? "right-[calc(var(--overview-banner-value-axis)-var(--space-lg))]"
-            : "-right-(--space-lg)",
-        )}
+        className="overview-usage-banner pointer-events-none absolute -inset-x-(--space-lg) -top-(--space-lg) bottom-[calc(var(--overview-banner-dates)+var(--overview-banner-key))] -z-10 overflow-hidden rounded-t-(--radius-popover)"
       >
         <div className="overview-banner-in size-full">{plot}</div>
       </div>
@@ -53,13 +48,13 @@ export function UsageBanner({
         <div
           role="group"
           aria-label="Percentage used"
-          className="pointer-events-none absolute -right-(--space-lg) -top-(--space-lg) bottom-[calc(var(--overview-banner-dates)+var(--overview-banner-key))] w-(--overview-banner-value-axis) type-caption text-label-secondary tabular-nums"
+          className="pointer-events-none absolute -inset-x-(--space-lg) -top-(--space-lg) bottom-[calc(var(--overview-banner-dates)+var(--overview-banner-key))] type-caption text-label-secondary tabular-nums"
         >
           {valueAxis.map(({ text, at }) => (
             <span
               key={text}
               className={cn(
-                "absolute left-(--space-xs)",
+                "absolute right-(--space-lg)",
                 at === 0
                   ? "translate-y-0"
                   : at === 1
@@ -74,24 +69,14 @@ export function UsageBanner({
         </div>
       )}
       {hover?.(
-        cn(
-          "absolute -left-(--space-lg) top-1/2 bottom-[calc(var(--overview-banner-dates)+var(--overview-banner-key))] z-10",
-          valueAxis
-            ? "right-[calc(var(--overview-banner-value-axis)-var(--space-lg))]"
-            : "-right-(--space-lg)",
-        ),
+        "absolute -inset-x-(--space-lg) top-1/2 bottom-[calc(var(--overview-banner-dates)+var(--overview-banner-key))] z-10",
       )}
       {/* One block for the dates and the key, so the card's gap does not
           come between them and the plot stops on the dates. */}
       <div className="order-last mt-auto flex flex-col">
         <div
           aria-hidden="true"
-          className={cn(
-            "relative -ml-(--space-lg) h-(--overview-banner-dates) type-caption text-label-tertiary",
-            valueAxis
-              ? "mr-[calc(var(--overview-banner-value-axis)-var(--space-lg))]"
-              : "-mr-(--space-lg)",
-          )}
+          className="relative -mx-(--space-lg) h-(--overview-banner-dates) type-caption text-label-tertiary"
         >
           {dates.map((date) => (
             <span
