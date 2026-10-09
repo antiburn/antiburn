@@ -26,9 +26,6 @@ const overviewProgressMock = vi.hoisted(() => ({
   current: {
     mode: "steady",
     flow: "done",
-    openStep: null,
-    openStepControl: null,
-    openStepControlRevision: 0,
     stepShown: true,
     actionPending: false,
     actionError: null,
@@ -47,15 +44,40 @@ const overviewProgressMock = vi.hoisted(() => ({
     history: null,
   } as OverviewProgress,
 }))
-const openProgressStep = vi.fn()
 vi.mock("./main-window/overview/overviewProgressStore", () => ({
   subscribeOverviewProgress: () => () => undefined,
   overviewProgress: () => overviewProgressMock.current,
-  openProgressStep: (step: string, control?: string) => openProgressStep(step, control),
 }))
-vi.mock("./main-window/overview/ProgressNav", () => ({ ProgressNav: () => null }))
-
-vi.mock("./main-window/MainActivityView", () => ({ MainActivityView: () => <p>Sessions</p> }))
+// The pills' own behavior is covered in `ProgressNav.test.tsx`. Here a
+// stand-in proves where the main window sends each pill.
+vi.mock("./main-window/overview/ProgressNav", () => ({
+  ProgressNav: ({
+    onOpenSettings,
+    onOpenFixes,
+  }: {
+    onOpenSettings: (step: string) => void
+    onOpenFixes: (check: string | undefined) => void
+  }) => (
+    <>
+      <button type="button" onClick={() => onOpenSettings("checks")}>
+        Checks pill
+      </button>
+      <button type="button" onClick={() => onOpenFixes("unusedSkills")}>
+        To fix pill
+      </button>
+    </>
+  ),
+}))
+vi.mock("./main-window/MainActivityView", () => ({
+  MainActivityView: ({ onOpenRangeSettings }: { onOpenRangeSettings: () => void }) => (
+    <>
+      <p>Sessions</p>
+      <button type="button" onClick={onOpenRangeSettings}>
+        Range settings
+      </button>
+    </>
+  ),
+}))
 vi.mock("./main-window/BurnChecksView", () => ({
   BurnChecksView: () => <p>Burn checks workspace</p>,
 }))
@@ -275,16 +297,16 @@ describe("MainWindowView", () => {
     await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
     expect(screen.getByRole("tabpanel", { name: "Checks" })).toHaveFocus()
   })
-  it("choosing a step-settings result opens Overview on that step's control", async () => {
+  it("opens a former step setting in its Settings pane from search", async () => {
     render(<MainWindowView />)
     fireEvent.keyDown(document, { key: "k", metaKey: isMacOS(), ctrlKey: !isMacOS() })
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "scan folders" } })
     await act(async () => fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" }))
+    expect(openSettingsWindow).toHaveBeenCalledWith("sessions", "sourceFolders")
     expect(screen.getByRole("tabpanel", { name: "Overview" })).toBeVisible()
-    expect(openProgressStep).toHaveBeenCalledWith("sessions", "sourceFolders")
     expect(noteInteraction).toHaveBeenCalledWith({
       kind: "appSearchResultOpened",
-      category: "stepSetting",
+      category: "setting",
     })
   })
   it.each([
@@ -492,6 +514,31 @@ describe("MainWindowView", () => {
     )
     expect(capability.permissions).toContain("allow-open-settings-window")
     expect(capability.permissions).toContain("allow-open-burn-check-sample")
+  })
+
+  it("opens a pill's step in the Settings window", () => {
+    render(<MainWindowView />)
+    fireEvent.click(screen.getByRole("button", { name: "Checks pill" }))
+    expect(openSettingsWindow).toHaveBeenCalledExactlyOnceWith("checks")
+    expect(screen.queryByRole("dialog")).toBeNull()
+    expect(noteInteraction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "stepSettingsViewed" }),
+    )
+  })
+
+  it("opens Checks at the first failing check from the To fix pill", () => {
+    render(<MainWindowView />)
+    fireEvent.click(screen.getByRole("button", { name: "To fix pill" }))
+    expect(screen.getByRole("tabpanel", { name: "Checks" })).toBeVisible()
+    expect(openSettingsWindow).not.toHaveBeenCalled()
+  })
+
+  it("opens Settings on the activity window control from Sessions", () => {
+    render(<MainWindowView />)
+    fireEvent.click(tab("Sessions"))
+    fireEvent.click(screen.getByRole("button", { name: "Range settings" }))
+    expect(openSettingsWindow).toHaveBeenCalledExactlyOnceWith("sessions", "recentDays")
+    expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
   })
 
   it("shows a recoverable Settings error", async () => {

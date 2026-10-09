@@ -7,9 +7,33 @@ describe("withSnoozes", () => {
   const progress = {
     failingCount: 2,
     categories: [
-      { id: "unusedSkills", label: "", status: "needsFix", estimatedBurnBasisPoints: 300 },
-      { id: "unusedMcpServers", label: "", status: "needsFix", estimatedBurnBasisPoints: 10 },
-      { id: "modelOverthinking", label: "", status: "passing", estimatedBurnBasisPoints: null },
+      {
+        id: "unusedSkills",
+        label: "",
+        status: "needsFix",
+        estimatedBurnBasisPoints: 300,
+        finding: 0,
+        clean: 0,
+        agents: [],
+      },
+      {
+        id: "unusedMcpServers",
+        label: "",
+        status: "needsFix",
+        estimatedBurnBasisPoints: 10,
+        finding: 0,
+        clean: 0,
+        agents: [],
+      },
+      {
+        id: "modelOverthinking",
+        label: "",
+        status: "passing",
+        estimatedBurnBasisPoints: null,
+        finding: 0,
+        clean: 0,
+        agents: [],
+      },
     ],
   } as unknown as OverviewProgress
 

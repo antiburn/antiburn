@@ -49,8 +49,8 @@ export function MainActivityView({
   /** Open one quota window on the Quota screen. Omitted where there is no
    *  Quota screen to open. */
   onOpenQuota?: (target: SessionQuotaOpenTarget) => void
-  /** Open the Overview's Sessions step modal on the "Show the last" row.
-   *  Omitted where there is no Overview to open. */
+  /** Open Settings → Sessions on the "Show the last" row. Omitted where
+   *  the host cannot open Settings. */
   onOpenRangeSettings?: () => void
 }) {
   const filterButtonRef = useRef<HTMLButtonElement | null>(null)

@@ -25,7 +25,7 @@ describe("attentionBanners", () => {
     expect(banner?.id).toBe("sourceAccess")
     expect(banner?.message).toContain("widgets")
     expect(banner?.actionLabel).toBe("Review")
-    expect(banner?.action).toEqual({ kind: "openOverviewStep", step: "sessions" })
+    expect(banner?.action).toEqual({ kind: "openSettingsPane", pane: "sessions" })
     // Short, so a screen-reader user is not read the whole sentence twice.
     expect(banner?.dismissLabel).toBe("Dismiss the repository-access warning")
   })

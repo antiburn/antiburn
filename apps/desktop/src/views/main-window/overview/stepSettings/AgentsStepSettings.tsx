@@ -16,17 +16,18 @@ import { renderAgentIcon } from "../../../../lib/agentIcon"
 import { cn } from "../../../../lib/cn"
 import type { AgentSessionLocations } from "../../../../lib/ipc"
 import { AGENT_SLUGS, agentDisplayName } from "../../../../lib/presentation/agents"
-import { overviewProgress, subscribeOverviewProgress } from "../overviewProgressStore"
-import { StepSettingsSectionGroup } from "./StepSettingsSearchRows"
+import { agentSessionCounts, subscribeAgentSessionCounts } from "./agentSessionCounts"
+import { SettingsSectionGroup } from "../../../settings/SettingsSearchRows"
 import { useAppSettings } from "../../../settings/useAppSettings"
 
-export function AgentsStepSettings() {
+/** `titled` shows the section title. The first-run step card already names it. */
+export function AgentsStepSettings({ titled = false }: { titled?: boolean }) {
   const { settings, update } = useAppSettings()
   const disabledAgents = settings.disabledAgents
-  const progress = useSyncExternalStore(
-    subscribeOverviewProgress,
-    overviewProgress,
-    overviewProgress,
+  const counts = useSyncExternalStore(
+    subscribeAgentSessionCounts,
+    agentSessionCounts,
+    agentSessionCounts,
   )
   const locations = useSyncExternalStore(
     subscribeAgentSessionLocations,
@@ -47,13 +48,13 @@ export function AgentsStepSettings() {
     [disabledAgents, update],
   )
 
-  const sessionsByAgent = new Map(progress.agents.rows.map((row) => [row.agent, row.sessions]))
+  const sessionsByAgent = new Map(counts.map((row) => [row.agent, row.sessions]))
   const agentRows = [...AGENT_SLUGS].sort(
     (a, b) => (sessionsByAgent.get(b) ?? 0) - (sessionsByAgent.get(a) ?? 0),
   )
 
   return (
-    <StepSettingsSectionGroup hideTitle searchId="sourceAgents">
+    <SettingsSectionGroup hideTitle={!titled} searchId="sourceAgents">
       <Card>
         <ToggleListIntro>
           Switching off an agent hides its sessions from the list and reports.
@@ -72,7 +73,7 @@ export function AgentsStepSettings() {
           ))}
         </ToggleList>
       </Card>
-    </StepSettingsSectionGroup>
+    </SettingsSectionGroup>
   )
 }
 

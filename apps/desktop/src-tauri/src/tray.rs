@@ -151,6 +151,9 @@ const RESET_FIRST_RUN_LABEL: &str = "Reset First Run";
 const RANDOM_USAGE_LABEL: &str = "Simulate Random Usage";
 #[cfg(debug_assertions)]
 const BURN_CHECKS_LABEL: &str = "Simulate Burn Checks";
+/// Set to 1 to start a development build with the simulated checks on.
+#[cfg(debug_assertions)]
+const BURN_CHECKS_ENV: &str = "ANTIBURN_SIMULATE_BURN_CHECKS";
 #[cfg(debug_assertions)]
 const CODEX_ONLY_LABEL: &str = "Simulate Codex Only";
 /// The canonical provider id the Codex-only simulation keeps.
@@ -169,9 +172,14 @@ pub struct DebugBurnChecks {
 impl Default for DebugBurnChecks {
     fn default() -> Self {
         Self {
-            enabled: Mutex::new(false),
+            enabled: Mutex::new(burn_checks_from_env()),
         }
     }
+}
+
+#[cfg(debug_assertions)]
+fn burn_checks_from_env() -> bool {
+    std::env::var(BURN_CHECKS_ENV).is_ok_and(|value| value == "1")
 }
 
 /// Debug-only state that hides every provider except Codex.
@@ -506,21 +514,31 @@ pub(crate) fn simulate_burn_checks(app: &AppHandle, report: &mut crate::dto::Che
     if !enabled {
         return;
     }
-    report.estimated_token_burn_basis_points = Some(125);
+    report.estimated_token_burn_basis_points = Some(310);
     report.evidence_settled = false;
     // 8 assessed sessions (below) plus 12 still pending.
     report.window_sessions = 20;
     report.pending_evidence = 12;
-    for category in &mut report.categories {
-        category.finding = 0;
-        category.clean = 8;
+    // The first three checks fail, the fourth waits for verification, and the
+    // rest pass. Each status of the Overview checks shows at once.
+    const FAILING: [(u64, u16); 3] = [(3, 180), (2, 95), (1, 35)];
+    for (index, category) in report.categories.iter_mut().enumerate() {
         category.unavailable = 0;
-        category.estimated_token_burn_basis_points = None;
-    }
-    if let Some(category) = report.categories.first_mut() {
-        category.finding = 3;
-        category.clean = 5;
-        category.estimated_token_burn_basis_points = Some(125);
+        if let Some(&(finding, basis_points)) = FAILING.get(index) {
+            category.finding = finding;
+            category.clean = 8 - finding;
+            category.estimated_token_burn_basis_points = Some(basis_points);
+            category.lifecycle = Some(crate::dto::ChecksCategoryLifecyclePayload::Failing);
+        } else {
+            category.finding = 0;
+            category.clean = 8;
+            category.estimated_token_burn_basis_points = None;
+            category.lifecycle = Some(if index == FAILING.len() {
+                crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification
+            } else {
+                crate::dto::ChecksCategoryLifecyclePayload::Passing
+            });
+        }
     }
 }
 
@@ -814,7 +832,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         MENU_BURN_CHECKS,
         BURN_CHECKS_LABEL,
         true,
-        false,
+        burn_checks_from_env(),
         None::<&str>,
     )?;
     #[cfg(debug_assertions)]

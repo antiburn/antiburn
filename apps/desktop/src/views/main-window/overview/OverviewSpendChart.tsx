@@ -1,4 +1,4 @@
-import { useId, useState, type KeyboardEvent } from "react"
+import { useState, type KeyboardEvent } from "react"
 
 import type {
   ProviderUsageDayPayload,
@@ -17,18 +17,17 @@ import { Tooltip } from "../../../components/presentation/Tooltip"
 import { ChartLegend } from "../../../components/ui/ChartLegend"
 import { SegmentFigure } from "../../../components/ui/SegmentFigure"
 import { useEntranceProps } from "./overviewEntrance"
+import { UsageBanner, UsageBannerTip } from "./UsageBanner"
 
 import "./overview.css"
 
-/* Every agent stacks in the one blue the session Context chart uses, and
-   the columns fade toward the baseline like that chart's area. The opacity
-   steps are what tell the agents apart, so the swatches take the same steps. */
-const LAYER_STYLES = [
-  { opacity: 1, swatch: "bg-context-stroke" },
-  { opacity: 0.55, swatch: "bg-context-stroke/55" },
-  { opacity: 0.3, swatch: "bg-context-stroke/30" },
-  { opacity: 0.18, swatch: "bg-context-stroke/[0.18]" },
-] as const
+/* Each agent has its own hue, the same on every chart. An agent without its
+   own hue takes the neutral. */
+const AGENT_STYLES: Record<string, { fill: string; swatch: string }> = {
+  "claude-code": { fill: "fill-agent-claude-code", swatch: "bg-agent-claude-code" },
+  codex: { fill: "fill-agent-codex", swatch: "bg-agent-codex" },
+}
+const OTHER_AGENT_STYLE = { fill: "fill-agent-other", swatch: "bg-agent-other" }
 
 function spendScale(max: number): { ceiling: number; guideFractions: number[] } {
   const peak = Number.isFinite(max) && max > 0 ? max : 1
@@ -53,6 +52,33 @@ function spendLabel(usage: ProviderUsageWindowPayload): string {
   return windowTokens(usage) > 0 ? "not priced" : "no sessions"
 }
 
+/** The day's tooltip: total spend, then each agent's share of it. */
+function dayTip(day: ProviderUsageDayPayload, isToday: boolean) {
+  const agents = [...(day.agents ?? [])].sort(
+    (left, right) => (right.estimatedUsd ?? 0) - (left.estimatedUsd ?? 0),
+  )
+  const total = day.estimatedUsd ?? 0
+  const footnote = [
+    windowTokens(day) > 0 ? formatTokenFigure(windowTokens(day)) : null,
+    windowTokens(day) > 0 ? sessionCountLabel(day.sessionCount) : null,
+    !day.agents?.length && windowTokens(day) > 0 ? "Agent breakdown unavailable" : null,
+  ].filter((part) => part != null)
+  return (
+    <UsageBannerTip
+      title={isToday ? "Today" : dayLabel(day.localDate)}
+      figure={spendLabel(day)}
+      rows={agents.map((usage) => ({
+        key: usage.agent,
+        label: agentDisplayName(usage.agent),
+        value: spendLabel(usage),
+        swatch: (AGENT_STYLES[usage.agent] ?? OTHER_AGENT_STYLE).swatch,
+        ...(total > 0 ? { share: (usage.estimatedUsd ?? 0) / total } : {}),
+      }))}
+      footnote={footnote.length ? footnote.join(" · ") : undefined}
+    />
+  )
+}
+
 function dayDetail(day: ProviderUsageDayPayload, isToday: boolean): string {
   const parts = [isToday ? "Today" : dayLabel(day.localDate), spendLabel(day)]
   if (windowTokens(day) > 0) {
@@ -65,15 +91,22 @@ function dayDetail(day: ProviderUsageDayPayload, isToday: boolean): string {
   return parts.join(" · ")
 }
 
+/**
+ * `banner` draws the columns only, with no legend, axes, or day tooltips, to
+ * fill the usage card behind the spend figures.
+ */
 export function OverviewSpendChart({
   days,
   loading = false,
+  banner = false,
 }: {
   days: ReadonlyArray<ProviderUsageDayPayload>
   loading?: boolean
+  banner?: boolean
 }) {
   const [focusDate, setFocusDate] = useState<string | null>(null)
-  const fillId = `overview-spend-fill-${useId().replace(/:/g, "")}`
+  // The day under the pointer or the keyboard focus. The other days dim.
+  const [litDate, setLitDate] = useState<string | null>(null)
   const lastIndex = days.length - 1
   const foundFocus =
     focusDate == null ? -1 : days.findIndex((day) => day.localDate === focusDate)
@@ -88,38 +121,31 @@ export function OverviewSpendChart({
       )
     }
   }
-  // Largest 30-day spend first: that agent is the solid foot of every column.
+  // Largest 30-day spend first: that agent takes the left column of each day.
   const agents = [...agentTotals.keys()].sort((left, right) => {
     const diff = (agentTotals.get(right) ?? 0) - (agentTotals.get(left) ?? 0)
     return diff !== 0 ? diff : left.localeCompare(right)
   })
-  const totals = days.map((day) =>
-    (day.agents ?? []).reduce((sum, usage) => sum + (usage.estimatedUsd ?? 0), 0),
+  // Each agent has its own column, so the scale is the highest single column.
+  const peaks = days.flatMap((day) =>
+    (day.agents ?? []).map((usage) => usage.estimatedUsd ?? 0),
   )
-  const { ceiling, guideFractions } = spendScale(Math.max(0, ...totals))
+  const { ceiling, guideFractions } = spendScale(Math.max(0, ...peaks))
   const wholeGuides = guideFractions.every((fraction) => Number.isInteger(ceiling * fraction))
   const slotWidth = 100 / dayCount
-  const columnWidth = slotWidth * 0.8
+  // The agents' columns stand side by side in each day's slot.
+  const columnWidth = (slotWidth * 0.8) / Math.max(1, agents.length)
   const columnInset = slotWidth * 0.2
-  const lower = days.map(() => 0)
-  const series = agents.map((agent, agentIndex) => {
+  const series = agents.map((agent) => {
     const rects = days.flatMap((day, index) => {
       const usd = day.agents?.find((usage) => usage.agent === agent)?.estimatedUsd ?? 0
-      const bottom = lower[index]!
-      lower[index] = bottom + usd
       if (usd <= 0) return []
-      return [
-        {
-          index,
-          lower: (bottom / ceiling) * 100,
-          upper: ((bottom + usd) / ceiling) * 100,
-        },
-      ]
+      return [{ index, height: (usd / ceiling) * 100 }]
     })
     return {
       agent,
       rects,
-      style: LAYER_STYLES[Math.min(agentIndex, LAYER_STYLES.length - 1)]!,
+      style: AGENT_STYLES[agent] ?? OTHER_AGENT_STYLE,
     }
   })
 
@@ -144,8 +170,108 @@ export function OverviewSpendChart({
       ?.focus()
   }
 
+  const bars = (
+    <svg
+      className="pointer-events-none absolute inset-0 h-full w-full overflow-hidden"
+      viewBox="0 0 100 100"
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
+      {series.map(({ agent, rects, style }, agentIndex) => (
+        <g key={agent} data-agent={agent} className={style.fill}>
+          {rects.map(({ index, height }) => (
+            <rect
+              key={index}
+              x={index * slotWidth + columnInset + agentIndex * columnWidth}
+              y={100 - height}
+              width={columnWidth}
+              height={height}
+              className={cn(
+                "transition-opacity duration-fast",
+                litDate != null && days[index]?.localDate !== litDate
+                  ? "opacity-25"
+                  : "opacity-85",
+              )}
+            />
+          ))}
+        </g>
+      ))}
+    </svg>
+  )
+
+  const dayButtons = (className: string) => (
+    <div
+      role="group"
+      aria-label="Estimated spend for the past 30 days"
+      className={className}
+      onMouseLeave={() => setLitDate(null)}
+      onBlur={() => setLitDate(null)}
+    >
+      {days.map((day, index) => {
+        const detail = dayDetail(day, index === lastIndex)
+        const incomplete = !day.costComplete || (!day.agents?.length && windowTokens(day) > 0)
+        return (
+          <Tooltip key={day.localDate} label={dayTip(day, index === lastIndex)} delayMs={0}>
+            <button
+              type="button"
+              data-day={day.localDate}
+              aria-label={detail}
+              tabIndex={index === focusIndex ? 0 : -1}
+              className="group absolute inset-y-0 border-0 bg-transparent p-0"
+              style={{ left: `${index * slotWidth}%`, width: `${slotWidth}%` }}
+              onMouseEnter={() => setLitDate(day.localDate)}
+              onFocus={() => {
+                setFocusDate(day.localDate)
+                setLitDate(day.localDate)
+              }}
+              onKeyDown={(event) => onKeyDown(event, index)}
+            >
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 rounded-control bg-label/0 group-hover:bg-label/5 group-focus-visible:bg-label/5"
+              />
+              {incomplete && (
+                <span
+                  aria-hidden="true"
+                  data-unpriced
+                  className="absolute inset-x-0 bottom-0 border-t-2 border-dashed border-label-secondary"
+                />
+              )}
+            </button>
+          </Tooltip>
+        )
+      })}
+    </div>
+  )
+
   const placeholder = loading || days.length === 0
   const entranceProps = useEntranceProps("spend-chart", "overview-chart-in", !placeholder)
+  if (banner) {
+    if (placeholder) return null
+    return (
+      <UsageBanner
+        name="spend"
+        plot={bars}
+        keyItems={series.map(({ agent, style }) => ({
+          key: agent,
+          label: agentDisplayName(agent),
+          swatch: style.swatch,
+        }))}
+        dates={days.flatMap((day, index) =>
+          index === lastIndex || (index % 7 === 0 && index < lastIndex - 3)
+            ? [
+                {
+                  key: day.localDate,
+                  text: index === lastIndex ? "Today" : axisDayLabel(day.localDate),
+                  at: index === lastIndex ? 1 : index / dayCount,
+                },
+              ]
+            : [],
+        )}
+        hover={dayButtons}
+      />
+    )
+  }
 
   return (
     <section
@@ -199,83 +325,8 @@ export function OverviewSpendChart({
                   />
                 ))}
               </div>
-              <svg
-                className="pointer-events-none absolute inset-0 h-full w-full overflow-hidden"
-                viewBox="0 0 100 100"
-                preserveAspectRatio="none"
-                aria-hidden="true"
-              >
-                <defs>
-                  {/* Drawn in plot space, not per column, so a tall column is
-                      solid at the top and a short one sits in the faded band. */}
-                  <linearGradient
-                    id={fillId}
-                    gradientUnits="userSpaceOnUse"
-                    x1={0}
-                    y1={0}
-                    x2={0}
-                    y2={100}
-                  >
-                    <stop offset={0} stopColor="var(--color-context-stroke)" />
-                    <stop offset={1} stopColor="var(--color-context-fill-top)" />
-                  </linearGradient>
-                </defs>
-                {series.map(({ agent, rects, style }) => (
-                  <g key={agent} data-agent={agent} fillOpacity={style.opacity}>
-                    {rects.map(({ index, lower: segmentLower, upper }) => (
-                      <rect
-                        key={index}
-                        x={index * slotWidth + columnInset}
-                        y={100 - upper}
-                        width={columnWidth}
-                        height={upper - segmentLower}
-                        fill={`url(#${fillId})`}
-                      />
-                    ))}
-                  </g>
-                ))}
-              </svg>
-              <div
-                role="group"
-                aria-label="Estimated spend for the past 30 days"
-                className="absolute inset-0"
-              >
-                {days.map((day, index) => {
-                  const detail = dayDetail(day, index === lastIndex)
-                  const incomplete =
-                    !day.costComplete || (!day.agents?.length && windowTokens(day) > 0)
-                  return (
-                    <Tooltip
-                      key={day.localDate}
-                      label={<SegmentFigure>{detail}</SegmentFigure>}
-                      delayMs={100}
-                    >
-                      <button
-                        type="button"
-                        data-day={day.localDate}
-                        aria-label={detail}
-                        tabIndex={index === focusIndex ? 0 : -1}
-                        className="group absolute inset-y-0 border-0 bg-transparent p-0"
-                        style={{ left: `${index * slotWidth}%`, width: `${slotWidth}%` }}
-                        onFocus={() => setFocusDate(day.localDate)}
-                        onKeyDown={(event) => onKeyDown(event, index)}
-                      >
-                        <span
-                          aria-hidden="true"
-                          className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-label/0 group-hover:bg-label/25 group-focus-visible:bg-label/25"
-                        />
-                        {incomplete && (
-                          <span
-                            aria-hidden="true"
-                            data-unpriced
-                            className="absolute inset-x-0 bottom-0 border-t-2 border-dashed border-label-secondary"
-                          />
-                        )}
-                      </button>
-                    </Tooltip>
-                  )
-                })}
-              </div>
+              {bars}
+              {dayButtons("absolute inset-0")}
             </div>
             <div aria-hidden="true" className="type-metadata relative text-label-tertiary">
               <span className="invisible">

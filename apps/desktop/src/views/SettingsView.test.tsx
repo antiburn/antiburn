@@ -1242,6 +1242,9 @@ describe("SettingsView — window chrome", () => {
 
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "General",
+      "Agents",
+      "Sessions",
+      "Checks",
       "Notifications",
       "Usage",
       "Appearance",

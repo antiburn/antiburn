@@ -20,6 +20,126 @@ export const SETTINGS_SEARCH_TARGETS = {
     platform: "macos",
   },
   startAtLogin: { pane: "general", label: "Start at login", aliases: ["startup", "launch"] },
+  monitoring: {
+    pane: "sessions",
+    label: "Keep looking for new sessions",
+    aliases: ["automatic scan", "watch"],
+  },
+  sourceScanning: {
+    pane: "sessions",
+    label: "Recent sessions",
+    aliases: ["scanning", "discovery", "rescan"],
+  },
+  sourceAgents: {
+    pane: "agents",
+    label: "Coding agents",
+    aliases: ["harnesses", "enabled agents"],
+  },
+  sourceRemoteHosts: {
+    pane: "sessions",
+    label: "Remote hosts",
+    aliases: ["ssh", "remote sessions", "other computers"],
+  },
+  sourceAutomaticSync: {
+    pane: "sessions",
+    label: "Sync frequency",
+    aliases: ["automatic sync", "remote schedule", "sync interval"],
+  },
+  sourceFolders: {
+    pane: "sessions",
+    label: "Scan folders",
+    aliases: ["directories", "folder access", "paths"],
+  },
+  sourceRepositories: {
+    pane: "sessions",
+    label: "Repositories",
+    aliases: ["projects", "repo", "enabled repositories"],
+  },
+  sourceNonRepoFolders: {
+    pane: "sessions",
+    label: "Include folders without git",
+    aliases: ["non-repo folders", "missing sessions", "not a repository"],
+  },
+  historicalScan: {
+    pane: "sessions",
+    label: "Older sessions",
+    aliases: ["historical scan", "history", "import", "rescan"],
+  },
+  recentDays: {
+    pane: "sessions",
+    label: "Show the last",
+    aliases: ["days", "recent sessions", "date range"],
+  },
+  indexedSessions: {
+    pane: "sessions",
+    label: "Indexed sessions",
+    aliases: ["storage", "database size"],
+  },
+  retention: {
+    pane: "sessions",
+    label: "Keep session data",
+    aliases: ["retention", "storage", "history"],
+  },
+  sessionsOverDepthCheck: {
+    pane: "checks",
+    label: "Session overdepth",
+    aliases: ["long sessions", "context depth", "enable check"],
+  },
+  modelOverthinkingCheck: {
+    pane: "checks",
+    label: "Model overthinking",
+    aliases: ["reasoning effort", "thinking budget", "enable check"],
+  },
+  overpoweredSubagentsCheck: {
+    pane: "checks",
+    label: "Overpowered subagents",
+    aliases: ["expensive subagents", "model routing", "enable check"],
+  },
+  unusedMcpServersCheck: {
+    pane: "checks",
+    label: "Unused MCP servers",
+    aliases: ["unused servers", "MCP tools", "enable check"],
+  },
+  unusedBuiltInToolsCheck: {
+    pane: "checks",
+    label: "Unused built-in tools",
+    aliases: ["tool definitions", "built in tools", "enable check"],
+  },
+  unusedSkillsCheck: {
+    pane: "checks",
+    label: "Unused skills",
+    aliases: ["skill instructions", "enable check"],
+  },
+  oldModelUsageCheck: {
+    pane: "checks",
+    label: "Old model usage",
+    aliases: ["outdated models", "model versions", "enable check"],
+  },
+  overuseOfFastModeCheck: {
+    pane: "checks",
+    label: "Fast mode overuse",
+    aliases: ["fast mode", "priority", "enable check"],
+  },
+  cacheChurnCheck: {
+    pane: "checks",
+    label: "Excess cache rehydration",
+    aliases: ["prompt cache", "cache misses", "enable check"],
+  },
+  ignoredInstructions: {
+    pane: "checks",
+    label: "Ignored Instructions",
+    aliases: ["missed project instructions", "instruction conflicts"],
+  },
+  checkHistory: {
+    pane: "checks",
+    label: "Check history",
+    aliases: ["past sessions", "historical checks", "backfill"],
+  },
+  typeSafeApiKey: {
+    pane: "checks",
+    label: "API key",
+    aliases: ["TypeSafe API key", "Jev", "enable checks", "usage charges"],
+  },
   theme: {
     pane: "appearance",
     label: "Appearance",

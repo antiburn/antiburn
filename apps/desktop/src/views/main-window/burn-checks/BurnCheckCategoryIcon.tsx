@@ -33,12 +33,28 @@ const CHECK_CATEGORY_APPEARANCE: Record<BurnCheckDetectorId, CheckCategoryAppear
   },
 }
 
-export function BurnCheckCategoryIcon({ detector }: { detector: BurnCheckDetectorId }) {
+/** The check's colour as a CSS value, for a tint that matches its icon. */
+export function burnCheckCategoryColor(detector: BurnCheckDetectorId): string {
+  return `var(--color-${CHECK_CATEGORY_APPEARANCE[detector].className.replace(/^text-/, "")})`
+}
+
+/** `bare` draws the glyph alone, with no tinted circle behind it. */
+export function BurnCheckCategoryIcon({
+  detector,
+  bare = false,
+}: {
+  detector: BurnCheckDetectorId
+  bare?: boolean
+}) {
   const { Icon, className } = CHECK_CATEGORY_APPEARANCE[detector]
 
   return (
     <span
-      className={`burn-check-category-icon relative z-10 grid shrink-0 place-items-center justify-self-center rounded-full ${className}`}
+      className={
+        bare
+          ? `relative z-10 grid h-lh shrink-0 place-items-center type-body ${className}`
+          : `burn-check-category-icon relative z-10 grid shrink-0 place-items-center justify-self-center rounded-full ${className}`
+      }
       aria-hidden="true"
     >
       <Icon size={16} strokeWidth={1.9} />

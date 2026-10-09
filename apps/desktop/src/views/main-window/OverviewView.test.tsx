@@ -30,9 +30,6 @@ const overviewProgressMock = vi.hoisted(() => ({
   current: {
     mode: "steady",
     flow: "done",
-    openStep: null,
-    openStepControl: null,
-    openStepControlRevision: 0,
     stepShown: true,
     actionPending: false,
     actionError: null,

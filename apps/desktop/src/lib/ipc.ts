@@ -319,7 +319,7 @@ export async function openPrivacyPolicy(): Promise<void> {
 export type Interaction =
   | { kind: "navigationHistoryMoved"; direction: "back" | "forward" }
   | { kind: "appSearchOpened" }
-  | { kind: "appSearchResultOpened"; category: "view" | "setting" | "stepSetting" | "check" }
+  | { kind: "appSearchResultOpened"; category: "view" | "setting" | "check" }
   | { kind: "projectFolderAction"; action: "open" | "copy"; outcome: "succeeded" | "failed" }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" | "remote" }
   | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
@@ -452,8 +452,9 @@ type FirstRunActionKind =
  *  `StepSettingsStep` (the Overview's own type): `"fixes"` has no settings
  *  and never reaches this event. */
 type StepSettingsAnalyticsLabel = "agents" | "limits" | "sessions" | "checks"
-/** Which surface showed the step's settings. */
-type StepSettingsDetail = "first_run" | "modal"
+/** Which surface showed the step's settings. Settings → Agents, Sessions,
+ *  and Checks report `settingsPaneViewed` instead. */
+type StepSettingsDetail = "first_run"
 
 function isNativePeekInteraction(interaction: Interaction): boolean {
   switch (interaction.kind) {

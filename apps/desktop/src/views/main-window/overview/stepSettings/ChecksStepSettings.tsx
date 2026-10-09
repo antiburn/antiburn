@@ -23,8 +23,8 @@ import {
 } from "../../../../lib/checkAvailability"
 import type { BurnCheckDetectorId } from "../../../../lib/insightsIpc"
 import { CHECK_DEFINITIONS } from "../../../../lib/presentation/checkDefinitions"
-import type { StepSettingsControlId } from "../../../../lib/stepSettingsTargets"
-import { StepSettingsRow, StepSettingsToggleRow } from "./StepSettingsSearchRows"
+import type { SettingsControlId } from "../../../../lib/settingsSearchTargets"
+import { SettingsRow, SettingsToggleRow } from "../../../settings/SettingsSearchRows"
 
 /**
  * The Checks step's settings: Ignored Instructions, the check history
@@ -234,7 +234,7 @@ export function ChecksStepSettings() {
     searchId,
   }: {
     id: BurnCheckDetectorId
-    searchId: StepSettingsControlId
+    searchId: SettingsControlId
   }) {
     const definition = CHECK_DEFINITIONS[id]
     const needsSetup = definition.kind === "smart" && !state.savedKey
@@ -245,7 +245,7 @@ export function ChecksStepSettings() {
         ? " Smart Burn Checks are paused."
         : ""
     return (
-      <StepSettingsToggleRow
+      <SettingsToggleRow
         key={id}
         searchId={searchId}
         label={definition.label}
@@ -274,7 +274,7 @@ export function ChecksStepSettings() {
 
       <SectionGroup title="Past sessions">
         <Card>
-          <StepSettingsRow
+          <SettingsRow
             searchId="checkHistory"
             label="Check history"
             description="Choose a period. Checks start only when you ask."
@@ -326,13 +326,13 @@ export function ChecksStepSettings() {
                 )}
               </div>
             )}
-          </StepSettingsRow>
+          </SettingsRow>
         </Card>
       </SectionGroup>
 
       <SectionGroup title="TypeSafe account">
         <Card>
-          <StepSettingsRow
+          <SettingsRow
             searchId="typeSafeApiKey"
             label="API key"
             description="Enter your TypeSafe API key to enable Smart Burn Checks. TypeSafe usage charges may apply."
@@ -370,7 +370,7 @@ export function ChecksStepSettings() {
                 {error || state.error}
               </p>
             )}
-          </StepSettingsRow>
+          </SettingsRow>
         </Card>
         <DisclosureGroup className="mt-2 px-1">
           <Disclosure label="Privacy and usage">
@@ -398,7 +398,7 @@ export function ChecksStepSettings() {
   )
 }
 
-const CHECK_SEARCH_IDS: Record<BurnCheckDetectorId, StepSettingsControlId> = {
+const CHECK_SEARCH_IDS: Record<BurnCheckDetectorId, SettingsControlId> = {
   sessionsOverDepth: "sessionsOverDepthCheck",
   modelOverthinking: "modelOverthinkingCheck",
   overpoweredSubagents: "overpoweredSubagentsCheck",

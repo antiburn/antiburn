@@ -8,7 +8,7 @@ import type {
 } from "../../../lib/providerUsageIpc"
 import { cn } from "../../../lib/cn"
 import { SegmentedControl } from "../../../components/ui/SegmentedControl"
-import { OverviewAllowanceChart } from "./OverviewAllowanceChart"
+import { OverviewAllowanceBackdrop } from "./OverviewAllowanceBackdrop"
 import { OverviewAllowanceTotals } from "./OverviewAllowanceTotals"
 import { OverviewSpendChart } from "./OverviewSpendChart"
 import { OverviewSpendTotals } from "./OverviewSpendTotals"
@@ -57,7 +57,6 @@ export function OverviewUsage({
   loading?: boolean
 }) {
   const costFailed = usageError && !totals
-  const allowanceFailed = allowanceError && !allowance
 
   const chartAccounts = allowance?.accounts ?? []
   const [selectedTabKey, setSelectedTabKey] = useState<string | null>(
@@ -68,16 +67,11 @@ export function OverviewUsage({
     chartAccounts[0] ??
     null
 
-  // Prototype: the chart starts closed on every load. A headline figure
-  // opens it on that account; the same figure again closes it.
-  const [chartOpen, setChartOpen] = useState(false)
+  // With more than one account, a headline figure picks the account that the
+  // banner draws.
+  const choosable = chartAccounts.length > 1
 
   function selectTab(next: string): void {
-    if (chartOpen && selectedAccount && accountTabKey(selectedAccount) === next) {
-      setChartOpen(false)
-      return
-    }
-    setChartOpen(true)
     setSelectedTabKey(next)
     writeOverviewViewPrefs({ accountTabKey: next })
   }
@@ -85,20 +79,54 @@ export function OverviewUsage({
   return (
     <section
       aria-label="Usage"
-      className="overview-usage flex min-h-0 flex-col gap-(--space-md)"
+      className="overview-usage relative isolate flex min-h-0 flex-1 flex-col gap-(--space-md)"
     >
-      <SegmentedControl
-        options={METRICS}
-        value={metric}
-        onChange={onMetricChange}
-        ariaLabel="Usage unit"
-        variant="text-tabs"
-        size="large"
-        className="self-end"
-      />
+      {metric === "allowance" && !allowanceLoading && (
+        <OverviewAllowanceBackdrop
+          account={selectedAccount}
+          rangeStartEpoch={allowance?.rangeStartEpoch ?? 0}
+          rangeEndEpoch={allowance?.rangeEndEpoch ?? 0}
+        />
+      )}
+      {/* One header row: the figures on the left, the unit tabs on the right.
+          When the figures cannot stay side by side next to the tabs, the
+          tabs wrap to a row above them (wrap-reverse), so the figures keep
+          the full width. Under wrap-reverse, items-end aligns to the top.
+          The basis is the width at which `HeroFigures` stacks its cells. */}
+      <div className="flex flex-wrap-reverse items-end gap-x-(--space-lg) gap-y-(--space-sm)">
+        <div
+          className={cn(
+            "@container min-w-0 flex-1",
+            metric === "cost" || chartAccounts.length > 2 ? "basis-[540px]" : "basis-[360px]",
+          )}
+        >
+          {metric === "cost" ? (
+            !costFailed && <OverviewSpendTotals totals={totals} loading={loading} />
+          ) : (
+            <OverviewAllowanceTotals
+              accounts={chartAccounts}
+              utilizationSpanDays={allowance?.utilizationSpanDays ?? 0}
+              loading={allowanceLoading}
+              error={allowanceError}
+              collecting={allowanceCollecting}
+              selectedKey={choosable && selectedAccount ? accountTabKey(selectedAccount) : null}
+              {...(choosable ? { onSelect: selectTab } : {})}
+            />
+          )}
+        </div>
+        <SegmentedControl
+          options={METRICS}
+          value={metric}
+          onChange={onMetricChange}
+          ariaLabel="Usage unit"
+          variant="text-tabs"
+          size="large"
+          className="ms-auto shrink-0"
+        />
+      </div>
 
-      {metric === "cost" ? (
-        costFailed ? (
+      {metric === "cost" &&
+        (costFailed ? (
           <div className="flex flex-1 items-center justify-center text-center">
             <div>
               <p role="alert" className="type-body text-label-secondary">
@@ -113,45 +141,8 @@ export function OverviewUsage({
             </div>
           </div>
         ) : (
-          <>
-            <OverviewSpendTotals totals={totals} loading={loading} />
-            <OverviewSpendChart days={days} loading={loading} />
-          </>
-        )
-      ) : (
-        <>
-          <OverviewAllowanceTotals
-            accounts={chartAccounts}
-            utilizationSpanDays={allowance?.utilizationSpanDays ?? 0}
-            loading={allowanceLoading}
-            error={allowanceError}
-            collecting={allowanceCollecting}
-            selectedKey={chartOpen && selectedAccount ? accountTabKey(selectedAccount) : null}
-            onSelect={selectTab}
-          />
-
-          {!allowanceFailed && (
-            <div
-              inert={!chartOpen}
-              className={cn(
-                "-mt-(--space-md) grid transition-[grid-template-rows,opacity] duration-medium",
-                chartOpen ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
-              )}
-            >
-              <div className="min-h-0 overflow-hidden">
-                <div className="pt-(--space-md)">
-                  <OverviewAllowanceChart
-                    account={selectedAccount}
-                    rangeStartEpoch={allowance?.rangeStartEpoch ?? 0}
-                    rangeEndEpoch={allowance?.rangeEndEpoch ?? 0}
-                    loading={allowanceLoading}
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-        </>
-      )}
+          <OverviewSpendChart days={days} loading={loading} banner />
+        ))}
     </section>
   )
 }

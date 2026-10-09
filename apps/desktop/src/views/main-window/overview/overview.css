@@ -21,6 +21,9 @@
     transparent
   );
   --overview-entrance-duration: 700ms;
+  /* The date row under a banner, and the key row under the dates. */
+  --overview-banner-dates: 1.75rem;
+  --overview-banner-key: 1.25rem;
 }
 
 .overview-chart-placeholder {
@@ -116,97 +119,30 @@
 }
 
 /*
- * The all-clear mark draws in once. The ring draws round from the top, the
- * tick strokes in after it. The mark keeps its last frame, so it stays complete. The shared
- * reduced-motion rule cuts the animations short, so the mark shows complete.
+ * The Usage card's banners fade out toward the top, so the figures above
+ * them stay legible.
  */
-.overview-all-clear-mark {
-  overflow: visible;
-  animation: overview-all-clear-pop 500ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
-}
-
-.overview-all-clear-ring,
-.overview-all-clear-tick {
-  stroke-dasharray: 1;
-}
-
-.overview-all-clear-ring {
-  transform-box: fill-box;
-  transform-origin: center;
-  /* The ring starts at the top. */
-  transform: rotate(-90deg);
-  animation: overview-all-clear-draw 600ms ease-out both;
-}
-
-.overview-all-clear-tick {
-  animation: overview-all-clear-draw 300ms ease-out 450ms both;
-}
-
-/* The motion clamp keeps the delay, so the tick stays undrawn for it. Under
-   reduced motion, draw the tick at once. */
-@media (prefers-reduced-motion: reduce) {
-  .overview-all-clear-tick {
-    animation-delay: 0ms;
-  }
-}
-
-@keyframes overview-all-clear-pop {
-  from {
-    transform: scale(0.85);
-  }
-  to {
-    transform: scale(1);
-  }
-}
-
-@keyframes overview-all-clear-draw {
-  from {
-    stroke-dashoffset: 1;
-  }
-  to {
-    stroke-dashoffset: 0;
-  }
+.overview-usage-banner {
+  mask-image: linear-gradient(to top, black 25%, transparent 125%);
 }
 
 /*
- * Confetti flies out from the mark's centre to its own offset, turns, then
- * drops a little and fades. The first burst waits for the tick to land. Each
- * piece stays hidden until it starts to move.
+ * A banner's plot grows up from the date row when it mounts, so a switch of
+ * Usage tab draws the new chart in. The reduced-motion clamp in `motion.css`
+ * lands it on the finished state.
  */
-.overview-all-clear-confetti {
-  pointer-events: none;
-  position: absolute;
-  inset: 50% auto auto 50%;
+@keyframes overview-banner-in {
+  from {
+    transform: scaleY(0);
+  }
+
+  to {
+    transform: scaleY(1);
+  }
 }
 
-.overview-all-clear-confetto {
-  position: absolute;
-  top: -7px;
-  left: -7px;
-  opacity: 0;
-  animation: overview-all-clear-confetti 1200ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
-}
-
-.overview-all-clear-confetti-first .overview-all-clear-confetto {
-  animation-delay: 700ms !important;
-}
-
-@keyframes overview-all-clear-confetti {
-  0% {
-    opacity: 0;
-    transform: translate(0, 0) rotate(0) scale(0.4);
-  }
-  10% {
-    opacity: 1;
-  }
-  55% {
-    opacity: 1;
-    transform: translate(var(--confetti-x), var(--confetti-y)) rotate(var(--confetti-turn))
-      scale(1);
-  }
-  100% {
-    opacity: 0;
-    transform: translate(var(--confetti-x), calc(var(--confetti-y) + 24px))
-      rotate(calc(var(--confetti-turn) * 1.4)) scale(1);
-  }
+.overview-banner-in {
+  transform-origin: bottom;
+  animation: overview-banner-in var(--overview-entrance-duration, 700ms) var(--ease-out-quart)
+    backwards;
 }

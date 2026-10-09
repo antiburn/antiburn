@@ -29,13 +29,26 @@ export interface HeroFigureCell {
  * caption.
  *
  * The grid flows by column, so the cell count sets the column count and
- * every cell gets the same share of the row. Below 540px of container width
- * the cells stack. A cell after the first takes a rule on the side that
+ * every cell gets the same share of the row. When the container is too
+ * narrow for the cells, they stack: below 360px for two cells or fewer, and
+ * below 540px for more. A cell after the first takes a rule on the side that
  * faces the one before it — left in the row, top in the stack — and stands
  * off it by the same space.
  *
  * A `dl`, so each cell's label is the term for its figure.
  */
+// Static class sets, so Tailwind finds each container query.
+const STACK = {
+  wide: {
+    grid: "@max-[540px]:grid-flow-row",
+    cell: "@max-[540px]:not-first:border-t @max-[540px]:not-first:border-l-0 @max-[540px]:not-first:ps-0 @max-[540px]:not-first:pt-(--space-md)",
+  },
+  narrow: {
+    grid: "@max-[360px]:grid-flow-row",
+    cell: "@max-[360px]:not-first:border-t @max-[360px]:not-first:border-l-0 @max-[360px]:not-first:ps-0 @max-[360px]:not-first:pt-(--space-md)",
+  },
+} as const
+
 export function HeroFigures({
   cells,
   className,
@@ -43,10 +56,12 @@ export function HeroFigures({
   cells: readonly HeroFigureCell[]
   className?: string
 }) {
+  const stack = cells.length <= 2 ? STACK.narrow : STACK.wide
   return (
     <dl
       className={cn(
-        "grid grid-flow-col auto-cols-[minmax(0,1fr)] gap-(--space-lg) @max-[540px]:grid-flow-row",
+        "grid grid-flow-col auto-cols-[minmax(0,1fr)] gap-(--space-lg)",
+        stack.grid,
         className,
       )}
     >
@@ -58,7 +73,8 @@ export function HeroFigures({
           <div
             key={cell.key}
             className={cn(
-              "min-w-0 border-separator not-first:border-l not-first:ps-(--space-lg) @max-[540px]:not-first:border-t @max-[540px]:not-first:border-l-0 @max-[540px]:not-first:ps-0 @max-[540px]:not-first:pt-(--space-md)",
+              "min-w-0 border-separator not-first:border-l not-first:ps-(--space-lg)",
+              stack.cell,
               selectable && "cursor-pointer transition-opacity duration-fast",
               selectable && cell.selected === false && "opacity-40 hover:opacity-70",
               selectable && cell.selected !== false && "hover:opacity-80",

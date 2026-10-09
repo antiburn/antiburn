@@ -131,8 +131,8 @@ describe("OverviewUsage", () => {
     }
   })
 
-  it("reserves the chart's frame while loading, then draws the legend over the plot", () => {
-    const { rerender } = render(
+  it("draws the allowance banner once the accounts load", () => {
+    const { container, rerender } = render(
       <OverviewUsage
         metric="allowance"
         onMetricChange={vi.fn()}
@@ -142,31 +142,18 @@ describe("OverviewUsage", () => {
         allowanceLoading
       />,
     )
-    const chart = screen.getByRole("region", { name: "Allowance chart" })
-    // Reserved rather than drawn: without it the rest of the page sits a row
-    // too high until the plot arrives.
-    expect(chart.querySelector(".overview-chart-placeholder")).not.toBeNull()
-
+    expect(container.querySelector('[data-usage-banner="allowance"]')).toBeNull()
     rerender(
       <OverviewUsage
         metric="allowance"
         onMetricChange={vi.fn()}
         totals={null}
         days={[]}
-        allowance={summary([
-          account(),
-          account({ provider: "openai", accountKey: "second", displayName: "Codex" }),
-        ])}
+        allowance={summary([account()])}
       />,
     )
-    // Once an account is picked (the first one, by default) the plot draws
-    // its own legend floating over the chart area rather than in a held-open
-    // row above it.
-    expect(
-      within(screen.getByRole("region", { name: "Allowance chart" })).getByRole("list", {
-        name: "Layers",
-      }),
-    ).toBeInTheDocument()
+    expect(container.querySelector('[data-usage-banner="allowance"]')).not.toBeNull()
+    expect(screen.getByRole("list", { name: "Key" })).toBeInTheDocument()
   })
 
   it("hands the page the unit the reader picked", () => {
@@ -180,7 +167,7 @@ describe("OverviewUsage", () => {
     const cell = screen.getByRole("region", { name: "Allowance" })
     expect(within(cell).getByText("Claude")).toBeInTheDocument()
     expect(within(cell).getByText("41%")).toBeInTheDocument()
-    expect(within(cell).getByText("Average subscription usage")).toBeInTheDocument()
+    expect(within(cell).queryByText("Average subscription usage")).not.toBeInTheDocument()
   })
 
   it("explains the figure's window counts and time span", () => {
@@ -201,11 +188,10 @@ describe("OverviewUsage", () => {
       ]),
     })
     const codexFigure = screen.getByRole("button", {
-      name: "Codex 41% Average subscription usage",
+      name: "Codex 41%",
     })
     fireEvent.click(codexFigure)
     expect(codexFigure).toHaveAttribute("aria-pressed", "true")
-    expect(screen.getByText(/Codex: not enough window history/)).toBeInTheDocument()
     expect(onMetricChange).not.toHaveBeenCalled()
     expect(JSON.parse(localStorage.getItem("antiburn.overview.view.v1")!)).toEqual({
       accountTabKey: "openai:second",

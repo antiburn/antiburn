@@ -17,9 +17,6 @@ function progress(overrides: Partial<OverviewProgress> = {}): OverviewProgress {
   return {
     mode: "steady",
     flow: "done",
-    openStep: null,
-    openStepControl: null,
-    openStepControlRevision: 0,
     stepShown: true,
     actionPending: false,
     actionError: null,
@@ -49,6 +46,9 @@ describe("OverviewFixes", () => {
           label: "Model overthinking",
           status: "needsFix",
           estimatedBurnBasisPoints: null,
+          finding: 0,
+          clean: 0,
+          agents: [],
         },
       ],
     })
@@ -72,55 +72,76 @@ describe("OverviewFixes", () => {
           label: "Model overthinking",
           status: "needsFix",
           estimatedBurnBasisPoints: null,
+          finding: 0,
+          clean: 0,
+          agents: [],
         },
         {
           id: "cacheChurn",
           label: "Cache churn",
           status: "passing",
           estimatedBurnBasisPoints: null,
+          finding: 0,
+          clean: 0,
+          agents: [],
         },
         {
           id: "oldModelUsage",
           label: "Old model usage",
           status: "awaitingVerification",
           estimatedBurnBasisPoints: null,
+          finding: 0,
+          clean: 0,
+          agents: [],
         },
         {
           id: "overuseOfFastMode",
           label: "Overuse of fast mode",
           status: "notChecked",
           estimatedBurnBasisPoints: null,
+          finding: 0,
+          clean: 0,
+          agents: [],
         },
       ],
     })
     render(<OverviewFixes onOpenCheck={() => {}} />)
-    expect(screen.getByText("Model overthinking").closest("li")).toHaveTextContent("needs fix")
-    expect(screen.getByText("Cache churn").closest("li")).toHaveTextContent("passing")
+    expect(screen.getByText("Model overthinking").closest("li")).toHaveTextContent("0 failed")
+    expect(screen.getByText("Cache churn").closest("li")).toHaveTextContent("Passed")
     expect(screen.getByText("Old model usage").closest("li")).toHaveTextContent(
-      "awaiting verification",
+      "Awaiting verification",
     )
     expect(screen.getByText("Overuse of fast mode").closest("li")).toHaveTextContent(
-      "not checked",
+      "Not checked",
     )
+    // Failing checks lead the grid; passing checks come last.
+    expect(screen.getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      expect.stringContaining("Model overthinking"),
+      expect.stringContaining("Old model usage"),
+      expect.stringContaining("Overuse of fast mode"),
+      expect.stringContaining("Cache churn"),
+    ])
   })
 
-  it("shows a failing category's problem phrase beside its label", () => {
+  it("shows a failing card's counts and estimated burn", () => {
     snapshot = progress({
       categories: [
         {
           id: "modelOverthinking",
           label: "Model overthinking",
           status: "needsFix",
-          estimatedBurnBasisPoints: null,
+          estimatedBurnBasisPoints: 180,
+          finding: 3,
+          clean: 5,
+          agents: [],
         },
       ],
     })
     render(<OverviewFixes onOpenCheck={() => {}} />)
-    const row = screen.getByText("Model overthinking").closest("li")!
-    expect(row).toHaveTextContent("needs fix")
-    // The phrase itself comes from CHECK_PROBLEM_PHRASES; this only checks the
-    // row renders more than the label and status for a failing category.
-    expect(row.querySelectorAll("span").length).toBeGreaterThan(2)
+    const card = screen.getByText("Model overthinking").closest("li")!
+    expect(card).toHaveTextContent("3 failed")
+    expect(card).toHaveTextContent("5 passed")
+    expect(card).toHaveTextContent("estimated burn")
   })
 
   it("renders no categories when none are reported", () => {
@@ -130,7 +151,7 @@ describe("OverviewFixes", () => {
     expect(screen.queryByRole("listitem")).toBeNull()
   })
 
-  it("celebrates when every check passes or is snoozed, and shows the list on request", () => {
+  it("shows the list when every check passes or is snoozed", () => {
     snapshot = progress({
       categories: [
         {
@@ -138,62 +159,24 @@ describe("OverviewFixes", () => {
           label: "Model overthinking",
           status: "passing",
           estimatedBurnBasisPoints: null,
+          finding: 0,
+          clean: 0,
+          agents: [],
         },
         {
           id: "unusedSkills",
           label: "Unused skills",
           status: "snoozed",
           estimatedBurnBasisPoints: null,
+          finding: 0,
+          clean: 0,
+          agents: [],
         },
       ],
     } as Partial<OverviewProgress>)
     render(<OverviewFixes onOpenCheck={() => {}} />)
-    expect(screen.getByText(/passed or snoozed/)).toHaveTextContent(
-      "All checks passed or snoozed",
-    )
-    expect(screen.queryByRole("heading", { name: "Config checks" })).toBeNull()
-    expect(screen.queryByRole("button", { name: /Model overthinking/ })).toBeNull()
-    fireEvent.click(screen.getByRole("button", { name: "All checks" }))
+    expect(screen.getByRole("heading", { name: "Config checks" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /Model overthinking/ })).toBeInTheDocument()
-  })
-
-  it("shows the list, not the celebration, while a check needs a fix", () => {
-    snapshot = progress({
-      categories: [
-        {
-          id: "modelOverthinking",
-          label: "Model overthinking",
-          status: "passing",
-          estimatedBurnBasisPoints: null,
-        },
-        {
-          id: "unusedSkills",
-          label: "Unused skills",
-          status: "needsFix",
-          estimatedBurnBasisPoints: null,
-        },
-      ],
-    } as Partial<OverviewProgress>)
-    render(<OverviewFixes onOpenCheck={() => {}} />)
-    expect(screen.queryByText("All checks passed or snoozed")).toBeNull()
-  })
-
-  it("shows the celebration again after the user leaves the Overview and returns", () => {
-    snapshot = progress({
-      categories: [
-        {
-          id: "modelOverthinking",
-          label: "Model overthinking",
-          status: "passing",
-          estimatedBurnBasisPoints: null,
-        },
-      ],
-    } as Partial<OverviewProgress>)
-    const { rerender } = render(<OverviewFixes active onOpenCheck={() => {}} />)
-    fireEvent.click(screen.getByRole("button", { name: "All checks" }))
-    expect(screen.queryByText(/passed or snoozed/)).toBeNull()
-    rerender(<OverviewFixes active={false} onOpenCheck={() => {}} />)
-    rerender(<OverviewFixes active onOpenCheck={() => {}} />)
-    expect(screen.getByText(/passed or snoozed/)).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Unused skills/ })).toBeInTheDocument()
   })
 })

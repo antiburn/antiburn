@@ -155,9 +155,7 @@ function TakeoverStep({
     <>
       <ProgressStepCard
         step={step}
-        surface="firstRun"
         progress={progress}
-        isSteady={false}
         transitionName={progressStepTransitionName(step)}
         bodyAction={
           step !== "fixes" && (
@@ -195,15 +193,20 @@ function TakeoverStep({
 
 export function FirstRunTakeover({
   onOpenChecks,
+  className,
 }: {
   onOpenChecks: (check: BurnCheckDetectorId | undefined) => void
+  className?: string
 }) {
   const progress = useOverviewProgress()
 
   return (
     <fieldset
       disabled={progress.actionPending}
-      className="flex flex-1 flex-col items-center justify-center p-(--space-2xl)"
+      className={cn(
+        "flex flex-1 flex-col items-center justify-center p-(--space-2xl)",
+        className,
+      )}
     >
       <div className="flex w-full max-w-xl flex-col items-center gap-(--space-lg)">
         {!progress.stepShown ? null : progress.flow === "welcome" ? (

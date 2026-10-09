@@ -9,6 +9,9 @@
  */
 export const SETTINGS_PANES = [
   { id: "general", label: "General" },
+  { id: "agents", label: "Agents" },
+  { id: "sessions", label: "Sessions" },
+  { id: "checks", label: "Checks" },
   { id: "notifications", label: "Notifications" },
   { id: "usage", label: "Usage" },
   { id: "appearance", label: "Appearance" },
