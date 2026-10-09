@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-archive-agent-memory"
+description = "Enables the archive_agent_memory command without any pre-configured scope."
+commands.allow = ["archive_agent_memory"]
+
+[[permission]]
+identifier = "deny-archive-agent-memory"
+description = "Denies the archive_agent_memory command without any pre-configured scope."
+commands.deny = ["archive_agent_memory"]

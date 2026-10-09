@@ -1,4 +1,4 @@
-/* Session rows change fill without scaling the thin Burn Check geometry. */
+/* Session rows change fill only. */
 .session-card {
   transition-property: background-color;
   transition-duration: var(--duration-fast);
@@ -7,7 +7,6 @@
 
 .session-card:active {
   opacity: 1;
-  transform: none;
 }
 
 /* Crossfade context without changing the card geometry. */

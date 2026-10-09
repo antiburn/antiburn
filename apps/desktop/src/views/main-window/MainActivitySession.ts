@@ -29,6 +29,7 @@ import {
   type SurfaceOrigin,
   type SessionFilterAction,
 } from "../../lib/ipc"
+import { getSessionMemories, type SessionMemoriesPayload } from "../../lib/memoriesIpc"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import { listInterests, liveSessions, withRegistryActivity } from "../../lib/sessionLifecycle"
 import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
@@ -66,6 +67,8 @@ export interface MainActivitySnapshot {
   allocations: SessionLimitAllocationSummaryPayload
   /** The open subject's quota contributions, loaded alongside its analysis. */
   sessionQuota: SessionQuotaPayload | null
+  /** The memories the open subject read or wrote, loaded beside its quota. */
+  sessionMemories: SessionMemoriesPayload | null
   filters: SessionFilters
   remoteHosts: readonly RemoteHost[]
   remoteHostsLoaded: boolean
@@ -206,6 +209,7 @@ export class MainActivitySession {
     liveUsage: EMPTY_LIVE_USAGE,
     allocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
     sessionQuota: null,
+    sessionMemories: null,
     filters: parseSessionFilters(DEFAULT_SETTINGS.sessionFilter),
     remoteHosts: [],
     remoteHostsLoaded: false,
@@ -237,6 +241,10 @@ export class MainActivitySession {
   private sessionQuotaRun = 0
   private sessionQuotaTask: Promise<void> | null = null
   private sessionQuotaDirty = false
+  private sessionMemoriesVersion = 0
+  private sessionMemoriesRun = 0
+  private sessionMemoriesTask: Promise<void> | null = null
+  private sessionMemoriesDirty = false
   private usageTask: Promise<void> | null = null
   private usageDirty = false
   private usageRevision = 0
@@ -469,6 +477,7 @@ export class MainActivitySession {
       // trigger, per loadSessionQuota's contract.
       this.refreshAnalysis()
       this.refreshSessionQuota()
+      this.refreshSessionMemories()
     }
     if (
       this.snapshot.active &&
@@ -539,6 +548,8 @@ export class MainActivitySession {
       this.analysisTask = null
       this.sessionQuotaRun += 1
       this.sessionQuotaTask = null
+      this.sessionMemoriesRun += 1
+      this.sessionMemoriesTask = null
     }
     if (listActive) {
       const rows = this.snapshot.entries
@@ -560,6 +571,7 @@ export class MainActivitySession {
         if (hadSubject || this.snapshot.subject === null) {
           this.refreshAnalysis()
           this.refreshSessionQuota()
+          this.refreshSessionMemories()
         }
       }
     }
@@ -575,6 +587,9 @@ export class MainActivitySession {
     this.sessionQuotaVersion += 1
     this.sessionQuotaRun += 1
     this.sessionQuotaTask = null
+    this.sessionMemoriesVersion += 1
+    this.sessionMemoriesRun += 1
+    this.sessionMemoriesTask = null
     this.initialized = false
     this.visible = false
     this.listRunning = false
@@ -674,6 +689,9 @@ export class MainActivitySession {
     this.sessionQuotaVersion += 1
     this.sessionQuotaRun += 1
     this.sessionQuotaTask = null
+    this.sessionMemoriesVersion += 1
+    this.sessionMemoriesRun += 1
+    this.sessionMemoriesTask = null
     this.update({
       subject,
       history,
@@ -681,9 +699,11 @@ export class MainActivitySession {
       loading: true,
       refreshing: false,
       sessionQuota: null,
+      sessionMemories: null,
     })
     this.refreshAnalysis()
     this.refreshSessionQuota()
+    this.refreshSessionMemories()
     if (!this.restoringNavigation) this.onNavigation?.(origin)
   }
 
@@ -695,6 +715,9 @@ export class MainActivitySession {
     this.sessionQuotaVersion += 1
     this.sessionQuotaRun += 1
     this.sessionQuotaTask = null
+    this.sessionMemoriesVersion += 1
+    this.sessionMemoriesRun += 1
+    this.sessionMemoriesTask = null
     this.update({
       subject: null,
       history: [],
@@ -702,6 +725,7 @@ export class MainActivitySession {
       loading: false,
       refreshing: false,
       sessionQuota: null,
+      sessionMemories: null,
     })
   }
 
@@ -810,6 +834,53 @@ export class MainActivitySession {
         })
         if (version !== this.sessionQuotaVersion || work !== this.workVersion) continue
         this.update({ sessionQuota })
+      } catch {
+        // Keep the last good payload; a failed load is not shown.
+      }
+    }
+  }
+
+  refreshSessionMemories = (): void => {
+    this.sessionMemoriesVersion += 1
+    this.sessionMemoriesDirty = true
+    if (!this.snapshot.active || !this.snapshot.subject || this.sessionMemoriesTask) return
+    const run = ++this.sessionMemoriesRun
+    this.sessionMemoriesTask = this.loadSessionMemories(run).finally(() => {
+      if (run !== this.sessionMemoriesRun) return
+      this.sessionMemoriesTask = null
+      if (this.sessionMemoriesDirty && this.snapshot.active && this.snapshot.subject)
+        this.refreshSessionMemories()
+    })
+  }
+
+  /**
+   * The memories one subject read or wrote. A failure keeps the last good
+   * value, so it never blanks the rest of the detail view.
+   */
+  private async loadSessionMemories(run: number): Promise<void> {
+    while (
+      run === this.sessionMemoriesRun &&
+      this.sessionMemoriesDirty &&
+      this.snapshot.active &&
+      this.snapshot.subject
+    ) {
+      this.sessionMemoriesDirty = false
+      const subject = this.snapshot.subject
+      const version = this.sessionMemoriesVersion
+      const work = this.workVersion
+      try {
+        if (subject.remoteHostId) {
+          this.update({ sessionMemories: null })
+          continue
+        }
+        const sessionMemories = await getSessionMemories({
+          agent: subject.agent,
+          sessionId: subject.subagent?.parentSessionId ?? subject.sessionId,
+          wslDistro: subject.wslDistro ?? null,
+          remoteHostId: null,
+        })
+        if (version !== this.sessionMemoriesVersion || work !== this.workVersion) continue
+        this.update({ sessionMemories })
       } catch {
         // Keep the last good payload; a failed load is not shown.
       }

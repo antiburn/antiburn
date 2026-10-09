@@ -2,7 +2,7 @@
 
 mod config;
 mod editor;
-mod filesystem;
+pub(crate) mod filesystem;
 mod inventory;
 mod vendors;
 

@@ -3,21 +3,20 @@
    ========================================================================== */
 
 /* Every button gets the same press feedback, so a control that opts out has
-   to say so explicitly rather than every control opting in. Unlayered, which
-   means a call site cancels it with `active:transform-none` rather than by
-   racing Tailwind's utility layer. */
+   to say so explicitly rather than every control opting in. The feedback is
+   opacity only: a pressed button must not move or shrink, because a wide
+   button then shifts its content and slides out from under a pointer near
+   its edge. Unlayered, so a call site cancels it with `active:opacity-100`. */
 button,
 [role="button"] {
   transition:
     opacity 120ms ease-out,
-    transform 80ms ease-out,
     background-color 120ms ease-out;
 }
 
 button:active,
 [role="button"]:active {
   opacity: 0.85;
-  transform: scale(0.98);
 }
 
 /* --- Push button --- */

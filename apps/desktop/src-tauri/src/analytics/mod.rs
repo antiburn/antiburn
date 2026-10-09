@@ -122,6 +122,9 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::ProjectFolderAction { action, outcome } => {
             let _ = (action, outcome);
         }
+        event::Interaction::MemoryAction { action, outcome } => {
+            let _ = (action, outcome);
+        }
         event::Interaction::SessionFilterSelected { filter, agent } => {
             let _ = (filter, agent);
         }

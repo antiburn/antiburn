@@ -45,6 +45,7 @@ use crate::dto::{
 };
 use crate::first_run_gate::{FirstRunGate, FirstRunStage};
 pub(crate) mod local_usage;
+pub(crate) mod memories;
 pub(crate) mod quota;
 #[cfg(test)]
 mod reader_routing_tests;

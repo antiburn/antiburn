@@ -775,6 +775,37 @@ not start a new exposure; it stays the same visit. No provider, account,
 lane, dollar figure, or session identity is collected. The existing consent
 and build gates apply.
 
+### Memories view — 2026-10-08
+
+Question: do readers open the Memories audit, and does it find memories? The
+main window's Memories section adds a `memories` value to the existing
+`surface_viewed` and `surface_state_observed` label vocabularies, with the
+same rules as every other main-window section: one `surface_viewed` per
+deliberate show, and at most one `ready`/`empty`/`error`/`loading_timeout`
+per distinct state per exposure. `ready` means at least one project is
+listed, `empty` means none is, and `error` means the command failed. The
+tracker owns `loading_timeout`. Expanding a row, collapsing a project, and
+reloading on re-entry stay inside the same visit. No project path, memory
+name, count, or content leaves the device. The existing consent and build
+gates apply.
+
+Question: do people act on what the audit shows them? One `memory_action`
+event fires after each Reveal, Delete, Undo, or Remove line settles. The
+denominator is installations with a `surface_viewed` for `memories` in the
+period. Read the event by `label` and `detail`:
+
+| `label`             | `detail` values                                          | Reading                                                      |
+| ------------------- | -------------------------------------------------------- | ------------------------------------------------------------ |
+| `reveal`            | `succeeded`, `failed`                                    | How often people open a file to read it in full.             |
+| `archive`           | `succeeded`, `failed`, `changed_on_disk`, `unsupported`  | How often people delete a memory. `changed_on_disk` counts stale views, not errors. |
+| `restore`           | `succeeded`, `failed`, `changed_on_disk`, `unsupported`  | Undo use. A high restore-to-archive ratio means deletes are regretted. |
+| `remove_index_line` | `succeeded`, `failed`, `changed_on_disk`, `unsupported`  | How often people clear a dangling index line.                |
+| `open_from_session` | `succeeded`                                              | How often a session detail row opens a memory in the Memories view. |
+
+Exclusions: `unsupported` installations (Windows) cannot act, so leave them
+out of the archive, restore and remove_index_line rates. The event carries no count, path, name,
+or content. Rates use action counts per viewing installation, not per memory.
+
 ### Quota window accuracy — 2026-09-18
 
 Question: for each closed quota window, did the dollars-only estimate land

@@ -82,7 +82,7 @@ export function ChecksSummary({
           focused.current = false
           if (!hovered.current) onLeave()
         }}
-        className="min-w-0 flex-1 cursor-pointer rounded-control text-left disabled:opacity-100 active:transform-none active:opacity-100"
+        className="min-w-0 flex-1 cursor-pointer rounded-control text-left disabled:opacity-100 active:opacity-100"
       >
         <BurnCheckSummary presentation={burnChecks} />
       </button>

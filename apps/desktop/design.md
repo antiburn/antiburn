@@ -461,7 +461,7 @@ motion:
   --ease-out-quart: cubic-bezier(0.23, 1, 0.32, 1)
   # Recipes, for the timings the tokens above do not carry. Animation timings
   # stay with the keyframes that own them.
-  button: "transform 80ms / opacity 120ms ease-out; :active scale(0.98) opacity 0.85"
+  button: "opacity 120ms ease-out; :active opacity 0.85, no transform"
   menu-in: "120ms ease-out from trigger origin"
   tooltip-in: "100ms"
   switch: "180ms ease-out track + thumb"
@@ -611,36 +611,6 @@ Notes for what isn't expressible as a token:
   `measure` ink, with a `type-caption text-label-tertiary` line under it, cells parted by a
   hairline, stacking when their container narrows. A figure's method goes in its tooltip.
   A new headline number joins this row rather than drawing its own.
-
-- **Limits page** — the scope picker is a pill that floats over the bottom centre of
-  the page, in the shape of the session detail's section picker and in its selected
-  chip colours for its whole length: `rounded-full`, `bg-selected-fill`,
-  `text-selected-ink`, `shadow-raised`, 2px track padding, and `type-callout` labels.
-  Account › lane › range are its segments, each a `rounded-full` menu button at least
-  24px tall with 12px inline padding, washed with `selected-ink` at 10% on hover and 15%
-  while its menu is open; a `›` at 50% opacity sits between segments. The chevron shows
-  only on hover, focus, or while the menu is open (`quota-jump-chevron`); a level with
-  one choice is plain text. The range menu lists every preset and greys one that ends
-  before the lane's first reading at 40% opacity, with "· no readings" after its label.
-  The range reads in the lane's own words ("Last 3 weeks" on a weekly lane, "Last 3
-  windows" on a 5-hour lane); the "last reading" note at the top right is
-  `type-footnote text-label-tertiary`. The chart always spans the whole window, start
-  to reset, with the open window's data ending at "now" and the pace line ending at the
-  same point; local midnights (or whole hours on a 5-hour lane) label the axis. The
-  pace-line toggle is a small `type-footnote` push button under the chart's right edge,
-  24px tall on `bg-surface-secondary` in secondary ink with `rounded-control` and 8px
-  inline padding, reading "Show pace" or "Hide pace" for what a press does. A range with nothing to show renders a centred `Gauge`
-  icon in tertiary ink over a `type-body` title and a `type-callout` caption that says
-  when readings began. Session rows follow the session-card recipe (`bg-session-card`,
-  `rounded-control`, 12px by 8px padding, 6px gaps, `hover:bg-surface-secondary/50`)
-  with the agent icon, a regular-weight `type-body` title, and at the right the colour
-  swatch beside the percent, then the dollars in secondary ink. The swatch sits with the
-  figure it explains, not at the row's edge, so the row starts with the agent icon like
-  a session card; the "other", "unattributed" and "unexplained" rows use `surface-card/50` and
-  secondary ink. The list sizes to its rows up to 45% of the column and the chart takes
-  the rest (`quota-session-list` in `quota.css`). Sessions above the percentage
-  threshold remain individually visible without a count limit. Hover identifies each
-  session across the chart and list, including sessions that reuse a shade.
 
 - **Popover spend summary** — one shared `surface-card` card uses `rounded-control`,
   a 12px top inset, 8px side insets, 12px horizontal and 8px vertical internal padding, and three equal columns with 8px gaps.

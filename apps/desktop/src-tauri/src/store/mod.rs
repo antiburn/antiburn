@@ -33,6 +33,7 @@ mod check_preferences;
 pub(crate) use check_preferences::{check_preferences_snapshot_in, enabled_checks_in};
 pub(crate) mod codex_rollout_checkpoint;
 mod evidence_queue;
+pub(crate) mod memories;
 pub mod model;
 pub(crate) mod provider_limit;
 pub(crate) mod provider_usage_history;

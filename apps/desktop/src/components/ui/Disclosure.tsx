@@ -47,14 +47,10 @@ export function Disclosure({
         }}
         // No hover fill and no press feedback: these sit on the bare window
         // surface as prose, not as list rows, and the global button:active
-        // scale/opacity rule (styles/controls.css) made a paragraph heading
+        // opacity rule (styles/controls.css) made a paragraph heading
         // twitch. The chevron rotation is the affordance.
-        // `active:transform-none` is what actually cancels that rule —
-        // Tailwind's `scale-*` sets the separate `scale` property and composes
-        // with its `transform` instead.
-        className="flex w-full items-center justify-between gap-3 rounded-control px-1 py-3 text-left active:transform-none active:opacity-100"
+        className="flex w-full items-center gap-3 rounded-control px-1 py-3 text-left active:opacity-100 hover:opacity-70"
       >
-        <span className="type-body text-label">{label}</span>
         <ChevronDown
           size={14}
           strokeWidth={2}
@@ -64,6 +60,7 @@ export function Disclosure({
             open && "rotate-180",
           )}
         />
+        <span className="type-body text-label">{label}</span>
       </button>
       {/* Unmounted rather than hidden when collapsed, so collapsed prose stays
           out of the accessibility tree and out of find-in-page. */}
