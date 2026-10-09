@@ -80,6 +80,39 @@ afterEach(() => {
 })
 
 describe("OverviewUsage", () => {
+  it.each([20, 100])("keeps a %s%% peak on the fixed allowance scale", (peakPercent) => {
+    renderTotals({
+      allowance: summary([
+        account({
+          chart: {
+            shortWindows: [{ startsAtEpoch: 0, resetsAtEpoch: 86400, peakPercent }],
+            weeklyWindows: [
+              {
+                lane: "weekly",
+                startsAtEpoch: 0,
+                resetsAtEpoch: 7 * 86400,
+                points: [
+                  { atEpoch: 0, percent: 0 },
+                  { atEpoch: 86400, percent: peakPercent },
+                ],
+              },
+            ],
+            rolling: [],
+          },
+        }),
+      ]),
+    })
+    for (const label of ["0%", "25%", "50%", "75%", "100%"]) {
+      expect(screen.getByText(label, { exact: true })).toBeVisible()
+    }
+    const plot = document.querySelector('[data-usage-banner="allowance"] svg')!
+    expect(plot.querySelector("rect")).toHaveAttribute("height", String(peakPercent))
+    expect(plot.querySelector("rect")).toHaveAttribute("y", String(100 - peakPercent))
+    expect(plot.querySelector('path[fill="none"]')?.getAttribute("d")).toContain(
+      `,${100 - peakPercent}`,
+    )
+  })
+
   it("shows the spend figures on the cost branch and the meters on the allowance branch", () => {
     const { rerender } = render(
       <OverviewUsage

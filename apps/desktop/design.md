@@ -878,8 +878,13 @@ Notes for what isn't expressible as a token:
   collects between them.
 - **Overview usage banner** — both Usage tabs draw their chart behind the figures, not under
   them: the Cost tab's daily spend by agent, and the Subscription tab's weekly fill and 5-hour
-  peaks in `context-stroke` tints. The chart has no axes. It scales to its own peak so low usage
-  still fills the card, and fades toward the top. The figures and the unit tabs share the top
+  peaks in `context-stroke` tints. Subscription uses a fixed 0–100% scale with guide lines
+  and right-side labels at 0%, 25%, 50%, 75%, and 100%. Reserve a 3rem value-axis gutter
+  (`--overview-banner-value-axis`); align the plot, dates, and hover targets before it,
+  and keep the header controls clear of the labels.
+  Axis labels use secondary caption ink and stay outside the plot's fade and entrance animation.
+  Cost scales to its own peak and has no value axis. Both plots fade toward the top.
+  The figures and the unit tabs share the top
   row; when the figures need the full width to stay side by side, the tabs move to a row above. A date row (every 7 days and "Today") and then the key close the card, and the lower half shows a tooltip for each day:
   a `UsageBannerTip` card with the day's figure and one row and share bar per layer. The
   hovered day takes a faint band, and on the Cost tab the other days' columns dim. With more

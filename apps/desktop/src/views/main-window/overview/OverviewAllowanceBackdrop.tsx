@@ -17,8 +17,7 @@ import { UsageBanner, UsageBannerTip } from "./UsageBanner"
 /** Width of the drawing in viewBox units. The height is the percent scale. */
 const SPAN = 1000
 
-/** The highest point of the drawing, in percent of its height. */
-const HEADROOM = 85
+const GUIDE_PERCENTS = [100, 75, 50, 25, 0]
 
 /** The banner draws no average line, so its key leaves that entry out. */
 const KEY_ITEMS = LEGEND_ITEMS.filter((item) => item.key !== "rolling")
@@ -41,19 +40,22 @@ export function OverviewAllowanceBackdrop({
   const range = rangeEndEpoch - rangeStartEpoch
   if (!account || range <= 0) return null
   const x = (epoch: number) => ((epoch - rangeStartEpoch) / range) * SPAN
-  // Scale to the account's own peak so low usage still fills the card.
-  const peak = Math.max(
-    1,
-    ...account.chart.shortWindows.map((window) => window.peakPercent),
-    ...account.chart.weeklyWindows.flatMap((window) =>
-      window.points.map((point) => point.percent),
-    ),
-  )
-  const height = (percent: number) => (percent / peak) * HEADROOM
+  const height = (percent: number) => Math.min(100, Math.max(0, percent))
   const y = (percent: number) => 100 - height(percent)
   const slots = chartDaySlots(rangeStartEpoch, rangeEndEpoch)
   const plot = (
     <svg viewBox={`0 0 ${SPAN} 100`} preserveAspectRatio="none" className="size-full">
+      {GUIDE_PERCENTS.map((percent) => (
+        <line
+          key={percent}
+          x1={0}
+          x2={SPAN}
+          y1={y(percent)}
+          y2={y(percent)}
+          vectorEffect="non-scaling-stroke"
+          className="stroke-separator"
+        />
+      ))}
       {account.chart.shortWindows.map((window) => (
         <rect
           key={`${window.startsAtEpoch}-${window.resetsAtEpoch}`}
@@ -91,6 +93,10 @@ export function OverviewAllowanceBackdrop({
       name="allowance"
       plot={plot}
       keyItems={KEY_ITEMS}
+      valueAxis={GUIDE_PERCENTS.map((percent) => ({
+        text: `${percent}%`,
+        at: y(percent) / 100,
+      }))}
       dates={slots
         .flatMap((slot) => {
           const text = dayAxisLabel(slot)

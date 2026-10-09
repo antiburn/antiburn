@@ -93,7 +93,15 @@ export function OverviewUsage({
           tabs wrap to a row above them (wrap-reverse), so the figures keep
           the full width. Under wrap-reverse, items-end aligns to the top.
           The basis is the width at which `HeroFigures` stacks its cells. */}
-      <div className="flex flex-wrap-reverse items-end gap-x-(--space-lg) gap-y-(--space-sm)">
+      <div
+        className={cn(
+          "flex flex-wrap-reverse items-end gap-x-(--space-lg) gap-y-(--space-sm)",
+          metric === "allowance" &&
+            selectedAccount &&
+            !allowanceLoading &&
+            "pr-[calc(var(--overview-banner-value-axis)-var(--space-lg))]",
+        )}
+      >
         <div
           className={cn(
             "@container min-w-0 flex-1",

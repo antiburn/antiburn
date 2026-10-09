@@ -24,6 +24,7 @@
   /* The date row under a banner, and the key row under the dates. */
   --overview-banner-dates: 1.75rem;
   --overview-banner-key: 1.25rem;
+  --overview-banner-value-axis: 3rem;
 }
 
 .overview-chart-placeholder {
