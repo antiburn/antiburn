@@ -3,6 +3,7 @@ description = "Compatibility permissions for antiburn's existing interactive win
 permissions = [
   "allow-add-scan-root",
   "allow-add-remote-host",
+  "allow-agent-session-locations",
   "allow-app-info",
   "allow-begin-popover-hold",
   "allow-cancel-scan",

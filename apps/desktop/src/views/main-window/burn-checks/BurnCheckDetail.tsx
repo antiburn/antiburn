@@ -173,7 +173,7 @@ export function CheckPromptAction({
         type="button"
         disabled={busy}
         onClick={() => void copy()}
-        className="burn-check-action type-callout gap-1 disabled:opacity-100"
+        className="burn-check-action burn-check-action-primary type-callout gap-1 disabled:opacity-100"
       >
         {copied ? (
           <Check size={12} className="text-token-in" aria-hidden="true" />

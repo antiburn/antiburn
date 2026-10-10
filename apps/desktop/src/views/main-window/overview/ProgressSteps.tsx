@@ -1,8 +1,3 @@
-// The first-run steps' live content: shared by the takeover's centred card
-// (`FirstRunTakeover.tsx`) and a docked row's modal (`ProgressNav.tsx`). Each
-// component renders one step's data; the card chrome, title, body copy, and
-// buttons belong to its caller.
-
 import type { ReactNode } from "react"
 
 import { CountUp } from "../../../components/ui/CountUp"
@@ -17,18 +12,10 @@ import {
 import {
   fixesFound,
   type FixCategory,
-  type HistoryProgress,
   type OverviewProgress,
   type ProgressStepKey,
 } from "./overviewProgressStore"
 
-/**
- * The Sessions step's folder-permission queue, wired to the store's granted
- * callback. Shared by the takeover and the modal, so both react the same
- * way once a folder is granted: a rescan already feeds back through the
- * store's own scan-status subscription, which refreshes `read.deferred`
- * once that pass finishes.
- */
 function useReadPermissionFlow(progress: OverviewProgress): FolderPermissionFlow {
   return useFolderPermissionFlow(progress.sessions.deferred, () => {
     noteInteraction({ kind: "firstRunAction", action: "folder_access_granted" })
@@ -48,12 +35,32 @@ function capitalize(value: string): string {
   return value.length === 0 ? value : value[0]!.toUpperCase() + value.slice(1)
 }
 
-function fixesSubtitle(failing: FixCategory[]): string {
-  const phrases = failing.map((category) => CHECK_PROBLEM_PHRASES[category.id])
-  const shown = phrases.slice(0, 3)
-  const remaining = phrases.length - shown.length
-  const sentence = shown.map((phrase, index) => (index === 0 ? capitalize(phrase) : phrase))
-  return remaining > 0 ? `${sentence.join(", ")}, +${remaining} more` : sentence.join(", ")
+const COUNT_WORDS = [
+  "zero",
+  "one",
+  "two",
+  "three",
+  "four",
+  "five",
+  "six",
+  "seven",
+  "eight",
+  "nine",
+  "ten",
+]
+
+function countWord(count: number): string {
+  return COUNT_WORDS[count] ?? String(count)
+}
+
+function FixesList({ failing }: { failing: FixCategory[] }) {
+  return (
+    <ul className="mx-auto flex list-disc flex-col gap-(--space-sm) ps-6 text-start type-title-3 font-normal! text-label-secondary">
+      {failing.map((category) => (
+        <li key={category.id}>{capitalize(CHECK_PROBLEM_PHRASES[category.id])}</li>
+      ))}
+    </ul>
+  )
 }
 
 function StepProgressBar({
@@ -72,14 +79,14 @@ function StepProgressBar({
   const value = started ? (total === 0 ? 1 : completed / total) : 0
 
   return (
-    <div className="flex items-center gap-x-3">
+    <div className="flex flex-col items-center gap-(--space-xs)">
       <div
         role="progressbar"
         aria-label={title}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(value * 100)}
-        className="flex-1 h-2 overflow-hidden rounded-full bg-surface-tertiary opacity-70"
+        className="h-2 w-full overflow-hidden rounded-full bg-surface-tertiary opacity-70"
       >
         <div
           className="h-full rounded-full bg-brand-tint transition-[width] duration-medium ease-out"
@@ -87,7 +94,7 @@ function StepProgressBar({
         />
       </div>
 
-      <span className="type-body flex items-baseline justify-end tabular-nums">
+      <span className="type-callout flex items-baseline tabular-nums text-label-secondary">
         {!started ? (
           "Waiting"
         ) : total === 0 ? (
@@ -102,31 +109,6 @@ function StepProgressBar({
   )
 }
 
-/** The Sessions step's footnote for the background history pass. One line,
- *  under the step's progress bar; nothing shows once the pass is done. */
-function HistoryFootnote({ history }: { history: HistoryProgress }) {
-  switch (history.state) {
-    case "pending":
-      return (
-        <p className="type-footnote text-label-tertiary">
-          Older sessions are read once checks finish.
-        </p>
-      )
-    case "looking":
-      return <p className="type-footnote text-label-tertiary">Looking for older sessions…</p>
-    case "reading":
-      return (
-        <p className="type-footnote text-label-tertiary">
-          Reading older sessions · {fmt(history.completed)} of {fmt(history.total)}
-        </p>
-      )
-    case "done":
-      return null
-  }
-}
-
-/** The Agents step's own content: a row of agent logos. No heading row — the
- *  card around it already carries the step's title. */
 function AgentsStepRow({ snapshot }: { snapshot: OverviewProgress }) {
   const { rows } = snapshot.agents
 
@@ -162,11 +144,6 @@ function AgentsStepRow({ snapshot }: { snapshot: OverviewProgress }) {
   )
 }
 
-/**
- * One line asking for the protected folders the last pass could not read,
- * with a button that starts {@link useFolderPermissionFlow}'s queue. Shown
- * wherever the Sessions step's content shows.
- */
 function ReadFolderPermissionNotice({
   deferredCount,
   permissionFlow,
@@ -216,8 +193,6 @@ function SessionsStepRow({
     <div className="flex flex-col gap-2">
       <StepProgressBar {...data} />
 
-      {snapshot.history && <HistoryFootnote history={snapshot.history} />}
-
       {snapshot.sessions.deferred.length > 0 && (
         <ReadFolderPermissionNotice
           deferredCount={snapshot.sessions.deferred.length}
@@ -228,16 +203,10 @@ function SessionsStepRow({
   )
 }
 
-function ChecksStepRow({
-  snapshot,
-  isSteady,
-}: {
-  snapshot: OverviewProgress
-  isSteady: boolean
-}) {
-  const { windowSessions, pendingEvidence } = snapshot.checks
-  const started = isSteady || snapshot.sessions.done
-  const completed = Math.max(0, windowSessions - pendingEvidence)
+function ChecksStepRow({ snapshot }: { snapshot: OverviewProgress }) {
+  const { windowSessions, pendingEvidence, deferredEvidence } = snapshot.checks
+  const started = snapshot.sessions.done
+  const completed = Math.max(0, windowSessions - (pendingEvidence - deferredEvidence))
 
   const data = {
     completed,
@@ -254,147 +223,152 @@ function ChecksStepRow({
   )
 }
 
-/** The takeover's primary action, such as Next or Turn on live limits. */
 export const PRIMARY_BUTTON =
-  "rounded-control bg-brand-tint px-8 py-2.5 type-headline font-semibold! text-white shadow-[var(--shadow-raised)] transition-[filter] duration-fast hover:brightness-110 active:brightness-95 disabled:opacity-50"
+  "rounded-control bg-brand-tint px-10 py-3 type-title-3 font-semibold! text-white shadow-[var(--shadow-raised)] transition-[filter] duration-fast hover:brightness-110 active:brightness-95 disabled:opacity-50"
 
-/** The quiet way past a step's primary action, under it. */
 export const SKIP_BUTTON =
-  "type-footnote text-label-secondary underline underline-offset-[3px] hover:text-label"
+  "type-callout text-label-secondary underline underline-offset-[3px] hover:text-label"
 
-/**
- * One step's card chrome: a title, one or two lines of body copy, and the
- * step's own live content below. Shared by the takeover (which adds its own
- * Next button after this) and a docked row's modal (which adds none), so
- * both show literally the same card.
- */
 function StepCard({
   transitionName,
   title,
   body,
+  bodyAction,
+  childrenFirst = false,
   children,
 }: {
   transitionName: string | undefined
   title: string
   body?: string
+  bodyAction?: ReactNode
+  childrenFirst?: boolean
   children?: ReactNode
 }) {
+  const content = children && (
+    <div className="mx-auto flex w-full max-w-lg flex-col gap-(--space-md)">{children}</div>
+  )
   return (
     <div
       style={transitionName ? { viewTransitionName: transitionName } : undefined}
-      className="flex w-full max-w-lg flex-col items-center gap-(--space-lg)"
+      className="flex w-full max-w-xl flex-col items-center gap-(--space-lg)"
     >
+      {childrenFirst && content}
       <div className="flex flex-col gap-(--space-xs) text-center">
-        <h2 className="type-title-2 text-label">{title}</h2>
-        {body && <p className="type-body text-label-secondary">{body}</p>}
+        <h2 className="type-title-1 text-label">{title}</h2>
+        {body && (
+          // A narrow, balanced body wraps to lines of even width under the title.
+          <p className="mx-auto max-w-lg text-balance type-title-3 font-normal! text-label-secondary">
+            {body}
+            {bodyAction && <> {bodyAction}</>}
+          </p>
+        )}
       </div>
-      {children && <div className="flex w-full flex-col gap-(--space-md)">{children}</div>}
+      {!childrenFirst && content}
     </div>
   )
 }
 
-/** Where a step card shows: the first-run takeover, or a docked row's modal. */
-export type ProgressStepSurface = "firstRun" | "modal"
-
-/**
- * The title and body of each step that has live content. The first run
- * tells what the step does now; the modal tells what the step keeps and
- * what its settings below change.
- */
-const STEP_COPY: Record<
-  Exclude<ProgressStepKey, "fixes">,
-  Record<ProgressStepSurface, { title: string; body: string }>
-> = {
-  agents: {
-    firstRun: {
-      title: "Finding agents",
-      body: "Scanning the last 30 days of session logs to find out which coding agents you're using on this machine.",
-    },
-    modal: {
-      title: "Agents",
-      body: "The coding agents antiburn will scan for sessions to report on.",
-    },
-  },
-  sessions: {
-    firstRun: {
-      title: "Reading sessions",
-      body: "antiburn pulls each session's metadata - every line of the log - into a local unencrypted sqlite db, for indexed access.",
-    },
-    modal: {
-      title: "Sessions",
-      body: "Each session's metadata in a local unencrypted sqlite db. Choose where it looks, how far back it reads, and how long it keeps data.",
-    },
-  },
-  checks: {
-    firstRun: {
-      title: "Running session checks",
-      body: "antiburn checks for anti-patterns, especially problems with the context window, caching, and unused tools or skills.",
-    },
-    modal: {
-      title: "Checks",
-      body: "antiburn checks each session for anti-patterns in the context window, caching, and unused tools or skills.",
-    },
-  },
+function stepCopy(
+  step: Exclude<ProgressStepKey, "fixes">,
+  progress: OverviewProgress,
+): { title: string; body: string } {
+  switch (step) {
+    case "agents": {
+      if (!progress.agents.done) {
+        return {
+          title: "Finding agents…",
+          body: "Scanning last 30 days of session logs to find your coding agents.",
+        }
+      }
+      const foundCount = progress.agents.rows.filter(
+        (row) => row.done && row.sessions > 0,
+      ).length
+      return {
+        title:
+          foundCount === 0
+            ? "No agents found"
+            : `${capitalize(countWord(foundCount))} ${pluralize(foundCount, "agent", "agents")} found`,
+        body: "Scanned the last 30 days of session logs to find your coding agents.",
+      }
+    }
+    case "sessions":
+      return {
+        title: progress.sessions.done
+          ? "Finished reading recent sessions"
+          : "Reading recent sessions…",
+        body: "antiburn pulls each session's metadata - every line of the log - into a local unencrypted sqlite db, for indexed access.",
+      }
+    case "checks":
+      return {
+        title: progress.checks.done
+          ? "Finished running session checks"
+          : "Running session checks…",
+        body: "Checking for anti-patterns: problems with context window, caching, unused tools and skills, and more.",
+      }
+  }
 }
 
-/**
- * One step's card, body copy and content only — no button. `transitionName`
- * is the step's shared name while this card owns it (the takeover's centred
- * card, or an open modal), and `undefined` while its docked row owns it
- * instead.
- */
 export function ProgressStepCard({
   step,
-  surface,
   progress,
-  isSteady,
   transitionName,
+  bodyAction,
 }: {
   step: ProgressStepKey
-  surface: ProgressStepSurface
   progress: OverviewProgress
-  isSteady: boolean
   transitionName: string | undefined
+  bodyAction?: ReactNode
 }) {
   const permissionFlow = useReadPermissionFlow(progress)
   switch (step) {
     case "agents":
       return (
-        <StepCard transitionName={transitionName} {...STEP_COPY.agents[surface]}>
+        <StepCard
+          transitionName={transitionName}
+          bodyAction={bodyAction}
+          {...stepCopy("agents", progress)}
+          childrenFirst
+        >
           <AgentsStepRow snapshot={progress} />
         </StepCard>
       )
     case "sessions":
       return (
-        <StepCard transitionName={transitionName} {...STEP_COPY.sessions[surface]}>
+        <StepCard
+          transitionName={transitionName}
+          bodyAction={bodyAction}
+          {...stepCopy("sessions", progress)}
+        >
           <SessionsStepRow snapshot={progress} permissionFlow={permissionFlow} />
         </StepCard>
       )
     case "checks":
       return (
-        <StepCard transitionName={transitionName} {...STEP_COPY.checks[surface]}>
-          <ChecksStepRow snapshot={progress} isSteady={isSteady} />
+        <StepCard
+          transitionName={transitionName}
+          bodyAction={bodyAction}
+          {...stepCopy("checks", progress)}
+        >
+          <ChecksStepRow snapshot={progress} />
         </StepCard>
       )
     case "fixes": {
       const failing = progress.categories.filter((category) => category.status === "needsFix")
       return (
-        <StepCard
-          transitionName={transitionName}
-          title={
-            progress.checks.windowSessions === 0
-              ? "No sessions in the last 30 days"
-              : fixesFound(progress)
-                ? `${progress.failingCount} ${pluralize(progress.failingCount, "fix", "fixes")} found in your config`
-                : "No fixes needed"
-          }
-          {...(fixesFound(progress)
-            ? { body: fixesSubtitle(failing) }
-            : progress.checks.windowSessions > 0
-              ? { body: "Your config already looks efficient." }
-              : {})}
-        />
+        <StepCard transitionName={transitionName} {...fixesSummary(progress)}>
+          {fixesFound(progress) && <FixesList failing={failing} />}
+        </StepCard>
       )
     }
   }
+}
+
+function fixesSummary(progress: OverviewProgress): { title: string; body?: string } {
+  if (progress.checks.windowSessions === 0) return { title: "No sessions in the last 30 days" }
+  if (fixesFound(progress)) {
+    return {
+      title: `${capitalize(countWord(progress.failingCount))} fixable ${pluralize(progress.failingCount, "issue", "issues")} found`,
+    }
+  }
+  return { title: "Nice work!", body: "No fixes needed. Your config already looks efficient." }
 }

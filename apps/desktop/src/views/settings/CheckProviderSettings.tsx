@@ -12,10 +12,7 @@ import {
 } from "../../lib/smartCheckProviders"
 import { ProviderSettingsSession } from "./ProviderSettingsSession"
 import type { CheckAvailability } from "../../lib/checkAvailability"
-import {
-  StepSettingsDisclosure,
-  StepSettingsRow as SettingsRow,
-} from "../main-window/overview/stepSettings/StepSettingsSearchRows"
+import { SettingsDisclosure, SettingsRow } from "./SettingsSearchRows"
 
 const inputClass =
   "mt-2 min-h-[var(--control-height-regular)] w-full rounded-control border border-separator bg-input-fill px-3 type-body text-label"
@@ -348,7 +345,7 @@ export function CheckProviderSettings({
             </p>
           )}
         </SettingsRow>
-        <StepSettingsDisclosure
+        <SettingsDisclosure
           searchId="smartCheckLimits"
           open={open}
           onOpenChange={(open) => setDisclosure({ open, dismissedRevision: targetRevision })}
@@ -405,7 +402,7 @@ export function CheckProviderSettings({
             )}
             {current?.capabilities && <CapabilityDetails capabilities={current.capabilities} />}
           </div>
-        </StepSettingsDisclosure>
+        </SettingsDisclosure>
         {usage && (
           <div className="px-3">
             <Disclosure label="Model usage">

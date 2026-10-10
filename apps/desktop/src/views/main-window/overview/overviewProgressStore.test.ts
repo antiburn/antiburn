@@ -12,7 +12,9 @@ import {
   INITIAL_LAST_PASS,
   advanceLastPass,
   deriveOverviewProgress,
+  firstFailingCheck,
   type LastPass,
+  type OverviewProgress,
   type ProgressInputs,
 } from "./overviewProgressStore"
 
@@ -165,7 +167,6 @@ describe("deriveOverviewProgress's mode", () => {
       INITIAL_FIRST_RUN_LATCH,
       inputs(),
       "agents",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -174,27 +175,13 @@ describe("deriveOverviewProgress's mode", () => {
 
   it("is firstRun once the latch decides to show the steps block", () => {
     const latch = resetFirstRunLatch()
-    const snapshot = deriveOverviewProgress(
-      latch,
-      inputs(),
-      "agents",
-      null,
-      true,
-      INITIAL_LAST_PASS,
-    )
+    const snapshot = deriveOverviewProgress(latch, inputs(), "agents", true, INITIAL_LAST_PASS)
     expect(snapshot.mode).toBe("firstRun")
   })
 
   it("is steady once the latch decides the device has scanned before", () => {
     const latch: FirstRunLatch = { ...INITIAL_FIRST_RUN_LATCH, decided: true, showSteps: false }
-    const snapshot = deriveOverviewProgress(
-      latch,
-      inputs(),
-      "agents",
-      null,
-      true,
-      INITIAL_LAST_PASS,
-    )
+    const snapshot = deriveOverviewProgress(latch, inputs(), "agents", true, INITIAL_LAST_PASS)
     expect(snapshot.mode).toBe("steady")
   })
 })
@@ -219,14 +206,7 @@ describe("deriveOverviewProgress in steady mode", () => {
     const liveReset = inputs({
       scanStatus: status({ running: true, phase: "finding", foundByAgent: [] }),
     })
-    const snapshot = deriveOverviewProgress(
-      steadyLatch,
-      liveReset,
-      "agents",
-      null,
-      true,
-      lastPass,
-    )
+    const snapshot = deriveOverviewProgress(steadyLatch, liveReset, "agents", true, lastPass)
     expect(snapshot.agents.rows).toEqual([
       { agent: "claude-code", label: "Claude Code", sessions: 49, done: true },
     ])
@@ -240,7 +220,6 @@ describe("deriveOverviewProgress in steady mode", () => {
       steadyLatch,
       live,
       "agents",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -257,7 +236,6 @@ describe("deriveOverviewProgress in steady mode", () => {
       steadyLatch,
       live,
       "agents",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -286,7 +264,6 @@ describe("deriveOverviewProgress in first-run mode", () => {
       firstRunLatch,
       inputs(),
       "agents",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -307,7 +284,7 @@ describe("deriveOverviewProgress in first-run mode", () => {
       lastRead: { completed: 49, total: 49 },
     }
     const live = inputs({ checksReport: report({ windowSessions: 49, pendingEvidence: 1 }) })
-    const snapshot = deriveOverviewProgress(firstRunLatch, live, "fixes", null, true, lastPass)
+    const snapshot = deriveOverviewProgress(firstRunLatch, live, "fixes", true, lastPass)
     // The numbers are the same at the moment of the switch, so no jump.
     expect(snapshot.checks).toEqual({
       done: true,
@@ -322,7 +299,6 @@ describe("deriveOverviewProgress in first-run mode", () => {
       firstRunLatch,
       inputs(),
       "fixes",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -337,14 +313,7 @@ describe("deriveOverviewProgress in first-run mode", () => {
       checksDone: true,
       checksResult: { windowSessions: 44, deferredEvidence: 1 },
     }
-    const snapshot = deriveOverviewProgress(
-      latch,
-      inputs(),
-      "agents",
-      null,
-      true,
-      INITIAL_LAST_PASS,
-    )
+    const snapshot = deriveOverviewProgress(latch, inputs(), "agents", true, INITIAL_LAST_PASS)
     expect(snapshot.checks).toEqual({
       done: true,
       windowSessions: 44,
@@ -365,7 +334,6 @@ describe("deriveOverviewProgress", () => {
       latch,
       emptyInputs,
       "agents",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -388,7 +356,6 @@ describe("deriveOverviewProgress", () => {
       INITIAL_FIRST_RUN_LATCH,
       inputs({ checksReport }),
       "agents",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -410,7 +377,6 @@ describe("deriveOverviewProgress", () => {
       INITIAL_FIRST_RUN_LATCH,
       inputs({ checksReport }),
       "agents",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -433,7 +399,6 @@ describe("deriveOverviewProgress", () => {
         }),
       }),
       "agents",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -459,7 +424,6 @@ describe("deriveOverviewProgress's history", () => {
         }),
       }),
       "sessions",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -475,7 +439,6 @@ describe("deriveOverviewProgress's history", () => {
         }),
       }),
       "done",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -491,7 +454,6 @@ describe("deriveOverviewProgress's history", () => {
         }),
       }),
       "agents",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -503,7 +465,6 @@ describe("deriveOverviewProgress's history", () => {
       steadyLatch,
       inputs({ scanStatus: status({ history }) }),
       "agents",
-      null,
       true,
       INITIAL_LAST_PASS,
     ).history
@@ -560,7 +521,6 @@ describe("deriveOverviewProgress's history", () => {
       steadyLatch,
       inputs({ scanStatus: status() }),
       "agents",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -585,7 +545,6 @@ describe("deriveOverviewProgress's Sessions display numbers", () => {
         }),
       }),
       "agents",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -603,7 +562,6 @@ describe("deriveOverviewProgress's Sessions display numbers", () => {
         }),
       }),
       "agents",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -621,7 +579,6 @@ describe("deriveOverviewProgress's Sessions display numbers", () => {
         }),
       }),
       "agents",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -639,7 +596,6 @@ describe("deriveOverviewProgress's Sessions display numbers", () => {
         }),
       }),
       "sessions",
-      null,
       true,
       INITIAL_LAST_PASS,
     )
@@ -649,5 +605,51 @@ describe("deriveOverviewProgress's Sessions display numbers", () => {
     expect(snapshot.sessions.displayCompleted).toBe(1)
     expect(snapshot.sessions.displayTotal).toBe(10)
     expect(snapshot.history).toBeNull()
+  })
+})
+
+describe("firstFailingCheck", () => {
+  it("picks the failing check with the highest estimated burn, the Checks list's top row", () => {
+    const progress = {
+      categories: [
+        {
+          id: "unusedMcpServers",
+          label: "",
+          status: "needsFix",
+          estimatedBurnBasisPoints: 10,
+          finding: 0,
+          clean: 0,
+          agents: [],
+        },
+        {
+          id: "modelOverthinking",
+          label: "",
+          status: "passing",
+          estimatedBurnBasisPoints: 900,
+          finding: 0,
+          clean: 0,
+          agents: [],
+        },
+        {
+          id: "unusedSkills",
+          label: "",
+          status: "needsFix",
+          estimatedBurnBasisPoints: 300,
+          finding: 0,
+          clean: 0,
+          agents: [],
+        },
+        {
+          id: "unusedBuiltInTools",
+          label: "",
+          status: "needsFix",
+          estimatedBurnBasisPoints: null,
+          finding: 0,
+          clean: 0,
+          agents: [],
+        },
+      ],
+    } as unknown as OverviewProgress
+    expect(firstFailingCheck(progress)).toBe("unusedSkills")
   })
 })

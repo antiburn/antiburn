@@ -6,12 +6,15 @@ import type * as ProgressStore from "./overviewProgressStore"
 import type { FlowStep, OverviewProgress } from "./overviewProgressStore"
 
 let snapshot: OverviewProgress
-const { showLiveLimits, skipLiveLimits, nextStep, enhanceFixes } = vi.hoisted(() => ({
-  showLiveLimits: vi.fn(async () => undefined),
-  skipLiveLimits: vi.fn(),
-  nextStep: vi.fn(async () => undefined),
-  enhanceFixes: vi.fn(async () => true),
-}))
+const { showLiveLimits, skipLiveLimits, nextStep, previousStep, enhanceFixes } = vi.hoisted(
+  () => ({
+    showLiveLimits: vi.fn(async () => undefined),
+    skipLiveLimits: vi.fn(),
+    previousStep: vi.fn(),
+    nextStep: vi.fn(async () => undefined),
+    enhanceFixes: vi.fn(async () => true),
+  }),
+)
 
 const platform = vi.hoisted(() => ({ macOS: true }))
 const openChecks = vi.fn()
@@ -31,6 +34,7 @@ vi.mock("./overviewProgressStore", async (importOriginal) => ({
   overviewProgress: () => snapshot,
   showLiveLimits,
   skipLiveLimits,
+  previousStep,
   nextStep,
   enhanceFixes,
   fixesFound: (progress: OverviewProgress) =>
@@ -47,9 +51,6 @@ function progress(flow: FlowStep, overrides: Partial<OverviewProgress> = {}): Ov
   return {
     mode: "firstRun",
     flow,
-    openStep: null,
-    openStepControl: null,
-    openStepControlRevision: 0,
     stepShown: true,
     actionPending: false,
     actionError: null,
@@ -74,8 +75,8 @@ describe("FirstRunTakeover's live-limits step", () => {
   it("shows the live-limits card without the welcome line", () => {
     snapshot = progress("limits")
     render(<FirstRunTakeover onOpenChecks={openChecks} />)
-    expect(screen.queryByText("Welcome")).toBeNull()
-    expect(screen.getByRole("heading", { name: "Show your plan limits" })).toBeInTheDocument()
+    expect(screen.queryByText("Welcome to antiburn")).toBeNull()
+    expect(screen.getByRole("heading", { name: "Plan limits" })).toBeInTheDocument()
   })
 
   it("mentions the Keychain prompt only on macOS", () => {
@@ -112,7 +113,7 @@ describe("FirstRunTakeover's live-limits step", () => {
   it("calls skipLiveLimits when Skip is clicked, without calling showLiveLimits", () => {
     snapshot = progress("limits")
     render(<FirstRunTakeover onOpenChecks={openChecks} />)
-    fireEvent.click(screen.getByRole("button", { name: "Skip and turn on in settings later" }))
+    fireEvent.click(screen.getByRole("button", { name: "Skip" }))
     expect(skipLiveLimits).toHaveBeenCalledTimes(1)
     expect(showLiveLimits).not.toHaveBeenCalled()
   })
@@ -121,7 +122,7 @@ describe("FirstRunTakeover's live-limits step", () => {
     snapshot = progress("limits")
     render(<FirstRunTakeover onOpenChecks={openChecks} />)
     expect(screen.queryByTestId("step-settings")).toBeNull()
-    fireEvent.click(screen.getByRole("button", { name: "Show settings" }))
+    fireEvent.click(screen.getByRole("button", { name: "More info" }))
     expect(screen.getByTestId("step-settings")).toHaveTextContent("limits")
   })
 })
@@ -130,8 +131,8 @@ describe("FirstRunTakeover's step cards", () => {
   it("shows the welcome step first, with an enabled Get Started that calls nextStep", () => {
     snapshot = progress("welcome")
     render(<FirstRunTakeover onOpenChecks={openChecks} />)
-    expect(screen.getByRole("heading", { name: "Welcome" })).toBeInTheDocument()
-    expect(screen.queryByRole("heading", { name: "Finding agents" })).toBeNull()
+    expect(screen.getByRole("heading", { name: "Welcome to antiburn" })).toBeInTheDocument()
+    expect(screen.queryByRole("heading", { name: "Finding agents…" })).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "Get Started" }))
     expect(nextStep).toHaveBeenCalledTimes(1)
   })
@@ -139,8 +140,8 @@ describe("FirstRunTakeover's step cards", () => {
   it("renders only the Agents step's card, without the welcome, while flow is agents", () => {
     snapshot = progress("agents")
     render(<FirstRunTakeover onOpenChecks={openChecks} />)
-    expect(screen.queryByText("Welcome")).toBeNull()
-    expect(screen.getByRole("heading", { name: "Finding agents" })).toBeInTheDocument()
+    expect(screen.queryByText("Welcome to antiburn")).toBeNull()
+    expect(screen.getByRole("heading", { name: "Finding agents…" })).toBeInTheDocument()
     expect(screen.queryByRole("heading", { name: "Reading sessions" })).toBeNull()
   })
 
@@ -180,6 +181,15 @@ describe("FirstRunTakeover's step cards", () => {
     expect(screen.getByRole("button", { name: "Next" })).toBeDisabled()
   })
 
+  it("fills the Checks bar when only a deferred live session remains", () => {
+    snapshot = progress("checks", {
+      sessions: { ...progress("checks").sessions, done: true },
+      checks: { done: true, windowSessions: 144, pendingEvidence: 1, deferredEvidence: 1 },
+    })
+    render(<FirstRunTakeover onOpenChecks={openChecks} />)
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "100")
+  })
+
   it("labels the fixes step's button Done, and leaves it enabled", () => {
     snapshot = progress("fixes", {
       checks: { done: true, windowSessions: 0, pendingEvidence: 0, deferredEvidence: 0 },
@@ -196,9 +206,33 @@ describe("FirstRunTakeover's step cards", () => {
       checks: { done: true, windowSessions: 5, pendingEvidence: 0, deferredEvidence: 0 },
       failingCount: 2,
       categories: [
-        { id: "cacheChurn", label: "Excess cache rehydration", status: "passing" },
-        { id: "unusedSkills", label: "Unused skills", status: "needsFix" },
-        { id: "unusedMcpServers", label: "Unused MCP servers", status: "needsFix" },
+        {
+          id: "cacheChurn",
+          label: "Excess cache rehydration",
+          status: "passing",
+          estimatedBurnBasisPoints: null,
+          finding: 0,
+          clean: 0,
+          agents: [],
+        },
+        {
+          id: "unusedSkills",
+          label: "Unused skills",
+          status: "needsFix",
+          estimatedBurnBasisPoints: null,
+          finding: 0,
+          clean: 0,
+          agents: [],
+        },
+        {
+          id: "unusedMcpServers",
+          label: "Unused MCP servers",
+          status: "needsFix",
+          estimatedBurnBasisPoints: null,
+          finding: 0,
+          clean: 0,
+          agents: [],
+        },
       ],
     })
     render(<FirstRunTakeover onOpenChecks={openChecks} />)
@@ -213,7 +247,17 @@ describe("FirstRunTakeover's step cards", () => {
     snapshot = progress("fixes", {
       checks: { done: true, windowSessions: 5, pendingEvidence: 0, deferredEvidence: 0 },
       failingCount: 1,
-      categories: [{ id: "unusedSkills", label: "Unused skills", status: "needsFix" }],
+      categories: [
+        {
+          id: "unusedSkills",
+          label: "Unused skills",
+          status: "needsFix",
+          estimatedBurnBasisPoints: null,
+          finding: 0,
+          clean: 0,
+          agents: [],
+        },
+      ],
     })
     render(<FirstRunTakeover onOpenChecks={openChecks} />)
     fireEvent.click(screen.getByRole("button", { name: /skip/i }))
@@ -227,7 +271,7 @@ describe("FirstRunTakeover's step cards", () => {
       checks: { done: true, windowSessions: 0, pendingEvidence: 0, deferredEvidence: 0 },
     })
     render(<FirstRunTakeover onOpenChecks={openChecks} />)
-    expect(screen.queryByRole("button", { name: "Show settings" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "More info" })).toBeNull()
   })
 
   it("shows the Agents step's settings when Show settings is clicked, and hides them again", () => {
@@ -235,12 +279,12 @@ describe("FirstRunTakeover's step cards", () => {
     render(<FirstRunTakeover onOpenChecks={openChecks} />)
     expect(screen.queryByTestId("step-settings")).toBeNull()
 
-    const toggle = screen.getByRole("button", { name: "Show settings" })
+    const toggle = screen.getByRole("button", { name: "More info" })
     expect(toggle).toHaveAttribute("aria-expanded", "false")
     fireEvent.click(toggle)
 
     expect(screen.getByTestId("step-settings")).toHaveTextContent("agents")
-    const hide = screen.getByRole("button", { name: "Hide settings" })
+    const hide = screen.getByRole("button", { name: "Less info" })
     expect(hide).toHaveAttribute("aria-expanded", "true")
 
     fireEvent.click(hide)
@@ -269,3 +313,13 @@ it("does not open Burn Checks when finishing setup fails", async () => {
   await vi.waitFor(() => expect(enhanceFixes).toHaveBeenCalled())
   expect(openChecks).not.toHaveBeenCalled()
 })
+
+it.each(["agents", "limits", "sessions", "checks", "fixes"] as const)(
+  "offers Back from %s",
+  (flow) => {
+    snapshot = progress(flow)
+    render(<FirstRunTakeover onOpenChecks={openChecks} />)
+    fireEvent.click(screen.getByRole("button", { name: "Back" }))
+    expect(previousStep).toHaveBeenCalledOnce()
+  },
+)

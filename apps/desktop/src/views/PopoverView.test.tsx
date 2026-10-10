@@ -1282,7 +1282,7 @@ describe("PopoverView — attention banners", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument()
   })
 
-  it("surfaces a blocked repository, and Review opens the Overview Sessions step", async () => {
+  it("surfaces a blocked repository, and Review opens Settings on Sessions", async () => {
     mockCommands({
       list_repositories: [repositoryPayload({ status: "permission_denied" })],
     })
@@ -1293,14 +1293,12 @@ describe("PopoverView — attention banners", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Review" }))
 
-    // Not just "open Settings": the banner lands the reader, in the main
-    // window, on the step that can do something about what it reported.
+    // Not just "open Settings": the banner lands the reader on the pane
+    // that can do something about what it reported.
     await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("open_main_window_section", {
-        section: "overview",
-        overviewStep: "sessions",
-      }),
+      expect(invoke).toHaveBeenCalledWith("open_settings_window", { pane: "sessions" }),
     )
+    expect(invoke).not.toHaveBeenCalledWith("open_main_window_section", expect.anything())
   })
 
   it("reads the repository list on first paint rather than waiting for a scan", async () => {

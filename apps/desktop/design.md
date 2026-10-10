@@ -323,6 +323,15 @@ colors:
   token-subagent: # quiet label-family neutral
     light: "hsl(240 5.5% 25% / 0.45)"
     dark: "hsl(240 33% 94% / 0.4)"
+  agent-claude-code: # Claude Code in the Overview usage charts; the context blue
+    light: "hsl(221.2 83% 53.3%)"
+    dark: "hsl(221 89% 59.8%)"
+  agent-codex: # Codex in the Overview usage charts; mid grey
+    light: "hsl(240 4% 66%)"
+    dark: "hsl(240 5% 52%)"
+  agent-other: # any other agent in the Overview usage charts; neutral
+    light: "hsl(240 5.5% 25% / 0.45)"
+    dark: "hsl(240 33% 94% / 0.4)"
   cost-cache-read: # cost burnup chart, cache-read layer; muted blue-green
     light: "hsl(165 45% 40%)"
     dark: "hsl(165 50% 62%)"
@@ -469,6 +478,7 @@ motion:
   segmented-indicator: "120ms ease-out slide; reduced motion swaps to a 60ms per-segment crossfade"
   anchored-content: "100ms opacity-only crossfade after native geometry commits; reduced motion uses 60ms"
   text-roll: "300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease"
+  overview-banner-in: "700ms ease-out-quart; a Usage banner's plot grows up from the date row (scaleY from the bottom) each time it mounts, so a tab switch draws the new chart in; reduced motion clamps it through the shared rule"
   overview-entrance: "700ms ease-out; the chart reveals from the left with a clip-path inset, the headline figures fade in; plays once per app run and is recorded on animationend; reduced motion clamps it through the shared rule"
   tray-usage-meter: "launch: 1.5s column-by-column depletion; later changes: 300ms column-by-column"
   hud-led-blink: "steps(1) loop; --led-period 300ms to 3s on eight geometric rungs, set per segment from the spend rate; 300ms is the flash-safety cap for a 6px dot"
@@ -599,10 +609,16 @@ Notes for what isn't expressible as a token:
   from the window with a clamp — the page needs the width more at small sizes and less at
   large — keeps the full window height between its margins, and scrolls alone when the accounts
   outgrow it. It uses the popover corner, the opaque `surface-window` fill under the
-  `surface-sidebar` tint, and `shadow-raised` over the `shadow-stats-card` outline.
+  `surface-sidebar` tint, and the `shadow-stats-card` outline with no drop shadow. The Overview's
+  usage card has no outline, shadow, or fill, so its banner sits on the window background.
+  During first run, hide the usage card and Recent sessions until the user advances past
+  Session checks. Keep data collection active while they are hidden. The subsequent fixes
+  step takes the same card and fills the free height between them. The config checks grid
+  that replaces it has no card.
 
-- **Overview cost chart** — show daily estimated cost as stacked areas, one per source
-  agent, for the latest 30 days. Keep agent colors stable and name each agent in the
+- **Overview cost chart** — show daily estimated cost as side-by-side columns, one per source
+  agent, for the latest 30 days. Each agent takes its `agent-*` colour: blue for Claude Code, grey
+  for Codex. Keep agent colors stable and name each agent in the
   legend. Do not show the previous period. Leave gaps for unknown costs and mark
   incomplete days; tooltips distinguish unpriced usage from known subtotals.
 
@@ -851,6 +867,48 @@ Notes for what isn't expressible as a token:
 - **Window chrome** — a window that hides its native title bar owns the drag strip and the matching
   top clearance in the webview; a window that keeps native decorations must not reserve that space.
   Keep that decision in the window's own layout, not in the shared primitives.
+- **Sidebar summaries** — Agents and Sessions show their scan counts; Checks shows the
+  unsnoozed count as “N to fix”. Limits shows the Overview subscription percentages in
+  account order, separated by “ / ”. Use trailing `type-caption`, `label-secondary`,
+  tabular figures. No duplicate footer pills. Agents opens a summary page with session
+  links and an Agent settings action. Memories shows a file count once known; omit it
+  before the first successful read and until onboarding completes. Settings stays
+  disabled during onboarding, including its keyboard shortcut.
+- **Onboarding docking** — completed step cards share a view-transition name with their
+  sidebar destination and shrink into that row. Checks and its result dock into Checks.
+  Each step after Welcome has Back; Back changes the visible step without restarting
+  completed work. Reduced motion applies changes immediately. On compact windows the
+  closed navigation drawer provides no visible docking target.
+- **Settings pane descriptions** — the Agents, Sessions and Checks panes put one
+  `type-callout` `label-secondary` line under the `type-title-2` title that says what the pane
+  controls. Sessions stays one page, so Settings search finds every row.
+- **Overview stacking** — the usage card sits at the top and Recent sessions at the bottom.
+  Recent sessions has no card: its heading and rows sit on the window background. Free space
+  collects between them.
+- **Overview usage banner** — both Usage tabs draw their chart behind the figures, not under
+  them: the Cost tab's daily spend by agent, and the Subscription tab's weekly fill and 5-hour
+  peaks in `context-stroke` tints. Subscription uses a fixed 0–100% scale with guide lines
+  and labels at 0%, 25%, 50%, and 75% inside the plot's right edge, inset by `space-lg`.
+  Omit the 100% label but keep the top of the scale at 100%. The plot, dates, and hover
+  targets use the full width. Reserve 3rem (`--overview-banner-value-axis`) beside the
+  header controls to keep them clear of the labels.
+  Axis labels use secondary caption ink and stay outside the plot's fade and entrance animation.
+  Cost scales to its own peak and has no value axis. Both plots fade toward the top.
+  The figures and the unit tabs share the top
+  row; when the figures need the full width to stay side by side, the tabs move to a row above. A date row (every 7 days and "Today") and then the key close the card, and the lower half shows a tooltip for each day:
+  a `UsageBannerTip` card with the day's figure and one row and share bar per layer. The
+  hovered day takes a faint band, and on the Cost tab the other days' columns dim. With more
+  than one subscription account, a figure picks the account the banner draws.
+  The usage card has no fill and no outline and takes the page's free height, so the chart grows with the
+  window.
+- **Overview config checks** — a grid of check cards, as wide as the space allows (at least
+  14rem each): the tinted category icon, the check name, its result, and for a failing check
+  the estimated burn, with the agents as a watermark. Failing checks come first, highest burn
+  first. Every card has the quiet card fill and no outline; a failing card shows its failed count
+  in the failure text colour, and every other status is neutral. The category icon is the bare
+  glyph in its check colour, with no tinted circle. On hover, a card takes a faint tint of its icon colour.
+- **Overview Recent sessions row** — the check icon leads the row, then the title and models,
+  tokens, the cost or limit share, the check phrase, and the time, right-aligned, last.
 - **Data views** — a view that shows figures (Session Detail, the Overview) keeps the home
   screen's density of styles. One data size per view: every figure, row, and data label is
   `type-body`; hierarchy comes from ink and weight, and size changes are reserved for a hero

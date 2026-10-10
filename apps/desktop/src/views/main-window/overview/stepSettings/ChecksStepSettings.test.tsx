@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest"
 
 import { defaultConnection, type Connection } from "../../../../lib/smartCheckProviders"
-import { searchApp, resolveStepSettingsSearchTarget } from "../../../../lib/appSearch"
+import { searchApp, resolveSettingsSearchTarget } from "../../../../lib/appSearch"
 import { SettingsTargetFocus } from "../../../settings/SettingsTargetFocus"
 import { StepSettings } from "./StepSettings"
 import { ChecksStepSettings } from "./ChecksStepSettings"
@@ -161,16 +161,16 @@ it.each(["macos", "windows", "linux"] as const)(
   "reveals provider limits from the Checks step search destination on %s",
   async (platform) => {
     const result = searchApp("Model limits", platform)[0]!
-    if (result.target.kind !== "stepSetting") throw new Error("Missing step destination")
-    const request = resolveStepSettingsSearchTarget(result.target)
+    if (result.target.kind !== "setting") throw new Error("Missing step destination")
+    const request = resolveSettingsSearchTarget(result.target)
     const { container } = render(
-      <StepSettings step={request.step} control={request.control} targetRevision={1} />,
+      <StepSettings step="checks" control={request.control} targetRevision={1} />,
     )
     await waitFor(() => expect(screen.getByLabelText("TypeSafe API key")).toBeEnabled())
     if (!(container instanceof HTMLDivElement))
       throw new Error("Missing step settings container")
     HTMLElement.prototype.scrollIntoView = vi.fn()
-    new SettingsTargetFocus().attach(container, request.step, request.control, 1)()
+    new SettingsTargetFocus().attach(container, request.pane, request.control, 1)()
     expect(screen.getByRole("button", { name: "Model limits" })).toHaveAttribute(
       "aria-expanded",
       "true",

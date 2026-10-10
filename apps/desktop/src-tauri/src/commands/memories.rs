@@ -8,7 +8,8 @@ use antiburn_local::discovery::agents::path_codec::{
     decode_hyphenated_absolute_path, initial_hyphenated_path_state,
 };
 use antiburn_local::memories::inventory::{
-    HookSource, MemoryProjectInventory, scan_claude_memory_project, scan_claude_memory_projects,
+    HookSource, MemoryProjectInventory, count_claude_memories, scan_claude_memory_project,
+    scan_claude_memory_projects,
 };
 use antiburn_local::memories::usage::{
     MemoryAction, MemoryUsageFacts, aggregate_memory_facts, query_memory_tool_calls,
@@ -103,6 +104,15 @@ struct Gathered {
     inventories: Vec<MemoryProjectInventory>,
     sessions: HashMap<String, Vec<ProjectSession>>,
     facts: HashMap<PathBuf, MemoryUsageFacts>,
+}
+
+/// Counts memory files without loading their contents or session history.
+#[tauri::command]
+pub async fn count_agent_memories() -> CommandResult<usize> {
+    let Some(home) = home_dir() else {
+        return Ok(0);
+    };
+    run_blocking(move || count_claude_memories(&home).map_err(fail)).await
 }
 
 /// Lists every project that has Claude Code memories.

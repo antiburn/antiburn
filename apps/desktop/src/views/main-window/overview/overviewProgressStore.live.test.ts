@@ -506,7 +506,8 @@ describe("overviewProgressStore's rewind", () => {
 
   it("goes back to a docked step and undocks every later one", async () => {
     const store = await reachFixes("skip")
-    store.rewindTo("sessions")
+    await store.previousStep()
+    await store.previousStep()
     await vi.waitFor(() => expect(store.overviewProgress().flow).toBe("sessions"))
     expect(store.stepDocked(store.overviewProgress().flow, "sessions")).toBe(false)
     expect(store.stepDocked(store.overviewProgress().flow, "checks")).toBe(false)
@@ -515,9 +516,26 @@ describe("overviewProgressStore's rewind", () => {
     expect(store.overviewProgress().flow).toBe("checks")
   })
 
+  it("can return to Welcome without sending backend commands or losing completed work", async () => {
+    const store = await reachFixes("skip")
+    mocks.invoke.mockClear()
+    for (const expected of ["checks", "sessions", "limits", "agents", "welcome"]) {
+      await store.previousStep()
+      expect(store.overviewProgress().flow).toBe(expected)
+    }
+    expect(mocks.invoke).not.toHaveBeenCalled()
+    expect(store.overviewProgress().agents.done).toBe(true)
+    expect(store.overviewProgress().sessions.done).toBe(true)
+    await store.previousStep()
+    expect(store.overviewProgress().flow).toBe("welcome")
+  })
+
   it("offers the live limits step again only when the reader skipped it", async () => {
     const skipped = await reachFixes("skip")
-    skipped.rewindTo("agents")
+    await skipped.previousStep()
+    await skipped.previousStep()
+    await skipped.previousStep()
+    await skipped.previousStep()
     await vi.waitFor(() => expect(skipped.overviewProgress().flow).toBe("agents"))
     await skipped.nextStep()
     expect(skipped.overviewProgress().flow).toBe("limits")
@@ -525,7 +543,10 @@ describe("overviewProgressStore's rewind", () => {
 
   it("passes over the live limits step once live usage is on", async () => {
     const shown = await reachFixes("show")
-    shown.rewindTo("agents")
+    await shown.previousStep()
+    await shown.previousStep()
+    await shown.previousStep()
+    await shown.previousStep()
     await vi.waitFor(() => expect(shown.overviewProgress().flow).toBe("agents"))
     await shown.nextStep()
     expect(shown.overviewProgress().flow).toBe("sessions")
@@ -564,7 +585,7 @@ describe("overviewProgressStore's rewind", () => {
 
   it("reports the result once, however often the reader returns to it", async () => {
     const store = await reachFixes("skip")
-    store.rewindTo("checks")
+    await store.previousStep()
     await vi.waitFor(() => expect(store.overviewProgress().flow).toBe("checks"))
     await store.nextStep()
     expect(store.overviewProgress().flow).toBe("fixes")

@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore } from "react"
+import { useState } from "react"
 
 import { cn } from "../../../lib/cn"
 import type { BurnCheckDetectorId } from "../../../lib/insightsIpc"
@@ -11,28 +11,27 @@ import {
   fixesFound,
   LIVE_LIMITS_TRANSITION_NAME,
   nextStep,
+  previousStep,
   type OverviewProgress,
-  overviewProgress,
   type ProgressStepKey,
   progressStepTransitionName,
   showLiveLimits,
   skipLiveLimits,
-  subscribeOverviewProgress,
   stepDone,
 } from "./overviewProgressStore"
-import { StepSettingsDisclosure } from "./stepSettings/StepSettingsDisclosure"
+import { useOverviewProgress } from "./useOverviewProgress"
+import { MoreInfoToggle, StepSettingsPanel } from "./stepSettings/StepSettingsDisclosure"
 
 function WelcomeCard() {
   return (
-    <div className="flex w-full max-w-lg flex-col gap-(--space-sm) text-center">
-      <h2 className="type-title-2 text-label">Welcome</h2>
+    <div className="flex w-full flex-col gap-(--space-lg) text-center">
+      <h2 className="type-large-title text-label">Welcome to antiburn</h2>
 
-      <p className="type-body text-label-secondary">
-        antiburn reads and analyses your session logs,
-        <br />
-        keeping you on top of your usage and how you can save.
-      </p>
-      <p className="type-body text-label-secondary">100% local, no account needed.</p>
+      <ul className="mx-auto flex list-disc flex-col gap-(--space-sm) ps-6 text-start type-title-3 font-normal! text-label-secondary">
+        <li>Reads and analyses your session logs</li>
+        <li>Helps you avoid hitting limits</li>
+        <li>100% local, no account needed</li>
+      </ul>
 
       <div className="mt-(--space-lg)">
         <NextButton disabled={false} label="Get Started" onClick={() => void nextStep()} />
@@ -64,6 +63,7 @@ function NextButton({
 function LiveLimitsCard() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [infoOpen, setInfoOpen] = useState(false)
 
   async function handleShow() {
     setBusy(true)
@@ -78,25 +78,31 @@ function LiveLimitsCard() {
   }
 
   return (
-    <div className="flex w-full max-w-lg flex-col items-center">
+    <div className="flex w-full flex-col items-center">
       <div
         style={{ viewTransitionName: LIVE_LIMITS_TRANSITION_NAME }}
         className="flex w-full flex-col items-center gap-(--space-lg)"
       >
         <div className="flex flex-col gap-(--space-sm) text-center">
-          <h2 className="type-title-2 text-label">Show your plan limits</h2>
-          <p className="type-body text-label-secondary">
-            antiburn shows you your plan limit usage, and how it tracks against your reset
-            times.
+          <h2 className="type-title-1 text-label">Plan limits</h2>
+          <p className="type-title-3 font-normal! text-label-secondary">
+            See plan limit usage against your reset times.{" "}
+            <MoreInfoToggle
+              step="limits"
+              open={infoOpen}
+              onToggle={() => setInfoOpen(!infoOpen)}
+            />
           </p>
           {/* Only macOS keeps these credentials in the Keychain. */}
           {isMacOS() && (
-            <p className="type-footnote text-label-tertiary">
-              macOS may ask for Keychain access, so antiburn can read the credentials your
-              coding tools already use.
+            <p className="mx-auto max-w-lg text-balance type-callout text-label-tertiary">
+              macOS may ask for Keychain access, allowing antiburn to read existing coding tool
+              credentials.
             </p>
           )}
         </div>
+
+        {infoOpen && <StepSettingsPanel step="limits" />}
 
         <div className="mt-(--space-lg) flex flex-col items-center gap-(--space-sm)">
           <button
@@ -114,7 +120,15 @@ function LiveLimitsCard() {
             onClick={skipLiveLimits}
             className={SKIP_BUTTON}
           >
-            Skip and turn on in settings later
+            Skip
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={previousStep}
+            className="ui-push-button"
+          >
+            Back
           </button>
         </div>
 
@@ -123,8 +137,6 @@ function LiveLimitsCard() {
             {error}
           </p>
         )}
-
-        <StepSettingsDisclosure step="limits" />
       </div>
     </div>
   )
@@ -145,17 +157,27 @@ function TakeoverStep({
     const check = firstFailingCheck(progress)
     if (await enhanceFixes()) onOpenChecks(check)
   }
+  // Keep the step whose info is open, so the next step starts closed.
+  const [infoStep, setInfoStep] = useState<ProgressStepKey | null>(null)
+  const infoOpen = infoStep === step
   return (
     <>
       <ProgressStepCard
         step={step}
-        surface="firstRun"
         progress={progress}
-        isSteady={false}
         transitionName={progressStepTransitionName(step)}
+        bodyAction={
+          step !== "fixes" && (
+            <MoreInfoToggle
+              step={step}
+              open={infoOpen}
+              onToggle={() => setInfoStep(infoOpen ? null : step)}
+            />
+          )
+        }
       />
 
-      {step !== "fixes" && <StepSettingsDisclosure step={step} />}
+      {step !== "fixes" && infoOpen && <StepSettingsPanel step={step} />}
 
       {step === "fixes" && fixesFound(progress) ? (
         <div className="mt-(--space-lg) flex flex-col items-center gap-(--space-sm)">
@@ -174,41 +196,47 @@ function TakeoverStep({
           onClick={() => void nextStep()}
         />
       )}
+      <button type="button" onClick={previousStep} className="ui-push-button">
+        Back
+      </button>
     </>
   )
 }
 
 export function FirstRunTakeover({
   onOpenChecks,
+  className,
 }: {
   onOpenChecks: (check: BurnCheckDetectorId | undefined) => void
+  className?: string
 }) {
-  const progress = useSyncExternalStore(
-    subscribeOverviewProgress,
-    overviewProgress,
-    overviewProgress,
-  )
+  const progress = useOverviewProgress()
 
   return (
     <fieldset
       disabled={progress.actionPending}
-      className="flex flex-1 flex-col items-center justify-center gap-(--space-lg) p-(--space-2xl)"
-    >
-      {!progress.stepShown ? null : progress.flow === "welcome" ? (
-        <WelcomeCard />
-      ) : progress.flow === "limits" ? (
-        <LiveLimitsCard />
-      ) : progress.flow === "agents" ||
-        progress.flow === "sessions" ||
-        progress.flow === "checks" ||
-        progress.flow === "fixes" ? (
-        <TakeoverStep step={progress.flow} progress={progress} onOpenChecks={onOpenChecks} />
-      ) : null}
-      {progress.actionError && (
-        <p role="alert" className="type-footnote text-system-red-text">
-          {progress.actionError}
-        </p>
+      className={cn(
+        "flex flex-1 flex-col items-center justify-center p-(--space-2xl)",
+        className,
       )}
+    >
+      <div className="flex w-full max-w-xl flex-col items-center gap-(--space-lg)">
+        {!progress.stepShown ? null : progress.flow === "welcome" ? (
+          <WelcomeCard />
+        ) : progress.flow === "limits" ? (
+          <LiveLimitsCard />
+        ) : progress.flow === "agents" ||
+          progress.flow === "sessions" ||
+          progress.flow === "checks" ||
+          progress.flow === "fixes" ? (
+          <TakeoverStep step={progress.flow} progress={progress} onOpenChecks={onOpenChecks} />
+        ) : null}
+        {progress.actionError && (
+          <p role="alert" className="type-footnote text-system-red-text">
+            {progress.actionError}
+          </p>
+        )}
+      </div>
     </fieldset>
   )
 }

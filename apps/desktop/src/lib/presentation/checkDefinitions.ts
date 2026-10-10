@@ -91,20 +91,6 @@ export const CHECK_DEFINITIONS = {
   }
 >
 
-/** How many selected checks can currently run. Smart checks also need their
- * provider gate to be active. A snoozed check still runs, so it counts. */
-export function enabledCheckCount(
-  checks: readonly { id: BurnCheckDetectorId; enabled: boolean }[],
-  smartChecksConfigured: boolean,
-): number {
-  return checks.filter(({ id, enabled }) => {
-    const definition = CHECK_DEFINITIONS[id]
-    return (
-      enabled && Boolean(definition) && (definition.kind === "local" || smartChecksConfigured)
-    )
-  }).length
-}
-
 export const CHECK_LABELS = Object.fromEntries(
   Object.entries(CHECK_DEFINITIONS).map(([id, definition]) => [id, definition.label]),
 ) as Record<BurnCheckDetectorId, string>
