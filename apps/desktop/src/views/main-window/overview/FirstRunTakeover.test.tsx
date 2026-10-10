@@ -6,12 +6,15 @@ import type * as ProgressStore from "./overviewProgressStore"
 import type { FlowStep, OverviewProgress } from "./overviewProgressStore"
 
 let snapshot: OverviewProgress
-const { showLiveLimits, skipLiveLimits, nextStep, enhanceFixes } = vi.hoisted(() => ({
-  showLiveLimits: vi.fn(async () => undefined),
-  skipLiveLimits: vi.fn(),
-  nextStep: vi.fn(async () => undefined),
-  enhanceFixes: vi.fn(async () => true),
-}))
+const { showLiveLimits, skipLiveLimits, nextStep, previousStep, enhanceFixes } = vi.hoisted(
+  () => ({
+    showLiveLimits: vi.fn(async () => undefined),
+    skipLiveLimits: vi.fn(),
+    previousStep: vi.fn(),
+    nextStep: vi.fn(async () => undefined),
+    enhanceFixes: vi.fn(async () => true),
+  }),
+)
 
 const platform = vi.hoisted(() => ({ macOS: true }))
 const openChecks = vi.fn()
@@ -31,6 +34,7 @@ vi.mock("./overviewProgressStore", async (importOriginal) => ({
   overviewProgress: () => snapshot,
   showLiveLimits,
   skipLiveLimits,
+  previousStep,
   nextStep,
   enhanceFixes,
   fixesFound: (progress: OverviewProgress) =>
@@ -309,3 +313,13 @@ it("does not open Burn Checks when finishing setup fails", async () => {
   await vi.waitFor(() => expect(enhanceFixes).toHaveBeenCalled())
   expect(openChecks).not.toHaveBeenCalled()
 })
+
+it.each(["agents", "limits", "sessions", "checks", "fixes"] as const)(
+  "offers Back from %s",
+  (flow) => {
+    snapshot = progress(flow)
+    render(<FirstRunTakeover onOpenChecks={openChecks} />)
+    fireEvent.click(screen.getByRole("button", { name: "Back" }))
+    expect(previousStep).toHaveBeenCalledOnce()
+  },
+)

@@ -58,10 +58,13 @@ describe("OverviewFixes", () => {
     expect(onOpenCheck).toHaveBeenCalledWith("modelOverthinking")
   })
 
-  it("renders the config checks heading and nothing else", () => {
+  it("opens all checks from the section heading", () => {
     snapshot = progress()
-    render(<OverviewFixes onOpenCheck={() => {}} />)
+    const onOpenCheck = vi.fn()
+    render(<OverviewFixes onOpenCheck={onOpenCheck} />)
     expect(screen.getByRole("heading", { name: "Config checks" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "All checks" }))
+    expect(onOpenCheck).toHaveBeenCalledWith(undefined)
   })
 
   it("lists every category with its label and status", () => {

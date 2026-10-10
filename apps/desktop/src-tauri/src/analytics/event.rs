@@ -861,6 +861,7 @@ pub enum MemoryActionOutcome {
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Surface {
+    Agents,
     Activity,
     SessionDetail,
     ProviderPreview,
@@ -877,6 +878,7 @@ pub enum Surface {
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StateSurface {
+    Agents,
     Activity,
     SessionDetail,
     ProviderPreview,
@@ -1404,6 +1406,7 @@ wire_values!(Surface, {
     Surface::Settings => "settings",
     Surface::BurnChecks => "burn_checks",
     Surface::Quota => "quota",
+    Surface::Agents => "agents",
     Surface::Memories => "memories",
 });
 
@@ -1418,6 +1421,7 @@ wire_values!(StateSurface, {
     StateSurface::Settings => "settings",
     StateSurface::BurnChecks => "burn_checks",
     StateSurface::Quota => "quota",
+    StateSurface::Agents => "agents",
     StateSurface::Memories => "memories",
 });
 
@@ -2180,6 +2184,24 @@ mod tests {
         let (name, facts) = observed.resolve();
         assert_eq!(name.as_str(), "antiburn.surface_state_observed");
         assert_eq!(facts.label, Some("memories"));
+    }
+    #[test]
+    fn agents_surface_resolves_to_its_wire_label() {
+        let viewed: Interaction =
+            serde_json::from_str(r#"{"kind":"surfaceViewed","surface":"agents","origin":"user"}"#)
+                .unwrap();
+        let (name, facts) = viewed.resolve();
+        assert_eq!(name.as_str(), "antiburn.surface_viewed");
+        assert_eq!(facts.label, Some("agents"));
+        assert_eq!(facts.detail, Some("user"));
+
+        let observed: Interaction = serde_json::from_str(
+            r#"{"kind":"surfaceStateObserved","surface":"agents","state":"empty","origin":"user"}"#,
+        )
+        .unwrap();
+        let (name, facts) = observed.resolve();
+        assert_eq!(name.as_str(), "antiburn.surface_state_observed");
+        assert_eq!(facts.label, Some("agents"));
     }
 
     fn resource_summary() -> ResourceUsageSummary {

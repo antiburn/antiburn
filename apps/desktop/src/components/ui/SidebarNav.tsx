@@ -12,6 +12,8 @@ type SidebarNavChildItem = {
   icon?: LucideIcon
   /** Shown right-aligned as a muted count pill, e.g. a filtered session count. */
   count?: number
+  status?: string
+  transitionName?: string
   /** Draw a hairline above this row to set it apart from the group before it. */
   separatorBefore?: boolean
   /** The panel id this row's `aria-controls` points at. Defaults to
@@ -25,6 +27,8 @@ export type SidebarNavItem = {
   icon: LucideIcon
   /** Shown right-aligned as a muted count pill, e.g. a filtered session count. */
   count?: number
+  status?: string
+  transitionName?: string
   /** Draw a hairline above this row to set it apart from the group before it. */
   separatorBefore?: boolean
   /** Rows nested under this item, one level deep. They join the same tablist,
@@ -242,7 +246,10 @@ function SidebarNavRow({
       // Set the accessible name to the label alone when a count pill is
       // present. This keeps the name stable and free of the count digits,
       // which the row already shows as visible text.
-      aria-label={item.count !== undefined ? item.label : undefined}
+      aria-label={item.count !== undefined || item.status ? item.label : undefined}
+      aria-description={item.status}
+      title={item.status}
+      style={{ viewTransitionName: item.transitionName }}
       tabIndex={selected && !disabled ? 0 : -1}
       onClick={() => {
         if (disabled) return
@@ -262,7 +269,13 @@ function SidebarNavRow({
     >
       {Icon && <Icon size={16} strokeWidth={2} className="shrink-0" aria-hidden="true" />}
       <span className="truncate">{item.label}</span>
-      {item.count !== undefined && <CountPill count={item.count} className="ml-auto" />}
+      {item.status ? (
+        <span className="ml-auto shrink-0 type-caption tabular-nums text-label-secondary">
+          {item.status}
+        </span>
+      ) : (
+        item.count !== undefined && <CountPill count={item.count} className="ml-auto" />
+      )}
     </button>
   )
 }

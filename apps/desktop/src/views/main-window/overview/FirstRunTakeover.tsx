@@ -11,6 +11,7 @@ import {
   fixesFound,
   LIVE_LIMITS_TRANSITION_NAME,
   nextStep,
+  previousStep,
   type OverviewProgress,
   type ProgressStepKey,
   progressStepTransitionName,
@@ -85,7 +86,7 @@ function LiveLimitsCard() {
         <div className="flex flex-col gap-(--space-sm) text-center">
           <h2 className="type-title-1 text-label">Plan limits</h2>
           <p className="type-title-3 font-normal! text-label-secondary">
-            See plan limit usage versus reset times.{" "}
+            See plan limit usage against your reset times.{" "}
             <MoreInfoToggle
               step="limits"
               open={infoOpen}
@@ -120,6 +121,14 @@ function LiveLimitsCard() {
             className={SKIP_BUTTON}
           >
             Skip
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={previousStep}
+            className="ui-push-button"
+          >
+            Back
           </button>
         </div>
 
@@ -187,6 +196,9 @@ function TakeoverStep({
           onClick={() => void nextStep()}
         />
       )}
+      <button type="button" onClick={previousStep} className="ui-push-button">
+        Back
+      </button>
     </>
   )
 }

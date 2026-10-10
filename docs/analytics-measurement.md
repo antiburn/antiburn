@@ -1015,3 +1015,13 @@ already-open disclosure report nothing. `label` is the step (`agents`,
 controls report `app_search_result_opened` with `setting`. No control
 identity, setting value, or search query reaches either event. The Rust
 boundary rejects an unlisted label or detail, and any extra field (`step_settings_viewed_uses_closed_vocabulary`).
+
+### Agents summary exposure
+
+The main-window Agents page uses the existing `surface_viewed` and
+`surface_state_observed` events with the closed `agents` surface label. It reports
+only while the page is selected and the main window is visible. A discovery row
+with sessions is `ready`; completed discovery without sessions is `empty`.
+Unsettled discovery can report `loading_timeout` after ten seconds. Leaving the
+page ends the exposure. These events contain no agent names, counts, or paths and
+do not establish that a session link was followed.

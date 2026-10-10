@@ -411,6 +411,8 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
       return { allocations: [], generatedAt: now }
     case "get_storage_health":
       return { failing: false, message: null }
+    case "count_agent_memories":
+      return empty ? 0 : 12
     case "get_scan_status":
       return {
         running: false,
@@ -428,6 +430,14 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
             ],
         listChanged: false,
         reDescribed: 2,
+        phase: "saving",
+        foundByAgent: [
+          { agent: "claude-code", sessions: empty ? 0 : 41, done: true },
+          { agent: "codex", sessions: empty ? 0 : 87, done: true },
+          { agent: "cursor", sessions: 0, done: true },
+        ],
+        read: { completed: empty ? 0 : 128, total: empty ? 0 : 128 },
+        gate: { kept: empty ? 0 : 128, outsideRepository: 0, excluded: 0, unreadable: 0 },
       }
     case "get_folder_permissions":
       return { deferred: [], granted: [], supported: false }

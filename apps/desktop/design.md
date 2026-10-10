@@ -611,8 +611,9 @@ Notes for what isn't expressible as a token:
   outgrow it. It uses the popover corner, the opaque `surface-window` fill under the
   `surface-sidebar` tint, and the `shadow-stats-card` outline with no drop shadow. The Overview's
   usage card has no outline, shadow, or fill, so its banner sits on the window background.
-  During first run, the step between the usage card and Recent sessions (the session checks
-  progress, for example) takes the same card and fills the free height. The config checks grid
+  During first run, hide the usage card and Recent sessions until the user advances past
+  Session checks. Keep data collection active while they are hidden. The subsequent fixes
+  step takes the same card and fills the free height between them. The config checks grid
   that replaces it has no card.
 
 - **Overview cost chart** — show daily estimated cost as side-by-side columns, one per source
@@ -866,10 +867,18 @@ Notes for what isn't expressible as a token:
 - **Window chrome** — a window that hides its native title bar owns the drag strip and the matching
   top clearance in the webview; a window that keeps native decorations must not reserve that space.
   Keep that decision in the window's own layout, not in the shared primitives.
-- **Overview shortcuts** — the sidebar footer shows Agents, Sessions, Checks and To fix as
-  shortcut pills below Settings: `rounded-full`, `type-caption`, `surface-card` fill that turns
-  `surface-secondary` on hover, label in `text-label` on the left and a mono `label-secondary`
-  count on the right. The pills sit in two equal columns with a 6px gap.
+- **Sidebar summaries** — Agents and Sessions show their scan counts; Checks shows the
+  unsnoozed count as “N to fix”. Limits shows the Overview subscription percentages in
+  account order, separated by “ / ”. Use trailing `type-caption`, `label-secondary`,
+  tabular figures. No duplicate footer pills. Agents opens a summary page with session
+  links and an Agent settings action. Memories shows a file count once known; omit it
+  before the first successful read and until onboarding completes. Settings stays
+  disabled during onboarding, including its keyboard shortcut.
+- **Onboarding docking** — completed step cards share a view-transition name with their
+  sidebar destination and shrink into that row. Checks and its result dock into Checks.
+  Each step after Welcome has Back; Back changes the visible step without restarting
+  completed work. Reduced motion applies changes immediately. On compact windows the
+  closed navigation drawer provides no visible docking target.
 - **Settings pane descriptions** — the Agents, Sessions and Checks panes put one
   `type-callout` `label-secondary` line under the `type-title-2` title that says what the pane
   controls. Sessions stays one page, so Settings search finds every row.

@@ -111,7 +111,7 @@ export interface HistoryProgress {
 export type FlowStep =
   "welcome" | "agents" | "limits" | "sessions" | "checks" | "fixes" | "done"
 
-/** Limits docks into the provider pane instead of a nav row. */
+/** Steps with scan progress. */
 export type ProgressStepKey = "agents" | "sessions" | "checks" | "fixes"
 
 const FLOW_ORDER: readonly FlowStep[] = [
@@ -165,8 +165,7 @@ export function stepDocked(flow: FlowStep, step: ProgressStepKey): boolean {
   return flowIndex(flow) >= flowIndex(STEP_DOCKED_AT[step])
 }
 
-// Reuse the name when a card moves within the takeover. The nav rows carry
-// no name, so they change without motion.
+// Move the name from the completed card to its sidebar row.
 export function progressStepTransitionName(step: ProgressStepKey): string {
   return `progress-step-${step}`
 }
@@ -601,14 +600,27 @@ export async function enhanceFixes(): Promise<boolean> {
   return finished
 }
 
-// Rewinding does not lower the backend gate or restart completed work.
-export function rewindTo(step: ProgressStepKey): void {
+// Back changes the visible step without restarting completed work.
+export async function previousStep(): Promise<void> {
   if (snapshot.mode !== "firstRun" || flow === "done" || !stepShown || actionPending) return
-  if (!stepDocked(flow, step)) return
-  void withViewTransition(() => {
-    flow = step
-    recompute()
-  })
+  const previous = FLOW_ORDER[flowIndex(flow) - 1]
+  if (!previous) return
+  actionError = null
+  actionPending = true
+  const revision = flowRevision
+  recompute()
+  try {
+    await withViewTransition(() => {
+      if (revision !== flowRevision) return
+      flow = previous
+      recompute()
+    })
+  } finally {
+    if (revision === flowRevision) {
+      actionPending = false
+      recompute()
+    }
+  }
 }
 
 /* ---- Ref-counted subscriptions: start on the first listener, stop on the

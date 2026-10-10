@@ -423,6 +423,7 @@ export function smartCheckForDetector(detector: string): SmartCheck | undefined 
 }
 
 export type Surface =
+  | "agents"
   | "activity"
   | "session_detail"
   | "provider_preview"

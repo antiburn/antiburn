@@ -1,3 +1,4 @@
+import { ArrowRight } from "lucide-react"
 import { type CSSProperties } from "react"
 
 import { BurnCheckFlame } from "../../../components/burn-checks/BurnCheckFlames"
@@ -47,18 +48,28 @@ function byUrgency(a: FixCategory, b: FixCategory): number {
 /**
  * The persistent config checks grid. The first-run takeover and its docked
  * steps and fixes result live in `FirstRunTakeover.tsx` and
- * `ProgressNav.tsx`; this keeps only the steady checklist, in its permanent
+ * the main sidebar; this keeps only the steady checklist, in its permanent
  * style, so it shows the same way in `firstRun` and `steady` mode alike.
  */
 export function OverviewFixes({
   onOpenCheck,
 }: {
-  onOpenCheck: (check: BurnCheckDetectorId) => void
+  onOpenCheck: (check: BurnCheckDetectorId | undefined) => void
 }) {
   const progress = useOverviewProgress()
   return (
     <section aria-label="Fixes" className="flex flex-col gap-(--space-sm)">
-      <h2 className="type-caption text-label-secondary">Config checks</h2>
+      <div className="flex items-baseline justify-between">
+        <h2 className="type-caption text-label-secondary">Config checks</h2>
+        <button
+          type="button"
+          onClick={() => onOpenCheck(undefined)}
+          className="inline-flex items-center gap-1 type-caption text-label-secondary hover:text-label hover:underline hover:underline-offset-[3px]"
+        >
+          All checks
+          <ArrowRight size={12} strokeWidth={2} aria-hidden="true" />
+        </button>
+      </div>
       <ul className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-(--space-sm)">
         {[...progress.categories].sort(byUrgency).map((category) => (
           <CheckCard key={category.id} category={category} onOpen={onOpenCheck} />

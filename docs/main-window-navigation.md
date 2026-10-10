@@ -1,7 +1,7 @@
 # Main-window navigation and local search
 
 The retained main renderer owns a bounded history of 100 destinations. A destination is
-Overview, Limits, Memories, Sessions with its contextual filters and optional session identity, or Checks with an
+Overview, Agents, Limits, Memories, Sessions with its contextual filters and optional session identity, or Checks with an
 optional check ID. Explicit navigation appends; Back and Forward restore; automatic initial
 selection replaces. Selecting the same destination can reveal it again without appending.
 New navigation after Back removes the forward branch. Deleted session targets are pruned.
@@ -59,14 +59,17 @@ The popover's attention banners do not use this route. A banner action names a
 Settings pane (`openSettingsPane`), and the popover opens the Settings window on
 that pane, for example Settings → Sessions for a blocked repository.
 
-### Progress shortcuts
+### Sidebar summaries
 
-The Agents, Sessions, Checks, and To fix pills below Settings in the sidebar
-footer are status shortcuts, not views. They are not in the registry or
-search. During the first run, a pill takes the reader back to its step. After
-the first run, Agents, Sessions, and Checks open the Settings window on the
-pane of the same name, and To fix opens Checks at the first check that needs
-a fix, or plain Checks when none does. The pills add no history entry.
+Agents and Sessions show scan counts. Checks shows the unsnoozed number of checks
+that need a fix. Limits shows the same rounded subscription utilization percentages
+as Overview, in account order; missing figures are omitted. Counts and transitions
+belong to the renderer, not the navigation registry. The Agents page lists local
+agent discovery results and links to agent-filtered Sessions and Agent settings.
+
+First-run cards dock into their sidebar destinations. The sidebar remains disabled
+until setup finishes. Each step after Welcome has an explicit Back button, which
+changes only the visible step and does not lower the backend scan gate.
 
 ### Feature-owned search metadata
 
@@ -125,3 +128,12 @@ row without a React effect.
 Search only navigates. It does not toggle controls, scan, fix, export, or delete data.
 Queries are transient and local. Analytics carries only explicit actions and fixed result
 categories, described in `docs/analytics-measurement.md`.
+
+The Memories sidebar count uses a separate directory-only read of local Claude Code
+memory files. It uses the report's file exclusions and 500-file per-project limit.
+It loads when the main window becomes visible after onboarding completes, then refreshes on focus or
+reopening if the last attempt is at least one minute old. Successful full reports
+supply the count, and archive/restore actions invalidate it immediately. Reads are
+coalesced; older results cannot replace a report or a count invalidated by an edit.
+The count is held only in memory. Failures retain the last known value; before a
+successful read the sidebar shows no number. No timer or filesystem watcher runs.

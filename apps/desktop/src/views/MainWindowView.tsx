@@ -1,10 +1,11 @@
-import { Brain, Flame, Gauge, House, MessagesSquare, Settings } from "lucide-react"
+import { Bot, Brain, Flame, Gauge, House, MessagesSquare, Settings } from "lucide-react"
 import { useState, useSyncExternalStore, type ReactNode } from "react"
 import { flushSync } from "react-dom"
 
 import { SidebarNav, type SidebarNavItem } from "../components/ui/SidebarNav"
 import type { BurnCheckDetectorId } from "../lib/insightsIpc"
 import { noteInteraction, openSettingsWindow } from "../lib/ipc"
+import { memoryCountStore } from "../lib/memoryCountStore"
 import { MAIN_VIEWS, isMainViewId, type MainViewId } from "../lib/navigation/mainViews"
 import { useGlobalKeydown } from "../lib/useGlobalKeydown"
 import { sessionHygieneIdentities, useSessionHygiene } from "../lib/useSessionHygiene"
@@ -18,11 +19,9 @@ import { MainWindowLayout } from "./main-window/MainWindowLayout"
 import { MainWindowNavigationSession } from "./main-window/MainWindowNavigationSession"
 import { MainOverviewSession } from "./main-window/MainOverviewSession"
 import { OverviewView } from "./main-window/OverviewView"
-import {
-  overviewProgress,
-  subscribeOverviewProgress,
-} from "./main-window/overview/overviewProgressStore"
-import { ProgressNav } from "./main-window/overview/ProgressNav"
+import { AgentsView } from "./main-window/AgentsView"
+import { useOverviewProgress } from "./main-window/overview/useOverviewProgress"
+import { sidebarProgress } from "./main-window/overview/sidebarProgress"
 import { MemoriesSession } from "./main-window/memories/MemoriesSession"
 import { MemoriesView } from "./main-window/memories/MemoriesView"
 import { QuotaSession } from "./main-window/quota/QuotaSession"
@@ -42,9 +41,14 @@ function neverSubscribe(): () => void {
 
 /** A section supplies its panes without changing the main window's native lifecycle. */
 export function MainWindowView({ sections }: { sections?: readonly MainWindowSection[] }) {
+  const overview = useOverviewProgress()
+  const onboardingComplete =
+    overview.mode === "steady" || (overview.mode === "firstRun" && overview.flow === "done")
+  const onboardingBlocked = !sections && !onboardingComplete
   const [searchOpen, setSearchOpen] = useState(false)
   const [settingsError, setSettingsError] = useState(false)
   async function openSettings(...target: Parameters<typeof openSettingsWindow>): Promise<void> {
+    if (onboardingBlocked) return
     setSettingsError(false)
     try {
       await openSettingsWindow(...target)
@@ -74,6 +78,11 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   const [overviewSession] = useState(() => new MainOverviewSession(activitySession))
   const [quotaSession] = useState(() => new QuotaSession())
   const [memoriesSession] = useState(() => new MemoriesSession())
+  const memoryCount = useSyncExternalStore(
+    sections || !onboardingComplete ? neverSubscribe : memoryCountStore.subscribe,
+    memoryCountStore.getSnapshot,
+    memoryCountStore.getSnapshot,
+  )
   const navigation = useSyncExternalStore(
     navigationSession.subscribe,
     navigationSession.getSnapshot,
@@ -88,10 +97,10 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   )
   // Use the full list so facet selection does not change the hygiene request key.
   const hygieneBySession = useSessionHygiene(sessionHygieneIdentities(activity.entries ?? []))
-  const overview = useSyncExternalStore(
-    subscribeOverviewProgress,
-    overviewProgress,
-    overviewProgress,
+  const usage = useSyncExternalStore(
+    sections ? neverSubscribe : overviewSession.subscribe,
+    overviewSession.getSnapshot,
+    overviewSession.getSnapshot,
   )
   // While the first run takes over the Overview, every other main section is
   // inert and the workspace stays on Overview. A `sections` override (tests,
@@ -119,6 +128,28 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
               subject: subjectForEntry(entry),
             })
           }}
+        />
+      ),
+    },
+    agents: {
+      icon: Bot,
+      render: ({ active }) => (
+        <AgentsView
+          active={active}
+          entries={activity.localEntries ?? []}
+          onSettings={() => void openSettings("agents")}
+          onSessions={(agent) =>
+            navigationSession.navigate({
+              section: "activity",
+              filters: {
+                source: { kind: "selected", includeLocal: true, remote: [] },
+                agents: [agent],
+                result: "all",
+                spend: "all",
+              },
+              subject: null,
+            })
+          }
         />
       ),
     },
@@ -178,6 +209,9 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     },
     memories: {
       icon: Brain,
+      ...(!onboardingComplete || memoryCount == null
+        ? {}
+        : { status: memoryCount.toLocaleString() }),
       render: ({ active }) => <MemoriesView active={active} session={memoriesSession} />,
     },
   }
@@ -188,6 +222,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
       label,
       disabled: takeoverActive,
       ...viewBindings[id],
+      ...sidebarProgress(id, overview, usage.allowance),
     }))
   const [customSelectedId, setCustomSelectedId] = useState(() => availableSections[0]?.id ?? "")
   const [customVisited, setCustomVisited] = useState(
@@ -277,26 +312,16 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
 
                 <button
                   type="button"
+                  disabled={onboardingBlocked}
                   onClick={() => {
                     closeNavigation()
                     void openSettings()
                   }}
-                  className="flex h-7 w-full items-center gap-2 rounded-control px-2 type-body text-label hover:bg-surface-hover"
+                  className="flex h-7 w-full items-center gap-2 rounded-control px-2 type-body text-label enabled:hover:bg-surface-hover disabled:text-label-tertiary"
                 >
                   <Settings size={14} strokeWidth={2} aria-hidden="true" />
                   <span>Settings</span>
                 </button>
-
-                <ProgressNav
-                  onOpenSettings={(step) => {
-                    closeNavigation()
-                    void openSettings(step)
-                  }}
-                  onOpenFixes={(check) => {
-                    closeNavigation()
-                    openChecks(check)
-                  }}
-                />
               </>
             }
           />

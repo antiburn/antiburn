@@ -161,21 +161,20 @@ export function OverviewView({
       >
         {showTakeover ? (
           // The usage card and Recent sessions fade in around the takeover
-          // once the Sessions step is done: the sessions are read, only
-          // their checks wait.
+          // after the Checks step. The session subscription keeps data current.
           <div className="flex grow flex-col gap-(--space-2xl)">
-            {stepDocked(progress.flow, "sessions") && usageCard}
+            {stepDocked(progress.flow, "checks") && usageCard}
             <FirstRunTakeover
               onOpenChecks={onOpenChecks}
               // Between the usage card and Recent sessions, the step sits
               // in a card like the provider limits card, and fills the free
               // height. The config checks that replace it have no card.
               className={cn(
-                stepDocked(progress.flow, "sessions") &&
+                stepDocked(progress.flow, "checks") &&
                   "rounded-(--radius-popover) bg-(--color-surface-window) bg-gradient-to-b from-(--color-surface-sidebar) to-(--color-surface-sidebar) shadow-stats-card",
               )}
             />
-            {stepDocked(progress.flow, "sessions") && recentSessions}
+            {stepDocked(progress.flow, "checks") && recentSessions}
           </div>
         ) : modeDecided ? (
           <div

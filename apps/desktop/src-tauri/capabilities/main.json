@@ -59,6 +59,7 @@
     "allow-get-settings",
     "allow-get-subagent-analysis",
     "allow-list-agent-memories",
+    "allow-count-agent-memories",
     "allow-archive-agent-memory",
     "allow-restore-agent-memory",
     "allow-remove-agent-memory-index-line",
