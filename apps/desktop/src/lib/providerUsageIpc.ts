@@ -485,6 +485,7 @@ export type LiveUsageSourceErrorDetail =
   | "cliMissing"
   | "signInRequired"
   | "refreshPending"
+  | "credentialExpired"
   | "desktopOnly"
 
 /** Live provider usage as one snapshot. Mirrors Rust `LiveUsageSummary`. */

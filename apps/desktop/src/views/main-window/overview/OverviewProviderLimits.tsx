@@ -1,3 +1,4 @@
+import { cn } from "../../../lib/cn"
 import { Fragment, useRef } from "react"
 
 import type {
@@ -6,9 +7,9 @@ import type {
 } from "../../../lib/providerUsageIpc"
 import {
   liveDisplayableProviders,
-  liveGraceNote,
   livePlanAccountLabel,
   liveProviderStatus,
+  liveStatusNote,
   liveUnavailableProviders,
   liveWindows,
   orderedLiveAccounts,
@@ -123,15 +124,9 @@ export function OverviewProviderLimits({
                         : reading.displayName
                     const plan = livePlanAccountLabel(reading, count)
                     const status = liveProviderStatus(live, reading)
-                    const graceNote =
-                      status.kind === "grace"
-                        ? liveGraceNote(
-                            status.category,
-                            reading.provider,
-                            status.ageMs,
-                            status.detail,
-                          )
-                        : null
+                    const note = liveStatusNote(status, reading.provider)
+                    const graceNote = status.kind === "grace" ? note : null
+                    const staleNote = status.kind === "stale" ? note : null
 
                     return (
                       <Fragment key={key}>
@@ -141,6 +136,7 @@ export function OverviewProviderLimits({
                           role="group"
                           aria-label={providerGroupLabel(displayName, plan)}
                           className="min-w-0"
+                          {...(staleNote ? { title: staleNote } : {})}
                         >
                           <h3 className="min-w-0 type-footnote truncate">
                             <span className="uppercase">{displayName}</span>
@@ -153,7 +149,9 @@ export function OverviewProviderLimits({
                             </p>
                           )}
 
-                          <MeterGroup windows={liveWindows(reading)} now={at} />
+                          <div className={cn(staleNote && "opacity-60")}>
+                            <MeterGroup windows={liveWindows(reading)} now={at} />
+                          </div>
                         </div>
                       </Fragment>
                     )

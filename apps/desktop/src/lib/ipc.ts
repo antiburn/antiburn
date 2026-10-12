@@ -438,7 +438,13 @@ export type SurfaceOrigin = "user" | "automatic"
 export type SurfaceState = "ready" | "empty" | "error" | "loading_timeout"
 export type LiveUsageProvider = "anthropic" | "openai" | "google"
 export type LiveUsageState =
-  "fresh" | "stale" | "authentication" | "rate_limited" | "unavailable" | "no_credentials"
+  | "fresh"
+  | "stale"
+  | "authentication"
+  | "login_recovering"
+  | "rate_limited"
+  | "unavailable"
+  | "no_credentials"
 export type AutoFixReviewAnalyticsOutcome =
   "ready" | "stale" | "expired" | "conflict" | "unavailable" | "failed"
 export type AutoFixAnalyticsOutcome =

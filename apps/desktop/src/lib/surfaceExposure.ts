@@ -46,6 +46,14 @@ function failedState(category: string, detail?: string): LiveUsageState {
   // Claude Desktop alone has no login antiburn can read. That is a missing
   // credential, not a failed sign-in.
   if (detail === "desktopOnly") return "no_credentials"
+  // The login expired, but it can recover without a new sign-in. The surface
+  // keeps the last reading and gives no instruction.
+  if (
+    category === "authentication" &&
+    (detail === "credentialExpired" || detail === "refreshPending")
+  ) {
+    return "login_recovering"
+  }
   switch (category) {
     case "authentication":
       return "authentication"
@@ -78,11 +86,17 @@ export function liveUsageObservations(
           provider: meter.provider,
           state: provider.freshness === "stale" ? "stale" : "fresh",
         })
-      } else if (status.kind === "grace") {
+      } else if (status.kind === "grace" || status.kind === "stale") {
         observations.push({ provider: meter.provider, state: "stale" })
-        observations.push({ provider: meter.provider, state: failedState(status.category) })
+        observations.push({
+          provider: meter.provider,
+          state: failedState(status.category, status.detail),
+        })
       } else {
-        observations.push({ provider: meter.provider, state: failedState(status.category) })
+        observations.push({
+          provider: meter.provider,
+          state: failedState(status.category, status.detail),
+        })
       }
     }
 

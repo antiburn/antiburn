@@ -732,7 +732,7 @@ describe("UsageLimitsBar — degraded state", () => {
     // shows even when the meters are collapsed, with no disclosure.
     bar({ live: liveSummary({ providers: [], errors: [sourceError()] }) })
     expect(screen.getByRole("group", { name: "Claude" })).toHaveTextContent(
-      "Claude rate limited usage checks.",
+      "Couldn't get Claude usage yet. antiburn checks again shortly.",
     )
     expect(screen.queryByTestId("usage-limits-unavailable")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /usage limits/ })).not.toBeInTheDocument()
@@ -746,8 +746,10 @@ describe("UsageLimitsBar — degraded state", () => {
       }),
     })
     const seat = screen.getByTestId("usage-limits-unavailable")
-    expect(seat).toHaveAccessibleName("Codex, usage unavailable (rate limited)")
-    expect(seat).toHaveAttribute("title", "Codex — rate limited")
+    expect(seat).toHaveAccessibleName("Codex, usage unavailable (checking again soon)")
+    // The row states no words any more, so the failure has to survive on
+    // hover. It is also spelled out in full in the expanded listing.
+    expect(seat).toHaveAttribute("title", "Codex — checking again soon")
     expect(screen.getByRole("button", { name: "Expand usage limits" })).toBeInTheDocument()
   })
 
@@ -777,7 +779,9 @@ describe("UsageLimitsBar — degraded state", () => {
     })
     const failure = screen.getByRole("group", { name: "Claude" })
     expect(
-      within(failure).getByText("Claude rate limited usage checks. Wait, then retry."),
+      within(failure).getByText(
+        "Couldn't get Claude usage yet. antiburn checks again shortly.",
+      ),
     ).toBeInTheDocument()
     // The provider keeps its eyebrow, as it does when it has meters.
     expect(within(failure).getByRole("heading")).toHaveTextContent("Claude")
@@ -847,7 +851,7 @@ describe("UsageLimitsBar — degraded state", () => {
 })
 
 describe("UsageLimitsBar — grace period", () => {
-  const GRACE_NOTE = "Claude is temporarily limiting usage checks. Last updated 4 min ago."
+  const GRACE_NOTE = "Last updated 4 min ago."
 
   it("keeps a graced reading on the ring, muted, with the grace note attached", () => {
     bar({
@@ -865,17 +869,45 @@ describe("UsageLimitsBar — grace period", () => {
     expect(figureWrapper).toHaveClass("text-label-tertiary")
   })
 
-  it("drops a reading past its grace period and shows the unavailable seat instead", () => {
+  it("keeps a rate-limited reading past its grace period, dimmed, with its age", () => {
+    bar({
+      live: liveSummary({
+        providers: [liveProvider({ observedAt: "2027-01-15T10:00:00Z" })],
+        errors: [sourceError()],
+      }),
+    })
+    const seat = screen.getByRole("img", {
+      name: "Claude at 42 percent. 5-hour limit. Last updated 2 hr ago.",
+    })
+    expect(seat.querySelector("svg")?.closest(".opacity-60")).not.toBeNull()
+    expect(screen.queryByTestId("usage-limits-unavailable")).not.toBeInTheDocument()
+  })
+
+  it("drops a reading after a terminal sign-in failure and shows the sign-in note", () => {
     bar({
       live: liveSummary({
         providers: [liveProvider({ observedAt: "2027-01-15T11:49:00Z" })],
-        errors: [sourceError()],
+        errors: [sourceError({ category: "authentication", detail: "signInRequired" })],
       }),
     })
     expect(screen.queryByRole("img", { name: /Claude at 42 percent/ })).not.toBeInTheDocument()
     expect(screen.getByRole("group", { name: "Claude" })).toHaveTextContent(
-      "Claude rate limited usage checks.",
+      "Sign in inside Claude Code again, then retry.",
     )
+  })
+
+  it("dims the expanded meters of a stale reading and puts its age in the tooltip", () => {
+    bar({
+      live: liveSummary({
+        providers: [liveProvider({ observedAt: "2027-01-15T10:00:00Z" })],
+        errors: [sourceError()],
+      }),
+      expanded: true,
+    })
+    const group = screen.getByRole("group", { name: "Claude" })
+    expect(group).toHaveAttribute("title", "Last updated 2 hr ago.")
+    expect(within(group).queryByText(/Last updated/)).not.toBeInTheDocument()
+    expect(group.querySelector(".opacity-60")).not.toBeNull()
   })
 
   it("adds a muted grace line under the provider name in the expanded meters", () => {
