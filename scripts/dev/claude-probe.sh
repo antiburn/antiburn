@@ -17,6 +17,8 @@
 # It shows if expiresAt is in the past or the future, in minutes. It never shows
 # a token, a refresh token, an account ID or a scope (scopes show as a count).
 # The secret goes from `security -w` straight into jq. It is never kept.
+# Some macOS versions print the secret as hex. jq decodes it and says so.
+# A failed read (prompt denied, locked Keychain) shows as unreadable, not empty.
 #
 # Four-point login run (issue #704): run with --keychain-shape at each point:
 #   1. signed in            --label 01-signed-in
@@ -31,6 +33,7 @@ set -euo pipefail
 
 # Print the login shape of the JSON on stdin as Markdown list lines.
 # Never print a value. Print names, types, states, counts and expiry only.
+# Hex input (as `security -w` prints on some macOS versions) is decoded in jq.
 # Set CLAUDE_PROBE_NOW_MS to fix the clock (tests only).
 login_shape() {
   local now_ms="${CLAUDE_PROBE_NOW_MS:-}"
@@ -52,27 +55,53 @@ login_shape() {
         | if $m >= 0 then "future, in about \($m) min"
           else "past, about \(-$m) min ago" end
       end;
+    # Hex text to a byte array, then UTF-8 bytes to a string.
+    def hexbytes:
+      gsub("\\s"; "") | ascii_downcase | explode
+      | map(if . >= 97 then . - 87 else . - 48 end)
+      | [range(0; length; 2) as $i | .[$i] * 16 + .[$i + 1]];
+    def utf8:
+      . as $b
+      | [foreach range(0; $b | length) as $i ({cp: 0, need: 0, out: null};
+          $b[$i] as $x
+          | if .need == 0 then
+              if $x < 128 then {cp: 0, need: 0, out: $x}
+              elif $x >= 240 then {cp: ($x % 8), need: 3, out: null}
+              elif $x >= 224 then {cp: ($x % 16), need: 2, out: null}
+              elif $x >= 192 then {cp: ($x % 32), need: 1, out: null}
+              else {cp: 0, need: 0, out: 65533} end
+            else {cp: (.cp * 64 + $x % 64), need: (.need - 1), out: null}
+              | if .need == 0 then .out = .cp else . end
+            end;
+          .out | select(. != null))]
+      | implode;
+    def report:
+      . as $d
+      | if ($d | type) != "object" then "- data: JSON \($d | type), not an object"
+        else
+          "- top-level keys: \($d | keys | join(", "))",
+          ($d | to_entries[] | "  - \(.key): \(.value | type), \(.value | state)"),
+          (if ($d | has("claudeAiOauth")) | not then "- claudeAiOauth: absent"
+           elif ($d.claudeAiOauth | type) != "object" then "- claudeAiOauth: \($d.claudeAiOauth | type), not an object"
+           else
+             "- claudeAiOauth keys:",
+             ($d.claudeAiOauth | to_entries[] | "  - \(.key): \(.value | type), \(.value | state)"),
+             (if ($d.claudeAiOauth | has("expiresAt")) then "- claudeAiOauth.expiresAt: \($d.claudeAiOauth.expiresAt | expiry)"
+              else "- claudeAiOauth.expiresAt: absent" end)
+           end)
+        end;
     . as $raw
     | if ($raw | test("^\\s*$")) then "- data: empty"
-      else (try [$raw | fromjson] catch null) as $w
-      | if $w == null then
-          (if ($raw | test("^[0-9a-fA-F\\s]+$")) then "- data: not valid JSON (looks hex-encoded)"
-           else "- data: not valid JSON" end)
-        else $w[0] as $d
-        | if ($d | type) != "object" then "- data: JSON \($d | type), not an object"
-          else
-            "- top-level keys: \($d | keys | join(", "))",
-            ($d | to_entries[] | "  - \(.key): \(.value | type), \(.value | state)"),
-            (if ($d | has("claudeAiOauth")) | not then "- claudeAiOauth: absent"
-             elif ($d.claudeAiOauth | type) != "object" then "- claudeAiOauth: \($d.claudeAiOauth | type), not an object"
-             else
-               "- claudeAiOauth keys:",
-               ($d.claudeAiOauth | to_entries[] | "  - \(.key): \(.value | type), \(.value | state)"),
-               (if ($d.claudeAiOauth | has("expiresAt")) then "- claudeAiOauth.expiresAt: \($d.claudeAiOauth.expiresAt | expiry)"
-                else "- claudeAiOauth.expiresAt: absent" end)
-             end)
-          end
-        end
+      else
+        (try [$raw | fromjson] catch null) as $w
+        | ($raw | test("^[0-9a-fA-F\\s]+$")) as $looks_hex
+        | (if $w == null and $looks_hex and (($raw | gsub("\\s"; "") | length) % 2 == 0)
+           then (try [$raw | hexbytes | utf8 | fromjson] catch null)
+           else null end) as $h
+        | if $w != null then $w[0] | report
+          elif $h != null then "- data: hex-encoded, decoded", ($h[0] | report)
+          elif $looks_hex then "- data: not valid JSON (looks hex-encoded)"
+          else "- data: not valid JSON" end
       end
   ' 2>/dev/null || echo "- data: could not parse"
 }
@@ -91,7 +120,8 @@ while [[ $# -gt 0 ]]; do
     --shape-from-file)
       [[ -f "${2:-}" ]] || { echo "file not found" >&2; exit 2; }
       login_shape < "$2"; exit 0 ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    # Print the comment block at the top of this file, up to `set -euo pipefail`.
+    -h|--help) awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -153,8 +183,14 @@ jsonl_shape() {
       if [[ "$svc" == "Claude Code-credentials"* ]]; then
         if [[ $keychain_shape -eq 1 ]]; then
           echo "  - login shape (secret read, can show a Keychain prompt):"
-          # Pipe the secret straight into jq. Do not keep it.
-          { security find-generic-password -s "$svc" -w 2>/dev/null || true; } | login_shape | sed 's/^/    /'
+          # Pipe the secret straight into jq. Do not keep it. Keep only the
+          # shape and the exit status of `security`, so a failed read (prompt
+          # denied, locked Keychain) does not look like an empty login.
+          if shape=$(security find-generic-password -s "$svc" -w 2>/dev/null | login_shape | sed 's/^/    /'; exit "${PIPESTATUS[0]}"); then
+            echo "$shape"
+          else
+            echo "    - data: unreadable (security exit $?: prompt denied, Keychain locked, or read failed)"
+          fi
         else
           echo "  - login shape: skipped (use --keychain-shape)"
         fi
