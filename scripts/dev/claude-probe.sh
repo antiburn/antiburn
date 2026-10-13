@@ -2,20 +2,126 @@
 # claude-probe.sh — metadata-only inventory of Claude Code CLI / Claude Desktop
 # footprints on macOS. Never prints secrets or transcript content.
 #
-# Usage: scripts/dev/claude-probe.sh [--label NAME] [--out DIR]
-#   --label  tag for this snapshot (e.g. "03-desktop-signed-in")
-#   --out    directory to write the report to (default: .agent-artifacts/claude-probe)
+# Usage: scripts/dev/claude-probe.sh [--label NAME] [--out DIR] [--keychain-shape]
+#        scripts/dev/claude-probe.sh --shape-from-file PATH
+#   --label           tag for this snapshot (e.g. "03-desktop-signed-in")
+#   --out             directory to write the report to (default: .agent-artifacts/claude-probe)
+#   --keychain-shape  also read the secret of each "Claude Code-credentials*" Keychain
+#                     item and report its shape. This read can show a Keychain prompt.
+#   --shape-from-file print the login shape of a JSON file to stdout and stop.
+#                     Use it on synthetic data. It works on any OS.
 #
 # Run it after each characterization step and diff successive reports.
+#
+# Login shape: key names, value types, and empty/blank/zero/non-empty state only.
+# It shows if expiresAt is in the past or the future, in minutes. It never shows
+# a token, a refresh token, an account ID or a scope (scopes show as a count).
+# The secret goes from `security -w` straight into jq. It is never kept.
+# Some macOS versions print the secret as hex. jq decodes it and says so.
+# A failed read (prompt denied, locked Keychain) shows as unreadable, not empty.
+#
+# Four-point login run (issue #704): run with --keychain-shape at each point:
+#   1. signed in            --label 01-signed-in
+#   2. after normal expiry  --label 02-expired      (about 8 hours after sign-in)
+#   3. after `claude /logout` --label 03-logout
+#   4. after `claude /login`  --label 04-login
+# At each point, write down what `claude /status` says for the login, and if a
+# read showed a Keychain prompt. Then diff the reports. They show if /logout
+# deletes the item, removes claudeAiOauth, or makes it blank, and if a new item
+# shows a prompt for the secret read.
 set -euo pipefail
+
+# Print the login shape of the JSON on stdin as Markdown list lines.
+# Never print a value. Print names, types, states, counts and expiry only.
+# Hex input (as `security -w` prints on some macOS versions) is decoded in jq.
+# Set CLAUDE_PROBE_NOW_MS to fix the clock (tests only).
+login_shape() {
+  local now_ms="${CLAUDE_PROBE_NOW_MS:-}"
+  [[ -n "$now_ms" ]] || now_ms=$(( $(date +%s) * 1000 ))
+  jq -Rrs --argjson nowms "$now_ms" '
+    def state:
+      if type == "string" then
+        (if . == "" then "empty" elif test("^\\s*$") then "blank" else "non-empty" end)
+      elif type == "number" then
+        (if . == 0 then "zero" elif . < 0 then "negative" else "non-zero" end)
+      elif type == "array" then "\(length) items"
+      elif type == "object" then "\(length) keys"
+      elif type == "boolean" then "set"
+      else "null" end;
+    def expiry:
+      if type != "number" then "not a number"
+      elif . <= 0 then "not set (zero or negative)"
+      else ((. - $nowms) / 60000 | floor) as $m
+        | if $m >= 0 then "future, in about \($m) min"
+          else "past, about \(-$m) min ago" end
+      end;
+    # Hex text to a byte array, then UTF-8 bytes to a string.
+    def hexbytes:
+      gsub("\\s"; "") | ascii_downcase | explode
+      | map(if . >= 97 then . - 87 else . - 48 end)
+      | [range(0; length; 2) as $i | .[$i] * 16 + .[$i + 1]];
+    def utf8:
+      . as $b
+      | [foreach range(0; $b | length) as $i ({cp: 0, need: 0, out: null};
+          $b[$i] as $x
+          | if .need == 0 then
+              if $x < 128 then {cp: 0, need: 0, out: $x}
+              elif $x >= 240 then {cp: ($x % 8), need: 3, out: null}
+              elif $x >= 224 then {cp: ($x % 16), need: 2, out: null}
+              elif $x >= 192 then {cp: ($x % 32), need: 1, out: null}
+              else {cp: 0, need: 0, out: 65533} end
+            else {cp: (.cp * 64 + $x % 64), need: (.need - 1), out: null}
+              | if .need == 0 then .out = .cp else . end
+            end;
+          .out | select(. != null))]
+      | implode;
+    def report:
+      . as $d
+      | if ($d | type) != "object" then "- data: JSON \($d | type), not an object"
+        else
+          "- top-level keys: \($d | keys | join(", "))",
+          ($d | to_entries[] | "  - \(.key): \(.value | type), \(.value | state)"),
+          (if ($d | has("claudeAiOauth")) | not then "- claudeAiOauth: absent"
+           elif ($d.claudeAiOauth | type) != "object" then "- claudeAiOauth: \($d.claudeAiOauth | type), not an object"
+           else
+             "- claudeAiOauth keys:",
+             ($d.claudeAiOauth | to_entries[] | "  - \(.key): \(.value | type), \(.value | state)"),
+             (if ($d.claudeAiOauth | has("expiresAt")) then "- claudeAiOauth.expiresAt: \($d.claudeAiOauth.expiresAt | expiry)"
+              else "- claudeAiOauth.expiresAt: absent" end)
+           end)
+        end;
+    . as $raw
+    | if ($raw | test("^\\s*$")) then "- data: empty"
+      else
+        (try [$raw | fromjson] catch null) as $w
+        | ($raw | test("^[0-9a-fA-F\\s]+$")) as $looks_hex
+        | (if $w == null and $looks_hex and (($raw | gsub("\\s"; "") | length) % 2 == 0)
+           then (try [$raw | hexbytes | utf8 | fromjson] catch null)
+           else null end) as $h
+        | if $w != null then $w[0] | report
+          elif $h != null then "- data: hex-encoded, decoded", ($h[0] | report)
+          elif $looks_hex then "- data: not valid JSON (looks hex-encoded)"
+          else "- data: not valid JSON" end
+      end
+  ' 2>/dev/null || echo "- data: could not parse"
+}
+
+# Print the modification time of a file.
+file_mtime() { stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%S%z' "$1" 2>/dev/null || echo '?'; }
 
 label="snapshot"
 out_dir=".agent-artifacts/claude-probe"
+keychain_shape=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --label) label="$2"; shift 2 ;;
     --out) out_dir="$2"; shift 2 ;;
-    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    --keychain-shape) keychain_shape=1; shift ;;
+    --shape-from-file)
+      [[ -f "${2:-}" ]] || { echo "file not found" >&2; exit 2; }
+      login_shape < "$2"; exit 0 ;;
+    # Print the comment block at the top of this file, up to `set -euo pipefail`.
+    -h|--help) awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -65,15 +171,34 @@ jsonl_shape() {
   section "Keychain (service names + attributes only, never the secret)"
   security dump-keychain 2>/dev/null \
     | grep -E '"svce"<blob>=' | grep -iE 'claude|anthropic' | sort | uniq -c | sed 's/^/- /' || true
-  for svc in "Claude Code-credentials" "Claude Safe Storage"; do
+  # Find hashed login items ("Claude Code-credentials-<hex>") from the attributes.
+  login_items=$(security dump-keychain 2>/dev/null \
+    | sed -n 's/.*"svce"<blob>="\(Claude Code-credentials-[0-9a-fA-F]*\)".*/\1/p' | sort -u || true)
+  while IFS= read -r svc; do
+    [[ -n "$svc" ]] || continue
     if meta=$(security find-generic-password -s "$svc" 2>/dev/null); then
       acct=$(sed -n 's/.*"acct"<blob>="\(.*\)"/\1/p' <<<"$meta" | head -1)
       mdat=$(sed -n 's/.*"mdat"<timedate>=.*"\(.*\)\\000"/\1/p' <<<"$meta" | head -1)
       echo "- \`$svc\`: present (acct set: $([[ -n "$acct" ]] && echo yes || echo no), mdat: ${mdat:-?})"
+      if [[ "$svc" == "Claude Code-credentials"* ]]; then
+        if [[ $keychain_shape -eq 1 ]]; then
+          echo "  - login shape (secret read, can show a Keychain prompt):"
+          # Pipe the secret straight into jq. Do not keep it. Keep only the
+          # shape and the exit status of `security`, so a failed read (prompt
+          # denied, locked Keychain) does not look like an empty login.
+          if shape=$(security find-generic-password -s "$svc" -w 2>/dev/null | login_shape | sed 's/^/    /'; exit "${PIPESTATUS[0]}"); then
+            echo "$shape"
+          else
+            echo "    - data: unreadable (security exit $?: prompt denied, Keychain locked, or read failed)"
+          fi
+        else
+          echo "  - login shape: skipped (use --keychain-shape)"
+        fi
+      fi
     else
       echo "- \`$svc\`: absent"
     fi
-  done
+  done <<<"$(printf '%s\n' "Claude Code-credentials" "$login_items" "Claude Safe Storage")"
 
   section "CLI config/credential files"
   for p in "$HOME/.claude" "$HOME/.claude.json" "$HOME/.claude/.credentials.json" \
@@ -86,9 +211,13 @@ jsonl_shape() {
     echo "- ~/.claude.json has oauthAccount: $(jq 'has("oauthAccount")' "$HOME/.claude.json" 2>/dev/null)"
     echo "- ~/.claude.json has cachedUsageUtilization: $(jq 'has("cachedUsageUtilization")' "$HOME/.claude.json" 2>/dev/null)"
   fi
-  if [[ -f "$HOME/.claude/.credentials.json" ]]; then
-    echo "- .credentials.json keys: $(json_keys "$HOME/.claude/.credentials.json")"
-    echo "- .credentials.json claudeAiOauth keys: $(jq -c '.claudeAiOauth|keys? // "none"' "$HOME/.claude/.credentials.json" 2>/dev/null)"
+  creds="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
+  if [[ -f "$creds" ]]; then
+    echo "- credentials file (\$CLAUDE_CONFIG_DIR or ~/.claude)/.credentials.json: present (mtime: $(file_mtime "$creds"))"
+    echo "  - login shape:"
+    login_shape < "$creds" | sed 's/^/    /'
+  else
+    echo "- credentials file (\$CLAUDE_CONFIG_DIR or ~/.claude)/.credentials.json: absent"
   fi
   [[ -d "$HOME/.claude" ]] && echo "- ~/.claude entries: $(find "$HOME/.claude" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort | tr '\n' ' ')"
 
