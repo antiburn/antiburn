@@ -645,6 +645,50 @@ jobs:
       - name: Verify third-party notices
         run: pnpm notices:check
 
+  # The drift test that compares the mod catalog with ReportCatalogs runs in
+  # the engine job. A change under plugins/ classifies as full, so it runs.
+  antiburn-live:
+    name: antiburn-live mod
+    needs: classify
+    if: needs.classify.outputs.full == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      CLAUDE_CODE_VERSION: "2.1.292"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Claude Code
+        run: npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+
+      - name: Validate the mod and the marketplace
+        shell: bash
+        run: |
+          set -euo pipefail
+          claude plugin validate .claude-plugin/marketplace.json
+          claude plugin validate plugins/antiburn-live | tee validate.log
+
+      # The mod must add no resident cost: no network, processes, model calls
+      # or timers (plan section 4.0).
+      - name: Refuse network, process, model and timer calls
+        shell: bash
+        run: |
+          set -euo pipefail
+          calls="$(grep 'calls:' validate.log)"
+          echo "$calls"
+          if grep -Eq '\$\.(http|process|model|clock)\.' <<<"$calls"; then
+            echo "::error::antiburn-live calls an engine noun that it must not use"
+            exit 1
+          fi
+
+      - name: Test the mod
+        run: claude plugin test plugins/antiburn-live
+
   dco:
     name: DCO sign-off
     if: github.event_name == 'pull_request'

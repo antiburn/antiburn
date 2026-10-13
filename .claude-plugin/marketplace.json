@@ -1,0 +1,22 @@
+{
+  "name": "antiburn",
+  "owner": {
+    "name": "antiburn"
+  },
+  "metadata": {
+    "description": "antiburn plugins for Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "antiburn-live",
+      "description": "Live token-burn checks for this session, with one fix per check. Local only.",
+      "version": "0.1.0",
+      "source": {
+        "source": "git-subdir",
+        "url": "antiburn/antiburn",
+        "path": "plugins/antiburn-live",
+        "ref": "antiburn-live-v0.1.0"
+      }
+    }
+  ]
+}
