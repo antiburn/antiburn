@@ -163,34 +163,34 @@ Frontend packages
 @fontsource-variable/bitcount-prop-single@5.3.0 | OFL-1.1 | https://fontsource.org/fonts/bitcount-prop-single
 @radix-ui/number@1.1.3 | MIT | https://radix-ui.com/primitives
 @radix-ui/primitive@1.1.7 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-arrow@1.1.15 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-collection@1.1.15 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-arrow@1.1.16 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-collection@1.1.16 | MIT | https://radix-ui.com/primitives
 @radix-ui/react-compose-refs@1.1.5 | MIT | https://radix-ui.com/primitives
 @radix-ui/react-context@1.2.2 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-direction@1.1.4 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-dismissable-layer@1.1.19 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-dropdown-menu@2.1.24 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-direction@1.1.5 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-dismissable-layer@1.1.20 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-dropdown-menu@2.1.25 | MIT | https://radix-ui.com/primitives
 @radix-ui/react-focus-guards@1.1.6 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-focus-scope@1.1.16 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-focus-scope@1.2.0 | MIT | https://radix-ui.com/primitives
 @radix-ui/react-id@1.1.4 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-menu@2.1.24 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-popper@1.3.7 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-portal@1.1.17 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-presence@1.1.10 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-primitive@2.1.10 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-roving-focus@1.1.19 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-scroll-area@1.2.18 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-slot@1.3.3 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-switch@1.3.7 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-tooltip@1.2.16 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-menu@2.1.25 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-popper@1.3.8 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-portal@1.1.18 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-presence@1.1.11 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-primitive@2.1.11 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-roving-focus@1.1.20 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-scroll-area@1.3.0 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-slot@1.4.0 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-switch@1.3.8 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-tooltip@1.3.0 | MIT | https://radix-ui.com/primitives
 @radix-ui/react-use-callback-ref@1.1.4 | MIT | https://radix-ui.com/primitives
 @radix-ui/react-use-controllable-state@1.2.6 | MIT | https://radix-ui.com/primitives
 @radix-ui/react-use-effect-event@0.0.5 | MIT | https://radix-ui.com/primitives
 @radix-ui/react-use-is-hydrated@0.1.3 | MIT | https://radix-ui.com/primitives
 @radix-ui/react-use-layout-effect@1.1.4 | MIT | https://radix-ui.com/primitives
 @radix-ui/react-use-rect@1.1.4 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-use-size@1.1.4 | MIT | https://radix-ui.com/primitives
-@radix-ui/react-visually-hidden@1.2.11 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-use-size@1.1.5 | MIT | https://radix-ui.com/primitives
+@radix-ui/react-visually-hidden@1.2.12 | MIT | https://radix-ui.com/primitives
 @radix-ui/rect@1.1.3 | MIT | https://radix-ui.com/primitives
 @reduxjs/toolkit@2.12.0 | MIT | https://redux-toolkit.js.org
 @standard-schema/spec@1.1.0 | MIT | https://standardschema.dev
@@ -233,7 +233,7 @@ eventemitter3@5.0.4 | MIT | https://github.com/primus/eventemitter3#readme
 get-nonce@1.0.1 | MIT | https://github.com/theKashey/get-nonce
 immer@11.1.16 | MIT | https://github.com/immerjs/immer#readme
 internmap@2.0.3 | ISC | https://github.com/mbostock/internmap/
-lucide-react@1.52.0 | ISC | https://lucide.dev
+lucide-react@1.53.0 | ISC | https://lucide.dev
 react-dom@19.3.0 | MIT | https://react.dev/
 react-is@17.0.2 | MIT | https://reactjs.org/
 react-redux@9.3.0 | MIT | https://github.com/reduxjs/react-redux
@@ -1000,34 +1000,34 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 Used by:
   @radix-ui/number@1.1.3
   @radix-ui/primitive@1.1.7
-  @radix-ui/react-arrow@1.1.15
-  @radix-ui/react-collection@1.1.15
+  @radix-ui/react-arrow@1.1.16
+  @radix-ui/react-collection@1.1.16
   @radix-ui/react-compose-refs@1.1.5
   @radix-ui/react-context@1.2.2
-  @radix-ui/react-direction@1.1.4
-  @radix-ui/react-dismissable-layer@1.1.19
-  @radix-ui/react-dropdown-menu@2.1.24
+  @radix-ui/react-direction@1.1.5
+  @radix-ui/react-dismissable-layer@1.1.20
+  @radix-ui/react-dropdown-menu@2.1.25
   @radix-ui/react-focus-guards@1.1.6
-  @radix-ui/react-focus-scope@1.1.16
+  @radix-ui/react-focus-scope@1.2.0
   @radix-ui/react-id@1.1.4
-  @radix-ui/react-menu@2.1.24
-  @radix-ui/react-popper@1.3.7
-  @radix-ui/react-portal@1.1.17
-  @radix-ui/react-presence@1.1.10
-  @radix-ui/react-primitive@2.1.10
-  @radix-ui/react-roving-focus@1.1.19
-  @radix-ui/react-scroll-area@1.2.18
-  @radix-ui/react-slot@1.3.3
-  @radix-ui/react-switch@1.3.7
-  @radix-ui/react-tooltip@1.2.16
+  @radix-ui/react-menu@2.1.25
+  @radix-ui/react-popper@1.3.8
+  @radix-ui/react-portal@1.1.18
+  @radix-ui/react-presence@1.1.11
+  @radix-ui/react-primitive@2.1.11
+  @radix-ui/react-roving-focus@1.1.20
+  @radix-ui/react-scroll-area@1.3.0
+  @radix-ui/react-slot@1.4.0
+  @radix-ui/react-switch@1.3.8
+  @radix-ui/react-tooltip@1.3.0
   @radix-ui/react-use-callback-ref@1.1.4
   @radix-ui/react-use-controllable-state@1.2.6
   @radix-ui/react-use-effect-event@0.0.5
   @radix-ui/react-use-is-hydrated@0.1.3
   @radix-ui/react-use-layout-effect@1.1.4
   @radix-ui/react-use-rect@1.1.4
-  @radix-ui/react-use-size@1.1.4
-  @radix-ui/react-visually-hidden@1.2.11
+  @radix-ui/react-use-size@1.1.5
+  @radix-ui/react-visually-hidden@1.2.12
   @radix-ui/rect@1.1.3
 
 MIT License
@@ -6709,7 +6709,7 @@ DEALINGS IN THE SOFTWARE.
 ========================================
 
 Used by:
-  lucide-react@1.52.0
+  lucide-react@1.53.0
 
 ISC License
 

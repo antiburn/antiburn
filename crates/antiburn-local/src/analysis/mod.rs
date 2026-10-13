@@ -246,7 +246,9 @@ pub use vendors::{has_dedicated_reader, reader_for, reader_for_input};
 // Reparse stored requests; legacy path-only rows cannot recover a requested range.
 // +1 for retained root user-text proof and bounded native OpenCode skill results.
 // Reparse native retained roots, selected skills, and observed result bindings.
-pub const PARSER_REVISION: i64 = 52;
+// +1 for OMP housekeeping and `custom` rows, `session_init` startup skills, and
+// `skill://` reads. Reparse completed OMP sessions to collect them.
+pub const PARSER_REVISION: i64 = 53;
 
 /// Source admission still requires a validated retained-root snapshot.
 pub fn smart_check_source_supported(agent: &str, format: SourceFormat) -> bool {
@@ -376,7 +378,8 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 6;
 // +1 because SlotAggregate gained priced tokens for per-bucket cost.
 // +1 because a merged slot keeps one priced entry per pricing key.
 // +1 for bounded Claude, Codex, and Pi scope state and cross-record native bindings.
-pub const RESUME_SNAPSHOT_REVISION: i64 = 13;
+// +1 because the Pi-family stream state now keeps OMP startup context.
+pub const RESUME_SNAPSHOT_REVISION: i64 = 14;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///
@@ -456,26 +459,22 @@ pub fn analyze_sources_with(
 
         // Skill one-liners grafted onto each `SkillUse::description` by name. This
         // rides the same raw-payload read as the initial-context pass (so the
-        // aggregate tick, which skips this whole block, pays nothing) but is
-        // independent of it: a session with skills but no initial-context
-        // breakdown still gets its descriptions. Isolated behind `catch_unwind`
-        // like the breakdown — a malformed transcript must not sink the command.
-        let descriptions = catch_unwind(AssertUnwindSafe(|| {
-            initial_context::parse_skill_descriptions(&input.agent, &payload)
-        }))
-        .unwrap_or_default();
-
-        let breakdown = match catch_unwind(AssertUnwindSafe(|| {
-            initial_context::parse_initial_context(&input.agent, &payload)
+        // aggregate tick, which skips this whole block, pays nothing). A session
+        // with skills but no initial-context breakdown still gets its
+        // descriptions. One call reads both values, so a Claude or Oh My Pi
+        // transcript is parsed once. `catch_unwind` isolates the parse: a
+        // malformed transcript must not sink the command.
+        let (breakdown, descriptions) = match catch_unwind(AssertUnwindSafe(|| {
+            initial_context::parse_initial_context_and_skill_descriptions(&input.agent, &payload)
         })) {
-            Ok(breakdown) => breakdown,
+            Ok(parsed) => parsed,
             Err(_) => {
                 ::tracing::error!(
                     event = "initial_context_parse_panicked",
                     agent = %input.agent,
                     session_id = %input.session_id
                 );
-                None
+                (None, std::collections::HashMap::new())
             }
         };
 

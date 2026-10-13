@@ -407,6 +407,7 @@ export function SessionPane({
       subagentCount={payload?.orchestration?.subagentCount ?? 0}
       modelRuns={payload?.modelRuns ?? []}
       relations={relations}
+      calledTools={payload?.calledTools ?? null}
       sessionQuota={subject.remoteHostId ? null : sessionQuota}
       {...(onOpenQuota ? { onOpenQuota } : {})}
       sessionMemories={subject.remoteHostId ? null : sessionMemories}

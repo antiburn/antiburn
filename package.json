@@ -23,7 +23,7 @@
   },
   "devDependencies": {
     "@secretlint/secretlint-rule-preset-recommend": "13.0.7",
-    "aislop": "^0.17.0",
+    "aislop": "^0.18.1",
     "secretlint": "13.0.7",
     "yaml": "^2.9.1"
   }

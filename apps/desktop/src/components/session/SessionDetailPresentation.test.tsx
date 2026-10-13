@@ -828,6 +828,102 @@ describe("SessionDetailPresentation — session facts", () => {
     ).toBeTruthy()
   })
 
+  it("lists the tools the session called when no startup context was recorded", () => {
+    view({
+      summary: summary(),
+      calledTools: [
+        { name: "Bash", kind: "tool", calls: 12 },
+        { name: "Read", kind: "tool", calls: 3 },
+      ],
+    })
+    fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))
+
+    expect(
+      screen.queryByText("No startup context has been recorded for this session."),
+    ).toBeNull()
+    expect(screen.getByText("Bash")).toBeTruthy()
+    expect(screen.getByText("12")).toBeTruthy()
+    expect(screen.getByText("Read")).toBeTruthy()
+    expect(screen.getByText("3")).toBeTruthy()
+    // The payload's order is the ranking, so the view must not reorder it.
+    const names = screen.getAllByText(/^(Bash|Read)$/).map((node) => node.textContent)
+    expect(names).toEqual(["Bash", "Read"])
+  })
+
+  it("lists skill uses apart from tool calls", () => {
+    view({
+      summary: summary(),
+      calledTools: [
+        { name: "read", kind: "tool", calls: 2 },
+        { name: "research", kind: "skill", calls: 1 },
+      ],
+    })
+    fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))
+
+    expect(screen.getByText("Calls")).toBeTruthy()
+    expect(screen.getByText("Uses")).toBeTruthy()
+    const toolRow = screen.getByText("read").parentElement
+    const skillRow = screen.getByText("research").parentElement
+    expect(toolRow?.textContent).toBe("read2")
+    expect(skillRow?.textContent).toBe("research1")
+    // A skill use must not sit in the list of tool calls.
+    expect(screen.getByText("Calls").parentElement?.contains(skillRow ?? null)).toBe(false)
+  })
+
+  it("lists only skills when the session called no other tool", () => {
+    view({
+      summary: summary(),
+      calledTools: [{ name: "research", kind: "skill", calls: 1 }],
+    })
+    fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))
+
+    expect(screen.getByText("research")).toBeTruthy()
+    expect(screen.queryByText("Calls")).toBeNull()
+  })
+
+  it("keeps the startup-context reading when the session records both", () => {
+    const withContext = summary({
+      sessions: [
+        metrics({
+          initialContext: {
+            sources: [
+              {
+                source: "skill_instructions",
+                sourceName: "research",
+                tokenCount: 12_000,
+                useCount: 1,
+              },
+            ],
+          },
+        }),
+      ],
+    })
+    view({ summary: withContext, calledTools: [{ name: "Bash", kind: "tool", calls: 12 }] })
+    fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))
+
+    expect(screen.getByText("research")).toBeTruthy()
+    expect(screen.queryByText("Tools and skills used")).toBeNull()
+  })
+
+  it("lists called tools when the startup context has no sized item", () => {
+    const emptyContext = summary({ sessions: [metrics({ initialContext: { sources: [] } })] })
+    view({ summary: emptyContext, calledTools: [{ name: "Bash", kind: "tool", calls: 12 }] })
+    fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))
+
+    expect(screen.getByText("Tools and skills used")).toBeTruthy()
+    expect(screen.getByText("Bash")).toBeTruthy()
+  })
+
+  it("keeps the empty state when the session has neither reading", () => {
+    view({ summary: summary(), calledTools: [] })
+    fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))
+
+    expect(screen.queryByText("Tools and skills used")).toBeNull()
+    expect(
+      screen.getByText("No startup context has been recorded for this session."),
+    ).toBeTruthy()
+  })
+
   it("reddens the wasted-token figure only for a large share of a large context", () => {
     function wastedContext(unusedTokens: number, usedTokens: number) {
       return summary({
