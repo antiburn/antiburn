@@ -31,8 +31,11 @@ CI changes, and documentation that no user acts on stay out — see
   see their recent use, archive or restore them, and open a memory from the
   session that used it.
 - Claude Desktop Cowork transcripts are discovered as sessions.
-- Burn Checks add context-aware findings for ignored instructions and
-  over-exploration. Each check can be enabled or disabled individually.
+- Burn Checks assess ignored instructions, scope creep, over-exploration, and
+  skill opportunities against session context. Choose Jev, Ollama, Cloudflare,
+  or a custom provider, and enable or disable each check.
+- Session details show recorded tool calls. OMP startup skill listings and
+  recorded skill reads now contribute to skill context and use.
 - The Overview is the first-run experience. It finds your coding agents,
   reads the last 30 days of sessions, and runs Burn Checks, with real
   progress at each step, then shows the fixes it found. The separate setup
