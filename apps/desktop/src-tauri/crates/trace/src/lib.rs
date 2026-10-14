@@ -216,3 +216,5 @@ mod tests {
         assert!(env_controls_trace_bootstrap("warn,antiburn_local=trace"));
     }
 }
+
+// CI cache probe. Do not merge.

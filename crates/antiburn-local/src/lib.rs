@@ -24,3 +24,5 @@ pub mod platform;
 pub mod pricing;
 pub mod remediation;
 pub mod repositories;
+
+// CI cache probe. Do not merge.
