@@ -151,8 +151,7 @@ pub enum EventName {
     #[cfg(feature = "analytics")]
     CheckEnablementSaved,
     /// A progress step's settings became visible: the first-run "Show
-    /// settings" disclosure opened, or the step's modal opened after the
-    /// first run.
+    /// settings" disclosure opened.
     #[cfg(feature = "analytics")]
     StepSettingsViewed,
 }
@@ -655,12 +654,9 @@ pub enum Interaction {
     },
     /// The first-run Overview's result first showed.
     FirstRunFinished {},
-    /// A progress step's settings became visible. `limits` only ever
-    /// carries `first_run`: after the first run, its settings live in
-    /// Settings → Usage, which reports its own `settings_pane_viewed`
-    /// instead. Nothing here enforces that pairing — it holds because the
-    /// only caller for `limits` is the first-run disclosure — so it is
-    /// documented, not typed.
+    /// A progress step's settings became visible in the first-run
+    /// disclosure. After the first run, the settings live in Settings
+    /// panes, which report their own `settings_pane_viewed` instead.
     StepSettingsViewed {
         label: StepSettingsLabel,
         detail: StepSettingsDetail,
@@ -941,6 +937,7 @@ pub enum MemoryActionOutcome {
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Surface {
+    Agents,
     Activity,
     SessionDetail,
     ProviderPreview,
@@ -957,6 +954,7 @@ pub enum Surface {
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StateSurface {
+    Agents,
     Activity,
     SessionDetail,
     ProviderPreview,
@@ -1045,6 +1043,9 @@ pub enum SurfaceState {
 #[serde(rename_all = "snake_case")]
 pub enum SettingsPane {
     General,
+    Agents,
+    Sessions,
+    Checks,
     Appearance,
     Privacy,
     Notifications,
@@ -1116,7 +1117,6 @@ pub enum HistoryDirection {
 pub enum SearchCategory {
     View,
     Setting,
-    StepSetting,
     Check,
 }
 
@@ -1188,14 +1188,13 @@ pub enum StepSettingsLabel {
     Checks,
 }
 
-/// Which surface showed the step's settings.
+/// Which surface showed the step's settings. Settings → Agents, Sessions,
+/// and Checks report `settings_pane_viewed` instead.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StepSettingsDetail {
     /// The first-run takeover's "Show settings" disclosure opened.
     FirstRun,
-    /// The progress-nav step modal opened, after the first run.
-    Modal,
 }
 
 /// A privacy-safe result from checking one remote host connection.
@@ -1489,6 +1488,7 @@ wire_values!(Surface, {
     Surface::Settings => "settings",
     Surface::BurnChecks => "burn_checks",
     Surface::Quota => "quota",
+    Surface::Agents => "agents",
     Surface::Memories => "memories",
 });
 
@@ -1503,6 +1503,7 @@ wire_values!(StateSurface, {
     StateSurface::Settings => "settings",
     StateSurface::BurnChecks => "burn_checks",
     StateSurface::Quota => "quota",
+    StateSurface::Agents => "agents",
     StateSurface::Memories => "memories",
 });
 
@@ -1518,7 +1519,7 @@ wire_values!(SessionFilterKind, {
 #[cfg(feature = "analytics")]
 wire_values!(HistoryDirection, { HistoryDirection::Back => "back", HistoryDirection::Forward => "forward" });
 #[cfg(feature = "analytics")]
-wire_values!(SearchCategory, { SearchCategory::View => "view", SearchCategory::Setting => "setting", SearchCategory::StepSetting => "step_setting", SearchCategory::Check => "check" });
+wire_values!(SearchCategory, { SearchCategory::View => "view", SearchCategory::Setting => "setting", SearchCategory::Check => "check" });
 #[cfg(feature = "analytics")]
 wire_values!(IgnoredInstructionStage, {
     IgnoredInstructionStage::Finding => "finding",
@@ -1642,6 +1643,9 @@ wire_values!(SurfaceState, {
 #[cfg(feature = "analytics")]
 wire_values!(SettingsPane, {
     SettingsPane::General => "general",
+    SettingsPane::Agents => "agents",
+    SettingsPane::Sessions => "sessions",
+    SettingsPane::Checks => "checks",
     SettingsPane::Appearance => "appearance",
     SettingsPane::Privacy => "privacy",
     SettingsPane::Notifications => "notifications",
@@ -1660,7 +1664,6 @@ wire_values!(StepSettingsLabel, {
 #[cfg(feature = "analytics")]
 wire_values!(StepSettingsDetail, {
     StepSettingsDetail::FirstRun => "first_run",
-    StepSettingsDetail::Modal => "modal",
 });
 
 #[cfg(feature = "analytics")]
@@ -2308,6 +2311,24 @@ mod tests {
         let (name, facts) = observed.resolve();
         assert_eq!(name.as_str(), "antiburn.surface_state_observed");
         assert_eq!(facts.label, Some("memories"));
+    }
+    #[test]
+    fn agents_surface_resolves_to_its_wire_label() {
+        let viewed: Interaction =
+            serde_json::from_str(r#"{"kind":"surfaceViewed","surface":"agents","origin":"user"}"#)
+                .unwrap();
+        let (name, facts) = viewed.resolve();
+        assert_eq!(name.as_str(), "antiburn.surface_viewed");
+        assert_eq!(facts.label, Some("agents"));
+        assert_eq!(facts.detail, Some("user"));
+
+        let observed: Interaction = serde_json::from_str(
+            r#"{"kind":"surfaceStateObserved","surface":"agents","state":"empty","origin":"user"}"#,
+        )
+        .unwrap();
+        let (name, facts) = observed.resolve();
+        assert_eq!(name.as_str(), "antiburn.surface_state_observed");
+        assert_eq!(facts.label, Some("agents"));
     }
 
     fn resource_summary() -> ResourceUsageSummary {
@@ -3342,13 +3363,6 @@ mod tests {
                 EventName::AppSearchResultOpened,
                 Some("check"),
             ),
-            (
-                Interaction::AppSearchResultOpened {
-                    category: SearchCategory::StepSetting,
-                },
-                EventName::AppSearchResultOpened,
-                Some("step_setting"),
-            ),
         ];
         for (interaction, expected_name, expected_label) in cases {
             let (name, facts) = interaction.resolve();
@@ -3359,6 +3373,7 @@ mod tests {
             serde_json::json!({"kind":"navigationHistoryMoved","direction":"sideways"}),
             serde_json::json!({"kind":"appSearchOpened","extra":true}),
             serde_json::json!({"kind":"appSearchResultOpened","category":"session"}),
+            serde_json::json!({"kind":"appSearchResultOpened","category":"step_setting"}),
         ] {
             assert!(serde_json::from_value::<Interaction>(value).is_err());
         }
@@ -3461,23 +3476,52 @@ mod tests {
             (StepSettingsLabel::Sessions, "sessions"),
             (StepSettingsLabel::Checks, "checks"),
         ] {
-            for (detail, expected_detail) in [
-                (StepSettingsDetail::FirstRun, "first_run"),
-                (StepSettingsDetail::Modal, "modal"),
-            ] {
-                let (name, facts) = Interaction::StepSettingsViewed { label, detail }.resolve();
-                assert_eq!(name, EventName::StepSettingsViewed);
-                assert_eq!(facts.label, Some(expected_label));
-                assert_eq!(facts.detail, Some(expected_detail));
+            let (name, facts) = Interaction::StepSettingsViewed {
+                label,
+                detail: StepSettingsDetail::FirstRun,
             }
+            .resolve();
+            assert_eq!(name, EventName::StepSettingsViewed);
+            assert_eq!(facts.label, Some(expected_label));
+            assert_eq!(facts.detail, Some("first_run"));
         }
         for value in [
-            serde_json::json!({"kind":"stepSettingsViewed","label":"usage","detail":"modal"}),
+            serde_json::json!({"kind":"stepSettingsViewed","label":"usage","detail":"first_run"}),
             serde_json::json!({"kind":"stepSettingsViewed","label":"agents","detail":"settings"}),
-            serde_json::json!({"kind":"stepSettingsViewed","label":"agents","detail":"modal","extra":true}),
+            serde_json::json!({"kind":"stepSettingsViewed","label":"agents","detail":"modal"}),
+            serde_json::json!({"kind":"stepSettingsViewed","label":"agents","detail":"first_run","extra":true}),
         ] {
             assert!(serde_json::from_value::<Interaction>(value).is_err());
         }
+    }
+
+    #[test]
+    fn settings_pane_viewed_accepts_every_settings_pane() {
+        for (pane, expected) in [
+            ("general", "general"),
+            ("agents", "agents"),
+            ("sessions", "sessions"),
+            ("checks", "checks"),
+            ("notifications", "notifications"),
+            ("usage", "usage"),
+            ("appearance", "appearance"),
+            ("privacy", "privacy"),
+            ("about", "about"),
+        ] {
+            let interaction: Interaction = serde_json::from_value(
+                serde_json::json!({"kind":"settingsPaneViewed","pane":pane}),
+            )
+            .expect(pane);
+            let (name, facts) = interaction.resolve();
+            assert_eq!(name, EventName::SettingsPaneViewed);
+            assert_eq!(facts.label, Some(expected));
+        }
+        assert!(
+            serde_json::from_value::<Interaction>(
+                serde_json::json!({"kind":"settingsPaneViewed","pane":"sources"})
+            )
+            .is_err()
+        );
     }
 
     #[test]

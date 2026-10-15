@@ -1,6 +1,7 @@
 import { ChevronRight } from "lucide-react"
 import type { ReactNode } from "react"
 
+import { pluralize } from "../../../lib/presentation/text"
 import { agentDisplayName } from "../../../lib/presentation/agents"
 import { renderAgentIcon } from "../../../lib/agentIcon"
 import { cn } from "../../../lib/cn"
@@ -302,12 +303,8 @@ function MemoryRow({
   )
 }
 
-function plural(count: number, word: string): string {
-  return `${count} ${word}${count === 1 ? "" : "s"}`
-}
-
 function entries(count: number): string {
-  return count === 1 ? "1 entry" : `${count} entries`
+  return `${count} ${pluralize(count, "entry", "entries")}`
 }
 
 function folderName(project: MemoryProject): string {
@@ -394,7 +391,7 @@ export function MemoryProjectGroup({
             <span>no sessions found</span>
           ) : (
             <>
-              <span>{plural(project.sessionCount, "session")}</span>
+              <span>{`${project.sessionCount} ${pluralize(project.sessionCount, "session", "sessions")}`}</span>
               {project.lastSessionMs && (
                 <span>
                   last{" "}
@@ -410,7 +407,7 @@ export function MemoryProjectGroup({
 
           {attention > 0 && (
             <span className="shrink-0 text-system-orange">
-              {attention} {attention === 1 ? "needs" : "need"} attention
+              {attention} {pluralize(attention, "needs", "need")} attention
             </span>
           )}
 
@@ -420,7 +417,7 @@ export function MemoryProjectGroup({
         </span>
 
         <span className="font-mono text-label justify-self-end">
-          {live.length} {live.length === 1 ? "memory" : "memories"} [
+          {live.length} {pluralize(live.length, "memory", "memories")} [
           {formatSize(live.reduce((total, entry) => total + entry.sizeBytes, 0))}]
         </span>
       </button>

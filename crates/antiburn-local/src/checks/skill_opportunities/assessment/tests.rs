@@ -1,5 +1,7 @@
 use super::*;
-use crate::analysis::jev::{JevRunProgress, run_jev_check, unpack_jev_response};
+use crate::analysis::jev::{
+    JevRunProgress, pack_work_items_with_capabilities, unpack_jev_response,
+};
 use crate::analysis::jev_evidence::prepare_session_content;
 use crate::analysis::session_scope::{
     SessionScopeBoundary, SessionScopeBranch, SessionScopeBuilder,
@@ -8,10 +10,7 @@ use crate::analysis::{
     ContentKind, ContentPart, ContentQueryCoverage, PublishedContent, PublishedContentPart,
     SourceFormat,
 };
-use crate::checks::sampling::SamplingLimits;
-use crate::checks::skill_opportunities::{
-    SKILL_USE_SELECTION, SkillDefinition, SkillScope, SkillUseBoundary,
-};
+use crate::checks::skill_opportunities::{SKILL_USE_SELECTION, SkillScope, SkillUseBoundary};
 use crate::model::AgentKind;
 
 fn scope() -> SkillScope {
@@ -22,144 +21,22 @@ fn scope() -> SkillScope {
     }
 }
 
-#[test]
-fn short_approval_does_not_establish_complete_task_context() {
-    let source = vec![
-        part(
-            0,
-            ContentKind::UserText,
-            "Audit the parser before editing. Keep billing unchanged.",
-            None,
-            None,
-        ),
-        part(
-            1,
-            ContentKind::AssistantText,
-            "I propose to audit the parser and its tests, then report the risks.",
-            None,
-            None,
-        ),
-        part(2, ContentKind::UserText, "Yes, continue.", None, None),
-        part(
-            3,
-            ContentKind::ToolInput,
-            r#"{"command":"cargo test parser"}"#,
-            Some("Bash"),
-            Some("audit"),
-        ),
-        part(
-            4,
-            ContentKind::ToolResult,
-            "Parser tests pass.",
-            Some("Bash"),
-            Some("audit"),
-        ),
-    ];
-    let check = check(source, 1, false);
-    let plan = check.prepare(&check.session_context()).unwrap();
-    assert!(check.task_contexts[0].fields["partial"] == true);
-    assert!(check.task_contexts[0].fields["antecedent_context_omitted"] == true);
-    assert!(
-        plan.prepared.comparisons[0]
-            .limitations
-            .contains(&SkillOpportunityLimit::TaskContextPartial)
-    );
-    let result = check
-        .reduce(&plan, &results(&plan, "no_opportunity", 0.9), true)
-        .unwrap();
-    assert!(!result.complete);
-}
-
-#[test]
-fn settled_targets_preserve_the_plan_inventory_invariant() {
-    let check = check(parts(), 4, false);
-    let mut sampling = SamplingProgress::new(SamplingLimits {
-        checks: 1,
-        candidates_per_check: 4096,
-        answers_per_candidate: 1,
-        judgments_per_run: 4,
-    })
-    .unwrap();
-    check.synchronize_sampling(&mut sampling).unwrap();
-    sampling.begin_run();
-    let jobs = (0..4)
-        .map(|_| sampling.choose_job().unwrap())
-        .collect::<Vec<_>>();
-    let mut plan = check
-        .prepare_sampled(
-            &check.session_context(),
-            &ModelCapabilities::jev_default(),
-            &jobs,
-        )
-        .unwrap();
-    let mut broken = plan.clone();
-    broken.work_items.remove(0);
-    assert!(matches!(
-        check.reduce(&broken, &[], false),
-        Err(JevError::InvalidCheckPlan)
-    ));
-    check.retain_plan_jobs(&mut plan, &jobs[1..]).unwrap();
-    assert_eq!(plan.prepared.comparisons.len(), 3);
-    assert_eq!(plan.work_items.len() + plan.skipped_item_ids.len(), 3);
-    check
-        .reduce(&plan, &results(&plan, "no_opportunity", 0.9), true)
-        .unwrap();
-    let mut altered = plan.clone();
-    altered.work_items[0].window.fields["work"] = json!([]);
-    assert!(matches!(
-        check.reduce(&altered, &[], false),
-        Err(JevError::InvalidCheckPlan)
-    ));
-}
-
-#[tokio::test]
-async fn missing_task_is_unassessed_without_invalid_plan_or_dispatch() {
-    let mut source = parts();
-    source[0].turn_index = 3;
-    source[0].uuid = Some("later-task".into());
-    source.sort_by_key(|part| part.turn_index);
-    let check = check(source, 1, false);
-    let plan = check.prepare(&check.session_context()).unwrap();
-    assert!(plan.work_items.is_empty());
-    assert_eq!(plan.skipped_item_ids.len(), 1);
-    let outcome = run_jev_check(
-        &check,
-        &check.session_context(),
-        JevRunProgress::default(),
-        |_| async { panic!("missing task must not dispatch") },
-        |_| Ok(()),
-    )
-    .await
-    .unwrap();
-    assert!(!outcome.result.complete);
-    assert!(
-        outcome
-            .result
-            .decisions
-            .iter()
-            .all(|decision| decision.judgments.is_none())
-    );
-}
-fn skill(index: usize) -> SkillDefinition {
+fn skill() -> SkillDefinition {
+    let description = "1. Run `cargo test parser`.\n2. Run `cargo check`, inspect failures, and check lock ordering before changing code.\n";
     SkillDefinition {
-        identity: format!("skill-{index}"),
+        identity: "parser-review".into(),
         revision: "definition".into(),
-        name: format!("review-{index}"),
+        name: "parser-review".into(),
         aliases: vec![],
-        description: "Review Rust lock order, cancellation, and resource lifetime defects.".into(),
-        frontmatter: json!({"description": "Review Rust lock order, cancellation, and resource lifetime defects."}),
+        description: description.into(),
+        frontmatter: json!({"description": description}),
         scope: scope(),
         enabled: true,
         created_at_ms: Some(10000),
     }
 }
-fn part(
-    index: u64,
-    kind: ContentKind,
-    text: &str,
-    tool: Option<&str>,
-    call: Option<&str>,
-) -> PublishedContentPart {
+
+fn part(index: u64, kind: ContentKind, text: &str, call: Option<&str>) -> PublishedContentPart {
     PublishedContentPart {
         source_key: "transcript".into(),
         thread_id: "branch".into(),
@@ -175,52 +52,43 @@ fn part(
         message_id: None,
         part_index: 0,
         part: ContentPart::new(kind, text)
-            .with_tool_identity(tool.map(str::to_owned), call.map(str::to_owned)),
+            .with_tool_identity(call.map(|_| "Bash".into()), call.map(str::to_owned)),
         context_only: false,
         stable_event_identity: true,
     }
 }
+
 fn parts() -> Vec<PublishedContentPart> {
     vec![
         part(
             0,
             ContentKind::UserText,
-            "Investigate the worker shutdown deadlock.",
-            None,
+            "Investigate the parser failure.",
             None,
         ),
         part(
             1,
             ContentKind::ToolInput,
-            r#"{"command":"cargo test worker_shutdown"}"#,
-            Some("Bash"),
+            r#"{"command":"cargo test parser"}"#,
             Some("test"),
         ),
+        part(2, ContentKind::ToolResult, "Tests failed.", Some("test")),
         part(
-            2,
-            ContentKind::ToolResult,
-            "FAILED: queue -> lease and lease -> queue",
-            Some("Bash"),
-            Some("test"),
+            3,
+            ContentKind::ToolInput,
+            r#"{"command":"cargo check"}"#,
+            Some("check"),
         ),
+        part(4, ContentKind::ToolResult, "Check passed.", Some("check")),
     ]
 }
-fn check(parts: Vec<PublishedContentPart>, count: usize, partial: bool) -> SkillOpportunitiesCheck {
-    check_with_skills(parts, (0..count).map(skill).collect(), partial)
-}
 
-fn check_with_skills(
+fn check(
     mut parts: Vec<PublishedContentPart>,
     skills: Vec<SkillDefinition>,
     partial: bool,
 ) -> SkillOpportunitiesCheck {
-    parts.push(part(
-        100,
-        ContentKind::Thinking,
-        "private unique marker",
-        None,
-        None,
-    ));
+    parts.push(part(100, ContentKind::Thinking, "private marker", None));
     let page = PublishedContent {
         publication_fence: 4,
         source_generation: Some(3),
@@ -249,9 +117,8 @@ fn check_with_skills(
         content.complete = false;
         content.limitations.push("selected_input_gap".into());
     }
-    let selected = select_session_content(&content, SKILL_USE_SELECTION);
     let usage = SkillUseSnapshot::from_selected_content(
-        &selected,
+        &select_session_content(&content, SKILL_USE_SELECTION),
         &SkillUseBoundary {
             session_identity: content.session_identity_digest.clone(),
             native_session_id: "native-session".into(),
@@ -269,744 +136,586 @@ fn check_with_skills(
     )
     .unwrap()
 }
+
+fn response(
+    batch: &crate::analysis::jev::JevRequestBatch,
+    choice: &str,
+    probability: f64,
+) -> JevResponse {
+    JevResponse {
+        model: batch.request.model.clone(),
+        usage: JevUsage {
+            input_tokens: 10,
+            output_tokens: 5,
+        },
+        answers: batch
+            .request
+            .questions
+            .keys()
+            .map(|id| {
+                (
+                    id.clone(),
+                    JevAnswer::Choice {
+                        choice: choice.into(),
+                        probabilities: [
+                            "actionable_help",
+                            "already_adequate_or_unrelated",
+                            "uncertain",
+                        ]
+                        .into_iter()
+                        .map(|key| {
+                            (
+                                key.into(),
+                                if key == choice {
+                                    probability
+                                } else {
+                                    (1.0 - probability) / 2.0
+                                },
+                            )
+                        })
+                        .collect(),
+                        confidence: 0.1,
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
 fn results(
     plan: &JevCheckPlan<PreparedSkillOpportunities>,
     choice: &str,
     probability: f64,
 ) -> Vec<JevWorkItemResult> {
-    pack_work_items_with_shared_context(
-        &plan.work_items,
-        &plan.capabilities,
-        plan.shared_context.as_ref().unwrap(),
-    )
-    .batches
-    .iter()
-    .flat_map(|batch| {
-        let response = JevResponse {
-            model: batch.request.model.clone(),
-            usage: JevUsage {
-                input_tokens: 10,
-                output_tokens: 5,
-            },
-            answers: batch
-                .request
-                .questions
-                .keys()
-                .map(|id| {
-                    (
-                        id.clone(),
-                        JevAnswer::Choice {
-                            choice: choice.into(),
-                            probabilities: ["useful_opportunity", "no_opportunity", "uncertain"]
-                                .into_iter()
-                                .map(|key| {
-                                    (
-                                        key.into(),
-                                        if key == choice {
-                                            probability
-                                        } else {
-                                            (1.0 - probability) / 2.0
-                                        },
-                                    )
-                                })
-                                .collect(),
-                            confidence: 0.1,
-                        },
-                    )
-                })
-                .collect(),
-        };
-        unpack_jev_response(batch, &response).unwrap()
-    })
-    .collect()
+    pack_work_items_with_capabilities(&plan.work_items, &plan.capabilities)
+        .batches
+        .iter()
+        .flat_map(|batch| {
+            unpack_jev_response(batch, &response(batch, choice, probability)).unwrap()
+        })
+        .collect()
 }
 
 #[test]
-fn one_decision_uses_selected_choice_and_positive_threshold() {
-    let check = check(parts(), 1, false);
+fn complete_workflow_publishes_current_procedure_with_exact_bindings() {
+    let definition = skill();
+    let check = check(parts(), vec![definition.clone()], false);
     let plan = check.prepare(&check.session_context()).unwrap();
-    assert_eq!(plan.work_items[0].questions.len(), 1);
+    assert_eq!(plan.work_items.len(), 1, "{:?}", plan.coverage);
+    assert!(skill_request_fits(&plan.work_items[0], &plan.capabilities));
+    let result = check
+        .reduce(&plan, &results(&plan, "actionable_help", 1.0), true)
+        .unwrap();
+    assert_eq!(result.findings.len(), 1);
+    assert!(
+        result.findings[0]
+            .comparison
+            .skill
+            .matches_definition(&definition)
+    );
+    assert_eq!(result.findings[0].comparison.work.len(), 4);
+    assert!(!result.findings[0].absence_limit.contains("was available"));
+    let restored: SkillOpportunityFinding =
+        serde_json::from_value(json!(&result.findings[0])).unwrap();
+    assert_eq!(restored, result.findings[0]);
+}
+
+#[test]
+fn threshold_unknown_and_missing_answers_remain_distinct() {
+    let check = check(parts(), vec![skill()], false);
+    let plan = check.prepare(&check.session_context()).unwrap();
     for (choice, probability, expected) in [
+        ("actionable_help", 0.95, SkillOpportunityOutcome::Advisory),
+        ("actionable_help", 0.94, SkillOpportunityOutcome::Uncertain),
         (
-            "useful_opportunity",
-            0.75,
-            SkillOpportunityOutcome::Advisory,
-        ),
-        (
-            "useful_opportunity",
-            0.74,
-            SkillOpportunityOutcome::Uncertain,
-        ),
-        (
-            "no_opportunity",
-            0.6,
+            "already_adequate_or_unrelated",
+            0.99,
             SkillOpportunityOutcome::NoOpportunity,
         ),
-        ("uncertain", 0.8, SkillOpportunityOutcome::Uncertain),
+        ("uncertain", 1.0, SkillOpportunityOutcome::Uncertain),
     ] {
         let result = check
             .reduce(&plan, &results(&plan, choice, probability), true)
             .unwrap();
         assert_eq!(result.decisions[0].outcome, expected);
-        assert_eq!(
-            result.findings.len(),
-            usize::from(expected == SkillOpportunityOutcome::Advisory)
-        );
-        assert_eq!(
-            result.complete,
-            expected != SkillOpportunityOutcome::Uncertain
-        );
     }
-}
-
-#[test]
-fn partial_work_and_unknown_use_reach_model_with_bound_attempts() {
-    let mut activity = parts();
-    activity.pop();
-    activity.push(part(
-        3,
-        ContentKind::ToolInput,
-        r#"{"skill":"review-0","name":"conflicting"}"#,
-        Some("Skill"),
-        Some("unknown"),
-    ));
-    activity.extend([
-        part(
-            4,
-            ContentKind::ToolInput,
-            r#"{"path":"worker.rs"}"#,
-            Some("Read"),
-            Some("read"),
-        ),
-        part(
-            5,
-            ContentKind::ToolResult,
-            "queue.lock(); lease.lock();",
-            Some("Read"),
-            Some("read"),
-        ),
-    ]);
-    let check = check(activity, 1, true);
-    let plan = check.prepare(&check.session_context()).unwrap();
-    assert_eq!(plan.work_items.len(), 1);
-    assert_eq!(plan.prepared.comparisons[0].work.len(), 3);
-    assert!(!plan.prepared.comparisons[0].absence_assessable);
-    let payload = plan.work_items[0].window.fields.to_string();
-    assert!(payload.contains("cargo test worker_shutdown"));
-    assert!(!payload.contains("private unique marker"));
-    let result = check
-        .reduce(&plan, &results(&plan, "useful_opportunity", 0.9), true)
-        .unwrap();
-    assert_eq!(result.findings.len(), 1);
+    let result = check.reduce(&plan, &[], false).unwrap();
     assert!(!result.complete);
-    assert!(!result.findings[0].absence_limit.contains("No matching use"));
-    for work in &result.findings[0].comparison.work {
-        assert!(
-            result.findings[0]
-                .evidence
-                .iter()
-                .any(|evidence| evidence.source_id == work.reference.id)
-        );
-    }
-}
-
-#[test]
-fn descriptor_inventory_hydrates_only_selected_pairs_and_batches_them() {
-    let mut activity = parts();
-    activity.extend([
-        part(
-            3,
-            ContentKind::UserText,
-            "Now inspect cancellation.",
-            None,
-            None,
-        ),
-        part(
-            4,
-            ContentKind::ToolInput,
-            r#"{"path":"cancel.rs"}"#,
-            Some("Read"),
-            Some("cancel"),
-        ),
-    ]);
-    let check = check(activity, 260, false);
-    assert_eq!(check.descriptors.len(), 520);
-    assert_eq!(check.items.len(), 260);
-    assert!(
-        check
-            .prepared
-            .comparisons
-            .iter()
-            .all(|comparison| comparison.work.is_empty())
-    );
-    let mut sampling = SamplingProgress::new(SamplingLimits {
-        checks: 1,
-        candidates_per_check: 4096,
-        answers_per_candidate: 1,
-        judgments_per_run: 4,
-    })
-    .unwrap();
-    check.synchronize_sampling(&mut sampling).unwrap();
-    sampling.begin_run();
-    let jobs: Vec<_> = (0..4).map(|_| sampling.choose_job().unwrap()).collect();
-    let plan = check
-        .prepare_sampled(
-            &check.session_context(),
-            &ModelCapabilities::jev_default(),
-            &jobs,
-        )
-        .unwrap();
-    assert_eq!(plan.work_items.len(), 4);
-    assert_eq!(plan.coverage.not_selected_items, 516);
-    let packed = pack_work_items_with_shared_context(
-        &plan.work_items,
-        &plan.capabilities,
-        plan.shared_context.as_ref().unwrap(),
-    );
-    assert_eq!(packed.batches.len(), 1);
-    assert_eq!(packed.batches[0].request.questions.len(), 4);
-    let result = check
-        .reduce(&plan, &results(&plan, "uncertain", 0.9), true)
-        .unwrap();
-    for job in &jobs {
-        check
-            .record_sampling_result(&mut sampling, job, &result)
-            .unwrap();
-    }
-    let mut restored: SamplingProgress =
-        serde_json::from_value(serde_json::to_value(sampling).unwrap()).unwrap();
-    check.synchronize_sampling(&mut restored).unwrap();
-    assert_eq!(restored.coverage(check_identity()).unwrap().completed, 4);
-    restored.begin_run();
-    assert!(!jobs.contains(&restored.choose_job().unwrap()));
-}
-
-#[test]
-fn equivalent_recorded_use_is_context_for_the_single_decision() {
-    let mut activity = parts();
-    activity.push(part(
-        3,
-        ContentKind::ToolInput,
-        r#"{"skill":"review-0"}"#,
-        Some("Skill"),
-        Some("review"),
-    ));
-    let check = check(activity, 2, false);
-    let plan = check.prepare(&check.session_context()).unwrap();
-    assert_eq!(plan.work_items.len(), 2);
-    assert!(
-        plan.shared_context.as_ref().unwrap().fields["skill_references"]
-            .to_string()
-            .contains("lock order")
-    );
-    assert!(
-        check
-            .reduce(&plan, &results(&plan, "no_opportunity", 0.9), true)
-            .unwrap()
-            .findings
-            .is_empty()
-    );
-}
-
-#[test]
-fn packed_skill_references_exclude_metadata_and_body_when_description_exists() {
-    let mut definition = skill(0);
-    definition.description = "UNIQUE_SKILL_DESCRIPTION_MARKER".into();
-    definition.frontmatter = json!({
-        "description": definition.description,
-        "metadata": {"private": "UNIQUE_SKILL_BODY_MARKER"},
-        "body": "UNIQUE_SKILL_BODY_MARKER"
-    });
-    for used in [false, true] {
-        let mut activity = parts();
-        if used {
-            activity.push(part(
-                3,
-                ContentKind::ToolInput,
-                r#"{"skill":"review-0"}"#,
-                Some("Skill"),
-                Some("review"),
-            ));
-        }
-        let check = check_with_skills(activity, vec![definition.clone()], false);
-        let plan = check.prepare(&check.session_context()).unwrap();
-        let packed = pack_work_items_with_shared_context(
-            &plan.work_items,
-            &plan.capabilities,
-            plan.shared_context.as_ref().unwrap(),
-        );
-        assert!(!packed.batches.is_empty());
-        assert!(packed.skipped_item_ids.is_empty());
-        for batch in packed.batches {
-            let request = serde_json::to_string(&batch.request).unwrap();
-            assert!(!request.contains("UNIQUE_SKILL_BODY_MARKER"));
-            assert_eq!(
-                request.matches("UNIQUE_SKILL_DESCRIPTION_MARKER").count(),
-                1
-            );
-            assert!(request.contains("description"));
-            assert!(!request.contains("markdown_fallback"));
-        }
-    }
-}
-
-#[test]
-fn packed_fallback_references_include_markdown_and_preserve_partial_ranges() {
-    for frontmatter in [
-        json!({}),
-        json!({"description": null}),
-        json!({"description": "  "}),
-    ] {
-        for used in [false, true] {
-            let mut definition = skill(0);
-            definition.frontmatter = frontmatter.clone();
-            definition.description = format!(
-                "# Skill\n\nUNIQUE_FALLBACK_BODY_MARKER\n{}",
-                "Review ownership.\n".repeat(2000)
-            );
-            let mut activity = parts();
-            if used {
-                activity.push(part(
-                    3,
-                    ContentKind::ToolInput,
-                    r#"{"skill":"review-0"}"#,
-                    Some("Skill"),
-                    Some("review"),
-                ));
-            }
-            let check = check_with_skills(activity, vec![definition.clone()], false);
-            let plan = check.prepare(&check.session_context()).unwrap();
-            let packed = pack_work_items_with_shared_context(
-                &plan.work_items,
-                &plan.capabilities,
-                plan.shared_context.as_ref().unwrap(),
-            );
-            assert!(!packed.batches.is_empty());
-            assert!(packed.skipped_item_ids.is_empty());
-            for batch in packed.batches {
-                let request = serde_json::to_string(&batch.request).unwrap();
-                assert_eq!(request.matches("UNIQUE_FALLBACK_BODY_MARKER").count(), 1);
-                assert!(request.contains("markdown_fallback"));
-                assert!(request.contains("\"partial\":true"));
-                assert!(request.contains("start_byte"));
-                assert!(request.contains("end_byte"));
-            }
-        }
-    }
-}
-
-#[test]
-fn missing_invalid_and_foreign_answers_do_not_complete_sampling() {
-    let check = check(parts(), 1, false);
-    let plan = check.prepare(&check.session_context()).unwrap();
-    let missing = check.reduce(&plan, &[], false).unwrap();
     assert_eq!(
-        missing.decisions[0].outcome,
+        result.decisions[0].outcome,
         SkillOpportunityOutcome::Unassessed
     );
-    let mut answers = results(&plan, "useful_opportunity", 0.9);
-    answers[0].evidence[0].source_id = "foreign".into();
-    assert_eq!(
-        check.reduce(&plan, &answers, true).unwrap_err(),
-        JevError::InvalidCheckPlan
-    );
-    let mut stale = plan.clone();
-    stale.revisions.questions -= 1;
-    assert_eq!(
-        check.reduce(&stale, &[], true).unwrap_err(),
-        JevError::InvalidCheckPlan
-    );
-}
-
-fn large_fallback() -> SkillDefinition {
-    let mut definition = skill(0);
-    definition.frontmatter = json!({});
-    definition.description = (0..256)
-        .map(|index| {
-            let marker = match index {
-                0 => "EARLY_REFERENCE_MARKER",
-                127 => "MIDDLE_REFERENCE_MARKER",
-                255 => "LATE_REFERENCE_MARKER",
-                220 => "UNSELECTED_REFERENCE_MARKER",
-                _ => "Review resource ownership.",
-            };
-            format!("{marker}{}\n", "x".repeat(4095 - marker.len()))
-        })
-        .collect();
-    definition
-}
-
-#[test]
-fn requests_and_durable_results_sample_whole_fallback_without_full_document() {
-    let definition = large_fallback();
-    let check = check_with_skills(parts(), vec![definition.clone()], false);
-    let mut plan = check.prepare(&check.session_context()).unwrap();
-    let citation = &plan.prepared.comparisons[0].skill;
-    assert!(citation.matches_definition(&definition));
-    assert_eq!(citation.description.len(), 4 * 4096);
-    assert_eq!(citation.reference.total_bytes, definition.description.len());
-    assert!(citation.reference.partial);
-    assert_eq!(
-        citation.reference.ranges.last().unwrap().1,
-        definition.description.len()
-    );
-    let packed = pack_work_items_with_shared_context(
-        &plan.work_items,
-        &plan.capabilities,
-        plan.shared_context.as_ref().unwrap(),
-    );
-    assert!(!packed.batches.is_empty());
-    assert!(packed.skipped_item_ids.is_empty());
-    for batch in packed.batches {
-        let request = serde_json::to_string(&batch.request).unwrap();
-        for marker in [
-            "EARLY_REFERENCE_MARKER",
-            "MIDDLE_REFERENCE_MARKER",
-            "LATE_REFERENCE_MARKER",
-        ] {
-            assert!(request.contains(marker));
-        }
-        assert!(!request.contains("UNSELECTED_REFERENCE_MARKER"));
-        assert!(request.len() < 32 * 1024);
-    }
-    plan.coverage.limitations.clear();
-    for choice in ["useful_opportunity", "no_opportunity"] {
-        let result = check
-            .reduce(&plan, &results(&plan, choice, 0.9), true)
-            .unwrap();
-        assert!(!result.complete);
-        assert!(
-            result
-                .coverage
-                .limitations
-                .iter()
-                .any(|limit| limit == "skill_reference_content_partial")
-        );
-        let durable = serde_json::to_string(&result).unwrap();
-        if choice == "useful_opportunity" {
-            assert!(
-                result.findings[0]
-                    .absence_limit
-                    .contains("Only selected skill reference ranges")
-            );
-        }
-        assert!(durable.len() < 64 * 1024);
-        assert!(!durable.contains("UNSELECTED_REFERENCE_MARKER"));
-        assert!(durable.contains("LATE_REFERENCE_MARKER"));
-    }
-}
-
-#[test]
-fn many_large_used_skills_and_old_tasks_do_not_block_an_exact_alias_match() {
-    let mut activity = (0..20)
-        .map(|index| {
-            part(
-                index,
-                ContentKind::UserText,
-                &format!("OLD_TASK_PRIVATE_MARKER{}", "x".repeat(20 * 1024)),
-                None,
-                None,
-            )
-        })
-        .collect::<Vec<_>>();
-    activity.extend([
-        part(
-            20,
-            ContentKind::UserText,
-            "CURRENT_TASK_MARKER Investigate the worker shutdown deadlock.",
-            None,
-            None,
-        ),
-        part(
-            21,
-            ContentKind::ToolInput,
-            r#"{"command":"cargo test worker_shutdown"}"#,
-            Some("Bash"),
-            Some("test"),
-        ),
-        part(
-            22,
-            ContentKind::ToolResult,
-            "FAILED: lock order",
-            Some("Bash"),
-            Some("test"),
-        ),
-    ]);
-    let mut definitions = (0..32).map(skill).collect::<Vec<_>>();
-    definitions[0].aliases = vec!["review-alias".into()];
-    for (index, definition) in definitions.iter_mut().enumerate().skip(1) {
-        definition.frontmatter = json!({});
-        definition.description = format!(
-            "UNRELATED_SKILL_PRIVATE_MARKER_{index}\n{}",
-            "Garden seedlings and irrigation.\n".repeat(2000)
-        );
-        activity.push(part(
-            22 + index as u64,
-            ContentKind::ToolInput,
-            &format!(r#"{{"skill":"review-{index}"}}"#),
-            Some("Skill"),
-            Some(&format!("use-{index}")),
-        ));
-    }
-    activity.push(part(
-        55,
-        ContentKind::ToolInput,
-        r#"{"skill":"review-alias"}"#,
-        Some("Skill"),
-        Some("exact-use"),
-    ));
-    let check = check_with_skills(activity, definitions, false);
-    let plan = check.prepare(&check.session_context()).unwrap();
-    let exact = plan
-        .prepared
-        .comparisons
-        .iter()
-        .find(|comparison| comparison.skill.identity == "skill-0")
-        .unwrap();
+    let mut forged = plan.clone();
+    forged.prepared.comparisons[0]
+        .skill
+        .description
+        .push_str("invented");
     assert!(
-        exact
-            .used_current_skills
-            .iter()
-            .any(|skill| skill.identity == "skill-0")
+        check
+            .reduce(&forged, &results(&plan, "actionable_help", 1.0), true)
+            .is_err()
     );
-    assert!(!exact.use_citations.is_empty());
-    assert!(
-        plan.coverage
-            .limitations
-            .iter()
-            .any(|limit| limit == "selected_known_use_context_only")
-    );
-    let exact_item = plan
-        .work_items
-        .iter()
-        .find(|item| item.id == exact.id)
-        .unwrap();
-    let shared = check.shared_context(&BTreeSet::from([exact.id.as_str()]));
-    let packed = pack_work_items_with_shared_context(
-        std::slice::from_ref(exact_item),
-        &plan.capabilities,
-        &shared,
-    );
-    assert_eq!(packed.batches.len(), 1);
-    assert!(packed.skipped_item_ids.is_empty());
-    let request = serde_json::to_string(&packed.batches[0].request).unwrap();
-    assert!(request.contains("CURRENT_TASK_MARKER"));
-    assert!(!request.contains("OLD_TASK_PRIVATE_MARKER"));
-    assert!(!request.contains("UNRELATED_SKILL_PRIVATE_MARKER"));
-    assert_eq!(request.matches("Review Rust lock order").count(), 1);
-    assert_eq!(request.matches("review-alias").count(), 1);
-    assert!(request.len() < 16 * 1024);
-    let result = check
-        .reduce(&plan, &results(&plan, "no_opportunity", 0.9), true)
-        .unwrap();
-    assert!(!result.complete);
-}
-
-#[test]
-fn choice_must_have_a_highest_probability_and_ties_remain_valid() {
-    let check = check(parts(), 1, false);
-    let plan = check.prepare(&check.session_context()).unwrap();
-    for choice in ["useful_opportunity", "no_opportunity", "uncertain"] {
-        let answers = results(&plan, choice, 0.2);
-        assert_eq!(
-            check.reduce(&plan, &answers, true).unwrap_err(),
-            JevError::InvalidChoiceDistribution
-        );
-    }
-    let mut answers = results(&plan, "no_opportunity", 0.4);
-    if let JevAnswer::Choice { probabilities, .. } =
-        answers[0].answers.get_mut("opportunity").unwrap()
-    {
-        probabilities.insert("useful_opportunity".into(), 0.4);
-        probabilities.insert("uncertain".into(), 0.2);
-    }
-    assert!(check.reduce(&plan, &answers, true).is_ok());
-}
-
-#[test]
-fn shared_context_deduplicates_use_facts_and_equal_reference_text() {
-    let mut definitions = (0..3).map(skill).collect::<Vec<_>>();
-    for definition in &mut definitions[..2] {
-        definition.description = "SHARED_REFERENCE_MARKER Review lock order.".into();
-        definition.frontmatter = json!({"description": definition.description});
-    }
-    let mut activity = parts();
-    for (index, name) in [(3, "review-0"), (4, "review-0"), (5, "review-1")] {
-        let mut event = part(
-            index,
-            ContentKind::ToolInput,
-            &format!(r#"{{"skill":"{name}"}}"#),
-            Some("Skill"),
-            Some(&format!("use-{index}")),
-        );
-        event.ts_ms = Some(300);
-        activity.push(event);
-    }
-    let check = check_with_skills(activity, definitions, false);
-    let item = check.hydrate(&check.descriptors[2]).1;
-    let plan = check
-        .build_plan(
-            &check.session_context(),
-            &ModelCapabilities::jev_default(),
-            &[item],
-        )
-        .unwrap();
-    let shared = &plan.shared_context.as_ref().unwrap().fields;
-    assert_eq!(shared["used_current_skills"].as_array().unwrap().len(), 2);
-    assert_eq!(shared["skill_references"].as_object().unwrap().len(), 1);
-    assert_eq!(shared["use"].as_array().unwrap().len(), 2);
-    assert!(
-        shared["use"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|event| event["source_ids"].as_array().unwrap().len() == 2)
-    );
-    let packed = pack_work_items_with_shared_context(
-        &plan.work_items,
-        &plan.capabilities,
-        plan.shared_context.as_ref().unwrap(),
-    );
-    assert_eq!(packed.batches.len(), 1);
-    assert_eq!(
-        serde_json::to_string(&packed.batches[0].request)
-            .unwrap()
-            .matches("SHARED_REFERENCE_MARKER")
-            .count(),
-        1
-    );
-}
-
-#[test]
-fn exact_use_is_selected_before_a_large_equivalent_use_history() {
-    let mut definitions = vec![skill(0), skill(1)];
-    definitions[0].aliases = vec!["review-alias".into()];
-    let mut activity = parts();
-    for index in 3..40 {
-        activity.push(part(
-            index,
-            ContentKind::ToolInput,
-            r#"{"skill":"review-1"}"#,
-            Some("Skill"),
-            Some(&format!("use-{index}")),
-        ));
-    }
-    activity.push(part(
-        40,
-        ContentKind::ToolInput,
-        r#"{"skill":"review-alias"}"#,
-        Some("Skill"),
-        Some("exact"),
-    ));
-    let check = check_with_skills(activity, definitions, false);
-    let (comparison, item) = check.hydrate(&check.descriptors[0]);
-    assert!(
-        comparison
-            .used_current_skills
-            .iter()
-            .any(|skill| skill.identity == "skill-0")
-    );
-    assert!(
-        comparison
-            .use_citations
-            .iter()
-            .any(|reference| reference.turn_index == 40)
-    );
-    assert_eq!(comparison.use_citations.len(), 32);
-    assert_eq!(item.window.fields["current_skill_used"], true);
-    let mut plan = check.prepare(&check.session_context()).unwrap();
-    assert_eq!(
-        plan.shared_context.as_ref().unwrap().fields["tasks"]
-            .as_object()
-            .unwrap()
-            .len(),
-        1
-    );
-    plan.coverage.limitations.clear();
-    let result = check
-        .reduce(&plan, &results(&plan, "no_opportunity", 0.9), true)
-        .unwrap();
-    assert!(!result.complete);
-    assert!(
-        result
-            .coverage
-            .limitations
-            .iter()
-            .any(|limit| limit == "selected_known_use_context_only")
-    );
-}
-
-#[test]
-fn partial_task_context_cannot_produce_a_complete_negative() {
-    let mut activity = parts();
-    activity[0] = part(
-        0,
-        ContentKind::UserText,
-        &"Investigate the worker shutdown deadlock.\n".repeat(200),
-        None,
-        None,
-    );
-    let check = check(activity, 1, false);
-    let mut plan = check.prepare(&check.session_context()).unwrap();
-    assert!(
-        plan.prepared.comparisons[0]
-            .limitations
-            .contains(&SkillOpportunityLimit::TaskContextPartial)
-    );
-    plan.coverage.limitations.clear();
-    let result = check
-        .reduce(&plan, &results(&plan, "no_opportunity", 0.9), true)
-        .unwrap();
-    assert!(!result.complete);
-    assert!(
-        result
-            .coverage
-            .limitations
-            .iter()
-            .any(|limit| limit == "selected_task_context_only")
-    );
+    let mut bad = results(&plan, "actionable_help", 1.0);
+    bad[0].evidence.clear();
+    assert!(check.reduce(&plan, &bad, true).is_err());
 }
 
 #[tokio::test]
-async fn runner_dispatches_one_question_per_pair_without_followup() {
-    let check = check(parts(), 1, false);
-    let outcome = run_jev_check(
+async fn minimum_fit_and_incomplete_evidence_make_zero_calls() {
+    use crate::analysis::jev::capabilities::{CapabilityLimit, CapabilitySource};
+    let mut caps = ModelCapabilities::jev_default();
+    caps.runtime_context_tokens = CapabilityLimit::known(32, CapabilitySource::RuntimeMetadata);
+    for (mut source, partial) in [(parts(), false), (parts(), true)] {
+        if partial {
+            source.remove(2);
+        }
+        let check = check(source, vec![skill()], partial);
+        let outcome = crate::analysis::jev::run_jev_check_with_capabilities(
+            &check,
+            &check.session_context(),
+            JevRunProgress::default(),
+            caps.clone(),
+            |_| async { panic!("invalid evidence must not dispatch") },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert!(outcome.result.findings.is_empty());
+        assert!(outcome.progress.results.is_empty());
+        assert!(!outcome.result.complete);
+    }
+}
+
+#[tokio::test]
+async fn context_rejection_stops_without_a_second_skill_request() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let check = check(parts(), vec![skill()], false);
+    let calls = AtomicUsize::new(0);
+    let outcome = crate::analysis::jev::run_jev_check(
         &check,
         &check.session_context(),
         JevRunProgress::default(),
-        |batch| async move {
-            assert_eq!(batch.request.questions.len(), 1);
-            let response = JevResponse {
-                model: batch.request.model.clone(),
-                usage: JevUsage {
-                    input_tokens: 1,
-                    output_tokens: 1,
-                },
-                answers: batch
-                    .request
-                    .questions
-                    .keys()
-                    .map(|id| {
-                        (
-                            id.clone(),
-                            JevAnswer::Choice {
-                                choice: "useful_opportunity".into(),
-                                probabilities: BTreeMap::from([
-                                    ("useful_opportunity".into(), 0.9),
-                                    ("no_opportunity".into(), 0.05),
-                                    ("uncertain".into(), 0.05),
-                                ]),
-                                confidence: 0.1,
-                            },
-                        )
-                    })
-                    .collect(),
-            };
-            Ok(response)
+        |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Err(JevError::ContextRejected) }
         },
         |_| Ok(()),
     )
     .await
     .unwrap();
-    assert_eq!(outcome.result.findings.len(), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(!outcome.complete);
+    assert!(outcome.result.findings.is_empty());
+    assert!(
+        outcome
+            .result
+            .decisions
+            .iter()
+            .all(|decision| decision.outcome == SkillOpportunityOutcome::Unassessed)
+    );
+}
+
+#[test]
+fn rendered_fit_keeps_unicode_procedure_and_respects_runtime_and_scoring_reserves() {
+    use crate::analysis::jev::capabilities::{
+        CapabilityLimit, CapabilitySource, ModelLimitOverride,
+    };
+    let mut definition = skill();
+    definition
+        .description
+        .push_str("Keep the \"café\" and 🦀 labels when changing locks.\n");
+    definition.frontmatter = json!({"description": definition.description});
+    let check = check(parts(), vec![definition], false);
+    let mut caps = ModelCapabilities::jev_default();
+    caps.use_ollama_tev1_accounting("chat envelope", "system text");
+    caps.runtime_context_tokens = CapabilityLimit::known(2050, CapabilitySource::RuntimeMetadata);
+    let plan = check
+        .prepare_with_capabilities(&check.session_context(), &caps)
+        .unwrap();
+    assert_eq!(plan.work_items.len(), 1, "{:?}", plan.coverage);
+    let packed = pack_work_items_with_capabilities(&plan.work_items, &caps);
+    assert_eq!(packed.batches.len(), 1);
+    let batch = &packed.batches[0];
+    assert!(batch.serialized_bytes <= 4096);
+    assert!(
+        crate::analysis::jev::validate_jev_request_with_capabilities(&batch.request, &caps).is_ok()
+    );
+    let rendered =
+        crate::analysis::jev::estimate_jev_rendered_question_tokens(&batch.request, &caps).unwrap();
+    assert!(rendered <= 1024);
+    assert!(rendered <= caps.usable_input_tokens().unwrap());
+    assert!(rendered <= caps.usable_state_tokens().unwrap());
+    assert!(batch.request.state.to_string().contains("café"));
+    assert!(batch.request.state.to_string().contains("🦀"));
+    for limits in [
+        ModelLimitOverride {
+            runtime_context_tokens: Some(128),
+            ..Default::default()
+        },
+        ModelLimitOverride {
+            total_input_tokens: Some(128),
+            ..Default::default()
+        },
+        ModelLimitOverride {
+            state_and_longest_question_tokens: Some(128),
+            ..Default::default()
+        },
+    ] {
+        assert!(
+            check
+                .prepare_with_capabilities(&check.session_context(), &caps.with_override(&limits))
+                .unwrap()
+                .work_items
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn routine_command_and_generic_inventory_do_not_create_a_product() {
+    let mut inventory = Vec::new();
+    for index in 0..512 {
+        let mut definition = skill();
+        definition.identity = format!("skill-{index}");
+        definition.name = format!("skill-{index}");
+        definition.description = "Generic testing help.".into();
+        definition.frontmatter = json!({"description": definition.description});
+        inventory.push(definition);
+    }
+    let check = check(parts()[..3].to_vec(), inventory, false);
+    assert_eq!(check.descriptor_count(), 0);
+    let mut inventory = SkillDescriptorInventory::default();
+    check.enumerate_descriptors(&mut inventory).unwrap();
+    assert!(inventory.complete);
+    assert!(inventory.descriptors.is_empty());
+}
+
+#[tokio::test]
+async fn ambiguous_identity_and_recorded_equivalent_or_unknown_use_make_zero_calls() {
+    let mut duplicate = skill();
+    duplicate.identity = "other-definition".into();
+    let ambiguous = check(parts(), vec![skill(), duplicate], false);
+    let mut checks = vec![ambiguous];
+    for (identity, definitions) in [
+        (json!({"skill":"parser-review"}), vec![skill()]),
+        (json!({"skill":"equivalent-review"}), {
+            let mut equivalent = skill();
+            equivalent.identity = "equivalent-review".into();
+            equivalent.name = "equivalent-review".into();
+            vec![skill(), equivalent]
+        }),
+        (json!({}), vec![skill()]),
+    ] {
+        let mut source = parts();
+        let mut used = part(
+            5,
+            ContentKind::ToolInput,
+            &identity.to_string(),
+            Some("skill-use"),
+        );
+        used.part = used
+            .part
+            .with_tool_identity(Some("Skill".into()), Some("skill-use".into()));
+        source.push(used);
+        checks.push(check(source, definitions, false));
+    }
+    for check in checks {
+        assert_eq!(check.descriptor_count(), 0);
+        let outcome = crate::analysis::jev::run_jev_check(
+            &check,
+            &check.session_context(),
+            JevRunProgress::default(),
+            |_| async { panic!("use or identity uncertainty must block dispatch") },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert!(outcome.result.findings.is_empty());
+        assert!(!outcome.result.complete);
+    }
+}
+
+#[test]
+fn capability_constraints_do_not_split_or_clip_procedures() {
+    use crate::analysis::jev::capabilities::{CapabilityLimit, CapabilitySource};
+    let check = check(parts(), vec![skill()], false);
+    let normal = check.prepare(&check.session_context()).unwrap();
+    let packing = pack_work_items_with_capabilities(&normal.work_items, &normal.capabilities);
+    let bytes = packing.batches[0].serialized_bytes;
+    let mut caps = normal.capabilities.clone();
+    caps.request_body_bytes = CapabilityLimit::known((bytes - 1) as u64, CapabilitySource::Manual);
+    let reduced = check
+        .prepare_with_capabilities(&check.session_context(), &caps)
+        .unwrap();
+    assert_eq!(reduced.work_items.len(), 1, "{:?}", reduced.coverage);
+    assert_eq!(reduced.prepared.comparisons, normal.prepared.comparisons);
+    assert!(skill_request_fits(&reduced.work_items[0], &caps));
+    let reduced_bytes =
+        pack_work_items_with_capabilities(&reduced.work_items, &caps).batches[0].serialized_bytes;
+    assert!(reduced_bytes < bytes);
+    caps.questions_per_request.value = Some(0);
+    assert!(
+        check
+            .prepare_with_capabilities(&check.session_context(), &caps)
+            .unwrap()
+            .work_items
+            .is_empty()
+    );
+    caps.questions_per_request.value = Some(1);
+    caps.criteria_per_question.value = Some(2);
+    assert!(
+        check
+            .prepare_with_capabilities(&check.session_context(), &caps)
+            .unwrap()
+            .work_items
+            .is_empty()
+    );
+}
+
+#[test]
+fn policy_omitted_pairs_do_not_become_clean_or_page_on_later_turns() {
+    let mut other = skill();
+    other.identity = "other-review".into();
+    other.name = "other-review".into();
+    let check = check(parts(), vec![skill(), other], false);
+    assert_eq!(check.descriptor_count(), 1);
+    assert_eq!(check.omitted_comparison_count(), 1);
+    let plan = check.prepare(&check.session_context()).unwrap();
+    assert_eq!(plan.work_items.len(), 1);
+    assert_eq!(plan.coverage.not_selected_items, 1);
+    let result = check
+        .reduce(
+            &plan,
+            &results(&plan, "already_adequate_or_unrelated", 1.0),
+            true,
+        )
+        .unwrap();
+    assert!(result.findings.is_empty());
+    assert!(!result.complete);
+    let mut sampling = SamplingProgress::new(crate::checks::sampling::SamplingLimits {
+        checks: 1,
+        candidates_per_check: 1,
+        answers_per_candidate: 1,
+        judgments_per_run: 1,
+    })
+    .unwrap();
+    check.synchronize_sampling(&mut sampling).unwrap();
+    sampling.begin_run();
+    let job = sampling.choose_job().unwrap();
+    check
+        .record_sampling_result(&mut sampling, &job, &result)
+        .unwrap();
+    sampling.begin_run();
+    assert!(sampling.choose_job().is_none());
+}
+
+#[test]
+fn repeated_workflow_keeps_both_bindings_when_only_one_example_fits() {
+    let mut source = parts();
+    for (index, command, call) in [
+        (5, "cargo test parser", "test-again"),
+        (7, "cargo check", "check-again"),
+    ] {
+        source.push(part(
+            index,
+            ContentKind::ToolInput,
+            &json!({"command":command}).to_string(),
+            Some(call),
+        ));
+        source.push(part(
+            index + 1,
+            ContentKind::ToolResult,
+            "Repeated outcome.",
+            Some(call),
+        ));
+    }
+    let check = check(source, vec![skill()], false);
+    let plan = check.prepare(&check.session_context()).unwrap();
+    assert_eq!(plan.work_items.len(), 1, "{:?}", plan.coverage);
+    assert_eq!(plan.work_items[0].window.fields["occurrences"], 2);
+    assert_eq!(plan.prepared.comparisons[0].work.len(), 8);
+    let result = check
+        .reduce(&plan, &results(&plan, "actionable_help", 1.0), true)
+        .unwrap();
+    assert_eq!(result.findings.len(), 1);
+    assert_eq!(result.findings[0].comparison.work.len(), 8);
+}
+
+#[test]
+fn single_complete_multiline_operation_can_offer_a_procedure() {
+    let command = "cargo test parser\ncargo check";
+    let mut definition = skill();
+    let procedure_command = command
+        .lines()
+        .map(|line| format!("   {line}\n"))
+        .collect::<String>();
+    definition.description = format!(
+        "1. Run this recorded workflow:\n   ```sh\n{procedure_command}   ```\n2. Inspect lock ordering and add a deadlock regression before accepting changes.\n"
+    );
+    definition.frontmatter = json!({"description": definition.description});
+    let check = check(
+        vec![
+            part(
+                0,
+                ContentKind::UserText,
+                "Investigate the parser deadlock.",
+                None,
+            ),
+            part(
+                1,
+                ContentKind::ToolInput,
+                &json!({"command":command}).to_string(),
+                Some("workflow"),
+            ),
+            part(
+                2,
+                ContentKind::ToolResult,
+                "Tests failed; check passed.",
+                Some("workflow"),
+            ),
+        ],
+        vec![definition],
+        false,
+    );
+    let plan = check.prepare(&check.session_context()).unwrap();
+    assert_eq!(
+        plan.work_items.len(),
+        1,
+        "{:?} {:?}",
+        plan.coverage,
+        plan.prepared
+    );
+    assert_eq!(
+        check
+            .reduce(&plan, &results(&plan, "actionable_help", 1.0), true)
+            .unwrap()
+            .findings
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn exact_path_and_command_anchors_bind_one_complete_workflow() {
+    let mut definition = skill();
+    definition.description = "1. Inspect `src/parser.rs`.\n2. Run `cargo test parser`, record failures, and inspect boundary conditions.\n".into();
+    definition.frontmatter = json!({"description": definition.description});
+    let mut read = part(
+        1,
+        ContentKind::ToolInput,
+        r#"{"file_path":"src/parser.rs","offset":1,"limit":3}"#,
+        Some("read"),
+    );
+    read.part = read
+        .part
+        .with_tool_identity(Some("Read".into()), Some("read".into()));
+    let mut output = part(
+        2,
+        ContentKind::ToolResult,
+        "Parser source returned.",
+        Some("read"),
+    );
+    output.part = output
+        .part
+        .with_tool_identity(Some("Read".into()), Some("read".into()));
+    let source = vec![
+        part(
+            0,
+            ContentKind::UserText,
+            "Investigate the parser failure.",
+            None,
+        ),
+        read,
+        output,
+        part(
+            3,
+            ContentKind::ToolInput,
+            r#"{"command":"cargo test parser"}"#,
+            Some("test"),
+        ),
+        part(4, ContentKind::ToolResult, "Tests failed.", Some("test")),
+    ];
+    let check = check(source, vec![definition], false);
+    let plan = check.prepare(&check.session_context()).unwrap();
+    assert_eq!(plan.work_items.len(), 1, "{:?}", plan.coverage);
+    assert_eq!(
+        check
+            .reduce(&plan, &results(&plan, "actionable_help", 1.0), true)
+            .unwrap()
+            .findings
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn accepted_response_resume_sends_no_second_request() {
+    let check = check(parts(), vec![skill()], false);
+    let first = crate::analysis::jev::run_jev_check(
+        &check,
+        &check.session_context(),
+        JevRunProgress::default(),
+        |batch| async move { Ok(response(&batch, "actionable_help", 1.0)) },
+        |_| Ok(()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.result.findings.len(), 1);
+    let resumed = crate::analysis::jev::run_jev_check(
+        &check,
+        &check.session_context(),
+        first.progress,
+        |_| async { panic!("accepted answer must be reused") },
+        |_| Ok(()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resumed.result.findings.len(), 1);
+}
+
+#[tokio::test]
+async fn stored_plan_recovers_accepted_answers_after_capability_shrink() {
+    let check = check(parts(), vec![skill()], false);
+    let context = check.session_context();
+    let mut plan = check.prepare(&context).unwrap();
+    let first = crate::analysis::jev::run_jev_check_prepared(
+        &check,
+        &context,
+        &mut plan,
+        JevRunProgress::default(),
+        crate::analysis::jev::admit_jev_orchestration()
+            .await
+            .unwrap(),
+        |batch| async move { Ok(response(&batch, "actionable_help", 1.0)) },
+        |_| Ok(()),
+    )
+    .await
+    .unwrap();
+    let stored = serde_json::to_vec(&plan).unwrap();
+    let mut changed = plan.capabilities.clone();
+    changed.runtime_context_tokens.value = Some(1);
+    assert!(
+        check
+            .prepare_with_capabilities(&context, &changed)
+            .unwrap()
+            .work_items
+            .is_empty()
+    );
+    let mut restored: JevCheckPlan<PreparedSkillOpportunities> =
+        serde_json::from_slice(&stored).unwrap();
+    let recovered = crate::analysis::jev::run_jev_check_prepared(
+        &check,
+        &context,
+        &mut restored,
+        first.progress,
+        crate::analysis::jev::admit_jev_orchestration()
+            .await
+            .unwrap(),
+        |_| async { panic!("accepted request must not be sent again") },
+        |_| Ok(()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered.result.findings.len(), 1);
+    assert_eq!(restored.capabilities, plan.capabilities);
 }

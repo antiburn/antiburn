@@ -30,9 +30,6 @@ const overviewProgressMock = vi.hoisted(() => ({
   current: {
     mode: "steady",
     flow: "done",
-    openStep: null,
-    openStepControl: null,
-    openStepControlRevision: 0,
     stepShown: true,
     actionPending: false,
     actionError: null,
@@ -212,25 +209,6 @@ describe("OverviewView first-run decision", () => {
 })
 
 describe("OverviewView metric preference", () => {
-  it("shows allowance collection only during active first-run live usage", () => {
-    overviewProgressMock.current = {
-      ...overviewProgressMock.current,
-      mode: "firstRun",
-      flow: "checks",
-    }
-    appSettings.current = { liveUsageEnabled: true, liveUsageStarted: false } as AppSettings
-    const view = setup(usage)
-    expect(screen.getByLabelText("Allowance collection")).toHaveTextContent("idle")
-
-    appSettings.current = { liveUsageEnabled: true, liveUsageStarted: true } as AppSettings
-    view.rerender(<OverviewView {...view.props} />)
-    expect(screen.getByLabelText("Allowance collection")).toHaveTextContent("collecting")
-
-    overviewProgressMock.current = { ...overviewProgressMock.current, flow: "done" }
-    view.rerender(<OverviewView {...view.props} />)
-    expect(screen.getByLabelText("Allowance collection")).toHaveTextContent("idle")
-  })
-
   it("settles on cost only once both the allowance and live-usage reads land without a plan", () => {
     const view = setup(usage)
     view.update(allowance([]))
@@ -387,7 +365,7 @@ describe("OverviewView's first-run takeover", () => {
     overviewProgressMock.current = { ...overviewProgressMock.current, mode: "firstRun", flow }
   }
 
-  it("shows no usage card or Recent sessions until the Sessions step is done", () => {
+  it("hides usage and Recent sessions during the Sessions step", () => {
     firstRunAt("sessions")
     setup()
     expect(screen.getByLabelText("First-run takeover")).toBeInTheDocument()
@@ -395,17 +373,30 @@ describe("OverviewView's first-run takeover", () => {
     expect(screen.queryByLabelText("Recent sessions")).toBeNull()
   })
 
-  it("shows Recent sessions without checks under the Checks step", () => {
+  it("keeps collecting data with usage and Recent sessions hidden during the Checks step", () => {
     firstRunAt("checks")
-    setup()
+    appSettings.current = { liveUsageEnabled: true, liveUsageStarted: true } as AppSettings
+    const { props } = setup()
+    expect(props.session.subscribe).toHaveBeenCalled()
     expect(screen.getByLabelText("First-run takeover")).toBeInTheDocument()
-    expect(screen.getByLabelText("Usage metric")).toBeInTheDocument()
-    expect(screen.getByLabelText("Recent sessions")).toHaveTextContent("no checks")
+    expect(screen.queryByLabelText("Usage metric")).toBeNull()
+    expect(screen.queryByLabelText("Recent sessions")).toBeNull()
+    expect(screen.getByLabelText("Provider limits pane")).toBeInTheDocument()
   })
 
-  it("adds the checks once the Checks step is done", () => {
+  it("keeps the final step clear until Get Started completes onboarding", () => {
     firstRunAt("fixes")
-    setup()
+    const view = setup()
+    expect(view.props.session.subscribe).toHaveBeenCalled()
+    expect(screen.getByLabelText("First-run takeover")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Usage metric")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Recent sessions")).not.toBeInTheDocument()
+
+    firstRunAt("done")
+    view.rerender(<OverviewView {...view.props} />)
+    expect(screen.queryByLabelText("First-run takeover")).not.toBeInTheDocument()
+    expect(screen.getByLabelText("Usage metric")).toBeInTheDocument()
     expect(screen.getByLabelText("Recent sessions")).toHaveTextContent(/^checks$/)
+    expect(screen.getByLabelText("Allowance collection")).toHaveTextContent("idle")
   })
 })

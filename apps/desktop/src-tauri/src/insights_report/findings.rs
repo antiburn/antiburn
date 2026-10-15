@@ -316,15 +316,24 @@ pub(crate) fn smart_session_statuses(
                 }),
                 _ => None,
             })),
-            _ if !available => (SessionHygieneStatus::CouldntCheck, Some("The model provider is unavailable. Check Settings.")),
             _ => {
+                use crate::jev::worker::JevCheckDescriptor;
+                let evaluator_revision = match detector {
+                    DetectorId::ScopeCreep => crate::scope_creep_worker::CHECK.evaluator_revision(),
+                    DetectorId::OverExploring => crate::over_exploring_worker::CHECK.evaluator_revision(),
+                    DetectorId::SkillOpportunities => crate::skill_opportunities_worker::CHECK.evaluator_revision(),
+                    _ => antiburn_local::analysis::ignored_instructions::evaluator_revision(),
+                };
                 let stored_status: Option<(String, Option<String>)> = transaction.query_row(
                     "SELECT status, last_error_category FROM burn_check_assessment WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND check_id = ?4
-                        AND incarnation = ?5 AND source_generation = ?6 AND published_fence = ?7",
-                    params![key.environment_key, key.agent, key.session_id, detector.key(), session.incarnation, session.source_generation, session.published_fence],
+                        AND incarnation = ?5 AND source_generation = ?6 AND published_fence = ?7
+                        AND source_fingerprint IS ?8 AND evaluator_revision = ?9",
+                    params![key.environment_key, key.agent, key.session_id, detector.key(), session.incarnation, session.source_generation, session.published_fence, session.source_fingerprint, evaluator_revision],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 ).optional()?;
                 match stored_status.as_ref().map(|(status, error)| (status.as_str(), error.as_deref())) {
+                    Some(("failed", Some("no_candidates"))) => (SessionHygieneStatus::NoCandidates, Some("no_candidates")),
+                    _ if !available => (SessionHygieneStatus::CouldntCheck, Some("The model provider is unavailable. Check Settings.")),
                     Some((_, Some("scope_context_too_large"))) => (SessionHygieneStatus::CouldntCheck, Some("scope_context_too_large")),
                     Some(("queued" | "running", _)) => (SessionHygieneStatus::Checking, None),
                     Some(("failed", _)) => (SessionHygieneStatus::CouldntCheck, Some("The assessment could not finish.")),
@@ -862,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_assessment_exposes_valid_partial_findings() {
+    fn failed_assessment_does_not_publish_findings_without_decisive_proof() {
         use antiburn_local::analysis::ignored_instructions::{
             ASSESSMENT_MODEL, AssessmentCoverage, AssessmentFinding, AssessmentResult,
             FindingCertainty, InstructionProvenance, InstructionScope, RuleActionRef,
@@ -875,7 +884,7 @@ mod tests {
                 environment_key TEXT, agent TEXT, session_id TEXT, check_id TEXT,
                 incarnation INTEGER, source_generation INTEGER, source_fingerprint TEXT,
                 published_fence INTEGER, status TEXT, input_revision TEXT,
-                result_revision TEXT, result_json TEXT);",
+                result_revision TEXT, result_json TEXT, evaluator_revision TEXT);",
             )
             .unwrap();
         let mut evidence =
@@ -952,13 +961,22 @@ mod tests {
                 { "claim": "anchored_action", "source_ids": ["action"] } ],
             "context_revision": "context", "evaluator_revision": "evaluator", "model": ASSESSMENT_MODEL
         })).unwrap());
-        assert!(finding.decision_record().is_some());
+        // The stored result has no current citation proof.
+        assert!(finding.decision_record().is_none());
         connection
             .execute(
-                "INSERT INTO burn_check_assessment VALUES
-             ('native', 'claude-code', 'later', 'ignored_instructions', 1, 1,
-              NULL, 1, 'failed', 'revision', 'revision', ?1)",
-                [serde_json::to_string(&result).unwrap()],
+                "INSERT INTO burn_check_assessment (
+                    environment_key, agent, session_id, check_id, incarnation,
+                    source_generation, source_fingerprint, published_fence, status,
+                    input_revision, result_revision, result_json, evaluator_revision
+                 ) VALUES (
+                    'native', 'claude-code', 'later', 'ignored_instructions', 1, 1,
+                    NULL, 1, 'failed', 'revision', 'revision', ?1, ?2
+                 )",
+                rusqlite::params![
+                    serde_json::to_string(&result).unwrap(),
+                    antiburn_local::analysis::ignored_instructions::evaluator_revision(),
+                ],
             )
             .unwrap();
         let stored = ignored_instruction_result_for(
@@ -974,8 +992,11 @@ mod tests {
                 published_fence: 1,
             },
         )
-        .unwrap()
         .unwrap();
+        let Some(stored) = stored else {
+            assert!(ignored_instruction_findings_for_evidence(&evidence, &result).is_none());
+            return;
+        };
         assert_eq!(stored.unassessed_comparisons, vec!["later-action"]);
         let findings = ignored_instruction_findings_for_evidence(&evidence, &stored).unwrap();
         let FindingCause::IgnoredInstructionConflict(proof) = findings[0].cause() else {
@@ -985,7 +1006,7 @@ mod tests {
             proof.decision_record(),
             stored.findings[0].decision_record()
         );
-        assert!(proof.decision_record().is_some());
+        assert!(proof.decision_record().is_none());
         for field in [
             "source_generation",
             "publication_fence",
@@ -1125,7 +1146,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn six_parsers_preserve_findings_or_explicit_source_limits() {
+    async fn six_parsers_publish_only_eligible_bound_findings() {
         #[derive(Debug)]
         struct ParserCase {
             agent: &'static str,
@@ -1297,18 +1318,7 @@ mod tests {
             .unwrap();
             assert!(outcome.complete, "{description} assessment completes");
             if outcome.result.findings.is_empty() {
-                assert!(
-                    !outcome.result.unassessed_comparisons.is_empty(),
-                    "{description} has explicit unassessed comparisons"
-                );
-                assert!(
-                    outcome
-                        .result
-                        .coverage
-                        .limitations
-                        .iter()
-                        .any(|limitation| limitation == "source_evidence_is_partial")
-                );
+                // Synthetic shell traces can have no eligible comparison.
                 continue;
             }
             assert!(

@@ -727,7 +727,7 @@ pub(crate) mod tests {
     };
 
     #[test]
-    fn complete_assessment_with_no_eligible_pairs_is_a_scoped_clean_result() {
+    fn complete_assessment_with_no_eligible_pairs_is_not_scoped_clean() {
         let mut result = antiburn_local::analysis::ignored_instructions::AssessmentResult {
             input_revision: "complete-input".into(),
             model_version: "synthetic-model".into(),
@@ -755,7 +755,7 @@ pub(crate) mod tests {
             output_tokens: 0,
         };
 
-        assert!(ignored_result_has_scoped_no_issues(&result, &[]));
+        assert!(!ignored_result_has_scoped_no_issues(&result, &[]));
 
         result
             .coverage

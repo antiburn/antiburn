@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-count-agent-memories"
+description = "Enables the count_agent_memories command without any pre-configured scope."
+commands.allow = ["count_agent_memories"]
+
+[[permission]]
+identifier = "deny-count-agent-memories"
+description = "Denies the count_agent_memories command without any pre-configured scope."
+commands.deny = ["count_agent_memories"]

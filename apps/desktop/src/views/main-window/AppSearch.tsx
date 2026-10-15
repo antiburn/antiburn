@@ -6,13 +6,9 @@ import { getCheckAvailability, onCheckAvailabilityChanged } from "../../lib/chec
 export function AppSearch({
   onChoose,
   onClose,
-  stepSettingsAvailable = true,
 }: {
   onChoose: (result: AppSearchResult) => Promise<void>
   onClose: () => void
-  /** False while the first run's step modals are unreachable, so a step
-   *  setting cannot appear with nowhere to open. */
-  stepSettingsAvailable?: boolean
 }) {
   const [query, setQuery] = useState("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -24,7 +20,7 @@ export function AppSearch({
   const choosing = useRef(false)
   const live = useRef(false)
   const id = useId()
-  const groups = groupAppResults(query, undefined, checksAvailable, stepSettingsAvailable)
+  const groups = groupAppResults(query, undefined, checksAvailable)
   const results = groups.flatMap((group) => group.results)
   const active = results.find((result) => result.id === selectedId) ?? results[0]
 

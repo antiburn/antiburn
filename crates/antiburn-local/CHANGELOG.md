@@ -17,6 +17,27 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-10-14
+
+No user-facing engine changes.
+
+## [0.14.0] - 2026-10-14
+
+### Added
+
+- The OMP reader also admits `custom` rows with a characterized `customType`
+  (`tool_execution_start`, `session_exit`, `todo_hud_state`,
+  `user_todo_edit`, and `goal-completed`). `title_change`, `credential_pin`,
+  `ttsr_injection`, and `session_init` are signal-free housekeeping rows that
+  keep their thread link. The skill listing in a `session_init` system prompt
+  becomes the session's initial context, and a `read` of a `skill://<name>`
+  path counts as a use of that skill. Other OMP record types stay
+  unrecognized.
+- **Breaking:** the Pi-family stream state keeps OMP startup context in resume
+  snapshots; advance the resume snapshot revision to 14.
+- Advance the parser revision to 53, so completed OMP sessions are parsed
+  again and pick up the new rows, startup skills, and skill uses.
+
 ### Changed
 
 - **Breaking:** `Explorers::discover_recent_sessions_with_progress` passes

@@ -281,6 +281,8 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             let text = if name == "future-review" {
                 "# Review API boundaries\nCheck parser inputs and add boundary tests.\n".repeat(600)
+            } else if name == "unused-review" {
+                "---\nname: unused-review\ndescription: |\n  1. Run `npm run build` and inspect generated exports.\n  2. Run `npm pack --dry-run` and verify packaged files.\n---\n".into()
             } else {
                 format!("---\nname: {name}\ndescription: Review API boundaries and tests.\n---\n")
             };
@@ -338,7 +340,7 @@ mod tests {
             .check
             .prepare(&prepared.check.session_context())
             .unwrap();
-        assert!(!plan.work_items.is_empty(), "{agent:?}");
+        assert!(!plan.work_items.is_empty(), "{agent:?}: {plan:?}");
         let answers = plan
             .work_items
             .iter()
@@ -350,30 +352,29 @@ mod tests {
                     .questions
                     .keys()
                     .map(|question| {
-                        let choice = "useful_opportunity";
+                        let choice = "actionable_help";
                         (
                             question.clone(),
                             JevAnswer::Choice {
                                 choice: choice.into(),
                                 confidence: 1.0,
-                                probabilities: std::collections::BTreeMap::from([
-                                    ("useful_opportunity".into(), 1.0),
-                                    ("no_opportunity".into(), 0.0),
-                                    ("uncertain".into(), 0.0),
-                                ]),
+                                probabilities: match &item.questions[question] {
+                                    antiburn_local::analysis::jev::JevQuestion::Choice {
+                                        criteria,
+                                        ..
+                                    } => criteria
+                                        .keys()
+                                        .map(|key| {
+                                            (key.clone(), if key == choice { 1.0 } else { 0.0 })
+                                        })
+                                        .collect(),
+                                    _ => unreachable!("skill opportunity question is a choice"),
+                                },
                             },
                         )
                     })
                     .collect(),
-                evidence: plan
-                    .shared_context
-                    .as_ref()
-                    .unwrap()
-                    .evidence
-                    .iter()
-                    .chain(&item.window.evidence)
-                    .cloned()
-                    .collect(),
+                evidence: item.window.evidence.clone(),
                 usage: JevUsage {
                     input_tokens: 0,
                     output_tokens: 0,
@@ -525,7 +526,14 @@ mod tests {
         let findings = read()
             .unwrap_or_else(|| panic!("{agent:?}: current report must retain validated findings"));
         assert!(!findings.is_empty(), "{agent:?}");
-        assert!(result.findings.iter().any(|finding| finding.comparison.skill.reference.partial && finding.comparison.skill.reference.source == antiburn_local::checks::skill_opportunities::SkillReferenceSource::MarkdownFallback), "{agent:?}: selected fallback ranges must reach the report");
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|finding| finding.comparison.skill.name == "unused-review"
+                    && !finding.comparison.skill.reference.partial),
+            "{agent:?}: a complete current procedure reaches the report"
+        );
         let review = |json: &str| {
             super::super::progress::published_coverage(
                 "skill_opportunities",
@@ -566,20 +574,20 @@ mod tests {
         partial.coverage.not_selected_items = 0;
         store.lock().execute("UPDATE burn_check_assessment SET result_json = ?1 WHERE check_id = 'skill_opportunities'", [saved_json(&partial)]).unwrap();
         assert!(read().is_some(), "{agent:?}");
-        let sibling_failure = prepared
+        let missing_answer = prepared
             .check
             .reduce(&plan, &answers[..answers.len() - 1], false)
             .unwrap();
-        assert!(!sibling_failure.complete);
-        assert!(!sibling_failure.findings.is_empty());
-        assert!(sibling_failure.decisions.iter().any(|decision| decision.outcome == antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome::Unassessed));
-        store.lock().execute("UPDATE burn_check_assessment SET result_json = ?1 WHERE check_id = 'skill_opportunities'", [saved_json(&sibling_failure)]).unwrap();
+        assert!(!missing_answer.complete);
+        assert!(missing_answer.findings.is_empty());
+        assert!(missing_answer.decisions.iter().any(|decision| decision.outcome == antiburn_local::checks::skill_opportunities::SkillOpportunityOutcome::Unassessed));
+        store.lock().execute("UPDATE burn_check_assessment SET result_json = ?1 WHERE check_id = 'skill_opportunities'", [saved_json(&missing_answer)]).unwrap();
         store.lock().execute("UPDATE burn_check_assessment SET last_error_category = 'provider_error' WHERE check_id = 'skill_opportunities'", []).unwrap();
         assert!(
-            read().is_some(),
-            "{agent:?}: a failed sibling does not erase validated positives"
+            read().is_none(),
+            "{agent:?}: the single unanswered candidate is not a finding or clean result"
         );
-        let mut no_positive = sibling_failure.clone();
+        let mut no_positive = result.clone();
         no_positive.findings.clear();
         for decision in &mut no_positive.decisions {
             if decision.outcome
@@ -621,7 +629,7 @@ mod tests {
             let workspace = directory.path().join("workspace");
             std::fs::create_dir_all(&home).unwrap();
             std::fs::create_dir_all(&workspace).unwrap();
-            let records = native_sources::records_with_work(agent, records)
+            let records = native_sources::records_with_workflow(agent, records)
                 .lines()
                 .enumerate()
                 .map(|(index, line)| {
@@ -662,6 +670,9 @@ mod tests {
     #[test]
     fn opencode_skill_report_uses_the_same_publication_gate() {
         let fixture = crate::scope_creep_worker::tests::NativeFixture::new(1);
+        for (index, command) in [(3, "npm run build"), (4, "npm pack --dry-run")] {
+            fixture.append(index, "assistant", serde_json::json!({"type":"tool", "tool":"bash", "callID":format!("release-{index}"), "state":{"status":"completed", "input":{"command":command}, "output":"Release check passed."}}));
+        }
         fixture
             .store
             .set_check_enabled(DetectorId::SkillOpportunities, true)

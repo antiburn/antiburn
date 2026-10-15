@@ -36,12 +36,12 @@ pub fn row(
     } else {
         "abstention"
     };
-    let correct = failure.is_none()
-        && complete
-        && outcome == case.expected_outcome
-        && observed == case.expected;
+    let bindings_correct = failure.is_none() && complete && observed == case.expected;
+    let outcome_correct = outcome == case.expected_outcome;
+    let correct = bindings_correct && outcome_correct;
     json!({"id":case.id,"reason":case.reason,"family":case.family,"expected":case.expected,"expected_outcome":case.expected_outcome,
-        "observed":observed,"outcome":outcome,"clean":clean,"correct":correct,"authority":case.authority,
+        "expected_semantic":case.expected_semantic,"expected_bindings":case.expected_bindings,"policy_admission":case.policy_admission,
+        "observed":observed,"outcome":outcome,"clean":clean,"correct":correct,"bindings_correct":bindings_correct,"outcome_correct":outcome_correct,"authority":case.authority,
         "unsafe_authority_publication":case.authority && (!observed.is_empty() || clean) && !correct,
         "complete":complete,"failure":failure,"limitations":result.map(|result| &result.unassessed)})
 }
@@ -54,6 +54,13 @@ fn metrics(cases: &[Case], rows: &[Value], reason: Option<Reason>) -> Value {
     let mut abstentions = 0;
     let mut clean = 0;
     let mut failures = 0;
+    let mut unsupported = 0;
+    let mut policy_limited = 0;
+    let mut wrong_findings = 0;
+    let mut wrong_bindings = 0;
+    let mut missed_supported_positives = 0;
+    let mut unsupported_clean = 0;
+    let mut unsupported_publications = 0;
     for case in cases {
         let scheduled_here = reason.is_none_or(|reason| case.reason == reason);
         let mut remaining = case
@@ -63,13 +70,22 @@ fn metrics(cases: &[Case], rows: &[Value], reason: Option<Reason>) -> Value {
             .cloned()
             .collect::<Vec<_>>();
         positives += remaining.len();
+        unsupported += usize::from(scheduled_here && case.policy_admission == "unsupported");
+        policy_limited += usize::from(scheduled_here && case.policy_admission == "policy_limited");
         let Some(row) = rows.iter().find(|row| row["id"] == case.id) else {
+            if case.policy_admission == "admitted" {
+                missed_supported_positives += remaining.len();
+            }
             missing += usize::from(scheduled_here);
             failures += usize::from(scheduled_here);
             continue;
         };
         let observed: Vec<ExpectedFinding> = serde_json::from_value(row["observed"].clone())
             .expect("Scoring row contains typed observed findings");
+        unsupported_publications += usize::from(
+            scheduled_here && case.policy_admission != "admitted" && !observed.is_empty(),
+        );
+        let mut unmatched = Vec::new();
         for finding in observed
             .into_iter()
             .filter(|finding| reason.is_none_or(|reason| finding.reason == reason))
@@ -78,8 +94,28 @@ fn metrics(cases: &[Case], rows: &[Value], reason: Option<Reason>) -> Value {
             if let Some(index) = remaining.iter().position(|expected| *expected == finding) {
                 remaining.remove(index);
                 tp += 1;
+            } else {
+                unmatched.push(finding);
             }
         }
+        for finding in unmatched {
+            if let Some(index) = remaining
+                .iter()
+                .position(|expected| expected.reason == finding.reason)
+            {
+                remaining.remove(index);
+                wrong_bindings += 1;
+            } else {
+                wrong_findings += 1;
+            }
+        }
+        missed_supported_positives += if case.policy_admission == "admitted" {
+            remaining.len()
+        } else {
+            0
+        };
+        unsupported_clean +=
+            usize::from(scheduled_here && row["clean"] == true && case.expected_outcome != "clean");
         abstentions += usize::from(scheduled_here && row["outcome"] == "abstention");
         clean += usize::from(scheduled_here && row["clean"] == true);
         failures +=
@@ -89,7 +125,9 @@ fn metrics(cases: &[Case], rows: &[Value], reason: Option<Reason>) -> Value {
     let recall = ratio(tp, positives).as_f64();
     json!({"scheduled":cases.iter().filter(|case|reason.is_none_or(|reason|case.reason==reason)).count(),"expected_findings":positives,"published_findings":publications,"joint_true_positives":tp,
         "joint_false_positives":publications-tp,"joint_false_negatives":positives-tp,"precision":precision,"recall":recall,
-        "missing":missing,"failures":failures,"abstentions":abstentions,"clean":clean,
+        "missing":missing,"failures":failures,"abstentions":abstentions,"clean":clean,"unsupported":unsupported,"policy_limited":policy_limited,
+        "wrong_findings":wrong_findings,"wrong_bindings":wrong_bindings,"missed_supported_positives":missed_supported_positives,"unsupported_clean":unsupported_clean,
+        "unsupported_publications":unsupported_publications,
         "executed":rows.iter().filter(|row| reason.is_none_or(|reason| row["reason"] == serde_json::to_value(reason).expect("Typed reason serializes"))).count()})
 }
 
@@ -140,4 +178,37 @@ fn a_wrong_read_binding_is_not_a_true_positive() {
     let result = report(&[case], &[row]);
     assert_eq!(result["overall"]["joint_true_positives"], 0);
     assert_eq!(result["overall"]["joint_false_positives"], 1);
+    assert_eq!(result["overall"]["wrong_bindings"], 1);
+    assert_eq!(result["overall"]["wrong_findings"], 0);
+}
+
+#[test]
+fn wrong_findings_missing_supported_positives_and_unsupported_clean_are_separate() {
+    let cases = super::compact::cases();
+    let positive = cases
+        .iter()
+        .find(|case| case.id == "compact-large-repeat")
+        .unwrap()
+        .clone();
+    let negative = cases
+        .iter()
+        .find(|case| case.id == "compact-explicit-verification")
+        .unwrap()
+        .clone();
+    let mut unsupported = cases
+        .into_iter()
+        .find(|case| case.id == "compact-generic-header")
+        .unwrap();
+    unsupported.policy_admission = "policy_limited".into();
+    unsupported.expected_outcome = "abstention".into();
+    let rows = [
+        json!({"id":negative.id,"reason":negative.reason,"observed":negative.expected_bindings,"outcome":"finding","clean":false,"complete":true,"failure":null}),
+        json!({"id":unsupported.id,"reason":unsupported.reason,"observed":[],"outcome":"clean","clean":true,"complete":true,"failure":null}),
+    ];
+    let report = report(&[positive, negative, unsupported], &rows);
+    assert_eq!(report["overall"]["wrong_findings"], 1);
+    assert_eq!(report["overall"]["wrong_bindings"], 0);
+    assert_eq!(report["overall"]["missed_supported_positives"], 1);
+    assert_eq!(report["overall"]["unsupported_clean"], 1);
+    assert_eq!(report["overall"]["policy_limited"], 1);
 }

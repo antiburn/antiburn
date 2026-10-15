@@ -272,6 +272,63 @@ pub(crate) fn records_with_work(agent: &str, records: &str) -> String {
     format!("{}\n{work}\n{result}\n", records.trim_end())
 }
 
+pub(crate) fn records_with_workflow(agent: &str, records: &str) -> String {
+    let mut rows = records
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    for (index, command) in ["npm run build", "npm pack --dry-run"]
+        .into_iter()
+        .enumerate()
+    {
+        let call = format!("release-{index}");
+        match agent {
+            "codex" => {
+                let mut row = rows
+                    .iter()
+                    .find(|row| row["payload"]["item"]["type"] == "CommandExecution")
+                    .unwrap()
+                    .clone();
+                row["ordinal"] = json!(rows.len());
+                let item = &mut row["payload"]["item"];
+                item["id"] = json!(call);
+                item["process_id"] = json!(format!("release-process-{index}"));
+                item["command"] = json!(["/bin/zsh", "-lc", command]);
+                item["parsed_cmd"] = json!([{"type":"unknown", "cmd":command}]);
+                item["status"] = json!("completed");
+                item["exit_code"] = json!(0);
+                item["stdout"] = json!("Release check passed.");
+                item["aggregated_output"] = json!("Release check passed.");
+                rows.push(row);
+            }
+            "claude-code" => {
+                let mut request = rows[3].clone();
+                request["uuid"] = json!(format!("release-request-{index}"));
+                request["parentUuid"] = rows.last().unwrap()["uuid"].clone();
+                request["message"]["content"][0]["id"] = json!(call);
+                request["message"]["content"][0]["input"]["command"] = json!(command);
+                rows.push(request);
+                let mut result = rows[4].clone();
+                result["uuid"] = json!(format!("release-result-{index}"));
+                result["parentUuid"] = rows.last().unwrap()["uuid"].clone();
+                result["message"]["content"][0]["tool_use_id"] = json!(call);
+                result["message"]["content"][0]["content"] = json!("Release check passed.");
+                result["toolUseResult"]["stdout"] = json!("Release check passed.");
+                rows.push(result);
+            }
+            "pi" => {
+                rows.push(json!({"type":"message", "id":format!("release-request-{index}"), "parentId":rows.last().unwrap()["id"], "timestamp":"2026-01-01T00:00:10Z", "message":{"role":"assistant", "content":[{"type":"toolCall", "id":call, "name":"bash", "arguments":{"command":command}}]}}));
+                rows.push(json!({"type":"message", "id":format!("release-result-{index}"), "parentId":rows.last().unwrap()["id"], "timestamp":"2026-01-01T00:00:11Z", "message":{"role":"toolResult", "toolCallId":call, "toolName":"bash", "content":[{"type":"text", "text":"Release check passed."}], "isError":false, "details":{"exitCode":0}}}));
+            }
+            _ => unreachable!(),
+        }
+    }
+    rows.iter()
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn append_approval(agent: &str, records: &str) -> String {
     let rows = records
         .lines()
@@ -354,7 +411,7 @@ fn assert_native_scope_source((agent, session, format, records): (&str, &str, So
         .check
         .reduce(&input.plan, &results(&input, false), true)
         .unwrap();
-    assert!(!result.findings.is_empty(), "{agent}");
+    assert!(!result.findings.is_empty(), "{agent}: {result:?}");
     let finding_id = result.findings[0].id.clone();
     persist(&store, &input, result);
     drop(store);

@@ -123,6 +123,32 @@ pub fn scan_claude_memory_projects(home: &Path) -> Vec<MemoryProjectInventory> {
     projects
 }
 
+/// Counts the files that the Memories report can list, without reading their contents.
+pub fn count_claude_memories(home: &Path) -> std::io::Result<usize> {
+    let projects = match fs::read_dir(home.join(".claude").join("projects")) {
+        Ok(projects) => projects,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    let mut count = 0;
+    for project in projects {
+        let project = project?;
+        if project.file_name().to_str().is_none() {
+            continue;
+        }
+        match try_memory_file_names(&project.path().join("memory")) {
+            Ok(names) => count += names.len().min(MAX_FILES_PER_PROJECT),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(count)
+}
+
 /// Scans one `home/.claude/projects/<slug>/memory/` directory.
 pub fn scan_claude_memory_project(home: &Path, slug: &str) -> Option<MemoryProjectInventory> {
     scan_project(
@@ -167,15 +193,18 @@ fn scan_project(slug: &str, memory_dir: &Path) -> Option<MemoryProjectInventory>
 
 /// Sorted names of the memory files, or `None` when the directory is missing.
 fn memory_file_names(memory_dir: &Path) -> Option<Vec<String>> {
-    let mut names: Vec<String> = fs::read_dir(memory_dir)
-        .ok()?
+    try_memory_file_names(memory_dir).ok()
+}
+
+fn try_memory_file_names(memory_dir: &Path) -> std::io::Result<Vec<String>> {
+    let mut names: Vec<String> = fs::read_dir(memory_dir)?
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
         .filter_map(|entry| entry.file_name().into_string().ok())
         .filter(|name| name.ends_with(".md") && name != INDEX_FILE && !name.contains(BACKUP_MARKER))
         .collect();
     names.sort();
-    Some(names)
+    Ok(names)
 }
 
 /// The link target without a leading `./`.
@@ -436,6 +465,46 @@ mod tests {
         let mut projects = scan_claude_memory_projects(home);
         assert_eq!(projects.len(), 1);
         projects.remove(0)
+    }
+
+    #[test]
+    fn count_matches_report_files_and_exclusions() {
+        let (home, memory) = fixture();
+        write(&memory, "a.md", "memory");
+        write(&memory, "MEMORY.md", "- [Missing](missing.md)");
+        write(&memory, "a.antiburn-bak.md", "backup");
+        write(&memory, "notes.txt", "not a memory");
+        fs::create_dir(memory.join("nested.md")).unwrap();
+        let other = home.path().join(".claude/projects/other/memory");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("b.md"), [0xff, 0xfe]).unwrap();
+        let expected: usize = scan_claude_memory_projects(home.path())
+            .iter()
+            .map(|project| project.memories.len())
+            .sum();
+        assert_eq!(expected, 2);
+        assert_eq!(count_claude_memories(home.path()).unwrap(), expected);
+    }
+
+    #[test]
+    fn count_uses_the_report_per_project_limit() {
+        let (home, memory) = fixture();
+        for index in 0..MAX_FILES_PER_PROJECT + 1 {
+            write(&memory, &format!("{index}.md"), "");
+        }
+        assert_eq!(
+            count_claude_memories(home.path()).unwrap(),
+            MAX_FILES_PER_PROJECT
+        );
+    }
+
+    #[test]
+    fn count_distinguishes_missing_projects_from_invalid_roots() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(count_claude_memories(home.path()).unwrap(), 0);
+        fs::create_dir(home.path().join(".claude")).unwrap();
+        fs::write(home.path().join(".claude/projects"), "not a directory").unwrap();
+        assert!(count_claude_memories(home.path()).is_err());
     }
 
     #[test]

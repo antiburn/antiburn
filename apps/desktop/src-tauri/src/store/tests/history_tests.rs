@@ -719,6 +719,28 @@ fn recent_history_waits_for_active_sessions_and_survives_worker_pages() {
 }
 
 #[test]
+fn history_no_candidates_counts_as_finished_work() {
+    let store = store();
+    let record = session("empty", NOW - 200);
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    add_session_content(&store, &record);
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], NOW - 300)
+        .unwrap();
+    assert_eq!(store.enqueue_burn_checks(NOW, 7).unwrap(), 1);
+    store.lock().execute("UPDATE burn_check_assessment SET status = 'failed', last_error_category = 'no_candidates'", []).unwrap();
+    let status = store.historical_burn_check_status(NOW, 180).unwrap();
+    assert_eq!(status.completed, 1);
+    assert_eq!(status.failed, 0);
+    assert_eq!(status.total, 1);
+}
+
+#[test]
 fn continuing_instruction_pages_count_as_in_progress_work() {
     let store = store();
     let records = [session("continuing", NOW - 10), session("failed", NOW - 10)];

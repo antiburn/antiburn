@@ -245,7 +245,7 @@ describe("BurnChecksView grouping", { timeout: 15_000 }, () => {
         expect(rows[0]).toHaveAttribute("aria-pressed", "true")
         expect(rows[0]).toHaveFocus()
         expect(
-          screen.queryByText("This check has not been assessed for the available sessions."),
+          screen.queryByText("This check has not reviewed any sessions yet."),
         ).not.toBeInTheDocument()
         if (snoozed)
           expect(screen.getByRole("button", { name: "Snoozed 1" })).toHaveAttribute(
@@ -279,7 +279,7 @@ describe("BurnChecksView grouping", { timeout: 15_000 }, () => {
         screen.queryByRole("button", { name: /Old model usage, Not assessed/ }),
       ).not.toBeInTheDocument()
       expect(
-        screen.queryByText("This check has not been assessed for the available sessions."),
+        screen.queryByText("This check has not reviewed any sessions yet."),
       ).not.toBeInTheDocument()
     })
 
@@ -617,7 +617,11 @@ describe("BurnChecksView grouping", { timeout: 15_000 }, () => {
     expect(screen.queryByText("Checks have not been assessed.")).not.toBeInTheDocument()
     view.unmount()
     setup(null, false, aggregate, { ...report, evidenceSettled: true, categories: [] })
-    expect(await screen.findByText("No checks enabled.")).toBeVisible()
+    expect(
+      await screen.findByText(
+        "No checks are turned on. Turn on a check in Settings to review sessions.",
+      ),
+    ).toBeVisible()
     expect(screen.queryByRole("button", { name: /Not assessed \d/ })).not.toBeInTheDocument()
   })
 
@@ -648,11 +652,11 @@ describe("BurnChecksView grouping", { timeout: 15_000 }, () => {
     setWindowWidth(1400)
     const first = setup(target, true)
 
-    expect(await screen.findByText(/At least 1 affected MCP server$/)).toBeVisible()
+    expect(await screen.findByText(/At least 1 affected tool server$/)).toBeVisible()
     first.view.unmount()
 
     setup(target)
-    expect(await screen.findByText(/1 affected MCP server$/)).toBeVisible()
+    expect(await screen.findByText(/1 affected tool server$/)).toBeVisible()
   })
 
   it("uses report session totals when named targets share bounded samples", async () => {
@@ -666,8 +670,8 @@ describe("BurnChecksView grouping", { timeout: 15_000 }, () => {
       },
     )
 
-    const resources = await screen.findByText(/At least 2 affected MCP servers$/)
-    expect(resources).toHaveTextContent("At least 2 affected MCP servers")
+    const resources = await screen.findByText(/At least 2 affected tool servers$/)
+    expect(resources).toHaveTextContent("At least 2 affected tool servers")
     expect(screen.queryByText("23 sessions affected")).not.toBeInTheDocument()
     expect(screen.getByRole("region", { name: "Burn check details" })).toHaveTextContent(
       "23 failed",

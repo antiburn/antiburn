@@ -8,6 +8,58 @@ use rusqlite::{Connection, params};
 
 use super::{SessionKey, SourceFormat};
 
+const MAX_METADATA_BYTES: usize = 128 * 1024;
+const MAX_CONTEXT_BYTES: usize = 16 * 1024 * 1024;
+
+pub(super) fn untrusted_user_parts(
+    connection: &Connection,
+    key: &SessionKey,
+    fence: i64,
+    format: SourceFormat,
+) -> rusqlite::Result<std::collections::BTreeSet<(u64, u32)>> {
+    let mut statement = connection.prepare(
+        "SELECT t.turn_index, c.part_index FROM turn t
+         JOIN (SELECT turn_rowid, part_index, kind, authority, content,
+             CASE WHEN json_valid(normalized_fields_json) THEN normalized_fields_json
+                  ELSE '{}' END AS normalized_fields_json FROM turn_content) c
+           ON c.turn_rowid = t.rowid
+         WHERE t.environment_key = ?1 AND t.agent = ?2 AND t.session_id = ?3
+           AND t.claim_fence = ?4 AND t.scope = 'main'
+           AND c.kind = 'user' AND c.authority = 'user' AND (
+             json_extract(c.normalized_fields_json, '$.metadata.user_text_history.source_format') IS NOT ?5
+             OR json_extract(c.normalized_fields_json, '$.metadata.user_text_history.session_id') IS NOT ?3
+             OR json_extract(c.normalized_fields_json, '$.metadata.user_text_history.message_id') IS NOT COALESCE(t.uuid, t.message_id)
+             OR json_extract(c.normalized_fields_json, '$.metadata.user_text_history.revision') IS NOT 1
+             OR (?5 != 'open_code_sqlite_v2' AND NOT EXISTS (
+               SELECT 1 FROM json_each(c.normalized_fields_json, '$.metadata.bindings') b
+               WHERE json_extract(b.value, '$.field') = 'user_message'
+                 AND json_extract(b.value, '$.container') = 'record'
+                 AND json_extract(b.value, '$.native_record_id') = COALESCE(t.uuid, t.message_id)
+                 AND ((?5 = 'codex_rollout_jsonl' AND json_extract(b.value, '$.pointer') LIKE '/payload/content/%/text')
+                   OR (?5 IN ('claude_jsonl', 'pi_v3_jsonl') AND (
+                     json_extract(b.value, '$.pointer') = '/message/content'
+                     OR json_extract(b.value, '$.pointer') LIKE '/message/content/%/text')))
+                 AND json_extract(b.value, '$.start') >= 0
+                  AND json_extract(b.value, '$.end') <= ?6
+                 AND json_extract(b.value, '$.end') - json_extract(b.value, '$.start') = length(c.content)
+             )))",
+    )?;
+    let format = serde_json::to_value(format).expect("source format serializes");
+    statement
+        .query_map(
+            params![
+                key.environment_key,
+                key.agent,
+                key.session_id,
+                fence,
+                format.as_str().expect("source format string"),
+                MAX_CONTEXT_BYTES
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?
+        .collect()
+}
+
 pub(super) fn validate(
     connection: &Connection,
     key: &SessionKey,
@@ -16,7 +68,7 @@ pub(super) fn validate(
 ) -> rusqlite::Result<bool> {
     let mut statement = connection.prepare(
         "SELECT t.uuid, t.message_id,
-            CASE WHEN length(c.normalized_fields_json) <= 131072
+            CASE WHEN length(c.normalized_fields_json) <= ?6 AND json_valid(c.normalized_fields_json)
                 THEN json_extract(c.normalized_fields_json, '$.metadata') ELSE NULL END, c.truncated,
             CASE WHEN length(c.content) <= ?5 THEN c.content ELSE NULL END,
             t.source_key, t.thread_id, t.turn_index, c.part_index, t.role
@@ -30,7 +82,8 @@ pub(super) fn validate(
         key.agent,
         key.session_id,
         fence,
-        antiburn_local::analysis::MAX_CONTENT_PART_BYTES
+        antiburn_local::analysis::MAX_CONTENT_PART_BYTES,
+        MAX_METADATA_BYTES
     ])?;
     let mut count = 0;
     let mut retained_bytes = 0;
@@ -46,7 +99,7 @@ pub(super) fn validate(
         let content: Option<Vec<u8>> = row.get(4)?;
         retained_bytes +=
             metadata.as_ref().map_or(0, String::len) + content.as_ref().map_or(0, Vec::len);
-        if truncated || retained_bytes > 16 * 1024 * 1024 {
+        if truncated || retained_bytes > MAX_CONTEXT_BYTES {
             return Ok(false);
         }
         let Some(metadata) = metadata

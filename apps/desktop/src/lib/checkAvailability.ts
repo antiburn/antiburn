@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "./tauriEvents"
 
-import { createExternalStore } from "./externalStore"
 import { hasShell } from "./ipc"
 import type { BurnCheckDetectorId } from "./insightsIpc"
 import { CHECK_DEFINITIONS } from "./presentation/checkDefinitions"
@@ -34,6 +33,8 @@ export type CheckAvailability = {
     completed: number
     skipped: number
     failed: number
+    reviewed: number
+    eligibleItems: number
   }
 }
 
@@ -71,6 +72,8 @@ export const emptyCheckAvailability: CheckAvailability = {
     completed: 0,
     skipped: 0,
     failed: 0,
+    reviewed: 0,
+    eligibleItems: 0,
   },
 }
 
@@ -113,23 +116,6 @@ export async function runCheckBackfill(): Promise<{
 }> {
   return invoke<{ queued: number; availability: CheckAvailability }>("run_check_backfill")
 }
-
-/** The complete availability snapshot for consumers such as Overview counts.
- * Events and mutation responses carry a backend revision so older snapshots
- * cannot undo a newer preference on screen. */
-export const checkAvailabilityStore = createExternalStore<CheckAvailability>({
-  initial: emptyCheckAvailability,
-  load: getCheckAvailability,
-  subscribe: (set) =>
-    onCheckAvailabilityChanged((event) => {
-      if (
-        event.status === "updated" &&
-        event.snapshot.revision >= checkAvailabilityStore.getSnapshot().revision
-      ) {
-        set(event.snapshot)
-      }
-    }),
-})
 
 export function onCheckAvailabilityChanged(
   callback: (event: CheckAvailabilityEvent) => void,

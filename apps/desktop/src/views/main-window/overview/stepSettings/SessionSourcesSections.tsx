@@ -1,6 +1,7 @@
 import { FolderPlus, RefreshCw, X } from "lucide-react"
 import { useCallback, useSyncExternalStore, type ReactNode } from "react"
 
+import { pluralize } from "../../../../lib/presentation/text"
 import { LocalRepositoryList } from "../../../../components/repositories/LocalRepositoryList"
 import { ToggleListIntro } from "../../../../components/ui/ToggleList"
 import { Card } from "../../../../components/ui/Card"
@@ -13,10 +14,10 @@ import { scanStatusStore, withKnownAgents } from "../../../../lib/scanStatusStor
 import type { LocalRepositoryItem } from "../../../../lib/types/repository"
 import { scanStatusLabel } from "../../../popover/ScanStatusBar"
 import {
-  StepSettingsRow,
-  StepSettingsSectionGroup,
-  StepSettingsToggleRow,
-} from "./StepSettingsSearchRows"
+  SettingsRow,
+  SettingsSectionGroup,
+  SettingsToggleRow,
+} from "../../../settings/SettingsSearchRows"
 import type { AppSettingsController } from "../../../settings/useAppSettings"
 
 /**
@@ -34,7 +35,7 @@ export function MonitoringSection({
   return (
     <SectionGroup title="Monitoring">
       <Card>
-        <StepSettingsToggleRow
+        <SettingsToggleRow
           searchId="monitoring"
           description="This option allows antiburn to read your session files in the background while you work. If you turn it off then they will only be read while the app or menu bar dropdown are open."
           checked={!settings.discoveryPaused}
@@ -83,7 +84,7 @@ export function ScanningSection({ discoveryPaused }: { discoveryPaused: boolean 
   return (
     <SectionGroup title="Scanning">
       <Card>
-        <StepSettingsRow
+        <SettingsRow
           searchId="sourceScanning"
           trailing={
             <PushButton
@@ -100,8 +101,8 @@ export function ScanningSection({ discoveryPaused }: { discoveryPaused: boolean 
             Sessions from the last 30 days. antiburn checks these every 5 minutes and when files
             change.
           </ScanRowText>
-        </StepSettingsRow>
-        <StepSettingsRow
+        </SettingsRow>
+        <SettingsRow
           searchId="historicalScan"
           trailing={
             historyPassRunning ? (
@@ -120,7 +121,7 @@ export function ScanningSection({ discoveryPaused }: { discoveryPaused: boolean 
             Sessions older than 30 days, as far back as Keep session data allows. Read once
             after setup.
           </ScanRowText>
-        </StepSettingsRow>
+        </SettingsRow>
       </Card>
     </SectionGroup>
   )
@@ -146,13 +147,13 @@ export function ScanFoldersSection({
   onRemoveFolder: (path: string) => void
 }) {
   return (
-    <StepSettingsSectionGroup
+    <SettingsSectionGroup
       searchId="sourceFolders"
       trailing={
         <StatusText tone="secondary">
           {scanRoots.length === 0
             ? "Defaults only"
-            : `${scanRoots.length} extra ${scanRoots.length === 1 ? "folder" : "folders"}`}
+            : `${scanRoots.length} extra ${pluralize(scanRoots.length, "folder", "folders")}`}
         </StatusText>
       }
     >
@@ -191,7 +192,7 @@ export function ScanFoldersSection({
           </PushButton>
         </div>
       </Card>
-    </StepSettingsSectionGroup>
+    </SettingsSectionGroup>
   )
 }
 
@@ -212,7 +213,7 @@ export function RepositoriesSection({
   onIncludeNonRepoFoldersChange: (next: boolean) => void
 }) {
   return (
-    <StepSettingsSectionGroup searchId="sourceRepositories">
+    <SettingsSectionGroup searchId="sourceRepositories">
       <Card>
         <ToggleListIntro>
           Switching off a repository deletes the sessions read from it and stops reading new
@@ -228,13 +229,13 @@ export function RepositoriesSection({
         </div>
       </Card>
       <Card>
-        <StepSettingsToggleRow
+        <SettingsToggleRow
           searchId="sourceNonRepoFolders"
           description="Counts sessions started in a folder that isn't a repository. Burn checks still need a repository."
           checked={includeNonRepoFolders}
           onChange={onIncludeNonRepoFoldersChange}
         />
       </Card>
-    </StepSettingsSectionGroup>
+    </SettingsSectionGroup>
   )
 }

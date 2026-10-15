@@ -62,6 +62,7 @@ fn load(
     store.load_session_scope(
         &SessionKey::new(environment, "claude-code", "scope"),
         ScopeLoadRequest {
+            untrusted_user_parts: Default::default(),
             source_format: SourceFormat::ClaudeJsonl,
             boundary: SessionScopeBoundary {
                 source_key: "transcript".into(),
@@ -79,14 +80,16 @@ fn load(
 }
 
 #[test]
-fn full_paging_keeps_pre_enablement_context_and_environment_boundaries() {
+fn full_paging_samples_recent_context_with_environment_boundaries() {
     let store = fixture();
     for environment in ["native", "wsl:synthetic", "remote:synthetic"] {
         let scope = load(&store, environment, 4, 3, true).unwrap();
-        assert_eq!(scope.occurrences().len(), 599);
-        assert_eq!(
-            scope.values()[0],
-            format!("{environment}: instruction 0\n  Do not delete.")
+        assert!(!scope.occurrences().is_empty());
+        assert!(scope.occurrences().len() <= 128);
+        assert!(
+            scope
+                .limitations()
+                .contains(&ScopeMissingReason::AssemblyLimitReached)
         );
         assert_eq!(
             scope.occurrences().last().unwrap().reference.turn_index,
@@ -117,15 +120,19 @@ fn stale_publication_generation_cannot_supply_scope() {
         )))
     ));
     let partial = load(&store, "native", 4, 3, false).unwrap();
-    assert_eq!(partial.occurrences().len(), 599);
-    assert_eq!(
-        partial.limitations(),
-        &[ScopeMissingReason::IncompleteSource]
+    assert!(!partial.occurrences().is_empty());
+    assert!(partial.occurrences().len() <= 128);
+    assert!(
+        partial
+            .limitations()
+            .contains(&ScopeMissingReason::IncompleteSource)
     );
-    assert_eq!(
-        partial.scope_creep_context().unwrap().fields["limitations"],
-        serde_json::json!(["IncompleteSource"])
+    assert!(
+        partial
+            .limitations()
+            .contains(&ScopeMissingReason::AssemblyLimitReached)
     );
+    assert!(partial.scope_creep_context().is_ok());
 }
 
 #[test]
@@ -151,7 +158,8 @@ fn ordinary_edit_and_tool_result_boundaries_need_no_selected_body() {
             .unwrap();
         }
         let snapshot = load(&store, "native", 4, 3, true).unwrap();
-        assert_eq!(snapshot.occurrences().len(), 598);
+        assert!(!snapshot.occurrences().is_empty());
+        assert!(snapshot.occurrences().len() <= 128);
         assert_eq!(
             snapshot.occurrences().last().unwrap().reference.turn_index,
             597
@@ -199,6 +207,7 @@ fn scoped_query_excludes_oversized_siblings_and_post_boundary_before_coverage() 
         .load_session_scope(
             &SessionKey::new("native", "claude-code", "scope"),
             ScopeLoadRequest {
+                untrusted_user_parts: Default::default(),
                 source_format: SourceFormat::ClaudeJsonl,
                 boundary,
                 publication_fence: 4,
@@ -208,20 +217,21 @@ fn scoped_query_excludes_oversized_siblings_and_post_boundary_before_coverage() 
             },
         )
         .unwrap();
-    assert_eq!(snapshot.occurrences().len(), 597);
+    assert!(!snapshot.occurrences().is_empty());
+    assert!(snapshot.occurrences().len() <= 128);
     assert!(
         snapshot
             .values()
             .iter()
             .all(|value| value.as_str().unwrap().len() < 100)
     );
-    // In-branch oversized evidence still fails. Counters are not discarded.
-    assert!(matches!(
-        load(&store, "native", 4, 3, true),
-        Err(ScopeLoadError::Scope(SessionScopeError::Missing(
-            ScopeMissingReason::TruncatedEvidence
-        )))
-    ));
+    let partial = load(&store, "native", 4, 3, true).unwrap();
+    assert!(
+        partial
+            .limitations()
+            .contains(&ScopeMissingReason::TruncatedEvidence)
+    );
+    assert_eq!(partial.occurrences(), snapshot.occurrences());
 }
 
 #[test]
@@ -281,10 +291,11 @@ fn partial_scope_keeps_intact_context_despite_a_truncated_sibling() {
         )
         .unwrap();
     let partial = load(&store, "native", 4, 3, false).unwrap();
-    assert_eq!(partial.occurrences().len(), 598);
+    assert!(!partial.occurrences().is_empty());
+    assert!(partial.occurrences().len() <= 128);
     assert_eq!(
-        partial.values()[0],
-        "native: instruction 0\n  Do not delete."
+        partial.occurrences().last().unwrap().reference.turn_index,
+        598
     );
     assert!(
         partial
@@ -384,7 +395,8 @@ fn partial_scope_excludes_private_thinking_from_model_context() {
         )
         .unwrap();
     let partial = load(&store, "native", 4, 3, false).unwrap();
-    assert_eq!(partial.occurrences().len(), 598);
+    assert!(!partial.occurrences().is_empty());
+    assert!(partial.occurrences().len() <= 128);
     let context = partial.scope_creep_context().unwrap();
     assert!(
         !serde_json::to_string(&context.fields)

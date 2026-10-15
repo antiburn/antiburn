@@ -112,9 +112,20 @@ jobs:
             echo "Release gate: [successful main run](${RUN_URL}) for \`${SHA}\`."
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # Advisories change without a code change, so the release checks them
+  # again before it packages anything. The engine tarball does not contain
+  # the desktop app, so the desktop checks stay off.
+  dependency-checks:
+    name: Dependency checks
+    needs: verify
+    uses: ./.github/workflows/dependency-checks.yml
+    with:
+      advisories: true
+      desktop: false
+
   package:
     name: Package and draft
-    needs: [verify, trusted-main-ci]
+    needs: [verify, trusted-main-ci, dependency-checks]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -176,6 +187,8 @@ jobs:
           tar --list --file "dist/${name}.tar.gz" > "${RUNNER_TEMP}/tarball-listing.txt"
           head -n 20 "${RUNNER_TEMP}/tarball-listing.txt"
 
+      # Main CI tests the repository tree. This step proves that the packaged
+      # tarball builds and passes its tests without the rest of the tree.
       - name: Test the extracted source archive
         env:
           VERSION: ${{ needs.verify.outputs.version }}
@@ -184,7 +197,7 @@ jobs:
           archive_test=$(mktemp -d "${RUNNER_TEMP}/engine-archive-test.XXXXXX")
           tar -xzf "dist/antiburn-local-${VERSION}.tar.gz" -C "$archive_test"
           cd "$archive_test/antiburn-local-${VERSION}"
-          cargo test --locked
+          cargo test --locked -- --test-threads=1
 
       - name: Inventory the engine dependency tree
         env:

@@ -40,6 +40,44 @@ pub struct ReadObservation {
     pub result: Option<JevReadResult>,
 }
 
+pub fn has_known_returned_extent(result: &JevReadResult) -> bool {
+    result.returned_extent.as_ref().is_some_and(|extent| {
+        extent.unit != crate::analysis::jev_evidence::JevReadUnit::Unknown
+            && extent
+                .offset
+                .zip(extent.end_inclusive)
+                .is_some_and(|(start, end)| start <= end)
+    })
+}
+
+pub(super) fn read_starts_at_file_beginning(result: &JevReadResult) -> bool {
+    use crate::analysis::jev_evidence::JevReadUnit;
+    result
+        .returned_extent
+        .as_ref()
+        .is_some_and(|extent| match extent.unit {
+            JevReadUnit::Lines => extent.offset == Some(1),
+            JevReadUnit::Bytes => extent.offset == Some(0),
+            JevReadUnit::Unknown => false,
+        })
+}
+
+pub(super) fn task_context_is_complete(task: &JevSharedRequestContext) -> bool {
+    task.evidence.iter().any(|reference| {
+        reference.role == JevEvidenceRole::Instruction && reference.content_kind == "UserMessage"
+    }) && task.fields["values"]
+        .as_array()
+        .and_then(|values| values.first())
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty())
+        && task.fields["partial"] == false
+        && task.fields["antecedent_context_omitted"] == false
+        && task.fields["limitations"]
+            .as_array()
+            .is_some_and(|limits| limits.is_empty())
+        && serde_json::to_vec(&task.fields).is_ok_and(|bytes| bytes.len() <= 384)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvestigationEpisode {
     pub id: StableId,
@@ -79,6 +117,7 @@ pub fn build_episodes(
         return Err(JevError::InvalidCheckContext);
     }
     let actions = &content.actions;
+    let mut limitations = content.limitations.clone();
     let mut action_bytes = 0usize;
     for action in actions {
         if action.text.len() > MAX_INPUT_BYTES {
@@ -102,8 +141,7 @@ pub fn build_episodes(
         )
     });
     for action in actions {
-        if !action.reference.stable
-            || !ids.insert(&action.reference.id)
+        if !ids.insert(&action.reference.id)
             || Some((
                 &action.reference.source_key_digest,
                 &action.reference.thread_digest,
@@ -133,7 +171,7 @@ pub fn build_episodes(
                 item.reference.id == action.reference.id && item.authority == ScopeAuthority::User
             })
     }) {
-        return Err(JevError::InvalidCheckContext);
+        limitations.push("task_record_not_retained".into());
     }
     let mut episodes = Vec::new();
     let mut previous_end = None;
@@ -160,8 +198,14 @@ pub fn build_episodes(
             let Some(request) = &event.metadata.read_request else {
                 continue;
             };
-            if request.reference_id != event.reference.id || event.kind != "tool_input" {
-                return Err(JevError::InvalidCheckContext);
+            if request.reference_id != event.reference.id
+                || event.kind != "tool_input"
+                || !event.reference.stable
+                || request.paths.len() != 1
+            {
+                limitations.push("read_request_unavailable".into());
+                covered_requests.insert(request.reference_id.clone());
+                continue;
             }
             covered_requests.insert(request.reference_id.clone());
             let matches: Vec<_> = events
@@ -172,17 +216,22 @@ pub fn build_episodes(
                     })
                 })
                 .collect();
+            let mut matched = if matches.len() == 1 {
+                matches.first().copied()
+            } else {
+                None
+            };
             if matches.len() > 1 {
-                return Err(JevError::InvalidCheckContext);
+                limitations.push("read_result_ambiguous".into());
             }
-            let matched = matches.first().copied();
             if let Some(result) = matched {
                 let read = result
                     .metadata
                     .read_result
                     .as_ref()
                     .ok_or(JevError::InvalidCheckContext)?;
-                if result.kind != "tool_result"
+                if !result.reference.stable
+                    || result.kind != "tool_result"
                     || read.reference_id != result.reference.id
                     || result.tool_call_id.is_none()
                     || result.tool_call_id != event.tool_call_id
@@ -193,7 +242,8 @@ pub fn build_episodes(
                         != u64::try_from(result.text.len())
                             .map_err(|_| JevError::InvalidCheckContext)?
                 {
-                    return Err(JevError::InvalidCheckContext);
+                    limitations.push("read_result_binding_invalid".into());
+                    matched = None;
                 }
             }
             reads.push(ReadObservation {
@@ -255,7 +305,7 @@ pub fn build_episodes(
         task_context,
         task_contexts,
         events: actions.clone(),
-        limitations: content.limitations.clone(),
+        limitations,
         episodes,
         complete: content.complete,
     };

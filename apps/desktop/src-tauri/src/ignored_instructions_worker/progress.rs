@@ -399,11 +399,16 @@ mod tests {
                 turn_role: "assistant".into(),
                 turn_scope: "main".into(),
                 authority: "assistant".into(),
-                kind: "assistant_text".into(),
-                text: "Published without validation.".into(),
-                tool_name: None,
-                tool_call_id: None,
-                normalized_fields: None,
+                kind: "tool_input".into(),
+                text: "npm publish".into(),
+                tool_name: Some("Bash".into()),
+                tool_call_id: Some(format!("publish-{index}")),
+                normalized_fields: antiburn_local::analysis::ContentPart::new(
+                    antiburn_local::analysis::ContentKind::ToolInput,
+                    "npm publish".to_owned(),
+                )
+                .with_tool_identity(Some("Bash".to_owned()), Some(format!("publish-{index}")))
+                .normalized_fields,
                 metadata: Default::default(),
                 truncated: false,
                 context_only: false,
@@ -419,7 +424,7 @@ mod tests {
                 instructions: vec![
                     snapshot_from_text(
                         "AGENTS.md",
-                        "Request validation before publishing.".into(),
+                        "Do not request `npm publish`.".into(),
                         InstructionProvenance::RecordedInjection,
                         InstructionScope::Project,
                     )
@@ -457,7 +462,7 @@ mod tests {
                     role: action.turn_role.clone(),
                     kind: action.kind.clone(),
                     timestamp_ms: action.timestamp_ms,
-                    tool_name: None,
+                    tool_name: action.tool_name.clone(),
                     text: action.text.clone(),
                     truncated: false,
                 })

@@ -1,17 +1,19 @@
 # Over Exploring diagnostics
 
-`development` covers unrelated files, unnecessary file breadth, unnecessary
-within-file extent, near negatives, requested review, protocol literals, and
+`development` covers repeated identical outputs, clearly unrelated sampled
+reads, explicit verification, relevant dependencies, near negatives, and
 authority/evidence controls. `controls` retains additional semantic contrasts
-from the former confirmation examples. Both suites are reusable prompt tests.
+for those two supported reasons. Both suites are reusable prompt tests.
 
 ```sh
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --offline --test over_exploring
 ANTIBURN_EVAL_LIMIT=5 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --offline --test over_exploring live -- --ignored --exact --nocapture --test-threads=1
 ```
 
-Reports show overall and per-reason exact outcome/read-binding scores,
-abstentions, clean decisions, errors, and usage. They do not assert an accuracy
-floor. Production probability and evidence requirements remain in the engine.
+Cases record the expected semantic decision, exact source bindings, and policy
+admission separately. Admission comes from the production selector. Reports
+expose outcome and binding correctness, plus unsupported and policy-limited
+counts. Reports do not assert an accuracy floor. Production probability and
+evidence requirements remain in the engine.
 Offline native tests characterize source-specific read facts separately from
 model diagnostics. See `../README.md` for common selection and provider options.

@@ -100,6 +100,7 @@ fn causes() -> Vec<FindingCause> {
             },
         )),
         FindingCause::ScopeCreep(Box::new(crate::checks::scope_creep::ScopeCreepFinding {
+            explanation_basis: None,
             id: "scope-finding".into(),
             group_id: "work-group".into(),
             work: Vec::new(),
@@ -131,6 +132,7 @@ fn causes() -> Vec<FindingCause> {
             ),
             outcome: crate::checks::over_exploring::SemanticOutcome::LikelyExcess,
             probability: 0.9,
+            explanation: None,
         })),
     ]
 }
@@ -157,7 +159,7 @@ fn over_exploring_constructor_validates_choice_probability_and_optional_result_p
     decision.source_evidence = vec![reference];
     decision.reads[0].result_id = None;
     decision.reads[0].output_digest = None;
-    decision.probability = 0.75;
+    decision.probability = 0.95;
     let finding = Finding::over_exploring(&evidence, &decision).unwrap();
     let prompt = remediation_prompt(&finding).unwrap();
     assert!(
@@ -166,11 +168,11 @@ fn over_exploring_constructor_validates_choice_probability_and_optional_result_p
             .contains("A request alone does not prove returned content")
     );
     assert!(prompt.as_str().contains("representative text ranges"));
-    for probability in [0.749, f64::NAN, f64::INFINITY, 1.001] {
+    for probability in [0.949, f64::NAN, f64::INFINITY, 1.001] {
         decision.probability = probability;
         assert!(Finding::over_exploring(&evidence, &decision).is_none());
     }
-    decision.probability = 0.9;
+    decision.probability = 0.95;
     for outcome in [
         SemanticOutcome::JustifiedOrMinor,
         SemanticOutcome::Uncertain,
@@ -212,7 +214,7 @@ fn scope_constructor_bounds_probability_and_prompt_distinguishes_proposals() {
         },
         digest: "work-digest".into(),
     });
-    for probability in [0.75, 1.0] {
+    for probability in [0.95, 1.0] {
         scope.decision_probability = probability;
         assert!(
             Finding::scope_creep(&evidence, &scope).is_some(),
@@ -224,13 +226,13 @@ fn scope_constructor_bounds_probability_and_prompt_distinguishes_proposals() {
         f64::INFINITY,
         f64::NEG_INFINITY,
         -0.1,
-        0.749,
+        0.949,
         1.001,
     ] {
         scope.decision_probability = probability;
         assert!(Finding::scope_creep(&evidence, &scope).is_none());
     }
-    scope.decision_probability = 0.9;
+    scope.decision_probability = 0.95;
     for (kind, verb) in [
         (WorkObservationKind::Attempt, "Attempts"),
         (WorkObservationKind::Proposal, "Proposes"),

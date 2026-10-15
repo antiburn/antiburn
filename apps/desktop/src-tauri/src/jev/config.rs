@@ -1,6 +1,6 @@
 use antiburn_local::analysis::jev::PINNED_MODEL;
 use antiburn_local::analysis::jev::capabilities::{
-    CapabilityLimit, ModelCapabilities, ModelLimitOverride,
+    CapabilityLimit, CapabilitySource, ModelCapabilities, ModelLimitOverride,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -169,13 +169,15 @@ impl SystemOneConnection {
             _ => Err(ConnectionValidationError::ProviderEndpointMismatch),
         }?;
         let capabilities = self.resolved_capabilities();
-        if !capabilities
+        let limits_invalid = capabilities
             .usable_input_tokens()
-            .is_some_and(|tokens| tokens > 0)
-            || !capabilities
+            .is_some_and(|tokens| tokens == 0)
+            || capabilities
                 .usable_state_tokens()
-                .is_some_and(|tokens| tokens > 0)
-        {
+                .is_some_and(|tokens| tokens == 0);
+        let limits_missing = capabilities.usable_input_tokens().is_none()
+            || capabilities.usable_state_tokens().is_none();
+        if limits_invalid || (self.provider != SystemOneProvider::Ollama && limits_missing) {
             return Err(ConnectionValidationError::InvalidContextOverride);
         }
         Ok(())
@@ -219,11 +221,6 @@ impl SystemOneConnection {
                 limits.state_and_longest_question_tokens = CapabilityLimit::unknown();
                 limits.runtime_context_tokens = CapabilityLimit::unknown();
                 if self.provider == SystemOneProvider::Ollama {
-                    use antiburn_local::analysis::jev::capabilities::CapabilitySource;
-                    limits.total_input_tokens =
-                        CapabilityLimit::known(8192, CapabilitySource::DocumentedDefault);
-                    limits.runtime_context_tokens =
-                        CapabilityLimit::known(8192, CapabilitySource::DocumentedDefault);
                     limits.rendering_reserve_tokens = 1024;
                     limits.request_body_bytes = CapabilityLimit::known(
                         OLLAMA_MAX_REQUEST_BODY_BYTES as u64,
@@ -505,8 +502,8 @@ mod tests {
         connection.endpoint = SystemOneEndpoint::BaseUrl("http://localhost:11434".into());
         connection.context_override = None;
         let capabilities = connection.capabilities().unwrap();
-        assert_eq!(capabilities.usable_input_tokens(), Some(7168));
-        assert_eq!(capabilities.usable_state_tokens(), Some(7168));
+        assert_eq!(capabilities.usable_input_tokens(), None);
+        assert_eq!(capabilities.usable_state_tokens(), None);
         connection.context_override = Some(ContextLimitOverride {
             total_input_tokens: Some(1024),
             ..ContextLimitOverride::default()
@@ -648,5 +645,50 @@ mod tests {
             too_large.validate(),
             Err(ConnectionValidationError::InvalidContextOverride)
         );
+    }
+    #[test]
+    fn ollama_connection_can_save_unknown_limits_and_manual_limits_keep_their_source() {
+        use antiburn_local::analysis::jev::capabilities::{CapabilityLimit, ModelCapabilities};
+
+        let mut connection = SystemOneConnection {
+            provider: SystemOneProvider::Ollama,
+            endpoint: SystemOneEndpoint::BaseUrl("http://localhost:11434".into()),
+            model: "tev1:0.8b".into(),
+            credential: None,
+            context_override: None,
+            ..SystemOneConnection::default()
+        };
+        assert_eq!(connection.validate(), Ok(()));
+        let unknown = connection.capabilities().unwrap();
+        assert_eq!(unknown.total_input_tokens, CapabilityLimit::unknown());
+        assert_eq!(unknown.runtime_context_tokens, CapabilityLimit::unknown());
+        connection.context_override = Some(ContextLimitOverride {
+            total_input_tokens: Some(2048),
+            ..ContextLimitOverride::default()
+        });
+        let manual = connection.capabilities().unwrap();
+        assert_eq!(manual.total_input_tokens.source, CapabilitySource::Manual);
+        assert_eq!(manual.usable_input_tokens(), Some(1024));
+        assert_eq!(manual.usable_state_tokens(), Some(1024));
+        assert_eq!(manual.runtime_context_tokens, CapabilityLimit::unknown());
+        let discovered = ModelCapabilities {
+            total_input_tokens: CapabilityLimit::known(2050, CapabilitySource::RuntimeMetadata),
+            state_and_longest_question_tokens: CapabilityLimit::known(
+                2050,
+                CapabilitySource::RuntimeMetadata,
+            ),
+            runtime_context_tokens: CapabilityLimit::known(2050, CapabilitySource::RuntimeMetadata),
+            ..unknown
+        };
+        let lower = connection.apply_capability_overrides(discovered.clone());
+        assert_eq!(lower.usable_input_tokens(), Some(1024));
+        assert_eq!(lower.runtime_context_tokens.value, Some(2050));
+        connection
+            .context_override
+            .as_mut()
+            .unwrap()
+            .total_input_tokens = Some(8192);
+        let bounded = connection.apply_capability_overrides(discovered);
+        assert_eq!(bounded.total_input_tokens.value, Some(2050));
     }
 }

@@ -1,3 +1,4 @@
+import { pluralize } from "./text"
 import type {
   InsightsNotAssessedReason,
   SessionHygieneBadgeId,
@@ -80,9 +81,9 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
     "No scope creep in assessed work",
     "Scope creep found",
     "Scope creep not assessed",
-    "Some assessed work went outside the agreed task.",
+    "Selected performed work adds a substantial separate objective.",
     ["Keep future work within the agreed task. Ask for approval before adding work."],
-    "Finds extra work outside the agreed task using recorded scope and approval evidence from accepted OpenCode, Codex, Claude Code, and Pi sessions. Incomplete or unproven scope cannot establish approval.",
+    "Compares selected performed work with the recorded task and authorization. Missing authority or outcome evidence leaves the work unassessed.",
     true,
   ),
   defineHygieneCheck(
@@ -158,12 +159,12 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
   defineHygieneCheck(
     "ignoredInstructions",
     "Ignored instructions",
-    "Instructions followed",
-    "Instructions ignored",
+    "No instruction conflict in assessed work",
+    "Instruction conflict found",
     "Instructions not assessed",
-    "Instructions were ignored in this session.",
-    ["Follow the cited instruction and correct the affected work."],
-    "Some sessions didn't follow your agent instruction files properly.",
+    "A selected action directly conflicts with the cited current rule.",
+    ["Review the current rule and its exceptions before similar future work."],
+    "Compares selected actions with complete current rules. Current files do not prove which rules applied during older work.",
     true,
   ),
   defineHygieneCheck(
@@ -172,9 +173,9 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
     "No skill opportunity in assessed work",
     "Skill opportunity found",
     "Skill opportunities not assessed",
-    "Assessed work matches a skill in your current inventory.",
+    "A current skill procedure could add concrete guidance to the selected workflow.",
     ["Use this current skill for similar future work."],
-    "Compares selected work with current skills. Current inventory does not prove past availability.",
+    "Compares one selected workflow with a complete current skill procedure. Current inventory does not prove past availability or whole-session non-use.",
     true,
   ),
   defineHygieneCheck(
@@ -183,9 +184,9 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
     "No over-exploring in assessed work",
     "Over-exploring found",
     "Over-exploring not assessed",
-    "Some assessed reads went beyond what the work needed.",
-    ["Read only the files and sections needed for future work."],
-    "Checks selected reads for unrelated files, excess file breadth, and excess reading within a file.",
+    "Selected reads repeat recorded output or suggest a purpose separate from the task.",
+    ["Reuse earlier read results when useful. Explain the purpose of supporting reads."],
+    "Checks selected substantial reads for identical recorded output or a clearly separate purpose. Samples do not prove whole-file irrelevance or exact savings.",
     true,
   ),
 ]
@@ -262,6 +263,15 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
         ink: "system-green" as const,
       }
     }
+    if (badge.status === "noCandidates") {
+      return {
+        ...badge,
+        title: `${definition.name} · No matching work`,
+        name: definition.name,
+        detail: null,
+        ink: "label-tertiary" as const,
+      }
+    }
     if (badge.status === "checking" || badge.status === "couldntCheck") {
       return {
         ...badge,
@@ -298,6 +308,13 @@ export function sessionHygieneDocumentation(
   check: SessionHygieneCheck,
 ): SessionHygieneDocumentation {
   const definition = CHECKS.find((candidate) => candidate.id === check.id)!
+  if (check.status === "noCandidates") {
+    return {
+      summary: "No comparisons are available for this check in the recorded work.",
+      findingDetails: [],
+      guidance: [],
+    }
+  }
   const guidance = check.detail ? [check.detail, ...definition.guidance] : definition.guidance
   return {
     summary: definition.summary,
@@ -307,7 +324,7 @@ export function sessionHygieneDocumentation(
 }
 
 function readableCount(value: number, noun: string): string {
-  return `${value.toLocaleString()} ${value === 1 ? noun : `${noun}s`}`
+  return `${value.toLocaleString()} ${pluralize(value, noun, `${noun}s`)}`
 }
 
 function readableModels(models: readonly string[]): string {

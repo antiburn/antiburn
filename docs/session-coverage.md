@@ -1,6 +1,6 @@
 # Session Parsing Coverage
 
-Audit date: 2026-10-08.
+Audit date: 2026-10-12.
 
 This document records how Antiburn discovers and parses local session sources.
 It covers source identity, framing, companion data, normalized facts, and
@@ -23,13 +23,16 @@ work, bounded reads, skill selection, and normalized human/result context.
 Scope Creep, Over-exploring, and Skill Opportunities reach the native desktop
 through these four accepted agent/source pairs:
 
-Over-exploring retains each source event once and uses indexes for investigation
-context. Its windows select bounded representative text ranges with explicit
-partial flags. Bound requests can support unrelated-file and file-breadth targets
-without a result. Within-file targets still require the characterized returned
-extents below. Missing results and incomplete sibling operations remain evidence
-limits; independent positive targets can still reach findings. A request citation
-does not prove returned content, file versions, or wasted tokens.
+Over-exploring consumes existing bound requests and successful complete results.
+Its compact policy selects redundant recorded-output runs or clearly irrelevant
+substantial reads, not general file breadth or first-read size. Repeats require
+the same path and compatible recorded context, known equal extents, full-output
+digest equality, earlier-result-before-later-request ordering, and no observed
+intervening work. At least 8 KiB of later output is required. Equality includes
+producer framing; it does not prove file versions or general cross-file body
+deduplication. Secondary irrelevant-read requests use a labeled sample of complete
+leading lines and a starts-at-file-beginning flag. Requests alone do not qualify.
+These narrower check gates do not add a native source shape or release range.
 
 - Claude Code / `ClaudeJsonl`: local CLI 2.1.278 accepted-log shape. The root is
   human text or the characterized informational prelude. Exact retained parent
@@ -65,8 +68,11 @@ does not prove returned content, file versions, or wasted tokens.
 
 These are bounded accepted shapes, not historical release ranges. The desktop
 validates the entire publication, source/session identity, order, scope, ranges,
-generation, and fence. Forks, conflicting root identities, invalid authority
-bindings, unsupported attachments, and stale publications remain unavailable.
+generation, and fence. Forks, unresolved branches, conflicting root identities,
+invalid session/source identities, and stale publications remain unavailable.
+Untrusted user parts and unknown context do not reject independent intact work;
+the scope loader omits unusable authority records and marks coverage partial.
+Unsupported attachments cannot supply authority or missing text.
 Accepted prefixes, detected compaction, missing retained history, child-attribution
 loss, and collection limits can retain intact root context with explicit limits.
 Truncated scope parts are omitted; their loss remains visible. Qualified
@@ -79,22 +85,31 @@ whole-session rejection for supported context gaps; it does not reconstruct lost
 records. Each check's reducer and publication policy determine whether a finding
 or scoped no-finding outcome is available from that partial input.
 
+Large sessions use lossy recent sampling at the production assembly boundary.
+Scope keeps at most 128 records and 32 KiB of selected scope fields, including a
+best-effort preceding user task. Activity keeps at most 2,048 selected parts and
+4 MiB, then prefers the latest task episode. Oversized parts are skipped.
+Investigation spans keep the latest 256 episodes. Size limits record omissions
+instead of rejecting the session. Retained records keep their exact source IDs.
+Sampling can miss evidence and reduce check quality, including returning no
+findings. A scoped clean result does not cover omitted history.
 Activity loading preserves intact selected events under bounded assembly limits.
 It records missing or ambiguous tool results, malformed selected inputs, clipped
 content, omitted events, and unfinished investigation context as limitations.
 Private thinking stays excluded. These limits do not supply missing approval,
 successful execution, or observed file extent.
 
-Scope Creep and Skill Opportunities preserve full immutable selected-work source
-bindings and digests. Only selected targets are prepared for provider requests.
-Large work values use at most four structural child fragments with explicit
-partial coverage; Scope Creep also samples large supporting activity. Each child
-has exact UTF-8 byte offsets and the observed total byte length. Coordinates refer
-to check-selected action text or the named normalized field, not bytes in native
-transcript JSON. Skill work citations bind the selected ranges to the full
-selected-action digest, so changes outside those ranges invalidate old citations.
-This provider-window sampling does not widen the accepted parser shapes or
-native source-format support listed above. It does not restore omitted records.
+Scope Creep and Skill Opportunities preserve immutable selected-work bindings
+and full selected-action digests. Only admitted targets become provider evidence.
+Scope Creep uses complete small recorded operations or meaningful edit units with
+valid path/hunk associations and bound outcomes. It cannot reconstruct historical
+before-content from the current checkout or guess lost multi-file patch bindings.
+Skill Opportunities requires intact anchored workflow steps and matched outcomes.
+Both require selected task evidence; missing task text is not a production
+Skill Opportunities finding path. Required authority and procedure units stay
+intact or the candidate is skipped. Local citations retain exact source ranges
+and revisions. These compact requests do not represent exhaustive history and
+cannot restore omitted records or widen accepted native formats.
 
 This source contract covers the current recorded root snapshot. Complete inputs
 preserve every retained authoritative user message. Partial inputs preserve only
@@ -232,15 +247,15 @@ records in that selected window. It never proves session-wide or equivalent-use
 absence. Existing aggregates remain inferred requests with unknown time/order
 and cannot prove absence.
 
-Skill Opportunities can retain a validated positive from partial selected work
-or unknown recorded-use absence. It binds current inventory and use revisions
-and does not infer completed work, past availability, or unused skills. A failed
-assessment can retain validated positive siblings without a clean result.
-Scope Creep labels selected work as an attempt or proposal and compares it with
-retained task context, including recorded approvals. Empty retained task context
-does not block a positive by itself and does not establish complete approval
-history or completed execution. These rules do not widen the accepted source
-shapes or versions.
+Skill Opportunities selects one current skill/workflow pair only with a complete
+anchored procedure, intact task/work, matched outcomes, and known relevant use
+context. Unknown use, ambiguous identity, or recorded exact/equivalent use blocks
+the pair. Current inventory and use revisions must match; these gates do not prove
+whole-session absence or historical availability. Scope Creep requires bound
+performed work, sufficient task/authorization history, and outcome evidence.
+Proposals alone, denied operations, unknown authority, and missing native bindings
+cannot support a performed-work finding. These check-owned gates do not widen
+the accepted source shapes or versions.
 
 Current skill discovery retains semantic YAML frontmatter and selected reference
 text within the existing native agent/project/environment boundary. A valid
@@ -249,14 +264,16 @@ change its revision. Missing, null, or blank descriptions and plain Markdown
 select the full Markdown instead, including frontmatter and body, and its text
 changes update the revision. Invalid YAML and non-string descriptions remain
 unsupported. Descriptions are capped at 16 KiB and frontmatter at 32 KiB.
-Large fallback text remains eligible: requests select at most four structural
-4 KiB chunks with exact byte ranges, total source bytes, and a partial flag.
+The compact check selects one complete anchored procedure of at most 512 bytes.
+A generic nonempty description with a useful body-only procedure is unavailable;
+the body is not a separate reference in that case. Ranges address decoded
+description text or normalized Markdown, not raw YAML/file bytes.
 Incomplete inventory retains admitted valid definitions with an explicit limit.
 Current report citations bind the selected reference source and ranges to the
 current definition revision; they do not require full fallback text equality.
 The 1 MiB inventory budget counts semantic frontmatter and bounded reference
-fields, not the unselected fallback suffix. Known used skills use the same
-selection and share reference text across comparisons in a request. Optional
+fields, not the unselected fallback suffix. Known-use evidence remains local to
+candidate validation. Optional
 creation time comes only from filesystem birth metadata, not modification or
 change time. Creation after the relevant work timestamp, including creation
 during an episode, remains an advisory limit, not a candidate exclusion.
@@ -445,9 +462,10 @@ at four levels, 128 directories, and 256 entries per directory. Content-derived
 digests bind the selected normalized messages, instruction snapshots, parser
 revision, and publication fence. A complete directory scan means only that the
 adapter finished its known paths; it does not establish historical activation.
-Markdown lists with more than 256 top-level items stay grouped as one rule
-block to avoid repeating shared context. Selection may leave some ranges from
-that block unchecked.
+Markdown structure uses the shared `pulldown-cmark` source-range helper. Complete
+rule units retain necessary ancestor and sibling qualifications. Syntax boundaries
+do not prove semantic completeness. Required scope that exceeds the compact budget
+is skipped rather than clipped into a partial authority claim.
 Leading YAML frontmatter is kept in the full source digest and attached to its
 rule sections instead of becoming a separate requirement. The section line
 ranges keep their original file line numbers. Agent adapters retain any
@@ -478,8 +496,7 @@ All six supported first-tier adapters discover the user-global `~/AGENTS.md` and
 applicable project `AGENTS.md` files in the session worktree in the same
 assessment. They also retain each agent's supported global and project
 instruction paths and override behavior. OpenCode additionally discovers
-`~/.config/opencode/AGENTS.md`. Sampling interleaves eligible rules by source,
-so one large file does not consume every early choice. Rule identity uses
+`~/.config/opencode/AGENTS.md`. Rule identity uses
 source, heading, and exact section text rather than line position; moving a
 rule does not split the same target, while global and project sources remain
 separate. The worker records an instruction digest and session source positions
@@ -488,28 +505,25 @@ actions only. The first observation cannot prove when it became active.
 
 The optional Ignored Instructions worker uses these bounded local inputs to
 prepare requests after the user enables Smart Burn Checks and configures a
-provider connection. It splits long rule text and non-command action text into overlapping
-byte ranges, then samples up to 8
-high-priority rule/action pairs per turn. Selection can omit lower-priority
-work, including range combinations. Word rarity, tool names, literal paths,
-prohibition/tool-input risk, and recency rank candidates. Choices spread across
-rules and sources and include low-overlap probes; none of these signals prove
-irrelevance. Later turns alternate risk-ranked new activity with older unchecked
-work across source chronology. The remaining gap decreases without new work and
-can grow after an append. Its input projection selects user and assistant text, Bash command
+provider connection. It selects at most two complete direct rule/action
+comparisons per snapshot, newest matched actions first. Concrete tool, command,
+or path anchors are eligibility hints, not conflict proof. Broad low-overlap
+probing, omissions, and completion deadlines are outside the compact scope.
+Required rules, conditions, exceptions, and actions must fit intact or remain
+unassessed. Policy-omitted comparisons do not become later pages of the same
+snapshot. Its input projection selects user and assistant text, Bash command
 input/output, file-edit paths, read-file paths, search queries with scope, and
 other tool inputs. Accepted human text and exact bound Bash results supply
 bounded context only. Human text needs normalized history proof and native
 source ranges. Bash commands stay atomic; commands that exceed the request
-limit remain unassessed. Rule targets retain bounded enclosing-section and
-ancestor text with exact source byte and line ranges. Large supporting text
-selects first, relevant, and last structural ranges within the context budget.
+limit remain unassessed. Rule targets retain necessary enclosing-section and
+ancestor context within the rule budget, with exact local source ranges.
 Results need a unique earlier selected call and matching source/thread/
 scope, name, call ID, ranges, digests, and completed/error status. Unknown-origin,
 synthetic, skill-document, conflicting, unmatched, and truncated evidence cannot
 establish human permission or successful tests. Edit content, read/search output,
 other results, typed question/plan fields, and thinking stay excluded.
-The provider receives bounded sampled ranges; durable pair
+The provider receives compact complete selected units; durable pair
 identities and typed answers allow compatible work to survive completed
 reviews, appends, and restarts. Reuse checks selected input, source binding,
 exact decision context, reference inputs, model/provider configuration, and check
@@ -531,21 +545,29 @@ path. Ignored Instructions supports `ClaudeJsonl`, `CodexRolloutJsonl`,
 `CursorChatStoreDb`, `CursorIdeComposer`, `AntigravityBrainJsonl`, and
 `AntigravitySqlite`. OpenCode JSONL and other Cursor and Antigravity formats
 are unavailable. Cursor store/composer sources retain normalized user and
-assistant text but may omit native tool inputs. Antigravity SQLite needs
+assistant text but do not supply typed tool anchors for compact direct-conflict
+candidates. Loader admission is not reachable finding support. Antigravity SQLite needs
 assessable companion transcript content.
 
-All four Smart Check descriptors initially target 50% of eligible targets, then
-continue remaining work. This is a target fraction, not model confidence or
-finding probability. The shared scheduler rotates across the four descriptors;
-four turns prefer initial review and the fifth prefers continuation. An empty
-preferred lane allows the other lane to run. Target limits per turn are 8 for
-Ignored Instructions, 4 for Scope Creep, 3 for Over-exploring, and 4 for Skill
-Opportunities, with at most two provider dispatch attempts per turn including
-retries. The Store persists finite attempt limits across turns and restarts.
-Only fully answered and successfully reduced targets count as reviewed. Private
-thinking remains excluded. Missing, unsupported, uncertain, exhausted, and
-failed evidence cannot establish Clean when the initial fraction is reached.
-These limits do not add accepted source formats or native evidence claims.
+The compact snapshot candidate caps are 2/2/3/1 for Ignored Instructions, Scope
+Creep, Over-exploring, and Skill Opportunities. Each check fits retained candidates
+into at most one logical request per snapshot, excluding finite transport retries.
+Zero qualifying candidates means zero calls. Capability-driven local reduction can
+shorten optional evidence; minimum valid evidence that cannot fit stays unassessed.
+Provider context rejection does not create child requests. Selection is
+nonexhaustive, and later turns do not drain policy-omitted candidates.
+
+The shared scheduler rotates across four descriptors; four turns prefer initial
+review and the fifth prefers continuation. An empty lane allows the other lane
+to run. The per-turn ceiling is eight provider dispatch attempts including retries.
+Continuation resumes admitted work, not omitted inventory. The Store persists
+finite attempts across turns and restarts. Compatible recovery preserves dispatched
+evidence and request identity and can reuse accepted answers before a new send.
+Only validated answers and successful reduction count as reviewed. Private thinking
+stays excluded. Missing, omitted, unsupported, uncertain, exhausted, and failed
+evidence cannot establish session-wide Clean. These limits do not add accepted
+source formats or native evidence claims. See the capability and request budgets
+in [Smart Burn Checks](smart-burn-checks.md#incremental-review-and-scheduling).
 
 The twelve-field source capability and Ignored Instructions selection matrix is
 maintained in [Smart Burn Checks selected-input coverage](smart-burn-checks.md#ignored-instructions-selected-input-coverage).
@@ -701,7 +723,7 @@ Newly discovered repositories remain enabled by default.
 | `OpenCodeJsonl`                | OpenCode      | Legacy exported session JSONL                                                                                           | Native persisted export or WSL CLI export; bounded JSONL with validated history wrappers/order                                                                                                                                                                               | Usage, time, models, provider/API fields where saved, task proof, selected skills, tools, compactions, session/message identities; cache episodes use validated order and distinct message IDs, with a five-minute default Anthropic lifetime unless a prior write records one-hour TTL evidence; that lifetime carries across hits, which refresh it at request start | Characterized accepted export; WSL is not disk-only; variant labels do not prove effort or speed; no resource inventory |
 | `OpenCodeSqliteV2`             | OpenCode      | `~/.local/share/opencode/opencode.db` or platform equivalent                                                            | Read-only transaction snapshot, including visible WAL rows; requires `session(id)`, `message(id,session_id,data)`, and `part(message_id,data)`; optional time/title/part-ID columns are handled for migration-era schemas; row-streamed content fingerprint; validated order | Native messages and parts, task metadata joined to child models, selected skills, usage, provider/API fields, compactions, identities, and tool errors as result content; cache episodes use validated order and distinct message IDs, with a five-minute default Anthropic lifetime unless a prior write records one-hour TTL evidence; that lifetime carries across hits, which refresh it at request start                        | Characterized table contract; missing requested sessions reject publication; not CoreV2 `session_message`               |
 | `PiV3Jsonl`                    | Pi            | `~/.pi/agent/sessions/**/*.jsonl`, `PI_AGENT_DIR`, or `PI_CODING_AGENT_DIR`                                              | Native discovery; version 1, 2, and 3 headers with the documented read-time migrations; bounded JSONL; resume supported                                                                                                                                                      | Usage at the nested request-start timestamp, top-level event time, provider/API/model, agent-selected thinking policy paired with positive same-record usage, branch/fork state, tools, links, compactions, cache hit/miss/recovery episodes on continuous native routes; empty zero-usage aborts update branch-local model/provider state but add no effort or token evidence; official example-extension nested worker results; default Anthropic cache lifetime is five minutes unless a prior write records one-hour TTL evidence; that lifetime carries across hits, which refresh it at request start | Characterized migrated core; bounded legacy migration overflow is partial; extension delegation is finding-only         |
-| `OmpV3Jsonl`                   | Oh My Pi      | `~/.omp/agent/sessions/**/*.jsonl`, renamed by `PI_CONFIG_DIR`, or a default-profile `PI_CODING_AGENT_DIR` inside the OMP root                                          | Native discovery; the fixed-width 256-byte `type: "title"` slot is dropped as the OMP prologue, then an exact version 3 header and an allowlisted core (`message` with role `user`/`assistant`/`toolResult`/`bashExecution`, `model_change`, `thinking_level_change`, `compaction`) stream through the shared Pi-family scaffolding; bounded JSONL; resume supported; named profiles and the XDG redirects are not discovered                                        | Usage at the nested request-start timestamp, top-level event time, provider/API/model, agent-selected thinking policy, tools, links, and compactions from the allowlisted core                                                                                                        | Characterized OMP core only; Pi-only rows, other OMP record types, and pre-v3 headers stay unrecognized; in-file branches are not resolved to an active leaf and sibling subagent files are not opened, so D/T/O findings only and no clean result |
+| `OmpV3Jsonl`                   | Oh My Pi      | `~/.omp/agent/sessions/**/*.jsonl`, renamed by `PI_CONFIG_DIR`, or a default-profile `PI_CODING_AGENT_DIR` inside the OMP root                                          | Native discovery; the fixed-width 256-byte `type: "title"` slot is dropped as the OMP prologue, then an exact version 3 header and an allowlisted core (`message` with role `user`/`assistant`/`toolResult`/`bashExecution`, `model_change`, `thinking_level_change`, `compaction`, and `custom` with `customType` `tool_execution_start`/`session_exit`/`todo_hud_state`/`user_todo_edit`/`goal-completed`) stream through the shared Pi-family scaffolding; `title_change`, `credential_pin`, `ttsr_injection`, and `session_init` are admitted as signal-free housekeeping rows that keep their thread link; the `<skills>` listing in a `session_init` system prompt is the startup context, and a `read` of a `skill://<name>` path is a skill use; bounded JSONL; resume supported; named profiles and the XDG redirects are not discovered                                        | Usage at the nested request-start timestamp, top-level event time, provider/API/model, agent-selected thinking policy, tools, links, and compactions from the allowlisted core                                                                                                        | Characterized OMP core only; startup context lists skills only, from subagent journals that have `session_init`, because OMP records no tool or MCP definitions and top-level journals have no `session_init`; `custom` and housekeeping rows with a shared parser signal, other `customType` values, Pi-only rows, other OMP record types (including `custom_message`, `model_usage`, `service_tier_change`, and `reset_boundary`), and pre-v3 headers stay unrecognized; in-file branches are not resolved to an active leaf and sibling subagent files are not opened, so D/T/O findings only and no clean result |
 | `CursorJsonl`                  | Cursor        | In-memory or compatibility JSONL without a source marker                                                                | Dedicated reader with bounded JSONL; native surface is unknown                                                                                                                                                                                                               | Generic Cursor role, content, timestamp, model, tool call, and record ID fields                                                                                                                                                                                                         | Uncharacterized compatibility format                                                                                    |
 | `CursorCliAgentJsonl`          | Cursor        | `.cursor/projects/*/agent-transcripts/**` with chat metadata                                                            | Native discovery; transcript and metadata synthesis; bounded JSONL reader; subagent paths provide an explicit parent observation; the JSONL export is independent from the store contract                                                                                    | Role, text/thinking/tool input/tool result content, timestamps, models, tool calls, redacted-block handling, and selected record IDs                                                                                                                                                    | Partial; no model fallback or configuration inference                                                                   |
 | `CursorCliStoreDb`             | Cursor        | Legacy Cursor CLI `chats/**/store.db`                                                                                   | Read-only database extraction into marked JSONL; reviewed `blobs(id,data)` and `meta(key,value)` subset                                                                                                                                                                      | Scalar user/assistant messages, title, workspace, timestamps, model, IDs, and fork-prefix hints; structured tool input is reduced during synthesis                                                                                                                                        | Partial; Ignored Instructions marks tool fields unavailable                                                            |
@@ -823,7 +845,7 @@ compactions, or incomplete history prevent clean. OpenCode uses validated
 ordered history, not `parentID` as a fabricated predecessor link.
 
 The route columns use engine turn migration 7 and desktop migration 39. Current
-parser/analyzer/evidence/coverage/resume revisions are 39/25/22/6/11. Existing
+parser/analyzer/evidence/coverage/resume revisions are 53/25/22/6/14. Existing
 revision gates invalidate old projections and snapshots; JSON and binary
 evidence round trips and full/resumed replay are covered by tests.
 

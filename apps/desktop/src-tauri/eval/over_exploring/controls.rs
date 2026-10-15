@@ -142,18 +142,6 @@ pub(crate) fn primary(reason: Reason, positive: bool, variant: usize) -> Case {
             task.failure
         ),
     );
-    if reason == Reason::ExcessiveFileBreadth {
-        read_source(
-            &mut parts,
-            "package.json",
-            "{\"type\":\"module\",\"files\":[\"src\",\"adapters\"],\"scripts\":{\"test\":\"node --test test/*.test.js\"}}\n",
-        );
-        read_source(
-            &mut parts,
-            "src/index.js",
-            &format!("export {{ check }} from './{}.js';\n", task.name),
-        );
-    }
     push(
         &mut parts,
         ContentKind::AssistantText,
@@ -199,29 +187,7 @@ pub(crate) fn primary(reason: Reason, positive: bool, variant: usize) -> Case {
                 );
             }
         }
-        Reason::ExcessiveFileBreadth => {
-            for index in 0..5 {
-                let (path, contents) = if positive {
-                    let mut contents = format!(
-                        "// Historical seminar example {index}, not included by package.json.\n{}",
-                        source(task, false, true)
-                    );
-                    for note in 0..18 {
-                        contents.push_str(&format!("function seminarCard{note}() {{ return 'Example {note}: formatting demonstration'; }}\n"));
-                    }
-                    (format!("seminars/obsolete_{index}.js"), contents)
-                } else {
-                    (
-                        format!("adapters/active_{index}.js"),
-                        format!(
-                            "import {{ check }} from '../src/{}.js';\nexport function handle(data) {{ return check(data); }}\n// Contract used by adapter {index}: {}\n",
-                            task.name, task.goal
-                        ),
-                    )
-                };
-                read_source(&mut parts, &path, &contents);
-            }
-        }
+        Reason::ExcessiveFileBreadth => unreachable!("File breadth is outside this eval suite"),
         Reason::ExcessiveWithinFileReading => {
             for pass in 0..4 {
                 if !positive && variant == 7 && pass == 2 {
@@ -287,7 +253,10 @@ pub(crate) fn primary(reason: Reason, positive: bool, variant: usize) -> Case {
     assemble(
         format!(
             "confirmation-v2-{}-{}-{variant:02}",
-            serde_json::to_value(reason).unwrap().as_str().unwrap(),
+            serde_json::to_value(reason)
+                .expect("Reason serializes")
+                .as_str()
+                .expect("Reason serializes as a string"),
             if positive { "positive" } else { "negative" }
         ),
         "confirmation_v2",
@@ -332,10 +301,10 @@ pub(crate) fn controls() -> Vec<Case> {
         };
         read_source(&mut parts, "src/ready_state.js", text);
         if ["unknown_answer", "cancelled_approval", "synthetic_approval"].contains(&limit) {
-            parts[3].part.metadata.user_answers.push(serde_json::from_value(json!({"source":{"source_format":"open_code_sqlite_v2","role":"tool","native_record_id":"ready-answer","call_id":"read-2","question_id":"expand-review","order":3,"provenance":"recognized_question_workflow","producer_revision":"synthetic","normalization_revision":1,"bindings":[],"truncated":false},"prompt":"Approve other UI work?","options":[],"multi_select":false,"selections":[],"free_text":"approved","status":if limit=="cancelled_approval"{"cancelled"}else{"submitted"},"origin":if limit=="synthetic_approval"{"synthetic"}else{"unknown_origin"}})).unwrap());
+            parts[3].part.metadata.user_answers.push(serde_json::from_value(json!({"source":{"source_format":"open_code_sqlite_v2","role":"tool","native_record_id":"ready-answer","call_id":"read-2","question_id":"expand-review","order":3,"provenance":"recognized_question_workflow","producer_revision":"synthetic","normalization_revision":1,"bindings":[],"truncated":false},"prompt":"Approve other UI work?","options":[],"multi_select":false,"selections":[],"free_text":"approved","status":if limit=="cancelled_approval"{"cancelled"}else{"submitted"},"origin":if limit=="synthetic_approval"{"synthetic"}else{"unknown_origin"}})).expect("Authored approval fixture matches the user answer schema"));
         }
         if limit == "mutable_plan" {
-            parts[3].part.metadata.plan_references.push(serde_json::from_value(json!({"source":{"source_format":"open_code_sqlite_v2","role":"tool","native_record_id":"ready-plan","call_id":"read-2","order":3,"provenance":"session_linked_companion","producer_revision":"synthetic","normalization_revision":1,"bindings":[],"truncated":false},"plan_id":"ready-review","path":"ready.md","revision":"current-mutable","text":"Read every theme implementation","status":"approved","origin":"user","content_status":"mutable_companion"})).unwrap());
+            parts[3].part.metadata.plan_references.push(serde_json::from_value(json!({"source":{"source_format":"open_code_sqlite_v2","role":"tool","native_record_id":"ready-plan","call_id":"read-2","order":3,"provenance":"session_linked_companion","producer_revision":"synthetic","normalization_revision":1,"bindings":[],"truncated":false},"plan_id":"ready-review","path":"ready.md","revision":"current-mutable","text":"Read every theme implementation","status":"approved","origin":"user","content_status":"mutable_companion"})).expect("Authored plan fixture matches the plan reference schema"));
         }
         push(&mut parts, ContentKind::AssistantText, "The three recorded lines show isReady always returns true and has no dependencies. This answers the requested explanation.".into(), None);
         cases.push(assemble(

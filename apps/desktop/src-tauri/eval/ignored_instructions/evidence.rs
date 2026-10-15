@@ -259,11 +259,20 @@ pub(crate) fn input(case: &Case) -> AssessmentInput {
     } else {
         InstructionProvenance::RecordedInjection
     };
+    let nested = case.scenario.shape == Shape::NestedScope;
     let instruction = snapshot_from_text(
-        "AGENTS.md",
+        if nested {
+            "project:src/AGENTS.md"
+        } else {
+            "AGENTS.md"
+        },
         format!("# Evaluation rule\n\n{}", case.scenario.instruction),
         provenance,
-        InstructionScope::Project,
+        if nested {
+            InstructionScope::Nested
+        } else {
+            InstructionScope::Project
+        },
     )
     .expect("authored instruction snapshot");
     let content = SessionContentEvidence {
@@ -335,7 +344,7 @@ pub(crate) fn findings_valid(result: &AssessmentResult, input: &AssessmentInput)
         };
         let reference = &finding.reference;
         finding.composite_probability.is_finite()
-            && finding.composite_probability >= 0.75
+            && finding.composite_probability >= 0.95
             && finding.composite_probability <= 1.0
             && decision.evaluator_revision
                 == antiburn_local::checks::ignored_instructions::evaluator_revision()
@@ -355,7 +364,7 @@ pub(crate) fn findings_valid(result: &AssessmentResult, input: &AssessmentInput)
                             && section
                                 .text
                                 .get(decision.rule_start_byte..decision.rule_end_byte)
-                                .is_some_and(|text| !text.is_empty())
+                                == Some(finding.instruction_excerpt.as_str())
                     })
             })
             && input.content.actions.iter().any(|action| {
@@ -365,7 +374,7 @@ pub(crate) fn findings_valid(result: &AssessmentResult, input: &AssessmentInput)
                     && action
                         .text
                         .get(decision.action_anchor.start_byte..decision.action_anchor.end_byte)
-                        .is_some_and(|text| !text.is_empty())
+                        == Some(finding.action_excerpt.as_str())
             })
             && decision.selected_evidence.iter().all(|identity| {
                 input.content.actions.iter().any(|action| {
@@ -408,8 +417,12 @@ fn sibling_rules_bind_exact_expected_action_references() {
 
 #[test]
 fn positive_references_resolve_through_production_preparation() {
-    let capabilities = &crate::support::provider::configuration().capabilities;
+    let capabilities =
+        &antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default();
     for case in crate::fixtures::select("all", None).expect("all cases") {
+        if !case.scenario.policy_admitted || case.scenario.diagnostic_only {
+            continue;
+        }
         let input = input(&case);
         let context =
             antiburn_local::checks::ignored_instructions::build_jev_context_with_capabilities(
@@ -421,6 +434,11 @@ fn positive_references_resolve_through_production_preparation() {
         let plan = IgnoredInstructionsCheck
             .prepare_with_capabilities(&context, capabilities)
             .expect("plan");
+        assert!(
+            !plan.work_items.is_empty(),
+            "{} declares admission but prepares no request",
+            case.id
+        );
         for expected in expected_references(&case) {
             assert!(
                 plan.prepared
@@ -432,6 +450,38 @@ fn positive_references_resolve_through_production_preparation() {
             );
         }
     }
+}
+
+#[test]
+fn expected_policy_admission_matches_normal_production_preparation() {
+    let capabilities =
+        antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default();
+    let mut mismatches = Vec::new();
+    for case in crate::fixtures::select("all", None).unwrap() {
+        let input = input(&case);
+        let context =
+            antiburn_local::checks::ignored_instructions::build_jev_context_with_capabilities(
+                &input,
+                &Default::default(),
+                &capabilities,
+            )
+            .unwrap();
+        let plan = IgnoredInstructionsCheck
+            .prepare_with_capabilities(&context, &capabilities)
+            .unwrap();
+        let admitted = !plan.work_items.is_empty();
+        if admitted != case.scenario.policy_admitted {
+            mismatches.push(format!(
+                "{} expected={} actual={admitted}",
+                case.id, case.scenario.policy_admitted
+            ));
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "Admission mismatches:\n{}",
+        mismatches.join("\n")
+    );
 }
 
 #[test]

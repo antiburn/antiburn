@@ -25,6 +25,7 @@ pub struct ScopeLoadRequest {
     source_generation: i64,
     /// True only when the source retains complete recorded user text with no known loss.
     source_complete: bool,
+    untrusted_user_parts: std::collections::BTreeSet<(u64, u32)>,
     key: SessionKey,
 }
 
@@ -57,6 +58,7 @@ impl Store {
             publication_fence,
             source_generation,
             source_complete,
+            untrusted_user_parts,
             key: _,
         } = request;
         let content_scope = boundary.content_scope().map_err(ScopeLoadError::Scope)?;
@@ -71,7 +73,7 @@ impl Store {
         let positions = BTreeMap::new();
         let mut cursor = None;
         loop {
-            let page = self
+            let mut page = self
                 .published_turn_content_keyset_scoped(
                     key,
                     SelectedContentRequest {
@@ -101,6 +103,10 @@ impl Store {
             builder
                 .bind_boundary(proof)
                 .map_err(ScopeLoadError::Scope)?;
+            page.page
+                .content
+                .parts
+                .retain(|part| !untrusted_user_parts.contains(&(part.turn_index, part.part_index)));
             builder
                 .push_page(page.page.content, page.page.next_cursor.is_some())
                 .map_err(ScopeLoadError::Scope)?;

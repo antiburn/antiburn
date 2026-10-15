@@ -1,6 +1,6 @@
 # Burn Check Source Coverage
 
-Audit date: 2026-10-08.
+Audit date: 2026-10-12.
 
 This document covers local passive session evidence and the desktop's read-only
 current resource inventory. Session evidence supports historical claims. Current
@@ -14,6 +14,13 @@ companion-source, and provider-route coverage for the same source formats.
 
 ## Status Rules
 
+Large sessions remain processable through bounded lossy recent input sampling.
+Scope, activity, and investigation episode limits record loss instead of failing
+input assembly because of session size. Retained evidence keeps exact source IDs.
+Sampling can miss violations or useful skill opportunities. No findings, or a
+scoped clean result when the check permits it, does not cover omitted history.
+The individual checks still apply their selected-evidence requirements below.
+
 Skill Opportunities has a registered descriptor, prompt, report, and shared UI
 path for the four pinned native sources in
 [retained-root smart-check inputs](session-coverage.md#retained-root-smart-check-inputs).
@@ -22,19 +29,24 @@ snapshot retains semantic frontmatter, selected reference text, and optional
 filesystem birth time. Only a valid nonempty description is sent as reference
 text. Missing, null, or blank descriptions and plain Markdown use the full
 Markdown as a fallback source; invalid YAML and non-string descriptions remain
-unsupported. Large fallback sources use at most four structural 4 KiB chunks
-with byte ranges and a partial flag. Known used skills follow the same rule.
-Agent, project, environment, and enablement constrain candidates. Ambiguous
-recorded-use identity and creation after the relevant work timestamp remain
-advisory limits, not candidate exclusions; missing time stays explicit. This current-data
-heuristic does not prove historical availability or contents.
+unsupported. The compact check selects one complete concrete procedure of at most
+512 bytes from the supported reference. A generic nonempty description with a
+useful body-only procedure remains unavailable. Citation ranges address decoded
+description text or normalized Markdown, not raw YAML/file bytes. Agent, project,
+environment, and enablement constrain candidates. Ambiguous skill identity, unknown
+relevant use history, and recorded exact or cheaply established equivalent use
+block the selected pair. Birth time remains a current-data limit, not proof of
+historical availability or contents.
 
-Each selected skill/work comparison uses one choice: useful opportunity, no
-opportunity, or uncertain. A validated positive can use partial selected work
-or unknown recorded-use absence. It does not prove that the skill was unused or
-that the work completed. Current source, inventory, use, and evaluator revisions
-must match. A failed assessment can retain validated positive siblings; partial
-or uncertain assessments cannot produce Clean.
+One selected skill/workflow pair receives a three-option Choice: actionable help,
+already adequate or unrelated, or uncertain. A finding requires a unique positive
+winner at probability 0.95 or higher, a complete anchored multi-step procedure,
+intact selected task and work, and matched outcomes. Repeated matching multi-step
+work has priority; one substantial multi-line operation can qualify. Partial work,
+missing results, or unknown relevant use cannot support a positive. This does not
+prove that the skill was historically available or unused throughout the session.
+Current source, inventory, use, and evaluator revisions must match. Partial or
+uncertain assessments cannot produce Clean.
 
 Incomplete current inventory retains valid definitions with an explicit limit.
 Report and evaluation matching validate selected reference text, source, byte
@@ -44,29 +56,23 @@ partial status, and the full selected-action digest. The desktop evidence view
 validates these bindings against the current check-selected projection. A
 same-length change in an omitted range invalidates the saved citation.
 
-Scope Creep uses one choice per selected work group. Findings require a finite
-decision probability from 0.75 through 1.0 and distinguish recorded attempts
-from proposals. Retained task context can be empty; it does not prove complete
-approval history. Findings do not prove completed execution. Recorded approvals
-still constrain the decision. Uncertain and unassessed groups count separately
-from reviewed clean outcomes.
+Scope Creep uses one three-option Choice per selected performed-work group.
+Findings need a unique positive winner at probability 0.95 or higher, a complete
+active task and relevant authorization units, and bound material work with a
+matched successful outcome. Proposals alone and denied or stopped operations are
+not performed-work findings. Assistant text cannot authorize itself. Short replies
+retain their linked proposal; later user acceptance can suppress a finding.
+Missing or ambiguous authority, materiality, or operation binding leaves the group
+unassessed. A model answer does not repair those limits.
 
-Scope Creep and Skill Opportunities retain large selected work, including edit
-inputs, commands, and tool results, as bounded sampled content. Each large value
-uses at most four structural fragments: early, task-relevant, middle, and late.
-The relevant slot uses the first third when no interior child matches task terms.
-Scope Creep also retains large supporting activity this way. Provider content
-carries exact UTF-8 start/end byte offsets, total bytes, and partial flags. Offsets
-refer to check-selected action text or the named normalized field, not native
-transcript JSON. Sampled entries do not claim a complete text body. A retained
-exact Bash first line does not prove complete command options.
-
-Sampled negative decisions are Uncertain, not Clean or complete no-opportunity
-results. Accepted semantic answers still complete their selected sampling jobs;
-review completion does not mean all source bytes were reviewed. Validated positive
-decisions can support bounded findings and recommendations with the content and
-selected-window limits. No exhaustive subrange review is implemented. These
-limits do not change parser or native source-format support.
+Scope Creep reuses recorded hunks, complete small replacement pairs, or meaningful
+new-content units only with valid file bindings. Ambiguous projected multi-file
+patches and current-checkout reconstruction cannot supply historical edits. Skill
+Opportunities requires intact selected steps and outcomes. Full selected-action
+digests and local source ranges bind evidence; provider requests contain compact
+selected text rather than broad structural fragment windows. Review completion
+does not mean every source byte or candidate was reviewed. These policy limits
+do not widen parser or native source-format support.
 
 The native skill-use adapter is fixture-characterized for `ClaudeJsonl`,
 `OpenCodeSqliteV2`, `CodexRolloutJsonl`, and `PiV3Jsonl` under the
@@ -174,31 +180,35 @@ still reject stale or misbound evidence.
 `ReadFileRequest` and `ReadFileResult` require explicit Jev field selection.
 `ReadFileOutput` separately selects recorded result text. These fields are
 shared evidence APIs used by Over-exploring. Eligibility needs accepted retained
-task context and bound read requests. Unrelated-file and file-breadth targets can
-use requests without results; within-file targets require supported observed
-extents. Findings require the actual `likely_excess` choice with finite probability
-in 0.75–1.0. Available matched results bind both result ID and output digest;
+task context and bound successful complete read results. General file-breadth and
+first-read-size judgments are outside the compact scope. Duplicate runs require
+known equal extents, equal full recorded-output digests, compatible same-path
+context, result-before-later-request ordering, and no observed intervening work.
+At least 8 KiB of redundant later output is required. Cross-file body deduplication
+is unavailable. Findings require a unique positive choice with finite probability
+in 0.95–1.0. Matched results bind both result ID and output digest;
 half-present pairs are invalid. Independent positive targets remain available
 with sibling or provider failures. Incomplete evidence never establishes Clean.
-Provider windows use bounded representative text ranges with partial flags,
-not complete large outputs. Review counts use completed target IDs. Smart checks
+Duplicate requests send local equality and extent facts, not file bodies. Secondary
+irrelevant-read requests send at most 512 bytes of complete leading lines with
+sample and starts-at-file-beginning flags. Separate purpose needs affirmative
+evidence; samples cannot prove whole-file irrelevance. Review counts use completed
+target IDs. Smart checks
 have no Auto Fix, verification, or savings estimate.
 
-Over-exploring selects task context for each investigation instead of sending
-the full session scope. It retains the latest user task and recorded question
-or plan context through the investigation boundary. Assistant discussion is
-supporting work, not shared task authority. Work windows retain at most 16
-supporting events and 8 KiB of text, with exact target bindings and explicit
-partial flags. Sampled task or work text cannot establish Clean.
+Over-exploring requires complete selected investigation task context that fits
+its compact budget. A short approval such as "Yes, continue" cannot establish an
+omitted antecedent task or proposal. Recorded assistant purpose is supporting
+context, not task authority. The current episode selector prefers duplicate runs;
+it considers an irrelevant-read candidate only when that episode has no repeat
+target. Fit and snapshot selection retain at most three targets.
 
-Skill Opportunities uses the same task boundary for selected work. Both checks
-mark task context partial when the selection omits an earlier user task. A short
-approval such as "Yes, continue" cannot establish the antecedent task or proposal.
-Missing prior task evidence leaves the comparison unassessed and sends no request.
-Skill-use snapshots bind the same enrollment projection as the selected work;
-pre-enrollment uses remain context and do not enroll old work as a target. Settled
-comparisons leave both the work inventory and its shared context before the
-remaining plan runs; publication validation remains exact.
+Skill Opportunities groups exact anchored steps with their uniquely matched
+results and requires intact selected task context. Task text is not optional at
+the production finding gate. Skill-use snapshots bind the same enrollment
+projection as selected work; pre-enrollment uses remain context and do not enroll
+old work as a target. Publication validation remains exact. Missing or partial
+task, work, outcome, or relevant use evidence cannot establish a complete result.
 
 Requested line units are characterized for exact Claude `Read`, Pi `read`, and
 OpenCode SQLite `read` calls under the schema and producer pins in
@@ -261,7 +271,7 @@ a bounded contract. No row promises parity across all historical versions.
 | `OpenCodeJsonl`                | OpenCode legacy exported session data                                     | Accepted export wrappers and native message/part shapes; pinned research below                                                                                                                                                            | Dedicated                             |
 | `OpenCodeSqliteV2` | OpenCode SQLite `session`, `message`, `part` tables | Fixture-backed read-only snapshot with exact IDs; optional time/title/part-ID columns. Smart message/skill producer `772392050500e0ddcd2ad2193411a22a3824372f`; numbered Read renderer `652c090dc119b5f3dc1e5e0bf1c4b40d9721f0ef`. Not CoreV2 `session_message` or a historical release range. | Dedicated |
 | `PiV3Jsonl` | Pi session JSONL | Header V1/V2/V3 metric migrations; smart retained core V3 roots/results use 0.84.4 at `b79e4cc834970cca69daebffab7df1da7d1e52c4`. Optional extension question/plan pins are separate. Headerless/unsupported sources reject; no historical release range. | Dedicated |
-| `OmpV3Jsonl`                   | Oh My Pi session JSONL behind the title slot                              | Fixed-width 256-byte `type: "title"` slot, then an exact version 3 header; synthetic fixtures pin the accepted shape, an allowlist admits only the OMP core rows, and every other record type or header version fails closed                | Shared Pi-family reader               |
+| `OmpV3Jsonl`                   | Oh My Pi session JSONL behind the title slot                              | Fixed-width 256-byte `type: "title"` slot, then an exact version 3 header; synthetic fixtures pin the accepted shape, an allowlist admits only the OMP core rows, characterized `custom` rows, and signal-free `title_change`/`credential_pin`/`ttsr_injection`/`session_init` housekeeping rows, and every other record type or header version fails closed                | Shared Pi-family reader               |
 | `CursorJsonl`                  | Cursor compatibility JSONL without a surface marker                       | Unversioned and uncharacterized                                                                                                                                                                                                           | Dedicated shared Cursor reader        |
 | `CursorCliAgentJsonl`          | Cursor agent transcript JSONL                                             | Separate partial export contract with content blocks and explicit subagent-path parent observations; no model fallback                                                                                                                    | Dedicated shared Cursor reader        |
 | `CursorCliStoreDb`             | Legacy Cursor CLI `chats/**/store.db` data                                | Private `blobs`/`meta` subset pinned by public reverse engineering; partial                                                                                                                                                               | Dedicated shared Cursor reader        |
@@ -341,26 +351,69 @@ in this matrix.
 
 ## Smart Check Review Coverage
 
-All four production descriptors target an initial review of 50% of eligible
-targets, then continue remaining work. The percentage measures the target
-fraction, not model confidence or finding probability. Review counts require all
-required answers and successful check reduction. Partial answers, dispatches,
-private thinking, and unavailable evidence cannot count as reviewed targets.
+All four checks use short questions and capability-aware compact evidence.
+Per immutable input snapshot, selection retains at most two Ignored Instructions
+comparisons, two Scope Creep groups, three Over-exploring targets, or one Skill
+Opportunities pair. The retained set must fit one logical request, excluding
+finite transport retries. Zero qualifying candidates means zero calls. The packer
+drops lower-priority candidates locally and can reduce optional singleton evidence
+while preserving mandatory units. Below minimum fit, the check abstains. Context
+rejection remains unassessed without child requests. Selection is nonexhaustive;
+policy-omitted candidates are not drained on later turns of the same snapshot.
+New snapshots can create new work, so this is not a lifetime session cost cap.
+
+The product state/request/estimated-token caps are 1,536/6,144/1,536 for Ignored
+Instructions, 2,048/8,192/2,048 for Scope Creep, 1,024/6,144/1,536 for Over-exploring,
+and 2,048/4,096/1,024 for Skill Opportunities. State bytes apply per candidate;
+request bytes include the complete serialized request. Applicable capabilities
+can lower each bound. Total input, state plus longest question, byte, question,
+and criteria limits remain distinct. Fit includes wrapper and scoring overhead.
+Verified Ollama accounting bounds the largest rendered scoring input, not
+aggregate scoring work or actual usage. Shared wrappers become compact at 4,096
+usable state tokens or fewer. Estimates are not exact tokenizer counts, model
+accuracy, or measured latency.
+
+Native input loading omits malformed selected tool inputs and untrusted user
+parts while retaining independent valid work with partial coverage. Exact source,
+branch, publication, and selected dependency bindings remain required. Unknown
+authority cannot become approval. Empty candidate inventories are stored as
+terminal `no_candidates` work, distinct from Clean and unavailable evidence.
+Loader failures retain specific internal categories; stale publications do not
+publish replacement results. Skipped targets remain unreviewed and do not imply
+active continuation. Normal candidate enumeration excludes terminal empty work
+with unchanged source, publication, and evaluator identities.
+
+Skill Opportunities selects one anchored pair without operation-by-skill paging.
+Omitted inventory is outside reviewed scope and cannot establish session-wide
+no-opportunity coverage. All checks retain exact source and reference bindings.
+
+Findings can retain a versioned comparison basis with the selected passages and
+typed relationship. The evidence endpoint validates source bindings and provides
+paired read requests/results with separate requested and observed extents. Skill
+task citations belong to the comparison, not the request batch. Older findings
+can expose available excerpts without a fabricated explanation. None of these
+contracts proves complete history, execution success, or historical skill visibility.
+
+Review counts require all required answers and successful check reduction.
+They describe admitted comparisons, not a 50% inventory review or exhaustive
+continuation. Partial answers, dispatches, private thinking, and unavailable
+evidence cannot count as reviewed targets. Missing, omitted, uncertain, or failed
+work cannot become session-wide Clean.
 
 One shared scheduler rotates across the four descriptors. Four turns prefer
 initial review and the fifth prefers continuation, with the other lane available
-when the preferred lane is empty. Per-turn target limits are 8 for Ignored
-Instructions, 4 for Scope Creep, 3 for Over-exploring, and 4 for Skill
-Opportunities. Each turn admits at most two provider dispatch attempts, including
+when the preferred lane is empty. Continuation resumes admitted unfinished work.
+Snapshot candidate limits are 2/2/3/1 in check order above. Each turn admits at
+most eight provider dispatch attempts, including
 retries. The Store retains finite attempt limits across turns and restarts;
 continuation does not reset exhausted work.
 
 Answer reuse requires the exact selected evidence, decision context, source
 bindings, reference inputs, model/provider configuration, and check revisions.
-Repacking alone does not invalidate a compatible answer. A changed scope or
-skill reference invalidates affected answers. Reaching the initial fraction
-does not turn incomplete, unsupported, uncertain, exhausted, or failed work into
-Clean. These scheduling rules do not expand source or remediation support in
+Dispatched evidence and request identity remain fixed during compatible recovery;
+capability changes cannot silently repack a pending request. Accepted compatible
+answers recover before a new send. Changed scope, reference, provider, or evaluator
+identities invalidate affected work. These scheduling rules do not expand source or remediation support in
 the matrices below. See [incremental review](smart-burn-checks.md#incremental-review-and-scheduling).
 
 Scope Creep stops new descriptor enumeration at 512 KiB of serialized descriptor
@@ -375,11 +428,14 @@ Creep scheduling, including completed assessments with no runnable targets.
 ## Ignored Instructions Evidence
 
 The first-tier product matrix is the source of truth for reachable check
-support. Supported formats are `ClaudeJsonl`, `CodexRolloutJsonl`,
+support. The selected-input loader accepts `ClaudeJsonl`, `CodexRolloutJsonl`,
 `OpenCodeSqliteV2`, `PiV3Jsonl`, `CursorCliAgentJsonl`, `CursorCliStoreDb`,
 `CursorChatStoreDb`, `CursorIdeComposer`, `AntigravityBrainJsonl`, and
 `AntigravitySqlite`. Cursor store and composer routes retain normalized user
-and assistant text but may not retain native tool inputs. Antigravity SQLite
+and assistant text but do not supply the typed tool anchors required by the
+compact selector. Their loader admission does not establish reachable findings.
+Cursor finding support is limited to `CursorCliAgentJsonl` with bound native tool
+input. Antigravity SQLite
 needs assessable companion transcript content. Other Cursor and Antigravity
 formats remain unavailable. `OpenCodeJsonl` is also unavailable. Clean
 means no finding among sampled comparisons in a completed review, not that all
@@ -388,6 +444,10 @@ current-file versions govern future actions; the first observation cannot
 prove earlier activation. An explicit history run can compare past actions to
 current files, but this does not prove historical activation. Missing recorded
 historical snapshots remain unavailable as proof.
+Completed post-observation comparisons can report scoped Clean. Historical
+comparisons retain the current-file historical-proof limitation. Policy-omitted
+pairs do not block a completed sampled result; skipped, unresolved, or partial
+selected evidence still blocks Clean.
 Provider failures and incomplete source evidence are different from sampling
 gaps and cannot produce Clean. Auto Fix, verification, and estimates are
 unsupported. Each comparison uses one joint Choice decision. Missing required
@@ -425,8 +485,10 @@ Auto Fix. The limit stays beside the row it qualifies.
 
 Ignored Instructions uses stored Jev assessments, including bounded local excerpts
 of each finding's compared instruction and action, and the current published
-content projection. Finding, sampled Clean, and prompt support are limited to
-the exact source formats listed above. The worker records observed
+content projection. Finding and prompt support require a reachable directly
+anchored comparison in an accepted source format; text-only Cursor stores and
+composer projections cannot meet that gate. Scoped Clean also needs complete
+eligible selected evidence. The worker records observed
 instruction versions with session positions. A changed version applies to
 future actions, while a requested history run can compare older actions to
 current rules as a possible issue. Without an authoritative snapshot this is
@@ -445,28 +507,18 @@ normalized human-history or exact request/result facts validate them. Unknown
 origin, synthetic text, skill documents, unmatched/conflicting joins, and clipping
 cannot establish permission or successful tests. Edit content, read/search output,
 other results, typed question/plan fields, and thinking remain excluded.
-Selected paths can leave the machine. Sampling selects
-up to 8 high-priority rule/action pairs per turn by word rarity, tool
-name, literal path, prohibition/tool-input risk, and recency. It spreads choices
-across rules and sources and probes low-overlap pairs. These signals cannot
-prove that omitted pairs are irrelevant. Risk-ranked new activity alternates with
-older unchecked work across source chronology to reduce the remaining gap,
-unless new work adds pairs. Compatible typed answers persist across append, completion, and
-restart with source-bound identities and input/revision checks. Long non-command text is
-split into overlapping byte ranges; not every range must be sent. Bash commands
-stay atomic and remain unassessed when they exceed the request limit. Rule
-targets include bounded enclosing-section and ancestor text with source byte
-and line ranges. Large supporting text selects first, relevant, and last
-structural ranges within the context budget. Request
-size remains bounded, but this is not a per-session price or time cap. About
-60 seconds after worker start for an ordinary assessment is a goal, not a
-completion deadline or guarantee.
-Requests retain the rule text, provenance, scope, candidate action, and bounded
-same-branch evidence. One event window groups up to eight rule targets around a
-candidate action, so the request sends shared event text once instead of
-repeating it for each rule. Instruction-file paths and stable event IDs stay
-local. Source byte and line ranges accompany selected instruction context.
-Earlier context is sent in source order within its array.
+Selected paths can leave the machine. Selection admits at most two directly
+anchored rule/action comparisons per snapshot, newest matched actions first.
+Concrete tool, command, and path matches are eligibility hints, not proof of
+conflict. Broad low-overlap probes, omission inference, and completion deadlines
+are outside this scope. Omitted pairs do not become later pages of the same
+snapshot. Compatible answers persist with exact source, input, reference, provider,
+and evaluator identities. Complete rule, action, and relevant exception units
+must fit; oversized required units remain unassessed. Normal field budgets are
+512 bytes for rule and action and 256 for context. Necessary ancestor scope and
+late exceptions stay within the rule budget. Instruction-file paths, source ranges,
+digests, and stable identities stay local. About 60 seconds after worker start
+is a goal, not a completion deadline, guarantee, or measured speedup.
 Candidate actions include normalized assistant text (`assistant` content kind)
 and the selected input envelope for each recognized tool category. Edit and read
 inputs are reduced to paths; search inputs retain the query and scope filters.
@@ -485,56 +537,27 @@ or conflicting joins remain unavailable. Native singleton-selection tests cover
 all twelve fields and private thinking. Explicit empty text is observed rather
 than inferred missing. Selected Bash output needs exact normalized context
 bindings; lifecycle status alone does not prove successful tests.
-Tool results do not create candidate work. Pages interleave rules from each instruction
-source so a large global file cannot starve project rules. All six
-first-tier agents include shared global and project AGENTS.md files alongside
-their supported agent-specific sources. The Markdown reader uses headings and
-list structure to bound rule text. Text before the first heading scopes each
-headed rule but does not become a separate rule. It does not infer semantic rule types from
-keyword lists. Jev answers one joint Choice question per target: `conflict`,
-`no_issue`, `pending_completion`, or `uncertain`. The decision considers
-applicability, conditions, exceptions, prerequisites, and evidence sufficiency
-together. Publication requires at least 0.75 actual probability for `conflict`;
-the reducer retains that value as `composite_probability`. Current-file or
-truncated-action findings remain possible; stronger source/action evidence
-permits likely findings under the same probability threshold. A sufficiently
-probable `pending_completion` answer marks a rule pending. Missing prerequisite
-evidence remains uncertain. The reducer leaves weak and uncertain decisions
-unassessed. Truncated context does not block a direct conflict when
-supplied evidence establishes it. Partial assessment cannot support a clean
-result.
+Tool results do not create candidate work. All six first-tier agents include
+shared global and project AGENTS.md files alongside supported agent-specific
+sources. The shared `pulldown-cmark` range helper discovers Markdown structure;
+application rules retain necessary scope, conditions, and exceptions. Syntax
+boundaries alone do not establish semantic completeness. Text before a heading
+scopes its rules rather than becoming a separate target. Oversized required
+scope is skipped, not represented by a prefix and tail.
 
-For a supported single-path file-read request prerequisite, Jev identifies the
-literal prerequisite and triggering edit scope. Code compares selected read
-requests in the same recorded branch and scope. Complete prior history with
-known request paths can establish a missing earlier request. This finding is
-limited to request order; it does not prove successful reading or execution.
-Missing history, malformed paths, ambiguous reading requirements, alternative
-prerequisites, and unsupported literal bindings remain unassessed. A matching
-earlier request can satisfy request order without read output. Bounded prose
-context does not replace the exact selected request facts.
-Literal edit scopes support plain relative file and directory paths. Wildcards,
-variables, absolute paths, and paths that need alias resolution remain unknown.
-The reducer settles supported request order from exact facts after semantic
-rule and path binding. It does not change the publication thresholds.
+Each target receives a three-option Choice about direct conflict, no conflict,
+or uncertainty. Publication requires a unique positive winner at probability
+0.95 or higher and valid decision/source bindings. The reducer retains the
+probability as `composite_probability`; it is not a measured accuracy claim.
+Current-file findings describe possible conflict with the current rule, not
+historical activation. Command requests do not prove success, variable names
+do not prove secret values, and quoted shell substrings do not prove action
+semantics. Missing authority or qualifications cannot become permission or a
+positive finding. Partial or unresolved comparisons cannot establish Clean.
 
-Approval-dependent rules cannot publish a finding or clean comparison without
-accepted authorizing context. Selected human text needs source-bound history
-proof, native ranges, and the same recorded branch. Unknown-origin answers,
-synthetic text, skill selection, assistant reports, and tool permission do not
-restore authority. Missing history stays unassessed.
-A rule that prohibits claiming approval can still be assessed as observable
-assistant communication. Unclear permission dependence remains unassessed.
-Checkpoint reduction also requires permission classification. A prepared plan
-without classified exact observations cannot publish a guessed order result.
-
-The content reader orders events by their source positions and divides large
-sessions into bounded pages. If an older page may contain a required earlier
-step, the worker carries the newer candidate and its source identity forward.
-It adds matching earlier events from each older page and assesses the candidate
-again. The worker clears an earlier unassessed result only after the new page
-covers that candidate. Missing pages never prove that an approval or
-prerequisite did not happen.
+Source paging remains bounded local loading. It does not make compact candidate
+selection exhaustive or restore omitted history. Missing pages cannot prove
+that an approval or prerequisite did not happen.
 New activity is assessed after three minutes of inactivity. Appended new actions
 enter review even when compatible old judgments are reused. Settings can also
 queue sessions active in the selected 7-day or 30-day window. Historical runs
@@ -552,7 +575,7 @@ limits; they do not establish complete history outside the selected window.
 | Codex       | I     | Y       | Y      | N        | N            | N        | `CodexRolloutJsonl` only; Clean covers sampled post-observation comparisons.                                                                 |
 | OpenCode    | I     | Y       | Y      | N        | N            | N        | `OpenCodeSqliteV2` only; JSONL export is not enabled; Clean covers sampled post-observation comparisons.                                    |
 | Pi          | I     | Y       | Y      | N        | N            | N        | `PiV3Jsonl` only; Clean covers sampled post-observation comparisons.                                                                         |
-| Cursor      | I     | Y       | Y      | N        | N            | N        | `CursorCliAgentJsonl`, `CursorCliStoreDb`, `CursorChatStoreDb`, and `CursorIdeComposer`; normalized store/composer routes may omit tool inputs. |
+| Cursor      | I     | Y       | Y      | N        | N            | N        | `CursorCliAgentJsonl` with bound native tool anchors only. `CursorCliStoreDb`, `CursorChatStoreDb`, and `CursorIdeComposer` loader admission supplies text, not reachable compact comparisons. |
 | Antigravity | I     | Y       | Y      | N        | N            | N        | `AntigravityBrainJsonl` and `AntigravitySqlite`; SQLite needs assessable companion transcript content.                                         |
 | Claude Code | D     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one supported current compaction control.                                                                                     |
 | Claude Code | T     | Y       | Y      | Y        | Y            | Y        | Verification needs a later complete lower control on the same route and model.                                                               |
@@ -614,15 +637,15 @@ limits; they do not establish complete history outside the selected window.
 | Pi | SkillOpportunities | Y | Y | N | N | N | Native 0.84.4 core V3 retained root; wrapper selection/requests do not prove extension identity or successful execution; current inventory is not historical visibility. |
 | Cursor | SkillOpportunities | N | N | N | N | N | No accepted source format or product descriptor/report path is available. |
 | Antigravity | SkillOpportunities | N | N | N | N | N | No accepted source format or product descriptor/report path is available. |
-| Claude Code | OverExploring | Y | Y | N | N | N | Native CLI 2.1.278 retained task context and bound Read requests; within-file targets require matched text results with observed extents; no whole-file inference. |
+| Claude Code | OverExploring | Y | Y | N | N | N | Native CLI 2.1.278 retained task and bound successful complete Read results; repeats need known equal extents and exact full-output equality. Substantial irrelevant-read samples remain limited; no whole-file inference. |
 | Codex | OverExploring | Y | Y | N | N | N | Native 0.160.1 retained task context and pinned numbered single-file shell slice requests; observed extents require native item/path and stdout joins; other shell forms unsupported. |
-| OpenCode | OverExploring | Y | Y | N | N | N | Native `OpenCodeSqliteV2` retained text task context and bound read requests. Within-file targets require pinned numbered result extents; no verification or savings. |
-| Pi | OverExploring | Y | Y | N | N | N | Native 0.84.4 core V3 retained task context and bound Read requests; within-file targets require exact text/clipping extents; continuation is not whole-file access. |
+| OpenCode | OverExploring | Y | Y | N | N | N | Native `OpenCodeSqliteV2` retained task and bound successful complete read results. Repeats need pinned equal numbered extents and full-output equality; clipped results cannot qualify. No verification or savings. |
+| Pi | OverExploring | Y | Y | N | N | N | Native 0.84.4 core V3 retained task and bound successful complete Read results; repeats need known equal extents and full-output equality. Native truncation excludes affected candidates; continuation is not whole-file access. |
 | Cursor | OverExploring | N | N | N | N | N | Complete task history and observed-result support are unavailable. |
 | Antigravity | OverExploring | N | N | N | N | N | Complete task history and observed-result support are unavailable. |
 | Claude Code | ScopeCreep | Y | Y | N | N | N | Native CLI 2.1.278 retained root with explicit human markers; SDK/meta/synthetic text and tool permission do not authorize scope; original retention not proved. |
 | Codex | ScopeCreep | Y | Y | N | N | N | Native 0.160.1 pinned retained root; qualified single-local environment context is non-authorizing; unknown-origin answers and skill selections cannot approve scope. |
-| OpenCode | ScopeCreep | Y | Y | N | N | N | Native `OpenCodeSqliteV2` current retained root scope only. Requests use intact latest compact scope with explicit partial-history limits when needed; later recorded approval withdraws stale findings. Missing influence or scope fit is unassessed. Original historical retention is not proved. |
+| OpenCode | ScopeCreep | Y | Y | N | N | N | Native `OpenCodeSqliteV2` retained task and sufficient authority history, with bound performed work and outcomes. Required task/authorization units must fit intact. Later user acceptance suppresses stale findings. Ambiguous patch bindings and invalid dependencies stay unassessed. Original historical retention is not proved. |
 | Pi | ScopeCreep | Y | Y | N | N | N | Native 0.84.4 core V3 linear retained root; exact user argument ranges stay separate from skill documents; extension answers do not prove human origin. |
 | Cursor | ScopeCreep | N | N | N | N | N | Current retained root scope proof is unavailable. |
 | Antigravity | ScopeCreep | N | N | N | N | N | Current retained root scope proof is unavailable. |

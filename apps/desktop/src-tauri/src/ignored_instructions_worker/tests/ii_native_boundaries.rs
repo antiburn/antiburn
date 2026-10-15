@@ -69,11 +69,9 @@ async fn prepare_native(
     *input
 }
 
-async fn evaluate_native(
+async fn evaluate_native_with_positive_answers(
     page: &PreparedInput,
-    permission: &str,
 ) -> ignored_instructions::AssessmentResult {
-    let permission = permission.to_owned();
     let mut context = page.context.clone();
     ignored_instructions::extend_jev_context_with_history_and_capabilities(
         &mut context,
@@ -98,28 +96,17 @@ async fn evaluate_native(
                     };
                     let local_key = &batch.answer_owners[key].1;
                     assert!(local_key.ends_with("::decision"), "{local_key}");
-                    let selected = if permission == "authoritative_approval" {
-                        "uncertain"
-                    } else {
-                        "conflict"
-                    };
+                    let selected = "conflict";
                     assert!(criteria.contains_key(selected), "{key}: {selected}");
                     (
                         key.clone(),
                         JevAnswer::Choice {
                             choice: selected.into(),
-                            confidence: 0.98,
+                            confidence: 1.0,
                             probabilities: criteria
                                 .keys()
                                 .map(|choice| {
-                                    (
-                                        choice.clone(),
-                                        if choice == selected {
-                                            0.98
-                                        } else {
-                                            0.02 / (criteria.len() - 1) as f64
-                                        },
-                                    )
+                                    (choice.clone(), if choice == selected { 1.0 } else { 0.0 })
                                 })
                                 .collect(),
                         },
@@ -163,6 +150,144 @@ fn findings(directory: &Path) -> crate::insights_report::CurrentFindingsPage {
     .unwrap()
 }
 
+#[test]
+fn preparation_distinguishes_missing_malformed_stale_and_empty_inputs() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    for (sql, expected) in [
+        (
+            "DELETE FROM session_evidence",
+            Some(PreparationUnavailable::EvidenceMissing),
+        ),
+        (
+            "UPDATE session_evidence SET evidence_json = NULL",
+            Some(PreparationUnavailable::EvidenceMissing),
+        ),
+        (
+            "UPDATE session_evidence SET evidence_json = '{bad'",
+            Some(PreparationUnavailable::EvidenceMalformed),
+        ),
+        (
+            "UPDATE session_evidence SET status = 'pending'",
+            Some(PreparationUnavailable::EvidenceNotPublished),
+        ),
+        (
+            "UPDATE session_evidence SET published_fence = published_fence + 1",
+            None,
+        ),
+    ] {
+        let fixture = crate::scope_creep_worker::tests::NativeFixture::new(1);
+        let candidate = fixture.publish();
+        let home = tempfile::tempdir().unwrap();
+        let origin = fixture
+            .store
+            .observe_burn_check_sample_origin(&candidate, CHECK_ID)
+            .unwrap();
+        fixture.store.lock().execute_batch(sql).unwrap();
+        let outcome = runtime
+            .block_on(prepare_selected_input_with_home(
+                &fixture.store,
+                &candidate,
+                None,
+                None,
+                home.path(),
+                &mut InstructionDiscoveryCache::default(),
+                SamplingPass {
+                    pairs: &[],
+                    round: 0,
+                    backlog: false,
+                    origin: &origin,
+                    capabilities: &ModelCapabilities::jev_default(),
+                    legacy_fixture: false,
+                },
+            ))
+            .unwrap();
+        match (expected, outcome) {
+            (Some(expected), PrepareInputOutcome::Unavailable(reason)) => {
+                assert_eq!(reason, expected);
+                assert_ne!(reason.category(), "evidence_unavailable");
+            }
+            (None, PrepareInputOutcome::Stale) => {}
+            _ => panic!("unexpected preparation outcome for {sql}"),
+        }
+    }
+    let fixture = crate::scope_creep_worker::tests::NativeFixture::new(1);
+    let candidate = fixture.publish();
+    let home = tempfile::tempdir().unwrap();
+    let origin = fixture
+        .store
+        .observe_burn_check_sample_origin(&candidate, CHECK_ID)
+        .unwrap();
+    let outcome = runtime
+        .block_on(prepare_selected_input_with_home(
+            &fixture.store,
+            &candidate,
+            None,
+            None,
+            home.path(),
+            &mut InstructionDiscoveryCache::default(),
+            SamplingPass {
+                pairs: &[],
+                round: 0,
+                backlog: false,
+                origin: &origin,
+                capabilities: &ModelCapabilities::jev_default(),
+                legacy_fixture: false,
+            },
+        ))
+        .unwrap();
+    let PrepareInputOutcome::Ready(input) = outcome else {
+        panic!("empty comparison inventory must remain ready")
+    };
+    let plan = ignored_instructions::IgnoredInstructionsCheck
+        .prepare_with_capabilities(&input.context, &ModelCapabilities::jev_default())
+        .unwrap();
+    assert_eq!(plan.prepared.coverage.candidate_pairs, 0);
+    assert!(!input.more_content);
+}
+
+#[test]
+fn readable_instruction_enrolls_when_a_sibling_file_is_invalid_utf8() {
+    let fixture = crate::scope_creep_worker::tests::NativeFixture::new(1);
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("AGENTS.md"), [0xff]).unwrap();
+    std::fs::write(
+        fixture.directory.path().join("AGENTS.md"),
+        "Do not change billing.\n",
+    )
+    .unwrap();
+    fixture
+        .store
+        .set_check_enabled(DetectorId::IgnoredInstructions, true)
+        .unwrap();
+    fixture
+        .store
+        .capture_burn_check_boundaries(&[CHECK_ID], 0)
+        .unwrap();
+    let mut candidate = fixture.publish();
+    candidate.session.cwd = Some(fixture.directory.path().to_str().unwrap().to_owned());
+    fixture
+        .store
+        .lock()
+        .execute("UPDATE session SET cwd = ?1", [&candidate.session.cwd])
+        .unwrap();
+    let page = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(prepare_native(
+            &fixture.store,
+            &candidate,
+            home.path(),
+            &ModelCapabilities::jev_default(),
+        ));
+    assert!(page.future_only);
+    assert_eq!(page.content.instructions.len(), 1);
+    assert!(
+        page.content.instructions[0]
+            .text
+            .contains("Do not change billing.")
+    );
+    assert!(!page.content.complete);
+}
+
 #[tokio::test]
 async fn four_native_agents_prepare_publish_and_report_without_invented_authority() {
     for (agent, id, format, records) in native_sources().into_iter().chain([(
@@ -174,11 +299,17 @@ async fn four_native_agents_prepare_publish_and_report_without_invented_authorit
         let directory = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path()).unwrap();
-        std::fs::write(
-            directory.path().join("AGENTS.md"),
-            "Do not run Bash commands.\n",
-        )
-        .unwrap();
+        let instruction_file = directory.path().join(if agent == "claude-code" {
+            "CLAUDE.md"
+        } else {
+            "AGENTS.md"
+        });
+        let rule = if agent == "codex" {
+            "Do not call the tool named `exec_command`.\n"
+        } else {
+            "Do not run Bash commands.\n"
+        };
+        std::fs::write(&instruction_file, rule).unwrap();
         store.capture_burn_check_boundaries(&[CHECK_ID], 0).unwrap();
         let mut record = synthetic_session_record(id, directory.path(), "native-v1", 9);
         record.key.agent = agent.into();
@@ -243,6 +374,7 @@ async fn four_native_agents_prepare_publish_and_report_without_invented_authorit
             .unwrap();
         candidate.historical = true;
         candidate.boundary_positions.clear();
+        candidate.boundary_at_epoch = 0;
         let capabilities = ModelCapabilities::jev_default();
         let page = prepare_native(&store, &candidate, home.path(), &capabilities).await;
         assert_eq!(page.content.source_format, format);
@@ -261,8 +393,12 @@ async fn four_native_agents_prepare_publish_and_report_without_invented_authorit
                 .iter()
                 .all(|rule| rule.provenance == InstructionProvenance::CurrentFileComparison)
         );
-        let result = evaluate_native(&page, "independent").await;
-        assert!(!result.findings.is_empty(), "{agent}: {result:?}");
+        let result = evaluate_native_with_positive_answers(&page).await;
+        assert!(
+            !result.findings.is_empty(),
+            "{agent}: {result:?}; instructions={:?}",
+            page.content.instructions
+        );
         for finding in &result.findings {
             assert!(matches!(
                 resolve_content_reference(
@@ -308,22 +444,22 @@ async fn four_native_agents_prepare_publish_and_report_without_invented_authorit
             );
         }
         std::fs::write(
-            directory.path().join("AGENTS.md"),
-            "Get maintainer approval before running Bash commands.\n",
+            &instruction_file,
+            if agent == "codex" {
+                "Do not call the tool named `exec_command` without user approval.\n"
+            } else {
+                "Do not run Bash commands without user approval.\n"
+            },
         )
         .unwrap();
         let approval_page = prepare_native(&store, &candidate, home.path(), &capabilities).await;
-        let approval = evaluate_native(&approval_page, "authoritative_approval").await;
+        let approval = evaluate_native_with_positive_answers(&approval_page).await;
         assert!(
             approval.findings.is_empty(),
             "{agent} must not invent human approval"
         );
         assert!(!approval.unassessed_comparisons.is_empty(), "{agent}");
-        std::fs::write(
-            directory.path().join("AGENTS.md"),
-            "Do not run Bash commands.\n",
-        )
-        .unwrap();
+        std::fs::write(&instruction_file, rule).unwrap();
         assert!(
             store
                 .queue_burn_check_assessment(&page.input, NOW, IDLE_SECS)

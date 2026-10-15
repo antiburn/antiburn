@@ -1,7 +1,9 @@
 //! Instruction snapshots and structure-aware Markdown segmentation.
 
+use crate::analysis::jev::markdown_ranges::{MarkdownBlockKind, MarkdownRanges, MarkdownSection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_INSTRUCTION_BYTES: usize = 128 * 1024;
 pub const MAX_RULE_SECTION_BYTES: usize = MAX_INSTRUCTION_BYTES;
@@ -136,6 +138,10 @@ pub fn segment_markdown(
         return Err(MarkdownLimit::FileTooLarge);
     }
 
+    let parsed = MarkdownRanges::parse(markdown);
+    let markdown = parsed.source;
+    let mut offsets = vec![0];
+    offsets.extend(markdown.match_indices('\n').map(|(offset, _)| offset + 1));
     let source_lines: Vec<&str> = markdown.lines().collect();
     let frontmatter_line_count = yaml_frontmatter_line_count(&source_lines).unwrap_or_default();
     let frontmatter = source_lines[..frontmatter_line_count].join("\n");
@@ -146,7 +152,24 @@ pub fn segment_markdown(
     let mut document_context = String::new();
     let mut body = String::new();
     let mut start_line = line_offset.saturating_add(1);
-    let mut in_fence = false;
+    let mut headings_by_line = BTreeMap::new();
+    let mut setext_lines = BTreeSet::new();
+    for heading in &parsed.headings {
+        let line = offsets.partition_point(|offset| *offset <= heading.range.start) - 1;
+        let line_start = offsets[line];
+        let end_line = offsets.partition_point(|offset| *offset < heading.range.end);
+        headings_by_line.insert(line, (heading.level, heading.title.clone()));
+        if !markdown[line_start..]
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim_start()
+            .starts_with('#')
+            && end_line > line
+        {
+            setext_lines.insert(line.saturating_add(1));
+        }
+    }
 
     let emit = |sections: &mut Vec<InstructionRuleSection>,
                 heading_stack: &[(usize, String, String)],
@@ -163,21 +186,41 @@ pub fn segment_markdown(
             .map(|(_, title, _)| title.as_str())
             .collect::<Vec<_>>()
             .join(" / ");
-        let content_class = if background_heading(&heading) && !contains_binding_language(body) {
-            InstructionContentClass::BackgroundOrExample
-        } else {
-            InstructionContentClass::RequirementCandidate
-        };
         let lines: Vec<&str> = body.lines().collect();
-        let mut in_code = false;
         let mut items = Vec::new();
-        for (index, line) in lines.iter().enumerate() {
-            if line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~") {
-                in_code = !in_code;
-            } else if !in_code && top_level_list_item(line) {
+        let body_start = offsets[start_line as usize - 1];
+        let body_end = offsets
+            .get(end_line as usize)
+            .copied()
+            .unwrap_or(markdown.len());
+        let has_prose = parsed
+            .prose_ranges
+            .iter()
+            .any(|range| range.start >= body_start && range.end <= body_end);
+        for block in &parsed.blocks {
+            if block.kind == MarkdownBlockKind::Item
+                && block.list_depth == 1
+                && !block.quoted
+                && block.range.start >= body_start
+                && block.range.end <= body_end
+                && !qualifies_prior_rule(
+                    markdown[block.range.clone()]
+                        .lines()
+                        .next()
+                        .unwrap_or_default(),
+                )
+            {
+                let index = offsets.partition_point(|offset| *offset <= block.range.start)
+                    - start_line as usize;
                 items.push(index);
             }
         }
+        let content_class =
+            if !has_prose || (background_heading(&heading) && !contains_binding_language(body)) {
+                InstructionContentClass::BackgroundOrExample
+            } else {
+                InstructionContentClass::RequirementCandidate
+            };
         let ranges: Vec<(usize, usize)> = if items.len() > 1 && items.len() <= MAX_SPLIT_LIST_ITEMS
         {
             items
@@ -233,41 +276,13 @@ pub fn segment_markdown(
         Ok(())
     };
 
-    let mut skip_setext_underline = false;
     for (index, line) in lines.iter().enumerate() {
-        if skip_setext_underline {
-            skip_setext_underline = false;
+        let source_line = frontmatter_line_count + index;
+        if setext_lines.contains(&source_line) {
             continue;
         }
         let line_number = line_offset.saturating_add(index as u32).saturating_add(1);
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_fence = !in_fence;
-        }
-        let setext = (!in_fence)
-            .then(|| lines.get(index + 1).map(|next| (trimmed, next.trim())))
-            .flatten()
-            .and_then(|(title, underline)| {
-                let level = if !title.is_empty()
-                    && !underline.is_empty()
-                    && underline.chars().all(|c| c == '=')
-                {
-                    Some(1)
-                } else if !title.is_empty()
-                    && !underline.is_empty()
-                    && underline.chars().all(|c| c == '-')
-                {
-                    Some(2)
-                } else {
-                    None
-                }?;
-                Some((level, title))
-            });
-        let heading = if !in_fence {
-            markdown_heading(trimmed).or(setext)
-        } else {
-            None
-        };
+        let heading = headings_by_line.get(&source_line);
         if let Some((level, title)) = heading {
             if heading_stack.is_empty() {
                 document_context.clone_from(&body);
@@ -287,15 +302,18 @@ pub fn segment_markdown(
             body.clear();
             while heading_stack
                 .last()
-                .is_some_and(|(parent_level, _, _)| *parent_level >= level)
+                .is_some_and(|(parent_level, _, _)| *parent_level >= *level)
             {
                 heading_stack.pop();
             }
-            heading_stack.push((level, title.to_owned(), String::new()));
-            start_line = line_number + if setext.is_some() { 2 } else { 1 };
-            if setext.is_some() {
-                skip_setext_underline = true;
-            }
+            heading_stack.push((*level, title.clone(), String::new()));
+            start_line = line_number.saturating_add(
+                if setext_lines.contains(&source_line.saturating_add(1)) {
+                    2
+                } else {
+                    1
+                },
+            );
         } else {
             if body.is_empty() && line.trim().is_empty() {
                 start_line = line_number.saturating_add(1);
@@ -315,29 +333,17 @@ pub fn segment_markdown(
         start_line,
         line_offset.saturating_add(lines.len() as u32),
     )?;
-    attach_section_context(markdown, &mut sections);
+    attach_section_context(markdown, &mut sections, &parsed.sections);
     Ok(sections)
 }
 
-fn attach_section_context(markdown: &str, sections: &mut [InstructionRuleSection]) {
+fn attach_section_context(
+    markdown: &str,
+    sections: &mut [InstructionRuleSection],
+    regions: &[MarkdownSection],
+) {
     let mut offsets = vec![0];
     offsets.extend(markdown.match_indices('\n').map(|(offset, _)| offset + 1));
-    let headings = context_headings(markdown);
-    let mut regions: Vec<(usize, usize, Option<usize>)> = Vec::new();
-    let mut ancestors: Vec<usize> = Vec::new();
-    for (index, &(start, level)) in headings.iter().enumerate() {
-        while ancestors
-            .last()
-            .is_some_and(|parent| headings[*parent].1 >= level)
-        {
-            let parent = ancestors
-                .pop()
-                .expect("the current heading has an ancestor");
-            regions[parent].1 = start;
-        }
-        regions.push((start, markdown.len(), ancestors.last().copied()));
-        ancestors.push(index);
-    }
     for section in sections {
         let target_start = offsets[(section.start_line - 1) as usize];
         let target_end = offsets
@@ -349,11 +355,12 @@ fn attach_section_context(markdown: &str, sections: &mut [InstructionRuleSection
         let mut enclosing_end = target_end;
         let mut context_clipped = false;
         let mut ancestor = regions
-            .partition_point(|(start, _, _)| *start <= target_start)
+            .partition_point(|region| region.range.start <= target_start)
             .checked_sub(1);
         while let Some(position) = ancestor {
-            let (start, end, parent) = regions[position];
-            ancestor = parent;
+            let region = &regions[position];
+            let (start, end) = (region.range.start, region.range.end);
+            ancestor = region.parent;
             if end < target_end {
                 continue;
             }
@@ -368,7 +375,9 @@ fn attach_section_context(markdown: &str, sections: &mut [InstructionRuleSection
                 context_clipped = true;
                 ranges.extend(adjacent_context_ranges(markdown, start, end, target_start));
             } else {
-                let prelude_end = headings.get(position + 1).map_or(end, |(start, _)| *start);
+                let prelude_end = regions
+                    .get(position + 1)
+                    .map_or(end, |region| region.range.start);
                 context_clipped |= prelude_end - start > MAX_CHUNK_BYTES;
                 let prelude = chunk_text_with_ranges(&markdown[start..prelude_end]);
                 if let Some(&(first, last)) = prelude.last() {
@@ -424,46 +433,6 @@ fn attach_section_context(markdown: &str, sections: &mut [InstructionRuleSection
             })
             .collect();
     }
-}
-
-fn context_headings(markdown: &str) -> Vec<(usize, usize)> {
-    let mut headings = Vec::new();
-    let lines = markdown.lines().collect::<Vec<_>>();
-    let mut offset = 0;
-    let mut in_fence = false;
-    let frontmatter = yaml_frontmatter_line_count(&lines).unwrap_or_default();
-    for (index, line) in lines.iter().enumerate() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_fence = !in_fence;
-        }
-        if !in_fence && index >= frontmatter {
-            let level = markdown_heading(trimmed)
-                .map(|(level, _)| level)
-                .or_else(|| {
-                    let underline = lines.get(index + 1)?.trim();
-                    if trimmed.is_empty() || underline.is_empty() {
-                        None
-                    } else if underline.chars().all(|c| c == '=') {
-                        Some(1)
-                    } else if underline.chars().all(|c| c == '-') {
-                        Some(2)
-                    } else {
-                        None
-                    }
-                });
-            if let Some(level) = level {
-                headings.push((offset, level));
-            }
-        }
-        offset += line.len()
-            + if markdown.as_bytes().get(offset + line.len()) == Some(&b'\r') {
-                2
-            } else {
-                1
-            };
-    }
-    headings
 }
 
 fn adjacent_context_ranges(
@@ -587,7 +556,7 @@ fn structural_line_boundary(text: &str) -> Option<usize> {
 }
 
 fn markdown_rule_start(line: &str) -> bool {
-    markdown_heading(line).is_some()
+    line.trim_start().starts_with('#')
         || line.starts_with("- ")
         || line.starts_with("* ")
         || line.starts_with("+ ")
@@ -625,45 +594,19 @@ fn yaml_frontmatter_line_count(lines: &[&str]) -> Option<usize> {
         .then_some(end + 1)
 }
 
-fn top_level_list_item(line: &str) -> bool {
-    let text = if let Some(rest) = line
-        .strip_prefix("- ")
-        .or_else(|| line.strip_prefix("* "))
-        .or_else(|| line.strip_prefix("+ "))
-    {
-        rest
-    } else if let Some((number, rest)) = line.split_once(". ") {
-        if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
-            return false;
-        }
-        rest
-    } else {
-        return false;
-    };
+fn qualifies_prior_rule(line: &str) -> bool {
+    let text = line.split_once(' ').map_or(line, |(_, text)| text);
     let lower = text.to_ascii_lowercase();
-    !text.is_empty()
-        && ![
-            "exception",
-            "except",
-            "unless",
-            "otherwise",
-            "example",
-            "e.g.",
-        ]
-        .iter()
-        .any(|word| lower.starts_with(word))
-}
-
-fn markdown_heading(line: &str) -> Option<(usize, &str)> {
-    let level = line
-        .chars()
-        .take_while(|character| *character == '#')
-        .count();
-    if (1..=6).contains(&level) && line.as_bytes().get(level) == Some(&b' ') {
-        let title = line[level..].trim();
-        return (!title.is_empty()).then_some((level, title));
-    }
-    None
+    [
+        "exception",
+        "except",
+        "unless",
+        "otherwise",
+        "example",
+        "e.g.",
+    ]
+    .iter()
+    .any(|word| lower.starts_with(word))
 }
 
 #[cfg(test)]

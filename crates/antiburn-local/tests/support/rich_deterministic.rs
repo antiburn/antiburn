@@ -91,6 +91,8 @@ pub fn tool(id: &str, order: u64, name: &str, text: &str) -> ContentAction {
     action.kind = "tool_input".to_owned();
     action.tool_name = Some(name.to_owned());
     action.tool_call_id = Some(format!("call-{id}"));
+    let input = serde_json::from_str(text).unwrap_or_else(|_| serde_json::json!({"command":text}));
+    action.normalized_fields = Some(native_fields(name, &input));
     action
 }
 
@@ -131,23 +133,6 @@ pub fn context(content: SessionContentEvidence) -> JevSessionContext {
     .unwrap()
 }
 
-#[derive(Clone, Copy)]
-pub struct Answers {
-    pub decision: &'static str,
-}
-
-impl Answers {
-    pub const CONFLICT: Self = Self {
-        decision: "conflict",
-    };
-    pub const FOLLOWS: Self = Self {
-        decision: "no_issue",
-    };
-    pub const MISSING: Self = Self {
-        decision: "uncertain",
-    };
-}
-
 pub fn choice(question: &JevQuestion, selected: &str) -> JevAnswer {
     let JevQuestion::Choice { criteria, .. } = question else {
         panic!("expected Choice")
@@ -163,22 +148,7 @@ pub fn choice(question: &JevQuestion, selected: &str) -> JevAnswer {
     }
 }
 
-pub fn results(items: &[JevWorkItem], answers: Answers) -> Vec<JevWorkItemResult> {
-    let packing = pack_work_items(items);
-    assert!(packing.skipped_item_ids.is_empty());
-    let mut output = Vec::new();
-    for batch in packing.batches {
-        assert_eq!(
-            validate_jev_request(&batch.request).unwrap(),
-            batch.serialized_bytes
-        );
-        let response = response(&batch, answers);
-        output.extend(unpack_jev_response(&batch, &response).unwrap());
-    }
-    output
-}
-
-pub fn response(batch: &JevRequestBatch, answers: Answers) -> JevResponse {
+pub fn response(batch: &JevRequestBatch) -> JevResponse {
     JevResponse {
         model: batch.request.model.clone(),
         answers: batch
@@ -191,66 +161,12 @@ pub fn response(batch: &JevRequestBatch, answers: Answers) -> JevResponse {
                     panic!("expected Choice")
                 };
                 assert_eq!(local.rsplit("::").next(), Some("decision"));
-                let selected = answers.decision;
-                (id.clone(), choice(question, selected))
+                (id.clone(), choice(question, "uncertain"))
             })
             .collect(),
         usage: JevUsage {
             input_tokens: 12,
             output_tokens: 2,
         },
-    }
-}
-
-pub fn assess(
-    context: &JevSessionContext,
-    answers: Answers,
-) -> (JevCheckPlan<AssessmentPlan>, AssessmentResult) {
-    let check = IgnoredInstructionsCheck;
-    let plan = check.prepare(context).unwrap();
-    assert!(check.classifications(context).unwrap().is_empty());
-    let initial = results(&plan.work_items, answers);
-    let reduced = check.reduce(&plan, &initial, true).unwrap();
-    (plan, reduced)
-}
-
-pub fn assert_citations(
-    plan: &JevCheckPlan<AssessmentPlan>,
-    result: &AssessmentResult,
-    raw: &SessionContentEvidence,
-) {
-    for comparison in &plan.prepared.comparisons {
-        let action = raw
-            .actions
-            .iter()
-            .find(|action| action.reference.id == comparison.reference.action_id)
-            .unwrap();
-        let selected = select_session_content(raw, INPUT_SELECTION);
-        let projected = selected
-            .actions
-            .iter()
-            .find(|selected| selected.reference.id == action.reference.id)
-            .unwrap();
-        assert_eq!(
-            &projected.text[comparison.action_text_start..comparison.action_text_end],
-            comparison.action.text
-        );
-        assert!(raw.instructions.iter().any(|snapshot| {
-            snapshot.id == comparison.reference.instruction_id
-                && snapshot.digest == comparison.reference.instruction_digest
-                && snapshot.sections.iter().any(|section| {
-                    section.id == comparison.reference.rule_id
-                        && section.start_line == comparison.reference.start_line
-                        && section.end_line == comparison.reference.end_line
-                })
-        }));
-    }
-    for finding in &result.findings {
-        assert!(
-            plan.prepared
-                .comparisons
-                .iter()
-                .any(|comparison| comparison.reference == finding.reference)
-        );
     }
 }

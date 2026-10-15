@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { parse } from "yaml";
 
 import { compactAislopOutput } from "./aislop-hook-output.mjs";
 import { run as runClaude } from "./claude-aislop-hook.mjs";
@@ -17,7 +18,14 @@ const shadow = join(probeRoot, "shadow");
 const probeRelative = `.aislop/probe-${process.pid}/fx/probe.rs`;
 const cleanRelative = `.aislop/probe-${process.pid}/fx/clean.rs`;
 const quotedRelative = `.aislop/probe-${process.pid}/fx/a "q"\\b.rs`;
-const probeSource = 'const API_URL: &str = "https://api.antiburn.invalid";\n';
+// .aislop/config.yml turns some rules off. The probe must use a rule that
+// stays an error, so that the hook reports exactly one finding.
+const probeRule = "ai-slop/rust-non-test-unwrap";
+const probeSource = 'fn probe() -> u8 { "1".parse().unwrap() }\n';
+// The lockfile records the exact version that a frozen install puts in
+// node_modules; package.json can hold a range.
+const lockedAislopVersion = parse(readFileSync(join(root, "pnpm-lock.yaml"), "utf8"))
+  .importers["."].devDependencies.aislop.version.replace(/\(.*$/, "");
 const telemetryEnv = {
   ...process.env,
   AISLOP_TELEMETRY_DEBUG: "1",
@@ -55,7 +63,7 @@ function assertProbeResult(result, path = probeRelative) {
   assert.match(
     context,
     new RegExp(
-      `^error ${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:1 ai-slop/hardcoded-url:`,
+      `^error ${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:1(?::\\d+)? ${probeRule}:`,
       "m",
     ),
   );
@@ -109,10 +117,17 @@ after(() => {
 
 test("the hook uses the pinned aislop executable", () => {
   const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  const version = packageJson.devDependencies.aislop;
-  assert.equal(version, "0.14.1");
-  assert.equal(execFileSync(AISLOP_BIN, ["--version"], { encoding: "utf8" }).trim(), version);
+  assert.ok(packageJson.devDependencies.aislop);
+  assert.equal(
+    execFileSync(AISLOP_BIN, ["--version"], { encoding: "utf8" }).trim(),
+    lockedAislopVersion,
+  );
   assert.match(AISLOP_BIN, /node_modules\/.bin\/aislop$/);
+});
+
+test("the repository config keeps the probe rule an error", () => {
+  const config = parse(readFileSync(join(root, ".aislop/config.yml"), "utf8"));
+  assert.equal(config.rules[probeRule], "error");
 });
 
 test("the committed hook files have the required shapes", () => {
@@ -329,7 +344,7 @@ test("the absolute pin ignores an aislop shadow on PATH", () => {
     execFileSync("/bin/sh", ["-c", "command -v aislop"], { env, encoding: "utf8" }).trim(),
     join(shadow, "aislop"),
   );
-  assert.equal(execFileSync(AISLOP_BIN, ["--version"], { env, encoding: "utf8" }).trim(), "0.14.1");
+  assert.equal(execFileSync(AISLOP_BIN, ["--version"], { env, encoding: "utf8" }).trim(), lockedAislopVersion);
   const codex = JSON.parse(readFileSync(join(root, ".codex/hooks.json"), "utf8"));
   const command = codex.hooks.PostToolUse[0].hooks[0].command;
   assertProbeResult(runCommand(command, eventFor(probeRelative), env));

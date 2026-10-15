@@ -8,8 +8,7 @@ use super::assessment::{
     ASSESSMENT_CHUNKING_REVISION, ASSESSMENT_MODEL, ASSESSMENT_PROJECTION_REVISION,
     ASSESSMENT_QUESTION_REVISION, ASSESSMENT_REDUCER_REVISION, AssessmentCoverage, AssessmentInput,
     AssessmentPlan, CandidateComparison, CounterEvidence, INPUT_SELECTION,
-    InstructionSourceCoverage, MAX_ASSESSMENT_CANDIDATES, MAX_SAMPLED_COMPARISONS_PER_PASS,
-    RuleActionRef,
+    InstructionSourceCoverage, MAX_ASSESSMENT_CANDIDATES, RuleActionRef,
 };
 use super::evidence::{ContentAction, content_action_digest};
 use super::instructions::{
@@ -21,9 +20,9 @@ use crate::analysis::jev::{JevError, JevSessionContext};
 
 const MAX_CONTEXT_EVENTS: usize = 3;
 pub(super) const MAX_COUNTER_EVIDENCE: usize = 4;
-pub(super) const MAX_RULE_TEXT_BYTES: usize = 2 * 1024;
-pub(super) const MAX_ACTION_TEXT_BYTES: usize = 1024;
-const MAX_CONTEXT_TEXT_BYTES: usize = 192;
+pub(super) const MAX_RULE_TEXT_BYTES: usize = 512;
+pub(super) const MAX_ACTION_TEXT_BYTES: usize = 512;
+const MAX_CONTEXT_TEXT_BYTES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct EvidenceTextLimits {
@@ -39,30 +38,8 @@ impl EvidenceTextLimits {
         context: MAX_CONTEXT_TEXT_BYTES,
     };
 
-    fn from_capabilities(capabilities: &ModelCapabilities) -> Self {
-        // Use one UTF-8 byte per token for this allocation bound. The packer
-        // checks the serialized request with the selected token estimator.
-        let budget = [
-            capabilities.request_body_bytes.value,
-            capabilities.state_and_longest_question_bytes.value,
-            capabilities.usable_state_tokens(),
-        ]
-        .into_iter()
-        .flatten()
-        .min()
-        .unwrap_or(0)
-        .saturating_sub(8 * 1024);
-        // Eight targets share one action and reserve space for earlier context.
-        let unit = usize::try_from(budget / 80).unwrap_or(usize::MAX);
-        // Keep the minimum evidence when limits are too small. The packer
-        // rejects an oversized item instead of removing required context.
-        Self {
-            rule: unit.saturating_mul(4).clamp(MAX_RULE_TEXT_BYTES, 8 * 1024),
-            action: unit
-                .saturating_mul(8)
-                .clamp(MAX_ACTION_TEXT_BYTES, 32 * 1024),
-            context: unit.clamp(MAX_CONTEXT_TEXT_BYTES, 2 * 1024),
-        }
+    fn from_capabilities(_capabilities: &ModelCapabilities) -> Self {
+        Self::LEGACY
     }
 }
 type RuleRange<'a> = (
@@ -72,35 +49,11 @@ type RuleRange<'a> = (
     usize,
 );
 type ActionRange<'a> = (&'a ContentAction, usize, usize);
-const SELECTOR_REVISION: u32 = 2;
+const SELECTOR_REVISION: u32 = 6;
 
 #[cfg(test)]
 std::thread_local! {
     static PREPARATION_COUNTS: std::cell::Cell<(usize, usize, usize)> = const { std::cell::Cell::new((0, 0, 0)) };
-    static REFERENCE_SELECTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(test)]
-pub(super) fn build_reference_context(
-    input: &AssessmentInput,
-    ledger: &SamplingLedger,
-    capabilities: &ModelCapabilities,
-) -> Result<JevSessionContext, JevError> {
-    REFERENCE_SELECTION.with(|enabled| enabled.set(true));
-    let result = build_jev_context_with_capabilities(input, ledger, capabilities);
-    REFERENCE_SELECTION.with(|enabled| enabled.set(false));
-    result
-}
-
-#[cfg(test)]
-pub(super) fn build_reference_plan(
-    input: AssessmentInput,
-    ledger: &SamplingLedger,
-) -> AssessmentPlan {
-    REFERENCE_SELECTION.with(|enabled| enabled.set(true));
-    let result = build_assessment_plan_with_sampling(input, ledger);
-    REFERENCE_SELECTION.with(|enabled| enabled.set(false));
-    result
 }
 
 #[cfg(test)]
@@ -202,13 +155,13 @@ impl PreparedAssessmentInput {
         );
         plan.model_version.clone_from(&capabilities.model);
         for comparison in &mut plan.comparisons {
-            comparison.prerequisite_episode =
-                Some(super::PrerequisiteContextPolicy::CoherentEpisode.select(
-                    comparison,
-                    &self.input.content.actions,
-                    capabilities,
-                    plan.complete_input,
-                ));
+            comparison.prerequisite_episode = Some(super::assessment::select_comparison_episode(
+                comparison,
+                &self.input.content.actions,
+                capabilities,
+                plan.complete_input,
+                super::PrerequisiteContextPolicy::CoherentEpisode,
+            ));
         }
         plan
     }
@@ -521,6 +474,12 @@ fn build_plan(
 ) -> AssessmentPlan {
     let content = &input.content;
     let mut limitations = content.limitations.clone();
+    if content.actions.iter().any(|action| {
+        action.authority == "assistant"
+            && matches!(action.kind.as_str(), "assistant" | "assistant_text")
+    }) {
+        limitations.push("assistant_text_outside_direct_action_scope".to_owned());
+    }
     let skipped_rules = content
         .instructions
         .iter()
@@ -530,7 +489,13 @@ fn build_plan(
                 .iter()
                 .filter(|rule| {
                     rule.content_class == InstructionContentClass::RequirementCandidate
-                        && !rule.evaluable
+                        && (!rule.evaluable
+                            || rule.text.len() > text_limits.rule
+                            || complete_rule_unit(&rule.text, &rule.context).len()
+                                > text_limits.rule
+                            || rule.context.iter().any(|range| {
+                                range.context_clipped || !range.enclosing_section_complete
+                            }))
                 })
                 .map(move |rule| format!("{}:{}", instruction.id, rule.id))
         })
@@ -541,7 +506,15 @@ fn build_plan(
     let skipped_actions = content
         .actions
         .iter()
-        .filter(|action| is_agent_action(action) && !has_selected_action_content(action))
+        .filter(|action| {
+            is_agent_action(action)
+                && (!has_selected_action_content(action)
+                    || action.text.len() > text_limits.action
+                    || action.truncated
+                    || !action.reference.stable
+                    || action.tool_call_id.is_none()
+                    || action.tool_name.is_none())
+        })
         .map(|action| action.reference.id.clone())
         .collect::<Vec<_>>();
     if !skipped_actions.is_empty() {
@@ -556,13 +529,17 @@ fn build_plan(
                 .iter()
                 .filter(move |rule| {
                     rule.content_class == InstructionContentClass::RequirementCandidate
+                        && rule
+                            .context
+                            .iter()
+                            .all(|range| !range.context_clipped && range.enclosing_section_complete)
                 })
                 .map(move |rule| (instruction, rule))
                 .filter(|(_, rule)| rule.evaluable)
                 .flat_map(|(instruction, rule)| {
-                    text_ranges(&rule.text, text_limits.rule).into_iter().map(
-                        move |(text_start, text_end)| (instruction, rule, text_start, text_end),
-                    )
+                    (rule.text.len() <= text_limits.rule
+                        && complete_rule_unit(&rule.text, &rule.context).len() <= text_limits.rule)
+                        .then_some((instruction, rule, 0, rule.text.len()))
                 })
                 .collect()
         })
@@ -593,14 +570,14 @@ fn build_plan(
                     })
         })
         .filter(|action| has_selected_action_content(action))
+        .filter(|action| {
+            !action.truncated
+                && action.reference.stable
+                && action.tool_call_id.is_some()
+                && action.tool_name.is_some()
+        })
         .flat_map(|action| {
-            (if atomic_command(action) {
-                vec![(0, action.text.len())]
-            } else {
-                text_ranges(&action.text, text_limits.action)
-            })
-            .into_iter()
-            .map(move |(text_start, text_end)| (action, text_start, text_end))
+            (action.text.len() <= text_limits.action).then_some((action, 0, action.text.len()))
         })
         .collect();
     let mut action_digests = BTreeMap::new();
@@ -623,6 +600,7 @@ fn build_plan(
         })
         .collect::<Vec<_>>();
     let evaluable_rules = rules.as_slice();
+    // This upper bound records the selection gap without a second matching sweep.
     let candidate_pairs = rules.len().saturating_mul(actions.len());
     let reviewed = resolve_saved_coordinates(
         &rules,
@@ -671,9 +649,10 @@ fn build_plan(
             .entry(instruction.source.clone())
             .or_default()
             .insert((instruction.id.clone(), rule.id.clone()));
-        *ranges_by_source
+        let ranges = ranges_by_source
             .entry(instruction.source.clone())
-            .or_default() += actions.len();
+            .or_default();
+        *ranges = ranges.saturating_add(actions.len());
     }
     let mut instruction_sources = ranges_by_source
         .into_iter()
@@ -814,6 +793,165 @@ fn build_plan(
     }
 }
 
+fn direct_anchor_match(
+    rule: &InstructionRuleSection,
+    start: usize,
+    end: usize,
+    action: &ContentAction,
+) -> bool {
+    let Some(text) = rule.text.get(start..end) else {
+        return false;
+    };
+    let facts = ExactActionFacts::from_selected(
+        action.tool_name.as_deref(),
+        action.normalized_fields.as_ref(),
+    );
+    if facts.malformed {
+        return false;
+    }
+    if text
+        .split(|character: char| !character.is_alphanumeric() && character != '_')
+        .any(|word| word.eq_ignore_ascii_case("secret"))
+        && facts
+            .command
+            .as_deref()
+            .is_some_and(|command| command.contains('$'))
+    {
+        return false;
+    }
+    let exact = crate::analysis::jev::exact_facts::reference_identifier_facts(text, &facts);
+    exact.iter().any(|fact| {
+        fact.matches_recorded_path
+            || fact.matches_recorded_command
+            || facts
+                .tool_name
+                .as_deref()
+                .is_some_and(|tool| fact.identifier.eq_ignore_ascii_case(tool))
+            || (fact.identifier.ends_with('/')
+                && facts
+                    .paths
+                    .iter()
+                    .any(|path| direct_path_identity(path) && path.starts_with(&fact.identifier)))
+            || fact.identifier.strip_suffix("**").is_some_and(|directory| {
+                directory.ends_with('/')
+                    && facts
+                        .paths
+                        .iter()
+                        .any(|path| direct_path_identity(path) && path.starts_with(directory))
+            })
+            || facts.command.as_deref().is_some_and(|command| {
+                command
+                    .strip_prefix(&fact.identifier)
+                    .is_some_and(|tail| tail.starts_with(char::is_whitespace))
+            })
+    }) || facts.command.as_deref().is_some_and(|command| {
+        let Some(line) = command
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with('#'))
+        else {
+            return false;
+        };
+        let mut words = line.split_whitespace();
+        let Some(program) = words.next() else {
+            return false;
+        };
+        if program.contains(['\'', '"', '$', '`', ';', '|']) {
+            return false;
+        }
+        if program.contains(['-', '/'])
+            && text.split_whitespace().any(|word| {
+                word.trim_matches('`')
+                    .trim_end_matches(['.', ',', ':', ';'])
+                    == program
+            })
+        {
+            return true;
+        }
+        let anchor = words
+            .next()
+            .filter(|word| !word.contains(['\'', '"', '$', '`', ';', '|']))
+            .map_or_else(
+                || program.to_owned(),
+                |argument| format!("{program} {argument}"),
+            );
+        text.split(['`', '\n']).any(|unit| {
+            unit.split_whitespace()
+                .map(|word| word.trim_end_matches(['.', ',', ':', ';']))
+                .collect::<Vec<_>>()
+                .windows(anchor.split_whitespace().count())
+                .any(|words| words.join(" ") == anchor)
+        })
+    }) || facts.tool_name.as_deref().is_some_and(|tool| {
+        let words = text
+            .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+            .collect::<Vec<_>>();
+        words.iter().any(|word| word.eq_ignore_ascii_case(tool))
+            && (tool.eq_ignore_ascii_case("Bash")
+                || words.iter().any(|word| word.eq_ignore_ascii_case("tool")))
+    })
+}
+
+fn direct_path_identity(path: &str) -> bool {
+    !path.contains(['\\', '$']) && path.split('/').all(|part| !matches!(part, "." | ".."))
+}
+
+pub(super) fn nested_scope_directory(source: &str) -> Option<&str> {
+    let source = source.strip_prefix("project:").unwrap_or(source);
+    let (directory, _) = source.rsplit_once('/')?;
+    (!directory.is_empty()
+        && directory.len() <= 192
+        && !directory.starts_with('/')
+        && !directory.contains(':')
+        && directory
+            .split('/')
+            .all(|part| !matches!(part, "" | "." | "..")))
+    .then_some(directory)
+}
+
+pub(super) fn instruction_scope_matches(
+    instruction: &InstructionSnapshot,
+    action: &ContentAction,
+) -> bool {
+    match instruction.scope {
+        super::InstructionScope::Global | super::InstructionScope::Project => true,
+        super::InstructionScope::Nested => {
+            let Some(directory) = nested_scope_directory(&instruction.source) else {
+                return false;
+            };
+            let facts = ExactActionFacts::from_selected(
+                action.tool_name.as_deref(),
+                action.normalized_fields.as_ref(),
+            );
+            let prefix = format!("{directory}/");
+            !facts.malformed
+                && facts.paths.iter().any(|path| {
+                    path.starts_with(&prefix)
+                        && path.split('/').all(|part| !matches!(part, "." | ".."))
+                })
+        }
+        super::InstructionScope::Conditional | super::InstructionScope::Unknown => false,
+    }
+}
+
+pub(super) fn complete_rule_unit(
+    text: &str,
+    context: &[super::instructions::InstructionContextRange],
+) -> String {
+    let surrounding = context
+        .iter()
+        .map(|range| range.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if surrounding.contains(text) {
+        surrounding
+    } else if surrounding.is_empty() {
+        text.to_owned()
+    } else {
+        format!("{text}\n{surrounding}")
+    }
+}
+
 struct ComparisonIndex<'a> {
     text_limits: EvidenceTextLimits,
     prior_history_complete: bool,
@@ -847,10 +985,6 @@ fn select_comparisons<'a>(
     if rules.is_empty() || actions.is_empty() {
         return SampleSelection::default();
     }
-    #[cfg(test)]
-    if REFERENCE_SELECTION.with(|enabled| enabled.get()) {
-        return select_comparisons_reference(rules, actions, ledger, cursor, index, None);
-    }
     let needs_selection = ranking.as_ref().is_none_or(|cached| {
         cached.limits != index.text_limits
             || cached.comparison_ids != ledger.comparison_ids
@@ -868,13 +1002,7 @@ fn select_comparisons<'a>(
             comparison_ids: ledger.comparison_ids.clone(),
             known_action_ids: ledger.known_action_ids.clone(),
             reviewed: index.reviewed.clone(),
-            coordinates: selection::select_coordinates(
-                rules,
-                actions,
-                ledger,
-                index.reviewed,
-                index,
-            ),
+            coordinates: selection::select_coordinates(rules, actions, ledger, index.reviewed),
         });
     }
     let chosen = &ranking
@@ -1007,213 +1135,6 @@ fn resolve_saved_coordinates<'a>(
         }
     }
     coordinates
-}
-
-#[cfg(test)]
-fn select_comparisons_reference<'a>(
-    rules: &[RuleRange<'a>],
-    actions: &[ActionRange<'a>],
-    ledger: &SamplingLedger,
-    cursor: Option<&str>,
-    index: &ComparisonIndex<'a>,
-    dependency_ids: Option<&BTreeSet<String>>,
-) -> SampleSelection {
-    if rules.is_empty() || actions.is_empty() {
-        return SampleSelection::default();
-    }
-    {
-        #[cfg(test)]
-        PREPARATION_COUNTS.with(|counts| {
-            let (projections, rankings, comparisons) = counts.get();
-            counts.set((projections, rankings + 1, comparisons));
-        });
-        let action_terms = actions
-            .iter()
-            .map(|(action, start, end)| {
-                let mut terms = meaningful_terms(&action.text[*start..*end]);
-                terms.extend(index.action_terms[&action.reference.id].iter().cloned());
-                if let Some(fields) = &action.normalized_fields {
-                    for value in fields.values.values() {
-                        terms.extend(meaningful_terms(value));
-                    }
-                }
-                terms
-            })
-            .collect::<Vec<_>>();
-        let mut document_frequency = BTreeMap::<&str, usize>::new();
-        for terms in &action_terms {
-            for term in terms {
-                *document_frequency.entry(term).or_default() += 1;
-            }
-        }
-        let action_paths = actions
-            .iter()
-            .map(|(action, _, _)| {
-                ExactActionFacts::from_selected(
-                    action.tool_name.as_deref(),
-                    action.normalized_fields.as_ref(),
-                )
-                .paths
-            })
-            .collect::<Vec<_>>();
-        let mut ranked = Vec::with_capacity(rules.len());
-        for (rule_index, (_, rule, start, end)) in rules.iter().enumerate() {
-            let terms = &index.rule_terms[rule_index];
-            let rule_text = &rule.text[*start..*end];
-            let mut scores = (0..actions.len())
-                .map(|action_index| {
-                    let (action, _, _) = actions[action_index];
-                    let overlap = terms
-                        .iter()
-                        .filter(|term| action_terms[action_index].contains(*term))
-                        .map(|term| 1000 / (1 + document_frequency[term.as_str()]))
-                        .sum::<usize>();
-                    let tool_match = action.tool_name.as_deref().is_some_and(|name| {
-                        rule_text
-                            .to_ascii_lowercase()
-                            .contains(&name.to_ascii_lowercase())
-                    });
-                    let path_match = action_paths[action_index]
-                        .iter()
-                        .any(|path| rule_text.contains(path));
-                    let risk = usize::from(
-                        ["never", "Never", "Do not", "must not"]
-                            .iter()
-                            .any(|word| rule_text.contains(word)),
-                    ) * usize::from(action.kind == "tool_input");
-                    let fresh = action_index * 16 / actions.len();
-                    let score = overlap.saturating_mul(8)
-                        + usize::from(tool_match) * 800
-                        + usize::from(path_match) * 1200
-                        + risk * 12
-                        + fresh;
-                    (score, action_index)
-                })
-                .collect::<Vec<_>>();
-            scores.sort_unstable_by(|left, right| {
-                right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1))
-            });
-            ranked.push(scores);
-        }
-        select_ranked_reference(
-            rules,
-            actions,
-            ledger,
-            cursor,
-            index,
-            dependency_ids,
-            &ranked,
-        )
-    }
-}
-
-#[cfg(test)]
-fn select_ranked_reference<'a>(
-    rules: &[RuleRange<'a>],
-    actions: &[ActionRange<'a>],
-    ledger: &SamplingLedger,
-    cursor: Option<&str>,
-    index: &ComparisonIndex<'a>,
-    dependency_ids: Option<&BTreeSet<String>>,
-    ranked: &[Vec<(usize, usize)>],
-) -> SampleSelection {
-    let limit = MAX_SAMPLED_COMPARISONS_PER_PASS.min(rules.len().saturating_mul(actions.len()));
-    let mut chosen = Vec::with_capacity(limit);
-    let mut used = BTreeSet::new();
-    let mut action_counts = vec![0usize; actions.len()];
-    // Complete the new-action tier before drawing from the older backlog.
-    for new_only in [true, false] {
-        if new_only && ledger.known_action_ids.is_empty() {
-            continue;
-        }
-        let eligible = |rule_index: usize, action_index: usize, used: &BTreeSet<(usize, usize)>| {
-            let (instruction, rule, start, end) = rules[rule_index];
-            let (action, action_start, action_end) = actions[action_index];
-            !used.contains(&(rule_index, action_index))
-                && (!new_only || !ledger.known_action_ids.contains(&action.reference.id))
-                && (ledger.comparison_ids.is_empty()
-                    || !ledger.comparison_ids.contains(&comparison_identity(
-                        instruction,
-                        rule,
-                        action,
-                        (start, end),
-                        (action_start, action_end),
-                    )))
-        };
-        // Reserve one relevant candidate and one low-overlap probe per rule.
-        for probe in [false, true] {
-            for (rule_index, scores) in ranked.iter().enumerate() {
-                if chosen.len() == limit {
-                    break;
-                }
-                if let Some(&(_, action_index)) = scores.iter().find(|(score, action_index)| {
-                    (*score < 16) == probe
-                        && action_counts[*action_index] < 3
-                        && eligible(rule_index, *action_index, &used)
-                }) {
-                    used.insert((rule_index, action_index));
-                    action_counts[action_index] += 1;
-                    chosen.push((rule_index, action_index));
-                }
-            }
-        }
-        let mut positions = vec![0usize; rules.len()];
-        while chosen.len() < limit {
-            let mut advanced = false;
-            for (rule_index, scores) in ranked.iter().enumerate() {
-                while let Some(&(_, action_index)) = scores.get(positions[rule_index]) {
-                    positions[rule_index] += 1;
-                    if eligible(rule_index, action_index, &used) {
-                        used.insert((rule_index, action_index));
-                        action_counts[action_index] += 1;
-                        chosen.push((rule_index, action_index));
-                        advanced = true;
-                        break;
-                    }
-                }
-                if chosen.len() == limit {
-                    break;
-                }
-            }
-            if !advanced {
-                break;
-            }
-        }
-    }
-    let offset = cursor
-        .and_then(|value| value.strip_prefix("sample:"))
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(0);
-    let end = offset
-        .saturating_add(if dependency_ids.is_some() {
-            MAX_SAMPLED_COMPARISONS_PER_PASS
-        } else {
-            MAX_ASSESSMENT_CANDIDATES
-        })
-        .min(chosen.len());
-    SampleSelection {
-        page_end: end,
-        next_cursor: (end < chosen.len()).then(|| format!("sample:{end}")),
-        comparisons: chosen
-            .get(offset..end)
-            .unwrap_or_default()
-            .iter()
-            .filter(|&&(rule_index, action_index)| {
-                dependency_ids.is_none_or(|ids| {
-                    let (instruction, rule, start, end) = rules[rule_index];
-                    let (action, action_start, action_end) = actions[action_index];
-                    ids.contains(&comparison_identity(
-                        instruction,
-                        rule,
-                        action,
-                        (start, end),
-                        (action_start, action_end),
-                    ))
-                })
-            })
-            .map(|&(rule, action)| comparison_at(rules, actions, rule, action, index))
-            .collect(),
-    }
 }
 
 #[derive(Default)]
@@ -1391,12 +1312,7 @@ pub(super) fn action_meaning(action: &CounterEvidence) -> &'static str {
 }
 
 fn is_agent_action(action: &ContentAction) -> bool {
-    !action.context_only
-        && matches!(action.turn_role.as_str(), "assistant" | "tool")
-        && matches!(
-            action.kind.as_str(),
-            "assistant" | "assistant_text" | "tool_input"
-        )
+    !action.context_only && action.authority == "assistant" && action.kind == "tool_input"
 }
 
 fn has_selected_action_content(action: &ContentAction) -> bool {
@@ -1404,7 +1320,7 @@ fn has_selected_action_content(action: &ContentAction) -> bool {
         || action
             .normalized_fields
             .as_ref()
-            .is_some_and(|fields| !fields.values.is_empty())
+            .is_some_and(|fields| fields.values.values().any(|value| !value.trim().is_empty()))
 }
 
 pub(super) fn atomic_command(action: &ContentAction) -> bool {
@@ -1711,11 +1627,6 @@ fn counter_event_with_range(
     }
 }
 
-#[cfg(test)]
-pub(super) fn action_text_ranges(text: &str) -> Vec<(usize, usize)> {
-    advancing_text_ranges(text, MAX_ACTION_TEXT_BYTES)
-}
-
 pub(super) fn bounded_text(text: &str, max_bytes: usize) -> (String, bool) {
     let end = text
         .char_indices()
@@ -1731,12 +1642,4 @@ pub(super) fn rule_text_fragment(comparison: &CandidateComparison) -> &str {
         .rule_text
         .get(comparison.rule_text_start..comparison.rule_text_end)
         .unwrap_or(&comparison.rule_text)
-}
-
-pub(super) fn text_ranges(text: &str, window_bytes: usize) -> Vec<(usize, usize)> {
-    advancing_text_ranges(text, window_bytes)
-}
-
-fn advancing_text_ranges(text: &str, window_bytes: usize) -> Vec<(usize, usize)> {
-    crate::analysis::jev::text_ranges::text_ranges(text, window_bytes, MAX_CONTEXT_TEXT_BYTES)
 }

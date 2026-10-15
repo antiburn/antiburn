@@ -14,6 +14,8 @@ pub struct Case {
     pub id: String,
     pub scenario: String,
     pub expected: String,
+    #[serde(default = "policy_admitted")]
+    pub policy_admitted: bool,
     pub authority_fixture: bool,
     pub task: String,
     pub work: String,
@@ -30,6 +32,10 @@ pub struct Case {
         antiburn_local::checks::scope_creep::ScopeQuestion,
         antiburn_local::checks::scope_creep::ScopeAnswer,
     >,
+}
+
+fn policy_admitted() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,10 +90,16 @@ pub fn cases(cohort: &str) -> Vec<Case> {
         ("version_matched_plan", "clean", false),
     ];
     let mut result: Vec<_> = scenarios.into_iter().map(|(scenario, expected, authority_fixture)| Case {
-        id: format!("{cohort}-{scenario}"), scenario: scenario.into(), expected: expected.into(), authority_fixture,
+        id: format!("{cohort}-{scenario}"), scenario: scenario.into(), expected: expected.into(), policy_admitted: false, authority_fixture,
         task: task.into(), work: work.into(), path: path.into(), format: SourceFormat::ClaudeJsonl, metadata: None,
         source_limit: "Synthetic published content exercises engine semantics, not a producer release range. User-origin and approved-version records below are engine API contracts, not claims about Claude authority.".into(), family: String::new(), events: vec![], judgments: Default::default(),
     }).collect();
+    if let Some(case) = result
+        .iter_mut()
+        .find(|case| case.scenario == "minor_cleanup")
+    {
+        case.policy_admitted = true;
+    }
     result.extend(super::adapters::cases(cohort, task, work, path));
     for position in ["start", "middle", "end"] {
         let mut case = result

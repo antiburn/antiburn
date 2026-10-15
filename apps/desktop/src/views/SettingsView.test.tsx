@@ -1100,7 +1100,9 @@ describe("SettingsView", () => {
           )
           expect(matches, control).toHaveLength(1)
           const match = matches[0]!
-          const visibleLabel = row.querySelector(":scope > p, :scope > div > h2")?.textContent
+          const visibleLabel = row.querySelector(
+            ":scope > p, :scope > div > h2, :scope > div > button[aria-expanded] > span",
+          )?.textContent
           expect(match.label, control).toBe(visibleLabel)
           expect(searchApp(visibleLabel!, os).some(({ id }) => id === match.id)).toBe(true)
         }
@@ -1119,6 +1121,12 @@ describe("SettingsView", () => {
           const row = container.querySelector(`[data-settings-control="${control}"]`)
           expect(row, control).not.toBeNull()
           expect(row!.contains(document.activeElement), control).toBe(true)
+          if (control === "smartCheckLimits") {
+            expect(screen.getByRole("button", { name: "Model limits" })).toHaveAttribute(
+              "aria-expanded",
+              "true",
+            )
+          }
         })
       }
       expect(invoke).not.toHaveBeenCalledWith("set_settings", expect.anything())
@@ -1245,6 +1253,9 @@ describe("SettingsView — window chrome", () => {
 
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "General",
+      "Agents",
+      "Sessions",
+      "Checks",
       "Notifications",
       "Usage",
       "Appearance",

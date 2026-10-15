@@ -37,6 +37,8 @@ const PROJECT_RULES: &str = "# React\n\
 # Release\n\
 - Get maintainer approval before publishing a release.\n\
 - Run focused tests before publishing a release.\n\
+\n\
+# Push\n\
 - Never run `git push --force`.\n";
 
 #[derive(Debug, Clone, Copy)]
@@ -579,8 +581,8 @@ async fn persisted_opencode_pages_preserve_order_and_expose_projection_limits() 
         later_plan
             .comparisons
             .iter()
-            .any(|comparison| comparison.reference.action_id == release_approval.reference.id),
-        "the earlier-page approval must be an eligible candidate action"
+            .all(|comparison| comparison.reference.action_id != release_approval.reference.id),
+        "assistant approval claims must not become direct-action candidates"
     );
 
     let serialized = serde_json::to_string(&paged.first_page.content.actions).unwrap();
@@ -743,15 +745,8 @@ async fn persisted_opencode_pages_preserve_order_and_expose_projection_limits() 
         );
         match case.id {
             "violates-multiple" => {
-                assert!(!selected.is_empty());
-                if selected.len() < 4 {
-                    assert!(
-                        assessment_plan(&recorded_eval_context(&case.first_page))
-                            .coverage
-                            .processing_limit_reached,
-                        "an incomplete targeted subset must expose the candidate limit"
-                    );
-                }
+                assert_eq!(selected.len(), 1);
+                assert!(assessment_plan(&recorded_context).coverage.unselected_pairs > 0);
                 assert_eq!(
                     targeted_work_item_ids(
                         case.id,
@@ -760,11 +755,70 @@ async fn persisted_opencode_pages_preserve_order_and_expose_projection_limits() 
                         &recorded_eval_context(&case.later_pages[0]),
                     )
                     .len(),
-                    1
+                    0
                 );
             }
-            "follows" => assert_eq!(selected.len(), 2),
-            "questionable" => assert_eq!(selected.len(), 1),
+            "follows" => {
+                assert_eq!(selected.len(), 1);
+                assert_eq!(production.len(), 1);
+                let plan = ignored_instructions::IgnoredInstructionsCheck
+                    .prepare(&recorded_context)
+                    .unwrap();
+                assert_eq!(plan.work_items.len(), 1);
+                let item = &plan.work_items[0];
+                assert_eq!(
+                    item.window.fields["candidate_action"]["text"],
+                    "git push origin synthetic-feature"
+                );
+                let answers = item
+                    .questions
+                    .keys()
+                    .map(|key| {
+                        (
+                            key.clone(),
+                            antiburn_local::analysis::jev::JevAnswer::Choice {
+                                choice: "no_conflict".to_owned(),
+                                confidence: 1.0,
+                                probabilities: BTreeMap::from([
+                                    ("conflict".to_owned(), 0.0),
+                                    ("no_conflict".to_owned(), 1.0),
+                                    ("uncertain".to_owned(), 0.0),
+                                ]),
+                            },
+                        )
+                    })
+                    .collect();
+                let response = JevWorkItemResult {
+                    request_id: "synthetic-compliance".to_owned(),
+                    work_item_id: item.id.clone(),
+                    answers,
+                    evidence: item.window.evidence.clone(),
+                    model: plan.capabilities.model.clone(),
+                    usage: antiburn_local::analysis::jev::JevUsage {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    },
+                };
+                let result = ignored_instructions::IgnoredInstructionsCheck
+                    .reduce(&plan, &[response], true)
+                    .unwrap();
+                assert!(result.findings.is_empty());
+                assert!(result.unassessed_comparisons.is_empty());
+                assert!(result.coverage.unselected_pairs > 0);
+            }
+            "questionable" => {
+                assert!(selected.is_empty());
+                assert!(production.is_empty());
+                let plan = ignored_instructions::IgnoredInstructionsCheck
+                    .prepare(&recorded_context)
+                    .unwrap();
+                let result = ignored_instructions::IgnoredInstructionsCheck
+                    .reduce(&plan, &[], true)
+                    .unwrap();
+                assert_eq!(result.request_count, 0);
+                assert!(result.findings.is_empty());
+                assert_eq!(result.coverage.selected_comparisons, 0);
+            }
             _ => unreachable!("the synthetic evaluation matrix is fixed"),
         }
     }
@@ -1506,7 +1560,10 @@ async fn build_eval_harness(shapes: Vec<EvalShape>) -> EvalHarness {
         {
             PrepareInputOutcome::Ready(input) => *input,
             PrepareInputOutcome::Unsupported => panic!("synthetic source is supported"),
-            PrepareInputOutcome::Unavailable => panic!("synthetic source is published"),
+            PrepareInputOutcome::Unavailable(reason) => {
+                panic!("synthetic source is published: {reason:?}")
+            }
+            PrepareInputOutcome::Stale => panic!("synthetic source remains current"),
         };
         if id == "questionable" {
             first_page.prior_history_complete = false;
@@ -1569,7 +1626,10 @@ async fn build_eval_harness(shapes: Vec<EvalShape>) -> EvalHarness {
             {
                 PrepareInputOutcome::Ready(input) => *input,
                 PrepareInputOutcome::Unsupported => panic!("synthetic source is supported"),
-                PrepareInputOutcome::Unavailable => panic!("synthetic source is published"),
+                PrepareInputOutcome::Unavailable(reason) => {
+                    panic!("synthetic source is published: {reason:?}")
+                }
+                PrepareInputOutcome::Stale => panic!("synthetic source remains current"),
             };
             offset = page.next_content_offset;
             later_pages.push(page);
@@ -2026,33 +2086,8 @@ fn targeted_work_item_ids(
 ) -> std::collections::BTreeSet<String> {
     let plan = assessment_plan(context);
     let targets: Vec<(&str, &str)> = match (case_id, page_index) {
-        ("violates-multiple", 0) => vec![
-            ("violation-effect", "Do not use `useEffect`"),
-            ("violation-lint", "Do not suppress dead-code"),
-            (
-                "release-too-early",
-                "Run focused tests before publishing a release",
-            ),
-            ("force-push", "Never run `git push --force`"),
-        ],
-        ("violates-multiple", 1) => vec![(
-            "release-approval",
-            "Get maintainer approval before publishing a release",
-        )],
-        ("follows", 0) => vec![
-            (
-                "compliant-release-summary",
-                "Get maintainer approval before publishing a release",
-            ),
-            (
-                "compliant-release-summary",
-                "Run focused tests before publishing a release",
-            ),
-        ],
-        ("questionable", 0) => vec![(
-            "questionable-release",
-            "Get maintainer approval before publishing a release",
-        )],
+        ("violates-multiple", 0) => vec![("force-push", "Never run `git push --force`")],
+        ("follows", 0) => vec![("compliant-force-push", "Never run `git push --force`")],
         _ => Vec::new(),
     };
     let mut work_item_ids = std::collections::BTreeSet::new();
@@ -2079,10 +2114,18 @@ fn targeted_work_item_ids(
         };
         work_item_ids.insert(comparison.id.clone());
     }
-    assert!(
-        !work_item_ids.is_empty(),
-        "eval case has at least one targeted comparison"
-    );
+    if matches!(case_id, "violates-multiple" | "follows") && page_index == 0 {
+        assert_eq!(
+            work_item_ids.len(),
+            1,
+            "The direct push comparison must remain reachable"
+        );
+    } else {
+        assert!(
+            plan.comparisons.is_empty(),
+            "The scope diagnostic has no direct-action target"
+        );
+    }
     work_item_ids
 }
 

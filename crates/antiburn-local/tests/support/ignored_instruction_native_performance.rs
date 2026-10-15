@@ -84,7 +84,7 @@ fn fixture(actions: usize, output_bytes: usize) -> SessionInput {
                 "content":[{"type":"text","text":"I requested git status."}]}})
         } else {
             json!({"type":"assistant","uuid":format!("a{index}"),"message":{"role":"assistant","model":"synthetic-model",
-                "content":[{"type":"thinking","thinking":"PRIVATE_NATIVE_THINKING"},{"type":"tool_use","id":format!("call{index}"),"name":"Bash","input":{"command":"git status"}}]}})
+                "content":[{"type":"thinking","thinking":"PRIVATE_NATIVE_THINKING"},{"type":"tool_use","id":format!("call{index}"),"name":"Bash","input":{"command":"git push --force"}}]}})
         };
         text.push_str(&record.to_string());
         text.push('\n');
@@ -186,7 +186,7 @@ fn sample(input: &SessionInput, actions: usize, output_bytes: usize) -> Value {
         let expected_text = if output_bytes == 0 {
             "I requested git status."
         } else {
-            "git status"
+            "git push --force"
         };
         if output_bytes == 0 {
             assert_eq!(selected_parts, actions.min(MAX_CONTENT_QUERY_PARTS));
@@ -217,7 +217,7 @@ fn sample(input: &SessionInput, actions: usize, output_bytes: usize) -> Value {
             selected.instructions = vec![
                 snapshot_from_text(
                     "AGENTS.md",
-                    "Do not force push.".to_owned(),
+                    "Do not run `git push --force`.".to_owned(),
                     InstructionProvenance::RecordedInjection,
                     InstructionScope::Project,
                 )
@@ -243,9 +243,46 @@ fn sample(input: &SessionInput, actions: usize, output_bytes: usize) -> Value {
                 );
             }
             let plan = IgnoredInstructionsCheck.prepare(&context).unwrap();
+            assert!(
+                !plan.work_items.is_empty(),
+                "expected an admitted tool-input comparison; prior_history_complete={}, content_complete={}, instruction_sections={:?}, coverage={:?}, plan_skipped_item_ids={:?}",
+                selected.complete,
+                selected.complete,
+                selected.instructions[0]
+                    .sections
+                    .iter()
+                    .map(|section| (&section.content_class, section.evaluable, &section.text))
+                    .collect::<Vec<_>>(),
+                plan.prepared.coverage,
+                plan.skipped_item_ids
+            );
             let packing = pack_work_items(&plan.work_items);
             assert!(packing.skipped_item_ids.is_empty());
-            assert!(!packing.batches.is_empty());
+            assert_eq!(packing.batches.len(), 1);
+            for item in &plan.work_items {
+                assert_eq!(
+                    item.window.fields["candidate_action"]["text"],
+                    expected_text
+                );
+                let candidate = item
+                    .window
+                    .evidence
+                    .iter()
+                    .find(|reference| reference.part_id == "candidate_action")
+                    .unwrap();
+                assert_eq!(candidate.content_kind, "tool_input");
+                assert!(
+                    selected
+                        .actions
+                        .iter()
+                        .any(|event| event.reference.id == candidate.source_id)
+                );
+            }
+            assert!(
+                !serde_json::to_string(&packing.batches[0].request)
+                    .unwrap()
+                    .contains("SELECTED_OUTPUT")
+            );
             largest_request_bytes = packing
                 .batches
                 .iter()

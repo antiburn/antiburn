@@ -4,8 +4,16 @@ use crate::checks::ignored_instructions::{
     INPUT_SELECTION, build_assessment_plan, build_jev_context, select_session_content,
 };
 
-fn anchored(actions: Vec<ContentAction>) -> (AssessmentPlan, CandidateComparison) {
-    let plan = build_assessment_plan(input(actions, "Request validation before publishing."));
+fn anchored(mut actions: Vec<ContentAction>) -> (AssessmentPlan, CandidateComparison) {
+    let action = actions
+        .iter_mut()
+        .find(|action| action.reference.id == "publish")
+        .unwrap();
+    action.kind = "tool_input".to_owned();
+    action.tool_name = Some("Bash".to_owned());
+    action.tool_call_id = Some("publish-call".to_owned());
+    action.text = "npm publish --access public".to_owned();
+    let plan = build_assessment_plan(input(actions, "Do not request `npm publish`."));
     let comparison = plan
         .comparisons
         .iter()
@@ -13,6 +21,14 @@ fn anchored(actions: Vec<ContentAction>) -> (AssessmentPlan, CandidateComparison
         .unwrap()
         .clone();
     (plan, comparison)
+}
+
+fn publish(order: i64, text: &str) -> ContentAction {
+    let mut action = event("publish", order, "assistant", "main", text);
+    action.kind = "tool_input".to_owned();
+    action.tool_name = Some("Bash".to_owned());
+    action.tool_call_id = Some("publish-call".to_owned());
+    action
 }
 
 #[test]
@@ -91,13 +107,8 @@ fn selected_episode_excludes_thinking_and_cannot_use_unproven_results_or_authori
     let mut user = event("approval", 3, "user", "main", "PRIVATE_APPROVAL");
     user.kind = "user_text".to_owned();
     let source = input(
-        vec![
-            thinking,
-            result,
-            user,
-            event("publish", 4, "assistant", "main", "Publish requested."),
-        ],
-        "Request validation before publishing.",
+        vec![thinking, result, user, publish(4, "npm publish")],
+        "Do not request `npm publish`.",
     );
     let selected = select_session_content(&source.content, INPUT_SELECTION);
     assert_eq!(selected.actions.len(), 3);
@@ -195,7 +206,7 @@ fn episode_revision_tracks_content_and_completeness_with_stable_anchor() {
 }
 
 #[test]
-fn oversized_support_reaches_production_as_exact_structural_ranges() {
+fn oversized_optional_support_keeps_local_exact_ranges_without_provider_payload() {
     use crate::analysis::jev::{JevAnswer, JevCheck, JevUsage, JevWorkItemResult};
     use crate::checks::ignored_instructions::IgnoredInstructionsCheck;
 
@@ -210,9 +221,9 @@ fn oversized_support_reaches_production_as_exact_structural_ranges() {
         vec![
             private,
             event("support", 1, "assistant", "main", &text),
-            event("publish", 2, "assistant", "main", "Publish requested."),
+            publish(2, "npm publish"),
         ],
-        "Request validation before publishing.",
+        "Do not request `npm publish`.",
     );
     let context = build_jev_context(&source).unwrap();
     let plan = IgnoredInstructionsCheck.prepare(&context).unwrap();
@@ -228,18 +239,17 @@ fn oversized_support_reaches_production_as_exact_structural_ranges() {
     let window = plan
         .work_items
         .iter()
-        .find(|item| item.window.fields["candidate_action"]["text"] == "Publish requested.")
+        .find(|item| item.window.fields["candidate_action"]["text"] == "npm publish")
         .unwrap();
-    let support = &window.window.fields["instruction_targets"][0]["earlier_counterevidence"][0];
-    let selected = support["text"].as_str().unwrap();
-    for marker in ["FIRST_CONTEXT", "MIDDLE_CONTEXT", "LAST_CONTEXT"] {
-        assert!(selected.contains(marker), "{marker}: {support}");
-    }
+    let selected = history.events[0].text.as_str();
+    assert!(selected.contains("FIRST_CONTEXT"));
+    assert!(selected.contains("LAST_CONTEXT"));
     assert!(selected.len() <= 4096);
-    assert_eq!(selected, history.events[0].text);
-    let ranges = support["selected_text_ranges"].as_array().unwrap();
-    assert!(ranges.len() > 1);
-    assert_eq!(ranges.len(), history.identities.len());
+    assert!(history.identities.len() > 1);
+    assert_eq!(
+        window.window.fields["instruction_targets"][0]["earlier_counterevidence"],
+        serde_json::json!([])
+    );
     assert!(
         !window
             .window
@@ -247,13 +257,13 @@ fn oversized_support_reaches_production_as_exact_structural_ranges() {
             .to_string()
             .contains("PRIVATE_THINKING")
     );
-    for (range, identity) in ranges.iter().zip(&history.identities) {
-        let start = range["start"].as_u64().unwrap() as usize;
-        let end = range["end"].as_u64().unwrap() as usize;
-        let selected_start = range["selected_text_start"].as_u64().unwrap() as usize;
-        let selected_end = range["selected_text_end"].as_u64().unwrap() as usize;
-        assert_eq!(&selected[selected_start..selected_end], &text[start..end]);
-        assert_eq!((identity.start_byte, identity.end_byte), (start, end));
+    let slices = history
+        .identities
+        .iter()
+        .map(|identity| &text[identity.start_byte..identity.end_byte])
+        .collect::<Vec<_>>();
+    assert_eq!(slices.join("\n"), selected);
+    for identity in &history.identities {
         assert_eq!(identity.source.id, "support");
         assert_eq!(
             identity.content_digest,
@@ -269,13 +279,12 @@ fn oversized_support_reaches_production_as_exact_structural_ranges() {
                 JevAnswer::Choice {
                     choice: "conflict".to_owned(),
                     probabilities: [
-                        ("conflict".to_owned(), 0.90),
-                        ("no_issue".to_owned(), 0.04),
-                        ("pending_completion".to_owned(), 0.03),
-                        ("uncertain".to_owned(), 0.03),
+                        ("conflict".to_owned(), 0.98),
+                        ("no_conflict".to_owned(), 0.01),
+                        ("uncertain".to_owned(), 0.01),
                     ]
                     .into(),
-                    confidence: 0.90,
+                    confidence: 0.98,
                 },
             )
         })
@@ -317,14 +326,15 @@ fn oversized_support_reaches_production_as_exact_structural_ranges() {
     let mut invalid = restored.clone();
     invalid.selected_evidence[1].start_byte = 0;
     assert!(!invalid.has_citation_proof());
-    for (identity, range) in restored.selected_evidence.iter().zip(ranges) {
-        let selected_start = range["selected_text_start"].as_u64().unwrap() as usize;
-        let selected_end = range["selected_text_end"].as_u64().unwrap() as usize;
-        assert_eq!(
-            &text[identity.start_byte..identity.end_byte],
-            &selected[selected_start..selected_end]
-        );
-    }
+    assert_eq!(
+        restored
+            .selected_evidence
+            .iter()
+            .map(|identity| &text[identity.start_byte..identity.end_byte])
+            .collect::<Vec<_>>()
+            .join("\n"),
+        selected
+    );
 }
 
 #[test]
@@ -338,6 +348,13 @@ fn saved_decision_requires_complete_exact_citations_and_legacy_has_no_record() {
     )]);
     let record = record(&plan, &comparison, None, Vec::new()).unwrap();
     assert!(record.contrast_template().is_some());
+    let basis = record.explanation_basis.as_ref().unwrap();
+    assert_eq!(basis.relationship, InstructionMismatch::RequirementConflict);
+    assert_eq!(
+        basis.instruction,
+        super::super::planning::rule_text_fragment(&comparison)
+    );
+    assert_eq!(basis.action, comparison.action.text);
     let saved = serde_json::to_string(&record).unwrap();
     assert_eq!(
         serde_json::from_str::<DecisionRecord>(&saved).unwrap(),
@@ -443,20 +460,21 @@ fn decision_proof_requires_every_selected_prerequisite_citation() {
     assert!(record(&plan, &comparison, Some(&obligation), Vec::new()).is_none());
 }
 #[test]
-fn source_bound_utf8_suffix_uses_absolute_bounds_once() {
-    let text = format!(
-        "{}\nI requested a prohibited operation.",
-        "界é🦀\n".repeat(800)
-    );
-    let source = input(
-        vec![event("publish", 1, "assistant", "main", &text)],
-        "Do not request that operation.",
-    );
+fn complete_utf8_action_binds_exactly_and_oversize_suffix_abstains() {
+    let oversized = format!("{}\nnpm publish", "# 界é🦀\n".repeat(800));
+    let rejected = build_assessment_plan(input(
+        vec![publish(1, &oversized)],
+        "Do not request `npm publish`.",
+    ));
+    assert!(rejected.comparisons.is_empty());
+    assert_eq!(rejected.coverage.skipped_actions, ["publish"]);
+    let text = "npm publish --tag '界é🦀'".to_owned();
+    let source = input(vec![publish(1, &text)], "Do not request `npm publish`.");
     let plan = build_assessment_plan(source);
     let comparison = plan
         .comparisons
         .iter()
-        .find(|comparison| comparison.action_text_start > 0)
+        .find(|comparison| comparison.reference.action_id == "publish")
         .unwrap();
     let binding = comparison.source_binding.as_ref().unwrap();
     assert!(binding.matches(comparison));

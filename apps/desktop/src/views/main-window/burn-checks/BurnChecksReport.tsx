@@ -3,6 +3,7 @@ import "../../../styles/burn-checks-report.css"
 import { ChevronRight, Clock, Hourglass } from "lucide-react"
 import { useCallback, useRef, useState, type KeyboardEvent, type MouseEvent } from "react"
 
+import { pluralize } from "../../../lib/presentation/text"
 import { BurnCheckFlame } from "../../../components/burn-checks/BurnCheckFlames"
 import { BURN_CHECK_MARKS } from "../../../components/burn-checks/burnCheckMarks"
 import { ScrollPane } from "../../../components/ui/ScrollPane"
@@ -32,15 +33,12 @@ import { checkRowPresentation as baseCheckRowPresentation } from "../../checks/c
 import type { BurnChecksController, BurnChecksControllerSnapshot } from "./BurnChecksController"
 import { BurnCheckCategoryIcon } from "./BurnCheckCategoryIcon"
 import { BurnCheckDetail, CheckDetailActions, CHECK_SENTENCES } from "./BurnCheckDetail"
-import {
-  BurnCheckTargetDetail,
-  EvidenceLimitsIcon,
-  SmartCheckEvidenceSkeleton,
-} from "./BurnCheckTargetDetail"
+import { BurnCheckTargetDetail, EvidenceLimitsIcon } from "./BurnCheckTargetDetail"
 import { BurnChecksHeader } from "./BurnChecksHeader"
 import { BurnChecksSavings } from "./BurnChecksSavings"
 import { BurnCheckDetailBody } from "./BurnCheckDetailBody"
 import { RemindLaterAction } from "./RemindLaterAction"
+import { smartCheckReviewPresentation } from "../../../lib/presentation/smartCheckReview"
 
 type ReportUiState = {
   reportKey: string
@@ -62,30 +60,28 @@ function checkRowPresentation(
       : null
   const reviewDetails = [
     coverage?.total === 0
-      ? "No eligible review targets."
+      ? "There were no matching items to review."
       : percent == null
-        ? "The review percentage is unknown because the full target count is unavailable."
-        : `${percent}% of review targets have been reviewed.`,
-    "The review target is 50% of eligible targets. This is a sampling goal, not a confidence score or a guarantee that no issues remain.",
-    "Reviewed targets have a terminal review answer, including uncertain answers. Unanswered targets have no terminal review answer. Pending completion is a reviewed answer that waits for task completion.",
+        ? "The full number of matching items is not known, so the review share cannot be shown."
+        : `${percent}% of matching items have been reviewed.`,
+    "The check aims to review half of matching items. This is a sample, not proof that the rest are clear.",
+    "Reviewed means the check has an answer, even if that answer is unclear. Not reviewed means there is no answer yet. Waiting means the answer depends on the task finishing.",
   ]
   const coverageLabel = coverage
     ? [
         coverage.total == null
           ? `${coverage.reviewed} reviewed`
           : `${coverage.reviewed} of ${coverage.total} reviewed`,
-        coverage.uncertain == null
-          ? "uncertain count unknown"
-          : `${coverage.uncertain} uncertain`,
+        coverage.uncertain == null ? "unclear count unknown" : `${coverage.uncertain} unclear`,
         coverage.pending == null
-          ? "unanswered count unknown"
-          : `${coverage.pending} unanswered`,
+          ? "not reviewed count unknown"
+          : `${coverage.pending} not reviewed`,
         ...(coverage.pendingCompletion == null
           ? check.id === "ignoredInstructions"
-            ? ["pending completion count unknown"]
+            ? ["waiting count unknown"]
             : []
           : coverage.pendingCompletion > 0
-            ? [`${coverage.pendingCompletion} pending completion`]
+            ? [`${coverage.pendingCompletion} waiting for task to finish`]
             : []),
         ...(percent == null ? [] : [`${percent}% reviewed`]),
       ].join(" · ")
@@ -119,12 +115,9 @@ function LoadingCheckDetail({ smart = false }: { smart?: boolean }) {
       )}
       <Skeleton className="h-4 w-72 max-w-full" />
       {smart ? (
-        <>
-          <Skeleton className="mt-3 h-3 w-48 max-w-full" />
-          <div className="mt-3 min-h-72">
-            <SmartCheckEvidenceSkeleton />
-          </div>
-        </>
+        <p role="status" className="mt-2 type-callout text-label-secondary">
+          Loading findings…
+        </p>
       ) : (
         <>
           <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -144,10 +137,12 @@ function TargetDetails({
   targets,
   refresh,
   openEvidence = false,
+  evidenceActive = true,
 }: {
   targets: BurnCheckTargetPayload[]
   refresh: () => void
   openEvidence?: boolean
+  evidenceActive?: boolean
 }) {
   return (
     <div className="burn-check-target-list">
@@ -158,6 +153,7 @@ function TargetDetails({
           refresh={refresh}
           reportRow
           openEvidence={openEvidence}
+          evidenceActive={evidenceActive}
         />
       ))}
     </div>
@@ -167,7 +163,7 @@ function TargetDetails({
 function TargetLoadError({ retry }: { retry: () => void }) {
   return (
     <article role="alert" className="rounded-control bg-surface-card/75 p-4">
-      <p className="type-callout text-label-secondary">Could not load this check's details.</p>
+      <p className="type-callout text-label-secondary">The check details did not load.</p>
       <button type="button" onClick={retry} className="burn-check-action mt-2 type-callout">
         Retry
       </button>
@@ -175,22 +171,61 @@ function TargetLoadError({ retry }: { retry: () => void }) {
   )
 }
 
+type CheckDetailContentProps = {
+  check: ChecksCategoryPayload
+  session: BurnChecksController
+  state: BurnChecksControllerSnapshot
+  evidenceActive: boolean
+}
+
 function CheckDetailContent({
   check,
   session,
   state,
-}: {
-  check: ChecksCategoryPayload
-  session: BurnChecksController
-  state: BurnChecksControllerSnapshot
-}) {
+  evidenceActive,
+}: CheckDetailContentProps) {
   const targets = state.targets[check.id]
+  const review = smartCheckReviewPresentation(check)
+  return (
+    <>
+      {review.progress && (
+        <p role="status" className="mb-3 type-callout tabular-nums text-label-secondary">
+          {review.progress}
+        </p>
+      )}
+      {!review.terminalLabel && review.description && (
+        <p className="mb-3 type-callout text-label-secondary">{review.description}</p>
+      )}
+      {targets?.data && targets.error && (
+        <TargetLoadError retry={() => session.loadTargets(check.id, true)} />
+      )}
+      <CheckDetailBody
+        check={check}
+        session={session}
+        state={state}
+        evidenceActive={evidenceActive}
+      />
+    </>
+  )
+}
+
+function CheckDetailBody({ check, session, state, evidenceActive }: CheckDetailContentProps) {
+  const targets = state.targets[check.id]
+  const review = smartCheckReviewPresentation(check)
+  if (review.terminalLabel) {
+    return (
+      <div className="space-y-1 rounded-control bg-surface-card/75 p-4">
+        <p className="type-body text-label">{review.terminalLabel}</p>
+        <p className="type-callout text-label-secondary">{review.description}</p>
+      </div>
+    )
+  }
   if (check.lifecycle == null || checkRowPresentation(check).provisional) {
     return (
       <p className="type-callout text-label-secondary">
         {checkRowPresentation(check).provisional
           ? "No issues found yet."
-          : "This check has not been assessed for the available sessions."}
+          : "This check has not reviewed any sessions yet."}
       </p>
     )
   }
@@ -206,8 +241,8 @@ function CheckDetailContent({
         />
         <p className="type-callout text-label-secondary">
           {check.sampled
-            ? `No finding in the assessed sample across ${check.clean} ${check.clean === 1 ? "session" : "sessions"}. Unassessed work may remain.`
-            : `No finding in ${check.clean} complete ${check.clean === 1 ? "session" : "sessions"}.`}
+            ? `No issue was found in the reviewed sample across ${check.clean} ${pluralize(check.clean, "session", "sessions")}. Other work may not have been checked.`
+            : `No issue was found in ${check.clean} complete ${pluralize(check.clean, "session", "sessions")}.`}
         </p>
       </div>
     )
@@ -233,7 +268,13 @@ function CheckDetailContent({
         />
       )
     }
-    return <TargetDetails targets={targets.data.targets} refresh={session.refresh} />
+    return (
+      <TargetDetails
+        targets={targets.data.targets}
+        refresh={session.refresh}
+        evidenceActive={evidenceActive}
+      />
+    )
   }
   if (
     (check.id === "ignoredInstructions" ||
@@ -243,7 +284,11 @@ function CheckDetailContent({
     targets.data.targets.length > 0
   ) {
     return (
-      <TargetDetails targets={targets.data.targets} refresh={session.refresh} openEvidence />
+      <TargetDetails
+        targets={targets.data.targets}
+        refresh={session.refresh}
+        evidenceActive={evidenceActive}
+      />
     )
   }
   return (
@@ -303,15 +348,15 @@ function CheckDetail({
   )
   const targetList = state.targets[check.id]?.data
   const named = isUnusedResourceDetector(check.id)
-  const resourceNames =
+  const resourceNames: [string, string] =
     check.id === "unusedSkills"
       ? ["skill", "skills"]
       : check.id === "unusedMcpServers"
-        ? ["MCP server", "MCP servers"]
+        ? ["tool server", "tool servers"]
         : ["tool", "tools"]
   const resourceCount =
     named && targetList
-      ? `${targetList.truncated ? "At least " : ""}${targetList.targets.length} affected ${resourceNames[targetList.targets.length === 1 ? 0 : 1]}`
+      ? `${targetList.truncated ? "At least " : ""}${targetList.targets.length} affected ${pluralize(targetList.targets.length, resourceNames[0], resourceNames[1])}`
       : null
   const showFindingActions = check.lifecycle === "failing" && check.finding > 0 && targetList
   const showSnoozedAction = snooze !== undefined || check.lifecycle === "awaitingVerification"
@@ -396,9 +441,9 @@ function CheckDetail({
           {check.lifecycle === "failing" && (
             <p className="w-full type-body text-pretty text-label-secondary">
               {check.id === "unusedMcpServers"
-                ? "These servers loaded tools that weren’t used. Disable each server where you don’t need it."
+                ? "These tool servers loaded tools that were not used. Turn off servers you do not need."
                 : check.id === "unusedSkills"
-                  ? "These skills added context that wasn’t used. Load each skill only where the work needs it."
+                  ? "These skills added instructions that were not used. Load each skill only when the work needs it."
                   : CHECK_SENTENCES[check.id]}
             </p>
           )}
@@ -411,11 +456,14 @@ function CheckDetail({
             check.lifecycle === "failing" && "pt-[var(--space-lg)]",
           )}
         >
-          {visible && (
+          {(visible ||
+            (smartCheckForDetector(check.id) != null &&
+              state.targets[check.id]?.data != null)) && (
             <CheckDetailContent
               check={snooze ? { ...check, checking: false } : check}
               session={session}
               state={state}
+              evidenceActive={visible && state.active}
             />
           )}
         </div>
@@ -447,6 +495,10 @@ function CheckMetadata({
       <span className="mt-0.5 block font-mono type-footnote tabular-nums">
         {presentation.provisional ? (
           <CheckingText text="Checking" />
+        ) : smartCheckReviewPresentation(check).terminalLabel ? (
+          <span className="text-label-secondary">
+            {smartCheckReviewPresentation(check).terminalLabel}
+          </span>
         ) : check.lifecycle === "passing" ? (
           <span className="text-burn-check-pass-fill">Passed</span>
         ) : (
@@ -550,15 +602,17 @@ function CheckTrigger({
     snoozeLabel ? { ...check, checking: false } : check,
     state.targets[check.id]?.data?.targets,
   )
-  const summary = presentation.provisional
-    ? "Checking"
-    : check.lifecycle == null
-      ? "Not assessed"
-      : check.lifecycle === "awaitingVerification"
-        ? "Awaiting verification"
-        : check.lifecycle === "passing"
-          ? "Passed"
-          : `${check.finding} failed · ${check.clean} passed${presentation.checking ? ` · ${checkingLabel(check)}` : ""}`
+  const summary =
+    smartCheckReviewPresentation(check).terminalLabel ??
+    (presentation.provisional
+      ? "Checking"
+      : check.lifecycle == null
+        ? "Not assessed"
+        : check.lifecycle === "awaitingVerification"
+          ? "Awaiting verification"
+          : check.lifecycle === "passing"
+            ? "Passed"
+            : `${check.finding} failed · ${check.clean} passed${presentation.checking ? ` · ${checkingLabel(check)}` : ""}`)
   const metric = presentation.metric?.replace("<", "Under ").replace(" token", "")
   const agents = [
     ...new Map(
@@ -1091,10 +1145,14 @@ export function BurnChecksReport({
                 passedDetectors={new Set(activeWins.map((check) => check.id))}
               />
               {presentation.noEnabledChecks && (
-                <p className="type-body text-label-secondary">No checks enabled.</p>
+                <p className="type-body text-label-secondary">
+                  No checks are turned on. Turn on a check in Settings to review sessions.
+                </p>
               )}
               {presentation.noActiveChecks && !presentation.noEnabledChecks && (
-                <p className="type-body text-label-secondary">No active checks.</p>
+                <p className="type-body text-label-secondary">
+                  No checks can run right now. Check their settings and provider connection.
+                </p>
               )}
             </div>
           </ScrollPane>
@@ -1112,8 +1170,8 @@ export function BurnChecksReport({
           ) : selectedVisibleId == null ? (
             <p className="burn-checks-detail-content type-body text-label-secondary">
               {unassessed.length > 0
-                ? "Open Not assessed to inspect a check."
-                : "Details will appear when a check has enough evidence."}
+                ? "Open Not assessed to see which checks have not reviewed any sessions."
+                : "Select a check to see its result and explanation."}
             </p>
           ) : (
             checks.map((check) => (
@@ -1166,8 +1224,8 @@ function UnavailableSearchCheck({
       <h2 className="type-title-3 text-label">{CHECK_LABELS[check]}</h2>
       <p className="mt-2 type-callout text-label-secondary">
         {available
-          ? "This check has not been assessed for the available sessions."
-          : "Smart Burn Checks are unavailable."}
+          ? "This check has not reviewed any sessions yet."
+          : "Smart checks are turned off for this setup."}
       </p>
     </section>
   )

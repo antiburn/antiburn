@@ -3,19 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, LazyLock, Mutex};
 
-use antiburn_local::analysis::SourceFormat;
-use antiburn_local::analysis::jev::capabilities::ModelCapabilities;
-use antiburn_local::analysis::jev::{
-    JevCheck, JevCheckPlan, JevError, JevEvidenceReference, JevRunProgress, JevSessionContext,
-    admit_jev_orchestration,
-};
-use antiburn_local::checks::over_exploring::{
-    self, Assessment, Decision, MAX_TARGETS_PER_TURN, OverExploringCheck, PreparedAssessment,
-    SEMANTIC_PROBABILITY_THRESHOLD, SemanticOutcome, Target,
-};
-use antiburn_local::checks::sampling::{SamplingJob, SamplingLimits, SamplingProgress, StableId};
-use tauri::Emitter;
-
+use crate::jev::config::SystemOneConnection;
 use crate::jev::worker::{
     BatchExecution, CandidateExecution, CheckPolicy, JevCheckDescriptor, WorkerFuture,
     error_category, run_prepared_check, unix_now,
@@ -26,14 +14,23 @@ use crate::smart_check_inputs::{
 use crate::store::{
     BurnCheckAssessment, BurnCheckCandidate, BurnCheckFailure, BurnCheckInput, Store,
 };
+use antiburn_local::analysis::SourceFormat;
+use antiburn_local::analysis::jev::capabilities::ModelCapabilities;
+use antiburn_local::analysis::jev::{
+    JevCheck, JevCheckPlan, JevError, JevEvidenceReference, JevRunProgress, JevSessionContext,
+    admit_jev_orchestration,
+};
+use antiburn_local::checks::over_exploring::{
+    self, Assessment, Decision, MAX_SAMPLING_CANDIDATES, MAX_TARGETS_PER_TURN, OverExploringCheck,
+    PreparedAssessment, SEMANTIC_PROBABILITY_THRESHOLD, SemanticOutcome, Target,
+};
+use antiburn_local::checks::sampling::{SamplingJob, SamplingLimits, SamplingProgress, StableId};
 
 pub(crate) const CHECK_ID: &str = "over_exploring";
 static PREPARED_INPUTS: LazyLock<
     Mutex<crate::smart_check_inputs::cache::PreparedInputCache<PreparedInput>>,
 > = LazyLock::new(|| Mutex::new(Default::default()));
 const CURSOR_REVISION: u32 = 6;
-// Accepted input has at most 4096 events and 256 disjoint episodes.
-const MAX_SAMPLING_CANDIDATES: usize = 2 * 4096 + 256;
 const POLICY: CheckPolicy = CheckPolicy {
     idle_secs: 180,
     lease_secs: 300,
@@ -67,6 +64,8 @@ impl JevCheckDescriptor for OverExploringDescriptor {
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct AssessmentCursor {
+    #[serde(default)]
+    context_blocked_ids: BTreeSet<String>,
     revision: u32,
     input_revision: String,
     provider_generation: u64,
@@ -78,6 +77,12 @@ struct AssessmentCursor {
     result: Option<Assessment>,
     run_started: bool,
     run_finished: bool,
+    #[serde(default)]
+    active_capabilities: Option<ModelCapabilities>,
+    #[serde(default)]
+    active_connection: Option<SystemOneConnection>,
+    #[serde(default)]
+    active_request_identities: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -240,10 +245,20 @@ fn new_sampling() -> anyhow::Result<SamplingProgress> {
     .map_err(|error| anyhow::anyhow!("invalid sampling limits: {error:?}"))
 }
 
+#[cfg(test)]
 fn restore_cursor(
     stored: Option<&BurnCheckAssessment>,
     input: &BurnCheckInput,
     provider_generation: u64,
+) -> AssessmentCursor {
+    restore_cursor_for_recovery(stored, input, provider_generation, false)
+}
+
+fn restore_cursor_for_recovery(
+    stored: Option<&BurnCheckAssessment>,
+    input: &BurnCheckInput,
+    provider_generation: u64,
+    recover_dispatched_request: bool,
 ) -> AssessmentCursor {
     stored
         .filter(|saved| saved.input_revision.as_deref() == Some(&input.input_revision))
@@ -251,7 +266,11 @@ fn restore_cursor(
         .filter(|cursor| {
             cursor.revision == CURSOR_REVISION
                 && cursor.input_revision == input.input_revision
-                && cursor.provider_generation == provider_generation
+                && (cursor.provider_generation == provider_generation || recover_dispatched_request)
+        })
+        .map(|mut cursor| {
+            cursor.provider_generation = provider_generation;
+            cursor
         })
         .unwrap_or_else(|| AssessmentCursor {
             revision: CURSOR_REVISION,
@@ -261,15 +280,98 @@ fn restore_cursor(
         })
 }
 
+fn pending_over_exploring_capabilities(
+    store: &Store,
+    candidate: &BurnCheckCandidate,
+    handle: &crate::jev::worker::WorkerHandle,
+) -> anyhow::Result<Option<ModelCapabilities>> {
+    let Some(saved) = store.burn_check_assessment(&candidate.session.key, CHECK_ID)? else {
+        return Ok(None);
+    };
+    let Ok(cursor) = serde_json::from_str::<AssessmentCursor>(&saved.progress_json) else {
+        return Ok(None);
+    };
+    let (Some(capabilities), Some(connection)) = (
+        cursor.active_capabilities.as_ref(),
+        cursor.active_connection.as_ref(),
+    ) else {
+        return Ok(None);
+    };
+    if cursor.revision != CURSOR_REVISION
+        || !matches!(saved.status.as_str(), "queued" | "running" | "failed")
+        || cursor.active_job.is_none()
+        || cursor.active_request_identities.is_empty()
+        || saved.input_revision.as_deref() != Some(cursor.input_revision.as_str())
+        || connection != &handle.system_one_connection()
+    {
+        return Ok(None);
+    }
+    let input = BurnCheckInput {
+        key: candidate.session.key.clone(),
+        check_id: CHECK_ID.into(),
+        incarnation: candidate.incarnation,
+        source_generation: candidate.source_generation,
+        source_fingerprint: candidate.source_fingerprint.clone(),
+        activity_cursor: candidate.activity_cursor.clone(),
+        published_fence: candidate.published_fence,
+        input_revision: cursor.input_revision,
+        evaluator_revision: CHECK.evaluator_revision(),
+        boundary_at_epoch: candidate.boundary_at_epoch,
+    };
+    if !Store::burn_check_input_is_current(&store.lock(), &input)? {
+        return Ok(None);
+    }
+    for identity in &cursor.active_request_identities {
+        if store.burn_check_dispatch_attempts(std::slice::from_ref(identity))? == 0 {
+            return Ok(None);
+        }
+    }
+    Ok(Some(capabilities.clone()))
+}
+
+async fn candidate_capabilities(
+    store: &Store,
+    candidate: &BurnCheckCandidate,
+    handle: &crate::jev::worker::WorkerHandle,
+    key_generation: u64,
+) -> anyhow::Result<(ModelCapabilities, bool)> {
+    if let Some(capabilities) = pending_over_exploring_capabilities(store, candidate, handle)? {
+        return Ok((capabilities, true));
+    }
+    Ok((handle.resolve_capabilities(key_generation).await?, false))
+}
+
+fn request_identities(
+    handle: &crate::jev::worker::WorkerHandle,
+    input: &BurnCheckInput,
+    capabilities: &ModelCapabilities,
+    plan: &JevCheckPlan<PreparedAssessment>,
+) -> Vec<String> {
+    let mut connection = handle.system_one_connection();
+    connection
+        .model_revision
+        .clone_from(&capabilities.model_revision);
+    let packed = plan.pack(&plan.work_items);
+    let mut identities = packed
+        .batches
+        .iter()
+        .flat_map(|batch| crate::jev::worker::batch_request_identities(&connection, input, batch))
+        .collect::<Vec<_>>();
+    identities.sort();
+    identities.dedup();
+    identities
+}
+
 fn unavailable(
     store: &Store,
     candidate: &BurnCheckCandidate,
-    unsupported: bool,
+    category: &str,
 ) -> anyhow::Result<()> {
-    store.record_burn_check_candidate_issue_for_check(
+    store.record_burn_check_candidate_failure_for_check(
         CHECK_ID,
         candidate,
-        unsupported,
+        category == "unsupported_format",
+        category,
         unix_now().saturating_add(POLICY.retry_delay_secs),
         unix_now(),
     )?;
@@ -278,7 +380,7 @@ fn unavailable(
 
 async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> {
     let CandidateExecution {
-        app,
+        effects,
         store,
         candidate,
         client,
@@ -292,9 +394,10 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             "opencode" | "codex" | "claude" | "claude-code" | "pi"
         )
     {
-        return unavailable(store, candidate, true);
+        return unavailable(store, candidate, "unsupported_format");
     }
-    let capabilities = handle.resolve_capabilities(key_generation).await?;
+    let (capabilities, recovered_dispatched_request) =
+        candidate_capabilities(store, candidate, handle, key_generation).await?;
     let preparation = admit_jev_orchestration().await?;
     let input_store = store.clone();
     let input_candidate = candidate.clone();
@@ -306,16 +409,30 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     .await?;
     let input = match loaded {
         Ok(input) => input,
+        Err(error) if error.is_stale() => return Ok(()),
         Err(error) => {
-            ::tracing::debug!(event = "over_exploring_input_unavailable", error = ?error);
-            return unavailable(store, candidate, false);
+            return unavailable(store, candidate, error.failure_category());
         }
     };
     if input.plan.prepared.candidates.is_empty() {
-        return unavailable(store, candidate, false);
+        if store.record_burn_check_no_candidates(
+            &input.durable,
+            "{}",
+            unix_now(),
+            POLICY.idle_secs,
+        )? {
+            effects.checks_report_changed();
+        }
+        return Ok(());
     }
     let stored = store.burn_check_assessment(&candidate.session.key, CHECK_ID)?;
-    let mut cursor = restore_cursor(stored.as_ref(), &input.durable, key_generation);
+    let mut cursor = restore_cursor_for_recovery(
+        stored.as_ref(),
+        &input.durable,
+        key_generation,
+        recovered_dispatched_request,
+    );
+    let mut verify_recovered_request_identity = recovered_dispatched_request;
     if cursor.sampling.is_none() {
         cursor.sampling = Some(new_sampling()?);
     }
@@ -378,56 +495,37 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             Ok::<_, JevError>((selected_plan.clone(), selected_plan))
         })
         .await??;
-        let mut connection = handle.system_one_connection();
-        connection
-            .model_revision
-            .clone_from(&capabilities.model_revision);
-        let mut terminal = plan.work_items.is_empty();
-        let mut deferred = false;
-        for item in &plan.work_items {
-            if cursor.run_progress.results.contains_key(&item.id) {
-                continue;
+        cursor.active_capabilities = Some(capabilities.clone());
+        cursor.active_connection = Some(handle.system_one_connection());
+        let identities = request_identities(handle, &input.durable, &capabilities, &plan);
+        if verify_recovered_request_identity {
+            if cursor.active_request_identities != identities {
+                return Err(JevError::InvalidCheckPlan.into());
             }
-            let packed = antiburn_local::analysis::jev::pack_work_items_with_shared_context(
-                std::slice::from_ref(item),
-                &capabilities,
-                plan.shared_context.as_ref().expect("prepared task context"),
-            );
-            for batch in packed.batches {
-                let identities = crate::jev::worker::batch_request_identities(
-                    &connection,
-                    &input.durable,
-                    &batch,
-                );
-                match store.burn_check_dispatch_readiness(&identities, unix_now())? {
-                    crate::store::BurnCheckRequestAdmission::Admitted => {}
-                    crate::store::BurnCheckRequestAdmission::Exhausted
-                    | crate::store::BurnCheckRequestAdmission::Unresolved => terminal = true,
-                    crate::store::BurnCheckRequestAdmission::Deferred => deferred = true,
-                    crate::store::BurnCheckRequestAdmission::Stale => return Ok(()),
-                }
-            }
+            verify_recovered_request_identity = false;
         }
-        if terminal {
-            let reviewed = OverExploringCheck.reduce(&plan, &[], false)?;
-            merge_result(
-                cursor.result.as_mut().expect("initialized"),
-                reviewed,
-                &plan,
-            );
-            cursor
-                .sampling
-                .as_mut()
-                .expect("initialized")
-                .terminate_candidate(&job)
-                .map_err(|error| anyhow::anyhow!("sampling termination rejected: {error:?}"))?;
-            cursor.active_job = None;
-            cursor.run_progress = JevRunProgress::default();
-            if !save_cursor(store, &input.durable, &cursor)? {
-                return Ok(());
-            }
-            continue;
+        cursor.active_request_identities = identities;
+        if !save_cursor(store, &input.durable, &cursor)? {
+            return Ok(());
         }
+        let readiness = crate::jev::worker::dispatch_readiness(
+            store,
+            handle,
+            &input.durable,
+            &capabilities,
+            &plan,
+            &cursor.run_progress,
+        )?;
+        if readiness == crate::store::BurnCheckRequestAdmission::Stale {
+            return Ok(());
+        }
+        let terminal = matches!(
+            readiness,
+            crate::store::BurnCheckRequestAdmission::Exhausted
+                | crate::store::BurnCheckRequestAdmission::Unresolved
+        );
+        let deferred = readiness == crate::store::BurnCheckRequestAdmission::Deferred
+            && !recovered_dispatched_request;
         if deferred {
             save_failure(
                 store,
@@ -441,7 +539,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         let progress = std::mem::take(&mut cursor.run_progress);
         let outcome = run_prepared_check(
             BatchExecution {
-                app,
+                effects,
                 store,
                 input: &input.durable,
                 client: client.clone(),
@@ -511,15 +609,29 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 save_failure(store, &input, &cursor, "continuing", None)?;
                 return Ok(());
             }
-            if matches!(
-                error_category(&error),
-                "outcome_unknown"
-                    | "invalid_response"
-                    | "response_too_large"
-                    | "response_decode"
-                    | "response_usage_exceeded"
-                    | "invalid_request"
-            ) {
+            if (terminal
+                && matches!(
+                    error,
+                    JevError::ProviderUnavailable | JevError::RequestOutcomeUnknown
+                ))
+                || matches!(
+                    error_category(&error),
+                    "outcome_unknown"
+                        | "invalid_response"
+                        | "response_too_large"
+                        | "response_decode"
+                        | "response_usage_exceeded"
+                        | "invalid_request"
+                )
+            {
+                if matches!(
+                    error,
+                    JevError::RequestTooLarge { .. } | JevError::RequestTokenLimitExceeded { .. }
+                ) {
+                    cursor
+                        .context_blocked_ids
+                        .extend(plan.work_items.iter().map(|item| item.id.clone()));
+                }
                 let sampling = cursor.sampling.as_mut().expect("initialized");
                 if !sampling
                     .completed_ids(check_identity())
@@ -531,6 +643,9 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 }
                 cursor.active_job = None;
                 cursor.run_progress = JevRunProgress::default();
+                cursor.active_capabilities = None;
+                cursor.active_connection = None;
+                cursor.active_request_identities.clear();
                 if !save_cursor(store, &input.durable, &cursor)? {
                     return Ok(());
                 }
@@ -553,9 +668,9 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                         store.burn_check_next_attempt_at(&input.durable)?,
                     )?;
                     if published && !matches!(error, JevError::Cancelled) {
-                        let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
-                        record_assessment(
-                            app,
+                        effects.checks_report_changed();
+                        effects.record_assessment(
+                            crate::analytics::event::SmartCheck::OverExploring,
                             candidate.historical,
                             crate::analytics::event::SmartCheckAssessmentOutcome::Failed,
                         );
@@ -563,13 +678,8 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                     Ok::<_, anyhow::Error>(published)
                 })
                 .transpose();
-            let rejection = crate::jev::worker::settle_authentication_rejection(
-                app,
-                store,
-                handle,
-                key_generation,
-                rejected,
-            );
+            let rejection =
+                effects.settle_authentication_rejection(store, handle, key_generation, rejected);
             saved?;
             rejection?;
             return Ok(());
@@ -596,6 +706,9 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         }
         cursor.active_job = None;
         cursor.run_progress = JevRunProgress::default();
+        cursor.active_capabilities = None;
+        cursor.active_connection = None;
+        cursor.active_request_identities.clear();
         if !save_cursor(store, &input.durable, &cursor)? {
             return Ok(());
         }
@@ -608,15 +721,18 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         .expect("synchronized");
     let result = cursor.result.as_mut().expect("initialized");
     result.coverage.selected_items = coverage.completed;
-    result.coverage.not_selected_items = coverage.remaining
+    let runnable = cursor
+        .sampling
+        .as_ref()
+        .expect("initialized")
+        .runnable_count(check_identity());
+    result.coverage.not_selected_items = runnable
         + cursor
             .inventory_total
             .saturating_sub(cursor.inventory_count);
-    result.coverage.skipped_items = result
-        .unassessed
-        .iter()
-        .filter(|item| item.limitation == over_exploring::Abstention::ContextTooLarge)
-        .count();
+    result.coverage.skipped_items = coverage
+        .eligible
+        .saturating_sub(coverage.completed + runnable);
     result.coverage.limitations = result
         .unassessed
         .iter()
@@ -628,31 +744,20 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         .with_current_generation(key_generation, || {
             let outcome = publish_current(store, candidate, &capabilities, &input, &cursor)?;
             if let Some(outcome) = outcome {
-                record_assessment(app, candidate.historical, outcome);
+                effects.record_assessment(
+                    crate::analytics::event::SmartCheck::OverExploring,
+                    candidate.historical,
+                    outcome,
+                );
             }
             Ok::<_, anyhow::Error>(outcome.is_some())
         })
         .transpose()?
         .unwrap_or(false);
     if published {
-        let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
+        effects.checks_report_changed();
     }
     Ok(())
-}
-
-fn record_assessment(
-    app: &tauri::AppHandle,
-    historical: bool,
-    outcome: crate::analytics::event::SmartCheckAssessmentOutcome,
-) {
-    crate::analytics::record_smart_check_lifecycle(
-        app,
-        crate::analytics::event::SmartCheckLifecycle::Assessment {
-            check: crate::analytics::event::SmartCheck::OverExploring,
-            historical,
-            outcome,
-        },
-    );
 }
 
 fn publish_current(
@@ -851,38 +956,71 @@ fn merge_result(
         .map(|item| item.id.as_str())
         .chain(plan.skipped_item_ids.iter().map(String::as_str))
         .collect();
+    let accepted: BTreeSet<_> = page
+        .completed_work_item_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
     target
         .findings
-        .retain(|finding| !selected.contains(finding.work_item_id.as_str()));
+        .retain(|finding| !accepted.contains(finding.work_item_id.as_str()));
     target.findings.extend(page.findings);
     target.unassessed.retain(|item| {
-        item.work_item_id
-            .as_deref()
-            .is_none_or(|id| !selected.contains(id))
+        item.work_item_id.as_deref().is_none_or(|id| {
+            !accepted.contains(id)
+                && (!selected.contains(id)
+                    || target
+                        .completed_work_item_ids
+                        .iter()
+                        .any(|saved| saved == id))
+        })
     });
     target
         .unassessed
         .extend(page.unassessed.into_iter().filter(|item| {
-            item.work_item_id
-                .as_deref()
-                .is_some_and(|id| selected.contains(id))
+            item.work_item_id.as_deref().is_some_and(|id| {
+                selected.contains(id)
+                    && (accepted.contains(id)
+                        || !target
+                            .completed_work_item_ids
+                            .iter()
+                            .any(|saved| saved == id))
+            })
         }));
-    for (saved, incoming) in [
-        (&mut target.clean_episode_ids, page.clean_episode_ids),
-        (
-            &mut target.completed_episode_ids,
-            page.completed_episode_ids,
-        ),
-    ] {
-        saved.extend(incoming);
-        saved.sort();
-        saved.dedup();
-    }
     target
         .completed_work_item_ids
         .extend(page.completed_work_item_ids);
     target.completed_work_item_ids.sort();
     target.completed_work_item_ids.dedup();
+    target.completed_episode_ids.clear();
+    target.clean_episode_ids.clear();
+    for episode in plan.prepared.episodes.iter() {
+        let ids: Vec<_> = plan
+            .prepared
+            .targets
+            .iter()
+            .filter(|(_, item)| item.episode_id == episode.id)
+            .map(|(id, _)| id)
+            .collect();
+        if !ids.is_empty()
+            && ids
+                .iter()
+                .all(|id| target.completed_work_item_ids.contains(id))
+        {
+            target.completed_episode_ids.push(episode.id);
+            if !target
+                .findings
+                .iter()
+                .any(|item| item.episode_id == episode.id)
+                && !target
+                    .unassessed
+                    .iter()
+                    .any(|item| item.episode_id == episode.id)
+            {
+                target.clean_episode_ids.push(episode.id);
+            }
+        }
+    }
 }
 
 pub(crate) fn publication(input: &PreparedInput, mut assessment: Assessment) -> Publication {
@@ -894,13 +1032,35 @@ pub(crate) fn publication(input: &PreparedInput, mut assessment: Assessment) -> 
             .limitations
             .push("sampling_inventory_limit".into());
     }
-    let mut task_evidence = input
+    let original_task_evidence = input
         .plan
         .prepared
         .task_contexts
         .values()
         .flat_map(|context| context.evidence.clone())
         .collect::<Vec<_>>();
+    let valid_task = |finding: &Decision, reference: &JevEvidenceReference| {
+        finding.task_evidence.contains(reference)
+            && input
+                .plan
+                .prepared
+                .task_contexts
+                .get(&finding.episode_id)
+                .is_some_and(|context| finding.task_evidence_is_bound_to(&context.evidence))
+    };
+    let mut task_evidence = original_task_evidence.clone();
+    task_evidence.extend(
+        assessment
+            .findings
+            .iter()
+            .flat_map(|finding| finding.task_evidence.iter())
+            .filter(|reference| {
+                assessment.findings.iter().any(|finding| {
+                    finding.task_evidence.contains(reference) && valid_task(finding, reference)
+                })
+            })
+            .cloned(),
+    );
     task_evidence.sort_by(|left, right| left.source_id.cmp(&right.source_id));
     task_evidence.dedup();
     Publication {
@@ -915,9 +1075,27 @@ pub(crate) fn publication(input: &PreparedInput, mut assessment: Assessment) -> 
             .map(|finding| {
                 (
                     finding.work_item_id.clone(),
-                    input.plan.prepared.task_contexts[&finding.episode_id]
-                        .evidence
-                        .clone(),
+                    finding
+                        .task_evidence
+                        .iter()
+                        .filter(|reference| {
+                            input
+                                .plan
+                                .prepared
+                                .task_contexts
+                                .get(&finding.episode_id)
+                                .is_some_and(|context| {
+                                    context.evidence.iter().any(|original| {
+                                        original.source_id == reference.source_id
+                                            && original.role == reference.role
+                                            && (original.content_kind == reference.content_kind
+                                                || (reference.part_id.starts_with("task[")
+                                                    && original.role == antiburn_local::analysis::jev::JevEvidenceRole::Instruction))
+                                    })
+                                })
+                        })
+                        .cloned()
+                        .collect(),
                 )
             })
             .collect(),

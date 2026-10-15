@@ -1,0 +1,81 @@
+import type { BurnCheckTargetEvidencePayload } from "../../../../lib/insightsIpc"
+
+export const skillOpportunityEvidence = {
+  status: "available",
+  items: [
+    {
+      label: "instruction",
+      sourceLabel: "parser-review",
+      reference: "skill-source",
+      observedAtMs: null,
+      startLine: null,
+      endLine: null,
+      excerpt: "Review parser boundaries and test malformed records.",
+      explanation: "",
+      limitation: null,
+    },
+    {
+      label: "observedAction",
+      sourceLabel: "Recorded work",
+      reference: "work-source",
+      observedAtMs: 1003,
+      startLine: null,
+      endLine: null,
+      excerpt: "pnpm test parser-boundaries",
+      explanation: "",
+      limitation: null,
+    },
+    {
+      label: "observedAction",
+      sourceLabel: "Recorded work",
+      reference: "work-result",
+      observedAtMs: 1003,
+      startLine: null,
+      endLine: null,
+      excerpt: "Parser boundary tests passed.",
+      explanation: "",
+      limitation: null,
+    },
+    {
+      label: "context",
+      sourceLabel: "Requested task",
+      reference: "task-source",
+      observedAtMs: 1002,
+      startLine: null,
+      endLine: null,
+      excerpt: "Explain the parser fix.",
+      explanation: "",
+      limitation: null,
+    },
+  ],
+  comparison: {
+    reads: [],
+    explanation: {
+      version: 1,
+      relationship: "usefulProcedure",
+      text: "parser-review provides a useful procedure for the recorded work “pnpm test parser-boundaries”: “Review parser boundaries and test malformed records.”.",
+      references: ["skill-source", "work-source"],
+    },
+    sourceRanges: [
+      {
+        reference: "work-source",
+        startByte: 0,
+        endByte: 27,
+        rangeSource: "selected_action_text",
+      },
+      {
+        reference: "work-result",
+        startByte: 0,
+        endByte: 29,
+        rangeSource: "selected_action_text",
+      },
+      {
+        reference: "task-source",
+        startByte: 0,
+        endByte: 23,
+        rangeSource: "selected_action_text",
+      },
+      { reference: "skill-source", startByte: 0, endByte: 52, rangeSource: "skill_definition" },
+    ],
+  },
+} satisfies BurnCheckTargetEvidencePayload

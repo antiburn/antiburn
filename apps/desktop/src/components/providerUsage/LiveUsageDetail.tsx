@@ -1,5 +1,6 @@
 import { RotateCcw } from "lucide-react"
 
+import { pluralize } from "../../lib/presentation/text"
 import { cn } from "../../lib/cn"
 import type { LiveProviderUsagePayload } from "../../lib/ipc"
 import {
@@ -104,7 +105,7 @@ function ResetCreditsNotice({
   provider: LiveProviderUsagePayload
   availableCount: number
 }) {
-  const noun = availableCount === 1 ? "reset" : "resets"
+  const noun = pluralize(availableCount, "reset", "resets")
   const action =
     provider.provider === "openai" ? (
       <>

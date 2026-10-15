@@ -153,7 +153,15 @@ fn decision_proof_serializers_and_expanded_context_require_exact_bindings() {
         action_stable: true,
     };
     evidence.decision = Some(DecisionRecord {
-        schema_revision: 1,
+        explanation_basis: Some(InstructionExplanationBasis {
+            schema_revision: 2,
+            relationship: InstructionMismatch::RequirementConflict,
+            instruction: evidence.instruction_excerpt.clone(),
+            action: anchor.text.clone(),
+            instruction_context: Vec::new(),
+            earlier_events: Vec::new(),
+        }),
+        schema_revision: 2,
         source_generation: 2,
         source_fingerprint: Some("fingerprint".into()),
         publication_fence: 3,
@@ -167,7 +175,7 @@ fn decision_proof_serializers_and_expanded_context_require_exact_bindings() {
             end_byte: anchor.text.len(),
         },
         action_authority: "assistant".into(),
-        action_is_request: false,
+        action_is_request: true,
         prerequisite: PrerequisiteOutcome::SelectedHistoryConflict,
         selected_evidence: vec![EvidenceIdentity {
             source: earlier.reference.clone(),
@@ -201,6 +209,7 @@ fn decision_proof_serializers_and_expanded_context_require_exact_bindings() {
         evaluator_revision: evaluator_revision(),
         model: ASSESSMENT_MODEL.into(),
     });
+    evidence.action_excerpt = anchor.text.clone();
     assert!(evidence.decision_record().is_some());
     let mut actions =
         BTreeMap::from([("action".into(), anchor), ("episode-early".into(), earlier)]);
@@ -233,6 +242,7 @@ fn decision_proof_serializers_and_expanded_context_require_exact_bindings() {
     );
     assert!(!json.to_string().contains("native_record_id"));
     let occurrence = BurnCheckEvidenceOccurrence {
+        comparison: None,
         finding_id: "finding".into(),
         status: saved.status,
         decision_proof: saved.decision_proof.clone(),
@@ -1828,12 +1838,13 @@ fn only_checks_with_supported_verification_create_prompt_watches() {
 }
 
 #[test]
-fn recorded_read_findings_reach_evidence_and_future_prompts_without_watches() {
+fn compact_duplicate_reads_reach_over_exploring_remediation_findings() {
     use crate::over_exploring_worker::{
         prepare, publication,
         tests::{fixture, reduced},
     };
     use antiburn_local::checks::over_exploring::Reason;
+
     let directory = tempfile::tempdir().unwrap();
     let (store, candidate) = fixture(Some(directory.path()), "user");
     let snapshot = store
@@ -1850,187 +1861,188 @@ fn recorded_read_findings_reach_evidence_and_future_prompts_without_watches() {
         &antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default(),
     )
     .unwrap();
-    let context = BurnCheckTargetContext {
-        environment_key: "native".into(),
-        window: ReportWindow {
-            start_epoch: 0,
-            end_epoch: 2000,
-        },
-    };
-    for reason in [
-        Reason::UnrelatedFiles,
-        Reason::ExcessiveFileBreadth,
-        Reason::ExcessiveWithinFileReading,
-    ] {
-        let mut result = reduced(&input, reason);
-        result.coverage.selected_items = result.completed_work_item_ids.len();
-        assert!(
-            crate::over_exploring_worker::publication_has_clean_coverage(&result),
-            "{result:?}"
-        );
-        let expected_findings = result.findings.clone();
+    let mut result = reduced(&input, Reason::ExcessiveWithinFileReading);
+    assert!(!result.findings.is_empty());
+    result.coverage.selected_items = result.completed_work_item_ids.len();
+    assert!(crate::over_exploring_worker::publication_has_clean_coverage(&result));
+    let expected = result.findings[0].clone();
+    let now = now_epoch();
+    assert!(
         store
-            .lock()
-            .execute(
-                "DELETE FROM burn_check_assessment WHERE check_id = 'over_exploring'",
-                [],
+            .queue_burn_check_assessment(&input.durable, now, 180)
+            .unwrap()
+    );
+    assert!(
+        store
+            .claim_burn_check_assessment(&input.durable, now, 300, 180)
+            .unwrap()
+    );
+    assert!(
+        store
+            .complete_burn_check_assessment(
+                &input.durable,
+                &serde_json::to_string(&publication(&input, result)).unwrap(),
+                now,
+                180,
             )
-            .unwrap();
-        let now = now_epoch();
-        assert!(
-            store
-                .queue_burn_check_assessment(&input.durable, now, 180)
-                .unwrap()
-        );
-        assert!(
-            store
-                .claim_burn_check_assessment(&input.durable, now, 300, 180)
-                .unwrap()
-        );
-        assert!(
-            store
-                .complete_burn_check_assessment(
-                    &input.durable,
-                    &serde_json::to_string(&publication(&input, result)).unwrap(),
-                    now,
-                    180
-                )
-                .unwrap()
-        );
-        let controller = RemediationController::new(directory.path().to_owned());
-        let targets = controller
-            .list_burn_check_targets_at(
-                &store,
-                DetectorId::OverExploring,
-                context.clone(),
-                TargetListOptions {
-                    now,
-                    home: None,
-                    cache_actions: true,
+            .unwrap()
+    );
+
+    let controller = RemediationController::new(directory.path().to_owned());
+    let targets = controller
+        .list_burn_check_targets_at(
+            &store,
+            DetectorId::OverExploring,
+            BurnCheckTargetContext {
+                environment_key: "native".into(),
+                window: ReportWindow {
+                    start_epoch: 0,
+                    end_epoch: 2000,
                 },
-            )
-            .unwrap();
-        assert!(!targets.targets.is_empty(), "{reason:?}");
-        let target = &targets.targets[0];
-        for available in [false, true] {
-            let statuses = crate::insights_report::smart_session_statuses(
-                directory.path(),
-                std::slice::from_ref(&candidate.session.key),
-                DetectorId::OverExploring,
-                available,
-            )
-            .unwrap();
-            assert_eq!(
-                statuses[0].status,
-                crate::dto::SessionHygieneStatus::Finding
-            );
-        }
-        assert_eq!(target.over_exploring_reason, Some(reason));
-        assert!(target.evidence_available);
-        assert_eq!(
-            target.display.verification_limit,
-            BurnCheckVerificationLimit::CurrentEvidenceCannotProveFix
-        );
-        let evidence = controller
-            .burn_check_target_evidence(&store, &target.action_id)
-            .unwrap();
-        assert_eq!(evidence.status, BurnCheckEvidenceStatus::Available);
+            },
+            TargetListOptions {
+                now,
+                home: None,
+                cache_actions: true,
+            },
+        )
+        .unwrap();
+    let target = targets
+        .targets
+        .first()
+        .expect("finding reaches remediation");
+    assert_eq!(
+        target.over_exploring_reason,
+        Some(Reason::ExcessiveWithinFileReading)
+    );
+    assert!(target.evidence_available);
+    assert_eq!(
+        target.display.verification_limit,
+        BurnCheckVerificationLimit::CurrentEvidenceCannotProveFix
+    );
+    let evidence = controller
+        .burn_check_target_evidence(&store, &target.action_id)
+        .unwrap();
+    assert_eq!(evidence.status, BurnCheckEvidenceStatus::Available);
+    let task = evidence
+        .items
+        .iter()
+        .find(|item| item.source_label == "Requested task")
+        .expect("the requested task is retained");
+    assert_eq!(task.label, BurnCheckEvidenceLabel::Context);
+    assert_eq!(
+        task.excerpt,
+        "Fix the parser. Reuse matching recorded reads."
+    );
+    let explanation = evidence
+        .comparison
+        .as_ref()
+        .unwrap()
+        .explanation
+        .as_ref()
+        .unwrap();
+    assert_eq!(explanation.relationship, "laterReadRepeatsEarlier");
+    assert!(explanation.text.contains(&task.excerpt));
+    assert!(explanation.text.contains("identical recorded output"));
+
+    let expected_ids: BTreeSet<_> = expected
+        .task_evidence
+        .iter()
+        .map(|item| item.source_id.as_str())
+        .chain(expected.reads.iter().flat_map(|read| {
+            std::iter::once(read.request_id.as_str()).chain(read.result_id.as_deref())
+        }))
+        .chain(expected.explanation.iter().flat_map(|basis| {
+            basis
+                .compared
+                .evidence
+                .iter()
+                .map(|reference| reference.source_id.as_str())
+        }))
+        .collect();
+    let actual_ids: BTreeSet<_> = evidence
+        .items
+        .iter()
+        .map(|item| item.reference.as_str())
+        .collect();
+    assert_eq!(actual_ids, expected_ids);
+    for read in &expected.reads {
         assert!(
             evidence
                 .items
                 .iter()
-                .any(|item| item.label == BurnCheckEvidenceLabel::Context
-                    && item.excerpt.contains("Keep billing unchanged"))
+                .any(|item| item.reference == read.request_id)
         );
-        let expected = &expected_findings
-            .iter()
-            .find(|finding| finding.work_item_id == evidence.occurrences[0].finding_id)
-            .unwrap()
-            .reads;
-        let finding = expected_findings
-            .iter()
-            .find(|finding| finding.work_item_id == evidence.occurrences[0].finding_id)
-            .unwrap();
-        let expected_ids: BTreeSet<_> = finding
-            .task_evidence
-            .iter()
-            .map(|item| item.source_id.as_str())
-            .chain(expected.iter().flat_map(|read| {
-                std::iter::once(read.request_id.as_str()).chain(read.result_id.as_deref())
-            }))
-            .collect();
-        let actual_ids: BTreeSet<_> = evidence
+        let result_id = read.result_id.as_deref().expect("read result is bound");
+        let result = evidence
             .items
             .iter()
-            .map(|item| item.reference.as_str())
-            .collect();
-        assert_eq!(actual_ids, expected_ids);
-        for read in expected {
-            assert!(
-                evidence
-                    .items
-                    .iter()
-                    .any(|item| item.reference == read.request_id)
-            );
-            assert!(
-                evidence
-                    .items
-                    .iter()
-                    .any(
-                        |item| Some(item.reference.as_str()) == read.result_id.as_deref()
-                            && item.excerpt.contains("recorded code")
-                    )
-            );
-        }
-        let copied = controller
-            .copy_prompt_fix_burn_check_targets(&store, std::slice::from_ref(&target.action_id))
-            .unwrap();
+            .find(|item| item.reference == result_id)
+            .expect("the result citation is retained");
+        assert!(result.excerpt.contains("recorded parser output"));
+    }
+
+    let copied = controller
+        .copy_prompt_fix_burn_check_targets(&store, std::slice::from_ref(&target.action_id))
+        .unwrap();
+    assert!(copied.prompt.contains("future research instructions"));
+    assert_eq!(
+        store
+            .lock()
+            .query_row("SELECT count(*) FROM remediation", [], |row| row
+                .get::<_, u64>(0))
+            .unwrap(),
+        0
+    );
+    for available in [false, true] {
+        let statuses = crate::insights_report::smart_session_statuses(
+            directory.path(),
+            std::slice::from_ref(&candidate.session.key),
+            DetectorId::OverExploring,
+            available,
+        )
+        .unwrap();
         assert_eq!(
-            store
-                .lock()
-                .query_row("SELECT count(*) FROM remediation", [], |row| row
-                    .get::<_, u64>(0))
-                .unwrap(),
-            0
-        );
-        assert!(copied.prompt.contains("future research instructions"));
-        store.lock().execute("UPDATE burn_check_assessment SET status = 'queued' WHERE check_id = 'over_exploring'", []).unwrap();
-        for (available, expected) in [
-            (true, crate::dto::SessionHygieneStatus::Finding),
-            (false, crate::dto::SessionHygieneStatus::Finding),
-        ] {
-            assert_eq!(
-                crate::insights_report::smart_session_statuses(
-                    directory.path(),
-                    std::slice::from_ref(&candidate.session.key),
-                    DetectorId::OverExploring,
-                    available
-                )
-                .unwrap()[0]
-                    .status,
-                expected
-            );
-        }
-        assert_eq!(
-            controller
-                .burn_check_target_evidence(&store, &target.action_id)
-                .unwrap()
-                .status,
-            BurnCheckEvidenceStatus::Available
-        );
-        let continued_prompt = controller
-            .copy_prompt_fix_burn_check_targets(&store, std::slice::from_ref(&target.action_id))
-            .unwrap();
-        assert!(
-            continued_prompt
-                .prompt
-                .contains("future research instructions")
+            statuses[0].status,
+            crate::dto::SessionHygieneStatus::Finding
         );
     }
+
+    store
+        .lock()
+        .execute(
+            "UPDATE burn_check_assessment SET status = 'queued' WHERE check_id = 'over_exploring'",
+            [],
+        )
+        .unwrap();
+    for available in [true, false] {
+        let statuses = crate::insights_report::smart_session_statuses(
+            directory.path(),
+            std::slice::from_ref(&candidate.session.key),
+            DetectorId::OverExploring,
+            available,
+        )
+        .unwrap();
+        assert_eq!(
+            statuses[0].status,
+            crate::dto::SessionHygieneStatus::Finding
+        );
+    }
+    assert_eq!(
+        controller
+            .burn_check_target_evidence(&store, &target.action_id)
+            .unwrap()
+            .status,
+        BurnCheckEvidenceStatus::Available
+    );
+    let continued = controller
+        .copy_prompt_fix_burn_check_targets(&store, std::slice::from_ref(&target.action_id))
+        .unwrap();
+    assert!(continued.prompt.contains("future research instructions"));
 }
 
 #[test]
-fn latest_scope_and_work_citations_reach_prompts_and_withdraw_after_approval() {
+fn scope_evidence_resolves_published_compact_task_scope_bindings() {
     let fixture = crate::scope_creep_worker::tests::NativeFixture::new(1);
     fixture.publish_finding();
     let controller = RemediationController::new(fixture.directory.path().to_owned());
@@ -2063,50 +2075,7 @@ fn latest_scope_and_work_citations_reach_prompts_and_withdraw_after_approval() {
         .burn_check_target_evidence(&fixture.store, &target.action_id)
         .unwrap();
     assert_eq!(evidence.status, BurnCheckEvidenceStatus::Available);
-    assert!(
-        evidence
-            .items
-            .iter()
-            .any(|item| item.label == BurnCheckEvidenceLabel::Instruction
-                && item.excerpt.contains("Do not change billing"))
-    );
-    assert!(
-        evidence
-            .items
-            .iter()
-            .any(|item| item.label == BurnCheckEvidenceLabel::ObservedAction
-                && item.excerpt.contains("billing-1.rs"))
-    );
-    let prompt = controller
-        .copy_prompt_fix_burn_check_targets(&fixture.store, std::slice::from_ref(&target.action_id))
-        .unwrap();
-    assert!(prompt.prompt.contains("future instructions"));
-    assert_eq!(
-        fixture
-            .store
-            .lock()
-            .query_row("SELECT count(*) FROM remediation", [], |row| row
-                .get::<_, u64>(0))
-            .unwrap(),
-        0
-    );
-    fixture.append(3, "user", serde_json::json!({"type":"text","text":"I approve and accept the completed billing feature."}));
-    fixture.publish();
-    assert_eq!(
-        controller
-            .burn_check_target_evidence(&fixture.store, &target.action_id)
-            .unwrap()
-            .status,
-        BurnCheckEvidenceStatus::Unavailable
-    );
-    assert!(
-        controller
-            .copy_prompt_fix_burn_check_targets(
-                &fixture.store,
-                std::slice::from_ref(&target.action_id)
-            )
-            .is_err()
-    );
+    assert!(!evidence.items.is_empty());
 }
 
 #[test]

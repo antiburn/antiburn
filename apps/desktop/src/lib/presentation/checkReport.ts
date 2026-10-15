@@ -1,3 +1,4 @@
+import { pluralize } from "./text"
 import type {
   BurnCheckDetectorId,
   ChecksCategoryPayload,
@@ -9,6 +10,7 @@ import {
   type BurnCheckPresentation,
 } from "./checkStatus"
 import { activeChecksReport } from "../snoozedBurnChecks"
+import { smartCheckReviewPresentation } from "./smartCheckReview"
 
 export { CHECK_LABELS } from "./checkDefinitions"
 
@@ -49,10 +51,15 @@ export function checksPresentation(
 ): ChecksPresentation {
   const activeReport = activeChecksReport(report, snoozed)
   const activeAssessed = activeReport.categories.filter(
-    (category) => category.lifecycle != null,
+    (category) =>
+      category.lifecycle != null &&
+      smartCheckReviewPresentation(category).terminalLabel == null,
   )
   const activeUnavailable = activeReport.categories.filter(
-    (category) => category.lifecycle == null && !checkHasProvisionalResult(category),
+    (category) =>
+      (category.lifecycle == null ||
+        smartCheckReviewPresentation(category).terminalLabel != null) &&
+      !checkHasProvisionalResult(category),
   )
   const snoozedCategories = report.categories.filter((category) => snoozed.has(category.id))
   const noEnabledChecks = report.evidenceSettled && report.categories.length === 0
@@ -69,7 +76,9 @@ export function checksPresentation(
       (category) => category.lifecycle === "awaitingVerification",
     ),
     wins: activeReport.categories.filter(
-      (category) => category.lifecycle === "passing" || checkHasProvisionalResult(category),
+      (category) =>
+        smartCheckReviewPresentation(category).terminalLabel == null &&
+        (category.lifecycle === "passing" || checkHasProvisionalResult(category)),
     ),
     unavailable: activeUnavailable,
     refreshUnavailable,
@@ -101,7 +110,7 @@ export function checksHeroPresentation(
   }
   const failureCount = presentation.failures.length
   if (failureCount > 0) {
-    const failed = `${failureCount} check${failureCount === 1 ? "" : "s"} failed`
+    const failed = `${failureCount} ${pluralize(failureCount, "check", "checks")} failed`
     const basisPoints = presentation.estimate.tokenBurnBasisPoints
     return {
       result:
@@ -118,7 +127,7 @@ export function checksHeroPresentation(
   if (awaitingCount > 0) {
     return {
       result: "Awaiting verification",
-      summary: `${awaitingCount} check${awaitingCount === 1 ? "" : "s"} awaiting verification`,
+      summary: `${awaitingCount} ${pluralize(awaitingCount, "check", "checks")} awaiting verification`,
       state: "pending",
       tone: "text-label",
     }
@@ -131,7 +140,7 @@ export function checksHeroPresentation(
   return {
     result: completePass ? "No issues found" : "No checks assessed",
     summary: completePass
-      ? `${passed.length} check${passed.length === 1 ? "" : "s"} passed`
+      ? `${passed.length} ${pluralize(passed.length, "check", "checks")} passed`
       : null,
     state: completePass ? "passed" : "pending",
     tone: "text-label",

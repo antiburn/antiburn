@@ -34,6 +34,36 @@ a local or remote base URL serving `/v1/systemone`; an ordinary chat endpoint
 does not establish this protocol. Cloudflare accepts Clef or Clef Flash with an
 account ID and credential. Custom uses the exact endpoint with direct System One
 or Cloudflare-envelope response decoding.
+
+All four checks use compact evidence and short questions. Capabilities determine
+fit before dispatch, not model names. Ollama discovery distinguishes a matching
+loaded `/api/ps` context from configured `num_ctx` and the advertised model maximum.
+Loaded context takes priority; configured context is a budget, not runtime proof.
+Known model limits and lower user overrides constrain it. Missing discovery does
+not create an assumed 8,192-token budget. New requests need usable discovered or
+explicit manual limits; saving a connection is separate from assessment admission.
+If discovery has no context limit, assessment admission and connection tests load
+the idle model with an empty `/api/generate` request, then read discovery again.
+No session content is sent in the load request. If limits remain unknown, set a
+manual context override and test the connection before enabling checks.
+For Ollama 0.40.1, verified `tev1` metadata and either a passthrough
+template or the pinned Qwen3.5 template enable renderer-specific accounting.
+That path estimates each rendered question with its state and options, reserves
+the chat envelope and system-text bytes, and adds two scoring positions plus a
+32-token margin. It remains a heuristic, not an exact tokenizer. Unknown server,
+encoding, or template contracts retain conservative accounting. Request-body
+byte limits remain separate from rendered-question context limits. Offline
+2,048- and 2,050-token fixtures do not prove live model accuracy or latency.
+
+An earlier, pre-compact-policy local evaluation used `tev1:0.8b` with a configured 2,050-token
+context. All 48 requests fit the estimated 1,746-token input budget and were
+accepted by the production runner. The model missed all six selected positive
+cases across the four checks and returned no unsafe findings. This confirms
+request fit, not useful finding recall. The installed environment did not have
+`tev1:0.9b`, so its behavior is unverified. A successful connection or fitting
+request does not show that a model can make useful judgments. That capture does
+not establish the current compact policy's quality or a measured speedup.
+
 You can choose future sessions or start a 7- or 30-day
 history review there. A history request includes only enabled eligible Smart
 Checks. Enabling a check does not silently add the disabled interval to a
@@ -66,71 +96,63 @@ They use individual enabled preferences, the same master setting, provider
 connection, history controls, and Checks views. Four descriptors use
 one worker, including Ignored Instructions.
 
-Scope Creep compares substantial optional performed work with the full latest
-recorded scope. It includes recorded user messages, supported answers and plan
-evidence, and required proposal context. Every initial and follow-up request
-includes the complete compact scope. Later recorded approval withdraws stale
-findings and prompt actions. Task context that exceeds the model limit remains
-unassessed; the check does not split, summarize, or silently truncate approvals.
+Scope Creep selects at most two bound material work groups, newest first. It asks
+whether performed work adds a substantial separate objective outside the task and
+authorization. Necessary support and minor cleanup are not separate objectives.
+Proposals alone, denied or stopped operations, and unbound outcomes cannot support
+a performed-work finding. Complete task and relevant authority units must fit;
+short approvals retain their linked proposal. Assistant text cannot authorize
+itself. Later recorded user acceptance can suppress a finding. Missing or ambiguous
+authority, materiality, or native operation binding leaves the group unassessed.
+Recorded hunks, small replacement pairs, and new-content units are used only when
+their file association is valid. Current checkout content is not historical proof.
 
-Large selected work and supporting activity stay eligible through bounded sampled
-excerpts. A sampled work entry carries child chunks instead of a complete text
-body. Each large value supplies at most four structural fragments: early,
-task-relevant, middle, and late. When no interior child matches task terms, the
-relevant slot uses the first third. Exact UTF-8 byte offsets, total bytes, and
-partial flags identify the gaps. These offsets refer to check-selected action
-text or the named normalized field, not native transcript JSON. Large Bash input
-can retain an exact first line of at most 1,024 bytes, but sampled input cannot
-prove complete command options. A negative decision with partial activity is
-Uncertain, not Clean. Useful positive decisions retain their evidence limits.
+Over-exploring checks substantial redundant or clearly irrelevant file reads.
+It does not judge general file breadth or the size of a first read. Duplicate
+runs need successful complete results, known equal extents, equal full recorded
+output digests, compatible recorded path context, and an earlier result available
+before the later request. At least 8 KiB of later recorded output is required.
+An observed intervening action breaks the comparison. The current selector matches
+the same path; general cross-file content deduplication is unavailable. Equality
+includes producer framing and does not prove identical filesystem versions.
+One run binds its earlier output and redundant later reads instead of creating
+one finding per pair. Complete selected task context must fit.
 
-Over-exploring reviews read targets against recorded task context. Its three
-reasons are unrelated files, excessive file breadth, and excessive within-file
-reading. Counts and requested ranges rank targets; they do not prove waste.
-Each target receives one choice: `likely_excess`, `justified_or_minor`, or
-`uncertain`. A finding requires the actual `likely_excess` choice with finite
-probability of at least 0.75. A valid uncertain answer completes that target's
-review but never establishes Clean.
-The provider receives recorded task context, read requests, available matched
-results, and earlier and later retained activity. No later edit is required for
-a useful read. Requests alone can support unrelated-file or file-breadth findings;
-within-file findings require supported observed extents. A request alone does not
-prove returned content. Each event supplies at most three representative 4 KiB
-UTF-8 byte ranges within a 48 KiB target text budget. Range boundaries and partial
-flags identify omitted text; the provider does not receive complete large outputs.
-Source gaps, unfinished sibling operations, and provider failures do not erase
-independent positive targets. They cannot establish a complete clean result.
-Review counts use targets, not episodes. Observed lines do not prove whole-file
-access, file versions, or wasted tokens.
+The secondary read comparison uses a successful, untruncated substantial result
+outside explicitly named task paths, plus path, task, recorded purpose when
+available, and at most 512 bytes of complete leading lines from returned content.
+The request labels the sample and whether the extent starts at the file beginning.
+A separate purpose must be affirmatively supported; paths, imports, and directories
+alone are insufficient. Supporting investigation, dependencies, and verification
+can justify the read. Sample-based findings remain possible issues, not proof of
+whole-file irrelevance or exact savings. Current episode selection prefers duplicate
+runs and considers an irrelevant-read target only when that episode has no repeat
+target. At most three targets survive snapshot selection and fit.
 
-Skill Opportunities compares recorded work with current installed skill
-descriptions and typed selected skill-use evidence. It sends selected task/work
-context, matching skill names, selected reference text, and use/time limits to
-the configured provider. A valid nonempty description is the only skill
-reference text sent. Missing, null, or blank descriptions and plain Markdown
-use the full Markdown as the fallback source, including frontmatter and body.
-Fallback requests select at most four structural 4 KiB chunks with byte ranges,
-total source bytes, and an explicit partial flag. Invalid YAML and non-string
-descriptions remain unsupported. Known used skills follow the same rule and
-share their reference text across comparisons in a request.
-OpenCode result proof needs selected
-`OtherToolOutput`; input-only projections cannot carry result text. Codex and Pi
-document selections and Claude requests/failures remain distinct facts, not
-execution proof.
-It does not prove past visibility or whole-session absence. Reliable birth time
-records creation after the relevant work as an advisory limit, not a candidate
-exclusion; missing time stays explicit.
+Skill Opportunities selects one unambiguous current skill/workflow pair using
+exact command or path anchors and a complete concrete procedure. Repeated matching
+multi-step work gets priority; a single substantial multi-line operation can also
+qualify. Generic topic matches and skill names alone do not qualify. Current gates
+require intact selected task context, bound outcomes for selected steps, known
+relevant use evidence, and no recorded exact or cheaply established equivalent use.
+Missing outcomes, partial work, ambiguous identity, or unknown use leave the pair
+unassessed. Remaining inventory pairs are not paginated.
 
-Skill Opportunities uses the same four-fragment sampling for large selected work,
-including edit inputs, commands, and tool results. Preparation samples only the
-selected episode. Work citations preserve ordered ranges, total bytes, partial
-status, and the digest of the full check-selected action. Changing an omitted
-range invalidates the saved binding even when the source length stays the same.
-The evidence view shows partial-work and selected-window limits. A sampled
-negative is Uncertain, not a complete no-opportunity result; a validated positive
-can still support a bounded recommendation. An accepted semantic answer completes
-the selected sampling job without claiming review of every source byte. There is
-no exhaustive subrange scheduler.
+A valid nonempty frontmatter description is the supported reference source; its
+Markdown body is not separately retained. Missing, null, or blank descriptions
+and plain Markdown use normalized full Markdown as the fallback. Invalid YAML
+and non-string descriptions remain unsupported. A useful body-only procedure
+under a generic nonempty description is therefore unavailable. The check selects
+one complete anchored procedure of at most 512 bytes, not arbitrary sampled fragments.
+Citation ranges refer to decoded description text or normalized Markdown, not raw
+YAML/file bytes. Current inventory does not prove past availability, historical
+contents, whole-session non-use, or guaranteed token savings. OpenCode skill-result
+proof requires selected `OtherToolOutput`; native requests, document selections,
+and failed results remain distinct from successful execution.
+
+Each retained candidate gets one three-option Choice. Positive findings require
+the positive option to win uniquely at probability 0.95 or higher, valid exact
+bindings, and the check's local gates. This is not a 95% accuracy guarantee.
 
 All four checks preserve exact source citations and exclude private thinking.
 Prompts suggest better instructions for future work. They do not repair the
@@ -138,29 +160,76 @@ reviewed session, offer Auto Fix, create verification watches, or estimate savin
 Changed source evidence, provider configuration, or skill inputs invalidate stale work.
 History progress counts check-session jobs, not distinct sessions.
 
+### Finding evidence
+
+Smart Check target cards load evidence automatically and keep it visible. Long
+excerpts and returned file contents retain their own expansion controls. Read
+results appear under their exact paired request in one **Files read** section;
+requested limits and observed returned extents have separate labels. Scope Creep
+uses **Proposed work**, **Attempted work**, or **Recorded work** from typed evidence.
+
+New findings can store a versioned comparison basis. The evidence endpoint
+validates the saved relationship and compared passages before displaying a
+specific explanation. It does not run another model to explain a card. Older
+findings can show their available excerpts without an invented explanation.
+Explanation and evidence use the same selected occurrence. A background refresh
+retains the previous snapshot until its replacement is available; a failed
+refresh retains it with Retry. A successful unavailable response replaces stale
+excerpts. Target-list refresh errors remain visible with cached targets.
+
+Empty candidate inventories finish as terminal `no_candidates` work, separate
+from Clean or unreadable evidence. Internal loader errors retain specific causes.
+This storage outcome does not promise a dedicated **Nothing to assess** UI label.
+Skipped or unclear work does not count as model review or imply an active request.
+
 ### Incremental review and scheduling
 
-The shared scheduler sets an initial review target of **50% of eligible targets**
-for each check descriptor, rounded up to a whole target.
-This percentage is a target fraction, not model confidence, finding
-probability, or a claim that half the session text was reviewed. A target counts
-as reviewed only after all required window answers pass validation and the
-check's reducer accepts them. Dispatch, partial answers, private thinking, and
-unavailable evidence do not count as completed review.
+Each check selects a small nonexhaustive set per immutable input snapshot. It
+sends at most **one logical request per check/input snapshot**, excluding existing
+finite transport retries. Zero qualifying candidates means zero calls. The local
+packer drops lower-priority candidates until one request fits; when the highest
+priority singleton still does not fit, bounded local reduction can shorten optional
+evidence while retaining mandatory task, rule, authority, or procedure units.
+If minimum valid evidence cannot fit, the check abstains without dispatch. Provider
+context rejection remains unassessed without child requests or a larger fallback.
+
+The product caps are upper bounds, not minimum supported model windows:
+
+| Check | Candidates per snapshot | State bytes per candidate | Packed request bytes | Estimated input fit ceiling |
+| --- | ---: | ---: | ---: | ---: |
+| Ignored Instructions | 2 | 1,536 | 6,144 | 1,536 |
+| Scope Creep | 2 | 2,048 | 8,192 | 2,048 |
+| Over-exploring | 3 | 1,024 | 6,144 | 1,536 |
+| Skill Opportunities | 1 | 2,048 | 4,096 | 1,024 |
+
+Each applicable provider limit can lower these bounds. Total input, state plus
+longest question, serialized bytes, question count, and criteria count remain
+separate constraints. Fit includes questions, answer criteria, escaping, wrappers,
+and scoring overhead. Existing usable-token helpers already subtract rendering
+reserve. With verified Ollama accounting, the token ceiling limits the largest
+rendered scoring input, not aggregate scoring work or actual billed usage.
+Smaller capacities can reduce recall or increase abstention without lowering the
+finding threshold. Estimates do not prove exact token usage or small-model quality.
+
+Policy-omitted candidates do not become later pages of the same snapshot. A new
+snapshot can create new work; this is not a lifetime one-request-per-session limit.
+Review completion describes retained comparisons, not exhaustive session coverage.
+Only validated answers and successful reduction count as reviewed work. Missing,
+omitted, uncertain, exhausted, or failed work cannot become session-wide Clean.
 
 The shared scheduler serves the four descriptors in round-robin order. Four
 turns prefer initial-review work, then the fifth prefers continuation work;
-either lane can serve work when the preferred lane is empty. Remaining targets
-continue after the initial fraction is reached. Each turn selects at most:
+either lane can serve work when the preferred lane is empty. Continuation resumes
+admitted unfinished work, rather than draining omitted inventory. Each snapshot selects at most:
 
 | Check                | Targets per turn |
 | -------------------- | ---------------- |
-| Ignored Instructions | 8                |
-| Scope Creep          | 4                |
+| Ignored Instructions | 2                |
+| Scope Creep          | 2                |
 | Over-exploring       | 3                |
-| Skill Opportunities  | 4                |
+| Skill Opportunities  | 1                |
 
-Each scheduler turn admits at most two provider dispatch attempts, including
+Each scheduler turn admits at most eight provider dispatch attempts, including
 retries. Packing can combine several answers in one request; a target limit is
 not a request count. The Store persists a limit of three total dispatch attempts
 for exact semantic work across turns and restarts. Yielding to another descriptor does not
@@ -172,8 +241,11 @@ evidence, source bindings, reference inputs, model/provider configuration, and
 check revisions must remain compatible. Transport repacking alone does not
 create new work. Changed task scope or skill references invalidate affected
 answers. Private thinking stays excluded from requests and review counts.
-Unsupported, incomplete, uncertain, and failed work cannot become a clean result
-merely because the initial fraction was reached.
+Dispatched evidence and request identity must remain unchanged during compatible
+recovery; changed capabilities cannot silently repack a pending request. Accepted
+compatible cached answers recover before a new send. Source and policy revisions
+fence incompatible work. The eight-dispatch ceiling is a scheduling guard, not
+permission to send eight logical requests for one compact snapshot.
 
 ## Ignored Instructions
 
@@ -235,10 +307,13 @@ Background and example sections do not become rule targets. The check does not
 classify a rule by searching for words such as “must” or “never.” Jev judges the
 meaning from the supplied text.
 
-Long text cannot fit in one request. The check cuts long rules, assistant
-messages, and tool inputs into small, overlapping text ranges. Each range
-repeats a little text from the range before it. This keeps words near a cut
-connected. Sampling can leave ranges and range combinations unchecked.
+The shared Markdown source-range parser uses `pulldown-cmark` with default
+features disabled. Syntax boundaries do not prove semantic completeness. A
+selected rule retains its necessary section, ancestor scope, conditions, and
+exceptions, including later sibling qualifications. Required context must fit
+intact; an oversized rule or atomic action is skipped rather than clipped into
+a misleading conflict. The compact check does not infer omitted obligations or
+completion deadlines.
 
 Instruction source also matters. The worker discovers supported instruction
 files from the session's worktree and home. It records an observed version and
@@ -269,71 +344,29 @@ apart.
 
 ### How sampling works
 
-One rule-text range and one action-text range form a possible comparison. The
-default turn sample is **8 high-priority rule/action pairs**. This is
-not exhaustive coverage or a per-session cap on comparisons, TypeSafe requests,
-tokens, elapsed time, or cost. A large session can have many more possible
-pairs. The check records possible, sampled, and remaining pair counts. Remaining
-pairs are a sampling gap, not known violations.
+The selector admits at most **two direct rule/action comparisons per snapshot**,
+preferring newest directly matched actions with stable source-order ties. Concrete
+tool, command, or path anchors are eligibility hints; the model decides whether
+the action conflicts with the complete rule and its exceptions. Broad low-overlap
+probing, omission inference, and deadline checks are outside the compact scope.
+Matching words alone cannot publish findings.
 
-The local selector scores meaningful word overlap; words found in fewer actions
-carry more weight. A tool name or literal action path mentioned by a rule adds
-a stronger signal. Prohibitions paired with tool input and recent actions add
-smaller signals. These signals rank work; they do not prove that any other pair
-is irrelevant. The selector spreads early choices across rules and instruction
-sources and includes low-overlap probes when space permits. It fills the rest
-of the budget in stable score order. Diversity and exploration reduce, but do
-not remove, the chance of missing a conflict. Jev still decides applicability
-using the rule and recorded context. Keyword matches alone never publish findings.
-
-On subsequent turns, risk-ranked new activity alternates with older unchecked
-work spread across source chronology. The worker saves sampled pair identities and
-compatible typed answers across completed reviews, appends, and restarts.
-Unchanged sampled pairs do not consume the next turn because content pages or
-request packing changed. With no new work, the remaining gap decreases over
-successive reviews; new actions or rules can increase it. Reuse requires the
-same identifiable instruction rule and action, selected text, relevant context,
-instruction version, model, and check revisions. A matching path or similar
-wording alone is insufficient. When a request outcome is unknown, recovery can
-make up to three total dispatch attempts. An earlier dispatched attempt may
-already have incurred a charge. If the result is still unknown after those
-attempts, Antiburn blocks further dispatch of that work.
-
-An **event window** contains one action and up to eight sampled rules. This sends
-the action once for those rules instead of copying it into a separate window
-each time. One rule/action comparison is a **target**. Long non-command actions or rules
-can need several windows with overlapping text. Bash commands stay atomic;
-commands that exceed the request limit remain unassessed. Sampling does not promise
-every possible range or window is sent.
-
-For example, the instructions might say “Run tests before publishing” and “Get
-approval before publishing.” If the session says “Published the release,” the
-window has one action and two targets. Jev makes a separate decision for each
-target.
-
-An older page may contain a selected earlier step for a newer action. The worker
-keeps only comparisons whose prior history is incomplete, up to the candidate
-limit. It adds matching earlier events in source order and checks each candidate
-again. Completed comparisons do not carry forward. The carried comparison state
-is separate from the content cursor and page result. Missing history never proves
-that a prerequisite did not happen. Accepted human text can inform a bounded
-permission-dependent comparison. Unknown-origin answers, assistant approval
-reports, skill selections, and tool permission do not establish human approval.
-If the needed interval remains
-missing or cut short, that comparison stays unassessed.
+The normal evidence budgets are 512 bytes for a complete rule, 512 for the typed
+action, and 256 for relevant exception/context. Required qualifications must fit
+together. Selection happens before answer reuse and does not fill freed slots
+with lower-priority comparisons from the same snapshot. Compatible selected
+answers can survive completed reviews, appends, and restarts when evidence,
+reference, provider, and evaluator identities match. This does not promise that
+the unchecked gap decreases on later turns. Recovery uses the existing finite
+attempt budget; an earlier attempt may already have incurred a charge.
 
 ### What Jev receives and returns
 
-Each event window contains the selected rule text, bounded enclosing-section
-and ancestor context, the action, and selected same-branch events. Instruction
-context carries exact source byte and line ranges and explicit clipping limits.
-Large supporting text selects first, relevant, and last structural ranges within
-the context budget. Command context remains atomic or unavailable.
-
-The check asks one joint Choice question per target. It returns `conflict`,
-`no_issue`, `pending_completion`, or `uncertain`, with an actual probability
-distribution. The decision considers applicability, conditions, exceptions,
-prerequisites, missing evidence, and completion boundaries together.
+Each candidate sends a complete rule, its applicable scope and exception, and a
+decisive typed action. Exact source ranges, identities, and publication bindings
+stay local. The check asks one joint three-option Choice per candidate about a
+direct conflict, no conflict, or uncertainty. It does not ask a second model to
+confirm or summarize the answer.
 
 Weak or uncertain answers do not prove a clean comparison. Source completeness
 and unresolved obligations limit conclusions about the reviewed comparisons.
@@ -352,24 +385,23 @@ Jev does not decide the session result by itself. Antiburn checks the answers
 available for each selected target, then combines those decisions into one
 review result.
 
-The local decision rules require at least 0.75 actual probability for `conflict`.
+The local decision rules require at least 0.95 actual probability for `conflict`
+and a unique positive winner.
 The finding retains this value as `composite_probability`; separate applicability
 and evidence probabilities are not multiplied or reconstructed. Current-file
-comparisons and truncated actions remain possible findings. Stronger evidence
-about the instruction source and action permits a likely finding under the same
-threshold. A direct conflict can still qualify when omitted
-history cannot change it. A conclusion that depends on missing history stays
-unassessed.
+comparisons describe possible conflicts with the current rule, not proof that an
+agent ignored a historically active rule. A command request does not prove
+execution or success. A conclusion that depends on missing conditions, authority,
+or action evidence stays unassessed.
 
 Antiburn links each finding to the exact local rule and action. It combines
-duplicate results for the same rule and action into one finding. A typed
-completion answer can keep a rule pending until the session shows the task's
-completion point. A completed sampled review with no findings can show the
+duplicate results for the same rule and action into one finding. A completed
+eligible selected review with no findings can show the
 ordinary **Clean** label. Clean means **no finding among sampled comparisons**.
 It does not mean that all session content is safe or that every instruction
 was active at the time. Unsampled pairs remain a coverage gap. Missing
-prerequisites, unavailable approval evidence, incomplete source evidence, pending
-obligations, and unresolved sampled comparisons cannot prove those comparisons
+prerequisites, unavailable approval evidence, incomplete source evidence,
+and unresolved selected comparisons cannot prove those comparisons
 clean. A provider or response error means the review did not finish; an
 evidence error means required source material is unavailable. Neither is a
 clean sampled review.
@@ -599,9 +631,10 @@ preparation, transport, or reduction changes.
 An ordinary assessment in about 60 seconds after worker start is a performance
 goal, not a deadline or guarantee. Preparation, provider admission, request
 packing, model latency, checkpoints, and publication all
-add time. A review can use several paid requests; the 8-pair turn budget does not
-cap spending. Large inputs, rate limits, retries, and missing history can take
-longer. Measure worker-start-to-result time, sampled coverage, requests and
+add time. One logical request per check/input snapshot still permits finite
+transport retries and new work after snapshot changes; it is not a lifetime
+spending cap. Rate limits, retries, and missing evidence can take longer.
+Measure worker-start-to-result time, selected coverage, requests and
 tokens, reuse, missed findings, and cost on representative sessions before
 making a performance or quality claim. Offline synthetic tests cannot establish
 live model accuracy or elapsed provider time.
@@ -640,7 +673,8 @@ coverage. Claims remain limited to the characterized source shapes and producer
 pins in the session coverage document. All other formats are unavailable to
 this check, even if another local parser reads them. Cursor store and composer
 routes retain user and assistant text but mark native tool fields unavailable,
-so they cannot produce a clean result from incomplete tool evidence.
+so they cannot produce compact direct-conflict candidates without typed tool
+anchors. Loader admission alone does not establish finding or Clean support.
 
 | `SourceFormat`                 | UserMessage | AssistantMessage | BashCommandInput | BashCommandOutput | FileEditPath | FileEditContent | ReadFilePath | ReadFileOutput | SearchFilesQuery | SearchFilesOutput | OtherToolInput | OtherToolOutput |
 | ------------------------------ | ----------- | ---------------- | ---------------- | ----------------- | ------------ | --------------- | ------------ | -------------- | ---------------- | ----------------- | -------------- | --------------- |
@@ -859,19 +893,27 @@ item independently and builds the final request once per batch. The final
 request must pass both the 60 KiB request limit and the 30 KiB state-plus-longest-
 question limit. These are byte proxies, not measured provider token counts.
 
-The desktop shares sixteen HTTP slots and a 4 MiB in-flight byte allowance.
+Four assessment admissions bound overlapping preparation. The engine has one
+process-wide ceiling of sixteen active execute futures. The desktop retains a
+distinct sixteen-slot HTTP guard for direct transport callers; it does not
+reacquire the engine semaphore. The desktop also shares a 4 MiB in-flight byte allowance.
 Each call reserves twice its request and local-binding bytes plus the 64 KiB
 response maximum.
-The runner also caps a request wave at a 16 MiB queued-byte allowance shared
-across runners. These limits account for serialized payloads and response
-buffers; they are not a bound on every allocator or check-owned preparation
-object. Provider starts are at least 25 ms apart across checks. Retry-After
-and bounded exponential backoff delay the shared start time. A rolling one-
+Each assessment validates at most 16 MiB of queued request data. Four admitted
+assessments can therefore retain up to 64 MiB of nominal queues, plus input,
+plan, cache, and other memory. No aggregate queue-byte semaphore or total process
+memory bound is claimed. Compact checks normally use much smaller requests.
+Sixteen candidate turns form a scheduling slice: the worker yields and continues
+ready work rather than waiting for the next poll. Provider admission waits until
+its next eligible start time and rechecks cancellation. Provider starts are at
+least 25 ms apart across checks. Retry-After, bounded exponential backoff, and
+shared cooldown for headerless overload responses delay the shared start time. A rolling one-
 second allowance admits at most 100,000 reserved input tokens. Each dispatched
 call starts with a 65,536-token reservation. Confirmed input-token usage replaces
 that reservation within the window; known rejection releases it. Unknown
 outcomes keep the reservation until the window expires. This is shared across
-checks. No live throughput claim follows from these local limits.
+checks. Local pacing limits do not establish account-wide provider quota entitlement
+or a measured live throughput improvement.
 Each session's compact progress checkpoint is limited to 2 MiB.
 
 Production HTTP uses a cancellable async request. Cancellation cannot undo a

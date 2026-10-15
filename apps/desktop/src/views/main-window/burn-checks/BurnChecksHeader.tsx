@@ -1,3 +1,4 @@
+import { pluralize } from "../../../lib/presentation/text"
 import { CountPill } from "../../../components/ui/CountPill"
 import { CollectionHeader } from "../../../components/ui/CollectionHeader"
 import { Tooltip } from "../../../components/presentation/Tooltip"
@@ -26,7 +27,7 @@ export function BurnChecksHeader({ report }: { report?: ChecksReportPayload }) {
               size="regular"
               aria-live="polite"
               aria-atomic="true"
-              aria-label={`${report.categories.length} ${report.categories.length === 1 ? "check type" : "check types"} in total, including snoozed checks`}
+              aria-label={`${report.categories.length} ${pluralize(report.categories.length, "check type", "check types")} in total, including snoozed checks`}
             />
           ) : null
         }

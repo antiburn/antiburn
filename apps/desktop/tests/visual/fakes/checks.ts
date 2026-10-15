@@ -2,6 +2,7 @@ import type { CheckAvailability } from "../../../src/lib/checkAvailability"
 import type { BurnCheckDetectorId, ChecksReportPayload } from "../../../src/lib/insightsIpc"
 import { CHECK_DEFINITIONS } from "../../../src/lib/presentation/checkDefinitions"
 import { emitFixtureEvent } from "./event"
+import { hasSmartCheckFixture, smartCheckReport } from "./smartChecks"
 
 const availability: CheckAvailability = {
   revision: 0,
@@ -32,11 +33,17 @@ const availability: CheckAvailability = {
     completed: 0,
     skipped: 0,
     failed: 0,
+    reviewed: 0,
+    eligibleItems: 0,
   },
 }
 
 export function fixtureCheckAvailability(): CheckAvailability {
-  return structuredClone(availability)
+  return structuredClone(
+    hasSmartCheckFixture()
+      ? { ...availability, configured: true, savedKey: true }
+      : availability,
+  )
 }
 
 export function setFixtureCheckEnabled(args?: Record<string, unknown>): CheckAvailability {
@@ -54,6 +61,7 @@ export function setFixtureCheckEnabled(args?: Record<string, unknown>): CheckAva
 }
 
 export function fixtureChecksReport(): ChecksReportPayload {
+  if (hasSmartCheckFixture()) return smartCheckReport()
   return {
     evidenceSettled: true,
     windowSessions: 128,

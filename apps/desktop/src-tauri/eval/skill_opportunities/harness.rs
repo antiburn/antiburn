@@ -11,30 +11,94 @@ async fn evaluate(
     client: &support::provider::EvalClient,
     usage: &Arc<Mutex<support::run::RunUsage>>,
 ) -> Value {
+    let total_started = Instant::now();
+    let context_started = Instant::now();
     let context = case.check.session_context();
+    let context_construction_ms = context_started.elapsed().as_millis();
     let permit = admit_jev_orchestration()
         .await
         .expect("Admit evaluation preparation");
+    let preparation_started = Instant::now();
     let mut plan = case
         .check
         .prepare_with_capabilities(&context, &support::provider::configuration().capabilities)
         .expect("Synthetic skill work prepares");
-    let started = Instant::now();
+    let preparation_ms = preparation_started.elapsed().as_millis();
+    let work_item_count = plan.work_items.len();
+    let packed = antiburn_local::analysis::jev::pack_work_items_with_capabilities(
+        &plan.work_items,
+        &plan.capabilities,
+    );
+    assert!(packed.batches.len() <= 1);
+    let request_bytes: usize = packed
+        .batches
+        .iter()
+        .map(|batch| batch.serialized_bytes)
+        .sum();
+    let estimated_input_tokens: u64 = packed
+        .batches
+        .iter()
+        .map(|batch| {
+            plan.capabilities.estimate_text_tokens(
+                &serde_json::to_string(&batch.request).expect("request serializes"),
+            )
+        })
+        .sum();
+    let rendered_input_tokens = packed
+        .batches
+        .iter()
+        .map(|batch| {
+            antiburn_local::analysis::jev::estimate_jev_rendered_question_tokens(
+                &batch.request,
+                &plan.capabilities,
+            )
+            .ok()
+        })
+        .collect::<Vec<_>>();
+    let request_count_before = usage.lock().expect("Usage lock").requests;
+    let request_elapsed = Arc::new(Mutex::new(std::time::Duration::ZERO));
+    let measured_request_elapsed = Arc::clone(&request_elapsed);
+    let runner_started = Instant::now();
     let outcome = run_jev_check_prepared(
         &case.check,
         &context,
         &mut plan,
         JevRunProgress::default(),
         permit,
-        |batch| async move {
-            support::run::evaluate_batch(client, usage, &case.id, "assessment", &batch).await
+        |batch| {
+            let request_elapsed = Arc::clone(&measured_request_elapsed);
+            async move {
+                let started = Instant::now();
+                let result =
+                    support::run::evaluate_batch(client, usage, &case.id, "assessment", &batch)
+                        .await;
+                *request_elapsed.lock().expect("Request timing lock") += started.elapsed();
+                result
+            }
         },
         |_| Ok(()),
     )
     .await;
+    let runner_ms = runner_started.elapsed().as_millis();
+    let request_execution_ms = request_elapsed
+        .lock()
+        .expect("Request timing lock")
+        .as_millis();
+    let request_count = usage
+        .lock()
+        .expect("Usage lock")
+        .requests
+        .saturating_sub(request_count_before);
     let mut row = match outcome {
         Ok(outcome) => {
+            let actual_input_tokens: u64 = outcome
+                .progress
+                .results
+                .values()
+                .map(|result| result.usage.input_tokens)
+                .sum();
             json!({"score":scoring::score(case, &outcome.result, &plan.work_items, plan.skipped_item_ids.len()),
+            "actual_input_tokens":actual_input_tokens,"findings":outcome.result.findings,
             "failure":outcome.failure.map(|error|error.to_string()),"decisions":outcome.result.decisions.iter().map(|decision|json!({"comparison":decision.comparison.id,"outcome":decision.outcome,"judgments":decision.judgments})).collect::<Vec<_>>()})
         }
         Err(error) => {
@@ -42,9 +106,45 @@ async fn evaluate(
         }
     };
     row["id"] = json!(case.id);
+    if !row["failure"].is_null() {
+        row["score"]["failed_cases"] = json!(1);
+    }
+    if let Some(baseline) = crate::baseline::result(&case.check, &plan, usage, &case.id) {
+        match baseline {
+            Ok(result) => {
+                row["baseline_score"] =
+                    scoring::score(case, &result, &plan.work_items, plan.skipped_item_ids.len());
+                row["baseline_result"] = json!(result);
+            }
+            Err(error) => row["baseline_failure"] = json!(error),
+        }
+    }
     row["family"] = json!(case.family);
     row["expected"] = json!(case.label);
-    row["elapsed_ms"] = json!(started.elapsed().as_millis());
+    row["effective_capabilities"] = json!(plan.capabilities);
+    row["request_bytes"] = json!(request_bytes);
+    row["estimated_aggregate_input_tokens"] = json!(estimated_input_tokens);
+    row["estimated_largest_rendered_inputs"] = json!(rendered_input_tokens);
+    row["selected_input"] = json!(
+        packed
+            .batches
+            .iter()
+            .map(|batch| &batch.request.state)
+            .collect::<Vec<_>>()
+    );
+    let total_ms = total_started.elapsed().as_millis();
+    row["elapsed_ms"] = json!(total_ms);
+    row["timing"] = json!({
+        "context_construction_ms":context_construction_ms,
+        "preparation_ms":preparation_ms,
+        "runner_ms":runner_ms,
+        "request_execution_ms":request_execution_ms,
+        "packing_ms":null,
+        "reduction_ms":null,
+        "total_ms":total_ms,
+        "work_items":work_item_count,
+        "requests":request_count,
+    });
     row
 }
 
@@ -88,6 +188,7 @@ pub(crate) async fn run() -> Result<(), String> {
     let metrics = scoring::metrics(&cases, &rows);
     println!("Skill Opportunities: {metrics}");
     let report = json!({"check":"skill_opportunities","suite":suite,"provider":support::provider::configuration().identity(),
+        "revisions":antiburn_local::checks::skill_opportunities::SKILL_OPPORTUNITIES_REVISIONS,"production_runner":true,
         "metrics":metrics,"stopped":stopped,"measurements":support::run::measurements(&rows,&usage.lock().expect("Usage lock")),"rows":rows});
     let path = support::capture::report("skill_opportunities", &suite, &report);
     match stopped {
@@ -163,22 +264,14 @@ fn single_pair_choices_preserve_partial_findings_and_complete_uncertainty_sampli
                 JevAnswer::Choice {
                     choice: "uncertain".into(),
                     probabilities: std::collections::BTreeMap::from([
-                        ("useful_opportunity".into(), 0.05),
-                        ("no_opportunity".into(), 0.05),
+                        ("actionable_help".into(), 0.05),
+                        ("already_adequate_or_unrelated".into(), 0.05),
                         ("uncertain".into(), 0.9),
                     ]),
                     confidence: 0.1,
                 },
             )]),
-            evidence: plan
-                .shared_context
-                .as_ref()
-                .unwrap()
-                .evidence
-                .iter()
-                .chain(&item.window.evidence)
-                .cloned()
-                .collect(),
+            evidence: item.window.evidence.clone(),
             usage: JevUsage {
                 input_tokens: 0,
                 output_tokens: 0,
@@ -213,16 +306,19 @@ fn single_pair_choices_preserve_partial_findings_and_complete_uncertainty_sampli
                 .is_none_or(|next| next.candidate != job.candidate)
         );
         for (probability, expected) in [
-            (0.74, SkillOpportunityOutcome::Uncertain),
-            (0.75, SkillOpportunityOutcome::Advisory),
+            (0.94, SkillOpportunityOutcome::Uncertain),
+            (0.95, SkillOpportunityOutcome::Advisory),
         ] {
             answer.answers.insert(
                 "opportunity".into(),
                 JevAnswer::Choice {
-                    choice: "useful_opportunity".into(),
+                    choice: "actionable_help".into(),
                     probabilities: std::collections::BTreeMap::from([
-                        ("useful_opportunity".into(), probability),
-                        ("no_opportunity".into(), (1.0 - probability) / 2.0),
+                        ("actionable_help".into(), probability),
+                        (
+                            "already_adequate_or_unrelated".into(),
+                            (1.0 - probability) / 2.0,
+                        ),
                         ("uncertain".into(), (1.0 - probability) / 2.0),
                     ]),
                     confidence: 0.1,

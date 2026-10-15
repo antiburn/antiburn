@@ -28,6 +28,8 @@ pub struct Case {
     pub family: &'static str,
     pub label: Label,
     pub authority: bool,
+    pub legacy_diagnostic: bool,
+    pub policy_admitted: bool,
     pub check: SkillOpportunitiesCheck,
     pub skill: SkillDefinition,
     pub work: Vec<antiburn_local::analysis::jev_evidence::ContentEventReference>,
@@ -82,8 +84,10 @@ fn domains(additional: bool) -> Vec<Domain> {
     ]
 }
 
-const FAMILIES: [&str; 20] = [
+const FAMILIES: [&str; 22] = [
     "opportunity",
+    "repeated_workflow",
+    "single_operation_generic",
     "direct_work",
     "irrelevant",
     "near_negative",
@@ -146,13 +150,13 @@ pub fn cases(suite: &str) -> Vec<Case> {
         ["development", "controls"].contains(&suite),
         "Unknown ANTIBURN_EVAL_SUITE"
     );
-    let mut cases = Vec::new();
+    let mut cases = compact_cases(suite);
     for domain in domains(suite == "controls") {
         for family in FAMILIES {
             let label = match family {
-                "opportunity" | "missing_birth" | "missing_work_time" | "missing_both_times"
-                | "unknown_use" => Label::Advisory,
-                "used_skill" | "later_birth" | "duplicate_identity" => Label::Ineligible,
+                "opportunity" | "repeated_workflow" | "missing_birth" | "missing_work_time"
+                | "missing_both_times" | "unknown_use" | "later_birth" => Label::Advisory,
+                "used_skill" | "duplicate_identity" => Label::Ineligible,
                 "ambiguous_identity" | "missing_history" | "cancelled_use"
                 | "synthetic_approval" => Label::Abstain,
                 _ => Label::NoOpportunity,
@@ -170,17 +174,28 @@ pub fn cases(suite: &str) -> Vec<Case> {
                 created_at_ms: Some(1),
             };
             let direct_work = matches!(family, "direct_work" | "unknown_use_direct_work");
-            let task = if direct_work {
-                "Perform only the single diagnostic command. It is routine and already efficient; no analysis or broader review is needed."
+            let task = if family == "repeated_workflow" {
+                format!(
+                    "The same workflow has failed on three consecutive runs. {} Review the repeated failures and produce a prevention procedure.",
+                    domain.task
+                )
+            } else if family == "single_operation_generic" {
+                "Format this one known UTC timestamp for a log entry. Return the formatted value only; no recurring workflow or broader analysis is needed.".into()
+            } else if direct_work {
+                "Perform only the single diagnostic command. It is routine and already efficient; no analysis or broader review is needed.".into()
             } else {
-                domain.task
+                domain.task.into()
             };
-            let command = if direct_work {
+            let command = if family == "single_operation_generic" {
+                "python -c 'from datetime import datetime, timezone; print(datetime(2026, 1, 15, tzinfo=timezone.utc).isoformat())'"
+            } else if direct_work {
                 domain.direct
             } else {
                 domain.command
             };
-            let output = if direct_work {
+            let output = if family == "single_operation_generic" {
+                "2026-01-15T00:00:00+00:00. The requested timestamp is formatted correctly."
+            } else if direct_work {
                 domain.direct_output
             } else {
                 domain.output
@@ -195,7 +210,7 @@ pub fn cases(suite: &str) -> Vec<Case> {
                 _ => {},
             }
             let mut parts = vec![
-                part(0, ContentKind::UserText, task, None, None),
+                part(0, ContentKind::UserText, &task, None, None),
                 part(
                     1,
                     ContentKind::ToolInput,
@@ -335,11 +350,187 @@ pub fn cases(suite: &str) -> Vec<Case> {
                         | "unknown_use_direct_work"
                         | "unknown_use_irrelevant"
                 ),
+                legacy_diagnostic: true,
+                policy_admitted: false,
                 check,
                 skill,
                 work,
             });
         }
+    }
+    cases
+}
+
+fn compact_cases(suite: &str) -> Vec<Case> {
+    let mut cases = Vec::new();
+    for family in [
+        "compact_workflow",
+        "compact_single_operation",
+        "compact_repeated_workflow",
+        "compact_adequate_workflow",
+        "compact_generic",
+        "compact_missing_result",
+        "compact_oversized_procedure",
+        "compact_long_session",
+    ] {
+        let id = format!("{suite}-{family}");
+        let procedure = "1. After `cargo test parser` reports a lock cycle, trace each lock acquisition edge.\n2. Run `cargo check` after enforcing one lock order; add a cancel/publish interleaving regression.\n";
+        let mut skill = SkillDefinition {
+            identity: "synthetic-parser-review".into(),
+            revision: "compact-v1".into(),
+            name: "parser-review".into(),
+            aliases: vec![],
+            description: procedure.into(),
+            frontmatter: json!({"description": procedure}),
+            scope: scope(),
+            enabled: true,
+            created_at_ms: Some(10_000),
+        };
+        if family == "compact_adequate_workflow" {
+            skill.description = "1. Run `cargo test parser`.\n2. Run `cargo check`.\n".into();
+        }
+        if family == "compact_generic" {
+            skill.description = "Review code and tests.".into();
+        }
+        if family == "compact_oversized_procedure" {
+            skill
+                .description
+                .push_str(&"Keep the complete exception. ".repeat(32));
+        }
+        skill.frontmatter = json!({"description": skill.description});
+        let mut parts = vec![part(
+            0,
+            ContentKind::UserText,
+            "Investigate the parser deadlock.",
+            None,
+            None,
+        )];
+        if family == "compact_long_session" {
+            for index in 1..50 {
+                parts.push(part(
+                    index,
+                    ContentKind::AssistantText,
+                    "Inspect the parser before changing code.",
+                    None,
+                    None,
+                ));
+            }
+        }
+        let mut workflow = vec![
+            (50, "cargo test parser", "Failed: lock order cycle."),
+            (52, "cargo check", "Check passed; deadlock unresolved."),
+        ];
+        if family == "compact_single_operation" {
+            workflow = vec![(
+                50,
+                "cargo test parser\ncargo check",
+                "Lock cycle in tests; check passed, deadlock unresolved.",
+            )];
+        }
+        if family == "compact_adequate_workflow" {
+            workflow[0].2 = "All parser tests passed.";
+            workflow[1].2 = "Check passed. Validation complete.";
+        }
+        if family == "compact_repeated_workflow" {
+            workflow.extend([
+                (54, "cargo test parser", "Failed: lock order cycle."),
+                (56, "cargo check", "Check passed; deadlock unresolved."),
+            ]);
+        }
+        for (index, command, result) in workflow {
+            let call = format!("work-{index}");
+            parts.push(part(
+                index,
+                ContentKind::ToolInput,
+                &json!({"command":command}).to_string(),
+                Some("Bash"),
+                Some(&call),
+            ));
+            if family != "compact_missing_result" {
+                parts.push(part(
+                    index + 1,
+                    ContentKind::ToolResult,
+                    result,
+                    Some("Bash"),
+                    Some(&call),
+                ));
+            }
+        }
+        let boundary = parts.last().unwrap().turn_index;
+        let page = PublishedContent {
+            publication_fence: 4,
+            source_generation: Some(3),
+            parts,
+            coverage: ContentQueryCoverage::default(),
+            next_offset: 0,
+        };
+        let mut builder = SessionScopeBuilder::new(
+            SourceFormat::ClaudeJsonl,
+            SessionScopeBoundary {
+                source_key: "synthetic-transcript".into(),
+                thread_id: "synthetic-branch".into(),
+                turn_index: boundary,
+                part_index: 0,
+                branch: SessionScopeBranch::ProvenLinear,
+            },
+            4,
+            3,
+            true,
+        )
+        .unwrap();
+        builder.push_page(page.clone(), false).unwrap();
+        let scope_snapshot = builder.finish().unwrap();
+        let content = prepare_session_content(&id, SourceFormat::ClaudeJsonl, page, vec![]);
+        let work = content
+            .actions
+            .iter()
+            .filter(|action| {
+                action
+                    .tool_call_id
+                    .as_deref()
+                    .is_some_and(|call| call.starts_with("work-"))
+            })
+            .map(|action| action.reference.clone())
+            .collect();
+        let usage = SkillUseSnapshot::from_selected_content(
+            &select_session_content(&content, SKILL_USE_SELECTION),
+            &SkillUseBoundary {
+                session_identity: content.session_identity_digest.clone(),
+                native_session_id: "synthetic-native-session".into(),
+                publication_fence: 4,
+                scope: scope(),
+            },
+            &[],
+        )
+        .unwrap();
+        let inventory = SkillOpportunitySnapshot::new(scope(), vec![skill.clone()], true).unwrap();
+        let check =
+            SkillOpportunitiesCheck::new(&content, &inventory, &usage, &scope_snapshot).unwrap();
+        let admitted = matches!(
+            family,
+            "compact_workflow"
+                | "compact_single_operation"
+                | "compact_repeated_workflow"
+                | "compact_adequate_workflow"
+                | "compact_long_session"
+        );
+        cases.push(Case {
+            id,
+            family,
+            label: if family == "compact_adequate_workflow" {
+                Label::NoOpportunity
+            } else if admitted {
+                Label::Advisory
+            } else {
+                Label::Abstain
+            },
+            authority: false,
+            legacy_diagnostic: false,
+            policy_admitted: admitted,
+            check,
+            skill,
+            work,
+        });
     }
     cases
 }

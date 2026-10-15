@@ -1,4 +1,4 @@
-use super::tests::{event, input};
+use super::tests::{command, event, input};
 use super::*;
 use crate::analysis::jev::{JevQuestion, JevUsage, capabilities::ModelCapabilities};
 use crate::checks::ignored_instructions::questions::comparison_questions;
@@ -25,16 +25,10 @@ fn selected_native_context_controls_result_and_authorization_publication() {
                         actions[0].metadata.user_text_history = None;
                     }
                 }
-                actions.push(event(
-                    "release",
-                    4,
-                    "assistant",
-                    "main",
-                    "Published the release.",
-                ));
+                actions.push(command("release", 4, "npm publish"));
                 let source = input(
                     actions,
-                    "Publish only after the focused tests pass and the user approves.",
+                    "Do not request `npm publish` without user approval.",
                 );
                 let (_, plan) = classified(
                     &source,
@@ -78,10 +72,9 @@ fn selected_native_context_controls_result_and_authorization_publication() {
                 let item = plan
                     .work_items
                     .iter()
-                    .find(|item| {
-                        item.window.fields["candidate_action"]["text"] == "Published the release."
-                    })
-                    .unwrap();
+                    .find(|item| item.window.fields["candidate_action"]["text"] == "npm publish");
+                assert_eq!(item.is_some(), complete_proof);
+                let Some(item) = item else { continue };
                 let context =
                     item.window.fields["instruction_targets"][0]["earlier_counterevidence"]
                         .as_array()
@@ -112,14 +105,8 @@ fn command_result_window_uses_the_selected_request_after_raw_argument_normalizat
         json!({"command": "cargo test --lib", "description": "Native-only display text"})
             .to_string();
     actions.extend(pair);
-    actions.push(event(
-        "report",
-        4,
-        "assistant",
-        "main",
-        "All focused tests passed.",
-    ));
-    let source = input(actions, "Report test results accurately.");
+    actions.push(command("report", 4, "npm publish"));
+    let source = input(actions, "Do not request `npm publish`.");
     let (_, plan) = classified(
         &source,
         PrerequisiteContextPolicy::CoherentEpisode,
@@ -130,7 +117,7 @@ fn command_result_window_uses_the_selected_request_after_raw_argument_normalizat
     let item = plan
         .work_items
         .iter()
-        .find(|item| item.window.fields["candidate_action"]["text"] == "All focused tests passed.")
+        .find(|item| item.window.fields["candidate_action"]["text"] == "npm publish")
         .unwrap();
     let context = item.window.fields["instruction_targets"][0]["earlier_counterevidence"]
         .as_array()
@@ -236,7 +223,7 @@ fn comparison_response(
                 } else if relationship == "conflict" {
                     "conflict"
                 } else if matches!(relationship, "follows" | "unrelated") {
-                    "no_issue"
+                    "no_conflict"
                 } else {
                     "uncertain"
                 };
@@ -264,54 +251,69 @@ fn literal_report_answers_do_not_override_the_joint_semantic_decision() {
             action.kind = kind.to_owned();
             action.truncated = source_truncated;
             let source = input(vec![action], "Do not add `disableLeaseGuard`.");
-            let (_, mut plan) = classified(
+            let (_, plan) = classified(
                 &source,
                 PrerequisiteContextPolicy::CoherentEpisode,
                 "action",
                 "not_read_order",
                 "other_path",
             );
-            plan.prepared
-                .comparisons
-                .retain(|comparison| comparison.action.text.contains("I added disableLeaseGuard"));
-            let comparison = &plan.prepared.comparisons[0];
-            assert!(comparison.action.truncated);
-            for probability in [0.89, 0.90] {
-                let mut response =
-                    comparison_response(comparison, "conflict", "evidence_incomplete");
-                response.answers.insert(
-                    "literal_report_0".to_owned(),
-                    JevAnswer::Choice {
-                        choice: "reports_addition".to_owned(),
-                        confidence: probability,
-                        probabilities: BTreeMap::from([
-                            ("reports_addition".to_owned(), probability),
-                            ("no_addition_report".to_owned(), 1.0 - probability),
-                        ]),
-                    },
-                );
-                let result = reduce_assessment(
-                    &plan.prepared,
-                    &BTreeMap::from([(comparison.id.clone(), response)]),
-                    true,
-                );
-                assert!(result.findings.is_empty());
-                assert_eq!(
-                    result.unassessed_comparisons,
-                    std::slice::from_ref(&comparison.id)
-                );
-            }
-            let direct = comparison_response(comparison, "conflict", "self_contained");
-            let result = reduce_assessment(
-                &plan.prepared,
-                &[(comparison.id.clone(), direct)].into(),
-                true,
+            assert!(plan.prepared.comparisons.is_empty());
+            assert!(plan.work_items.is_empty());
+            assert_eq!(
+                IgnoredInstructionsCheck
+                    .reduce(&plan, &[], true)
+                    .unwrap()
+                    .request_count,
+                0
             );
-            assert_eq!(result.findings.len(), 1);
-            assert_eq!(result.findings[0].reference.action_id, "native-report");
-            assert!(result.findings[0].decision_record().is_some());
         }
     }
+    let source = input(
+        vec![command("native-request", 1, "git push --force")],
+        "Do not run `git push --force`.",
+    );
+    let (_, plan) = classified(
+        &source,
+        PrerequisiteContextPolicy::CoherentEpisode,
+        "action",
+        "not_read_order",
+        "other_path",
+    );
+    let comparison = &plan.prepared.comparisons[0];
+    for probability in [0.89, 0.90, 1.0] {
+        let mut response = comparison_response(comparison, "conflict", "evidence_incomplete");
+        response.answers.insert(
+            "literal_report_0".to_owned(),
+            JevAnswer::Choice {
+                choice: "reports_addition".to_owned(),
+                confidence: probability,
+                probabilities: BTreeMap::from([
+                    ("reports_addition".to_owned(), probability),
+                    ("no_addition_report".to_owned(), 1.0 - probability),
+                ]),
+            },
+        );
+        let result = reduce_assessment(
+            &plan.prepared,
+            &BTreeMap::from([(comparison.id.clone(), response)]),
+            true,
+        );
+        assert!(result.findings.is_empty());
+        assert_eq!(
+            result.unassessed_comparisons,
+            std::slice::from_ref(&comparison.id)
+        );
+    }
+    let direct = comparison_response(comparison, "conflict", "self_contained");
+    let result = reduce_assessment(
+        &plan.prepared,
+        &[(comparison.id.clone(), direct)].into(),
+        true,
+    );
+    assert_eq!(result.findings.len(), 1);
+    assert_eq!(result.findings[0].reference.action_id, "native-request");
+    assert!(result.findings[0].decision_record().is_some());
 }
 
 #[test]
@@ -369,27 +371,40 @@ fn recursive_directory_scope_binds_move_paths_without_resolving_unknown_roots() 
             "not_read_order",
             "edit_directory",
         );
-        let comparison = &plan.prepared.comparisons[0];
-        let changes = &plan.work_items[0].window.fields["requested_path_changes"];
-        assert_eq!(changes[0]["path"], from);
-        assert_eq!(changes[1]["path"], to);
-        let result = reduce_assessment(
-            &plan.prepared,
-            &BTreeMap::from([(
-                comparison.id.clone(),
-                comparison_response(
-                    comparison,
-                    "conflict",
-                    if unknown {
-                        "evidence_incomplete"
-                    } else {
-                        "self_contained"
-                    },
-                ),
-            )]),
-            true,
-        );
-        assert_eq!(result.findings.is_empty(), unknown);
+        if unknown {
+            assert!(plan.prepared.comparisons.is_empty());
+            assert!(plan.work_items.is_empty());
+            assert_eq!(
+                IgnoredInstructionsCheck
+                    .reduce(&plan, &[], true)
+                    .unwrap()
+                    .request_count,
+                0
+            );
+        } else {
+            let comparison = &plan.prepared.comparisons[0];
+            let changes =
+                &plan.work_items[0].window.fields["candidate_action"]["requested_path_changes"];
+            assert_eq!(changes[0]["path"], from);
+            assert_eq!(changes[1]["path"], to);
+            let result = reduce_assessment(
+                &plan.prepared,
+                &BTreeMap::from([(
+                    comparison.id.clone(),
+                    comparison_response(
+                        comparison,
+                        "conflict",
+                        if unknown {
+                            "evidence_incomplete"
+                        } else {
+                            "self_contained"
+                        },
+                    ),
+                )]),
+                true,
+            );
+            assert_eq!(result.findings.is_empty(), unknown);
+        }
     }
 }
 
@@ -411,14 +426,8 @@ fn context_ablation_keeps_every_other_preparation_dimension_fixed() {
             "Reviewed a note.",
         )
     }));
-    actions.push(event(
-        "publish",
-        12,
-        "assistant",
-        "main",
-        "Requested publication.",
-    ));
-    let source = input(actions, "Request validation before publication.");
+    actions.push(command("publish", 12, "npm publish"));
+    let source = input(actions, "Do not request `npm publish`.");
     let (selected_context, selected) = classified(
         &source,
         PrerequisiteContextPolicy::SelectedEvents,
@@ -534,15 +543,9 @@ fn a_small_complete_selected_baseline_uses_the_same_prerequisite_proof() {
                 "main",
                 "Requested the first check.",
             ),
-            event(
-                "publish",
-                2,
-                "assistant",
-                "main",
-                "Requested publication without the second check.",
-            ),
+            command("publish", 2, "npm publish"),
         ],
-        "Request both checks before publication.",
+        "Do not request `npm publish`.",
     );
     for policy in [
         PrerequisiteContextPolicy::SelectedEvents,
@@ -604,33 +607,12 @@ fn path_identity_gates_conflict_and_clean_even_without_a_read_requirement() {
             "not_read_order",
             "edit_directory",
         );
-        let comparison = &plan.prepared.comparisons[0];
-        assert!(plan.prepared.observable_obligations.is_empty());
-        for relationship in ["conflict", "follows"] {
-            let result = reduce_assessment(
-                &plan.prepared,
-                &BTreeMap::from([(
-                    comparison.id.clone(),
-                    comparison_response(comparison, relationship, "evidence_incomplete"),
-                )]),
-                true,
-            );
-            assert!(result.findings.is_empty());
-            assert_eq!(result.unassessed_comparisons.len(), 1);
-            assert!(
-                result
-                    .coverage
-                    .limitations
-                    .contains(&"semantic_decision_uncertain".to_owned())
-            );
-        }
-        assert!(
-            !plan.work_items[0]
-                .window
-                .fields
-                .to_string()
-                .contains("EXCLUDED_EDIT_BODY")
-        );
+        assert!(plan.prepared.comparisons.is_empty(), "{path}");
+        assert!(plan.work_items.is_empty(), "{path}");
+        let result = IgnoredInstructionsCheck.reduce(&plan, &[], true).unwrap();
+        assert!(result.findings.is_empty());
+        assert_eq!(result.request_count, 0);
+        assert!(result.coverage.unselected_pairs > 0);
     }
     let source = input(
         vec![tool(
@@ -649,10 +631,7 @@ fn path_identity_gates_conflict_and_clean_even_without_a_read_requirement() {
         "edit_directory",
     );
     assert!(plan.prepared.observable_obligations.is_empty());
-    assert_eq!(
-        plan.work_items[0].window.fields["instruction_targets"][0]["identifier_facts"][0]["matches_recorded_path"],
-        false
-    );
+    assert_eq!(plan.work_items.len(), 1);
     assert!(
         plan.work_items[0].window.fields["candidate_action"]["text"]
             .as_str()
@@ -680,7 +659,7 @@ fn patch_operations_reach_requests_without_edit_bodies_or_execution_claims() {
         "edit_directory",
     );
     let item = &plan.work_items[0];
-    let changes = &item.window.fields["requested_path_changes"];
+    let changes = &item.window.fields["candidate_action"]["requested_path_changes"];
     assert_eq!(
         changes[0],
         json!({"path":"protected/old.rs", "change":"move_from"})
@@ -703,7 +682,7 @@ fn patch_operations_reach_requests_without_edit_bodies_or_execution_claims() {
 }
 
 #[test]
-fn long_here_document_keeps_the_atomic_command_and_source_bound_header() {
+fn long_here_document_abstains_without_clipping_its_decisive_input() {
     let command = format!(
         "format-check --stdin <<'END_INPUT'\n{}\nSECRET_MARKER\nEND_INPUT\n",
         "recorded input\n".repeat(500)
@@ -724,40 +703,20 @@ fn long_here_document_keeps_the_atomic_command_and_source_bound_header() {
         "not_read_order",
         "other_path",
     );
-    assert_eq!(plan.work_items.len(), 1);
-    assert!(
-        plan.work_items[0].window.fields["candidate_action"]["text"]
-            .as_str()
+    assert!(plan.work_items.is_empty());
+    assert!(plan.prepared.comparisons.is_empty());
+    assert_eq!(plan.prepared.coverage.skipped_actions, ["shell"]);
+    assert_eq!(
+        IgnoredInstructionsCheck
+            .reduce(&plan, &[], true)
             .unwrap()
-            .contains("SECRET_MARKER")
+            .request_count,
+        0
     );
-    for item in &plan.work_items {
-        let context = &item.window.fields["command_input_context"];
-        assert_eq!(context["header"], "format-check --stdin <<'END_INPUT'");
-        assert_eq!(context["body_expands"], false);
-        assert!(!context.to_string().contains("SECRET_MARKER"));
-        assert!(!item.window.fields.to_string().contains("EXCLUDED_OUTPUT"));
-        assert!(
-            item.window
-                .evidence
-                .iter()
-                .any(|reference| reference.part_id == "command_input_context"
-                    && reference.source_id == "shell"
-                    && reference.role == JevEvidenceRole::SupportingContext)
-        );
-        assert_eq!(
-            item.window
-                .evidence
-                .iter()
-                .filter(|reference| reference.role == JevEvidenceRole::Candidate)
-                .count(),
-            1
-        );
-    }
 }
 
 #[test]
-fn complete_missing_read_proof_is_distinct_from_unknown_read_success() {
+fn unanchored_read_prerequisites_do_not_create_edit_omission_findings() {
     for earlier_read in [false, true] {
         let mut actions = Vec::new();
         if earlier_read {
@@ -770,51 +729,24 @@ fn complete_missing_read_proof_is_distinct_from_unknown_read_success() {
         }
         actions.push(tool("edit", 2, "Edit", json!({"file_path":"src/main.rs"})));
         let source = input(actions, "Read `docs/policy.md` before editing any file.");
-        let (_, mut plan) = classified(
+        let (_, plan) = classified(
             &source,
             PrerequisiteContextPolicy::CoherentEpisode,
             "prerequisite",
             "read_success",
             "required_path",
         );
-        plan.prepared
-            .comparisons
-            .retain(|comparison| comparison.action.action_id == "edit");
-        let comparison = &plan.prepared.comparisons[0];
-        let result = reduce_assessment(
-            &plan.prepared,
-            &BTreeMap::from([(
-                comparison.id.clone(),
-                comparison_response(
-                    comparison,
-                    if earlier_read {
-                        "insufficient_evidence"
-                    } else {
-                        "conflict"
-                    },
-                    if earlier_read {
-                        "evidence_incomplete"
-                    } else {
-                        "self_contained"
-                    },
-                ),
-            )]),
-            true,
+        assert!(
+            plan.prepared
+                .comparisons
+                .iter()
+                .all(|comparison| comparison.reference.action_id != "edit")
         );
-        assert_eq!(result.findings.len(), usize::from(!earlier_read));
-        assert_eq!(
-            result.unassessed_comparisons.len(),
-            usize::from(earlier_read)
-        );
-        if !earlier_read {
-            assert!(
-                !result.findings[0]
-                    .decision_record()
-                    .unwrap()
-                    .coverage
-                    .read_request_inventory_complete
-            );
-        }
+        assert!(plan.prepared.observable_obligations.is_empty());
+        let result = IgnoredInstructionsCheck.reduce(&plan, &[], true).unwrap();
+        assert!(result.findings.is_empty());
+        assert_eq!(result.request_count, 0);
+        assert!(result.coverage.unselected_pairs > 0);
     }
 }
 
@@ -885,11 +817,8 @@ fn neither_context_policy_claims_complete_history_from_an_unbound_source() {
     let mut earlier = event("earlier", 1, "assistant", "main", "Requested the check.");
     earlier.reference.source_key_digest = "different-source".to_owned();
     let source = input(
-        vec![
-            earlier,
-            event("publish", 2, "assistant", "main", "Requested publication."),
-        ],
-        "Request a check before publication.",
+        vec![earlier, command("publish", 2, "npm publish")],
+        "Do not request `npm publish`.",
     );
     for policy in [
         PrerequisiteContextPolicy::SelectedEvents,
@@ -974,7 +903,7 @@ fn a_read_from_another_source_cannot_satisfy_or_disprove_the_prerequisite() {
             read,
             tool("edit", 2, "Edit", json!({"file_path":"src/main.rs"})),
         ],
-        "Request a read of `docs/policy.md` before editing.",
+        "Do not edit `src/main.rs` until `docs/policy.md` is read.",
     );
     let (_, mut plan) = classified(
         &source,
@@ -1008,14 +937,8 @@ fn a_read_from_another_source_cannot_satisfy_or_disprove_the_prerequisite() {
 #[test]
 fn source_binding_mismatch_blocks_conflict_and_clean_publication() {
     let source = input(
-        vec![event(
-            "candidate",
-            1,
-            "assistant",
-            "main",
-            "Recorded communication.",
-        )],
-        "Use the required format.",
+        vec![command("candidate", 1, "git push --force")],
+        "Do not run `git push --force`.",
     );
     for mismatch in ["digest", "thread", "source", "anchor", "order"] {
         let (_, mut plan) = classified(
@@ -1056,9 +979,9 @@ fn changed_episode_proof_blocks_both_conflict_and_clean_publication() {
     let source = input(
         vec![
             event("check", 1, "assistant", "main", "Requested a check."),
-            event("publish", 2, "assistant", "main", "Requested publication."),
+            command("publish", 2, "npm publish"),
         ],
-        "Request a check before publication.",
+        "Do not request `npm publish`.",
     );
     let (_, mut plan) = classified(
         &source,
@@ -1153,39 +1076,48 @@ fn typed_path_ban_uses_requested_changes_and_keeps_unknown_identity_unassessed()
             "edit_directory",
             policy,
         );
-        let comparison = &plan.prepared.comparisons[0];
-        let result = reduce_assessment(
-            &plan.prepared,
-            &BTreeMap::from([(
-                comparison.id.clone(),
-                comparison_response(
-                    comparison,
-                    if expected_finding {
-                        "conflict"
-                    } else {
-                        "follows"
-                    },
-                    if expected_unassessed {
-                        "evidence_incomplete"
-                    } else {
-                        "self_contained"
-                    },
-                ),
-            )]),
-            true,
-        );
-        assert_eq!(
-            result.findings.len(),
-            usize::from(expected_finding),
-            "{patch}, {policy}"
-        );
-        assert_eq!(
-            result.unassessed_comparisons.len(),
-            usize::from(expected_unassessed)
-        );
-        if expected_finding {
-            assert_eq!(result.findings[0].reference.action_id, "patch");
-            assert!(result.findings[0].decision_record().is_some());
+        if plan.prepared.comparisons.is_empty() {
+            assert!(!expected_finding);
+            assert!(plan.work_items.is_empty());
+            let result = IgnoredInstructionsCheck.reduce(&plan, &[], true).unwrap();
+            assert!(result.findings.is_empty());
+            assert!(result.coverage.unselected_pairs > 0);
+            assert_eq!(result.request_count, 0);
+        } else {
+            let comparison = &plan.prepared.comparisons[0];
+            let result = reduce_assessment(
+                &plan.prepared,
+                &BTreeMap::from([(
+                    comparison.id.clone(),
+                    comparison_response(
+                        comparison,
+                        if expected_finding {
+                            "conflict"
+                        } else {
+                            "follows"
+                        },
+                        if expected_unassessed {
+                            "evidence_incomplete"
+                        } else {
+                            "self_contained"
+                        },
+                    ),
+                )]),
+                true,
+            );
+            assert_eq!(
+                result.findings.len(),
+                usize::from(expected_finding),
+                "{patch}, {policy}"
+            );
+            assert_eq!(
+                result.unassessed_comparisons.len(),
+                usize::from(expected_unassessed)
+            );
+            if expected_finding {
+                assert_eq!(result.findings[0].reference.action_id, "patch");
+                assert!(result.findings[0].decision_record().is_some());
+            }
         }
     }
 }
@@ -1292,7 +1224,7 @@ fn opaque_earlier_requests_cannot_prove_read_absence() {
             ),
             tool("edit", 2, "Edit", json!({"file_path":"src/transfer.rs"})),
         ],
-        "Request a read of `docs/transfer-policy.md` before editing.",
+        "Do not edit `src/transfer.rs` until `docs/transfer-policy.md` is read.",
     );
     let (_, mut plan) = classified(
         &source,

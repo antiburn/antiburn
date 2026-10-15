@@ -72,10 +72,10 @@ describe("OverviewSpendChart", () => {
     [1251, ["$500", "$1,000", "$1,500"]],
     [0.7, ["$0.20", "$0.40", "$0.60", "$0.80"]],
     [0, ["$0.20", "$0.40", "$0.60", "$0.80", "$1.00"]],
-  ] as const)("fits readable ticks to a stacked peak of %s", (peak, labels) => {
+  ] as const)("fits readable ticks to a column peak of %s", (peak, labels) => {
     render(
       <OverviewSpendChart
-        days={[day("2026-09-14", [agent("claude-code", peak / 2), agent("codex", peak / 2)])]}
+        days={[day("2026-09-14", [agent("claude-code", peak), agent("codex", peak / 2)])]}
       />,
     )
     for (const label of labels) {
@@ -86,7 +86,7 @@ describe("OverviewSpendChart", () => {
     expect(screen.queryByText("$2,000")).toBeNull()
   })
 
-  it("stacks agent costs and removes the comparison period", () => {
+  it("draws each agent's cost in its own column and removes the comparison period", () => {
     const { container } = render(<OverviewSpendChart days={days} />)
     expect(screen.getByText("Claude Code")).toBeVisible()
     expect(screen.getByText("Codex")).toBeVisible()
@@ -95,11 +95,14 @@ describe("OverviewSpendChart", () => {
     const claude = container.querySelectorAll('[data-agent="claude-code"] rect')
     expect(codex).toHaveLength(3)
     expect(claude).toHaveLength(3)
-    expect(codex[2]).toHaveAttribute("y", "50")
-    expect(codex[2]).toHaveAttribute("height", "50")
-    expect(claude[2]).toHaveAttribute("y", "12.5")
-    expect(claude[2]).toHaveAttribute("height", "37.5")
-    expect(codex[2]).toHaveAttribute("x", claude[2]!.getAttribute("x"))
+    // Both columns stand on the baseline, side by side, with the larger cost taller.
+    for (const rect of [codex[2]!, claude[2]!]) {
+      expect(Number(rect.getAttribute("y")) + Number(rect.getAttribute("height"))).toBe(100)
+    }
+    expect(Number(codex[2]!.getAttribute("height"))).toBeGreaterThan(
+      Number(claude[2]!.getAttribute("height")),
+    )
+    expect(codex[2]!.getAttribute("x")).not.toBe(claude[2]!.getAttribute("x"))
     const buttons = dayButtons()
     expect(buttons).toHaveLength(3)
     expect(buttons[2]).toHaveAttribute(
@@ -107,7 +110,28 @@ describe("OverviewSpendChart", () => {
       "Today · $7.00 · 1.80k · 2 sessions · Claude Code: $3.00 · Codex: $4.00",
     )
     fireEvent.focus(buttons[2]!)
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Codex: $4.00")
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      /Today.*\$7\.00.*Codex.*\$4\.00.*Claude Code.*\$3\.00/,
+    )
+  })
+
+  it("draws a banner with a key, dates, and hover by day", () => {
+    const { container } = render(<OverviewSpendChart days={days} banner />)
+    expect(container.querySelector('[data-usage-banner="spend"]')).not.toBeNull()
+    expect(container.querySelectorAll('[data-agent="codex"] rect')).toHaveLength(3)
+    expect(screen.getByRole("list", { name: "Key" })).toHaveTextContent("Claude Code")
+    expect(screen.getByText("Today")).toBeInTheDocument()
+    const buttons = dayButtons()
+    expect(buttons).toHaveLength(3)
+    fireEvent.focus(buttons[2]!)
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      /Today.*\$7\.00.*Codex.*\$4\.00.*Claude Code.*\$3\.00/,
+    )
+  })
+
+  it("draws no banner while loading", () => {
+    const { container } = render(<OverviewSpendChart days={days} loading banner />)
+    expect(container).toBeEmptyDOMElement()
   })
 
   it("walks the days with the arrow keys and retains focus by date", () => {

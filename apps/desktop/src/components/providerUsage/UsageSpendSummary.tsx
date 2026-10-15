@@ -24,39 +24,41 @@ export const EMPTY_USAGE_WINDOWS: ProviderUsageWindowsPayload = {
   last30Days: { ...EMPTY_USAGE_WINDOW },
 }
 
-/** The primary figure shows the cost when pricing is available, or the token count otherwise. */
-function figure(window: UsageWindow): string {
-  if (window.estimatedUsd != null) {
-    return formatSpendFigure(window.estimatedUsd)
-  }
-  return formatTokenFigure(windowTokens(window))
-}
-
-/** The shared card shows each cost above its token count and period. */
 export function UsageSpendSummary({
   totals,
-  showApiPricingCaveat = false,
+  hasSubscriptionPlan = false,
 }: {
   totals: ProviderUsageWindowsPayload
-  showApiPricingCaveat?: boolean
+  hasSubscriptionPlan?: boolean
 }) {
   return (
     <section
       aria-label="Usage and spend"
       title={
-        showApiPricingCaveat
+        hasSubscriptionPlan
           ? "You're on subscription, so these are just estimated dollar values."
           : undefined
       }
       className="px-[var(--space-sm)] pt-[var(--space-md)]"
     >
       <dl className="grid grid-cols-3 gap-x-[var(--space-sm)] rounded-control bg-surface-card px-[var(--space-md)] py-[var(--space-sm)] shadow-stats-card">
-        <SpendColumn label="Today" accessibleLabel="Today" window={totals.today} />
-        <SpendColumn label="7 days" accessibleLabel="Last 7 days" window={totals.week} />
+        <SpendColumn
+          label="Today"
+          accessibleLabel="Today"
+          window={totals.today}
+          subscription={hasSubscriptionPlan}
+        />
+        <SpendColumn
+          label="7 days"
+          accessibleLabel="Last 7 days"
+          window={totals.week}
+          subscription={hasSubscriptionPlan}
+        />
         <SpendColumn
           label="30 days"
           accessibleLabel="Last 30 days"
           window={totals.last30Days}
+          subscription={hasSubscriptionPlan}
         />
       </dl>
     </section>
@@ -67,24 +69,29 @@ function SpendColumn({
   label,
   accessibleLabel,
   window,
+  subscription,
 }: {
   label: string
   accessibleLabel: string
   window: UsageWindow
+  subscription: boolean
 }) {
-  const hasCost = window.estimatedUsd != null
+  const tokens = formatTokenFigure(windowTokens(window))
+  const spend = window.estimatedUsd == null ? null : formatSpendFigure(window.estimatedUsd)
+  const leadWithTokens = subscription || spend == null
   return (
     <div className="min-w-0">
       <dt className="sr-only">{accessibleLabel}</dt>
       <dd className="type-title-3 font-semibold! whitespace-nowrap text-label">
-        <SegmentFigure>{figure(window)}</SegmentFigure>
-        {!hasCost && <span className="sr-only"> tokens</span>}
+        <SegmentFigure>{leadWithTokens ? tokens : spend}</SegmentFigure>
+        {leadWithTokens && <span className="sr-only"> tokens</span>}
       </dd>
       <dd className="type-footnote whitespace-nowrap text-label-secondary">
-        {hasCost && (
+        {spend != null && (
           <>
-            <SegmentFigure>{formatTokenFigure(windowTokens(window))}</SegmentFigure>
-            <span className="sr-only"> tokens</span>
+            <SegmentFigure>{leadWithTokens ? spend : tokens}</SegmentFigure>
+            {leadWithTokens && <span className="sr-only"> estimated dollars</span>}
+            {!leadWithTokens && <span className="sr-only"> tokens</span>}
             <span aria-hidden="true" className="mx-[var(--space-xs)] text-label-tertiary">
               ·
             </span>

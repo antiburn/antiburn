@@ -1,12 +1,14 @@
 import { expect, it } from "vitest"
-import { resolveStepSettingsSearchTarget, searchApp } from "./appSearch"
-import { stepSettingsControlLabel } from "./stepSettingsTargets"
+import { resolveSettingsSearchTarget, searchApp } from "./appSearch"
+import { settingsControlLabel } from "./settingsSearchTargets"
 
 it.each(["macos", "windows", "linux"] as const)(
   "keeps decision model search destinations on %s",
   (platform) => {
-    expect(stepSettingsControlLabel("smartChecksEnabled")).toBe("Enable smart burn checks")
-    expect(stepSettingsControlLabel("smartCheckProvider")).toBe("Provider")
+    expect(settingsControlLabel("smartChecksEnabled", platform)).toBe(
+      "Enable smart burn checks",
+    )
+    expect(settingsControlLabel("smartCheckProvider", platform)).toBe("Provider")
     for (const [query, control] of [
       ["Enable smart burn checks", "smartChecksEnabled"],
       ["Use Ollama or another provider", "smartCheckProvider"],
@@ -18,12 +20,12 @@ it.each(["macos", "windows", "linux"] as const)(
       ["provider credential", "typeSafeApiKey"],
     ] as const) {
       const result = searchApp(query, platform).find(
-        (result) => result.target.kind === "stepSetting" && result.target.control === control,
+        (result) => result.target.kind === "setting" && result.target.control === control,
       )
-      if (!result || result.target.kind !== "stepSetting")
+      if (!result || result.target.kind !== "setting")
         throw new Error(`Missing search destination for ${query}`)
-      expect(resolveStepSettingsSearchTarget(result.target)).toEqual({
-        step: "checks",
+      expect(resolveSettingsSearchTarget(result.target)).toEqual({
+        pane: "checks",
         control,
       })
     }

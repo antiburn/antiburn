@@ -2,6 +2,7 @@ import { Check } from "lucide-react"
 import { useId, useState } from "react"
 import { createPortal } from "react-dom"
 
+import { pluralize } from "../../../lib/presentation/text"
 import { PushButton } from "../../../components/ui/PushButton"
 import { cn } from "../../../lib/cn"
 import {
@@ -114,7 +115,7 @@ function selectionInstruction(targets: BurnCheckTargetPayload[]): string {
     case "builtInTool":
       return "Select optional built-in tools to disable."
     case "mcpServer":
-      return "Select the MCP servers to disable."
+      return "Select the tool servers to turn off."
     case "skill":
       return "Select the skills to disable."
     default:
@@ -131,9 +132,9 @@ function preparationMessage(outcome: PrepareAutoFixBurnCheckTargetOutcome | null
     case "expired":
       return "The findings changed. Review the current targets and try again."
     case "conflict":
-      return "A config change conflicts with this selection. Review the current settings."
+      return "A setting changed during this review. Check the current settings."
     case "unavailable":
-      return "One or more selected changes no longer pass the safety checks."
+      return "One or more selected changes could not be checked against the current settings."
   }
 }
 
@@ -149,14 +150,14 @@ function applyMessage(
     case "appliedVerificationUnavailable":
       return ""
     case "recoveryNeeded":
-      return `${progress}The last write has an uncertain result. Review the config before another change.`
+      return `${progress}The last change may be incomplete. Check the settings before making another change.`
     case "stale":
     case "expired":
       return `${progress}The findings changed before the remaining changes could be applied.`
     case "conflict":
-      return `${progress}The next change conflicts with the current config.`
+      return `${progress}The next change conflicts with the current settings.`
     case "unavailable":
-      return `${progress}The next change no longer passes the safety checks.`
+      return `${progress}The next change could not be checked against the current settings.`
   }
 }
 
@@ -279,7 +280,7 @@ export function BurnCheckTargetChooserDialog({
     setStatus(
       failed
         ? applyMessage(failed, applied, prepared.length)
-        : `${applied} ${applied === 1 ? "change" : "changes"} applied.${verificationUnavailable ? " Verification is unavailable for these checks." : ""}`,
+        : `${applied} ${pluralize(applied, "change", "changes")} applied.${verificationUnavailable ? " A later session could not confirm the results." : ""}`,
     )
     setStep("result")
     refresh()
@@ -292,7 +293,7 @@ export function BurnCheckTargetChooserDialog({
         ? appliedCount === prepared.length
           ? "Changes applied"
           : "Some changes need attention"
-        : `Review ${prepared.length} ${prepared.length === 1 ? "change" : "changes"}`
+        : `Review ${prepared.length} ${pluralize(prepared.length, "change", "changes")}`
 
   return createPortal(
     <div
@@ -472,7 +473,7 @@ export function BurnCheckTargetChooserDialog({
               >
                 {step === "preparing"
                   ? "Preparing…"
-                  : `Review ${selectedTargets.length} ${selectedTargets.length === 1 ? "change" : "changes"}`}
+                  : `Review ${selectedTargets.length} ${pluralize(selectedTargets.length, "change", "changes")}`}
               </PushButton>
             </>
           ) : step === "review" || step === "applying" ? (
@@ -489,7 +490,7 @@ export function BurnCheckTargetChooserDialog({
               <PushButton variant="primary" disabled={busy} onClick={() => void apply()}>
                 {step === "applying"
                   ? `Applying ${appliedCount + 1} of ${prepared.length}…`
-                  : `Apply ${prepared.length} ${prepared.length === 1 ? "change" : "changes"}`}
+                  : `Apply ${prepared.length} ${pluralize(prepared.length, "change", "changes")}`}
               </PushButton>
             </>
           ) : (

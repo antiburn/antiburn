@@ -162,7 +162,7 @@ describe("BurnChecksView savings", { timeout: 15_000 }, () => {
   it("uses generic clean copy without unrelated action attribution", async () => {
     setup(target, false, aggregate, passedTargetReport)
 
-    expect(await screen.findByText("No finding in 2 complete sessions.")).toBeVisible()
+    expect(await screen.findByText("No issue was found in 2 complete sessions.")).toBeVisible()
     expect(screen.queryByText("Current verification passed.")).not.toBeInTheDocument()
     expect(screen.queryByText("Verified after your fix.")).not.toBeInTheDocument()
   })

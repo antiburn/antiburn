@@ -1,5 +1,8 @@
 //! Shared scheduler and TypeSafe executor for Jev-powered Burn Checks.
 
+mod admission;
+pub(crate) use admission::{dispatch_readiness, preflight_admission, target_failure_is_terminal};
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -27,7 +30,7 @@ const RETRY_ATTEMPTS: usize = 3;
 #[cfg(test)]
 const IDLE_SECS: i64 = 180;
 const POLL_SECS: u64 = 60;
-const CANDIDATES_PER_WAKE: usize = 16;
+pub(crate) const CANDIDATES_PER_WAKE: usize = 16;
 const CANDIDATE_WORKERS: usize = 4;
 const DISPATCHES_PER_TURN: u64 = 8;
 const REQUEST_DEADLINE: Duration = Duration::from_secs(60);
@@ -36,14 +39,24 @@ const GLOBAL_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) async fn run_blocking_preparation<T: Send + 'static>(
     prepare: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
 ) -> anyhow::Result<T> {
+    let waiting = std::time::Instant::now();
     static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
     let permit = SLOTS
         .get_or_init(|| tokio::sync::Semaphore::new(CANDIDATE_WORKERS))
         .acquire()
         .await?;
+    let slot_wait_ms = waiting.elapsed().as_millis();
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        prepare()
+        let started = std::time::Instant::now();
+        let result = prepare();
+        ::tracing::debug!(
+            event = "burn_check_blocking_preparation",
+            slot_wait_ms,
+            elapsed_ms = started.elapsed().as_millis(),
+            succeeded = result.is_ok(),
+        );
+        result
     })
     .await?
 }
@@ -54,6 +67,7 @@ fn request_bytes() -> &'static tokio::sync::Semaphore {
 }
 
 fn request_slots() -> &'static tokio::sync::Semaphore {
+    // Direct desktop callers use this guard. The engine uses a separate semaphore.
     static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
     SLOTS.get_or_init(|| {
         tokio::sync::Semaphore::new(antiburn_local::analysis::jev::MAX_PARALLEL_REQUESTS)
@@ -114,6 +128,29 @@ impl ProviderPacing {
         true
     }
 
+    fn next_eligible(
+        &mut self,
+        estimated_tokens: u64,
+        now: tokio::time::Instant,
+    ) -> tokio::time::Instant {
+        while self.starts.front().is_some_and(|start| {
+            now.saturating_duration_since(start.started) >= Duration::from_secs(1)
+        }) {
+            self.starts.pop_front();
+        }
+        let estimated_tokens = estimated_tokens.clamp(1, MAX_REQUEST_TOKENS);
+        let mut used_tokens = self.starts.iter().map(|start| start.tokens).sum::<u64>();
+        let mut deadline = self.cooldown_until.max(self.next_start);
+        for start in &self.starts {
+            if used_tokens.saturating_add(estimated_tokens) <= GLOBAL_INPUT_TOKENS_PER_SECOND {
+                break;
+            }
+            used_tokens = used_tokens.saturating_sub(start.tokens);
+            deadline = deadline.max(start.started + Duration::from_secs(1));
+        }
+        deadline.max(now)
+    }
+
     fn settle(&mut self, reservation_id: &str, tokens: u64) {
         if let Some(start) = self
             .starts
@@ -161,13 +198,130 @@ fn provider_pacing(provider: SystemOneProvider) -> &'static std::sync::Mutex<Pro
 pub(crate) type WorkerFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
 pub(crate) struct CandidateExecution<'a> {
-    pub(crate) app: &'a tauri::AppHandle,
+    pub(crate) effects: &'a dyn WorkerEffects,
     pub(crate) store: &'a Store,
     pub(crate) candidate: &'a BurnCheckCandidate,
     pub(crate) client: TypeSafeClient,
     pub(crate) handle: &'a WorkerHandle,
     pub(crate) key_generation: u64,
     pub(crate) events: &'a SessionEvents,
+}
+
+/// Isolate desktop effects from candidate execution so adapters can run without Tauri.
+pub(crate) trait WorkerEffects: Send + Sync {
+    fn checks_report_changed(&self);
+    fn settings_changed(&self);
+    fn settings_progress_changed(&self);
+    fn record_assessment(
+        &self,
+        check: crate::analytics::event::SmartCheck,
+        historical: bool,
+        outcome: crate::analytics::event::SmartCheckAssessmentOutcome,
+    );
+    fn settle_authentication_rejection(
+        &self,
+        store: &Store,
+        handle: &WorkerHandle,
+        generation: u64,
+        rejected: bool,
+    ) -> anyhow::Result<()>;
+    fn wake(&self);
+}
+
+struct AppWorkerEffects<'a> {
+    app: &'a tauri::AppHandle,
+}
+
+impl WorkerEffects for AppWorkerEffects<'_> {
+    fn checks_report_changed(&self) {
+        let _ = self
+            .app
+            .emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
+    }
+
+    fn settings_changed(&self) {
+        crate::jev::settings::changed(self.app);
+    }
+
+    fn settings_progress_changed(&self) {
+        crate::jev::settings::progress_changed(self.app);
+    }
+
+    fn record_assessment(
+        &self,
+        check: crate::analytics::event::SmartCheck,
+        historical: bool,
+        outcome: crate::analytics::event::SmartCheckAssessmentOutcome,
+    ) {
+        crate::analytics::record_smart_check_lifecycle(
+            self.app,
+            crate::analytics::event::SmartCheckLifecycle::Assessment {
+                check,
+                historical,
+                outcome,
+            },
+        );
+    }
+
+    fn settle_authentication_rejection(
+        &self,
+        store: &Store,
+        handle: &WorkerHandle,
+        generation: u64,
+        rejected: bool,
+    ) -> anyhow::Result<()> {
+        settle_authentication_rejection(self.app, store, handle, generation, rejected)
+    }
+
+    fn wake(&self) {
+        self.app.state::<WorkerHandle>().wake.notify_one();
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct TestWorkerEffects {
+    pub(crate) events: std::sync::atomic::AtomicUsize,
+    pub(crate) assessments: Mutex<
+        Vec<(
+            crate::analytics::event::SmartCheck,
+            bool,
+            crate::analytics::event::SmartCheckAssessmentOutcome,
+        )>,
+    >,
+}
+
+#[cfg(test)]
+impl WorkerEffects for TestWorkerEffects {
+    fn checks_report_changed(&self) {
+        self.events.fetch_add(1, Ordering::Relaxed);
+    }
+    fn settings_changed(&self) {}
+    fn settings_progress_changed(&self) {}
+    fn record_assessment(
+        &self,
+        check: crate::analytics::event::SmartCheck,
+        historical: bool,
+        outcome: crate::analytics::event::SmartCheckAssessmentOutcome,
+    ) {
+        self.assessments
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push((check, historical, outcome));
+    }
+    fn settle_authentication_rejection(
+        &self,
+        store: &Store,
+        handle: &WorkerHandle,
+        generation: u64,
+        rejected: bool,
+    ) -> anyhow::Result<()> {
+        if rejected {
+            handle.reject_authentication(store, generation)?;
+        }
+        Ok(())
+    }
+    fn wake(&self) {}
 }
 
 #[derive(Clone, Copy)]
@@ -208,6 +362,7 @@ pub(crate) fn registered_check_ids() -> Vec<DetectorId> {
 /// Shared credential and wake state for the Jev worker.
 pub(crate) struct WorkerHandle {
     wake: Notify,
+    cancellation: Notify,
     request_admission: Mutex<()>,
     check_generations: Mutex<std::collections::BTreeMap<String, u64>>,
     system_one: RwLock<(SystemOneConnection, Option<String>)>,
@@ -292,14 +447,26 @@ impl WorkerHandle {
             && entry.generation == generation
             && tokio::time::Instant::now() < entry.expires
         {
-            return Ok(entry.capabilities.clone());
+            return if entry
+                .capabilities
+                .usable_state_tokens()
+                .is_some_and(|tokens| tokens > 0)
+                && entry
+                    .capabilities
+                    .usable_input_tokens()
+                    .is_some_and(|tokens| tokens > 0)
+            {
+                Ok(entry.capabilities.clone())
+            } else {
+                Err(JevError::ProviderUnavailable)
+            };
         }
         let SystemOneEndpoint::BaseUrl(base) = &connection.endpoint else {
             return Err(JevError::InvalidRequestSchema);
         };
         let discovery = async {
             crate::jev_ollama::OllamaClient::new(base, credential)?
-                .discover(&connection.model)
+                .discover_ready(&connection.model)
                 .await
         };
         let (capabilities, ttl) =
@@ -321,7 +488,17 @@ impl WorkerHandle {
             expires: tokio::time::Instant::now() + Duration::from_secs(ttl),
             capabilities: capabilities.clone(),
         });
-        Ok(capabilities)
+        if capabilities
+            .usable_state_tokens()
+            .is_some_and(|tokens| tokens > 0)
+            && capabilities
+                .usable_input_tokens()
+                .is_some_and(|tokens| tokens > 0)
+        {
+            Ok(capabilities)
+        } else {
+            Err(JevError::ProviderUnavailable)
+        }
     }
 
     /// Install a validated provider connection and its resolved secret.
@@ -355,6 +532,7 @@ impl WorkerHandle {
             *active = (connection, credential);
             self.runtime_enabled.store(enabled, Ordering::Release);
             self.key_generation.fetch_add(1, Ordering::AcqRel);
+            self.cancellation.notify_waiters();
             self.authentication_rejected.store(false, Ordering::Release);
         }
         drop(active);
@@ -375,6 +553,7 @@ impl WorkerHandle {
         active.1 = None;
         self.runtime_enabled.store(false, Ordering::Release);
         self.key_generation.fetch_add(1, Ordering::AcqRel);
+        self.cancellation.notify_waiters();
         self.authentication_rejected.store(false, Ordering::Release);
         drop(active);
         self.wake.notify_one();
@@ -529,6 +708,7 @@ impl WorkerHandle {
             .unwrap_or_else(|error| error.into_inner());
         self.with_current_generation(generation, || {
             self.authentication_rejected.store(true, Ordering::Release);
+            self.cancellation.notify_waiters();
             self.wake.notify_one();
             store.set_internal_value_checked("internal:typesafeAuthRejectedV1", "true")?;
             Ok(true)
@@ -553,6 +733,7 @@ impl Default for WorkerHandle {
     fn default() -> Self {
         Self {
             wake: Notify::new(),
+            cancellation: Notify::new(),
             request_admission: Mutex::new(()),
             check_generations: Mutex::new(std::collections::BTreeMap::new()),
             system_one: RwLock::new((SystemOneConnection::jev_default(), None)),
@@ -699,12 +880,14 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                     if !handle.key_is_current(key_generation) {
                         break;
                     }
-                    let selected = match select_turn_excluding(
+                    let selected = match schedule_candidate_turn(
                         &store,
+                        &handle,
                         checks,
-                        &cursor,
+                        &mut cursor,
                         unix_now(),
                         &in_flight,
+                        &mut scheduled,
                     ) {
                         Ok(selected) => selected,
                         Err(error) => {
@@ -715,46 +898,29 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                             break;
                         }
                     };
-                    let Some((index, candidate)) = selected else {
+                    let Some((index, candidate, check_generation)) = selected else {
                         break;
                     };
                     let check = checks[index];
-                    let check_generation = handle.check_generation(check.id());
-                    if !handle.check_is_current(check.id(), check_generation) {
-                        continue;
-                    }
-                    cursor.turn = match cursor.turn.checked_add(1) {
-                        Some(turn) => turn,
-                        None => break,
-                    };
-                    cursor.next_check = (index + 1) % checks.len();
-                    if let Err(error) = store.serve_burn_check_candidate(
-                        &candidate,
-                        check.id(),
-                        cursor.turn,
-                        &serde_json::to_string(&cursor).expect("scheduler cursor serializes"),
-                    ) {
-                        ::tracing::warn!(event = "burn_check_scheduler_save_failed", error = %error);
-                        break;
-                    }
+                    let candidate_turn = cursor.turn;
                     handle.start_candidate_turn(check.id(), &candidate.session.key);
                     in_flight.insert((check.id(), candidate.session.key.clone()));
                     let app = app.clone();
                     let store = store.clone();
                     let client = client.clone();
                     let task_candidate = candidate.clone();
-                    let candidate_turn = cursor.turn;
                     let check_id = check.id();
                     jobs.spawn(async move {
                     let handle = app.state::<WorkerHandle>();
                     let events = app.state::<SessionEvents>();
+                    let effects = AppWorkerEffects { app: &app };
                     let _turn = CandidateTurnGuard {
                         handle: &handle,
                         check_id,
                         key: task_candidate.session.key.clone(),
                     };
                     let future = check.run_candidate(CandidateExecution {
-                        app: &app,
+                        effects: &effects,
                         store: &store,
                         candidate: &task_candidate,
                         client,
@@ -782,7 +948,6 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                     };
                     (candidate, check_id, candidate_turn, check_generation, result)
                 });
-                    scheduled += 1;
                 }
                 if jobs.is_empty() {
                     break;
@@ -843,14 +1008,51 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
                     break;
                 }
             }
+            if scheduled == CANDIDATES_PER_WAKE {
+                handle.wake.notify_one();
+            }
         }
     })
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
-struct SchedulerCursor {
-    turn: u64,
-    next_check: usize,
+pub(crate) struct SchedulerCursor {
+    pub(crate) turn: u64,
+    pub(crate) next_check: usize,
+}
+
+/// Advance one scheduler turn using the same bound and selection path as production.
+pub(crate) fn schedule_candidate_turn(
+    store: &Store,
+    handle: &WorkerHandle,
+    checks: &[&'static dyn JevCheckDescriptor],
+    cursor: &mut SchedulerCursor,
+    now: i64,
+    in_flight: &std::collections::BTreeSet<(&'static str, SessionKey)>,
+    scheduled: &mut usize,
+) -> anyhow::Result<Option<(usize, BurnCheckCandidate, u64)>> {
+    select_next_candidate(store, handle, checks, cursor, now, in_flight, scheduled)
+}
+
+/// Select and persist one production scheduler turn, then count it in the
+/// current bounded slice.
+pub(crate) fn select_next_candidate(
+    store: &Store,
+    handle: &WorkerHandle,
+    checks: &[&'static dyn JevCheckDescriptor],
+    cursor: &mut SchedulerCursor,
+    now: i64,
+    in_flight: &std::collections::BTreeSet<(&'static str, SessionKey)>,
+    scheduled: &mut usize,
+) -> anyhow::Result<Option<(usize, BurnCheckCandidate, u64)>> {
+    if *scheduled >= CANDIDATES_PER_WAKE {
+        return Ok(None);
+    }
+    let selected = serve_next_candidate(store, handle, checks, cursor, now, in_flight)?;
+    if selected.is_some() {
+        *scheduled += 1;
+    }
+    Ok(selected)
 }
 
 fn scheduler_cursor(store: &Store) -> anyhow::Result<SchedulerCursor> {
@@ -883,11 +1085,14 @@ fn select_turn_excluding(
     now: i64,
     in_flight: &std::collections::BTreeSet<(&'static str, SessionKey)>,
 ) -> anyhow::Result<Option<(usize, BurnCheckCandidate)>> {
+    let started = std::time::Instant::now();
+    let mut query_count = 0;
     let continuation = cursor.turn % 5 == 4;
     for lane in [continuation, !continuation] {
         for offset in 0..checks.len() {
             let index = (cursor.next_check + offset) % checks.len();
             let check = checks[index];
+            query_count += 1;
             let candidates = store.burn_check_candidates_in_lane(
                 check.id(),
                 &check.evaluator_revision(),
@@ -900,11 +1105,50 @@ fn select_turn_excluding(
                 .into_iter()
                 .find(|candidate| !in_flight.contains(&(check.id(), candidate.session.key.clone())))
             {
+                ::tracing::debug!(
+                    event = "burn_check_candidate_selection",
+                    query_count,
+                    selected_check = check.id(),
+                    elapsed_ms = started.elapsed().as_millis(),
+                );
                 return Ok(Some((index, candidate)));
             }
         }
     }
+    ::tracing::debug!(
+        event = "burn_check_candidate_selection",
+        query_count,
+        selected_check = "none",
+        elapsed_ms = started.elapsed().as_millis(),
+    );
     Ok(None)
+}
+
+pub(crate) fn serve_next_candidate(
+    store: &Store,
+    handle: &WorkerHandle,
+    checks: &[&'static dyn JevCheckDescriptor],
+    cursor: &mut SchedulerCursor,
+    now: i64,
+    in_flight: &std::collections::BTreeSet<(&'static str, SessionKey)>,
+) -> anyhow::Result<Option<(usize, BurnCheckCandidate, u64)>> {
+    let Some((index, candidate)) = select_turn_excluding(store, checks, cursor, now, in_flight)?
+    else {
+        return Ok(None);
+    };
+    let check = checks[index];
+    let generation = handle.check_generation(check.id());
+    if !handle.check_is_current(check.id(), generation) {
+        return Ok(None);
+    }
+    let Some(turn) = cursor.turn.checked_add(1) else {
+        return Ok(None);
+    };
+    cursor.turn = turn;
+    cursor.next_check = (index + 1) % checks.len();
+    let encoded = serde_json::to_string(cursor).expect("scheduler cursor serializes");
+    store.serve_burn_check_candidate(&candidate, check.id(), turn, &encoded)?;
+    Ok(Some((index, candidate, generation)))
 }
 
 fn candidate_error_policy(
@@ -963,7 +1207,7 @@ fn next_candidate<T: Copy, C>(
 }
 
 pub(crate) struct BatchExecution<'a> {
-    pub(crate) app: &'a tauri::AppHandle,
+    pub(crate) effects: &'a dyn WorkerEffects,
     pub(crate) store: &'a Store,
     pub(crate) input: &'a BurnCheckInput,
     pub(crate) client: TypeSafeClient,
@@ -1066,16 +1310,6 @@ where
     outcome
 }
 
-fn preflight_admission(admission: BurnCheckRequestAdmission) -> Result<(), JevError> {
-    match admission {
-        BurnCheckRequestAdmission::Admitted | BurnCheckRequestAdmission::Exhausted => Ok(()),
-        BurnCheckRequestAdmission::Unresolved => Err(JevError::RequestOutcomeUnknown),
-        BurnCheckRequestAdmission::Deferred | BurnCheckRequestAdmission::Stale => {
-            Err(JevError::Cancelled)
-        }
-    }
-}
-
 fn save_checkpoint(
     store: &Store,
     input: &BurnCheckInput,
@@ -1170,7 +1404,7 @@ pub(crate) async fn execute_jev_batch(
     batch: std::sync::Arc<JevRequestBatch>,
 ) -> Result<JevResponse, JevError> {
     let BatchExecution {
-        app,
+        effects,
         store,
         input,
         client,
@@ -1193,7 +1427,42 @@ pub(crate) async fn execute_jev_batch(
             capabilities,
         },
         batch,
-        &|| crate::jev::settings::changed(app),
+        &|| effects.settings_changed(),
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) struct TestBatchExecution<'a> {
+    pub store: &'a Store,
+    pub input: &'a BurnCheckInput,
+    pub client: TypeSafeClient,
+    pub handle: &'a WorkerHandle,
+    pub key_generation: u64,
+    pub events: &'a SessionEvents,
+    pub policy: CheckPolicy,
+    pub capabilities: &'a antiburn_local::analysis::jev::capabilities::ModelCapabilities,
+}
+
+#[cfg(test)]
+pub(crate) async fn execute_batch_for_test(
+    execution: TestBatchExecution<'_>,
+    batch: std::sync::Arc<JevRequestBatch>,
+) -> Result<JevResponse, JevError> {
+    execute_batch(
+        BatchContext {
+            store: execution.store,
+            input: execution.input,
+            client: execution.client,
+            handle: execution.handle,
+            key_generation: execution.key_generation,
+            events: execution.events,
+            idle_secs: execution.policy.idle_secs,
+            lease_secs: execution.policy.lease_secs,
+            capabilities: execution.capabilities,
+        },
+        batch,
+        &|| {},
     )
     .await
 }
@@ -1433,6 +1702,9 @@ async fn execute_batch_inner(
                             crate::jev_ollama::OllamaError::ResponseDecode => {
                                 JevError::ResponseDecode
                             }
+                            crate::jev_ollama::OllamaError::ContextRejected => {
+                                JevError::ContextRejected
+                            }
                             crate::jev_ollama::OllamaError::InvalidRequest
                             | crate::jev_ollama::OllamaError::RequestBodyTooLarge => {
                                 JevError::InvalidRequestSchema
@@ -1588,14 +1860,12 @@ fn apply_provider_cooldown(
     error: &JevError,
     now: tokio::time::Instant,
 ) {
-    if let JevError::RateLimited {
-        retry_after: Some(delay),
-    }
-    | JevError::ProviderOverloaded {
-        retry_after: Some(delay),
-    } = error
+    if matches!(
+        error,
+        JevError::RateLimited { .. } | JevError::ProviderOverloaded { .. }
+    ) && let Some(delay) = retry_delay(error, 0)
     {
-        pacing.defer(now, *delay);
+        pacing.defer(now, delay);
     }
 }
 
@@ -1616,22 +1886,33 @@ async fn wait_for_provider(
     events: &SessionEvents,
     key: &SessionKey,
 ) -> Result<(), JevError> {
+    let mut lifecycle = events.subscribe();
     loop {
+        let cancellation = handle.cancellation.notified();
+        tokio::pin!(cancellation);
+        cancellation.as_mut().enable();
         if !handle.key_is_current(generation) || session_is_active(events, key) {
             return Err(JevError::Cancelled);
         }
-        let admitted = provider_pacing(provider)
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .admit(
-                reservation_id,
-                estimated_tokens,
-                tokio::time::Instant::now(),
-            );
+        let now = tokio::time::Instant::now();
+        let (admitted, next_eligible) = {
+            let mut pacing = provider_pacing(provider)
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let admitted = pacing.admit(reservation_id, estimated_tokens, now);
+            (admitted, pacing.next_eligible(estimated_tokens, now))
+        };
         if admitted {
             return Ok(());
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::select! {
+            _ = tokio::time::sleep_until(next_eligible) => {},
+            _ = &mut cancellation => {},
+            event = lifecycle.recv() => match event {
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {},
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return Err(JevError::Cancelled),
+            },
+        }
     }
 }
 
@@ -1683,11 +1964,29 @@ fn request_was_rejected(error: &JevError) -> bool {
     matches!(
         error,
         JevError::AuthenticationRejected
+            | JevError::ContextRejected
             | JevError::InvalidRequestSchema
             | JevError::RateLimited { .. }
             | JevError::ProviderOverloaded { .. }
             | JevError::ProviderUnavailable
     )
+}
+
+#[cfg(test)]
+mod context_rejection_tests {
+    use super::*;
+
+    #[test]
+    fn actual_context_rejection_releases_usage_and_never_retries_unchanged() {
+        assert!(request_was_rejected(&JevError::ContextRejected));
+        assert_eq!(
+            error_category(&JevError::ContextRejected),
+            "context_rejected"
+        );
+        for attempt in 0..RETRY_ATTEMPTS {
+            assert_eq!(retry_delay(&JevError::ContextRejected, attempt), None);
+        }
+    }
 }
 
 async fn acquire_budget<T>(
@@ -1751,6 +2050,7 @@ fn session_is_active(events: &SessionEvents, key: &SessionKey) -> bool {
 pub(crate) fn error_category(error: &JevError) -> &'static str {
     match error {
         JevError::AuthenticationRejected => "authentication_rejected",
+        JevError::ContextRejected => "context_rejected",
         JevError::InvalidRequestSchema => "invalid_request_schema",
         JevError::RateLimited { .. } => "rate_limited",
         JevError::ProviderOverloaded { .. } => "provider_overloaded",
@@ -2505,8 +2805,8 @@ mod checkpoint_tests {
         let server = tokio::spawn(async move {
             for (digest, context) in [
                 ("digest-one", 8192),
-                ("digest-two", 16384),
-                ("digest-three", 32768),
+                ("digest-two", 2048),
+                ("digest-three", 2050),
             ] {
                 for (route, body) in [
                     ("/api/version", serde_json::json!({"version": "0.35.0"})),
@@ -2519,7 +2819,7 @@ mod checkpoint_tests {
                     ),
                     (
                         "/api/show",
-                        serde_json::json!({"capabilities": ["decision"], "model_info": {
+                        serde_json::json!({"capabilities": ["decision"], "parameters": "num_ctx 8192", "model_info": {
                             "general.architecture": "clef", "clef.context_length": 65536
                         }}),
                     ),
@@ -2564,7 +2864,8 @@ mod checkpoint_tests {
         handle.discovery.lock().await.as_mut().unwrap().expires = tokio::time::Instant::now();
         let refreshed = handle.resolve_capabilities(generation).await.unwrap();
         assert_eq!(refreshed.model_revision.as_deref(), Some("digest-two"));
-        assert_eq!(refreshed.runtime_context_tokens.value, Some(16384));
+        assert_eq!(refreshed.runtime_context_tokens.value, Some(2048));
+        assert_eq!(refreshed.usable_input_tokens(), Some(1024));
         let input = BurnCheckInput {
             key: SessionKey::new("native", "opencode", "synthetic-session"),
             check_id: "ignored_instructions".into(),
@@ -2599,19 +2900,17 @@ mod checkpoint_tests {
         let generation = handle.key_generation.load(Ordering::Acquire);
         let changed = handle.resolve_capabilities(generation).await.unwrap();
         assert_eq!(changed.model_revision.as_deref(), Some("digest-three"));
-        assert_eq!(changed.runtime_context_tokens.value, Some(32768));
+        assert_eq!(changed.runtime_context_tokens.value, Some(2050));
         server.await.unwrap();
 
         handle.discovery.lock().await.as_mut().unwrap().expires = tokio::time::Instant::now();
-        let fallback = handle.resolve_capabilities(generation).await.unwrap();
-        assert_eq!(fallback, connection.capabilities().unwrap());
         assert_eq!(
-            fallback.runtime_context_tokens.source,
-            CapabilitySource::DocumentedDefault
+            handle.resolve_capabilities(generation).await,
+            Err(JevError::ProviderUnavailable)
         );
         assert_eq!(
-            handle.resolve_capabilities(generation).await.unwrap(),
-            fallback
+            handle.resolve_capabilities(generation).await,
+            Err(JevError::ProviderUnavailable)
         );
     }
 
@@ -3269,6 +3568,20 @@ mod checkpoint_tests {
     }
 
     #[test]
+    fn provider_pacing_returns_the_next_token_window_deadline() {
+        let now = tokio::time::Instant::now();
+        let mut pacing = ProviderPacing::new(now);
+        assert!(pacing.admit("first", 60_000, now));
+        let blocked_at = now + Duration::from_millis(25);
+        assert!(!pacing.admit("second", 50_000, blocked_at));
+        assert_eq!(
+            pacing.next_eligible(50_000, blocked_at),
+            now + Duration::from_secs(1)
+        );
+        assert!(pacing.admit("second", 50_000, now + Duration::from_secs(1)));
+    }
+
+    #[test]
     fn provider_pacing_buckets_do_not_share_admission_state() {
         let now = tokio::time::Instant::now();
         let pacing = ProviderPacingSet::new(now);
@@ -3550,6 +3863,38 @@ mod checkpoint_tests {
             Some(Duration::from_secs(5))
         );
         assert_eq!(retry_delay(&JevError::ProviderUnavailable, 2), None);
+    }
+
+    #[test]
+    fn headerless_rate_limit_and_overload_apply_provider_cooldown() {
+        let now = tokio::time::Instant::now();
+        for error in [
+            JevError::RateLimited { retry_after: None },
+            JevError::ProviderOverloaded { retry_after: None },
+        ] {
+            let mut pacing = ProviderPacing::new(now);
+            apply_provider_cooldown(&mut pacing, &error, now);
+            assert!(!pacing.admit("during", 10, now + Duration::from_secs(4)));
+            assert!(pacing.admit("after", 10, now + Duration::from_secs(5)));
+        }
+    }
+
+    #[test]
+    fn cooldown_is_provider_scoped_and_retry_after_dominates_backoff() {
+        let now = tokio::time::Instant::now();
+        let mut limited_provider = ProviderPacing::new(now);
+        let mut other_provider = ProviderPacing::new(now);
+        apply_provider_cooldown(
+            &mut limited_provider,
+            &JevError::RateLimited {
+                retry_after: Some(Duration::from_secs(17)),
+            },
+            now,
+        );
+
+        assert!(!limited_provider.admit("before", 10, now + Duration::from_secs(16)));
+        assert!(other_provider.admit("isolated", 10, now));
+        assert!(limited_provider.admit("retry-after", 10, now + Duration::from_secs(17)));
     }
 
     #[test]

@@ -1,4 +1,185 @@
 use super::*;
+
+#[test]
+fn pending_scope_plan_keeps_its_capabilities_and_request_after_runtime_shrink() {
+    let fixture = NativeFixture::new(1);
+    let candidate = fixture.publish();
+    let caps = ModelCapabilities::jev_default();
+    let mut input = load_descriptor_input(&fixture.store, &candidate, &caps).unwrap();
+    let mut cursor = restore_cursor(None, &input.durable, 1);
+    cursor.sampling = Some(new_sampling().unwrap());
+    enumerate_scope_turn(&mut input, &mut cursor).unwrap();
+    cursor.sampling.as_mut().unwrap().begin_run();
+    let job = cursor.sampling.as_mut().unwrap().choose_job().unwrap();
+    cursor.active_job = Some(job.clone());
+    let (input, mut cursor, plan, fits) =
+        prepare_scope_target(input, cursor, job.candidate).unwrap();
+    assert!(fits);
+    let now = unix_now();
+    fixture
+        .store
+        .queue_burn_check_assessment(&input.durable, now, POLICY.idle_secs)
+        .unwrap();
+    fixture
+        .store
+        .claim_burn_check_assessment(&input.durable, now, POLICY.lease_secs, POLICY.idle_secs)
+        .unwrap();
+    save_cursor(&fixture.store, &input.durable, &cursor).unwrap();
+    let handle = crate::jev::worker::WorkerHandle::default();
+    assert!(
+        pending_scope_capabilities(&fixture.store, &candidate, &handle)
+            .unwrap()
+            .is_none()
+    );
+    let batch =
+        antiburn_local::analysis::jev::pack_work_items_with_capabilities(&plan.work_items, &caps)
+            .batches
+            .remove(0);
+    let identities = crate::jev::worker::batch_request_identities(
+        &handle.system_one_connection(),
+        &input.durable,
+        &batch,
+    );
+    for identity in &identities {
+        fixture.store.lock().execute("INSERT INTO burn_check_dispatch_attempt (request_identity, environment_key, agent, session_id, attempts) VALUES (?1, ?2, ?3, ?4, 3)", params![identity, input.durable.key.environment_key, input.durable.key.agent, input.durable.key.session_id]).unwrap();
+    }
+    assert_eq!(
+        pending_scope_capabilities(&fixture.store, &candidate, &handle).unwrap(),
+        Some(caps.clone())
+    );
+    assert_eq!(
+        dispatch_readiness(
+            &fixture.store,
+            &handle,
+            &input.durable,
+            &caps,
+            &plan,
+            &cursor.run_progress
+        )
+        .unwrap(),
+        crate::store::BurnCheckRequestAdmission::Exhausted
+    );
+    assert!(
+        target_failure_is_terminal(&JevError::ProviderUnavailable, || dispatch_readiness(
+            &fixture.store,
+            &handle,
+            &input.durable,
+            &caps,
+            &plan,
+            &cursor.run_progress
+        ))
+        .unwrap()
+    );
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let mut accepted_plan = plan.clone();
+    let accepted = runtime.block_on(async {
+        antiburn_local::analysis::jev::run_jev_check_prepared(
+            input.check.as_ref(),
+            input.check.context(),
+            &mut accepted_plan,
+            JevRunProgress::default(),
+            admit_jev_orchestration().await.unwrap(),
+            |batch| async move {
+                Ok(antiburn_local::analysis::jev::JevResponse {
+                    model: batch.request.model.clone(),
+                    answers: batch
+                        .request
+                        .questions
+                        .keys()
+                        .map(|id| {
+                            (
+                                id.clone(),
+                                answer(ScopeQuestion::Decision, "unauthorized_extra"),
+                            )
+                        })
+                        .collect(),
+                    usage: JevUsage {
+                        input_tokens: 10,
+                        output_tokens: 2,
+                    },
+                })
+            },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap()
+    });
+    assert_eq!(accepted.result.findings.len(), 1);
+    cursor.run_progress = accepted.progress;
+    save_cursor(&fixture.store, &input.durable, &cursor).unwrap();
+    assert_eq!(
+        dispatch_readiness(
+            &fixture.store,
+            &handle,
+            &input.durable,
+            &caps,
+            &plan,
+            &cursor.run_progress
+        )
+        .unwrap(),
+        crate::store::BurnCheckRequestAdmission::Admitted
+    );
+    assert_eq!(
+        fixture
+            .store
+            .burn_check_dispatch_attempts(&identities)
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        pending_scope_capabilities(&fixture.store, &candidate, &handle).unwrap(),
+        Some(caps.clone())
+    );
+    let mut small = caps.clone();
+    small.runtime_context_tokens.value = Some(1);
+    assert!(
+        input
+            .check
+            .prepare_with_capabilities(input.check.context(), &small)
+            .unwrap()
+            .work_items
+            .is_empty()
+    );
+    let saved = fixture
+        .store
+        .burn_check_assessment(&candidate.session.key, CHECK_ID)
+        .unwrap()
+        .unwrap();
+    let restored = restore_cursor(Some(&saved), &input.durable, 99);
+    let (restored_input, restored_cursor, mut restored_plan, _) =
+        prepare_scope_target(input, restored, job.candidate).unwrap();
+    assert_eq!(restored_plan, plan);
+    let resumed = runtime.block_on(async {
+        antiburn_local::analysis::jev::run_jev_check_prepared(
+            restored_input.check.as_ref(),
+            restored_input.check.context(),
+            &mut restored_plan,
+            restored_cursor.run_progress,
+            admit_jev_orchestration().await.unwrap(),
+            |_| async { panic!("the accepted third-attempt answer must not dispatch again") },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap()
+    });
+    assert_eq!(resumed.result.findings.len(), 1);
+    assert_eq!(
+        fixture
+            .store
+            .burn_check_dispatch_attempts(&identities)
+            .unwrap(),
+        3
+    );
+    fixture
+        .store
+        .invalidate_burn_check_dependency(&restored_input.durable, unix_now())
+        .unwrap();
+    assert!(
+        pending_scope_capabilities(&fixture.store, &candidate, &handle)
+            .unwrap()
+            .is_none()
+    );
+}
 use std::sync::Arc;
 
 use crate::store::{
@@ -99,19 +280,21 @@ fn publish_ignored_work(
         "rule_heading":"Scope", "start_line":1, "end_line":1, "source":"synthetic.md",
         "provenance":"recorded_injection", "scope":"project", "action_id":work.reference.id,
         "action_digest":work.digest, "action_timestamp_ms":null, "action_stable":true});
-    let decision = json!({"schema_revision":1, "source_generation":scope.source_generation,
+    let decision = json!({"schema_revision":2, "source_generation":scope.source_generation,
         "source_fingerprint":scope.source_fingerprint, "publication_fence":scope.published_fence,
         "rule_action":reference, "rule_start_byte":0, "rule_end_byte":1,
         "action_anchor":{"source":work.reference, "content_digest":work.digest, "start_byte":0, "end_byte":1},
-        "action_authority":"assistant", "action_is_request":false, "prerequisite":"not_required",
+        "action_authority":"assistant", "action_is_request":true, "prerequisite":"not_required",
         "selected_evidence":[], "coverage":{"source_complete":true,"selected_history_complete":true,
             "read_request_inventory_complete":true,"results_excluded":true,"user_authority_excluded":true,"limitations":[]},
         "citations":[{"claim":"rule_requirement","source_ids":["instruction:rule"]},
             {"claim":"anchored_action","source_ids":[work.reference.id]}],
-        "context_revision":"context", "evaluator_revision":evaluator_revision(), "model":"synthetic-model"});
+        "context_revision":"context", "evaluator_revision":evaluator_revision(), "model":"synthetic-model",
+        "explanation_basis":{"schema_revision":2,"relationship":"requirement_conflict","instruction":"Do not change billing.","action":"Write billing feature.","instruction_context":[],"earlier_events":[]}});
     let result: AssessmentResult = serde_json::from_value(json!({"input_revision":"ignored-v1", "model_version":"synthetic-model",
         "findings":[{"id":"ignored-finding", "reference":reference, "decision":decision,
-            "nearby_context_ids":[], "counterevidence_ids":[], "certainty":"likely", "composite_probability":1.0, "limitations":[]}],
+            "instruction_excerpt":"Do not change billing.","action_excerpt":"Write billing feature.",
+            "nearby_context_ids":[], "counterevidence_ids":[], "certainty":"possible", "composite_probability":1.0, "limitations":[]}],
         "pending_rules":[], "unassessed_comparisons":[], "coverage":{"eligible_rules":1,"candidate_pairs":1,
             "selected_comparisons":1,"unselected_pairs":0,"skipped_rules":[],"skipped_actions":[],
             "processing_limit_reached":false,"limitations":[]}, "request_count":1,"input_tokens":1,"output_tokens":1})).unwrap();
@@ -173,7 +356,7 @@ fn publication_budget_stops_before_dispatch_and_keeps_accepted_findings() {
             model: capabilities.model.clone(),
             answers: BTreeMap::from([(
                 "scope_decision".into(),
-                answer(ScopeQuestion::Decision, "likely_scope_expansion"),
+                answer(ScopeQuestion::Decision, "unauthorized_extra"),
             )]),
             evidence: item.window.evidence.clone(),
             usage: JevUsage {
@@ -191,18 +374,22 @@ fn publication_budget_stops_before_dispatch_and_keeps_accepted_findings() {
     )
     .unwrap();
     merge_result(cursor.result.as_mut().unwrap(), accepted, &first_plan);
-    let next = cursor.sampling.as_mut().unwrap().choose_job().unwrap();
+    assert!(cursor.sampling.as_mut().unwrap().choose_job().is_none());
+    let next = first.clone();
     let group = cursor
         .inventory
         .groups
         .iter()
         .find(|group| StableId::new("scope_work", &[group.id.as_bytes()]) == next.candidate)
         .unwrap();
-    input
+    let citation_id = group.work[0].reference.id.clone();
+    let original_citation = input
         .citations
-        .insert(group.work[0].reference.id.clone(), "x".repeat(1024 * 1024));
+        .insert(citation_id.clone(), "x".repeat(1024 * 1024))
+        .unwrap();
     let (mut input, cursor, _, fits) = prepare_scope_target(input, cursor, next.candidate).unwrap();
     assert!(!fits);
+    input.citations.insert(citation_id, original_citation);
     let result = cursor.result.as_ref().unwrap();
     assert_eq!(result.findings.len(), 1);
     assert!(
@@ -279,18 +466,45 @@ fn no_issue_with_incomplete_work_has_valid_uncertain_publication() {
         result
             .decisions
             .iter()
-            .any(|decision| decision.outcome == Some(ScopeAnswer::NoIssue)
-                && decision.status == ScopeCreepStatus::Uncertain)
+            .all(|decision| decision.status == ScopeCreepStatus::Unassessed)
     );
+    assert!(result.coverage.skipped_items > 0);
     assert!(valid_publication(&publication(&input, result.clone())));
     assert!(!publication_has_clean_coverage(&result));
     let mut forged = publication(&input, result);
     for decision in &mut forged.assessment.decisions {
-        if decision.status == ScopeCreepStatus::Uncertain {
-            decision.status = ScopeCreepStatus::Clean;
-        }
+        decision.status = ScopeCreepStatus::Clean;
     }
     assert!(!valid_publication(&forged));
+}
+
+#[test]
+fn admitted_descriptors_do_not_mark_the_scope_baseline_as_omitted() {
+    let fixture = NativeFixture::new(1);
+    let candidate = fixture.publish();
+    let mut input = load_descriptor_input(
+        &fixture.store,
+        &candidate,
+        &ModelCapabilities::jev_default(),
+    )
+    .unwrap();
+    let mut cursor = restore_cursor(None, &input.durable, 7);
+    cursor.sampling = Some(new_sampling().unwrap());
+
+    enumerate_scope_turn(&mut input, &mut cursor).unwrap();
+
+    assert!(cursor.inventory.complete);
+    assert_eq!(input.plan.coverage.selected_items, 1);
+    assert_eq!(input.plan.coverage.not_selected_items, 0);
+    assert!(!input.plan.coverage.processing_limit_reached);
+    assert!(
+        !input
+            .plan
+            .coverage
+            .limitations
+            .iter()
+            .any(|limitation| limitation == "candidate_limit_reached")
+    );
 }
 
 #[test]
@@ -304,9 +518,9 @@ fn descriptor_storage_budget_preserves_accepted_answers_and_partial_publication(
     while scope_enumeration_pending(&cursor) {
         enumerate_scope_turn(&mut input, &mut cursor).unwrap();
     }
-    assert!(cursor.inventory.limitation.is_some());
+    assert!(cursor.inventory.limitation.is_none());
     assert!(cursor.inventory.groups.len() < 1000);
-    assert!(!cursor.inventory.complete);
+    assert!(cursor.inventory.complete);
     cursor.sampling.as_mut().unwrap().begin_run();
     let job = cursor.sampling.as_mut().unwrap().choose_job().unwrap();
     let selected = input
@@ -325,7 +539,7 @@ fn descriptor_storage_budget_preserves_accepted_answers_and_partial_publication(
             work_item_id: item.id.clone(),
             answers: BTreeMap::from([(
                 "scope_decision".into(),
-                answer(ScopeQuestion::Decision, "no_issue"),
+                answer(ScopeQuestion::Decision, "in_scope"),
             )]),
             evidence: item.window.evidence.clone(),
             model: capabilities.model.clone(),
@@ -660,7 +874,7 @@ fn complete_cursor(input: &PreparedInput, generation: u64) -> AssessmentCursor {
 
 #[test]
 fn descriptor_pages_resume_with_unknown_totals_and_only_selected_scope_hydration() {
-    let fixture = NativeFixture::paged_groups(270);
+    let fixture = NativeFixture::paged_groups(9);
     let candidate = fixture.publish();
     let capabilities = ModelCapabilities::jev_default();
     let mut input = load_descriptor_input(&fixture.store, &candidate, &capabilities).unwrap();
@@ -669,7 +883,7 @@ fn descriptor_pages_resume_with_unknown_totals_and_only_selected_scope_hydration
     let mut cursor = restore_cursor(None, &input.durable, 7);
     cursor.sampling = Some(new_sampling().unwrap());
     enumerate_scope_turn(&mut input, &mut cursor).unwrap();
-    assert!(!cursor.inventory.complete);
+    assert!(cursor.inventory.complete);
     assert!(!cursor.inventory.groups.is_empty());
     assert!(cursor.inventory.groups.len() <= 256);
     assert!(input.plan.work_items.is_empty());
@@ -684,7 +898,7 @@ fn descriptor_pages_resume_with_unknown_totals_and_only_selected_scope_hydration
     cursor.sampling.as_mut().unwrap().begin_run();
     let jobs: Vec<_> =
         std::iter::from_fn(|| cursor.sampling.as_mut().unwrap().choose_job()).collect();
-    assert_eq!(jobs.len(), 4);
+    assert_eq!(jobs.len(), 1);
     let selected = input
         .check
         .prepare_descriptors(
@@ -693,8 +907,8 @@ fn descriptor_pages_resume_with_unknown_totals_and_only_selected_scope_hydration
             &jobs.iter().map(|job| job.candidate).collect(),
         )
         .unwrap();
-    assert_eq!(selected.prepared.groups.len(), 4);
-    assert_eq!(selected.work_items.len(), 4);
+    assert_eq!(selected.prepared.groups.len(), 1);
+    assert_eq!(selected.work_items.len(), 1);
     let answers: Vec<_> = selected
         .work_items
         .iter()
@@ -750,7 +964,7 @@ fn descriptor_pages_resume_with_unknown_totals_and_only_selected_scope_hydration
     let counts: (Option<usize>, usize, usize) = reopened.lock().query_row(
         "SELECT eligible_targets, reviewed_targets, runnable_targets FROM burn_check_assessment WHERE check_id = ?1",
         [CHECK_ID], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
-    assert_eq!(counts, (None, 4, first_groups.len() - 4));
+    assert_eq!(counts, (Some(1), 1, 0));
     let saved = reopened
         .burn_check_assessment(&input.durable.key, CHECK_ID)
         .unwrap()
@@ -759,18 +973,18 @@ fn descriptor_pages_resume_with_unknown_totals_and_only_selected_scope_hydration
     assert_eq!(restored.inventory, cursor.inventory);
     let mut resumed_input = load_descriptor_input(&reopened, &candidate, &capabilities).unwrap();
     enumerate_scope_turn(&mut resumed_input, &mut restored).unwrap();
-    assert!(restored.inventory.next_action > first_position);
+    assert_eq!(restored.inventory.next_action, first_position);
     assert!(restored.inventory.groups.starts_with(&first_groups));
     assert!(restored.inventory.groups.len() - first_groups.len() <= 256);
     while !restored.inventory.complete {
         enumerate_scope_turn(&mut resumed_input, &mut restored).unwrap();
     }
-    assert_eq!(restored.inventory.groups.len(), 270);
+    assert_eq!(restored.inventory.groups.len(), 2);
     save_scheduling(&reopened, &resumed_input, &restored).unwrap();
     let counts: (Option<usize>, usize, usize) = reopened.lock().query_row(
         "SELECT eligible_targets, reviewed_targets, runnable_targets FROM burn_check_assessment WHERE check_id = ?1",
         [CHECK_ID], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
-    assert_eq!(counts, (Some(270), 4, 266));
+    assert_eq!(counts, (Some(1), 1, 0));
     assert!(!publication_has_clean_coverage(
         restored.result.as_ref().unwrap()
     ));
@@ -799,17 +1013,17 @@ fn descriptor_pages_resume_with_unknown_totals_and_only_selected_scope_hydration
     let mut appended_cursor =
         restore_cursor(Some(&saved_after_pages), &appended_input.durable, 100);
     enumerate_scope_turn(&mut appended_input, &mut appended_cursor).unwrap();
-    assert!(!appended_cursor.inventory.complete);
+    assert!(appended_cursor.inventory.complete);
     while !appended_cursor.inventory.complete {
         enumerate_scope_turn(&mut appended_input, &mut appended_cursor).unwrap();
     }
     assert_eq!(
         appended_cursor.result.as_ref().unwrap().assessed_candidates,
-        4
+        1
     );
     assert_eq!(
         scope_scheduling_counts(&appended_input, &appended_cursor),
-        (Some(271), 4, 267)
+        (Some(1), 1, 0)
     );
     assert!(appended_input.plan.work_items.is_empty());
     assert!(valid_publication(&publication(
@@ -916,8 +1130,7 @@ fn scheduler_counts_include_terminal_targets_without_reviewing_them() {
     }
     let reduction = input.check.reduce(&plan, &answers, true).unwrap();
     record_completion(&mut sampling, &reviewed, &reduction, &plan).unwrap();
-    let terminal = sampling.choose_job().unwrap();
-    sampling.terminate_candidate(&terminal).unwrap();
+    assert!(sampling.choose_job().is_none());
     cursor.sampling = Some(sampling);
     fixture
         .store
@@ -929,7 +1142,7 @@ fn scheduler_counts_include_terminal_targets_without_reviewing_them() {
         "SELECT eligible_targets, reviewed_targets, runnable_targets FROM burn_check_assessment WHERE check_id = ?1",
         [CHECK_ID], |row| Ok((row.get::<_, usize>(0)?, row.get::<_, usize>(1)?, row.get::<_, usize>(2)?))).unwrap()
     };
-    assert_eq!(counts(), (9, 1, 7));
+    assert_eq!(counts(), (1, 1, 0));
     let sampling = cursor.sampling.as_mut().unwrap();
     while sampling.runnable_count(ScopeCreepCheck::check_identity()) > 0 {
         sampling.begin_run();
@@ -938,7 +1151,7 @@ fn scheduler_counts_include_terminal_targets_without_reviewing_them() {
         }
     }
     save_scheduling(&fixture.store, &input, &cursor).unwrap();
-    assert_eq!(counts(), (9, 1, 0));
+    assert_eq!(counts(), (1, 1, 0));
     synchronize_sampling(&input, cursor.sampling.as_mut().unwrap()).unwrap();
     cursor.sampling.as_mut().unwrap().begin_run();
     assert!(cursor.sampling.as_mut().unwrap().choose_job().is_none());
@@ -958,8 +1171,19 @@ fn per_target_readiness_keeps_unknown_siblings_out_and_uses_resolved_model_revis
         .clone_from(&capabilities.model_revision);
     let inventory = ScopeCreepCheck::sampling_candidates(&input.plan);
     let first = ScopeCreepCheck::select_candidates(&input.plan, &BTreeSet::from([inventory[0].id]));
-    let sibling =
-        ScopeCreepCheck::select_candidates(&input.plan, &BTreeSet::from([inventory[1].id]));
+    let mut descriptors = ScopeDescriptorInventory::default();
+    input.check.enumerate_descriptors(&mut descriptors).unwrap();
+    let sibling = input
+        .check
+        .prepare_descriptors(
+            &descriptors,
+            &capabilities,
+            &BTreeSet::from([StableId::new(
+                "scope_work",
+                &[descriptors.groups[0].id.as_bytes()],
+            )]),
+        )
+        .unwrap();
     let packed = antiburn_local::analysis::jev::pack_work_items_with_capabilities(
         &first.work_items,
         &capabilities,
@@ -1243,19 +1467,21 @@ impl NativeFixture {
 
     pub(crate) fn paged_groups(groups: usize) -> Self {
         let fixture = Self::new(0);
+        let mut records = Vec::with_capacity(groups * 2);
         for index in 0..groups {
-            fixture.append(
+            records.push((
                 2 + index * 2,
                 "assistant",
                 json!({"type":"tool","tool":"write","callID":format!("write-{index}"),
                     "state":{"status":"completed","input":{"filePath":format!("/synthetic/billing-{index}.rs"),"content":"new billing feature"},"output":"File written successfully."}}),
-            );
-            fixture.append(
+            ));
+            records.push((
                 3 + index * 2,
-                "user",
+                "assistant",
                 json!({"type":"text","text":"Continue the parser fix. Do not change billing."}),
-            );
+            ));
         }
+        fixture.append_all(records);
         fixture
     }
 
@@ -1277,25 +1503,49 @@ impl NativeFixture {
             source_path,
             store,
         };
-        fixture.append(
+        let mut records = Vec::with_capacity(groups + 2);
+        records.push((
             0,
             "user",
             json!({"type":"text","text":"Fix the parser. Do not change billing."}),
-        );
+        ));
         for index in 1..=groups {
-            fixture.append(index, "assistant", json!({"type":"tool","tool":"write","callID":format!("write-{index}"),
-                "state":{"status":"completed","input":{"filePath":format!("/synthetic/billing-{index}.rs"),"content":"new billing feature"},"output":"File written successfully."}}));
+            records.push((index, "assistant", json!({"type":"tool","tool":"write","callID":format!("write-{index}"),
+                "state":{"status":"completed","input":{"filePath":format!("/synthetic/billing-{index}.rs"),"content":"new billing feature"},"output":"File written successfully."}})));
         }
-        fixture.append(
+        records.push((
             groups + 1,
             "user",
             json!({"type":"text","text":"Explain the parser fix."}),
-        );
+        ));
+        fixture.append_all(records);
         fixture
     }
 
     pub(crate) fn append(&self, index: usize, role: &str, part: serde_json::Value) {
-        let source = rusqlite::Connection::open(&self.source_path).unwrap();
+        self.append_all([(index, role, part)]);
+    }
+
+    /// Writes all records in one connection and one transaction. Per-row
+    /// commits each force a disk sync, which is very slow on Windows CI runners.
+    fn append_all<'a>(
+        &self,
+        records: impl IntoIterator<Item = (usize, &'a str, serde_json::Value)>,
+    ) {
+        let mut connection = rusqlite::Connection::open(&self.source_path).unwrap();
+        let source = connection.transaction().unwrap();
+        for (index, role, part) in records {
+            Self::insert_record(&source, index, role, &part);
+        }
+        source.commit().unwrap();
+    }
+
+    fn insert_record(
+        source: &rusqlite::Connection,
+        index: usize,
+        role: &str,
+        part: &serde_json::Value,
+    ) {
         source
             .execute(
                 "INSERT INTO message VALUES (?1, 'scope', ?2, ?2, ?3)",
@@ -1434,8 +1684,15 @@ impl NativeFixture {
             .unwrap()
     }
     pub(crate) fn publish_finding(&self) -> BurnCheckCandidate {
+        self.publish_finding_with_capabilities(ModelCapabilities::jev_default())
+    }
+
+    pub(crate) fn publish_finding_with_capabilities(
+        &self,
+        capabilities: ModelCapabilities,
+    ) -> BurnCheckCandidate {
         let candidate = self.publish();
-        let input = load_input(&self.store, &candidate, &ModelCapabilities::jev_default()).unwrap();
+        let input = load_input(&self.store, &candidate, &capabilities).unwrap();
         let result = input
             .check
             .reduce(&input.plan, &results(&input, false), true)
@@ -1480,9 +1737,9 @@ fn results(input: &PreparedInput, acceptance: bool) -> Vec<JevWorkItemResult> {
                 answer(
                     ScopeQuestion::Decision,
                     if acceptance {
-                        "no_issue"
+                        "in_scope"
                     } else {
-                        "likely_scope_expansion"
+                        "unauthorized_extra"
                     },
                 ),
             )]),
@@ -1503,16 +1760,29 @@ fn persist(store: &Store, input: &PreparedInput, result: ScopeCreepResult) {
     );
     let publication = publication(input, result);
     assert!(valid_publication(&publication));
-    assert!(
+    let json = serde_json::to_string(&publication).unwrap();
+    let restored: Publication = serde_json::from_str(&json).unwrap();
+    assert!(valid_publication(&restored));
+    let saved = if publication_has_clean_coverage(&publication.assessment) {
         store
-            .complete_burn_check_assessment(
+            .complete_burn_check_assessment(&input.durable, &json, 1000, POLICY.idle_secs)
+            .unwrap()
+    } else {
+        store
+            .fail_burn_check_assessment_with_result(
                 &input.durable,
-                &serde_json::to_string(&publication).unwrap(),
+                &BurnCheckFailure {
+                    error_category: "sampling_incomplete",
+                    result_json: &json,
+                    progress_json: "{}",
+                    retry_at_epoch: None,
+                },
                 1000,
-                POLICY.idle_secs
+                POLICY.idle_secs,
             )
             .unwrap()
-    );
+    };
+    assert!(saved);
 }
 
 #[test]
@@ -1587,7 +1857,7 @@ fn selected_work_has_one_local_decision_and_resumable_four_target_turns() {
         &ModelCapabilities::jev_default(),
     )
     .unwrap();
-    assert_eq!(input.plan.prepared.groups.len(), 9);
+    assert_eq!(input.plan.prepared.groups.len(), 2);
     let all_results = results(&input, false);
     let mut sampling = new_sampling().unwrap();
     synchronize_sampling(&input, &mut sampling).unwrap();
@@ -1628,7 +1898,10 @@ fn selected_work_has_one_local_decision_and_resumable_four_target_turns() {
         let reduction = input.check.reduce(&plan, &selected_results, true).unwrap();
         record_completion(&mut sampling, &job, &reduction, &plan).unwrap();
     }
-    assert_eq!(selected.len(), 4);
+    assert_eq!(
+        selected.len(),
+        ScopeCreepCheck::sampling_candidates(&input.plan).len()
+    );
     let mut restored: SamplingProgress =
         serde_json::from_str(&serde_json::to_string(&sampling).unwrap()).unwrap();
     assert!(restored.choose_job().is_none());
@@ -1637,7 +1910,7 @@ fn selected_work_has_one_local_decision_and_resumable_four_target_turns() {
     while let Some(job) = restored.choose_job() {
         next.insert(job.candidate);
     }
-    assert_eq!(selected.union(&next).count(), 8);
+    assert_eq!(selected.union(&next).count(), selected.len());
 }
 
 #[test]
@@ -1723,7 +1996,7 @@ fn oversized_atomic_target_has_typed_limitation_and_no_dispatch_work() {
         Some("work_context_too_large")
     );
     assert!(input.plan.work_items.is_empty());
-    assert_eq!(ScopeCreepCheck::sampling_candidates(&input.plan).len(), 1);
+    assert!(ScopeCreepCheck::sampling_candidates(&input.plan).is_empty());
     let result = input.check.reduce(&input.plan, &[], true).unwrap();
     assert!(!publication_has_clean_coverage(&result));
     let mut cursor = complete_cursor(&input, 7);
@@ -1800,7 +2073,10 @@ fn publication_gate_rejects_partial_clean_and_changed_revisions_or_work_bindings
     assert!(!valid_publication(&saved));
     assert_eq!(
         CHECK.evaluator_revision(),
-        "scope-creep-adapter-v4:8:5:24:13"
+        format!(
+            "scope-creep-adapter-v{CURSOR_REVISION}:{}:{}:{}:{}",
+            REVISIONS.projection, REVISIONS.chunking, REVISIONS.questions, REVISIONS.reducer
+        )
     );
 }
 
@@ -1850,7 +2126,7 @@ fn persisted_cursor_resumes_a_bounded_run_and_provider_change_keeps_fair_order()
     while restored.sampling.as_mut().unwrap().choose_job().is_some() {
         remaining += 1;
     }
-    assert_eq!(remaining, 3);
+    assert_eq!(remaining, 0);
     let switched = restore_cursor(Some(&saved), &input.durable, 8);
     assert_eq!(switched.active_job, cursor.active_job);
     assert!(switched.result.is_none());
@@ -2042,7 +2318,7 @@ fn mocked_authentication_rejection_preserves_scope_jobs_and_stops_dispatch() {
                 .as_ref()
                 .unwrap()
                 .runnable_count(ScopeCreepCheck::check_identity()),
-            9
+            1
         );
         let category: Option<String> = reopened
             .lock()
@@ -2124,7 +2400,7 @@ fn mocked_native_production_request_persists_one_decision_and_fit_failure_makes_
                             assert_eq!(key, "scope_decision");
                             (
                                 id.clone(),
-                                answer(ScopeQuestion::Decision, "likely_scope_expansion"),
+                                answer(ScopeQuestion::Decision, "unauthorized_extra"),
                             )
                         })
                         .collect(),
@@ -2147,7 +2423,7 @@ fn mocked_native_production_request_persists_one_decision_and_fit_failure_makes_
     assert_eq!(saved.assessment.findings[0].decision_probability, 1.0);
     assert_eq!(
         saved.assessment.decisions[0].outcome,
-        Some(ScopeAnswer::LikelyScopeExpansion)
+        Some(ScopeAnswer::UnauthorizedExtra)
     );
     assert!(
         saved_finding_citations(&fixture.store.lock(), &SourceFence::from(&candidate), &id)
@@ -2248,34 +2524,30 @@ fn failed_attempt_publication_uses_same_partial_decision_semantics() {
         &ModelCapabilities::jev_default(),
     )
     .unwrap();
-    assert_eq!(input.plan.work_items.len(), 1);
+    assert!(input.plan.work_items.is_empty());
     let result = input
         .check
         .reduce(&input.plan, &results(&input, false), true)
         .unwrap();
-    assert_eq!(result.findings.len(), 1);
-    assert_eq!(
-        result.findings[0].observation_kind,
-        antiburn_local::checks::scope_creep::WorkObservationKind::Attempt
+    assert!(result.findings.is_empty());
+    assert!(
+        result
+            .decisions
+            .iter()
+            .all(|decision| decision.status == ScopeCreepStatus::Unassessed)
     );
-    assert!(publishable_finding(
-        &result.findings[0],
-        &publication(&input, result.clone())
-    ));
-    let mut changed = publication(&input, result);
-    changed.assessment.findings[0].decision_probability = 0.74;
-    assert!(!valid_publication(&changed));
+    assert!(!publication_has_clean_coverage(&result));
 }
 
 #[test]
-fn accepted_positive_survives_a_failed_sibling_and_remains_non_clean_after_restart() {
+fn accepted_positive_survives_an_omitted_sibling_and_remains_non_clean_after_restart() {
     use antiburn_local::analysis::jev::{JevResponse, run_jev_check_prepared};
     let fixture = NativeFixture::new(2);
     let candidate = fixture.publish();
     let mut capabilities = ModelCapabilities::jev_default();
     capabilities.questions_per_request.value = Some(1);
     let input = load_input(&fixture.store, &candidate, &capabilities).unwrap();
-    assert_eq!(input.plan.work_items.len(), 2);
+    assert_eq!(input.plan.work_items.len(), 1);
     let mut plan = input.plan.clone();
     let calls = std::sync::atomic::AtomicUsize::new(0);
     let outcome = tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -2299,7 +2571,7 @@ fn accepted_positive_survives_a_failed_sibling_and_remains_non_clean_after_resta
                             .map(|id| {
                                 (
                                     id.clone(),
-                                    answer(ScopeQuestion::Decision, "likely_scope_expansion"),
+                                    answer(ScopeQuestion::Decision, "unauthorized_extra"),
                                 )
                             })
                             .collect(),
@@ -2314,8 +2586,10 @@ fn accepted_positive_survives_a_failed_sibling_and_remains_non_clean_after_resta
         .await
         .unwrap()
     });
-    assert!(outcome.failure.is_some());
-    assert!(!outcome.complete);
+    assert!(outcome.failure.is_none());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(outcome.complete);
+    assert!(!publication_has_clean_coverage(&outcome.result));
     assert_eq!(outcome.result.findings.len(), 1);
     let id = outcome.result.findings[0].id.clone();
     let mut sampling = new_sampling().unwrap();
@@ -2336,7 +2610,7 @@ fn accepted_positive_survives_a_failed_sibling_and_remains_non_clean_after_resta
     }
     update_result_counts(&mut cursor, &input);
     assert_eq!(cursor.result.as_ref().unwrap().assessed_candidates, 1);
-    assert_eq!(cursor.result.as_ref().unwrap().remaining_candidates, 1);
+    assert_eq!(cursor.result.as_ref().unwrap().remaining_candidates, 0);
     assert!(!publication_has_clean_coverage(
         cursor.result.as_ref().unwrap()
     ));
@@ -2365,4 +2639,116 @@ fn accepted_positive_survives_a_failed_sibling_and_remains_non_clean_after_resta
             .unwrap()
             .is_some()
     );
+    cursor.sampling.as_mut().unwrap().begin_run();
+    assert!(cursor.sampling.as_mut().unwrap().choose_job().is_none());
+    update_result_counts(&mut cursor, &input);
+    let result = cursor.result.as_ref().unwrap();
+    assert_eq!(result.assessed_candidates, 1);
+    assert_eq!(result.remaining_candidates, 0);
+    assert_eq!(result.coverage.skipped_items, 1);
+    assert_eq!(result.coverage.not_selected_items, 0);
+    assert!(valid_publication(&publication(&input, result.clone())));
+    fixture
+        .store
+        .queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)
+        .unwrap();
+    fixture
+        .store
+        .claim_burn_check_assessment(
+            &input.durable,
+            unix_now(),
+            POLICY.lease_secs,
+            POLICY.idle_secs,
+        )
+        .unwrap();
+    assert!(save_failure(&fixture.store, &input, &cursor, "sampling_incomplete", None).unwrap());
+    let saved = current_publication(&reopened.lock(), &SourceFence::from(&candidate))
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.assessment.findings.len(), 1);
+    assert!(!publication_has_clean_coverage(&saved.assessment));
+    assert!(
+        saved_finding_citations(&reopened.lock(), &SourceFence::from(&candidate), &id)
+            .unwrap()
+            .is_some()
+    );
+}
+#[test]
+fn scope_explanation_requires_exact_prepared_refs_digests_ranges_and_authority() {
+    let fixture = NativeFixture::new(1);
+    let candidate = fixture.publish();
+    let capabilities = ModelCapabilities::jev_default();
+    let input = load_input(&fixture.store, &candidate, &capabilities).unwrap();
+    let result = input
+        .check
+        .reduce(&input.plan, &results(&input, false), true)
+        .unwrap();
+    let publication = publication(&input, result);
+    let finding = publication
+        .assessment
+        .findings
+        .first()
+        .expect("source-bound positive reaches publication");
+    assert!(publishable_finding(finding, &publication));
+    assert!(
+        !finding
+            .explanation_basis
+            .as_ref()
+            .unwrap()
+            .excerpts
+            .is_empty()
+    );
+    for mutation in 0..12 {
+        let mut changed = finding.clone();
+        let basis = changed.explanation_basis.as_mut().unwrap();
+        let excerpt = &mut basis.excerpts[0];
+        match mutation {
+            0 => excerpt.source.id.push_str("-wrong"),
+            1 => excerpt.source.turn_index += 1,
+            2 => excerpt.content_digest.push_str("-wrong"),
+            3 => excerpt.start_byte += 1,
+            4 => excerpt.end_byte += 1,
+            5 => excerpt.authority.push_str("-wrong"),
+            6 => excerpt.text.push_str("wrong"),
+            7 => excerpt.range_source.push_str("-wrong"),
+            8 => excerpt.source.source_key_digest.push_str("-wrong"),
+            9 => excerpt.scope_field = Some(antiburn_local::analysis::jev::JevInputField::UserAnswer),
+            10 => excerpt.native_source = Some(antiburn_local::analysis::jev_evidence::JevScopeEvidenceSource {
+                source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+                role: antiburn_local::analysis::jev_evidence::JevScopeEvidenceRole::User,
+                native_record_id: Some("wrong-record".into()), call_id: None, question_id: None,
+                order: 0, acceptance_order: None,
+                provenance: antiburn_local::analysis::jev_evidence::JevScopeEvidenceProvenance::RecordedUser,
+                producer_revision: "wrong-producer".into(), normalization_revision: 1,
+                bindings: Vec::new(), truncated: false,
+            }),
+            11 => excerpt.source.native_record_id = Some("wrong-record".into()),
+            _ => unreachable!(),
+        }
+        assert!(
+            !publishable_finding(&changed, &publication),
+            "mutation {mutation}"
+        );
+    }
+}
+
+#[test]
+fn unchanged_request_fit_failures_are_terminal_before_dispatch_readiness() {
+    for error in [
+        JevError::RequestTooLarge {
+            bytes: 4096,
+            maximum: 1024,
+        },
+        JevError::RequestTokenLimitExceeded {
+            tokens: 4096,
+            maximum: 2050,
+        },
+    ] {
+        assert!(
+            target_failure_is_terminal(&error, || panic!(
+                "fit failure must not retry unchanged input"
+            ))
+            .unwrap()
+        );
+    }
 }

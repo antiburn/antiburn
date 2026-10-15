@@ -3,6 +3,7 @@ import * as TooltipPrimitive from "@radix-ui/react-tooltip"
 import { Check, ListFilter, Monitor, Minus, X } from "lucide-react"
 import { useCallback, useRef, useState, type MouseEvent, type RefObject } from "react"
 
+import { pluralize } from "../../lib/presentation/text"
 import { renderAgentIcon } from "../../lib/agentIcon"
 import { isMacOS } from "../../lib/platform"
 import { agentDisplayName } from "../../lib/presentation/agents"
@@ -73,7 +74,7 @@ const HIGH_COST_EXPLANATION =
   "Based on all agents in this time range: 3× the median session cost, with a $2 minimum."
 
 function sessionCountLabel(count: number): string {
-  return `${count} matching ${count === 1 ? "session" : "sessions"}`
+  return `${count} matching ${pluralize(count, "session", "sessions")}`
 }
 
 function VendorIcon({ agent, compact = false }: { agent: string; compact?: boolean }) {

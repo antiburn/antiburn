@@ -28,7 +28,7 @@ pub(crate) fn read_source(parts: &mut Vec<PublishedContentPart>, path: &str, sou
     tool(
         parts,
         "read",
-        json!({"filePath":path,"offset":1,"limit":lines}).to_string(),
+        json!({"filePath":path,"cwd":"/synthetic/workspace","offset":1,"limit":lines}).to_string(),
         format!(
             "<path>{path}</path>\n<type>file</type>\n<content>\n{output}\n(End of file - total {lines} lines)\n</content>"
         ),
@@ -47,8 +47,8 @@ fn core(module: &str, dependency: bool, long: bool, fixed: bool) -> String {
         )
     };
     if long {
-        for index in 0..28 {
-            text.push_str(&format!("fn render_panel_{index}() -> &'static str {{\n    \"Panel {index}: choose a display theme\"\n}}\n\n"));
+        for index in 0..60 {
+            text.push_str(&format!("fn render_panel_{index}() -> &'static str {{\n    \"Panel {index}: choose a display theme and inspect its numbered preview swatches\"\n}}\n\n"));
         }
     }
     text
@@ -62,16 +62,6 @@ fn dependency_source() -> String {
         source.push_str(&format!(
             "#[test]\nfn value_{value}() {{ assert_eq!(validate({value}, 10), {value} <= 10); }}\n"
         ));
-    }
-    source
-}
-
-fn archive_source(index: usize) -> String {
-    let mut source = format!(
-        "// Historical teaching example {index}.\nfn old_limit(value: usize, maximum: usize) -> bool {{\n    value <= maximum\n}}\n"
-    );
-    for value in 0..12 {
-        source.push_str(&format!("#[test]\nfn example_{value}() {{ assert_eq!(old_limit({value}, 10), {value} <= 10); }}\n"));
     }
     source
 }
@@ -110,10 +100,15 @@ pub(crate) fn primary(reason: Reason, positive: bool, variant: usize) -> Case {
         ][variant]
     };
     let mut parts = Vec::new();
-    let diligence = if positive {
+    let diligence = if positive && reason == Reason::ExcessiveWithinFileReading {
+        "Change only the comparison."
+    } else if positive {
         "Change only the inclusive endpoint comparison. No audit, refactor, or alternative implementation is requested."
     } else {
         match variant {
+            0 if reason == Reason::ExcessiveWithinFileReading => {
+                "Read the complete file three times. Compare the results and report without editing."
+            }
             0 => "Audit the relevant validation paths and supply a written report before editing.",
             1 => "Trace the imported validation dependency before selecting the correction.",
             2 => "Check boundary safety and cleanup behavior in each affected component.",
@@ -137,9 +132,17 @@ pub(crate) fn primary(reason: Reason, positive: bool, variant: usize) -> Case {
     push(
         &mut parts,
         ContentKind::UserText,
-        format!(
-            "The {module} endpoint is inclusive: accepts(10, 10) must be true and accepts(11, 10) must be false. Correct src/{module}.rs. {diligence}"
-        ),
+        if reason == Reason::ExcessiveWithinFileReading && (positive || variant == 0) {
+            if positive {
+                format!("Fix src/{module}.rs so 10 is included and 11 is rejected. {diligence}")
+            } else {
+                format!("Explain src/{module}.rs. {diligence}")
+            }
+        } else {
+            format!(
+                "The {module} endpoint is inclusive: accepts(10, 10) must be true and accepts(11, 10) must be false. Correct src/{module}.rs. {diligence}"
+            )
+        },
         None,
     );
     let dependency = !positive && reason == Reason::UnrelatedFiles;
@@ -155,21 +158,6 @@ pub(crate) fn primary(reason: Reason, positive: bool, variant: usize) -> Case {
             "running 1 test\n{module}::endpoint_is_valid --- FAILED\nthread panicked: assertion failed: accepts(10, 10)\nExpected true; observed false\nsource: src/{module}.rs:2\n1 failed; 0 passed"
         ),
     );
-    if reason == Reason::ExcessiveFileBreadth {
-        let main = if positive {
-            format!("mod {module};\nfn main() {{ assert!({module}::accepts(9, 10)); }}\n")
-        } else {
-            (0..6)
-                .map(|index| format!("mod consumer_{index};\n"))
-                .collect::<String>()
-        };
-        read_source(&mut parts, "src/main.rs", &main);
-        read_source(
-            &mut parts,
-            "Cargo.toml",
-            "[package]\nname = \"boundary-app\"\nversion = \"0.1.0\"\n[[bin]]\nname = \"boundary-app\"\npath = \"src/main.rs\"\n",
-        );
-    }
     push(
         &mut parts,
         ContentKind::AssistantText,
@@ -197,6 +185,14 @@ pub(crate) fn primary(reason: Reason, positive: bool, variant: usize) -> Case {
         "Target investigation starts.".into(),
         None,
     );
+    if !positive && reason == Reason::ExcessiveWithinFileReading && variant == 0 {
+        push(
+            &mut parts,
+            ContentKind::AssistantText,
+            "Three complete reads are required.".into(),
+            None,
+        );
+    }
     match reason {
         Reason::UnrelatedFiles => {
             if positive {
@@ -225,25 +221,7 @@ pub(crate) fn primary(reason: Reason, positive: bool, variant: usize) -> Case {
                 );
             }
         }
-        Reason::ExcessiveFileBreadth => {
-            for index in 0..6 {
-                let path = if positive {
-                    format!("archive/example_{index}.rs")
-                } else {
-                    format!("src/consumer_{index}.rs")
-                };
-                let text = if positive {
-                    archive_source(index)
-                } else {
-                    format!(
-                        "use crate::{module}::accepts;\npub fn process_{index}(value: usize) -> bool {{ accepts(value, {}) }}\n#[test]\nfn endpoint() {{ assert!(process_{index}({})); }}\n",
-                        index + 10,
-                        index + 10
-                    )
-                };
-                read_source(&mut parts, &path, &text);
-            }
-        }
+        Reason::ExcessiveFileBreadth => unreachable!("File breadth is outside this eval suite"),
         Reason::ExcessiveWithinFileReading => {
             for index in 0..if positive { 4 } else { 3 } {
                 if !positive && variant == 7 && index == 1 {
@@ -254,7 +232,7 @@ pub(crate) fn primary(reason: Reason, positive: bool, variant: usize) -> Case {
                     &format!("src/{module}.rs"),
                     &core(module, false, long, !positive && variant == 7 && index > 0),
                 );
-                if !positive {
+                if !positive && variant != 0 {
                     push(
                         &mut parts,
                         ContentKind::AssistantText,
@@ -316,4 +294,142 @@ pub(crate) fn primary(reason: Reason, positive: bool, variant: usize) -> Case {
         parts,
         "complete",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::primary;
+    use crate::fixtures::REASONS;
+    use antiburn_local::analysis::jev::JevCheck;
+    use antiburn_local::checks::over_exploring::{OverExploringCheck, build_jev_context};
+
+    fn assert_repeated_case_admitted(positive: bool, variant: usize, expected_reads: usize) {
+        let case = primary(REASONS[1], positive, variant);
+        let expected_id = format!(
+            "development-excessive_within_file_reading-{}-{variant:02}",
+            if positive { "positive" } else { "negative" },
+        );
+        assert_eq!(case.id, expected_id);
+        let input = case.input.as_ref().expect("Case has prepared input");
+        let context = build_jev_context(input).expect("Case context builds");
+        let plan = OverExploringCheck
+            .prepare(&context)
+            .expect("Production preparation succeeds");
+        assert_eq!(
+            case.policy_admission,
+            "admitted",
+            "{}: task_bytes={}, complete={}, episode_state={:?}, read_bytes={:?}, work_items={}, unassessed={:?}",
+            case.id,
+            serde_json::to_vec(&input.task_context.fields)
+                .unwrap()
+                .len(),
+            input.complete,
+            input.episodes.last().unwrap().state,
+            input
+                .episodes
+                .last()
+                .unwrap()
+                .reads
+                .iter()
+                .map(|read| read
+                    .result
+                    .as_ref()
+                    .map(|result| result.recorded_output_bytes))
+                .collect::<Vec<_>>(),
+            plan.work_items.len(),
+            plan.prepared.unassessed
+        );
+        let target = plan
+            .prepared
+            .targets
+            .values()
+            .find(|target| target.reason == REASONS[1])
+            .unwrap_or_else(|| panic!("{}: repeated read target is admitted", case.id));
+        assert_eq!(target.bindings.len(), expected_reads, "{}", case.id);
+        if positive {
+            assert_eq!(target.bindings, case.expected[0].reads, "{}", case.id);
+        }
+        assert_eq!(
+            case.expected_outcome,
+            if positive { "finding" } else { "clean" }
+        );
+        assert_eq!(case.expected.len(), usize::from(positive), "{}", case.id);
+        assert_eq!(case.expected_bindings, case.expected, "{}", case.id);
+        let episode = input.episodes.last().expect("Target episode exists");
+        let reads = &episode.reads;
+        let selected = &target.read_indexes;
+        assert_eq!(selected.len(), expected_reads, "{}", case.id);
+        assert!(input.complete, "{}", case.id);
+        let first = &reads[selected[0]];
+        let first_result = first.result.as_ref().expect("Read result exists");
+        assert!(first_result.recorded_output_bytes >= 8192, "{}", case.id);
+        assert!(first.request.cwd.is_some(), "{}", case.id);
+        assert!(!first.request.truncated, "{}", case.id);
+        assert!(!first_result.truncated, "{}", case.id);
+        assert!(first_result.returned_extent.is_some(), "{}", case.id);
+        for pair in selected.windows(2) {
+            let previous = &reads[pair[0]];
+            let current = &reads[pair[1]];
+            let previous_result = previous.result.as_ref().expect("Read result exists");
+            let current_result = current.result.as_ref().expect("Read result exists");
+            assert!(!current.request.truncated, "{}", case.id);
+            assert!(!current_result.truncated, "{}", case.id);
+            assert_eq!(current_result.status, first_result.status, "{}", case.id);
+            assert_eq!(current_result.kind, first_result.kind, "{}", case.id);
+            assert_eq!(first.request.paths, current.request.paths, "{}", case.id);
+            assert_eq!(first.request.cwd, current.request.cwd, "{}", case.id);
+            assert_eq!(first.request.extent, current.request.extent, "{}", case.id);
+            assert_eq!(
+                first.request.native_extent, current.request.native_extent,
+                "{}",
+                case.id
+            );
+            assert_eq!(
+                first_result.returned_extent, current_result.returned_extent,
+                "{}",
+                case.id
+            );
+            assert_eq!(
+                first_result.recorded_output_digest, current_result.recorded_output_digest,
+                "{}",
+                case.id
+            );
+            assert!(current_result.recorded_output_bytes >= 8192, "{}", case.id);
+            let result_position = episode
+                .events
+                .iter()
+                .position(|event| input.events[*event].reference.id == previous_result.reference_id)
+                .expect("Previous result belongs to episode");
+            let request_position = episode
+                .events
+                .iter()
+                .position(|event| input.events[*event].reference.id == current.request.reference_id)
+                .expect("Current request belongs to episode");
+            assert_eq!(result_position + 1, request_position, "{}", case.id);
+        }
+        let redundant_bytes = selected
+            .iter()
+            .skip(1)
+            .map(|index| {
+                reads[*index]
+                    .result
+                    .as_ref()
+                    .expect("Read result exists")
+                    .recorded_output_bytes
+            })
+            .sum::<u64>();
+        assert!(redundant_bytes >= 8192, "{}", case.id);
+    }
+
+    #[test]
+    fn all_excessive_reading_positives_are_admitted_for_complete_large_repeats() {
+        for variant in 0..12 {
+            assert_repeated_case_admitted(true, variant, 4);
+        }
+    }
+
+    #[test]
+    fn excessive_reading_audit_negative_is_admitted_for_required_repeats() {
+        assert_repeated_case_admitted(false, 0, 3);
+    }
 }

@@ -1,9 +1,9 @@
 import { useCallback, useRef, useState, useSyncExternalStore } from "react"
 
-import { AlertTriangle } from "lucide-react"
+import { AlertTriangle, ArrowUpRight } from "lucide-react"
 import type { VirtualItem } from "@tanstack/react-virtual"
 
-import { SessionList } from "../components/session/SessionList"
+import { SessionList, type SessionListEntry } from "../components/session/SessionList"
 import { UsageLimitsBar } from "../components/providerUsage"
 import {
   EMPTY_USAGE_WINDOWS,
@@ -19,6 +19,7 @@ import {
   noteInteraction,
   openMainWindowSection,
   openMainWindowSession,
+  openSettingsWindow,
 } from "../lib/ipc"
 import {
   getPopoverPeekAnchorState,
@@ -29,13 +30,24 @@ import {
   type PopoverPeekData,
   type PopoverPeekTarget,
 } from "../lib/popoverPeekIpc"
-import { checksPresentation } from "../lib/presentation/checkReport"
 import { snoozedDetectorIds, useSnoozedBurnChecks } from "../lib/snoozedBurnChecks"
 import { sessionHygieneIdentities, useSessionHygiene } from "../lib/useSessionHygiene"
 import { remoteHosts } from "../lib/remoteHosts"
 import { PopoverSession } from "./popover/PopoverSession"
-import { ChecksSummary } from "./popover/ChecksView"
 import { foldActivityHeader } from "./popover/usageChartFold"
+
+const CURRENT_SESSION_ACTIVITY_MS = 3 * 60 * 60 * 1000
+const CURRENT_SESSION_GROUP_DAYS = 2
+
+function isCurrentOrRecentlyActive(entry: SessionListEntry, now: number): boolean {
+  if (entry.isActive) return true
+  const timestamp = Date.parse(entry.timestamp)
+  return (
+    Number.isFinite(timestamp) &&
+    timestamp <= now &&
+    now - timestamp <= CURRENT_SESSION_ACTIVITY_MS
+  )
+}
 
 function samePopoverPeekTarget(left: PopoverPeekTarget, right: PopoverPeekTarget): boolean {
   if (left.kind !== right.kind) return false
@@ -85,8 +97,8 @@ function selectedProviderPresentation(
 /**
  * The tray popover.
  *
- * The window shows activity. Session cards open the retained main window.
- * Usage uses the anchored companion window. Checks opens the main window.
+ * The window shows current activity. Session cards and the footer open the
+ * retained main window. Usage uses the anchored companion window.
  * `PopoverSession` owns Escape handling and temporary attention-banner dismissal.
  */
 
@@ -128,12 +140,8 @@ export function PopoverView() {
     : undefined
   const snoozes = useSnoozedBurnChecks()
   const snoozedDetectors = snoozedDetectorIds(snoozes.records)
-  const checks =
-    state.checksReport && snoozes.status === "ready"
-      ? checksPresentation(state.checksReport, state.checksUnavailable, snoozedDetectors)
-      : null
-
-  const windowDays = state.settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays
+  const currentEntries =
+    state.entries?.filter((entry) => isCurrentOrRecentlyActive(entry, state.now)) ?? []
   const hygieneBySession = useSessionHygiene(sessionHygieneIdentities(state.entries ?? []))
 
   // Focus the activity heading when the popover renderer mounts.
@@ -197,7 +205,7 @@ export function PopoverView() {
                     void session.rescan()
                     return
                   }
-                  void openMainWindowSection("overview", banner.action.step)
+                  void openSettingsWindow(banner.action.pane)
                 }}
                 onDismiss={() => session.dismissBanner(banner.id)}
                 dismissLabel={banner.dismissLabel}
@@ -210,30 +218,6 @@ export function PopoverView() {
             step with the list scroll. */}
         <div ref={activityHeaderWrap} className="shrink-0 overflow-hidden">
           <div>
-            <div
-              data-testid="checks-summary-overview"
-              className="shrink-0 px-[var(--space-sm)] pt-[var(--space-md)]"
-            >
-              <ChecksSummary
-                active={false}
-                presentation={checks}
-                reportUnavailable={state.checksUnavailable || snoozes.status === "error"}
-                onPreview={() => void peekTriggers.leave()}
-                onLeave={() => void peekTriggers.leave()}
-                onOpen={() => {
-                  void peekTriggers.leave()
-                  void openMainWindowSection("burnChecks")
-                }}
-              />
-            </div>
-            {state.usage && (
-              <UsageSpendSummary
-                totals={state.usage.totals ?? EMPTY_USAGE_WINDOWS}
-                showApiPricingCaveat={state.liveUsage.providers.some(
-                  ({ plan }) => plan !== null,
-                )}
-              />
-            )}
             <div>
               <UsageLimitsBar
                 live={state.liveUsage}
@@ -270,7 +254,15 @@ export function PopoverView() {
                 }
               />
             </div>
-            <div className="mx-3 border-b border-separator" aria-hidden="true" />
+
+            {state.usage && (
+              <UsageSpendSummary
+                totals={state.usage.totals ?? EMPTY_USAGE_WINDOWS}
+                hasSubscriptionPlan={state.liveUsage.providers.some(
+                  ({ plan }) => plan !== null,
+                )}
+              />
+            )}
           </div>
         </div>
 
@@ -283,10 +275,12 @@ export function PopoverView() {
             </p>
           ) : (
             <SessionList
-              entries={state.entries}
+              entries={currentEntries}
               remoteHosts={remoteState.hosts}
               snoozedDetectors={snoozedDetectors}
-              days={windowDays}
+              days={CURRENT_SESSION_GROUP_DAYS}
+              emptyTitle="No current sessions"
+              emptyDescription="Sessions active now or with activity in the last 3 hours appear here."
               onOpenSession={(entry) => {
                 if (!entry.sessionId) return
                 void peekTriggers.leave()
@@ -312,6 +306,7 @@ export function PopoverView() {
               }}
               renderAgentIcon={renderAgentIcon}
               viewportRef={restoreListScroll}
+              viewportClassName="pb-14"
               initialScrollOffset={initialListScrollOffset}
               initialMeasurementsCache={listMeasurements}
               onMeasurementsChange={setListMeasurements}
@@ -331,11 +326,24 @@ export function PopoverView() {
   }
 
   return (
-    <div ref={focusHeading} className="h-full">
+    <div ref={focusHeading} className="relative h-full">
       <h1 data-view-heading tabIndex={-1} className="sr-only outline-none">
         Activity
       </h1>
       {body()}
+      <div className="pointer-events-none absolute inset-x-0 bottom-2 z-20 flex justify-center">
+        <button
+          type="button"
+          className="pointer-events-auto inline-flex h-10 items-center gap-1.5 rounded-control border border-separator bg-surface px-3 type-callout font-medium text-label transition-colors duration-fast hover:bg-surface-overlay"
+          onClick={() => {
+            void peekTriggers.leave()
+            void openMainWindowSection("activity")
+          }}
+        >
+          Open all sessions in main window
+          <ArrowUpRight size={14} aria-hidden="true" />
+        </button>
+      </div>
     </div>
   )
 }

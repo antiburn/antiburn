@@ -120,7 +120,7 @@ fn fallback_prompt_parts(detector: DetectorId) -> (&'static str, &'static str) {
         ),
         DetectorId::OverExploring => (
             "Over-exploring",
-            "Tie future research to open task questions, useful files, needed read extent, and a clear stopping point.",
+            "Reuse earlier read results when they answer the task. Keep file reads tied to a clear task need.",
         ),
     }
 }
@@ -344,11 +344,18 @@ fn prompt_facts(
                 over_exploring_reason_text(evidence.reason),
                 true,
             )?;
-            facts.push(
-                PromptFactRole::SelectedWindowLimit,
-                "The cited read requests and available results support this claim. A request alone does not prove returned content. The assessment uses bounded representative text ranges.",
-                true,
-            )?;
+            let limit = match evidence.reason {
+                crate::checks::over_exploring::Reason::UnrelatedFiles => {
+                    "The finding binds the recorded task, read purpose, and complete leading lines from returned content. A sample does not establish the purpose of the whole file."
+                }
+                crate::checks::over_exploring::Reason::ExcessiveWithinFileReading => {
+                    "The finding binds successful complete results with equal full recorded-output digests and no observed intervening work. It does not prove unchanged filesystem contents or exact savings."
+                }
+                crate::checks::over_exploring::Reason::ExcessiveFileBreadth => {
+                    "The cited read requests and available results support this claim. A request alone does not prove returned content. The assessment uses bounded representative text ranges."
+                }
+            };
+            facts.push(PromptFactRole::SelectedWindowLimit, limit, true)?;
         }
         FindingCause::SessionsOverDepth { requests, .. } => {
             for model in requests
@@ -461,9 +468,15 @@ fn sanitize_prompt_value(value: &str) -> Option<SafeValue> {
 fn over_exploring_reason_text(reason: crate::checks::over_exploring::Reason) -> &'static str {
     use crate::checks::over_exploring::Reason;
     match reason {
-        Reason::UnrelatedFiles => "Requests reads of files likely unrelated to the task.",
-        Reason::ExcessiveFileBreadth => "Requests reads of more files than the task likely needs.",
-        Reason::ExcessiveWithinFileReading => "Reads more of a file than the task needs.",
+        Reason::UnrelatedFiles => {
+            "Sampled returned content suggests a clearly separate purpose from the task; the sample does not describe the whole file."
+        }
+        Reason::ExcessiveFileBreadth => {
+            "No file-breadth finding is supported by the current check revision."
+        }
+        Reason::ExcessiveWithinFileReading => {
+            "Later reads return identical recorded output with no observed intervening work. This does not prove unchanged filesystem contents or exact savings."
+        }
     }
 }
 
@@ -487,7 +500,7 @@ pub(super) fn prompt_parts(cause: &FindingCause) -> (String, &'static str, &'sta
         ),
         FindingCause::OverExploring(evidence) => (
             over_exploring_reason_text(evidence.reason).to_owned(),
-            "Improve future research instructions. Tie reading to open task questions and stop when enough evidence is available.",
+            "Improve future research instructions. Reuse the earlier result or narrow the next read when appropriate. Preserve explicit repeat and verification needs.",
             "This prompt does not repair or verify the reviewed session.",
         ),
         FindingCause::SessionsOverDepth {

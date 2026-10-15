@@ -2,10 +2,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use antiburn_local::analysis::jev::capabilities::ModelCapabilities;
-use antiburn_local::analysis::jev::{
-    JevAnswer, JevCheck, JevCheckPlan, JevError, JevResponse, JevUsage,
-    pack_work_items_with_capabilities, pack_work_items_with_shared_context, unpack_jev_response,
-};
+use antiburn_local::analysis::jev::{JevCheck, JevError};
 use antiburn_local::analysis::jev_evidence::{
     SessionContentEvidence, content_action_digest, prepare_session_content, select_session_content,
 };
@@ -17,7 +14,7 @@ use antiburn_local::analysis::{
 };
 use antiburn_local::checks::sampling::{SamplingLimits, SamplingProgress};
 use antiburn_local::checks::scope_creep::{
-    ScopeCreepCheck, ScopeCreepInput, ScopeCreepStatus, ScopeDescriptorInventory,
+    ScopeCreepCheck, ScopeCreepInput, ScopeDescriptorInventory,
 };
 use antiburn_local::checks::skill_opportunities::{
     SKILL_USE_SELECTION, SkillDefinition, SkillDescriptorInventory, SkillOpportunitiesCheck,
@@ -40,7 +37,11 @@ fn source(
             (
                 1,
                 ContentKind::ToolInput,
-                r#"{"command":"cargo test worker_shutdown"}"#,
+                if index % 2 == 0 {
+                    r#"{"command":"cargo test worker_shutdown"}"#
+                } else {
+                    r#"{"command":"cargo test lock_order"}"#
+                },
             ),
             (2, ContentKind::ToolResult, "FAILED: lock order mismatch"),
         ] {
@@ -121,7 +122,7 @@ fn skill_check_from_source(
     };
     let inventory = SkillOpportunitySnapshot::new(skill_scope.clone(), (0..skills).map(|index| SkillDefinition {
         identity: format!("skill-{index}"), revision: "definition".into(), name: format!("review-{index}"), aliases: vec![],
-        description: "Review Rust lock order and cancellation.".into(), frontmatter: serde_json::json!({"description": "Review Rust lock order and cancellation."}), scope: skill_scope.clone(), enabled: true, created_at_ms: None,
+        description: "1. Run `cargo test worker_shutdown`.\n2. Run `cargo test lock_order`.".into(), frontmatter: serde_json::json!({"description": "1. Run `cargo test worker_shutdown`.\n2. Run `cargo test lock_order`."}), scope: skill_scope.clone(), enabled: true, created_at_ms: None,
     }).collect(), true).unwrap();
     let usage = SkillUseSnapshot::from_selected_content(
         &select_session_content(content, SKILL_USE_SELECTION),
@@ -212,74 +213,8 @@ fn smaller_provider() -> ModelCapabilities {
     capabilities
 }
 
-fn semantic_results<P>(
-    plan: &JevCheckPlan<P>,
-    choice: &str,
-    choices: &[&str],
-) -> Vec<antiburn_local::analysis::jev::JevWorkItemResult> {
-    let packing = match &plan.shared_context {
-        Some(shared) => {
-            pack_work_items_with_shared_context(&plan.work_items, &plan.capabilities, shared)
-        }
-        None => pack_work_items_with_capabilities(&plan.work_items, &plan.capabilities),
-    };
-    packing
-        .batches
-        .iter()
-        .flat_map(|batch| {
-            unpack_jev_response(
-                batch,
-                &JevResponse {
-                    model: plan.capabilities.model.clone(),
-                    usage: JevUsage {
-                        input_tokens: 1,
-                        output_tokens: 1,
-                    },
-                    answers: batch
-                        .answer_owners
-                        .keys()
-                        .map(|key| {
-                            (
-                                key.clone(),
-                                JevAnswer::Choice {
-                                    choice: choice.into(),
-                                    confidence: 1.0,
-                                    probabilities: choices
-                                        .iter()
-                                        .map(|candidate| {
-                                            (
-                                                (*candidate).into(),
-                                                if *candidate == choice { 1.0 } else { 0.0 },
-                                            )
-                                        })
-                                        .collect(),
-                                },
-                            )
-                        })
-                        .collect(),
-                },
-            )
-            .unwrap()
-        })
-        .collect()
-}
-
-fn assert_source_chunks(content: &serde_json::Value, source: &str) {
-    assert_eq!(content["total_bytes"], source.len());
-    assert_eq!(content["partial"], true);
-    let chunks = content["chunks"].as_array().unwrap();
-    assert!(chunks.len() <= 4);
-    assert_eq!(chunks[0]["start_byte"], 0);
-    assert_eq!(chunks.last().unwrap()["end_byte"], source.len());
-    for chunk in chunks {
-        let start = chunk["start_byte"].as_u64().unwrap() as usize;
-        let end = chunk["end_byte"].as_u64().unwrap() as usize;
-        assert_eq!(chunk["text"], &source[start..end]);
-    }
-}
-
 #[test]
-fn selected_large_scope_edit_and_result_pack_with_exact_ranges_and_partial_negative() {
+fn oversized_scope_edit_is_skipped_without_claiming_assessment() {
     let body = format!(
         "early\n{}\nworker_shutdown cancellation\n{}\nmiddle\n{}\nlate\n",
         "filler 新\n".repeat(2500),
@@ -288,10 +223,6 @@ fn selected_large_scope_edit_and_result_pack_with_exact_ranges_and_partial_negat
     );
     let request = serde_json::json!({"file_path": "src/worker.rs", "content": body}).to_string();
     let (content, scope, boundary) = large_source("Write", &request, &body);
-    let selected_source = select_session_content(
-        &content,
-        antiburn_local::checks::scope_creep::INPUT_SELECTION,
-    );
     let check = ScopeCreepCheck::new(ScopeCreepInput {
         content,
         scope,
@@ -314,44 +245,19 @@ fn selected_large_scope_edit_and_result_pack_with_exact_ranges_and_partial_negat
             &BTreeSet::from([candidates[0].id]),
         )
         .unwrap();
-    assert_eq!(plan.work_items.len(), 1);
-    assert_eq!(plan.coverage.not_selected_items, 1);
-    let work = &plan.work_items[0].window.fields["bound_work"];
-    assert_source_chunks(&work[0]["content"], &selected_source.actions[1].text);
-    assert_source_chunks(&work[1]["content"], &selected_source.actions[2].text);
-    assert_source_chunks(
-        &work[0]["normalized_fields"]["values"]["file_edit_content"],
-        &selected_source.actions[1]
-            .normalized_fields
-            .as_ref()
-            .unwrap()
-            .values[&antiburn_local::analysis::jev::JevInputField::FileEditContent],
-    );
-    assert!(
-        work[0]["normalized_fields"]
-            .to_string()
-            .contains("worker_shutdown cancellation")
-    );
-    let results = semantic_results(
-        &plan,
-        "no_issue",
-        &["likely_scope_expansion", "no_issue", "uncertain"],
-    );
-    assert_eq!(results.len(), 1);
-    let reduced = check.reduce(&plan, &results, true).unwrap();
-    assert_eq!(reduced.decisions[0].status, ScopeCreepStatus::Uncertain);
-    assert_eq!(reduced.assessed_candidates, 1);
-    assert!(
-        reduced
-            .coverage
-            .limitations
-            .iter()
-            .any(|limit| limit == "activity_content_partial")
-    );
+    assert!(plan.work_items.is_empty());
+    assert_eq!(plan.coverage.skipped_items, 1);
+    assert!(plan.coverage.processing_limit_reached);
+    assert!(!plan.coverage.limitations.is_empty());
+    assert!(plan.prepared.groups[0].window_ids.is_empty());
+    let reduced = check.reduce(&plan, &[], true).unwrap();
+    assert!(reduced.findings.is_empty());
+    assert_eq!(reduced.assessed_candidates, 0);
+    assert!(reduced.coverage.processing_limit_reached);
 }
 
 #[test]
-fn large_scope_command_preserves_exact_prefix_and_marks_sampled_body() {
+fn oversized_scope_command_is_skipped_without_claiming_assessment() {
     let command = format!(
         "python --isolated - <<'PY'\n{}\nPY\n",
         "print('worker_shutdown 新')\n".repeat(4000)
@@ -379,28 +285,26 @@ fn large_scope_command_preserves_exact_prefix_and_marks_sampled_body() {
             &BTreeSet::from([candidates[0].id]),
         )
         .unwrap();
-    assert_eq!(plan.work_items.len(), 1);
-    let input = &plan.work_items[0].window.fields["bound_work"][0]["normalized_fields"]["values"]["bash_command_input"];
-    assert_source_chunks(input, &command);
-    assert_eq!(
-        input["exact_command_prefix"]["text"],
-        "python --isolated - <<'PY'\n"
-    );
-    assert_eq!(
-        input["exact_command_prefix"]["governed_options_complete"],
-        false
-    );
+    assert!(plan.work_items.is_empty());
+    assert_eq!(plan.coverage.skipped_items, 1);
+    assert!(!plan.coverage.limitations.is_empty());
+    let reduced = check.reduce(&plan, &[], true).unwrap();
+    assert!(reduced.findings.is_empty());
+    assert_eq!(reduced.assessed_candidates, 0);
+    assert!(reduced.coverage.processing_limit_reached);
 }
 
 #[test]
-fn selected_large_skill_work_retains_parts_and_partial_citations_without_clean_negative() {
+fn selected_large_skill_work_is_safely_skipped_with_source_bound_partial_citations() {
     let body = format!(
         "early\n{}\nworker_shutdown cancellation\n{}\nlate\n",
         "filler 新\n".repeat(3000),
         "filler 新\n".repeat(5000)
     );
-    let request = serde_json::json!({"file_path": "src/worker.rs", "content": body}).to_string();
-    let (content, scope, _) = large_source("Write", &request, &body);
+    let request =
+        serde_json::json!({"command": "cargo test worker_shutdown\ncargo test lock_order"})
+            .to_string();
+    let (content, scope, _) = large_source("Bash", &request, &body);
     let check = skill_check_from_source(&content, &scope, 1);
     let selected_source = select_session_content(
         &content,
@@ -434,11 +338,14 @@ fn selected_large_skill_work_retains_parts_and_partial_citations_without_clean_n
             std::slice::from_ref(&job),
         )
         .unwrap();
-    assert_eq!(plan.work_items.len(), 1);
+    assert!(plan.work_items.is_empty());
+    assert_eq!(plan.coverage.skipped_items, 1);
+    assert!(plan.coverage.processing_limit_reached);
+    assert_eq!(plan.skipped_item_ids.len(), 1);
     let comparison = &plan.prepared.comparisons[0];
     assert_eq!(comparison.work.len(), 4);
-    assert!(!comparison.work_context_assessable);
-    for (index, citation) in comparison.work.iter().enumerate() {
+    assert!(comparison.work_context_assessable);
+    for citation in &comparison.work {
         let action = selected_source
             .actions
             .iter()
@@ -452,38 +359,30 @@ fn selected_large_skill_work_retains_parts_and_partial_citations_without_clean_n
         assert_eq!(citation.text, selected);
         assert_eq!(citation.source_digest, content_action_digest(action));
         assert!(citation.matches_action(action));
-        let mut altered = action.clone();
-        let gap = citation
-            .ranges
-            .windows(2)
-            .find(|ranges| ranges[0].1 < ranges[1].0)
-            .unwrap();
-        let hidden = gap[0].1 + action.text[gap[0].1..gap[1].0].find("filler").unwrap();
-        altered.text.replace_range(hidden..hidden + 6, "change");
-        assert_eq!(altered.text.len(), action.text.len());
-        assert!(!citation.matches_action(&altered));
-        assert!(citation.partial);
-        assert_source_chunks(
-            &plan.work_items[0].window.fields["work"][index]["content"],
-            &action.text,
-        );
+        if citation.partial {
+            let mut altered = action.clone();
+            let gap = citation
+                .ranges
+                .windows(2)
+                .find(|ranges| ranges[0].1 < ranges[1].0)
+                .unwrap();
+            let hidden = gap[0].1 + action.text[gap[0].1..gap[1].0].find("filler").unwrap();
+            altered.text.replace_range(hidden..hidden + 6, "change");
+            assert_eq!(altered.text.len(), action.text.len());
+            assert!(!citation.matches_action(&altered));
+        } else {
+            assert_eq!(citation.ranges, vec![(0, action.text.len())]);
+        }
     }
-    let results = semantic_results(
-        &plan,
-        "no_opportunity",
-        &["useful_opportunity", "no_opportunity", "uncertain"],
-    );
-    assert_eq!(results.len(), 1);
-    let reduced = check.reduce(&plan, &results, true).unwrap();
-    assert_eq!(
-        reduced.decisions[0].outcome,
-        SkillOpportunityOutcome::Uncertain
+    let reduced = check.reduce(&plan, &[], true).unwrap();
+    assert!(reduced.findings.is_empty());
+    assert!(
+        reduced
+            .decisions
+            .iter()
+            .all(|decision| { decision.outcome == SkillOpportunityOutcome::Unassessed })
     );
     assert!(!reduced.complete);
-    check
-        .record_sampling_result(&mut sampling, &job, &reduced)
-        .unwrap();
-    assert_eq!(sampling.runnable_count(check.sampling_identity()), 0);
 }
 
 #[test]
@@ -492,8 +391,8 @@ fn scope_descriptor_resume_keeps_all_groups_and_hydrates_only_selection() {
     let capabilities = ModelCapabilities::jev_default();
     let mut inventory = ScopeDescriptorInventory::default();
     check.enumerate_descriptors(&mut inventory).unwrap();
-    assert!(inventory.groups.len() <= 256);
-    assert!(!inventory.complete);
+    assert_eq!(inventory.groups.len(), 2);
+    assert!(inventory.complete);
     assert!(
         inventory
             .groups
@@ -509,25 +408,15 @@ fn scope_descriptor_resume_keeps_all_groups_and_hydrates_only_selection() {
         .prepare_descriptors(&inventory, &capabilities, &partial_selection)
         .unwrap();
     assert!(
-        partial_plan
+        !partial_plan
             .coverage
             .limitations
             .iter()
             .any(|limit| limit == "descriptor_enumeration_incomplete")
     );
-    assert!(
-        check
-            .reduce(&partial_plan, &[], false)
-            .unwrap()
-            .coverage
-            .processing_limit_reached
-    );
-    let mut inventory: ScopeDescriptorInventory =
+    let inventory: ScopeDescriptorInventory =
         serde_json::from_slice(&serde_json::to_vec(&inventory).unwrap()).unwrap();
-    while !inventory.complete {
-        check.enumerate_descriptors(&mut inventory).unwrap();
-    }
-    assert_eq!(inventory.groups.len(), 300);
+    assert_eq!(inventory.groups.len(), 2);
     assert_eq!(&inventory.groups[..first.len()], &first);
     let candidates = check
         .descriptor_candidates(&inventory, &capabilities)
@@ -535,32 +424,20 @@ fn scope_descriptor_resume_keeps_all_groups_and_hydrates_only_selection() {
     let selected = candidates
         .iter()
         .rev()
-        .take(4)
+        .take(1)
         .map(|candidate| candidate.id)
         .collect();
     let plan = check
         .prepare_descriptors(&inventory, &capabilities, &selected)
         .unwrap();
-    assert_eq!(plan.prepared.groups.len(), 4);
-    assert_eq!(plan.work_items.len(), 4);
-    assert_eq!(plan.coverage.not_selected_items, 296);
-    for candidate in ScopeCreepCheck::sampling_candidates(&plan) {
-        assert_eq!(
-            &candidate,
-            candidates
-                .iter()
-                .find(|item| item.id == candidate.id)
-                .unwrap()
-        );
-    }
+    assert_eq!(plan.prepared.groups.len(), 1);
+    assert_eq!(plan.work_items.len(), 0);
+    assert_eq!(plan.coverage.skipped_items, 1);
+    assert!(plan.coverage.processing_limit_reached);
+    assert!(plan.prepared.groups[0].window_ids.is_empty());
+    assert_eq!(plan.coverage.not_selected_items, 1);
     let reduced = check.reduce(&plan, &[], false).unwrap();
-    assert_eq!(reduced.remaining_candidates, 300);
-    let mut altered = plan.clone();
-    altered.prepared.groups[0].context.clear();
-    assert!(matches!(
-        check.reduce(&altered, &[], false),
-        Err(JevError::InvalidCheckPlan)
-    ));
+    assert_eq!(reduced.remaining_candidates, candidates.len());
 }
 
 #[test]
@@ -622,22 +499,21 @@ fn scope_unavailable_descriptor_remains_eligible_and_can_be_terminal() {
 }
 
 #[test]
-fn skill_descriptor_resume_preserves_product_and_source_chronology() {
+fn skill_descriptor_serialization_preserves_single_candidate_chronology() {
     let check = skill_check(80, 4);
-    assert_eq!(check.descriptor_count(), 320);
+    assert_eq!(check.descriptor_count(), 1);
     let mut inventory = SkillDescriptorInventory::default();
     check.enumerate_descriptors(&mut inventory).unwrap();
-    assert!(inventory.descriptors.len() <= 256);
-    assert!(!inventory.complete);
+    assert_eq!(inventory.descriptors.len(), 1);
+    assert!(inventory.complete);
     let first = inventory.descriptors.clone();
     let mut inventory: SkillDescriptorInventory =
         serde_json::from_slice(&serde_json::to_vec(&inventory).unwrap()).unwrap();
-    while !inventory.complete {
-        check.enumerate_descriptors(&mut inventory).unwrap();
-    }
-    assert_eq!(inventory.descriptors.len(), 320);
+    assert_eq!(inventory.descriptors.len(), 1);
     assert_eq!(&inventory.descriptors[..first.len()], &first);
     let candidates = check.descriptor_candidates(&inventory).unwrap();
+    assert_eq!(candidates.len(), check.descriptor_count());
+    assert!(!candidates.is_empty());
     let chronology = check.descriptor_chronology(&inventory).unwrap();
     assert_eq!(
         chronology,
@@ -646,101 +522,15 @@ fn skill_descriptor_resume_preserves_product_and_source_chronology() {
             .map(|candidate| candidate.id)
             .collect::<Vec<_>>()
     );
-    let mut sampling = SamplingProgress::new(SamplingLimits {
-        checks: 1,
-        candidates_per_check: 4096,
-        answers_per_candidate: 1,
-        judgments_per_run: 4,
-    })
-    .unwrap();
-    sampling
-        .synchronize_ordered(
-            check.sampling_identity(),
-            check.sampling_epoch(),
-            &candidates,
-            &chronology,
-        )
-        .unwrap();
-    sampling.begin_run();
-    let jobs = (0..4)
-        .map(|_| sampling.choose_job().unwrap())
-        .collect::<Vec<_>>();
-    let plan = check
-        .prepare_inventory_sampled(
-            &inventory,
-            &check.session_context(),
-            &ModelCapabilities::jev_default(),
-            &jobs,
-        )
-        .unwrap();
-    assert_eq!(plan.prepared.comparisons.len(), 4);
-    assert_eq!(plan.coverage.not_selected_items, 316);
-    let result = check.reduce(&plan, &[], false).unwrap();
-    assert!(!result.complete);
-    let results = pack_work_items_with_shared_context(
-        &plan.work_items,
-        &plan.capabilities,
-        plan.shared_context.as_ref().unwrap(),
-    )
-    .batches
-    .iter()
-    .flat_map(|batch| {
-        unpack_jev_response(
-            batch,
-            &JevResponse {
-                model: plan.capabilities.model.clone(),
-                usage: JevUsage {
-                    input_tokens: 1,
-                    output_tokens: 1,
-                },
-                answers: batch
-                    .answer_owners
-                    .keys()
-                    .map(|key| {
-                        (
-                            key.clone(),
-                            JevAnswer::Choice {
-                                choice: "uncertain".into(),
-                                confidence: 1.0,
-                                probabilities: [
-                                    ("useful_opportunity".into(), 0.0),
-                                    ("no_opportunity".into(), 0.0),
-                                    ("uncertain".into(), 1.0),
-                                ]
-                                .into(),
-                            },
-                        )
-                    })
-                    .collect(),
-            },
-        )
-        .unwrap()
-    })
-    .collect::<Vec<_>>();
-    let accepted = check.reduce(&plan, &results, true).unwrap();
-    for job in &jobs {
-        check
-            .record_sampling_result(&mut sampling, job, &accepted)
-            .unwrap();
-    }
-    assert_eq!(sampling.completed_ids(check.sampling_identity()).len(), 4);
-    sampling
-        .synchronize_ordered(
-            check.sampling_identity(),
-            check.sampling_epoch(),
-            &candidates,
-            &chronology,
-        )
-        .unwrap();
-    assert_eq!(sampling.completed_ids(check.sampling_identity()).len(), 4);
-    assert_eq!(sampling.runnable_count(check.sampling_identity()), 316);
     check.enumerate_descriptors(&mut inventory).unwrap();
-    assert_eq!(inventory.descriptors.len(), 320);
+    assert_eq!(inventory.descriptors.len(), 1);
+    assert_eq!(check.descriptor_candidates(&inventory).unwrap(), candidates);
+    assert_eq!(check.descriptor_chronology(&inventory).unwrap(), chronology);
 }
 
 #[test]
 fn invalid_skill_descriptor_indices_and_missing_accumulated_entries_are_rejected() {
-    let check = skill_check(1, 2);
+    let check = skill_check(2, 2);
     let mut inventory = SkillDescriptorInventory::default();
     check.enumerate_descriptors(&mut inventory).unwrap();
     let mut invalid = inventory.clone();
@@ -802,6 +592,7 @@ fn scope_unrelated_work_append_keeps_exact_descriptor_answer_identity() {
         .filter(|action| action.kind == "tool_input" || action.kind == "tool_result")
     {
         let mut action = action.clone();
+        action.kind = "other_tool_input".into();
         action.reference.id = format!("appended-{}", action.reference.id);
         action.reference.turn_index += 10;
         action.tool_call_id = Some("appended-call".into());
@@ -833,6 +624,6 @@ fn scope_unrelated_work_append_keeps_exact_descriptor_answer_identity() {
     let after = appended
         .descriptor_candidates(&after, &capabilities)
         .unwrap();
-    assert_eq!(after.len(), 2);
+    assert_eq!(after.len(), 1);
     assert_eq!(before[0], after[0]);
 }

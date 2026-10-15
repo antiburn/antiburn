@@ -1,6 +1,7 @@
 // Shared copy for the scan-status rows the Sessions step settings show: how
 // large the local index is, and what the historical pass did.
 
+import { pluralize } from "./text"
 import type { ScanHistoryProgress } from "../ipc"
 
 /** A byte count at a readable scale. Two significant places is enough for a
@@ -38,7 +39,7 @@ export function olderSessionsStatus(
         : `${history.completed} of ${history.total} processed`
     case "done":
       return history.total > 0
-        ? `${history.total} older ${history.total === 1 ? "session" : "sessions"} processed`
+        ? `${history.total} older ${pluralize(history.total, "session", "sessions")} processed`
         : "No older sessions found"
   }
 }

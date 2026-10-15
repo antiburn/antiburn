@@ -15,7 +15,7 @@ use antiburn_local::analysis::tool_catalog::{comparable_tool_name, situational_t
 use antiburn_local::analysis::{
     ActiveSessionsSummary, EfficiencyTotals, EvidenceValue, FAST_SPEED_KEY, LoadedSource,
     ModelEvidence, ModelRun, RepeatedContextAccounting, SessionCost, SessionEvidence, SourceFormat,
-    ToolDefinition, lookup_pricing,
+    ToolClass, ToolDefinition, ToolEvidence, lookup_pricing,
 };
 use antiburn_local::insights::{
     BadgeId, BadgeStatus, DetectorId, DetectorSelection, DetectorStatus, EfficiencyReport,
@@ -147,6 +147,26 @@ pub struct BillableTokens {
     pub cache_creation_tokens: u64,
 }
 
+/// What one called-tool entry counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CalledToolKind {
+    /// Calls of a tool, by tool name.
+    Tool,
+    /// Uses of a skill, by skill name. A use can come from a skill tool call
+    /// or from a read of the skill's file, so it is not a raw tool-call count.
+    Skill,
+}
+
+/// One tool or skill this session used, with how many times it used it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalledToolPayload {
+    pub name: String,
+    pub kind: CalledToolKind,
+    pub calls: u64,
+}
+
 /// Everything the session-analysis surface needs for one session.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -215,6 +235,12 @@ pub struct SessionAnalysis {
     /// show yet. The view keeps polling and swaps in the fresh pass once the
     /// worker publishes it.
     pub analysis_stale: bool,
+    /// The tools this session called, most-called first, capped at
+    /// [`MAX_CALLED_TOOLS`]. `None` when the session has no tool evidence.
+    ///
+    /// The Tools tab shows this when the agent records no startup context,
+    /// so the loaded-but-unused reading is unavailable.
+    pub called_tools: Option<Vec<CalledToolPayload>>,
 }
 
 /// A protected directory the last pass declined to read, and how many working
@@ -1001,6 +1027,8 @@ pub struct ChecksCategoryPayload {
     pub partial_context: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub review_coverage: Option<ChecksReviewCoveragePayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_state: Option<ChecksReviewStatePayload>,
     /// The current remediation state. `None` means the category has no complete assessment.
     pub lifecycle: Option<ChecksCategoryLifecyclePayload>,
     pub finding: u64,
@@ -1015,6 +1043,10 @@ pub struct ChecksCategoryPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChecksReviewCoveragePayload {
+    /// Targets that cannot run again for the current input.
+    pub skipped: Option<u64>,
+    /// Skipped targets whose meaningful request cannot fit. This is a subset of skipped.
+    pub context_blocked: Option<u64>,
     /// Terminal review targets, including uncertain answers.
     pub reviewed: u64,
     /// All review targets. Unknown when any applicable session has a missing or capped inventory.
@@ -1027,6 +1059,46 @@ pub struct ChecksReviewCoveragePayload {
     pub pending_completion: Option<u64>,
     /// True when queued, running, or resumable work has runnable targets.
     pub continuing: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChecksReviewStatePayload {
+    NoMatchingWork,
+    Stopped,
+}
+
+impl ChecksCategoryPayload {
+    pub fn update_review_state(&mut self) {
+        self.review_state = None;
+        let Some(coverage) = self
+            .review_coverage
+            .as_ref()
+            .filter(|coverage| !coverage.continuing)
+        else {
+            return;
+        };
+        self.review_state = if coverage.total == Some(0)
+            && coverage.reviewed == 0
+            && coverage.pending == Some(0)
+            && coverage.skipped == Some(0)
+            && coverage.context_blocked == Some(0)
+        {
+            Some(ChecksReviewStatePayload::NoMatchingWork)
+        } else if coverage
+            .pending
+            .zip(coverage.skipped)
+            .is_some_and(|(pending, skipped)| pending > 0 && skipped >= pending)
+        {
+            Some(ChecksReviewStatePayload::Stopped)
+        } else {
+            None
+        };
+        if self.review_state.is_some() {
+            self.checking = Some(false);
+            self.checking_count = Some(0);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1724,6 +1796,7 @@ pub struct SessionHygieneRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionHygieneStatus {
+    NoCandidates,
     Finding,
     Clean,
     Checking,
@@ -2117,6 +2190,47 @@ fn session_unused_resources(
             Vec::new()
         },
     })
+}
+
+/// The longest called-tool list the session payload carries. A session can
+/// call more distinct tools than a reader can use, and the list is a
+/// fallback reading, so it stays bounded.
+pub const MAX_CALLED_TOOLS: usize = 50;
+
+/// The tools and skills a session used, most-used first, then by name.
+/// `None` when the source records no tool evidence at all.
+///
+/// Tool evidence keys a skill use by the skill name, so each entry carries
+/// its kind. The reader must not show a skill use as a call of a tool.
+///
+/// Partial evidence counts: a partial read still names real calls, and the
+/// list carries no verdict that an undercount could invert.
+pub(crate) fn session_called_tools(
+    tools: &EvidenceValue<ToolEvidence>,
+) -> Option<Vec<CalledToolPayload>> {
+    let tools = observed(tools)?;
+    let mut called: Vec<CalledToolPayload> = tools
+        .by_name
+        .iter()
+        .filter(|(_, tool_use)| tool_use.calls > 0)
+        .map(|(name, tool_use)| CalledToolPayload {
+            name: name.clone(),
+            kind: if tool_use.class == ToolClass::Skill {
+                CalledToolKind::Skill
+            } else {
+                CalledToolKind::Tool
+            },
+            calls: tool_use.calls,
+        })
+        .collect();
+    called.sort_by(|left, right| {
+        right
+            .calls
+            .cmp(&left.calls)
+            .then(left.name.cmp(&right.name))
+    });
+    called.truncate(MAX_CALLED_TOOLS);
+    Some(called)
 }
 
 /// Reads the accounting `Cache Churn` used for this session's
@@ -2851,6 +2965,7 @@ impl ChecksReportPayload {
                     checking_count: None,
                     partial_context: None,
                     review_coverage: None,
+                    review_state: None,
                     lifecycle: None,
                     finding: counts.finding,
                     agents: if counts.finding > 0 {

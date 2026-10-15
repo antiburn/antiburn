@@ -4,7 +4,7 @@
 
 [package]
 name = "antiburn-local"
-version = "0.13.0"
+version = "0.14.1"
 edition = "2024"
 description = "Self-contained, network-free local engine for antiburn: discovery, session analysis, repository identity, pricing, and versioned local persistence/export contracts."
 license = "MIT"
@@ -51,6 +51,7 @@ toml = "1.1"
 # resumed pass writes one of these on every append, so JSON's re-expanded
 # field names and string values cost too many bytes.
 postcard = { version = "1", default-features = false, features = ["use-std"] }
+pulldown-cmark = { version = "0.13.4", default-features = false }
 time = { version = "0.3", features = ["formatting", "parsing"] }
 # Async runtime pieces used by local persistence and the bounded child-process
 # mechanism. Excludes `net`: nothing in the engine needs it yet, not that the

@@ -164,6 +164,20 @@ impl OllamaClient {
         Ok(decoded)
     }
 
+    pub async fn discover_ready(&self, model: &str) -> Result<DiscoveredModel, OllamaError> {
+        let discovered = self.discover(model).await?;
+        if discovered.capabilities.total_input_tokens.value.is_some() {
+            return Ok(discovered);
+        }
+        let _: serde_json::Value = self
+            .post_json(
+                "/api/generate",
+                &serde_json::json!({"model": model, "prompt": "", "stream": false}),
+            )
+            .await?;
+        self.discover(model).await
+    }
+
     pub async fn discover(&self, model: &str) -> Result<DiscoveredModel, OllamaError> {
         let version: VersionResponse = self.get_json("/api/version").await?;
         if !version_at_least(&version.version, (0, 35, 0)) {
@@ -198,20 +212,10 @@ impl OllamaClient {
         });
         let configured_context = show.parameters.as_deref().and_then(parse_num_ctx);
         let loaded_context = loaded.and_then(|entry| entry.context_length);
-        let (runtime_context_tokens, runtime_source) = match (loaded_context, configured_context) {
-            (Some(value), _) => (
-                CapabilityLimit::known(value, CapabilitySource::RuntimeMetadata),
-                CapabilitySource::RuntimeMetadata,
-            ),
-            (None, Some(value)) => (
-                CapabilityLimit::known(value, CapabilitySource::ProviderMetadata),
-                CapabilitySource::ProviderMetadata,
-            ),
-            (None, None) => (
-                CapabilityLimit::known(8_192, CapabilitySource::DocumentedDefault),
-                CapabilitySource::DocumentedDefault,
-            ),
-        };
+        let runtime_context_tokens = loaded_context
+            .map_or_else(CapabilityLimit::unknown, |value| {
+                CapabilityLimit::known(value, CapabilitySource::RuntimeMetadata)
+            });
         let model_context = show
             .model_info
             .as_ref()
@@ -225,17 +229,21 @@ impl OllamaClient {
                     .get(format!("{arch}.context_length"))?
                     .as_u64()
             });
-        let cap = model_context
-            .map(|max| max.min(runtime_context_tokens.value.unwrap_or(8_192)))
-            .unwrap_or(runtime_context_tokens.value.unwrap_or(8_192));
-        let source = if model_context.is_some() && cap == model_context.unwrap_or_default() {
-            CapabilitySource::ProviderMetadata
+        let selected_context = loaded_context.or(configured_context);
+        let cap = selected_context
+            .map(|context| model_context.map_or(context, |maximum| maximum.min(context)));
+        let source = if loaded_context.is_some() && cap == loaded_context {
+            CapabilitySource::RuntimeMetadata
         } else {
-            runtime_source
+            CapabilitySource::ProviderMetadata
         };
-        let capabilities = ModelCapabilities {
-            total_input_tokens: CapabilityLimit::known(cap, source),
-            state_and_longest_question_tokens: CapabilityLimit::known(cap, source),
+        let mut capabilities = ModelCapabilities {
+            total_input_tokens: cap.map_or_else(CapabilityLimit::unknown, |value| {
+                CapabilityLimit::known(value, source)
+            }),
+            state_and_longest_question_tokens: cap.map_or_else(CapabilityLimit::unknown, |value| {
+                CapabilityLimit::known(value, source)
+            }),
             state_and_longest_question_bytes: CapabilityLimit::unknown(),
             request_body_bytes: CapabilityLimit::known(
                 MAX_REQUEST_BODY_BYTES as u64,
@@ -255,6 +263,12 @@ impl OllamaClient {
             model: model.to_owned(),
             model_revision: Some(tag.digest.clone()),
         };
+        if let Some(envelope) = verified_tev1_chat_envelope(&version.version, &show) {
+            capabilities.use_ollama_tev1_accounting(envelope, show.system.as_deref().unwrap_or(""));
+        } else if let Some(envelope) = verified_generic_chat_envelope(&version.version, &show) {
+            capabilities
+                .use_ollama_generic_accounting(envelope, show.system.as_deref().unwrap_or(""));
+        }
         Ok(DiscoveredModel {
             name: model.to_owned(),
             digest: Some(tag.digest),
@@ -362,15 +376,22 @@ fn classify_error(status: u16, body: &[u8]) -> OllamaError {
         || message.contains("unsupported")
     {
         OllamaError::UnsupportedRunner
-    } else if message.contains("context")
-        || message.contains("too long")
-        || message.contains("token")
+    } else if status == 400
+        && ((message.contains("context")
+            && (message.contains("requires")
+                || message.contains("exceed")
+                || message.contains("too long")))
+            || (message.starts_with("prompt ")
+                && message.contains(" tokens; expected 1–")
+                && message.contains("input is never truncated")))
     {
         OllamaError::ContextRejected
     } else if message.contains("load") || message.contains("memory") {
         OllamaError::ColdLoad
     } else if status == 413 {
         OllamaError::RequestBodyTooLarge
+    } else if status == 400 || status == 422 {
+        OllamaError::InvalidRequest
     } else {
         OllamaError::ProviderUnavailable
     }
@@ -445,6 +466,87 @@ struct ShowResponse {
     parameters: Option<String>,
     #[serde(default)]
     model_info: Option<serde_json::Value>,
+    #[serde(default)]
+    template: Option<String>,
+    #[serde(default)]
+    system: Option<String>,
+    #[serde(default)]
+    modelfile: Option<String>,
+}
+
+// Pin the native Qwen3.5 template returned for the characterized Tev GGUF.
+// The text-only envelope follows Ollama v0.40.1 model/renderers/qwen35.go
+// and the native template's non-thinking generation prefix.
+const TEV1_QWEN35_TEMPLATE_SHA256: &str =
+    "d78de6bee4c952ca3145eb161921560a6ede7b59a34e7e4be815f3c5386b4364";
+const TEV1_QWEN35_CHAT_ENVELOPE: &str = "<|im_start|>system\n<|im_end|>\n<|im_start|>user\n<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
+
+fn verified_tev1_chat_envelope(version: &str, show: &ShowResponse) -> Option<&'static str> {
+    if version.strip_prefix('v').unwrap_or(version) != "0.40.1" {
+        return None;
+    }
+    let encoding = show.model_info.as_ref().and_then(|info| {
+        info.get("decision.type")
+            .or_else(|| {
+                let architecture = info.get("general.architecture")?.as_str()?;
+                info.get(format!("{architecture}.decision.type"))
+            })
+            .and_then(serde_json::Value::as_str)
+    });
+    if encoding != Some("tev1") {
+        return None;
+    }
+    verified_chat_envelope(show)
+}
+
+fn verified_generic_chat_envelope(version: &str, show: &ShowResponse) -> Option<&'static str> {
+    if version.strip_prefix('v').unwrap_or(version) != "0.40.1" {
+        return None;
+    }
+    // routes.go reads decision.type, then Config.Renderer. Require the full
+    // Modelfile before treating absent decision metadata as the generic encoding.
+    let info = show.model_info.as_ref()?.as_object()?;
+    let architecture = info.get("general.architecture")?.as_str()?;
+    if info
+        .get("decision.type")
+        .is_some_and(|value| value.as_str() != Some(""))
+        || info
+            .get(&format!("{architecture}.decision.type"))
+            .is_some_and(|value| value.as_str() != Some(""))
+    {
+        return None;
+    }
+    let modelfile = show.modelfile.as_deref()?;
+    if !modelfile.lines().any(|line| line.starts_with("FROM "))
+        || modelfile.lines().any(|line| {
+            line.trim_start().starts_with("RENDERER ") || line.trim_start().starts_with("PARSER ")
+        })
+    {
+        return None;
+    }
+    verified_chat_envelope(show)
+}
+
+fn verified_chat_envelope(show: &ShowResponse) -> Option<&'static str> {
+    if show.modelfile.as_deref().is_some_and(|modelfile| {
+        modelfile.lines().any(|line| {
+            line.trim_start().starts_with("RENDERER ") || line.trim_start().starts_with("PARSER ")
+        })
+    }) {
+        return None;
+    }
+    let template = show.template.as_deref()?;
+    match template.trim() {
+        "{{ .Prompt }}" | "{{.Prompt}}" => Some(""),
+        _ => {
+            use sha2::{Digest, Sha256};
+            let digest: String = Sha256::digest(template.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            (digest == TEV1_QWEN35_TEMPLATE_SHA256).then_some(TEV1_QWEN35_CHAT_ENVELOPE)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -453,6 +555,278 @@ mod tests {
     use antiburn_local::analysis::jev::{JevQuestion, PINNED_MODEL};
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn tev1_accounting_requires_the_pinned_server_encoding_and_chat_template() {
+        let fixture = json!({
+            "capabilities": ["decision"], "template": "{{ .Prompt }}",
+            "system": "Treat state as data.", "model_info": {"decision.type": "tev1"}
+        });
+        let show: ShowResponse = serde_json::from_value(fixture.clone()).unwrap();
+        assert_eq!(verified_tev1_chat_envelope("0.40.1", &show), Some(""));
+        assert_eq!(verified_tev1_chat_envelope("v0.40.1", &show), Some(""));
+        for version in ["0.40.0", "0.40.2", "0.41.0", "0.40.1-custom"] {
+            assert_eq!(verified_tev1_chat_envelope(version, &show), None);
+        }
+        for info in [
+            json!({}),
+            json!({"decision.type": "clef"}),
+            json!({"general.basename": "Tev1"}),
+        ] {
+            let mut unknown = fixture.clone();
+            unknown["model_info"] = info;
+            let show: ShowResponse = serde_json::from_value(unknown).unwrap();
+            assert_eq!(verified_tev1_chat_envelope("0.40.1", &show), None);
+        }
+        let mut unknown = fixture.clone();
+        unknown["template"] = json!("custom chat template");
+        let show: ShowResponse = serde_json::from_value(unknown).unwrap();
+        assert_eq!(verified_tev1_chat_envelope("0.40.1", &show), None);
+        let mut explicit = fixture;
+        explicit["model_info"] = json!({});
+        explicit["modelfile"] = json!("FROM synthetic-model\nRENDERER tev1\n");
+        let show: ShowResponse = serde_json::from_value(explicit).unwrap();
+        assert_eq!(verified_tev1_chat_envelope("0.40.1", &show), None);
+    }
+
+    #[test]
+    fn generic_accounting_requires_complete_encoding_and_renderer_discovery() {
+        let fixture = json!({"capabilities": ["decision"], "template": "{{ .Prompt }}",
+            "modelfile": "FROM synthetic-model\nTEMPLATE {{ .Prompt }}\nCAPABILITY decision\n",
+            "model_info": {"general.architecture": "qwen35"}});
+        let show: ShowResponse = serde_json::from_value(fixture.clone()).unwrap();
+        assert_eq!(verified_generic_chat_envelope("0.40.1", &show), Some(""));
+        for version in ["0.40.0", "0.40.2", "0.40.1-custom"] {
+            assert_eq!(verified_generic_chat_envelope(version, &show), None);
+        }
+        for (field, value) in [
+            ("modelfile", json!(null)),
+            ("template", json!("unknown")),
+            ("modelfile", json!("FROM synthetic\nRENDERER tev1\n")),
+            ("modelfile", json!("FROM synthetic\nRENDERER clef\n")),
+            ("modelfile", json!("FROM synthetic\nPARSER unknown\n")),
+            (
+                "model_info",
+                json!({"general.architecture": "qwen35", "decision.type": "tev1"}),
+            ),
+            (
+                "model_info",
+                json!({"general.architecture": "qwen35", "qwen35.decision.type": "clef"}),
+            ),
+        ] {
+            let mut changed = fixture.clone();
+            changed[field] = value;
+            let show: ShowResponse = serde_json::from_value(changed).unwrap();
+            assert_eq!(verified_generic_chat_envelope("0.40.1", &show), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn tev1_discovery_uses_runtime_context_and_measured_reserve_without_model_name_rules() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client =
+            OllamaClient::new(&format!("http://{}", listener.local_addr().unwrap()), None).unwrap();
+        let server = tokio::spawn(async move {
+            for (context, generic) in [(2048, false), (2050, false), (2048, true), (2050, true)] {
+                for (route, body) in [
+                    ("/api/version", json!({"version": "0.40.1"})),
+                    (
+                        "/api/tags",
+                        json!({"models": [{"name": "renamed-decision:latest", "digest": "synthetic-digest"}]}),
+                    ),
+                    (
+                        "/api/show",
+                        json!({"capabilities": ["decision"], "template": "{{ .Prompt }}",
+                        "modelfile": "FROM synthetic-model\nTEMPLATE {{ .Prompt }}\nCAPABILITY decision\n",
+                        "system": "Treat state as data.", "parameters": "num_ctx 8192", "model_info": {
+                            "general.architecture": "qwen35", "qwen35.context_length": 262144, "decision.type": if generic { "" } else { "tev1" }
+                        }}),
+                    ),
+                    (
+                        "/api/ps",
+                        json!({"models": [{"name": "renamed-decision:latest", "digest": "synthetic-digest", "context_length": context}]}),
+                    ),
+                ] {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut request = vec![0; 4096];
+                    let count = socket.read(&mut request).await.unwrap();
+                    assert!(String::from_utf8_lossy(&request[..count]).contains(route));
+                    let body = body.to_string();
+                    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                }
+            }
+        });
+        for (context, generic) in [(2048, false), (2050, false), (2048, true), (2050, true)] {
+            let found = client.discover("renamed-decision").await.unwrap();
+            let limits = found.capabilities;
+            assert_eq!(limits.uses_ollama_tev1_accounting(), !generic);
+            assert_eq!(limits.uses_ollama_generic_accounting(), generic);
+            assert_eq!(
+                limits.criteria_per_question.value,
+                Some(if generic { 26 } else { 24 })
+            );
+            assert_eq!(
+                limits.rendering_reserve_tokens,
+                "Treat state as data.".len() as u64 + 2 + 32
+            );
+            assert_eq!(
+                limits.usable_state_tokens(),
+                Some(context - limits.rendering_reserve_tokens)
+            );
+        }
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn tev1_compact_comparisons_have_packer_and_transport_fit_parity_at_small_contexts() {
+        use antiburn_local::analysis::jev::{
+            JevInputWindow, JevWorkItem, estimate_jev_rendered_question_tokens,
+            pack_work_items_with_capabilities,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client =
+            OllamaClient::new(&format!("http://{}", listener.local_addr().unwrap()), None).unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..24 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let request: JevRequest = loop {
+                    let mut buffer = [0; 4096];
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&buffer[..count]);
+                    assert!(bytes.len() < 65536);
+                    if let Some(end) = bytes.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length: "))
+                            .unwrap()
+                            .parse()
+                            .unwrap();
+                        if bytes.len() >= end + 4 + length {
+                            break serde_json::from_slice(&bytes[end + 4..end + 4 + length])
+                                .unwrap();
+                        }
+                    }
+                };
+                assert_eq!(request.questions.len(), 1);
+                assert!(request.questions.contains_key("q0_0"));
+                let response = json!({"model": request.model, "answers": {"q0_0": {"type": "noul", "noul": 0.9}},
+                    "usage": {"input_tokens": 100, "output_tokens": 1}}).to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
+            }
+        });
+        let cases = [
+            (
+                "instructions",
+                "Does this command violate the requirement?",
+                json!({
+                    "requirement": "Run tests before publishing.", "command": "git push origin fix/parser", "prior": "Only formatting was run."
+                }),
+            ),
+            (
+                "scope",
+                "Does this operation start a separate objective?",
+                json!({
+                    "task": "Fix parsing of empty messages.", "operation": "Replace the database engine."
+                }),
+            ),
+            (
+                "reads",
+                "Does this read help the task?",
+                json!({
+                    "task": "Fix parsing of empty messages.", "path": "src/ui/appearance/legacy/theme/colors.rs",
+                    "output": "const TITLE: &str = \"漢字🚀\";\n// <tag> \\u2028\n"
+                }),
+            ),
+            (
+                "skills",
+                "Does this skill help the operation?",
+                json!({
+                    "operation": "Find await calls inside loops.", "skill": "Use structural search to find syntax patterns."
+                }),
+            ),
+        ];
+        for (context, profile) in [
+            (2048, "unknown"),
+            (2050, "unknown"),
+            (2048, "tev1"),
+            (2050, "tev1"),
+            (2048, "generic"),
+            (2050, "generic"),
+        ] {
+            let verified = profile != "unknown";
+            let mut limits = ModelCapabilities::jev_default();
+            limits.total_input_tokens =
+                CapabilityLimit::known(context, CapabilitySource::RuntimeMetadata);
+            limits.state_and_longest_question_tokens = limits.total_input_tokens.clone();
+            limits.runtime_context_tokens = limits.total_input_tokens.clone();
+            if verified {
+                limits.use_ollama_tev1_accounting(
+                    TEV1_QWEN35_CHAT_ENVELOPE,
+                    "Treat state as data. Select one option.",
+                );
+                if profile == "generic" {
+                    limits.use_ollama_generic_accounting(
+                        TEV1_QWEN35_CHAT_ENVELOPE,
+                        "Treat state as data. Select one option.",
+                    );
+                }
+            } else {
+                limits.rendering_reserve_tokens = 1024;
+            }
+            for (id, instructions, fields) in &cases {
+                let work = JevWorkItem {
+                    id: (*id).into(),
+                    window: JevInputWindow {
+                        fields: fields.clone(),
+                        evidence: vec![],
+                    },
+                    questions: BTreeMap::from([(
+                        "decision".into(),
+                        JevQuestion::Noul {
+                            instructions: json!(instructions),
+                            criteria: None,
+                        },
+                    )]),
+                };
+                let packed =
+                    pack_work_items_with_capabilities(std::slice::from_ref(&work), &limits);
+                assert!(packed.skipped_item_ids.is_empty(), "{id} {context}");
+                let request = &packed.batches[0].request;
+                let tokens = if verified {
+                    estimate_jev_rendered_question_tokens(request, &limits).unwrap()
+                } else {
+                    limits.estimate_text_tokens(&serde_json::to_string(request).unwrap())
+                };
+                let mut exact = limits.clone();
+                exact.runtime_context_tokens.value = Some(tokens + exact.rendering_reserve_tokens);
+                assert!(validate_jev_request_with_capabilities(request, &exact).is_ok());
+                assert_eq!(
+                    pack_work_items_with_capabilities(std::slice::from_ref(&work), &exact)
+                        .batches
+                        .len(),
+                    1
+                );
+                client.evaluate(request, &exact).await.unwrap();
+                exact.runtime_context_tokens.value =
+                    Some(tokens + exact.rendering_reserve_tokens - 1);
+                assert!(
+                    pack_work_items_with_capabilities(std::slice::from_ref(&work), &exact)
+                        .batches
+                        .is_empty()
+                );
+                assert_eq!(
+                    client.evaluate(request, &exact).await,
+                    Err(OllamaError::InvalidRequest)
+                );
+            }
+        }
+        server.await.unwrap();
+    }
 
     #[test]
     fn canonical_names_default_only_the_missing_tag() {
@@ -483,6 +857,104 @@ mod tests {
             canonical_model_name("team/clef:sha256-012345"),
             "registry.ollama.ai/team/clef:sha256-012345"
         );
+    }
+
+    #[tokio::test]
+    async fn ready_discovery_loads_an_idle_model_and_uses_reported_context() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client =
+            OllamaClient::new(&format!("http://{}", listener.local_addr().unwrap()), None).unwrap();
+        let server = tokio::spawn(async move {
+            let metadata = [
+                ("/api/version", json!({"version": "0.35.0"})),
+                (
+                    "/api/tags",
+                    json!({"models": [{"name": "tev1:0.8b", "digest": "digest"}]}),
+                ),
+                ("/api/show", json!({"capabilities": ["decision"]})),
+            ];
+            let routes = metadata.clone().into_iter()
+                .chain([("/api/ps", json!({"models": []})), ("/api/generate", json!({"done": true}))])
+                .chain(metadata)
+                .chain([("/api/ps", json!({"models": [{"name": "tev1:0.8b", "digest": "digest", "context_length": 4096}]}))]);
+            for (route, body) in routes {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = [0; 4096];
+                let count = socket.read(&mut bytes).await.unwrap();
+                let request = String::from_utf8_lossy(&bytes[..count]);
+                assert!(request.contains(route));
+                if route == "/api/generate" {
+                    assert!(request.contains("\"prompt\":\"\""));
+                    assert!(request.contains("\"stream\":false"));
+                }
+                let body = body.to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+        });
+        let discovered =
+            tokio::time::timeout(Duration::from_secs(5), client.discover_ready("tev1:0.8b"))
+                .await
+                .unwrap()
+                .unwrap();
+        server.await.unwrap();
+        assert_eq!(
+            discovered.capabilities.runtime_context_tokens.value,
+            Some(4096)
+        );
+        assert_eq!(discovered.capabilities.usable_input_tokens(), Some(3072));
+    }
+
+    #[tokio::test]
+    async fn discovery_distinguishes_loaded_configured_and_unknown_context() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            for (loaded, configured, maximum, expected, source) in [
+                (Some(2048), Some(8192), Some(65536), Some(2048), CapabilitySource::RuntimeMetadata),
+                (Some(2050), Some(8192), Some(65536), Some(2050), CapabilitySource::RuntimeMetadata),
+                (Some(8192), Some(8192), Some(4096), Some(4096), CapabilitySource::ProviderMetadata),
+                (None, Some(8192), Some(4096), Some(4096), CapabilitySource::ProviderMetadata),
+                (None, Some(2048), None, Some(2048), CapabilitySource::ProviderMetadata),
+                (None, None, Some(65536), None, CapabilitySource::Unknown),
+                (None, None, None, None, CapabilitySource::Unknown),
+            ] {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let client = OllamaClient::new(&format!("http://{}", listener.local_addr().unwrap()), None).unwrap();
+                let server = tokio::spawn(async move {
+                    for (route, body) in [
+                        ("/api/version", json!({"version": "0.35.0"})),
+                        ("/api/tags", json!({"models": [{"name": "tev1:0.8b", "digest": "digest"}]})),
+                        ("/api/show", json!({"capabilities": ["decision"],
+                            "parameters": configured.map(|value| format!("num_ctx {value}")),
+                            "model_info": {"general.architecture": "test", "test.context_length": maximum}})),
+                        ("/api/ps", json!({"models": [{"name": "tev1:0.8b", "digest": "digest", "context_length": loaded}]})),
+                    ] {
+                        let (mut socket, _) = listener.accept().await.unwrap();
+                        let mut request = Vec::new();
+                        loop {
+                            let mut buffer = [0; 4096];
+                            let count = socket.read(&mut buffer).await.unwrap();
+                            assert!(count > 0);
+                            request.extend_from_slice(&buffer[..count]);
+                            if request.windows(4).any(|bytes| bytes == b"\r\n\r\n") { break; }
+                        }
+                        assert!(String::from_utf8_lossy(&request).contains(route));
+                        let body = body.to_string();
+                        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                    }
+                });
+                let capabilities = client.discover("tev1:0.8b").await.unwrap().capabilities;
+                server.await.unwrap();
+                assert_eq!(capabilities.total_input_tokens.value, expected);
+                assert_eq!(capabilities.total_input_tokens.source, source);
+                assert_eq!(capabilities.state_and_longest_question_tokens.value, expected);
+                assert_eq!(capabilities.runtime_context_tokens.value, loaded);
+                assert_eq!(capabilities.runtime_context_tokens.source,
+                    if loaded.is_some() { CapabilitySource::RuntimeMetadata } else { CapabilitySource::Unknown });
+                assert_eq!(capabilities.usable_input_tokens(), expected.map(|value| value - 1024));
+            }
+        }).await.unwrap();
     }
 
     #[tokio::test]
@@ -601,6 +1073,20 @@ mod tests {
         );
         assert_eq!(
             classify_error(400, br#"{"error":"context length exceeded"}"#),
+            OllamaError::ContextRejected
+        );
+        assert_eq!(
+            classify_error(
+                400,
+                br#"{"error":"candidate A must append exactly one ordinary token to prompt 0"}"#
+            ),
+            OllamaError::InvalidRequest
+        );
+        assert_eq!(
+            classify_error(
+                400,
+                br#"{"error":"prompt 0 requires 2052 context tokens for scoring; model has 2050"}"#
+            ),
             OllamaError::ContextRejected
         );
         assert!(version_at_least("0.35.1", (0, 35, 0)));

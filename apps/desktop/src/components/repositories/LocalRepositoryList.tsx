@@ -1,6 +1,7 @@
 import { FolderGit2, FolderSearch, Lock, RefreshCw, Search } from "lucide-react"
 import type { ReactNode } from "react"
 
+import { pluralize } from "../../lib/presentation/text"
 import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types/repository"
 import { Tooltip } from "../presentation/Tooltip"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
@@ -66,10 +67,12 @@ function RepositoryRow({
 
   const facts: string[] = []
   if (item.worktreeCount) {
-    facts.push(`${item.worktreeCount} worktree${item.worktreeCount === 1 ? "" : "s"}`)
+    facts.push(
+      `${item.worktreeCount} ${pluralize(item.worktreeCount, "worktree", "worktrees")}`,
+    )
   }
   if (item.sessionCount) {
-    facts.push(`${item.sessionCount} session${item.sessionCount === 1 ? "" : "s"}`)
+    facts.push(`${item.sessionCount} ${pluralize(item.sessionCount, "session", "sessions")}`)
   }
 
   return (

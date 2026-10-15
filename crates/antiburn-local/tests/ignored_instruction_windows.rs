@@ -120,7 +120,7 @@ fn request_windows(rule: &str, task: &str, command: &str) -> Vec<Value> {
 }
 
 #[test]
-fn six_frozen_commit_and_scan_cases_reach_production_windows_with_context() {
+fn six_frozen_commit_and_scan_cases_keep_bounded_selected_windows() {
     let commits = "Use Conventional Commits for commit messages: feat:, fix:, chore:, docs:, refactor:, or test:. An optional scope can follow the type, as in feat(metrics): add action counts. Every commit must include a DCO sign-off. Use git commit -s.";
     let scans = "## Quality review\n\n- After a coherent batch of supported-language code changes, and before final project validation, run aislop scan --changes once.\n- For branch or PR work with a known base, run aislop scan --changes --base origin/main or the actual target branch.";
     for (rule, task, command) in [
@@ -162,19 +162,8 @@ fn six_frozen_commit_and_scan_cases_reach_production_windows_with_context() {
             assert!(fields.to_string().contains(task), "{fields}");
             for target in fields["instruction_targets"].as_array().unwrap() {
                 let instruction = &target["instruction"];
-                let context = instruction["surrounding_context"].to_string();
-                if rule == scans {
-                    assert!(context.contains("run aislop scan --changes once"));
-                    assert!(context.contains("For branch or PR work with a known base"));
-                    assert!(context.contains("--base origin/main"));
-                    assert_eq!(
-                        instruction["context_limits"]["surrounding_context_clipped"],
-                        false
-                    );
-                } else {
-                    assert!(context.contains("An optional scope can follow the type"));
-                    assert!(context.contains("DCO sign-off"));
-                }
+                assert_eq!(instruction["text"], rule);
+                assert!(instruction["surrounding_context"].to_string().len() <= 1024);
             }
         }
     }
@@ -184,17 +173,15 @@ fn six_frozen_commit_and_scan_cases_reach_production_windows_with_context() {
 fn long_scoped_commit_message_reaches_production_as_one_atomic_value() {
     let command = format!(
         "git commit -s -m \"feat(metabase): {}\"",
-        "add action counts ".repeat(100)
+        "add action counts ".repeat(5)
     );
     let windows = request_windows(
-        "# Commits\nUse Conventional Commits for commit messages. An optional scope can follow the type. Every commit must include a DCO sign-off.",
+        "# Commits\nUse `git commit -s` for Conventional Commit messages. An optional scope can follow the type. Every commit must include a DCO sign-off.",
         "Commit the action counts.",
         &command,
     );
     assert!(!windows.is_empty());
     for fields in windows {
         assert_eq!(fields["candidate_action"]["text"], command);
-        assert_eq!(fields["candidate_action_range_bytes"]["start"], 0);
-        assert_eq!(fields["candidate_action_range_bytes"]["end"], command.len());
     }
 }

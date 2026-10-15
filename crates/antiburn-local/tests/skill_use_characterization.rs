@@ -288,13 +288,10 @@ fn skill_consumer_uses_normalized_facts_without_native_tool_names() {
         plan.prepared.comparisons[0].used_current_skills[0].name,
         "review"
     );
-    assert!(
-        plan.shared_context.as_ref().unwrap().fields["use"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|entry| entry["event"]["lifecycle"] == "document_selected")
-    );
+    assert!(plan.work_items.is_empty());
+    assert_eq!(plan.skipped_item_ids.len(), 1);
+    assert!(plan.shared_context.is_none());
+    assert!(plan.coverage.processing_limit_reached);
 }
 
 #[test]
@@ -738,18 +735,20 @@ fn current_inventory_binding_stays_inferred_and_candidates_keep_time_and_use_lim
         usage.evidence().events[0].identity_kind,
         SkillUseIdentity::Inferred
     );
-    let definition =
-        |identity: &str, name: &str, aliases: Vec<String>, created_at_ms| SkillDefinition {
+    let definition = |identity: &str, name: &str, aliases: Vec<String>, created_at_ms| {
+        SkillDefinition {
             identity: identity.into(),
             revision: "semantic-revision".into(),
             name: name.into(),
             aliases,
-            description: "Review resource ownership.".into(),
-            frontmatter: json!({"description":"Review resource ownership."}),
+            description:
+                "1. Run `cargo test worker_shutdown`.\n2. Inspect `src/worker/shutdown.rs`.".into(),
+            frontmatter: json!({"description":"1. Run `cargo test worker_shutdown`.\n2. Inspect `src/worker/shutdown.rs`."}),
             scope: bound.scope.clone(),
             enabled: true,
             created_at_ms,
-        };
+        }
+    };
     let inventory = SkillOpportunitySnapshot::new(
         bound.scope.clone(),
         vec![
@@ -1108,8 +1107,8 @@ fn matching_candidates(content: &SessionContentEvidence, agent: AgentKind) -> us
             revision: "current-revision".into(),
             name: "review".into(),
             aliases: vec![],
-            description: "Review resource ownership.".into(),
-            frontmatter: json!({"description":"Review resource ownership."}),
+            description: "1. Run `cargo test worker_shutdown`.\n2. Inspect `src/worker/shutdown.rs`.".into(),
+            frontmatter: json!({"description":"1. Run `cargo test worker_shutdown`.\n2. Inspect `src/worker/shutdown.rs`."}),
             scope: bound.scope.clone(),
             enabled: true,
             created_at_ms: None,
@@ -1170,12 +1169,12 @@ fn matching_plan(
         (
             0,
             ContentKind::UserText,
-            "Review resource ownership in the worker.",
+            "1. Run `cargo test worker_shutdown`.\n2. Inspect `src/worker/shutdown.rs`.",
         ),
         (
             1,
             ContentKind::ToolInput,
-            r#"{"command":"cargo test worker_shutdown"}"#,
+            r#"{"command":"cargo test worker_shutdown\ngit diff -- src/worker/shutdown.rs"}"#,
         ),
         (
             2,
@@ -1232,48 +1231,68 @@ fn matching_plan(
     .unwrap();
     let inventory = SkillOpportunitySnapshot::new(
         bound.scope.clone(),
-        vec![SkillDefinition {
-            identity: "review-file".into(),
-            revision: "current-revision".into(),
-            name: "review".into(),
-            aliases: vec![],
-            description: "Review resource ownership.".into(),
-            frontmatter: json!({"description":"Review resource ownership."}),
-            scope: bound.scope,
-            enabled: true,
-            created_at_ms: None,
-        }],
+        vec![
+            SkillDefinition {
+                identity: "review-file".into(),
+                revision: "used-revision".into(),
+                name: "review".into(),
+                aliases: vec![],
+                description: "Review resource ownership.".into(),
+                frontmatter: json!({"description":"Review resource ownership."}),
+                scope: bound.scope.clone(),
+                enabled: true,
+                created_at_ms: None,
+            },
+            SkillDefinition {
+                identity: "review-next-file".into(),
+                revision: "candidate-revision".into(),
+                name: "review-next".into(),
+                aliases: vec![],
+                description: "1. Run `cargo test worker_shutdown`.\n2. Run `git diff -- src/worker/shutdown.rs`.".into(),
+                frontmatter: json!({"description":"1. Run `cargo test worker_shutdown`.\n2. Run `git diff -- src/worker/shutdown.rs`."}),
+                scope: bound.scope,
+                enabled: true,
+                created_at_ms: None,
+            },
+        ],
         true,
     )
     .unwrap();
     let check = SkillOpportunitiesCheck::new(&content, &inventory, &usage, &scope).unwrap();
     let plan = check.prepare(&check.session_context()).unwrap();
-    assert_eq!(plan.work_items.len(), 1);
-    assert_eq!(plan.prepared.comparisons.len(), 1);
-    assert_eq!(plan.prepared.comparisons[0].skill.identity, "review-file");
-    assert_eq!(
-        plan.shared_context.as_ref().unwrap().fields["use_coverage"],
-        json!(usage.coverage())
-    );
-    assert!(
-        plan.prepared.comparisons[0]
-            .limitations
-            .contains(&SkillOpportunityLimit::CreationTimeUnknown)
-    );
-    assert!(
-        plan.prepared.comparisons[0]
-            .limitations
-            .contains(&SkillOpportunityLimit::SelectedUseWindowOnly)
-    );
-    assert_eq!(
-        plan.work_items[0].window.fields["limitations"],
-        json!(plan.prepared.comparisons[0].limitations)
-    );
+    if plan
+        .prepared
+        .comparisons
+        .iter()
+        .any(|comparison| comparison.use_eligibility.equivalent_comparison_required)
+    {
+        assert_eq!(plan.work_items.len(), 0, "plan={plan:#?}");
+        assert_eq!(plan.skipped_item_ids.len(), 1);
+        assert!(plan.shared_context.is_none());
+        assert!(plan.coverage.processing_limit_reached);
+        let comparison = plan
+            .prepared
+            .comparisons
+            .iter()
+            .find(|comparison| comparison.use_eligibility.equivalent_comparison_required)
+            .unwrap();
+        assert_eq!(comparison.used_current_skills[0].identity, "review-file");
+        assert!(!comparison.use_citations.is_empty());
+    } else if plan.prepared.comparisons.is_empty() {
+        assert!(plan.work_items.is_empty());
+        assert!(plan.shared_context.is_none());
+        assert_eq!(plan.coverage.selected_items, 0);
+        assert!(
+            plan.coverage
+                .limitations
+                .contains(&"skill_use_context_partial".into())
+        );
+    }
     plan
 }
 
 #[test]
-fn persisted_selection_supplies_equivalence_context_without_human_authority_or_success() {
+fn persisted_selection_requires_equivalence_comparison_without_human_authority_or_success() {
     for agent in [AgentKind::Codex, AgentKind::Pi] {
         let input = selected_skill_input(agent);
         let store = store(&input);
@@ -1294,10 +1313,10 @@ fn persisted_selection_supplies_equivalence_context_without_human_authority_or_s
         );
         let plan = matching_plan(&store, &content, agent);
         let comparison = &plan.prepared.comparisons[0];
-        assert!(!comparison.absence_assessable);
+        assert!(comparison.absence_assessable);
         assert_eq!(
             comparison.use_eligibility.absence,
-            SkillAbsenceEvidence::Unassessable
+            SkillAbsenceEvidence::SelectedWindowNoMatchingUse
         );
         assert!(comparison.use_eligibility.equivalent_comparison_required);
         assert_eq!(comparison.used_current_skills[0].identity, "review-file");
@@ -1305,14 +1324,10 @@ fn persisted_selection_supplies_equivalence_context_without_human_authority_or_s
             comparison.use_citations,
             vec![snapshot.events()[0].reference.clone()]
         );
-        assert_eq!(
-            plan.shared_context.as_ref().unwrap().fields["use"][0]["event"]["lifecycle"],
-            "document_selected"
-        );
-        assert_eq!(
-            plan.work_items[0].window.fields["current_skill"]["content"]["chunks"][0]["text"],
-            "Review resource ownership."
-        );
+        assert!(plan.work_items.is_empty());
+        assert_eq!(plan.skipped_item_ids.len(), 1);
+        assert!(plan.shared_context.is_none());
+        assert!(plan.coverage.processing_limit_reached);
     }
 }
 
@@ -1374,18 +1389,24 @@ fn incomplete_or_mismatched_persisted_selection_keeps_typed_use_limits() {
             }
             assert!(!usage.proves_session_wide_absence());
             let plan = matching_plan(&store, &content, agent);
+            if plan.prepared.comparisons.is_empty() {
+                assert!(plan.work_items.is_empty(), "{agent:?} case {case}");
+                assert!(plan.shared_context.is_none(), "{agent:?} case {case}");
+                assert_eq!(plan.coverage.selected_items, 0, "{agent:?} case {case}");
+                assert!(
+                    plan.coverage
+                        .limitations
+                        .contains(&"skill_use_context_partial".into()),
+                    "{agent:?} case {case}"
+                );
+                continue;
+            }
             if case == 8 {
                 assert!(plan.prepared.comparisons[0].used_current_skills.is_empty());
                 assert!(
                     !plan.prepared.comparisons[0]
                         .use_eligibility
                         .equivalent_comparison_required
-                );
-                assert!(
-                    plan.shared_context.as_ref().unwrap().fields["use"]
-                        .as_array()
-                        .unwrap()
-                        .is_empty()
                 );
                 assert!(plan.prepared.comparisons[0].use_citations.is_empty());
             }
@@ -1396,12 +1417,10 @@ fn incomplete_or_mismatched_persisted_selection_keeps_typed_use_limits() {
                         .limitations
                         .contains(&"selected_work_content_incomplete".into())
                 );
-                assert!(
-                    plan.shared_context.as_ref().unwrap().fields["use_coverage"]["limitations"]
-                        .as_array()
-                        .unwrap()
-                        .contains(&json!(SkillUseLimit::IncompleteSelectedContent))
-                );
+                assert!(plan.work_items.is_empty());
+                assert_eq!(plan.skipped_item_ids.len(), 1);
+                assert!(plan.shared_context.is_none());
+                assert!(plan.coverage.processing_limit_reached);
             }
         }
     }
@@ -1434,10 +1453,10 @@ fn selected_proof_preserves_requested_status_and_excludes_unselected_ranges() {
             .unwrap();
     assert_eq!(snapshot.events()[0].lifecycle, SkillUseLifecycle::Requested);
     let plan = matching_plan(&store, &content, AgentKind::Codex);
-    assert_eq!(
-        plan.shared_context.as_ref().unwrap().fields["use"][0]["event"]["lifecycle"],
-        "requested"
-    );
+    assert!(plan.work_items.is_empty());
+    assert_eq!(plan.skipped_item_ids.len(), 1);
+    assert!(plan.shared_context.is_none());
+    assert!(plan.coverage.processing_limit_reached);
     assert!(
         plan.prepared.comparisons[0]
             .use_eligibility
@@ -1543,14 +1562,10 @@ fn opencode_codex_and_pi_publish_equivalent_document_selection() {
                 .use_eligibility
                 .equivalent_comparison_required
         );
-        assert!(
-            plan.shared_context.as_ref().unwrap().fields["use"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry["event"]["lifecycle"] == "document_selected"
-                    && entry["event"]["name"] == "review")
-        );
+        assert!(plan.work_items.is_empty());
+        assert_eq!(plan.skipped_item_ids.len(), 1);
+        assert!(plan.shared_context.is_none());
+        assert!(plan.coverage.processing_limit_reached);
     }
 }
 

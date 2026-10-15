@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronRight } from "lucide-react"
 
+import { pluralize } from "../../../lib/presentation/text"
 import {
   costBreakdownRows,
   costFigureLabel,
@@ -257,7 +258,7 @@ export function CostBreakdown({ cost, split, onOpenSubagent }: CostBreakdownProp
             totalUsd={totalUsd}
           />
           <SubagentsSplitRow
-            label={`${split.subagentCount} sub-agent${split.subagentCount === 1 ? "" : "s"}`}
+            label={`${split.subagentCount} ${pluralize(split.subagentCount, "sub-agent", "sub-agents")}`}
             usd={split.subagents.totalCostUsd}
             tokens={split.subagents.totalTokens}
             totalUsd={totalUsd}

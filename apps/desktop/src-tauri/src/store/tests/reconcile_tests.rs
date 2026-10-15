@@ -64,7 +64,7 @@ fn parser_50_requeues_legacy_path_only_reads_and_rejects_their_resume_state() {
     }
     let before = store.session_source_state(&record.key).unwrap().unwrap();
     let revisions = projection_revisions();
-    assert_eq!(revisions.parser_revision, 52);
+    assert_eq!(revisions.parser_revision, 53);
     assert_eq!(revisions.evidence_schema_revision, 22);
     assert_eq!(
         store
@@ -88,6 +88,61 @@ fn parser_50_requeues_legacy_path_only_reads_and_rejects_their_resume_state() {
         .unwrap();
     assert!(claim.claim_fence > 4);
     assert_eq!(claim.source_generation, before.source_generation);
+}
+
+/// Parser revision 53 adds OMP startup skills and `skill://` uses. A
+/// completed OMP session from revision 52 has an unchanged source file, so
+/// only the revision change can requeue it.
+#[test]
+fn parser_53_requeues_completed_omp_sessions() {
+    let store = store();
+    let mut omp = session("omp-startup-context", 1_000);
+    omp.key.agent = "omp".to_owned();
+    omp.source_label = "/synthetic/omp-startup-context.jsonl".to_owned();
+    omp.source_fingerprint = Some("sv1:current".into());
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&omp),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let revisions = crate::analysis::projection_revisions();
+    assert_eq!(revisions.parser_revision, 53);
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence
+                SET status = 'ready', analyzed_generation = 1,
+                    processed_fingerprint = 'sv1:current', parser_revision = 52,
+                    analyzer_revision = ?4, evidence_schema_revision = ?5,
+                    evidence_json = '{\"groups\":[]}',
+                    retry_count = 0, claim_fence = 4, analyzed_at_epoch = 900
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                omp.key.environment_key,
+                omp.key.agent,
+                omp.key.session_id,
+                revisions.analyzer_revision,
+                revisions.evidence_schema_revision,
+            ],
+        )
+        .unwrap();
+    let before = store.session_source_state(&omp.key).unwrap().unwrap();
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&crate::agents::evidence_cohort(), revisions)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store.evidence(&omp.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+    assert_eq!(
+        store.session_source_state(&omp.key).unwrap().unwrap(),
+        before
+    );
 }
 
 #[test]

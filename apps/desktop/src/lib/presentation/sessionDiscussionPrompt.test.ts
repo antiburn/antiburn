@@ -58,6 +58,7 @@ const payload: SessionAnalysisPayload = {
   startedAtEpoch: null,
   analysisPending: false,
   analysisStale: false,
+  calledTools: null,
 }
 const input: SessionDiscussionInput = {
   subject: {

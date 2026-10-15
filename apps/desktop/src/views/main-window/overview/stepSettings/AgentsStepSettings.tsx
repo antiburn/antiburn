@@ -1,6 +1,7 @@
 import { ChevronDown } from "lucide-react"
 import { useCallback, useId, useState, useSyncExternalStore } from "react"
 
+import { pluralize } from "../../../../lib/presentation/text"
 import { Card } from "../../../../components/ui/Card"
 import {
   ToggleList,
@@ -29,17 +30,18 @@ import {
   type AgentStatus,
 } from "../../../../lib/presentation/agentStatus"
 import { AGENT_SLUGS } from "../../../../lib/presentation/agents"
-import { overviewProgress, subscribeOverviewProgress } from "../overviewProgressStore"
-import { StepSettingsSectionGroup } from "./StepSettingsSearchRows"
+import { agentSessionCounts, subscribeAgentSessionCounts } from "./agentSessionCounts"
+import { SettingsSectionGroup } from "../../../settings/SettingsSearchRows"
 import { useAppSettings } from "../../../settings/useAppSettings"
 
-export function AgentsStepSettings() {
+/** `titled` shows the section title. The first-run step card already names it. */
+export function AgentsStepSettings({ titled = false }: { titled?: boolean }) {
   const { settings, update } = useAppSettings()
   const disabledAgents = settings.disabledAgents
-  const progress = useSyncExternalStore(
-    subscribeOverviewProgress,
-    overviewProgress,
-    overviewProgress,
+  const counts = useSyncExternalStore(
+    subscribeAgentSessionCounts,
+    agentSessionCounts,
+    agentSessionCounts,
   )
   const locations = useSyncExternalStore(
     subscribeAgentSessionLocations,
@@ -76,18 +78,16 @@ export function AgentsStepSettings() {
     [disabledAgents, update],
   )
 
-  const sessionsByAgent = new Map(progress.agents.rows.map((row) => [row.agent, row.sessions]))
+  const sessionsByAgent = new Map(counts.map((row) => [row.agent, row.sessions]))
   // The scan lists every agent from its start, so a row with no sessions that
   // is not done means the agent's search is still running.
-  const searchedAgents = new Set(
-    progress.agents.rows.filter((row) => row.done).map((row) => row.agent),
-  )
+  const searchedAgents = new Set(counts.filter((row) => row.done).map((row) => row.agent))
   const agentRows = [...AGENT_SLUGS].sort(
     (a, b) => (sessionsByAgent.get(b) ?? 0) - (sessionsByAgent.get(a) ?? 0),
   )
 
   return (
-    <StepSettingsSectionGroup hideTitle searchId="sourceAgents">
+    <SettingsSectionGroup hideTitle={!titled} searchId="sourceAgents">
       <Card>
         <ToggleListIntro>
           Switching off an agent hides its sessions from the list and reports.
@@ -111,7 +111,7 @@ export function AgentsStepSettings() {
           ))}
         </ToggleList>
       </Card>
-    </StepSettingsSectionGroup>
+    </SettingsSectionGroup>
   )
 }
 
@@ -150,7 +150,7 @@ function AgentRow({
             onClick={() => setOpen((value) => !value)}
             className="inline-flex items-center gap-1 type-footnote text-label-secondary hover:text-label-tertiary active:opacity-100"
           >
-            Searched {locations.length} {locations.length === 1 ? "location" : "locations"}
+            Searched {locations.length} {pluralize(locations.length, "location", "locations")}
             <ChevronDown
               size={12}
               strokeWidth={2}

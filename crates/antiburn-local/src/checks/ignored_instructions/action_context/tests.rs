@@ -8,10 +8,7 @@ fn command_comparison(command: &str) -> (String, CandidateComparison) {
     action.kind = "tool_input".to_owned();
     action.tool_name = Some("Bash".to_owned());
     action.tool_call_id = Some("call".to_owned());
-    let plan = build_assessment_plan(input(
-        vec![action],
-        "Do not pass `SECRET_MARKER` to the formatter.",
-    ));
+    let plan = build_assessment_plan(input(vec![action], "Do not pass `SECRET_MARKER` to Bash."));
     (text, plan.comparisons[0].clone())
 }
 
@@ -176,6 +173,7 @@ fn leading_blank_and_comment_lines_do_not_change_the_recorded_input_recipient() 
     let mut action = event("command", 1, "assistant", "main", command);
     action.kind = "tool_input".to_owned();
     action.tool_name = Some("Bash".to_owned());
+    action.tool_call_id = Some("command-call".to_owned());
     let plan = build_assessment_plan(input(
         vec![action],
         "Do not pass BOUND_INPUT to proof-check.",

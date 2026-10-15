@@ -8,10 +8,12 @@
 //! [`crate::analysis::model`] stream, which discards the per-source text this needs). It
 //! is best-effort: agent-specific parsing stays isolated.
 //!
-//! Supported agents today: Claude Code and Codex (both delivered as JSONL by the
-//! app). Everything else returns `None` ("unavailable"). A supported agent whose
-//! session has no skills or MCP servers still returns a breakdown, with empty
-//! `sources`.
+//! Supported agents today: Claude Code, Codex, and Oh My Pi (all delivered as
+//! JSONL by the app). Everything else returns `None` ("unavailable"). A
+//! supported agent whose session has no skills or MCP servers still returns a
+//! breakdown, with empty `sources`. An Oh My Pi session returns `None` when it
+//! has no `session_init` row, because only that row records the startup
+//! context.
 
 use std::collections::{HashMap, HashSet};
 
@@ -138,6 +140,7 @@ fn parse_initial_context_with_catalog(
     }
     let result = match agent.to_ascii_lowercase().as_str() {
         "codex" => parse_codex(payload, catalog),
+        "omp" => return crate::analysis::vendors::omp::startup_context(payload).0,
         _ => InitialContextTokenParseResult::Unsupported,
     };
     match result {
@@ -159,18 +162,43 @@ pub fn parse_skill_descriptions(agent: &str, payload: &str) -> HashMap<String, S
     match agent.to_ascii_lowercase().as_str() {
         "claude" => collect_claude_skill_descriptions(payload, &mut out),
         "codex" => collect_codex_skill_descriptions(payload, &mut out),
+        "omp" => out.extend(crate::analysis::vendors::omp::startup_context(payload).1),
         _ => {}
     }
     out
 }
 
-fn collect_claude_skill_descriptions(payload: &str, out: &mut HashMap<String, String>) {
+/// Parse the initial-context breakdown and the skill descriptions together.
+///
+/// Claude and Oh My Pi read both values in one pass over the transcript.
+/// Other agents use [`parse_initial_context`] and [`parse_skill_descriptions`].
+pub fn parse_initial_context_and_skill_descriptions(
+    agent: &str,
+    payload: &str,
+) -> (Option<InitialContextBreakdown>, HashMap<String, String>) {
+    match agent.to_ascii_lowercase().as_str() {
+        "claude" => claude_context_and_descriptions(payload, tool_catalog::embedded()),
+        "omp" => crate::analysis::vendors::omp::startup_context(payload),
+        _ => (
+            parse_initial_context(agent, payload),
+            parse_skill_descriptions(agent, payload),
+        ),
+    }
+}
+
+fn claude_context_and_descriptions(
+    payload: &str,
+    catalog: &ToolCatalog,
+) -> (Option<InitialContextBreakdown>, HashMap<String, String>) {
     let mut accumulator = ClaudeContextAccumulator::default();
     for value in parse_json_lines(payload) {
         accumulator.observe(&value);
     }
-    let (_, descriptions) = accumulator.finish(tool_catalog::embedded());
-    out.extend(descriptions);
+    accumulator.finish(catalog)
+}
+
+fn collect_claude_skill_descriptions(payload: &str, out: &mut HashMap<String, String>) {
+    out.extend(claude_context_and_descriptions(payload, tool_catalog::embedded()).1);
 }
 
 fn collect_codex_skill_descriptions(payload: &str, out: &mut HashMap<String, String>) {
@@ -466,6 +494,50 @@ impl CodexContextAccumulator {
             &HashSet::new(),
             tool_catalog::embedded(),
         ));
+        let breakdown = to_output(normalize_breakdown(self.source_rows));
+        (Some(breakdown), self.skill_descriptions)
+    }
+}
+
+/// The startup context that an Oh My Pi `session_init` row records.
+///
+/// The row holds the system prompt and the tool names. The system prompt
+/// lists each skill as a `- <name>: <description>` bullet in a `<skills>`
+/// block. The row does not record tool or MCP definitions, so this
+/// accumulator gives skill rows only. OMP writes the row at the start of a
+/// subagent session only, so a top-level session has no startup context.
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct OmpContextAccumulator {
+    source_rows: Vec<InitialContextTokenSourceCount>,
+    skill_descriptions: HashMap<String, String>,
+    observed: bool,
+}
+
+impl OmpContextAccumulator {
+    /// Reads the first `session_init` row. Other rows have no effect.
+    ///
+    /// The Pi-family stream reader calls this only for an admitted, inert
+    /// row. The batch pass uses the same reader.
+    pub(crate) fn observe(&mut self, value: &Value) {
+        if self.observed || value.get("type").and_then(Value::as_str) != Some("session_init") {
+            return;
+        }
+        self.observed = true;
+        let Some(prompt) = value.get("systemPrompt").and_then(Value::as_str) else {
+            return;
+        };
+        if let Some((start, end)) = section_bounds(prompt, "<skills>") {
+            let section = &prompt[start..end];
+            self.source_rows =
+                parse_named_markdown_bullets(section, InitialContextTokenSource::Skill, None);
+            insert_bullet_descriptions(section, &mut self.skill_descriptions);
+        }
+    }
+
+    pub(crate) fn finish(self) -> (Option<InitialContextBreakdown>, HashMap<String, String>) {
+        if !self.observed {
+            return (None, HashMap::new());
+        }
         let breakdown = to_output(normalize_breakdown(self.source_rows));
         (Some(breakdown), self.skill_descriptions)
     }
@@ -869,11 +941,7 @@ fn real_claude_filesystem_probe(path: &str) -> bool {
 }
 
 fn parse_claude(payload: &str, catalog: &ToolCatalog) -> Option<InitialContextBreakdown> {
-    let mut accumulator = ClaudeContextAccumulator::default();
-    for value in parse_json_lines(payload) {
-        accumulator.observe(&value);
-    }
-    accumulator.finish(catalog).0
+    claude_context_and_descriptions(payload, catalog).0
 }
 
 fn normalize_breakdown(
@@ -1730,6 +1798,17 @@ mod tests {
         // Unknown agents and listing-free transcripts yield an empty map.
         assert!(parse_skill_descriptions("cursor", claude).is_empty());
         assert!(parse_skill_descriptions("claude", "{}").is_empty());
+
+        // The combined parse gives the same values as the two single parses.
+        for (agent, payload) in [("claude", claude), ("codex", codex), ("cursor", claude)] {
+            assert_eq!(
+                parse_initial_context_and_skill_descriptions(agent, payload),
+                (
+                    parse_initial_context(agent, payload),
+                    parse_skill_descriptions(agent, payload)
+                )
+            );
+        }
     }
 
     #[test]

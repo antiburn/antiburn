@@ -3,6 +3,8 @@ import { emitFixtureEvent } from "./event"
 import { fixtureDetailMap, fixtureIsland, fixtureTokenMap } from "./hud"
 import { hasRemoteFixture, remoteFixtureCommand, remoteFixtureIds } from "./remote"
 import { fixtureCheckAvailability, fixtureChecksReport, setFixtureCheckEnabled } from "./checks"
+import { hasSmartCheckFixture, smartCheckEvidence, smartCheckTarget } from "./smartChecks"
+import type { BurnCheckDetectorId } from "../../../src/lib/insightsIpc"
 
 declare global {
   interface Window {
@@ -411,6 +413,8 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
       return { allocations: [], generatedAt: now }
     case "get_storage_health":
       return { failing: false, message: null }
+    case "count_agent_memories":
+      return empty ? 0 : 12
     case "get_scan_status":
       return {
         running: false,
@@ -428,6 +432,14 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
             ],
         listChanged: false,
         reDescribed: 2,
+        phase: "saving",
+        foundByAgent: [
+          { agent: "claude-code", sessions: empty ? 0 : 41, done: true },
+          { agent: "codex", sessions: empty ? 0 : 87, done: true },
+          { agent: "cursor", sessions: 0, done: true },
+        ],
+        read: { completed: empty ? 0 : 128, total: empty ? 0 : 128 },
+        gate: { kept: empty ? 0 : 128, outsideRepository: 0, excluded: 0, unreadable: 0 },
       }
     case "get_folder_permissions":
       return { deferred: [], granted: [], supported: false }
@@ -454,6 +466,25 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
           ]
     case "get_checks_report":
       return fixtureChecksReport()
+    case "list_burn_check_targets": {
+      if (!hasSmartCheckFixture()) return { targets: [], samples: [], truncated: false }
+      const detector = args?.detector
+      if (
+        detector !== "ignoredInstructions" &&
+        detector !== "overExploring" &&
+        detector !== "scopeCreep" &&
+        detector !== "skillOpportunities"
+      )
+        throw new Error("Unknown smart-check fixture")
+      const target = smartCheckTarget(detector satisfies BurnCheckDetectorId)
+      return { targets: [target], samples: target.samples, truncated: false }
+    }
+    case "get_burn_check_target_evidence":
+      return smartCheckEvidence(args?.actionId)
+    case "get_burn_check_aggregate_wins":
+      return { wins: [] }
+    case "get_burn_check_remediation_progress":
+      return { attempts: [] }
     case "get_check_availability":
       return fixtureCheckAvailability()
     case "set_check_enabled":

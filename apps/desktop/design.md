@@ -323,6 +323,15 @@ colors:
   token-subagent: # quiet label-family neutral
     light: "hsl(240 5.5% 25% / 0.45)"
     dark: "hsl(240 33% 94% / 0.4)"
+  agent-claude-code: # Claude Code in the Overview usage charts; the context blue
+    light: "hsl(221.2 83% 53.3%)"
+    dark: "hsl(221 89% 59.8%)"
+  agent-codex: # Codex in the Overview usage charts; mid grey
+    light: "hsl(240 4% 66%)"
+    dark: "hsl(240 5% 52%)"
+  agent-other: # any other agent in the Overview usage charts; neutral
+    light: "hsl(240 5.5% 25% / 0.45)"
+    dark: "hsl(240 33% 94% / 0.4)"
   cost-cache-read: # cost burnup chart, cache-read layer; muted blue-green
     light: "hsl(165 45% 40%)"
     dark: "hsl(165 50% 62%)"
@@ -469,6 +478,7 @@ motion:
   segmented-indicator: "120ms ease-out slide; reduced motion swaps to a 60ms per-segment crossfade"
   anchored-content: "100ms opacity-only crossfade after native geometry commits; reduced motion uses 60ms"
   text-roll: "300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease"
+  overview-banner-in: "700ms ease-out-quart; a Usage banner's plot grows up from the date row (scaleY from the bottom) each time it mounts, so a tab switch draws the new chart in; reduced motion clamps it through the shared rule"
   overview-entrance: "700ms ease-out; the chart reveals from the left with a clip-path inset, the headline figures fade in; plays once per app run and is recorded on animationend; reduced motion clamps it through the shared rule"
   tray-usage-meter: "launch: 1.5s column-by-column depletion; later changes: 300ms column-by-column"
   hud-led-blink: "steps(1) loop; --led-period 300ms to 3s on eight geometric rungs, set per segment from the spend rate; 300ms is the flash-safety cap for a 6px dot"
@@ -599,10 +609,16 @@ Notes for what isn't expressible as a token:
   from the window with a clamp — the page needs the width more at small sizes and less at
   large — keeps the full window height between its margins, and scrolls alone when the accounts
   outgrow it. It uses the popover corner, the opaque `surface-window` fill under the
-  `surface-sidebar` tint, and `shadow-raised` over the `shadow-stats-card` outline.
+  `surface-sidebar` tint, and the `shadow-stats-card` outline with no drop shadow. The Overview's
+  usage card has no outline, shadow, or fill, so its banner sits on the window background.
+  During first run, hide the usage card and Recent sessions until the user advances past
+  Session checks. Keep data collection active while they are hidden. The subsequent completion
+  step shows “You’re all set!” and Get Started beside Back, with no Enhance or Skip action. It takes the same card and fills the free height between them. The config checks grid
+  that replaces it has no card.
 
-- **Overview cost chart** — show daily estimated cost as stacked areas, one per source
-  agent, for the latest 30 days. Keep agent colors stable and name each agent in the
+- **Overview cost chart** — show daily estimated cost as side-by-side columns, one per source
+  agent, for the latest 30 days. Each agent takes its `agent-*` colour: blue for Claude Code, grey
+  for Codex. Keep agent colors stable and name each agent in the
   legend. Do not show the previous period. Leave gaps for unknown costs and mark
   incomplete days; tooltips distinguish unpriced usage from known subtotals.
 
@@ -705,9 +721,36 @@ Notes for what isn't expressible as a token:
   click toggle, control fill, or separate row. Keep source and historical-evidence
   limits readable in the tooltip. Show instruction path and line metadata once.
   Show the main occurrence inline without an occurrence picker or duplicate cards.
-  Initial evidence loads use the shared `Skeleton`: a 64px comparison block,
-  two compact metadata lines, a 64px instruction block, and an 80px action block.
-  The evidence body reserves a 288px minimum height while loading and after load.
+  Smart Check findings use a summary-first compact card. Show the saved finding
+  observation as soon as the target loads. Keep instruction and action, reads
+  under review, task and work, or skill and related work behind a matching
+  disclosure, collapsed by default. Do not show transcript
+  previews, large evidence skeletons, or a reserved evidence height. Request
+  evidence only when the user opens the disclosure. Loading and failure statuses
+  stay compact inside it; unavailable evidence never replaces the finding summary
+  or creates an empty evidence panel. Keep one useful status and a retry only for
+  request failures. Bind the summary, excerpts, and citation destinations to one
+  occurrence. Retain that occurrence after a list reorder; replace the complete
+  snapshot when the occurrence disappears. Keep loaded details mounted when a
+  check or window section becomes inactive. Pause new evidence requests while
+  hidden. Returning from a session card keeps the retained occurrence. Hidden
+  evidence responses do not emit reader events. Keep the complete snapshot after
+  a refresh error. Show task context and decisive earlier events with their source
+  labels only inside the disclosure.
+  Show review counts once at check level. Keep skipped comparisons separate from
+  reviewed answers. Terminal zero-target work uses Nothing to assess in neutral
+  ink and stays outside Passed checks. A context-blocked review shows the model
+  context message and recorded counts without retrying unchanged inputs.
+  Stop Checking when runnable work ends. Keep partial findings visible after
+  review stops; unanswered or skipped work does not become a clean result.
+  Over-exploring uses one Files read section. Nest each result under its explicit
+  request binding. Show each path and request time once, even for repeated reads.
+  Label requested limits and returned ranges separately. Keep returned contents
+  collapsed behind Show file contents / Hide file contents. Expansion controls
+  expose their expanded state. Scope Creep uses Proposed work or Attempted work
+  from typed evidence, with Recorded work for older findings. Skill Opportunities
+  uses Relevant skill and Recorded work. Paths, commands, and timestamps wrap
+  within the reading column at narrow widths and large interface scales.
   Excerpts can grow beyond this minimum. Background refreshes keep the loaded
   content and pause stale citation navigation instead of showing a skeleton.
   Session-card rows use a 2px interline gap inside unchanged 12px vertical card padding. A zero-failure result with at least one assessed check uses an outlined ring and tick, even
@@ -733,47 +776,18 @@ Notes for what isn't expressible as a token:
   Failure wording and evidence use `burn-check-failure-text`, including card tooltips
   and expanded guidance. Passing row wording stays neutral. Unassessed checks remain
   omitted from the detail cards and rows.
-  The popover summary uses a stable “All burn checks” heading without a dial, reserving circular indicators
-  for provider usage and individual sessions. It uses `--space-md` (12px) horizontal padding and a 12px text-to-meter gap.
-  The text block uses `--space-sm` (8px) top and bottom padding, matching the spend card.
-  Failed and passed counts use `font-mono type-footnote tabular-nums`, matching session verdicts.
-  Failed counts use semibold failure ink; passed counts use regular cyan `burn-check-pass-fill`.
-  The headline uses system sans with `type-headline font-semibold! text-label`. A regular
-  `type-footnote text-label-tertiary` “30 days” label shares its baseline with an 8px gap.
-  Counts carry the visible verdict;
-  the accessible description and companion retain the full result and evidence status.
-  When no counts exist, the second line shows the loading or unavailable status.
-  Remaining context stays in system sans. The summary omits visible “Evidence incomplete” wording;
-  its accessible description retains the evidence status.
-  The summary is the first card in the collapsing overview header, above spend and provider limits.
-  Its wrapper uses twelve pixels of top padding and `--space-sm` (8px) horizontal padding.
-  The wrapper and inner padding use the same tokens as the spend card, so their text starts on the same line.
-  Provider rings retain their existing optical indent.
-  A single separator after
-  the provider limits is inset twelve pixels from both popover edges. The session toolbar starts eight
-  pixels below that rule.
-  The session list uses the remaining popover height without a persistent footer.
-  A static one-pixel edge sits one pixel inside the card. Its state color starts at 40% opacity and fades
-  to 10% at the 45% stop, then into a faint separator at the right. Findings use
-  `burn-check-failure-fill`; results with passes and no findings use `burn-check-pass-fill`;
-  loading, unavailable, and unassessed states use `burn-check-neutral`. Failure takes precedence over pass.
-  The fill stays neutral at 50% of `surface-card`, so the semantic state remains in the edge and content.
-  The surface uses `rounded-control` (5px), matching the spend summary card. The twelve-pixel gap between these cards matches the top inset. Hover uses 35% of `surface-hover`, and the active preview uses 40% of
-  `surface-selected`, while the keyboard-focus treatment remains unchanged.
-  Increased contrast uses a solid edge in the resolved state color.
-  The trailing estimate uses four filled Lucide flame silhouettes, masked over a neutral track.
-  Each full flame represents 25% token burn and fills from the bottom, in order from left to right.
-  The 78 × 18px meter uses local SVG geometry. Values below five percent use a yellow-to-brand
-  gradient; higher values use brand-to-red, matching the existing token-burn threshold.
-  The exact estimate stays in the accessible summary, meter value, app tooltip, and companion
-  panel. The flame tooltip opens on hover or keyboard focus and explains the estimate and scale.
-  The summary button opens Burn checks in the main window. The meter is a separate focus target
-  beside the button, so inspecting it does not open the main window.
-  Its estimate uses semibold `font-mono type-callout tabular-nums` in `burn-check-failure-text`,
-  or cyan `burn-check-pass-fill` for zero burn. The explanation uses secondary callout text,
-  followed by the scale in tertiary footnote text. Color identifies the result, not the explanatory prose.
-  Its target is at least 40px high. Inspecting the flames dismisses the companion, so only one
-  explanation opens at a time. Unknown estimates omit the meter. Flames remain static when reports update.
+  The usage section of the collapsing popover header starts with provider limits, followed by spend totals when available.
+  Subscription usage leads with tokens and shows estimated dollars in the secondary row. Non-subscription usage leads
+  with estimated dollars when available and show tokens in the secondary row. Its separator is inset twelve pixels
+  from both popover edges. The session toolbar starts eight
+  pixels below that rule. The list shows live sessions and sessions with valid activity timestamps
+  from the previous three hours. It groups those rows by local calendar date, including Yesterday
+  when the window crosses midnight. When the list is empty, say “No current sessions” and explain
+  that live sessions and recent activity appear here.
+  The list viewport extends to the bottom of the popover. Place “Open all sessions in main window”
+  in a 40px target, centered eight pixels above the bottom edge. Position it absolutely over the
+  viewport so the list scrolls beneath it. Use `hover:bg-surface-overlay` for an opaque hover fill.
+  Add 56px of viewport bottom padding so the final row can scroll clear of the link.
 - **Themes** — three sources, in cascade order. The system light/dark preference is the default. A
   platform whose webview exposes live system label/separator/accent tokens picks those up through
   `@supports`, so text and chrome track the OS exactly. Detect native accent support
@@ -851,6 +865,48 @@ Notes for what isn't expressible as a token:
 - **Window chrome** — a window that hides its native title bar owns the drag strip and the matching
   top clearance in the webview; a window that keeps native decorations must not reserve that space.
   Keep that decision in the window's own layout, not in the shared primitives.
+- **Sidebar summaries** — Agents and Sessions show their scan counts; Checks shows the
+  unsnoozed count as “N to fix”. Limits shows the Overview subscription percentages in
+  account order, separated by “ / ”. Use trailing `type-caption`, `label-secondary`,
+  tabular figures. No duplicate footer pills. Agents opens a summary page with session
+  links and an Agent settings action. Memories shows a file count once known; omit it
+  before the first successful read and until onboarding completes. Settings stays
+  disabled during onboarding, including its keyboard shortcut.
+- **Onboarding docking** — completed step cards share a view-transition name with their
+  sidebar destination and shrink into that row. Checks and its result dock into Checks.
+  Each step after Welcome has Back; Back changes the visible step without restarting
+  completed work. Reduced motion applies changes immediately. On compact windows the
+  closed navigation drawer provides no visible docking target.
+- **Settings pane descriptions** — the Agents, Sessions and Checks panes put one
+  `type-callout` `label-secondary` line under the `type-title-2` title that says what the pane
+  controls. Sessions stays one page, so Settings search finds every row.
+- **Overview stacking** — the usage card sits at the top and Recent sessions at the bottom.
+  Recent sessions has no card: its heading and rows sit on the window background. Free space
+  collects between them.
+- **Overview usage banner** — both Usage tabs draw their chart behind the figures, not under
+  them: the Cost tab's daily spend by agent, and the Subscription tab's weekly fill and 5-hour
+  peaks in `context-stroke` tints. Subscription uses a fixed 0–100% scale with guide lines
+  and labels at 0%, 25%, 50%, and 75% inside the plot's right edge, inset by `space-lg`.
+  Omit the 100% label but keep the top of the scale at 100%. The plot, dates, and hover
+  targets use the full width. Reserve 3rem (`--overview-banner-value-axis`) beside the
+  header controls to keep them clear of the labels.
+  Axis labels use secondary caption ink and stay outside the plot's fade and entrance animation.
+  Cost scales to its own peak and has no value axis. Both plots fade toward the top.
+  The figures and the unit tabs share the top
+  row; when the figures need the full width to stay side by side, the tabs move to a row above. A date row (every 7 days and "Today") and then the key close the card, and the lower half shows a tooltip for each day:
+  a `UsageBannerTip` card with the day's figure and one row and share bar per layer. The
+  hovered day takes a faint band, and on the Cost tab the other days' columns dim. With more
+  than one subscription account, a figure picks the account the banner draws.
+  The usage card has no fill and no outline and takes the page's free height, so the chart grows with the
+  window.
+- **Overview config checks** — a grid of check cards, as wide as the space allows (at least
+  14rem each): the tinted category icon, the check name, its result, and for a failing check
+  the estimated burn, with the agents as a watermark. Failing checks come first, highest burn
+  first. Every card has the quiet card fill and no outline; a failing card shows its failed count
+  in the failure text colour, and every other status is neutral. The category icon is the bare
+  glyph in its check colour, with no tinted circle. On hover, a card takes a faint tint of its icon colour.
+- **Overview Recent sessions row** — the check icon leads the row, then the title and models,
+  tokens, the cost or limit share, the check phrase, and the time, right-aligned, last.
 - **Data views** — a view that shows figures (Session Detail, the Overview) keeps the home
   screen's density of styles. One data size per view: every figure, row, and data label is
   `type-body`; hierarchy comes from ink and weight, and size changes are reserved for a hero
@@ -1155,14 +1211,14 @@ Every finding explanation appears below the header metrics.
 All check actions sit at the header’s right edge. Named resource cards contain evidence only.
 Do not repeat explanations or check-level actions in the body.
 An Ignored Instructions finding shows the same two sections in every detail state: “Instruction”
-and “Where it was ignored”. Load bounded saved excerpts when the detail opens, without another
+and “What happened”. Load bounded saved excerpts when the detail opens, without another
 disclosure. Include the instruction source and line range, plus the cited action and its available
-time. Show each complete bounded excerpt with its source and a short explanation. Keep surrounding
-events chronological behind “Show context”. Keep the finding summary visible while excerpts load
+time. Show each complete bounded excerpt with its source. Show selected supporting
+events in chronological order. Keep the finding summary visible while excerpts load
 or fail; offer Retry after a failed read. New assessments save the compared excerpts with the finding so later session changes
 do not hide the example. For older findings without saved excerpts, show the instruction location
 and action summary, then state that exact text was not saved. Closing or changing the selected
-detail discards late responses. Other session findings may load bounded evidence on demand.
+detail discards late responses. All four Smart Checks load bounded evidence automatically.
 The collection and detail panes start at the top of the workspace. The collection docks directly to
 the sidebar and uses the same `--main-window-collection-width` geometry as Sessions. Its 340px width
 does not change by breakpoint. The detail pane remains flexible, and both panes own independent scroll

@@ -37,9 +37,18 @@ pub(crate) fn score(inventory: &[Value], rows: &[Value]) -> Value {
     let mut binding_errors = 0;
     let mut reason_errors = 0;
     let mut unsafe_publications = 0;
+    let mut wrong_findings = 0;
+    let mut missed_positives = 0;
+    let mut unsupported_cases = 0;
+    let mut policy_errors = 0;
+    let mut unsupported_clean = 0;
+    let mut diagnostic_positives = 0;
     for case in inventory {
         let id = case["id"].as_str().expect("case ID");
-        positives += usize::from(case["expected"] == "finding");
+        let supported = case["policy_admitted"] == true && case["diagnostic_only"] != true;
+        positives += usize::from(supported && case["expected"] == "finding");
+        diagnostic_positives += usize::from(!supported && case["expected"] == "finding");
+        unsupported_cases += usize::from(!supported);
         let Some(row) = by_id.get(id) else {
             missing += 1;
             errors.push(json!({"id":id,"kind":"missing_result"}));
@@ -53,15 +62,32 @@ pub(crate) fn score(inventory: &[Value], rows: &[Value]) -> Value {
             missing += 1;
         }
         failures += usize::from(!row["failure"].is_null());
+        policy_errors += usize::from(
+            row.get("policy_admitted")
+                .is_some_and(|admitted| *admitted != case["policy_admitted"]),
+        );
+        unsupported_clean += usize::from(
+            row["clean_eligible"] == true
+                && (!supported || row["policy_limited"] == true || !row["failure"].is_null()),
+        );
         published += usize::from(observed == Some("finding"));
         abstentions += usize::from(matches!(observed, Some("pending" | "unassessed")));
-        let verdict = row["failure"].is_null() && row["observed"] == case["expected"];
-        let reason = row["observed_reason"] == case["expected_reason"];
-        let binding = references(&case["expected_references"])
-            == references(&row["observed_references"])
-            && (observed != Some("finding") || row["evidence_valid"] == true);
-        binding_errors += usize::from(!binding);
-        reason_errors += usize::from(!reason);
+        let verdict = row["failure"].is_null()
+            && if supported {
+                row["observed"] == case["expected"]
+            } else {
+                matches!(observed, Some("unassessed" | "no_finding"))
+            };
+        wrong_findings += usize::from(observed == Some("finding") && case["expected"] != "finding");
+        missed_positives +=
+            usize::from(supported && case["expected"] == "finding" && observed != Some("finding"));
+        let reason = !supported && row["observed_reason"].is_null()
+            || row["observed_reason"] == case["expected_reason"];
+        let binding = (!supported && matches!(observed, Some("unassessed" | "no_finding")))
+            || references(&case["expected_references"]) == references(&row["observed_references"])
+                && (observed != Some("finding") || row["evidence_valid"] == true);
+        binding_errors += usize::from(observed == Some("finding") && !binding);
+        reason_errors += usize::from(observed == Some("finding") && !reason);
         verdict_hits += usize::from(verdict && observed == Some("finding"));
         exact_hits += usize::from(verdict && reason && binding && observed == Some("finding"));
         correct += usize::from(verdict && reason && binding);
@@ -80,8 +106,10 @@ pub(crate) fn score(inventory: &[Value], rows: &[Value]) -> Value {
         "precision":ratio(exact_hits,published),"recall":ratio(exact_hits,positives),"accuracy":ratio(correct,inventory.len()),
         "verdict_precision":ratio(verdict_hits,published),"verdict_recall":ratio(verdict_hits,positives),
         "abstentions":abstentions,"binding_errors":binding_errors,"reason_errors":reason_errors,
+        "wrong_findings":wrong_findings,"missed_positives":missed_positives,"unsupported_cases":unsupported_cases,
+        "policy_admission_errors":policy_errors,"unsupported_clean_results":unsupported_clean,"scope_diagnostic_positives":diagnostic_positives,
         "execution_failures":failures,"missing_outcomes":missing,"unsafe_authority_publications":unsafe_publications,
-        "diagnostic_target":0.70,"errors":errors})
+        "errors":errors})
 }
 
 pub(crate) fn grouped(inventory: &[Value], rows: &[Value], field: &str) -> Value {
@@ -172,4 +200,18 @@ fn unsafe_clean_duplicate_and_failed_results_are_visible() {
             .iter()
             .any(|error| error["kind"] == "duplicate_result")
     );
+}
+
+#[test]
+fn missed_positive_is_not_a_wrong_binding_or_wrong_finding() {
+    let case = crate::fixtures::select("core", Some("command-ban:claude"))
+        .unwrap()
+        .remove(0);
+    let inventory = vec![crate::fixtures::inventory(&case)];
+    let row = json!({"id":case.id,"observed":"unassessed","observed_reason":null,"observed_references":[],"failure":null,"policy_admitted":true});
+    let metrics = score(&inventory, &[row]);
+    assert_eq!(metrics["missed_positives"], 1);
+    assert_eq!(metrics["wrong_findings"], 0);
+    assert_eq!(metrics["binding_errors"], 0);
+    assert_eq!(metrics["reason_errors"], 0);
 }

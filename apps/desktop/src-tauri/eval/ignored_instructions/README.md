@@ -3,19 +3,19 @@
 The Cargo target is `ignored_instructions`. Its small `main.rs` exposes one live
 entry, `live`, which calls `harness::run`, as in the other three eval targets.
 It runs production context construction, preparation, provider-aware packing,
-transport, response handling, and reduction. Scores are diagnostics. The 70%
-target does not control execution, product work, or delivery.
+transport, response handling, and reduction. Scores are diagnostics and do not
+control execution, product work, or delivery.
 
 ## Select cases
 
-| Variable                   | Default                                     | Purpose                                                            |
-| -------------------------- | ------------------------------------------- | ------------------------------------------------------------------ |
-| `ANTIBURN_EVAL_SUITE`      | Shared `development` default maps to `core` | `core`, `context`, `limits`, or `all`; `controls` aliases `limits` |
-| `ANTIBURN_EVAL_CASES`      | All cases in the suite                      | Shared comma-separated exact `scenario:agent` IDs                  |
-| `ANTIBURN_EVAL_LIMIT`      | Unset                                       | Shared positive maximum case count, applied after selection        |
-| `ANTIBURN_EVAL_OUTPUT_DIR` | Shared support default                      | Optional report root                                               |
-| `ANTIBURN_EVAL_RAW`        | Unset                                       | Include raw requests, responses, assessment results, and answers   |
-| `ANTIBURN_EVAL_PROVIDER`   | Shared support default                      | Select the production provider/model preset                        |
+| Variable                   | Default                                     | Purpose                                                                       |
+| -------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------- |
+| `ANTIBURN_EVAL_SUITE`      | Shared `development` default maps to `core` | `core`, `context`, `limits`, `compact`, or `all`; `controls` aliases `limits` |
+| `ANTIBURN_EVAL_CASES`      | All cases in the suite                      | Shared comma-separated exact `scenario:agent` IDs                             |
+| `ANTIBURN_EVAL_LIMIT`      | Unset                                       | Shared positive maximum case count, applied after selection                   |
+| `ANTIBURN_EVAL_OUTPUT_DIR` | Shared support default                      | Optional report root                                                          |
+| `ANTIBURN_EVAL_RAW`        | Unset                                       | Include raw requests, responses, assessment results, and answers              |
+| `ANTIBURN_EVAL_PROVIDER`   | Shared support default                      | Select the production provider/model preset                                   |
 
 Every scenario has cases for OpenCode, Codex, Claude Code, and Pi. Agent suffixes
 are `opencode`, `codex`, `claude`, and `pi`. Shared selection applies exact IDs and
@@ -76,7 +76,7 @@ known-base rule, not the general scan rule. Scoring requires exact source ranges
 and action IDs; sibling rules do not make their citations interchangeable.
 
 `shape` optionally selects a Rust fixture builder: `long_history`, `long_text`,
-`truncated`, `missing_history`, `sibling_history`, or `current_file`.
+`truncated`, `missing_history`, `sibling_history`, `current_file`, or `nested_scope`.
 `authority_control: true` marks cases where publishing a finding or a clean result
 would claim unavailable authority/history. Runtime builders create source IDs,
 matched call IDs, field ranges, history metadata, instruction snapshots, and
@@ -87,10 +87,12 @@ binding IDs, or sidecars. Builders pass their actions through analysis
 The catalog retains ordinary command/path/text violations, aliases, pipelines,
 rename and patch operations, read prerequisites, long Unicode and heredoc input,
 scope-only rules, current-file limits, truncation, excluded bodies/results,
-unknown origin, and prompt injection. `context` retains all 16 previously authored
-test/human development scenarios, including their weak cases, plus withdrawal and
-false-test-report controls. These are normalized synthetic evidence matrices,
-not a claim of universal native session support.
+unknown origin, and prompt injection. `compact` contains compact-policy cases,
+including direct counterexamples and Markdown rule parsing controls. `context`
+retains all 16 previously authored test/human development scenarios, including
+their weak cases, plus withdrawal and false-test-report controls. These are
+normalized synthetic evidence matrices, not a claim of universal native session
+support.
 
 ## Reports and deterministic checks
 

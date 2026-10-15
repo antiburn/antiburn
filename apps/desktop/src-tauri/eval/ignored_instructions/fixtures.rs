@@ -26,6 +26,7 @@ pub(crate) enum Shape {
     MissingHistory,
     SiblingHistory,
     CurrentFile,
+    NestedScope,
 }
 
 #[derive(Clone, Deserialize)]
@@ -41,6 +42,14 @@ pub(crate) struct Scenario {
     pub(crate) shape: Shape,
     #[serde(default)]
     pub(crate) authority_control: bool,
+    #[serde(default = "admitted")]
+    pub(crate) policy_admitted: bool,
+    #[serde(default)]
+    pub(crate) diagnostic_only: bool,
+}
+
+fn admitted() -> bool {
+    true
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -134,7 +143,9 @@ pub(crate) fn cases(suite: &str) -> Vec<Case> {
 
 pub(crate) fn inventory(case: &Case) -> Value {
     json!({"id":case.id,"agent":case.agent,"suite":case.scenario.suite,"family":case.scenario.family,"source_format":format!("{:?}",case.source_format),
-        "expected":case.scenario.expected.verdict,"expected_reason":case.scenario.expected.reason,
+        "expected":case.scenario.expected.verdict,"expected_semantic":case.scenario.expected.verdict,
+        "policy_admitted":case.scenario.policy_admitted,"diagnostic_only":case.scenario.diagnostic_only || !case.scenario.policy_admitted,
+        "expected_reason":case.scenario.expected.reason,
         "expected_references":crate::evidence::expected_references(case),"authority_control":case.scenario.authority_control})
 }
 

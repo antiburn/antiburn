@@ -1,0 +1,84 @@
+name: Dependency checks
+
+# CI and both release workflows call this workflow. Bans and licenses are
+# always checked. Advisories change without a code change, so callers enable
+# them only for the nightly run and for releases. The engine release does not
+# ship the desktop app, so it sets `desktop` to false.
+
+on:
+  workflow_call:
+    inputs:
+      advisories:
+        description: Also check the RustSec advisories for every Rust workspace.
+        type: boolean
+        required: false
+        default: false
+      desktop:
+        description: Also check the desktop app workspace.
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24"
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
+jobs:
+  dependency-checks:
+    name: dependency checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust license tools
+        uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2
+        with:
+          tool: cargo-deny,cargo-about@0.9.2
+
+      # setup-node runs pnpm to find the store for its cache, so the pnpm
+      # shim must exist before setup-node starts. This is the same order as
+      # the jobs in ci.yml.
+      - name: Enable Corepack for the cache lookup
+        run: corepack enable
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Each manifest gets one cargo deny call, so cargo deny resolves its
+      # dependency graph once, and every manifest gets the same checks. Each
+      # call runs in the manifest directory, so cargo deny finds the deny.toml
+      # there. The remote helper has no deny.toml and uses the engine's.
+      - name: Check dependency bans and licenses${{ inputs.advisories && ', and advisories' || '' }}
+        env:
+          ADVISORIES: ${{ inputs.advisories }}
+          DESKTOP: ${{ inputs.desktop }}
+        run: |
+          set -euo pipefail
+          checks=(bans licenses)
+          if [[ "$ADVISORIES" == "true" ]]; then checks+=(advisories); fi
+          deny() {
+            local directory=$1
+            shift
+            echo "::group::cargo deny in $directory"
+            (cd "$directory" && cargo deny --locked "$@" check "${checks[@]}")
+            echo "::endgroup::"
+          }
+          deny crates/antiburn-local
+          deny crates/antiburn-remote --config ../antiburn-local/deny.toml
+          if [[ "$DESKTOP" == "true" ]]; then deny apps/desktop/src-tauri; fi
+
+      - name: Verify third-party notices
+        run: pnpm notices:check

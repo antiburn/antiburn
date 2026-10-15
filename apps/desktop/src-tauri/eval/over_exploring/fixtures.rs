@@ -1,3 +1,4 @@
+use antiburn_local::analysis::jev::JevCheck;
 use antiburn_local::analysis::jev_evidence::{JevOperationState, prepare_session_content};
 use antiburn_local::analysis::session_scope::{
     SessionScopeBoundary, SessionScopeBranch, SessionScopeBuilder,
@@ -6,19 +7,15 @@ use antiburn_local::analysis::{
     ContentKind, ContentPart, PublishedContent, PublishedContentPart, SourceFormat,
 };
 use antiburn_local::checks::over_exploring::{
-    EpisodeSpan, EpisodeState, OverExploringInput, ReadBinding, Reason, build_episodes,
+    EpisodeSpan, EpisodeState, OverExploringCheck, OverExploringInput, ReadBinding, Reason,
+    build_episodes, build_jev_context,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-pub const REASONS: [Reason; 3] = [
-    Reason::UnrelatedFiles,
-    Reason::ExcessiveFileBreadth,
-    Reason::ExcessiveWithinFileReading,
-];
+pub const REASONS: [Reason; 2] = [Reason::UnrelatedFiles, Reason::ExcessiveWithinFileReading];
 
-// Accepted input has at most 4096 events and 256 disjoint episodes.
-pub const MAX_SAMPLING_CANDIDATES: usize = 2 * 4096 + 256;
+pub const MAX_SAMPLING_CANDIDATES: usize = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExpectedFinding {
@@ -33,6 +30,9 @@ pub struct Case {
     pub reason: Reason,
     pub family: String,
     pub expected: Vec<ExpectedFinding>,
+    pub expected_semantic: String,
+    pub expected_bindings: Vec<ExpectedFinding>,
+    pub policy_admission: String,
     pub expected_outcome: String,
     pub authority: bool,
     pub label_basis: String,
@@ -194,13 +194,54 @@ pub(crate) fn assemble(
                     .as_ref()
                     .map(|result| result.recorded_output_digest.clone()),
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let reads = if reason == Reason::UnrelatedFiles && reads.len() > 1 {
+            reads[reads.len() - 1..].to_vec()
+        } else {
+            reads
+        };
         vec![ExpectedFinding { reason, reads }]
     } else {
         Vec::new()
     };
     let extent_unresolved = ["missing_extent", "missing_result"].contains(&limit);
-    Case {id,cohort:cohort.into(),reason,family:family.into(),expected,expected_outcome:if positive{"finding"}else if extent_unresolved{"abstention"}else{"clean"}.into(),authority,
+    let expected_semantic = if positive {
+        "likely_excess"
+    } else if extent_unresolved {
+        "unsupported"
+    } else {
+        "justified_or_minor"
+    };
+    let policy_supported = input.as_ref().is_some_and(|input| {
+        let Ok(context) = build_jev_context(input) else {
+            return false;
+        };
+        let Ok(plan) = OverExploringCheck.prepare(&context) else {
+            return false;
+        };
+        plan.work_items.iter().any(|item| {
+            plan.prepared
+                .targets
+                .get(&item.id)
+                .is_some_and(|target| target.reason == reason)
+        })
+    });
+    let policy_admission = if limit != "complete" {
+        "unsupported"
+    } else if policy_supported {
+        "admitted"
+    } else {
+        "policy_limited"
+    };
+    let expected_outcome =
+        if policy_admission != "admitted" || (!positive && reason == Reason::UnrelatedFiles) {
+            "abstention"
+        } else if positive {
+            "finding"
+        } else {
+            "clean"
+        };
+    Case {id,cohort:cohort.into(),reason,family:family.into(),expected_bindings:expected.clone(),expected,expected_semantic:expected_semantic.into(),policy_admission:policy_admission.into(),expected_outcome:expected_outcome.into(),authority,
         label_basis:if positive{"Recorded task, diagnosis, read requests, and available results support likely excess for the named reason in this assistant turn. The label does not claim that every cited read is unnecessary."}else if extent_unresolved{"The recorded helper is relevant and small. The within-file target lacks accepted returned extent; a resolved unrelated-files target must not prove a clean assessment."}else{"Recorded task and source establish useful or minor investigation. Partial history, open investigation, and untrusted approval records do not automatically invalidate this bounded assessment."}.into(),input,preparation_error}
 }
 
@@ -360,7 +401,7 @@ fn missing_results_and_deferred_boundaries_have_detour_and_justified_pairs() {
             assert_eq!(target.state, EpisodeState::Deferred);
         }
         if case.id.ends_with("positive") {
-            assert_eq!(case.expected_outcome, "finding");
+            assert_eq!(case.expected_outcome, "abstention");
             assert_eq!(case.expected[0].reason, Reason::UnrelatedFiles);
             assert!(
                 target
@@ -370,14 +411,7 @@ fn missing_results_and_deferred_boundaries_have_detour_and_justified_pairs() {
             );
         } else {
             assert!(case.expected.is_empty());
-            assert_eq!(
-                case.expected_outcome,
-                if case.id.contains("missing_result") {
-                    "abstention"
-                } else {
-                    "clean"
-                }
-            );
+            assert_eq!(case.expected_outcome, "abstention");
             assert!(
                 target
                     .reads
@@ -411,7 +445,7 @@ pub fn cases(suite: &str) -> Vec<Case> {
         super::controls::controls()
     });
     if suite == "development" {
-        cases.extend(super::development_extents::cases());
+        cases.extend(super::compact::cases());
         cases.extend(limited_investigation_pairs());
     }
     cases

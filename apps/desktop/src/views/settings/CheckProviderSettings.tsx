@@ -12,10 +12,7 @@ import {
 } from "../../lib/smartCheckProviders"
 import { ProviderSettingsSession } from "./ProviderSettingsSession"
 import type { CheckAvailability } from "../../lib/checkAvailability"
-import {
-  StepSettingsDisclosure,
-  StepSettingsRow as SettingsRow,
-} from "../main-window/overview/stepSettings/StepSettingsSearchRows"
+import { SettingsDisclosure, SettingsRow } from "./SettingsSearchRows"
 
 const inputClass =
   "mt-2 min-h-[var(--control-height-regular)] w-full rounded-control border border-separator bg-input-fill px-3 type-body text-label"
@@ -348,7 +345,7 @@ export function CheckProviderSettings({
             </p>
           )}
         </SettingsRow>
-        <StepSettingsDisclosure
+        <SettingsDisclosure
           searchId="smartCheckLimits"
           open={open}
           onOpenChange={(open) => setDisclosure({ open, dismissedRevision: targetRevision })}
@@ -363,7 +360,9 @@ export function CheckProviderSettings({
                 ? "Jev uses documented model limits. Manual overrides are not available."
                 : provider === "custom"
                   ? "Enter manual total input tokens or loaded context tokens. Each supplied limit must exceed the 4,096-token rendering reserve. State plus longest question alone does not bound total input."
-                  : "Leave manual limits empty to use discovered values or documented defaults. Manual values can lower known bounds or supply missing token limits."}
+                  : provider === "ollama"
+                    ? "Smart Checks load an idle model to read its context size. If limits stay unknown, enter a manual total input or loaded context limit and test the connection before enabling checks. Saving alone does not confirm usable limits."
+                    : "Leave manual limits empty to use discovered values or documented defaults. Manual values can lower known bounds or supply missing token limits."}
             </p>
             <PushButton
               className="mt-2"
@@ -405,7 +404,7 @@ export function CheckProviderSettings({
             )}
             {current?.capabilities && <CapabilityDetails capabilities={current.capabilities} />}
           </div>
-        </StepSettingsDisclosure>
+        </SettingsDisclosure>
         {usage && (
           <div className="px-3">
             <Disclosure label="Model usage">

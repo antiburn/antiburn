@@ -4,6 +4,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, LazyLock, Mutex};
 
+use crate::jev::worker::{
+    BatchExecution, CandidateExecution, CheckPolicy, JevCheckDescriptor, WorkerFuture,
+    dispatch_readiness, error_category, run_prepared_check, target_failure_is_terminal, unix_now,
+};
+use crate::smart_check_inputs::{
+    DetectorInput, InputLoadError, InputUnavailable, SmartCheckInputSnapshot,
+};
+use crate::store::{
+    BurnCheckAssessment, BurnCheckCandidate, BurnCheckFailure, BurnCheckInput, SessionKey, Store,
+};
 use antiburn_local::analysis::SourceFormat;
 use antiburn_local::analysis::jev::capabilities::ModelCapabilities;
 use antiburn_local::analysis::jev::{
@@ -17,21 +27,9 @@ use antiburn_local::checks::scope_creep::{
     ScopeCreepPrepared, ScopeCreepResult, ScopeCreepStatus, ScopeDescriptorInventory,
 };
 use rusqlite::{OptionalExtension, params};
-use tauri::Emitter;
-
-use crate::jev::worker::{
-    BatchExecution, CandidateExecution, CheckPolicy, JevCheckDescriptor, WorkerFuture,
-    error_category, run_prepared_check, unix_now,
-};
-use crate::smart_check_inputs::{
-    DetectorInput, InputLoadError, InputUnavailable, SmartCheckInputSnapshot,
-};
-use crate::store::{
-    BurnCheckAssessment, BurnCheckCandidate, BurnCheckFailure, BurnCheckInput, SessionKey, Store,
-};
 
 pub(crate) const CHECK_ID: &str = "scope_creep";
-const CURSOR_REVISION: u32 = 4;
+const CURSOR_REVISION: u32 = 8;
 const PROJECTED_CHECKPOINT_LIMIT: usize = 2 * 1024 * 1024 - 256 * 1024;
 const PROJECTED_PUBLICATION_LIMIT: usize = 1024 * 1024 - 64 * 1024;
 const POLICY: CheckPolicy = CheckPolicy {
@@ -76,6 +74,10 @@ struct AssessmentCursor {
     sampling: Option<SamplingProgress>,
     active_job: Option<SamplingJob>,
     run_progress: JevRunProgress,
+    #[serde(default)]
+    active_plan: Option<JevCheckPlan<ScopeCreepPrepared>>,
+    #[serde(default)]
+    active_input: Option<ScopeRequestFence>,
     result: Option<ScopeCreepResult>,
     run_finished: bool,
     run_started: bool,
@@ -89,6 +91,16 @@ struct AssessmentCursor {
     ignored_work: Option<BTreeSet<String>>,
     #[serde(default)]
     configuration_fence: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct ScopeRequestFence {
+    incarnation: u64,
+    source_generation: i64,
+    source_fingerprint: Option<String>,
+    activity_cursor: String,
+    published_fence: i64,
+    boundary_at_epoch: i64,
 }
 
 #[path = "scope_creep_worker/inventory_storage.rs"]
@@ -117,7 +129,7 @@ pub(crate) struct Publication {
         serialize_with = "inventory_storage::serialize_prepared",
         deserialize_with = "inventory_storage::deserialize_prepared"
     )]
-    prepared: ScopeCreepPrepared,
+    pub(crate) prepared: ScopeCreepPrepared,
     citations: BTreeMap<String, String>,
     pub(crate) assessment: ScopeCreepResult,
 }
@@ -464,6 +476,8 @@ fn restore_cursor(
             cursor.input_revision = input.input_revision.clone();
             cursor.provider_generation = generation;
             cursor.active_job = None;
+            cursor.active_plan = None;
+            cursor.active_input = None;
             cursor.run_progress = JevRunProgress::default();
             cursor.run_started = false;
             cursor.run_finished = false;
@@ -496,6 +510,12 @@ fn save_cursor(
 
 fn serialize_cursor(cursor: &AssessmentCursor) -> Result<String, serde_json::Error> {
     let mut value = serde_json::to_value(cursor)?;
+    if cursor.active_job.is_none() {
+        value["active_plan"] = serde_json::Value::Null;
+        value["active_input"] = serde_json::Value::Null;
+    } else if cursor.active_plan.is_some() {
+        value["active_plan"]["prepared"]["scope_bindings"] = serde_json::json!([]);
+    }
     // The inventory owns canonical descriptors. Save only prepared differences.
     if let Some(prepared) = &cursor.prepared {
         value["prepared"]["scope_bindings"] = serde_json::json!([]);
@@ -551,7 +571,7 @@ fn save_failure(
 
 async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> {
     let CandidateExecution {
-        app,
+        effects,
         store,
         candidate,
         client,
@@ -560,7 +580,17 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         events,
     } = execution;
     let check_generation = handle.check_generation(CHECK_ID);
-    let capabilities = handle.resolve_capabilities(key_generation).await?;
+    let pending_store = store.clone();
+    let pending_candidate = candidate.clone();
+    let provider = handle.system_one_connection();
+    let pending = crate::jev::worker::run_blocking_preparation(move || {
+        pending_scope_capabilities_for_connection(&pending_store, &pending_candidate, provider)
+    })
+    .await?;
+    let capabilities = match pending {
+        Some(capabilities) => capabilities,
+        None => handle.resolve_capabilities(key_generation).await?,
+    };
     let preparation_store = store.clone();
     let preparation_candidate = candidate.clone();
     let preparation_capabilities = capabilities.clone();
@@ -569,9 +599,9 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         let candidate = &preparation_candidate;
         let mut input = match load_descriptor_input(store, candidate, &preparation_capabilities) {
             Ok(input) => input,
+            Err(error) if error.is_stale() => return Ok(None),
             Err(error) => {
-                tracing::debug!(event = "scope_creep_input_unavailable", error = ?error);
-                store.record_burn_check_candidate_issue_for_check(
+                store.record_burn_check_candidate_failure_for_check(
                     CHECK_ID,
                     candidate,
                     candidate.session.key.environment_key != "native"
@@ -579,6 +609,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                             candidate.session.key.agent.as_str(),
                             "opencode" | "codex" | "claude" | "claude-code" | "pi"
                         ),
+                    error.failure_category(),
                     unix_now().saturating_add(POLICY.retry_delay_secs),
                     unix_now(),
                 )?;
@@ -601,6 +632,29 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
     let Some((mut input, mut cursor, checkpoint)) = prepared else {
         return Ok(());
     };
+    if cursor.inventory.complete
+        && cursor.inventory.groups.is_empty()
+        && cursor
+            .sampling
+            .as_ref()
+            .and_then(|sampling| sampling.coverage(ScopeCreepCheck::check_identity()))
+            .is_some_and(|coverage| coverage.eligible == 0)
+    {
+        if handle
+            .admit_if_current(key_generation, CHECK_ID, check_generation, || {
+                store.record_burn_check_no_candidates(
+                    &input.durable,
+                    &checkpoint,
+                    unix_now(),
+                    POLICY.idle_secs,
+                )
+            })?
+            .unwrap_or(false)
+        {
+            effects.checks_report_changed();
+        }
+        return Ok(());
+    }
     let claimed = handle
         .admit_if_current(key_generation, CHECK_ID, check_generation, || {
             if !store.queue_burn_check_assessment(&input.durable, unix_now(), POLICY.idle_secs)?
@@ -701,7 +755,23 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
             &cursor.run_progress,
         )? {
             crate::store::BurnCheckRequestAdmission::Exhausted
+            | crate::store::BurnCheckRequestAdmission::Unresolved
+            | crate::store::BurnCheckRequestAdmission::Deferred
+                if !plan.work_items.is_empty() =>
+            {
+                // The executor checks accepted responses before durable attempt admission.
+            }
+            crate::store::BurnCheckRequestAdmission::Exhausted
             | crate::store::BurnCheckRequestAdmission::Unresolved => {
+                mark_terminal_scope_decision(
+                    &mut cursor,
+                    &job,
+                    if plan.work_items.is_empty() {
+                        "work_context_too_large"
+                    } else {
+                        "provider_attempt_exhausted"
+                    },
+                );
                 cursor
                     .sampling
                     .as_mut()
@@ -710,6 +780,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                     .map_err(|error| anyhow::anyhow!("scope termination rejected: {error:?}"))?;
                 cursor.active_job = None;
                 cursor.run_progress = JevRunProgress::default();
+                update_result_counts(&mut cursor, &input);
                 save_cursor(store, &input.durable, &cursor)?;
                 save_scheduling(store, &input, &cursor)?;
                 continue;
@@ -732,7 +803,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         let orchestration = admit_jev_orchestration().await?;
         let outcome = run_prepared_check(
             BatchExecution {
-                app,
+                effects,
                 store,
                 input: &input.durable,
                 client: client.clone(),
@@ -815,6 +886,19 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                 .completed_ids(ScopeCreepCheck::check_identity())
                 .contains(&job.candidate)
             {
+                mark_terminal_scope_decision(
+                    &mut cursor,
+                    &job,
+                    if matches!(
+                        error,
+                        JevError::RequestTooLarge { .. }
+                            | JevError::RequestTokenLimitExceeded { .. }
+                    ) {
+                        "work_context_too_large"
+                    } else {
+                        "provider_attempt_exhausted"
+                    },
+                );
                 cursor
                     .sampling
                     .as_mut()
@@ -823,6 +907,7 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                     .map_err(|error| anyhow::anyhow!("scope termination rejected: {error:?}"))?;
                 cursor.active_job = None;
                 cursor.run_progress = JevRunProgress::default();
+                update_result_counts(&mut cursor, &input);
                 save_cursor(store, &input.durable, &cursor)?;
                 save_scheduling(store, &input, &cursor)?;
                 continue;
@@ -838,9 +923,9 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                         store.burn_check_next_attempt_at(&input.durable)?,
                     )?;
                     if published && !matches!(error, JevError::Cancelled) {
-                        let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
-                        record_assessment(
-                            app,
+                        effects.checks_report_changed();
+                        effects.record_assessment(
+                            crate::analytics::event::SmartCheck::ScopeCreep,
                             candidate.historical,
                             crate::analytics::event::SmartCheckAssessmentOutcome::Failed,
                         );
@@ -848,13 +933,8 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
                     Ok::<_, anyhow::Error>(published)
                 })
                 .transpose();
-            let rejection = crate::jev::worker::settle_authentication_rejection(
-                app,
-                store,
-                handle,
-                key_generation,
-                rejected,
-            );
+            let rejection =
+                effects.settle_authentication_rejection(store, handle, key_generation, rejected);
             saved?;
             rejection?;
             return Ok(());
@@ -870,14 +950,18 @@ async fn run_candidate(execution: CandidateExecution<'_>) -> anyhow::Result<()> 
         .with_current_generation(key_generation, || {
             let outcome = publish_current(store, &capabilities, &input, &cursor)?;
             if let Some(outcome) = outcome {
-                record_assessment(app, candidate.historical, outcome);
+                effects.record_assessment(
+                    crate::analytics::event::SmartCheck::ScopeCreep,
+                    candidate.historical,
+                    outcome,
+                );
             }
             Ok::<_, anyhow::Error>(outcome.is_some())
         })
         .transpose()?
         .unwrap_or(false);
     if published {
-        let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());
+        effects.checks_report_changed();
     }
     Ok(())
 }
@@ -892,11 +976,36 @@ fn prepare_scope_target(
     JevCheckPlan<ScopeCreepPrepared>,
     bool,
 )> {
-    let plan = input.check.prepare_descriptors(
-        &cursor.inventory,
-        &input.plan.capabilities,
-        &BTreeSet::from([selected]),
-    )?;
+    let plan = if let Some(mut plan) = cursor.active_plan.clone() {
+        if !plan
+            .prepared
+            .groups
+            .iter()
+            .any(|group| StableId::new("scope_work", &[group.id.as_bytes()]) == selected)
+        {
+            anyhow::bail!("scope checkpoint belongs to a different candidate");
+        }
+        plan.prepared.scope_bindings = input.plan.prepared.scope_bindings.clone();
+        input.check.reduce(&plan, &[], false)?;
+        plan
+    } else {
+        input.check.prepare_descriptors(
+            &cursor.inventory,
+            &input.plan.capabilities,
+            &BTreeSet::from([selected]),
+        )?
+    };
+    if !plan.work_items.is_empty() {
+        cursor.active_plan = Some(plan.clone());
+        cursor.active_input = Some(ScopeRequestFence {
+            incarnation: input.durable.incarnation,
+            source_generation: input.durable.source_generation,
+            source_fingerprint: input.durable.source_fingerprint.clone(),
+            activity_cursor: input.durable.activity_cursor.clone(),
+            published_fence: input.durable.published_fence,
+            boundary_at_epoch: input.durable.boundary_at_epoch,
+        });
+    }
     let groups: BTreeMap<_, _> = plan
         .prepared
         .groups
@@ -920,6 +1029,76 @@ fn prepare_scope_target(
         stop_scope_storage(&mut input, &mut cursor)?;
     }
     Ok((input, cursor, plan, fits))
+}
+
+#[cfg(test)]
+fn pending_scope_capabilities(
+    store: &Store,
+    candidate: &BurnCheckCandidate,
+    handle: &crate::jev::worker::WorkerHandle,
+) -> anyhow::Result<Option<ModelCapabilities>> {
+    pending_scope_capabilities_for_connection(store, candidate, handle.system_one_connection())
+}
+
+fn pending_scope_capabilities_for_connection(
+    store: &Store,
+    candidate: &BurnCheckCandidate,
+    mut provider: crate::jev::config::SystemOneConnection,
+) -> anyhow::Result<Option<ModelCapabilities>> {
+    let Some(saved) = store.burn_check_assessment(&candidate.session.key, CHECK_ID)? else {
+        return Ok(None);
+    };
+    let Ok(cursor) = serde_json::from_str::<AssessmentCursor>(&saved.progress_json) else {
+        return Ok(None);
+    };
+    let Some(input) = cursor.active_input.as_ref() else {
+        return Ok(None);
+    };
+    let Some(plan) = cursor.active_plan.as_ref() else {
+        return Ok(None);
+    };
+    if cursor.revision != CURSOR_REVISION
+        || !matches!(saved.status.as_str(), "queued" | "running" | "failed")
+        || cursor.active_job.is_none()
+        || saved.input_revision.as_deref() != Some(cursor.input_revision.as_str())
+        || plan.revisions != REVISIONS
+    {
+        return Ok(None);
+    }
+    let input = BurnCheckInput {
+        key: candidate.session.key.clone(),
+        check_id: CHECK_ID.into(),
+        incarnation: input.incarnation,
+        source_generation: input.source_generation,
+        source_fingerprint: input.source_fingerprint.clone(),
+        activity_cursor: input.activity_cursor.clone(),
+        published_fence: input.published_fence,
+        input_revision: cursor.input_revision.clone(),
+        evaluator_revision: CHECK.evaluator_revision(),
+        boundary_at_epoch: input.boundary_at_epoch,
+    };
+    let connection = store.lock();
+    if cursor.configuration_fence.as_deref() != Some(configuration_fence(&connection)?.as_str())
+        || !Store::burn_check_input_is_current(&connection, &input)?
+    {
+        return Ok(None);
+    }
+    drop(connection);
+    if cursor.run_progress.results.is_empty() {
+        let packed = plan.pack(&plan.work_items);
+        if packed.batches.len() != 1 || !packed.skipped_item_ids.is_empty() {
+            return Ok(None);
+        }
+        provider
+            .model_revision
+            .clone_from(&plan.capabilities.model_revision);
+        let identities =
+            crate::jev::worker::batch_request_identities(&provider, &input, &packed.batches[0]);
+        if store.burn_check_dispatch_attempts(&identities)? == 0 {
+            return Ok(None);
+        }
+    }
+    Ok(Some(plan.capabilities.clone()))
 }
 
 fn scope_target_fits_storage(
@@ -955,6 +1134,15 @@ fn scope_target_fits_storage(
             revisions: REVISIONS,
             source_generation: input.durable.source_generation,
             publication_fence: input.durable.published_fence,
+            explanation_basis: (!group.selected_excerpts.is_empty()).then(|| {
+                antiburn_local::checks::scope_creep::ScopeExplanationBasis {
+                    schema_revision: 1,
+                    relationship:
+                        antiburn_local::checks::scope_creep::ScopeRelationship::SeparateObjective,
+                    observation_kind: group.observation_kind,
+                    excerpts: group.selected_excerpts.clone(),
+                }
+            }),
         });
     }
     let publication_bytes = serde_json::to_vec(&publication(input, result.clone()))?.len();
@@ -994,6 +1182,29 @@ fn stop_scope_storage(
     enumerate_scope_turn(input, cursor)
 }
 
+fn scope_decision_skipped(
+    decision: &antiburn_local::checks::scope_creep::ScopeCreepDecision,
+    group: &antiburn_local::checks::scope_creep::WorkGroup,
+) -> bool {
+    decision.outcome.is_none()
+        && ((group.window_ids.is_empty() && group.limitation.is_some())
+            || matches!(
+                decision.limitation.as_deref(),
+                Some("work_context_too_large" | "provider_attempt_exhausted")
+            ))
+}
+
+fn mark_terminal_scope_decision(cursor: &mut AssessmentCursor, job: &SamplingJob, reason: &str) {
+    if let Some(decision) = cursor.result.as_mut().and_then(|result| {
+        result.decisions.iter_mut().find(|decision| {
+            StableId::new("scope_work", &[decision.group_id.as_bytes()]) == job.candidate
+        })
+    }) && decision.outcome.is_none()
+    {
+        decision.limitation = Some(reason.into());
+    }
+}
+
 fn update_result_counts(cursor: &mut AssessmentCursor, input: &PreparedInput) {
     let groups: BTreeSet<_> = input
         .plan
@@ -1009,7 +1220,13 @@ fn update_result_counts(cursor: &mut AssessmentCursor, input: &PreparedInput) {
         .prepared
         .groups
         .iter()
-        .filter(|group| group.window_ids.is_empty() && group.limitation.is_some())
+        .filter(|group| {
+            result
+                .decisions
+                .iter()
+                .find(|decision| decision.group_id == group.id)
+                .is_some_and(|decision| scope_decision_skipped(decision, group))
+        })
         .count();
     result.coverage.limitations.extend(
         input
@@ -1018,6 +1235,13 @@ fn update_result_counts(cursor: &mut AssessmentCursor, input: &PreparedInput) {
             .groups
             .iter()
             .filter_map(|group| group.limitation.clone()),
+    );
+    result.coverage.limitations.extend(
+        result
+            .decisions
+            .iter()
+            .filter(|decision| decision.outcome.is_none())
+            .filter_map(|decision| decision.limitation.clone()),
     );
     if result
         .decisions
@@ -1039,9 +1263,19 @@ fn update_result_counts(cursor: &mut AssessmentCursor, input: &PreparedInput) {
         .prepared
         .groups
         .len()
-        .saturating_sub(result.assessed_candidates);
+        .saturating_sub(result.assessed_candidates + result.coverage.skipped_items);
     result.coverage.selected_items = result.assessed_candidates;
-    result.coverage.not_selected_items = result.remaining_candidates;
+    result.coverage.not_selected_items = input
+        .check
+        .policy_omitted_count(input.plan.prepared.groups.len());
+    result.remaining_candidates += result.coverage.not_selected_items;
+    if result.coverage.not_selected_items > 0 {
+        result.coverage.processing_limit_reached = true;
+        result
+            .coverage
+            .limitations
+            .push("candidate_limit_reached".into());
+    }
     result.coverage.processing_limit_reached |= !cursor.inventory.complete;
     if !cursor.inventory.complete {
         result
@@ -1196,12 +1430,42 @@ fn enumerate_scope_turn(
             &ScopeCreepCheck::descriptor_chronology(&cursor.inventory),
         )
         .map_err(|error| anyhow::anyhow!("scope sampling inventory rejected: {error:?}"))?;
-    let baseline = input.check.prepare_descriptors(
+    let admitted: BTreeSet<_> = candidates.iter().map(|candidate| candidate.id).collect();
+    let mut baseline = input.check.prepare_descriptors(
         &cursor.inventory,
         &input.plan.capabilities,
         &BTreeSet::new(),
     )?;
     let initial = input.check.reduce(&baseline, &[], false)?;
+    baseline.coverage.selected_items = admitted.len();
+    baseline.coverage.not_selected_items = input.check.policy_omitted_count(admitted.len());
+    baseline.coverage.processing_limit_reached = baseline.coverage.not_selected_items > 0;
+    baseline.coverage.limitations.retain(|limitation| {
+        limitation != "candidate_limit_reached"
+            && limitation != "descriptor_enumeration_incomplete"
+            && limitation != "descriptor_storage_budget_reached"
+    });
+    if baseline.coverage.not_selected_items > 0 {
+        baseline
+            .coverage
+            .limitations
+            .push("candidate_limit_reached".into());
+    }
+    if !cursor.inventory.complete {
+        baseline.coverage.processing_limit_reached = true;
+        baseline
+            .coverage
+            .limitations
+            .push("descriptor_enumeration_incomplete".into());
+    }
+    if cursor.inventory.limitation.is_some() {
+        baseline
+            .coverage
+            .limitations
+            .push("descriptor_storage_budget_reached".into());
+    }
+    baseline.coverage.limitations.sort();
+    baseline.coverage.limitations.dedup();
     let result = cursor.result.get_or_insert(initial.clone());
     if result.revisions != REVISIONS || result.model != initial.model {
         *result = initial.clone();
@@ -1211,7 +1475,13 @@ fn enumerate_scope_turn(
     result.scope_digest = initial.scope_digest;
     result.session_limitation = initial.session_limitation;
     input.plan = baseline;
-    input.plan.prepared.groups = cursor.inventory.groups.clone();
+    input.plan.prepared.groups = cursor
+        .inventory
+        .groups
+        .iter()
+        .filter(|group| admitted.contains(&StableId::new("scope_work", &[group.id.as_bytes()])))
+        .cloned()
+        .collect();
     let previous: BTreeMap<_, _> = cursor
         .prepared
         .as_ref()
@@ -1278,6 +1548,7 @@ fn enumerate_scope_turn(
                     status: ScopeCreepStatus::Unassessed,
                     outcome: None,
                     decision_probability: None,
+                    unique_positive_winner: false,
                     limitation: group.limitation.clone(),
                     reduced_answer_ids: Vec::new(),
                 });
@@ -1377,6 +1648,7 @@ fn synchronize_sampling(
         .prepared
         .groups
         .iter()
+        .filter(|group| !group.window_ids.is_empty())
         .map(|group| StableId::new("scope_work", &[group.id.as_bytes()]))
         .collect();
     let epoch = StableId::new(
@@ -1394,70 +1666,6 @@ fn synchronize_sampling(
             &chronology,
         )
         .map_err(|error| anyhow::anyhow!("scope sampling inventory rejected: {error:?}"))
-}
-
-pub(crate) fn dispatch_readiness<P>(
-    store: &Store,
-    handle: &crate::jev::worker::WorkerHandle,
-    input: &BurnCheckInput,
-    capabilities: &ModelCapabilities,
-    plan: &JevCheckPlan<P>,
-    progress: &JevRunProgress,
-) -> anyhow::Result<crate::store::BurnCheckRequestAdmission> {
-    use crate::store::BurnCheckRequestAdmission;
-    let mut connection = handle.system_one_connection();
-    connection
-        .model_revision
-        .clone_from(&capabilities.model_revision);
-    let mut readiness = BurnCheckRequestAdmission::Admitted;
-    for item in &plan.work_items {
-        if progress.results.contains_key(&item.id) {
-            continue;
-        }
-        let packed = match &plan.shared_context {
-            Some(shared) => antiburn_local::analysis::jev::pack_work_items_with_shared_context(
-                std::slice::from_ref(item),
-                capabilities,
-                shared,
-            ),
-            None => antiburn_local::analysis::jev::pack_work_items_with_capabilities(
-                std::slice::from_ref(item),
-                capabilities,
-            ),
-        };
-        if packed.batches.is_empty() {
-            return Ok(BurnCheckRequestAdmission::Exhausted);
-        }
-        for batch in &packed.batches {
-            let identities =
-                crate::jev::worker::batch_request_identities(&connection, input, batch);
-            match store.burn_check_dispatch_readiness(&identities, unix_now())? {
-                BurnCheckRequestAdmission::Admitted => {}
-                BurnCheckRequestAdmission::Deferred => {
-                    readiness = BurnCheckRequestAdmission::Deferred
-                }
-                blocked => return Ok(blocked),
-            }
-        }
-    }
-    if plan.work_items.is_empty() {
-        return Ok(BurnCheckRequestAdmission::Exhausted);
-    }
-    Ok(readiness)
-}
-
-pub(crate) fn target_failure_is_terminal(
-    error: &JevError,
-    readiness: impl FnOnce() -> anyhow::Result<crate::store::BurnCheckRequestAdmission>,
-) -> anyhow::Result<bool> {
-    if matches!(error, JevError::AuthenticationRejected) {
-        return Ok(false);
-    }
-    Ok(matches!(
-        readiness()?,
-        crate::store::BurnCheckRequestAdmission::Exhausted
-            | crate::store::BurnCheckRequestAdmission::Unresolved
-    ))
 }
 
 #[cfg(test)]
@@ -1526,21 +1734,6 @@ fn reuse_accepted_result(
         }
     }
     Ok(())
-}
-
-fn record_assessment(
-    app: &tauri::AppHandle,
-    historical: bool,
-    outcome: crate::analytics::event::SmartCheckAssessmentOutcome,
-) {
-    crate::analytics::record_smart_check_lifecycle(
-        app,
-        crate::analytics::event::SmartCheckLifecycle::Assessment {
-            check: crate::analytics::event::SmartCheck::ScopeCreep,
-            historical,
-            outcome,
-        },
-    );
 }
 
 fn record_completion(
@@ -1743,6 +1936,12 @@ pub(crate) fn publication(input: &PreparedInput, assessment: ScopeCreepResult) -
                 .iter()
                 .map(|item| &item.source_id)
                 .chain(finding.work.iter().map(|work| &work.reference.id))
+                .chain(
+                    finding
+                        .explanation_basis
+                        .iter()
+                        .flat_map(|basis| basis.excerpts.iter().map(|excerpt| &excerpt.source.id)),
+                )
         })
         .collect();
     Publication {
@@ -1850,7 +2049,14 @@ fn valid_publication(publication: &Publication) -> bool {
             == prepared
                 .groups
                 .len()
-                .saturating_sub(result.assessed_candidates)
+                .saturating_sub(result.assessed_candidates + result.coverage.skipped_items)
+                + result.coverage.not_selected_items
+        && result.coverage.skipped_items
+            == result
+                .decisions
+                .iter()
+                .filter(|decision| scope_decision_skipped(decision, by_group[&decision.group_id]))
+                .count()
         && result.decisions.iter().all(|decision| {
             let group = by_group[&decision.group_id];
             valid_decision(decision, group, prepared)
@@ -1885,14 +2091,18 @@ fn valid_decision(
         return false;
     }
     let expected = match outcome {
-        ScopeAnswer::LikelyScopeExpansion if probability >= DECISION_THRESHOLD => {
+        ScopeAnswer::UnauthorizedExtra
+            if probability >= DECISION_THRESHOLD
+                && decision.unique_positive_winner
+                && group.limitation.is_none() =>
+        {
             ScopeCreepStatus::Finding
         }
-        ScopeAnswer::NoIssue if group.limitation.is_none() => ScopeCreepStatus::Clean,
-        ScopeAnswer::LikelyScopeExpansion | ScopeAnswer::Uncertain | ScopeAnswer::NoIssue => {
+        ScopeAnswer::InScope if group.limitation.is_none() => ScopeCreepStatus::Clean,
+        ScopeAnswer::UnauthorizedExtra | ScopeAnswer::Uncertain | ScopeAnswer::InScope => {
             ScopeCreepStatus::Uncertain
         }
-        _ => return false,
+        ScopeAnswer::LikelyScopeExpansion | ScopeAnswer::NoIssue => return false,
     };
     let answer_plan = JevCheckPlan {
         check_id: CHECK_ID.into(),
@@ -1957,6 +2167,24 @@ fn publishable_finding_bound(
         && !finding.work.is_empty()
         && finding.task_scope == group.task_scope
         && finding.observation_kind == group.observation_kind
+        && finding
+            .explanation_basis
+            .as_ref()
+            .map_or(group.selected_excerpts.is_empty(), |basis| {
+                basis.schema_revision == 1
+                    && basis.relationship
+                        == antiburn_local::checks::scope_creep::ScopeRelationship::SeparateObjective
+                    && basis.observation_kind == group.observation_kind
+                    && !basis.excerpts.is_empty()
+                    && basis.excerpts == group.selected_excerpts
+                    && basis.excerpts.iter().all(|excerpt| {
+                        excerpt.source.stable
+                            && !excerpt.content_digest.is_empty()
+                            && excerpt.start_byte < excerpt.end_byte
+                            && excerpt.end_byte - excerpt.start_byte == excerpt.text.len()
+                            && publication.citations.contains_key(&excerpt.source.id)
+                    })
+            })
         && finding.decision_probability.is_finite()
         && finding.decision_probability >= DECISION_THRESHOLD
         && finding.decision_probability <= 1.0
@@ -2043,7 +2271,7 @@ pub(crate) fn current_publication(
     Ok((complete || partial).then_some(publication))
 }
 
-/// Retrieve saved citation text only after the current publication passes its gate.
+#[cfg(test)]
 pub(crate) fn saved_finding_citations(
     connection: &rusqlite::Connection,
     fence: &SourceFence<'_>,
@@ -2078,3 +2306,6 @@ pub(crate) fn saved_finding_citations(
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod benchmark;

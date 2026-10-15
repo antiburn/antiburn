@@ -1,4 +1,76 @@
 use super::*;
+
+#[test]
+fn concrete_anchors_do_not_match_command_or_path_suffixes() {
+    assert!(exact_procedure_anchor(
+        "Run `cargo test parser`.",
+        "cargo test parser"
+    ));
+    assert!(!exact_procedure_anchor(
+        "Run `cargo test parser_old`.",
+        "cargo test parser"
+    ));
+    assert!(!exact_procedure_anchor(
+        "Inspect `src/parser.rs.bak`.",
+        "src/parser.rs"
+    ));
+    assert!(!exact_procedure_anchor("Run commands.", ""));
+}
+
+#[test]
+fn procedure_selection_keeps_late_conditions_and_exact_crlf_ranges() {
+    let mut definition = skill();
+    definition.frontmatter = serde_json::json!({});
+    definition.description = "Release\r\n-------\r\n1. Run `cargo test parser`.\r\n   - Keep the test output.\r\n2. Run `cargo check`.\r\n\r\nDo not publish unless both commands pass.\r\n\r\n## Other\r\nExample only.\r\n".into();
+    let (text, ranges) = definition
+        .complete_procedure("cargo test parser", 512)
+        .unwrap();
+    assert!(text.contains("Do not publish unless both commands pass."));
+    assert_eq!(text, definition.description[ranges[0].0..ranges[0].1]);
+    assert!(
+        definition
+            .complete_procedure("cargo test parser", text.len() - 1)
+            .is_none()
+    );
+}
+
+#[test]
+fn procedure_keeps_preceding_scope_and_abstains_when_it_cannot_fit() {
+    let mut definition = skill();
+    definition.description = "# Scope\nUse this procedure only in a local test workspace. Do not run it in production.\n\n# Procedure\n1. Run `cargo test parser`.\n2. Run `cargo check`.\n".into();
+    definition.frontmatter = serde_json::json!({"description": definition.description});
+    let (passage, ranges) = definition
+        .complete_procedure("cargo test parser", 512)
+        .unwrap();
+    assert!(passage.contains("Do not run it in production."));
+    assert_eq!(passage, definition.description[ranges[0].0..ranges[0].1]);
+    let procedure_only =
+        definition.description.len() - definition.description.find("# Procedure").unwrap();
+    assert!(
+        definition
+            .complete_procedure("cargo test parser", procedure_only)
+            .is_none()
+    );
+}
+
+#[test]
+fn quoted_and_fenced_examples_do_not_establish_a_procedure() {
+    let mut definition = skill();
+    for text in [
+        "> 1. Run `cargo test parser`.\n> 2. Run `cargo check`.\n",
+        "```md\n1. Run `cargo test parser`.\n2. Run `cargo check`.\n```\n",
+        "1. Run `cargo test parser`.\n   - Example one.\n   - Example two.\n",
+        "1. Inspect the task.\n2. Choose a tool.\n\n> Example: `cargo test parser`.\n",
+        "1. Inspect the task.\n   > Example: `cargo test parser`.\n2. Choose a tool.\n",
+    ] {
+        definition.description = text.into();
+        assert!(
+            definition
+                .complete_procedure("cargo test parser", 512)
+                .is_none()
+        );
+    }
+}
 use crate::analysis::{ContextSourceEvidence, CoverageReason, LoadedSource};
 
 fn scope() -> SkillScope {
@@ -43,6 +115,53 @@ fn work(time: Option<i64>) -> SkillWorkContext {
 
 fn snapshot(skills: Vec<SkillDefinition>) -> SkillOpportunitySnapshot {
     SkillOpportunitySnapshot::new(scope(), skills, true).unwrap()
+}
+
+#[test]
+fn complete_procedure_requires_two_steps_and_keeps_original_range() {
+    let mut definition = skill();
+    definition.description =
+        "1. Run `cargo test parser`.\n2. Inspect the failure and rerun `cargo test parser`.".into();
+    definition.frontmatter = serde_json::json!({"description": definition.description});
+    let (passage, ranges) = definition
+        .complete_procedure("cargo test parser", 512)
+        .unwrap();
+    assert_eq!(passage, definition.description);
+    assert_eq!(ranges, vec![(0, definition.description.len())]);
+    assert!(
+        definition
+            .complete_procedure("cargo test other", 512)
+            .is_none()
+    );
+    assert!(
+        definition
+            .complete_procedure("cargo test parser", 16)
+            .is_none()
+    );
+}
+
+#[test]
+fn single_routine_operation_and_unanchored_workflows_are_not_procedures() {
+    let mut definition = skill();
+    definition.description = "Run `cargo test parser`.".into();
+    assert!(
+        definition
+            .complete_procedure("cargo test parser", 512)
+            .is_none()
+    );
+    definition.description = "1. Review the project.\n2. Choose useful tools for the task.".into();
+    assert!(
+        definition
+            .complete_procedure("cargo test parser", 512)
+            .is_none()
+    );
+    definition.description =
+        "1. Run `cargo test parser`.\n2. Inspect the failure and rerun `cargo test parser`.".into();
+    assert!(
+        definition
+            .complete_procedure("unknown command", 512)
+            .is_none()
+    );
 }
 
 #[test]

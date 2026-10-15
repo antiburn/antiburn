@@ -111,7 +111,13 @@ pub(super) fn over_exploring_findings_for_session(
         .findings
         .iter()
         .map(|finding| {
-            if !seen.insert(&finding.work_item_id) || !publishable_finding(finding, &publication) {
+            use antiburn_local::analysis::jev::JevCheck;
+            if !seen.insert(&finding.work_item_id)
+                || finding.revisions
+                    != antiburn_local::checks::over_exploring::OverExploringCheck.revisions()
+                || !finding.has_valid_explanation()
+                || !publishable_finding(finding, &publication)
+            {
                 return None;
             }
             Finding::over_exploring(evidence, finding)
@@ -128,7 +134,7 @@ mod tests {
     use antiburn_local::checks::over_exploring::OverExploringCheck;
 
     #[test]
-    fn native_read_publications_reach_findings_prompts_and_session_statuses() {
+    fn small_native_reads_do_not_publish_findings_or_clean_results() {
         use crate::over_exploring_worker::tests::reduced;
         use crate::scope_creep_worker::tests::native_sources;
         for (agent, session, format, records) in native_sources::read_sources() {
@@ -170,7 +176,20 @@ mod tests {
                 &input,
                 antiburn_local::checks::over_exploring::Reason::UnrelatedFiles,
             );
-            assert!(!result.findings.is_empty(), "{agent}");
+            assert!(
+                input
+                    .plan
+                    .prepared
+                    .episodes
+                    .iter()
+                    .flat_map(|episode| &episode.reads)
+                    .filter_map(|read| read.result.as_ref())
+                    .all(|result| result.recorded_output_bytes < 8192),
+                "{agent}"
+            );
+            assert!(input.plan.work_items.is_empty(), "{agent}");
+            assert!(result.findings.is_empty(), "{agent}");
+            assert!(result.clean_episode_ids.is_empty(), "{agent}");
             let published = publication(&input, result);
             assert!(
                 store
@@ -217,13 +236,7 @@ mod tests {
                 )
                 .unwrap()
             };
-            let findings = read().unwrap();
-            assert!(!findings.is_empty(), "{agent}");
-            let prompt = antiburn_local::remediation::remediation_prompt(&findings[0]).unwrap();
-            assert!(
-                prompt.as_str().contains("does not repair or verify"),
-                "{agent}"
-            );
+            assert!(read().is_none(), "{agent}");
             let statuses = super::super::findings::smart_session_statuses(
                 directory.path(),
                 std::slice::from_ref(&candidate.session.key),
@@ -231,7 +244,7 @@ mod tests {
                 true,
             )
             .unwrap();
-            assert_eq!(
+            assert_ne!(
                 statuses[0].status,
                 crate::dto::SessionHygieneStatus::Finding,
                 "{agent}"
@@ -270,6 +283,51 @@ mod tests {
             .map(|request| request.reference_id.clone())
             .collect::<BTreeSet<_>>();
         assert_eq!(reads.len(), 2);
+        let recorded_reads = snapshot
+            .content()
+            .actions
+            .iter()
+            .filter_map(|action| action.metadata.read_result.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(recorded_reads.len(), 2);
+        assert_eq!(
+            recorded_reads[0].recorded_output_digest,
+            recorded_reads[1].recorded_output_digest
+        );
+        assert_eq!(
+            recorded_reads[0].returned_extent,
+            recorded_reads[1].returned_extent
+        );
+        for request in snapshot
+            .content()
+            .actions
+            .iter()
+            .filter_map(|action| action.metadata.read_request.as_ref())
+        {
+            assert_eq!(request.paths, ["/synthetic/parser.rs"]);
+            assert_eq!(request.cwd.as_deref(), Some("/synthetic"));
+            assert_eq!(request.extent.offset, Some(1));
+            assert_eq!(request.extent.limit, Some(304));
+            let request_action = snapshot
+                .content()
+                .actions
+                .iter()
+                .find(|action| action.reference.id == request.reference_id)
+                .expect("each observed request has a source action");
+            assert!(!request_action.metadata.bindings.is_empty());
+            let result = snapshot
+                .content()
+                .actions
+                .iter()
+                .filter_map(|action| action.metadata.read_result.as_ref())
+                .find(|result| {
+                    result.request_reference_id.as_deref() == Some(&request.reference_id)
+                })
+                .expect("each observed request has a recorded result");
+            assert!(!result.truncated);
+            assert!(result.recorded_output_bytes >= 8192);
+            assert!(antiburn_local::checks::over_exploring::has_known_returned_extent(result));
+        }
 
         let input = prepare(
             &candidate,
@@ -277,7 +335,7 @@ mod tests {
             &antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default(),
         )
         .unwrap();
-        let publication = publication(&input, reduced(&input, Reason::UnrelatedFiles));
+        let publication = publication(&input, reduced(&input, Reason::ExcessiveWithinFileReading));
         assert!(
             publication
                 .assessment
@@ -366,6 +424,35 @@ mod tests {
                 .unwrap();
             assert!(read().is_some(), "{status} retains the valid finding");
         }
+        for mode in 0..3 {
+            let mut changed = serde_json::to_value(&publication).unwrap();
+            let basis = &mut changed["findings"][0]["explanation"];
+            match mode {
+                0 => basis["version"] = serde_json::json!(1),
+                1 => {
+                    basis["compared"]["fields"]["repeat"]["header_sample"]["text"] =
+                        serde_json::json!("Different sample")
+                }
+                2 => basis["task"]["fields"]["values"] = serde_json::json!([]),
+                _ => unreachable!(),
+            }
+            store
+                .lock()
+                .execute(
+                    "UPDATE burn_check_assessment SET result_json = ?1",
+                    [changed.to_string()],
+                )
+                .unwrap();
+            assert!(read().is_none(), "invalid explanation mode {mode}");
+        }
+        store
+            .lock()
+            .execute(
+                "UPDATE burn_check_assessment SET result_json = ?1",
+                [serde_json::to_string(&publication).unwrap()],
+            )
+            .unwrap();
+        assert!(read().is_some());
         store
             .lock()
             .execute(
@@ -449,7 +536,7 @@ mod tests {
         assert!(read().is_none());
         let mut result = crate::over_exploring_worker::tests::reduced(
             &input,
-            antiburn_local::checks::over_exploring::Reason::UnrelatedFiles,
+            antiburn_local::checks::over_exploring::Reason::ExcessiveWithinFileReading,
         );
         result.findings.clear();
         result.unassessed.clear();
@@ -466,7 +553,7 @@ mod tests {
             .lock()
             .execute("UPDATE burn_check_assessment SET result_json = ?1", [&json])
             .unwrap();
-        assert_eq!(read(), Some(Vec::new()));
+        assert!(read().is_some_and(|findings| findings.is_empty()));
         for update in [
             "status = 'failed', last_error_category = 'provider_unavailable'",
             "status = 'queued'",

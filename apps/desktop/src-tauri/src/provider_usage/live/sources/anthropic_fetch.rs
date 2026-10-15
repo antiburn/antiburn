@@ -746,7 +746,7 @@ impl ClaudeDirectFetch {
     /// Read the native carriers: the Keychain item on macOS, then the
     /// credentials file. Each one reads its secret only when its change
     /// marker changed. `user` is true for a check that the reader started.
-    fn read_native_carriers(&self, user: bool) -> (Vec<ClaudeCredentials>, Option<FetchFailure>) {
+    fn read_native_carriers(&self, _user: bool) -> (Vec<ClaudeCredentials>, Option<FetchFailure>) {
         let mut carriers = Vec::new();
         #[cfg(target_os = "macos")]
         let mut error = None;
@@ -758,7 +758,7 @@ impl ClaudeDirectFetch {
                 claude_touch::keychain_metadata,
                 macos_keychain::read,
                 &|delay| std::thread::sleep(delay),
-                user,
+                _user,
             ) {
                 Ok(Some(credentials)) => carriers.push(credentials),
                 Ok(None) => {}

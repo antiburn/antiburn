@@ -18,6 +18,34 @@ use crate::store::{
 
 const OUTPUT: &str = "<path>/synthetic/parser.rs</path>\n<type>file</type>\n<content>\n1: parser\n\n(End of file - total 1 lines)\n</content>";
 
+#[test]
+fn input_failure_categories_keep_loading_and_stale_reasons() {
+    for (reason, category) in [
+        (InputUnavailable::PublicationChanged, "publication_changed"),
+        (
+            InputUnavailable::InventoryContextMismatch,
+            "inventory_context_mismatch",
+        ),
+        (InputUnavailable::BoundaryMissing, "boundary_missing"),
+        (
+            InputUnavailable::AssemblyLimitReached,
+            "input_assembly_limit",
+        ),
+    ] {
+        let error = InputLoadError::Unavailable(reason);
+        assert_eq!(error.failure_category(), category);
+        assert_eq!(
+            error.is_stale(),
+            reason == InputUnavailable::PublicationChanged
+        );
+    }
+    assert!(InputLoadError::Query(SelectedContentQueryError::StaleCursor).is_stale());
+    assert_eq!(
+        InputLoadError::Preparation(JevError::InvalidCheckContext).failure_category(),
+        crate::jev::worker::error_category(&JevError::InvalidCheckContext)
+    );
+}
+
 fn read_output<'a>(
     input: &'a over_exploring::OverExploringInput,
     read: &over_exploring::ReadObservation,
@@ -49,7 +77,10 @@ fn publish_tool(
 ) -> (Store, SessionKey, i64, i64) {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("opencode.db");
-    let source = rusqlite::Connection::open(&path).unwrap();
+    let mut connection = rusqlite::Connection::open(&path).unwrap();
+    // One transaction keeps fixture setup to a single disk sync. Per-row
+    // commits each force a sync, which is very slow on Windows CI runners.
+    let source = connection.transaction().unwrap();
     source.execute_batch(
         "CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, time_created INTEGER, time_updated INTEGER);
          CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
@@ -71,8 +102,18 @@ fn publish_tool(
     if tool == "skill" && output.starts_with("<skill_content ") {
         tool_part["state"]["metadata"] = json!({"name":"review", "dir":"/synthetic/skills/review", "truncated":false, "interrupted":false});
     }
-    records.push(("assistant", tool_part));
+    records.push(("assistant", tool_part.clone()));
     match ending {
+        "duplicate" | "duplicate-gap" => {
+            if ending == "duplicate-gap" {
+                records.push((
+                    "assistant",
+                    json!({"type":"text", "text":"Check the next hypothesis."}),
+                ));
+            }
+            tool_part["callID"] = json!("second-read-call");
+            records.push(("assistant", tool_part));
+        }
         "user" => records.push(("user", json!({"type":"text", "text":"Now inspect tests."}))),
         "unknown" => records.push(("assistant", json!({"type":"text", "text":"Complete."}))),
         "edit" | "pending-edit" => records.push(("assistant", json!({"type":"tool", "tool":"edit", "callID":"edit-call",
@@ -108,6 +149,8 @@ fn publish_tool(
             )
             .unwrap();
     }
+    source.commit().unwrap();
+    drop(connection);
     let (latest, rows) = tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(db_session_fingerprint(path.clone(), "input".into()))
@@ -202,7 +245,7 @@ fn publish_tool(
 }
 
 #[test]
-fn parse_publish_load_joins_read_across_pages_and_keeps_full_scope() {
+fn parse_publish_load_joins_read_across_pages_and_keeps_sampled_scope() {
     let (store, key, fence, generation) = publish(
         "native",
         254,
@@ -213,8 +256,14 @@ fn parse_publish_load_joins_read_across_pages_and_keeps_full_scope() {
         .load_smart_check_inputs(&key, fence, generation, DetectorInput::OverExploring)
         .unwrap();
     assert_eq!(snapshot.content().actions.len(), 258);
-    assert!(snapshot.content().complete);
-    assert!(snapshot.content().limitations.is_empty());
+    assert!(!snapshot.content().complete);
+    assert!(
+        snapshot
+            .content()
+            .limitations
+            .iter()
+            .any(|limit| limit == "scope_AssemblyLimitReached")
+    );
     let request = &snapshot.content().actions[255];
     let result = &snapshot.content().actions[256];
     assert_eq!(
@@ -307,7 +356,7 @@ fn open_investigations_preserve_reads_without_a_later_edit() {
             let plan = over_exploring::OverExploringCheck
                 .prepare(&context)
                 .unwrap();
-            assert!(!plan.work_items.is_empty());
+            assert!(plan.work_items.is_empty());
             assert!(!plan.prepared.history_complete);
             let assessment = over_exploring::OverExploringCheck
                 .reduce(&plan, &[], false)
@@ -362,6 +411,53 @@ fn candidate_binding_rejects_identity_generation_and_publication_mismatches() {
                 ))
             ),
             "{field}"
+        );
+    }
+}
+
+#[test]
+fn final_bound_duplicate_interval_is_admitted_without_open_unrelated_work() {
+    let body = (1..=300)
+        .map(|index| format!("{index}: pub fn boundary(value: usize) -> bool {{ value <= 10 }}\n"))
+        .collect::<String>();
+    let output = format!(
+        "<path>/synthetic/parser.rs</path>\n<type>file</type>\n<content>\n{body}\n(End of file - total 300 lines)\n</content>"
+    );
+    for ending in ["duplicate", "duplicate-gap", "tool"] {
+        let (store, key, fence, generation) = publish_tool(
+            "native",
+            0,
+            ending,
+            "read",
+            json!({"filePath":"/synthetic/parser.rs", "offset":1, "limit":300}),
+            &output,
+        );
+        let snapshot = store
+            .load_smart_check_inputs(&key, fence, generation, DetectorInput::OverExploring)
+            .unwrap();
+        let closed = ending == "duplicate";
+        assert_eq!(snapshot.content().complete, closed, "{ending}");
+        assert_eq!(
+            matches!(
+                snapshot.investigation_spans()[0].completion,
+                EpisodeCompletion::ClosedDuplicateInterval { .. }
+            ),
+            closed
+        );
+        let input = snapshot.over_exploring_input().unwrap();
+        assert_eq!(
+            input.episodes[0].state,
+            over_exploring::EpisodeState::Deferred
+        );
+        let plan = over_exploring::OverExploringCheck
+            .prepare(&over_exploring::build_jev_context(&input).unwrap())
+            .unwrap();
+        assert_eq!(plan.work_items.len(), usize::from(closed));
+        assert!(
+            plan.prepared
+                .targets
+                .values()
+                .all(|target| target.reason == over_exploring::Reason::ExcessiveWithinFileReading)
         );
     }
 }
@@ -439,10 +535,19 @@ fn selected_evidence_gaps_preserve_retained_activity() {
             OUTPUT
         );
         let input = snapshot.over_exploring_input().unwrap();
-        assert_eq!(
-            read_output(&input, &input.episodes[0].reads[0]),
-            Some(OUTPUT)
-        );
+        if mutation.contains("malformed") {
+            assert!(
+                input
+                    .episodes
+                    .iter()
+                    .all(|episode| episode.reads.is_empty())
+            );
+        } else {
+            assert_eq!(
+                read_output(&input, &input.episodes[0].reads[0]),
+                Some(OUTPUT)
+            );
+        }
     }
 }
 
@@ -627,6 +732,93 @@ fn page_losses_merge_without_counting_drained_boundaries_as_loss() {
 }
 
 #[test]
+fn skill_loader_does_not_assess_request_only_operations_without_task_text() {
+    let (store, key, fence, generation) = publish_tool(
+        "native",
+        0,
+        "edit",
+        "bash",
+        json!({"command":"cargo test"}),
+        "Tests passed.",
+    );
+    store
+        .lock()
+        .execute(
+            "DELETE FROM turn_content WHERE kind IN ('user', 'tool_result')",
+            [],
+        )
+        .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let skill = home.path().join(".opencode/skills/review/SKILL.md");
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::write(
+        skill,
+        "---\nname: review\ndescription: Review code and tests.\n---\n",
+    )
+    .unwrap();
+    let snapshot = store
+        .load_smart_check_inputs(&key, fence, generation, DetectorInput::SkillOpportunities)
+        .unwrap();
+    assert!(!snapshot.content().complete);
+    assert!(snapshot.scope().occurrences().is_empty());
+    assert!(
+        snapshot
+            .content()
+            .actions
+            .iter()
+            .any(|action| action.kind == "tool_input")
+    );
+    assert!(
+        snapshot
+            .content()
+            .actions
+            .iter()
+            .all(|action| action.kind != "user" && action.kind != "tool_result")
+    );
+    let inputs = store
+        .load_smart_check_skill_inputs(
+            snapshot,
+            &ConfigContext::native(AgentKind::OpenCode, home.path(), None),
+        )
+        .unwrap();
+    assert_eq!(inputs.check().unwrap().descriptor_count(), 0);
+}
+
+#[test]
+fn malformed_tool_sibling_does_not_remove_a_valid_operation() {
+    let (store, key, fence, generation) = publish_tool(
+        "native",
+        0,
+        "edit",
+        "bash",
+        json!({"command":"cargo test"}),
+        "Tests passed.",
+    );
+    store.lock().execute("UPDATE turn_content SET normalized_fields_json = json_set(normalized_fields_json, '$.malformed', json('true')) WHERE kind = 'tool_input' AND tool_name = 'bash'", []).unwrap();
+    let snapshot = store
+        .load_smart_check_inputs(&key, fence, generation, DetectorInput::SkillOpportunities)
+        .unwrap();
+    assert!(!snapshot.content().complete);
+    assert!(
+        snapshot
+            .content()
+            .limitations
+            .iter()
+            .any(|limit| limit == "malformed_selected_tool_input")
+    );
+    assert!(
+        snapshot.content().actions.iter().any(
+            |action| action.kind == "tool_input" && action.tool_name.as_deref() == Some("edit")
+        )
+    );
+    assert!(
+        snapshot.content().actions.iter().all(
+            |action| action.kind != "tool_input" || action.tool_name.as_deref() != Some("bash")
+        )
+    );
+}
+
+#[test]
 fn scope_source_losses_make_retained_content_partial_for_each_detector() {
     for detector in [
         DetectorInput::ScopeCreep,
@@ -750,7 +942,7 @@ fn publication_changes_remain_unavailable() {
 }
 
 #[test]
-fn activity_limit_returns_bounded_partial_observations() {
+fn activity_limit_retains_recent_bound_read_and_task() {
     let (store, key, fence, generation) = publish(
         "native",
         4096,
@@ -760,17 +952,21 @@ fn activity_limit_returns_bounded_partial_observations() {
     let snapshot = store
         .load_smart_check_inputs(&key, fence, generation, DetectorInput::OverExploring)
         .unwrap();
-    assert_eq!(
-        snapshot.content().actions.len(),
-        DetectorInput::OverExploring.max_events()
-    );
+    assert!(snapshot.content().actions.len() <= DetectorInput::OverExploring.max_events());
     assert!(!snapshot.content().complete);
     assert!(
         snapshot
             .content()
             .limitations
             .iter()
-            .any(|limit| limit == "content_part_limit")
+            .any(|limit| limit == "activity_sampled")
+    );
+    let input = snapshot.over_exploring_input().unwrap();
+    assert!(
+        input
+            .episodes
+            .iter()
+            .any(|episode| !episode.reads.is_empty())
     );
 }
 

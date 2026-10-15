@@ -1,6 +1,6 @@
 //! Publication-bound production inputs. This module does not enroll checks.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use antiburn_local::analysis::jev::{JevCheck, JevError, JevInputSelection};
@@ -24,7 +24,8 @@ pub(crate) mod inventory_cache;
 pub use episodes::{EpisodeCompletion, InvestigationSpan};
 pub use inventory::{InventoryRevisionChange, InventoryRevisionObserver, SkillInputs};
 
-const MAX_ACTIVITY_BYTES: usize = 16 * 1024 * 1024;
+// Leave space for normalized bindings and request serialization.
+const MAX_ACTIVITY_BYTES: usize = 4 * 1024 * 1024;
 
 #[cfg(test)]
 thread_local! {
@@ -49,9 +50,7 @@ impl DetectorInput {
 
     fn max_events(self) -> usize {
         match self {
-            Self::ScopeCreep => 65_536,
-            Self::OverExploring => 4096,
-            Self::SkillOpportunities => antiburn_local::analysis::jev::MAX_SELECTED_EVIDENCE_PARTS,
+            Self::ScopeCreep | Self::OverExploring | Self::SkillOpportunities => 2048,
         }
     }
 }
@@ -79,6 +78,66 @@ pub enum InputLoadError {
     Inventory(crate::agent_config::SkillSnapshotError),
     SkillUse(skill_opportunities::SkillInputError),
     Serialization(serde_json::Error),
+}
+
+impl InputLoadError {
+    pub(crate) fn failure_category(&self) -> &'static str {
+        match self {
+            Self::Unavailable(reason) => match reason {
+                InputUnavailable::PublicationChanged => "publication_changed",
+                InputUnavailable::BoundaryMissing => "boundary_missing",
+                InputUnavailable::AssemblyLimitReached => "input_assembly_limit",
+                InputUnavailable::IncompleteEvidence => "input_evidence_incomplete",
+                InputUnavailable::InvalidEventOrder => "input_event_order_invalid",
+                InputUnavailable::WrongDetector => "input_detector_mismatch",
+                InputUnavailable::UnsupportedInventoryEnvironment => {
+                    "inventory_environment_unsupported"
+                }
+                InputUnavailable::InventoryContextMismatch => "inventory_context_mismatch",
+                InputUnavailable::InventoryIncomplete => "inventory_incomplete",
+            },
+            Self::Scope(ScopeLoadError::Scope(error)) => match error {
+                antiburn_local::analysis::session_scope::SessionScopeError::Missing(reason) => {
+                    use antiburn_local::analysis::session_scope::ScopeMissingReason;
+                    match reason {
+                        ScopeMissingReason::PublicationChanged => "publication_changed",
+                        ScopeMissingReason::BoundaryMissing => "scope_boundary_missing",
+                        ScopeMissingReason::BranchUnresolved => "scope_branch_unresolved",
+                        ScopeMissingReason::NoUserContext => "scope_task_missing",
+                        ScopeMissingReason::TruncatedEvidence => "scope_evidence_truncated",
+                        ScopeMissingReason::InvalidEvidence => "scope_evidence_invalid",
+                        ScopeMissingReason::IncompleteSource => "scope_source_incomplete",
+                        ScopeMissingReason::IncompletePaging => "scope_paging_incomplete",
+                        ScopeMissingReason::UnsupportedSource => "scope_source_unsupported",
+                        ScopeMissingReason::UnresolvedInfluence => "scope_influence_unresolved",
+                        ScopeMissingReason::MissingCapabilities => "scope_capabilities_missing",
+                        ScopeMissingReason::AssemblyLimitReached => "scope_assembly_limit",
+                    }
+                }
+                antiburn_local::analysis::session_scope::SessionScopeError::ScopeTooLarge => {
+                    "scope_context_too_large"
+                }
+            },
+            Self::Scope(ScopeLoadError::Query(_)) | Self::Query(_) => "input_query_failed",
+            Self::Preparation(JevError::RequestTokenLimitExceeded { .. }) => {
+                "input_context_too_large"
+            }
+            Self::Preparation(JevError::RequestTooLarge { .. }) => "input_request_too_large",
+            Self::Preparation(error) => crate::jev::worker::error_category(error),
+            Self::Inventory(_) => "skill_inventory_unavailable",
+            Self::SkillUse(_) => "skill_use_invalid",
+            Self::Storage(_) => "input_storage_failed",
+            Self::Serialization(_) => "input_serialization_failed",
+        }
+    }
+
+    pub(crate) fn is_stale(&self) -> bool {
+        matches!(self, Self::Unavailable(InputUnavailable::PublicationChanged)
+            | Self::Scope(ScopeLoadError::Scope(antiburn_local::analysis::session_scope::SessionScopeError::Missing(
+                antiburn_local::analysis::session_scope::ScopeMissingReason::PublicationChanged)))
+            | Self::Query(SelectedContentQueryError::StaleCursor)
+            | Self::Scope(ScopeLoadError::Query(SelectedContentQueryError::StaleCursor)))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -203,6 +262,7 @@ impl Store {
         source_generation: i64,
         detector: DetectorInput,
     ) -> Result<SmartCheckInputSnapshot, InputLoadError> {
+        let started = std::time::Instant::now();
         #[cfg(test)]
         INPUT_LOAD_COUNT.set(INPUT_LOAD_COUNT.get() + 1);
         let request = self
@@ -210,17 +270,20 @@ impl Store {
             .map_err(InputLoadError::Scope)?;
         let boundary = request.boundary().clone();
         let source_format = request.source_format();
-        let scope = Arc::new(
-            self.load_session_scope(key, request)
-                .map_err(InputLoadError::Scope)?,
-        );
-        let (published, limitations) = self.collect_smart_check_activity(
+        let mut scope = self
+            .load_session_scope(key, request)
+            .map_err(InputLoadError::Scope)?;
+        let (published, limitations, omitted) = self.collect_smart_check_activity(
             key,
             publication_fence,
             source_generation,
             &boundary,
             detector,
         )?;
+        if omitted && let Some(first) = published.parts.first() {
+            scope.retain_from(first.turn_index, first.part_index);
+        }
+        let scope = Arc::new(scope);
         // Normalize once so a result on another page can bind its request.
         let identity =
             serde_json::to_string(&(key.environment_key.as_str(), &key.agent, &key.session_id))
@@ -242,11 +305,10 @@ impl Store {
             })
             .map(|occurrence| occurrence.reference.id.as_str())
             .collect::<BTreeSet<_>>();
-        // Scope omits truncated user text. Do not use that text as authorization.
+        // Only source-bound scope text can supply user authority.
         prepared.actions.retain(|action| {
             !(action.kind == "user"
                 && action.authority == "user"
-                && action.truncated
                 && !scope_user_ids.contains(action.reference.id.as_str()))
         });
         prepared
@@ -255,11 +317,17 @@ impl Store {
         prepared.complete &= prepared.limitations.is_empty();
         let mut content = select_session_content(&prepared, detector.selection());
         let initial_limitations = prepared.limitations.len();
-        let investigation_spans = if detector == DetectorInput::OverExploring {
-            episodes::investigation_spans(&content, &scope)?
+        let (investigation_spans, spans_sampled) = if detector == DetectorInput::OverExploring {
+            episodes::investigation_spans(&content, &scope)
         } else {
-            Vec::new()
+            (Vec::new(), false)
         };
+        if spans_sampled {
+            prepared
+                .limitations
+                .push("investigation_span_limit".to_owned());
+            prepared.complete = false;
+        }
         if investigation_spans.iter().any(|span| {
             !scope.occurrences().iter().any(|occurrence| {
                 occurrence.authority
@@ -293,7 +361,7 @@ impl Store {
             source_generation,
             &boundary,
         )?;
-        Ok(SmartCheckInputSnapshot {
+        let snapshot = SmartCheckInputSnapshot {
             key: key.clone(),
             detector,
             scope,
@@ -301,7 +369,16 @@ impl Store {
             content,
             revision,
             investigation_spans,
-        })
+        };
+        ::tracing::debug!(
+            event = "smart_check_input_loaded",
+            detector = ?detector,
+            scope_occurrences = snapshot.scope.occurrences().len(),
+            selected_actions = snapshot.content.actions.len(),
+            limitations = snapshot.content.limitations.len(),
+            elapsed_ms = started.elapsed().as_millis(),
+        );
+        Ok(snapshot)
     }
 
     fn collect_smart_check_activity(
@@ -311,7 +388,7 @@ impl Store {
         source_generation: i64,
         boundary: &SessionScopeBoundary,
         detector: DetectorInput,
-    ) -> Result<(PublishedContent, Vec<String>), InputLoadError> {
+    ) -> Result<(PublishedContent, Vec<String>, bool), InputLoadError> {
         let content_scope = boundary
             .content_scope()
             .map_err(|error| InputLoadError::Scope(ScopeLoadError::Scope(error)))?;
@@ -325,7 +402,10 @@ impl Store {
         let mut bytes = 0usize;
         let mut previous = None;
         let mut limitations = Vec::new();
-        'pages: loop {
+        let mut retained = VecDeque::new();
+        let mut preceding_user = None;
+        let mut omitted_parts = 0usize;
+        loop {
             let page = self
                 .published_turn_content_keyset_scoped(
                     key,
@@ -383,21 +463,51 @@ impl Store {
                         .is_some_and(|fields| fields.malformed || fields.values.is_empty())
                 {
                     limitations.push("malformed_selected_tool_input".to_owned());
+                    continue;
                 }
                 let part_bytes = retained_part_bytes(&part)?;
-                if collected.parts.len() == detector.max_events() {
-                    collected.coverage.parts_capped = true;
-                    collected.coverage.more_parts = true;
-                    break 'pages;
-                }
-                if part_bytes > MAX_ACTIVITY_BYTES.saturating_sub(bytes) {
+                if part_bytes > MAX_ACTIVITY_BYTES {
+                    omitted_parts += 1;
                     collected.coverage.bytes_capped = true;
                     collected.coverage.oversized_parts =
                         collected.coverage.oversized_parts.saturating_add(1);
                     continue;
                 }
                 bytes += part_bytes;
-                collected.parts.push(part);
+                retained.push_back((part, part_bytes));
+                let omitted_before = omitted_parts;
+                while retained.len() >= detector.max_events()
+                    || bytes > MAX_ACTIVITY_BYTES - 64 * 1024
+                {
+                    let turn = retained.front().expect("retained activity").0.turn_index;
+                    while retained
+                        .front()
+                        .is_some_and(|(part, _)| part.turn_index == turn)
+                    {
+                        let (part, size) = retained.pop_front().expect("retained turn");
+                        bytes -= size;
+                        omitted_parts += 1;
+                        if part.role == "user"
+                            && part.part.kind.as_str() == "user"
+                            && size <= 64 * 1024
+                        {
+                            preceding_user = Some(part);
+                        }
+                    }
+                }
+                if omitted_parts > omitted_before
+                    && let Some(next_user) =
+                        retained.iter().position(|(part, _)| part.role == "user")
+                    && next_user > 0
+                    && next_user + 1 < retained.len()
+                {
+                    for _ in 0..next_user {
+                        let (_, size) = retained.pop_front().expect("older episode");
+                        bytes -= size;
+                        omitted_parts += 1;
+                    }
+                    preceding_user = None;
+                }
             }
             if page.page.next_cursor.is_some() && page.page.next_cursor == cursor {
                 return Err(unavailable(InputUnavailable::InvalidEventOrder));
@@ -407,9 +517,40 @@ impl Store {
                 break;
             }
         }
+        collected.parts = retained.into_iter().map(|(part, _)| part).collect();
+        if let Some(user) = preceding_user
+            && collected
+                .parts
+                .first()
+                .is_some_and(|part| part.role != "user")
+        {
+            collected.parts.insert(0, user);
+        }
+        if omitted_parts > 0
+            && let Some(start) =
+                collected
+                    .parts
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find_map(|(index, part)| {
+                        (part.role == "user"
+                            && collected.parts[index + 1..]
+                                .iter()
+                                .any(|later| later.role != "user"))
+                        .then_some(index)
+                    })
+        {
+            omitted_parts += start;
+            collected.parts.drain(..start);
+        }
+        ::tracing::debug!(event = "smart_check_activity_selected", omitted_parts);
+        if omitted_parts > 0 {
+            limitations.push("activity_sampled".to_owned());
+        }
         limitations.sort();
         limitations.dedup();
-        Ok((collected, limitations))
+        Ok((collected, limitations, omitted_parts > 0))
     }
 
     fn validate_smart_check_publication(

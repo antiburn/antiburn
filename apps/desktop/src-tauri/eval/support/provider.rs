@@ -2,110 +2,17 @@ use super::{client, config, jev_cloudflare, jev_ollama};
 use antiburn_local::analysis::jev::{
     JevError, JevRequest, JevResponse, capabilities::ModelCapabilities,
 };
-use config::{
-    ContextLimitOverride, SystemOneConnection, SystemOneEndpoint, SystemOneProvider,
-    SystemOneResponseMode,
-};
+#[cfg(test)]
+use config::ContextLimitOverride;
+use config::{SystemOneConnection, SystemOneEndpoint, SystemOneProvider, SystemOneResponseMode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 
-const LOCAL_BASE: &str = "http://127.0.0.1:11434";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum ProviderPreset {
-    Jev,
-    OllamaNimble,
-    OllamaClefFlash,
-    CloudflareClef,
-    CloudflareClefFlash,
-    CustomJevDirect,
-    CustomOllamaNimbleDirect,
-    CustomOllamaClefFlashDirect,
-    CustomCloudflareClefEnvelope,
-    CustomCloudflareClefFlashEnvelope,
-}
-
-impl ProviderPreset {
-    pub(crate) fn parse(value: &str) -> Result<Self, String> {
-        serde_json::from_value(json!(value))
-            .map_err(|_| "Unknown ANTIBURN_EVAL_PROVIDER preset".into())
-    }
-
-    fn local(self) -> bool {
-        matches!(
-            self,
-            Self::OllamaNimble
-                | Self::OllamaClefFlash
-                | Self::CustomOllamaNimbleDirect
-                | Self::CustomOllamaClefFlashDirect
-        )
-    }
-
-    fn cloudflare(self) -> bool {
-        matches!(
-            self,
-            Self::CloudflareClef
-                | Self::CloudflareClefFlash
-                | Self::CustomCloudflareClefEnvelope
-                | Self::CustomCloudflareClefFlashEnvelope
-        )
-    }
-
-    fn model(self) -> &'static str {
-        match self {
-            Self::Jev | Self::CustomJevDirect => antiburn_local::analysis::jev::PINNED_MODEL,
-            Self::OllamaNimble | Self::CustomOllamaNimbleDirect => "nimble:latest",
-            Self::OllamaClefFlash | Self::CustomOllamaClefFlashDirect => "clef-flash:latest",
-            Self::CloudflareClef | Self::CustomCloudflareClefEnvelope => "clef",
-            Self::CloudflareClefFlash | Self::CustomCloudflareClefFlashEnvelope => "clef-flash",
-        }
-    }
-
-    fn connection(self, account: Option<&str>) -> Result<SystemOneConnection, String> {
-        let mut connection = SystemOneConnection::jev_default();
-        connection.model = self.model().into();
-        connection.credential = None;
-        match self {
-            Self::Jev => {}
-            Self::OllamaNimble | Self::OllamaClefFlash => {
-                connection.provider = SystemOneProvider::Ollama;
-                connection.endpoint = SystemOneEndpoint::BaseUrl(LOCAL_BASE.into());
-            }
-            Self::CloudflareClef | Self::CloudflareClefFlash => {
-                connection.provider = SystemOneProvider::Cloudflare;
-                connection.endpoint = SystemOneEndpoint::CloudflareAccount(
-                    account.ok_or("CLOUDFLARE_ACCOUNT_ID is required")?.into(),
-                );
-            }
-            _ => {
-                connection.provider = SystemOneProvider::Custom;
-                connection.context_override = Some(ContextLimitOverride {
-                    total_input_tokens: Some(if self.local() { 8192 } else { 65_536 }),
-                    ..ContextLimitOverride::default()
-                });
-                let endpoint = if self.local() {
-                    format!("{LOCAL_BASE}/v1/systemone")
-                } else if self.cloudflare() {
-                    connection.response_mode = SystemOneResponseMode::CloudflareEnvelope;
-                    jev_cloudflare::account_endpoint(
-                        account.ok_or("CLOUDFLARE_ACCOUNT_ID is required")?,
-                        self.model(),
-                    )
-                    .map_err(|error| error.to_string())?
-                } else {
-                    config::system_one_endpoint()
-                };
-                connection.endpoint = SystemOneEndpoint::ExactUrl(endpoint);
-            }
-        }
-        connection
-            .validate()
-            .map_err(|_| "Invalid provider preset connection")?;
-        Ok(connection)
-    }
-}
+#[path = "provider_config.rs"]
+mod provider_config;
+use provider_config::LOCAL_BASE;
+pub(crate) use provider_config::ProviderPreset;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -124,17 +31,19 @@ fn selected_preset() -> ProviderPreset {
     ProviderPreset::parse(&value).expect("Select a closed provider preset")
 }
 
-fn account(preset: ProviderPreset) -> Option<String> {
-    preset
-        .cloudflare()
-        .then(|| std::env::var("CLOUDFLARE_ACCOUNT_ID").expect("CLOUDFLARE_ACCOUNT_ID is required"))
-}
-
 fn discover_configuration() -> EvalConfiguration {
     let preset = selected_preset();
-    let account = account(preset);
-    let mut connection = preset.connection(account.as_deref()).expect("valid preset");
+    let model = match std::env::var("ANTIBURN_EVAL_MODEL") {
+        Ok(model) => Some(model),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => panic!("ANTIBURN_EVAL_MODEL: {error}"),
+    };
+    let mut connection = preset
+        .environment_connection(model.as_deref())
+        .expect("valid preset and model");
     let capabilities = if preset.local() {
+        let model = connection.model.clone();
+        let expected_model = model.clone();
         let discovered = std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -142,7 +51,7 @@ fn discover_configuration() -> EvalConfiguration {
                 .expect("Discovery runtime builds");
             runtime.block_on(async {
                 jev_ollama::OllamaClient::new(LOCAL_BASE, None)?
-                    .discover(preset.model())
+                    .discover(&model)
                     .await
             })
         })
@@ -150,16 +59,17 @@ fn discover_configuration() -> EvalConfiguration {
         .expect("Ollama discovery does not panic")
         .expect("Production Ollama discovery must succeed");
         assert_eq!(
-            discovered.name,
-            preset.model(),
+            discovered.name, expected_model,
             "Discovery must bind the selected model"
         );
         connection.model_revision = discovered.digest;
         discovered.capabilities
     } else if preset.cloudflare() {
-        jev_cloudflare::cloudflare_capabilities(preset.model())
+        jev_cloudflare::cloudflare_capabilities(&connection.model)
     } else {
-        ModelCapabilities::jev_default()
+        let mut capabilities = ModelCapabilities::jev_default();
+        capabilities.model.clone_from(&connection.model);
+        capabilities
     };
     EvalConfiguration {
         preset,
@@ -199,20 +109,18 @@ pub(crate) struct EvalClient {
     transport: Transport,
 }
 
-fn credential(name: &str) -> Result<String, JevError> {
-    std::env::var(name)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or(JevError::AuthenticationRejected)
-}
-
 impl EvalClient {
+    pub(crate) fn capabilities(&self) -> &ModelCapabilities {
+        &self.configuration.capabilities
+    }
+
     pub(crate) async fn from_environment() -> Result<Self, JevError> {
         let configuration = configuration().clone();
+        let credential = configuration.preset.environment_credential()?;
         let transport = match configuration.connection.provider {
-            SystemOneProvider::Jev => Transport::Jev(client::TypeSafeClient::new(credential(
-                "TYPESAFE_API_KEY",
-            )?)?),
+            SystemOneProvider::Jev => Transport::Jev(client::TypeSafeClient::new(
+                credential.ok_or(JevError::AuthenticationRejected)?,
+            )?),
             SystemOneProvider::Ollama => Transport::Ollama(
                 jev_ollama::OllamaClient::new(LOCAL_BASE, None).map_err(ollama_error)?,
             ),
@@ -224,7 +132,7 @@ impl EvalClient {
                 };
                 Transport::Cloudflare(jev_cloudflare::CloudflareClient::new(
                     account.clone(),
-                    credential("CLOUDFLARE_AUTH_TOKEN")?,
+                    credential.ok_or(JevError::AuthenticationRejected)?,
                     configuration.connection.model.clone(),
                 )?)
             }
@@ -233,18 +141,7 @@ impl EvalClient {
                     .connection
                     .inference_endpoint()
                     .map_err(|_| JevError::InvalidRequestSchema)?,
-                credential: if configuration.preset.local() {
-                    None
-                } else {
-                    Some(
-                        credential(if configuration.preset.cloudflare() {
-                            "CLOUDFLARE_AUTH_TOKEN"
-                        } else {
-                            "TYPESAFE_API_KEY"
-                        })?
-                        .into(),
-                    )
-                },
+                credential: credential.map(Into::into),
                 mode: configuration.connection.response_mode,
             },
         };
@@ -304,6 +201,7 @@ fn ollama_error(error: jev_ollama::OllamaError) -> JevError {
         OllamaError::RequestOutcomeUnknown => JevError::RequestOutcomeUnknown,
         OllamaError::ResponseTooLarge => JevError::ResponseTooLarge,
         OllamaError::ResponseDecode => JevError::ResponseDecode,
+        OllamaError::ContextRejected => JevError::ContextRejected,
         OllamaError::InvalidRequest | OllamaError::RequestBodyTooLarge => {
             JevError::InvalidRequestSchema
         }

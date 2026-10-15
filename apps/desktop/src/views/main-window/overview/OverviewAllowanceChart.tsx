@@ -30,7 +30,7 @@ const AXIS_LABEL_CLEARANCE = 3
 
 const GUIDE_PERCENTS = [100, 75, 50, 25]
 
-const LEGEND_ITEMS = [
+export const LEGEND_ITEMS = [
   { key: "short", label: "5-hour window", swatch: "bg-context-stroke/20" },
   { key: "weekly", label: "Week", swatch: "bg-context-stroke/60" },
   { key: "rolling", label: "Average usage", swatch: "bg-gray-500", shape: "line" },
@@ -287,14 +287,17 @@ function AllowancePlot({
   )
 }
 
-interface AllowanceDaySlot {
+export interface AllowanceDaySlot {
   index: number
   startEpoch: number
   endEpoch: number
   isToday: boolean
 }
 
-function chartDaySlots(rangeStartEpoch: number, rangeEndEpoch: number): AllowanceDaySlot[] {
+export function chartDaySlots(
+  rangeStartEpoch: number,
+  rangeEndEpoch: number,
+): AllowanceDaySlot[] {
   return Array.from({ length: CHART_DAYS }, (_, index) => {
     const isToday = index === CHART_DAYS - 1
     const startEpoch = rangeStartEpoch + index * DAY_SECS
@@ -394,7 +397,7 @@ function localDateOf(epoch: number): string {
   return `${year}-${month}-${day}`
 }
 
-function dayAxisLabel(slot: AllowanceDaySlot): string | null {
+export function dayAxisLabel(slot: AllowanceDaySlot): string | null {
   if (slot.isToday) return "Today"
   if (
     slot.index % AXIS_LABEL_STEP === 0 &&
@@ -405,11 +408,11 @@ function dayAxisLabel(slot: AllowanceDaySlot): string | null {
   return null
 }
 
-function dayHeadingLabel(slot: AllowanceDaySlot): string {
+export function dayHeadingLabel(slot: AllowanceDaySlot): string {
   return slot.isToday ? "Today" : dayLabel(localDateOf(slot.startEpoch))
 }
 
-function rollingAt(
+export function rollingAt(
   rolling: readonly AllowanceRollingPointPayload[],
   atEpoch: number,
 ): number | null {
@@ -421,7 +424,7 @@ function rollingAt(
   return value
 }
 
-function dayTooltipLines(
+export function dayTooltipLines(
   account: AllowanceUsageAccountPayload,
   slot: AllowanceDaySlot,
 ): string[] {

@@ -48,7 +48,6 @@ pub(super) fn window_fields(comparisons: &[&CandidateComparison]) -> Value {
         .expect("assessment windows contain at least one target");
     let initial = initial_context(first);
     let targets = comparisons.iter().map(|comparison| json!({
-        "comparison_id": &comparison.id,
         "instruction": instruction_fields(comparison),
         "earlier_counterevidence": ordered_request_counter_evidence(comparison.prerequisite_episode.as_ref().map(|episode| episode.events.as_slice()).unwrap_or(&comparison.counterevidence), comparison),
         "assessment_limits": {
@@ -154,6 +153,8 @@ fn instruction_fields(comparison: &CandidateComparison) -> Value {
     json!({
         "section": comparison.reference.rule_heading,
         "text": rule_text_fragment(comparison),
+        "complete_text": super::super::planning::complete_rule_unit(rule_text_fragment(comparison), &comparison.instruction_context),
+        "scope_directory": if comparison.reference.scope == InstructionScope::Nested { super::super::planning::nested_scope_directory(&comparison.reference.source) } else { None },
         "provenance": comparison.reference.provenance,
         "scope": comparison.reference.scope,
         "target_source_lines": {"start": comparison.reference.start_line, "end": comparison.reference.end_line},
@@ -307,6 +308,7 @@ mod tests {
         let mut action = event("command", 10, "assistant", "main", text);
         action.kind = "tool_input".to_owned();
         action.tool_name = Some("bash".to_owned());
+        action.tool_call_id = Some("command-call".to_owned());
         action
     }
 
@@ -367,13 +369,11 @@ mod tests {
                 assert_eq!(fields["candidate_action"]["text"], request);
                 for target in fields["instruction_targets"].as_array().unwrap() {
                     assert!(
-                        target["instruction"]["surrounding_context"]
-                            .to_string()
-                            .contains(required),
+                        target["instruction"]["text"].to_string().contains(required),
                         "{request}: {target}"
                     );
                     if rule == scans {
-                        let context = target["instruction"]["surrounding_context"].to_string();
+                        let context = target["instruction"]["text"].to_string();
                         assert!(context.contains("run aislop scan --changes once"));
                         assert!(context.contains("For branch or PR work with a known base"));
                         assert!(
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn production_window_keeps_nonprefix_sibling_exception_and_target_citation() {
-        let rule = "# Checks\nOnly during release work.\n\n- Run all tests.\n- Documentation-only work needs no test run.\n- Keep the result private.";
+        let rule = "# Checks\nOnly during release work.\n\n- Do not request `git commit` before running the tests.\n- Documentation-only work needs no test run.\n- Keep the result private.";
         let plan = build_assessment_plan(input(
             vec![command("git commit -s -m \"docs: update guide\"")],
             rule,
@@ -404,7 +404,7 @@ mod tests {
             instruction["text"]
                 .as_str()
                 .unwrap()
-                .contains("Run all tests")
+                .contains("Do not request `git commit`")
         );
         assert!(
             instruction["surrounding_context"]
@@ -421,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn production_window_keeps_the_complete_scoped_commit_message_atomic() {
+    fn production_window_abstains_when_a_complete_scoped_commit_message_cannot_fit() {
         let request = format!(
             "git commit -s -m \"feat(metabase): {}\"",
             "add action counts ".repeat(100)
@@ -432,17 +432,16 @@ mod tests {
         );
         let context = build_jev_context(&source).unwrap();
         let plan = IgnoredInstructionsCheck.prepare(&context).unwrap();
-        assert!(!plan.work_items.is_empty());
-        for item in plan.work_items {
-            assert_eq!(item.window.fields["candidate_action"]["text"], request);
-            assert_eq!(
-                item.window.fields["candidate_action_range_bytes"]["start"],
-                0
-            );
-            assert_eq!(
-                item.window.fields["candidate_action_range_bytes"]["end"],
-                request.len()
-            );
-        }
+        assert!(request.len() > 512);
+        assert!(plan.work_items.is_empty());
+        assert!(plan.prepared.comparisons.is_empty());
+        assert_eq!(plan.prepared.coverage.skipped_actions, ["command"]);
+        assert_eq!(
+            IgnoredInstructionsCheck
+                .reduce(&plan, &[], true)
+                .unwrap()
+                .request_count,
+            0
+        );
     }
 }

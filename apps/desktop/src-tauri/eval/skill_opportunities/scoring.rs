@@ -3,7 +3,7 @@ use crate::support::scoring::{inventory_errors, ratio};
 use antiburn_local::analysis::jev::JevWorkItem;
 use antiburn_local::checks::skill_opportunities::{
     SkillOpportunitiesResult, SkillOpportunityFinding, SkillOpportunityLimit,
-    SkillOpportunityOutcome,
+    SkillOpportunityOutcome, SkillRelationship,
 };
 use serde_json::{Value, json};
 
@@ -37,7 +37,8 @@ pub(crate) fn score(
                 })
         })
         .count();
-    let tp = usize::from(case.label == Label::Advisory && exact == 1);
+    let binding = usize::from(exact == 1);
+    let tp = usize::from(case.policy_admitted && case.label == Label::Advisory && binding == 1);
     let missing = scheduled
         .iter()
         .filter(|item| {
@@ -71,8 +72,15 @@ pub(crate) fn score(
     json!({"tp":tp,"fp":result.findings.len()-tp,"fn":usize::from(case.label == Label::Advisory)-tp,
         "missing":missing,"failed_cases":0,"abstentions":abstentions,"clean":clean,
         "scheduled":scheduled.len(),"mechanical_skips":skipped,"assessed":scheduled.len()-missing,
+        "policy_admitted":scheduled.len(),"expected_outcome":case.label,"exact_binding":binding,
+        "expected_admission":case.policy_admitted,
+        "wrong_findings":usize::from(!result.findings.is_empty() && (!case.policy_admitted || case.label != Label::Advisory)),
+        "wrong_bindings":unsafe_publications,
+        "missed_positives":usize::from(case.policy_admitted && case.label == Label::Advisory && result.findings.is_empty()),
+        "unsupported_clean":usize::from(!case.policy_admitted && (result.complete || clean > 0)),
+        "unsupported_cases":usize::from(!case.policy_admitted),
         "unsafe_publications":unsafe_publications,"historical_claims":historical_claims,
-        "legacy_admission_case":case.authority})
+        "legacy_admission_case":case.authority,"legacy_diagnostic":case.legacy_diagnostic})
 }
 
 fn has_current_advisory_claim(finding: &SkillOpportunityFinding) -> bool {
@@ -86,14 +94,33 @@ fn has_current_advisory_claim(finding: &SkillOpportunityFinding) -> bool {
     {
         expected.push_str(" Task or known-use context is partial.");
     }
-    finding.message == "This current skill could help with the observed work."
+    let message = format!(
+        "{} offers {} for the recorded operation: {}",
+        finding.comparison.skill.name,
+        finding.comparison.skill.description,
+        finding
+            .comparison
+            .work
+            .first()
+            .map_or("", |work| work.text.as_str()),
+    );
+    finding.explanation_basis.as_ref().is_some_and(|basis| {
+        basis.version == 1
+            && matches!(
+                basis.relationship,
+                SkillRelationship::UsefulProcedure | SkillRelationship::SpecialistCheck
+            )
+    }) && finding.message == message
         && finding.absence_limit == expected
 }
 
 pub(crate) fn failed(case: &Case, scheduled: usize, skipped: usize) -> Value {
-    json!({"tp":0,"fp":0,"fn":usize::from(case.label == Label::Advisory),"missing":scheduled,
+    json!({"tp":0,"fp":0,"fn":usize::from(case.policy_admitted && case.label == Label::Advisory),"missing":scheduled,
         "failed_cases":1,"abstentions":0,"clean":0,"scheduled":scheduled,"mechanical_skips":skipped,
-        "assessed":0,"unsafe_publications":0,"historical_claims":0})
+        "assessed":0,"policy_admitted":scheduled,"expected_outcome":case.label,"exact_binding":0,
+        "unsafe_publications":0,"historical_claims":0,"legacy_diagnostic":case.legacy_diagnostic,
+        "wrong_findings":0,"wrong_bindings":0,"missed_positives":usize::from(case.policy_admitted && case.label == Label::Advisory),
+        "unsupported_clean":0,"unsupported_cases":usize::from(!case.policy_admitted),"expected_admission":case.policy_admitted})
 }
 
 pub(crate) fn metrics(cases: &[Case], rows: &[Value]) -> Value {
@@ -110,7 +137,7 @@ pub(crate) fn metrics(cases: &[Case], rows: &[Value]) -> Value {
     let fp = sum("fp");
     let positives = cases
         .iter()
-        .filter(|case| case.label == Label::Advisory)
+        .filter(|case| case.policy_admitted && case.label == Label::Advisory)
         .count();
     json!({"cases":cases.len(),"executed_cases":rows.len(),"tp":tp,"fp":fp,"fn":positives as u64-tp,
         "precision":ratio(tp as usize,(tp+fp) as usize),"recall":ratio(tp as usize,positives),
@@ -118,7 +145,9 @@ pub(crate) fn metrics(cases: &[Case], rows: &[Value]) -> Value {
         "missing_answers":sum("missing"),"failed_cases":rows.iter().filter(|row|!row["failure"].is_null()).count(),
         "abstentions":sum("abstentions"),"clean":sum("clean"),"scheduled_items":sum("scheduled"),
         "mechanical_skips":sum("mechanical_skips"),"unsafe_publications":sum("unsafe_publications"),
-        "historical_claims":sum("historical_claims"),"identity_errors":inventory_errors(&schedule,rows)})
+        "historical_claims":sum("historical_claims"),"identity_errors":inventory_errors(&schedule,rows),
+        "wrong_findings":sum("wrong_findings"),"wrong_bindings":sum("wrong_bindings"),"missed_positives":sum("missed_positives"),
+        "unsupported_clean":sum("unsupported_clean"),"unsupported_cases":sum("unsupported_cases")})
 }
 
 #[test]
@@ -131,7 +160,35 @@ fn missing_positive_cases_remain_in_recall() {
 }
 
 #[test]
-fn missing_history_reaches_the_model_without_removing_positive_labels() {
+fn repeated_workflows_are_positive_and_single_operations_are_negative() {
+    for suite in ["development", "controls"] {
+        let cases = super::fixtures::cases(suite);
+        for case in cases.iter().filter(|case| {
+            matches!(
+                case.family,
+                "repeated_workflow" | "single_operation_generic"
+            )
+        }) {
+            let expected = if case.family == "repeated_workflow" {
+                Label::Advisory
+            } else {
+                Label::NoOpportunity
+            };
+            assert_eq!(case.label, expected, "{}", case.id);
+            assert!(case.legacy_diagnostic, "{}", case.id);
+            assert!(!case.policy_admitted, "{}", case.id);
+        }
+        assert!(
+            cases
+                .iter()
+                .filter(|case| case.family == "opportunity")
+                .all(|case| case.legacy_diagnostic)
+        );
+    }
+}
+
+#[test]
+fn unsupported_history_preserves_semantic_labels_without_counting_a_supported_miss() {
     use antiburn_local::analysis::jev::JevCheck;
     let mut case = super::fixtures::cases("development")
         .into_iter()
@@ -140,9 +197,11 @@ fn missing_history_reaches_the_model_without_removing_positive_labels() {
     case.label = Label::Advisory;
     let plan = case.check.prepare(&case.check.session_context()).unwrap();
     let result = case.check.reduce(&plan, &[], true).unwrap();
-    assert!(!plan.work_items.is_empty());
+    assert!(plan.work_items.is_empty());
     let row = json!({"id":case.id,"failure":null,"score":score(&case,&result,&plan.work_items,plan.skipped_item_ids.len())});
-    assert_eq!(metrics(&[case], &[row])["recall"], 0.0);
+    let metrics = metrics(&[case], &[row]);
+    assert_eq!(metrics["unsupported_cases"], 1);
+    assert_eq!(metrics["missed_positives"], 0);
 }
 
 #[cfg(test)]
@@ -184,6 +243,8 @@ fn saved_choice_result(
                         probabilities: BTreeMap::from([
                             ("useful_opportunity".into(), probability),
                             ("no_opportunity".into(), 0.99 - probability),
+                            ("specialist_check".into(), 0.0),
+                            ("already_covered".into(), 0.0),
                             ("uncertain".into(), 0.01),
                         ]),
                     },
@@ -208,12 +269,24 @@ fn saved_choice_result(
     (plan, result)
 }
 
+fn has_reachable_skill(case: &Case) -> bool {
+    use antiburn_local::analysis::jev::JevCheck;
+    case.check
+        .prepare(&case.check.session_context())
+        .is_ok_and(|plan| {
+            plan.prepared
+                .comparisons
+                .iter()
+                .any(|comparison| comparison.skill.identity == case.skill.identity)
+        })
+}
+
 #[test]
 fn unknown_use_saved_choices_score_a_current_advisory_without_historical_claims() {
     for suite in ["development", "controls"] {
         for case in super::fixtures::cases(suite)
             .into_iter()
-            .filter(|case| case.family == "unknown_use")
+            .filter(|case| case.family == "unknown_use" && has_reachable_skill(case))
         {
             assert_eq!(case.label, Label::Advisory);
             let (plan, result) = saved_choice_result(&case, 0.78);
@@ -269,7 +342,7 @@ fn unknown_use_does_not_hide_routine_work_or_unrelated_skill_false_positives() {
             matches!(
                 case.family,
                 "unknown_use_direct_work" | "unknown_use_irrelevant"
-            )
+            ) && has_reachable_skill(case)
         }) {
             assert_eq!(case.label, Label::NoOpportunity);
             let (plan, result) = saved_choice_result(&case, 0.78);
@@ -288,10 +361,13 @@ fn unknown_use_does_not_hide_routine_work_or_unrelated_skill_false_positives() {
 
 #[test]
 fn claim_contract_accepts_only_typed_context_not_nonuse_or_history_accusations() {
-    let case = super::fixtures::cases("development")
+    let Some(case) = ["development", "controls"]
         .into_iter()
-        .find(|case| case.family == "unknown_use")
-        .unwrap();
+        .flat_map(super::fixtures::cases)
+        .find(|case| case.family == "unknown_use" && has_reachable_skill(case))
+    else {
+        return;
+    };
     let (plan, result) = saved_choice_result(&case, 0.78);
     let original = &result.findings[0];
     for variant in 0..3 {

@@ -12,7 +12,6 @@ import { OverviewFixes } from "./overview/OverviewFixes"
 import {
   overviewProgress,
   RECENT_SESSIONS_TRANSITION_NAME,
-  stepDocked,
   USAGE_TRANSITION_NAME,
   subscribeOverviewProgress,
 } from "./overview/overviewProgressStore"
@@ -91,7 +90,9 @@ export function OverviewView({
   const usageCard = (
     <div
       style={{ viewTransitionName: USAGE_TRANSITION_NAME }}
-      className="rounded-(--radius-popover) shadow-[var(--shadow-raised),var(--shadow-stats-card)] bg-surface-sidebar p-(--space-lg)"
+      // The card takes the free height of the page, so its banner chart grows
+      // to fill the window.
+      className="flex flex-1 flex-col p-(--space-lg)"
     >
       <OverviewUsage
         metric={metric}
@@ -104,12 +105,6 @@ export function OverviewView({
         allowance={state.allowance}
         allowanceLoading={state.allowanceLoading || !metricSettled}
         allowanceError={state.allowanceError}
-        allowanceCollecting={
-          isFirstRun &&
-          progress.flow !== "done" &&
-          settings.liveUsageEnabled &&
-          settings.liveUsageStarted
-        }
         usageError={state.usageError}
         onRetryUsage={session.refresh}
         loading={loading}
@@ -120,7 +115,9 @@ export function OverviewView({
   const recentSessions = (
     <div
       style={{ viewTransitionName: RECENT_SESSIONS_TRANSITION_NAME }}
-      className="mt-auto rounded-(--radius-popover) shadow-[var(--shadow-raised),var(--shadow-stats-card)] bg-surface-sidebar p-(--space-lg)"
+      // No card: the rows carry their own fill. The list sits at the
+      // bottom of the page and free space collects above it.
+      className="mt-auto"
     >
       <OverviewRecentSessions
         active={active && state.active}
@@ -131,8 +128,6 @@ export function OverviewView({
         metric={metric}
         liveUsage={state.liveUsage ?? undefined}
         sessionLimitAllocations={state.sessionLimitAllocations}
-        showChecks={!showTakeover || stepDocked(progress.flow, "checks")}
-        showOpenAll={!showTakeover}
       />
     </div>
   )
@@ -156,14 +151,7 @@ export function OverviewView({
         viewportClassName="[&>div]:flex! [&>div]:min-block-full"
       >
         {showTakeover ? (
-          // The usage card and Recent sessions fade in around the takeover
-          // once the Sessions step is done: the sessions are read, only
-          // their checks wait.
-          <div className="flex grow flex-col gap-(--space-2xl)">
-            {stepDocked(progress.flow, "sessions") && usageCard}
-            <FirstRunTakeover onOpenChecks={onOpenChecks} />
-            {stepDocked(progress.flow, "sessions") && recentSessions}
-          </div>
+          <FirstRunTakeover />
         ) : modeDecided ? (
           <div
             role="region"
@@ -179,7 +167,7 @@ export function OverviewView({
 
             {usageCard}
 
-            <OverviewFixes />
+            <OverviewFixes onOpenCheck={onOpenChecks} />
 
             {recentSessions}
           </div>
@@ -190,7 +178,7 @@ export function OverviewView({
         <ScrollPane
           className={cn(
             "overview-provider-limits min-h-0 min-w-0",
-            "rounded-(--radius-popover) shadow-[var(--shadow-raised),var(--shadow-stats-card)]",
+            "rounded-(--radius-popover) shadow-stats-card",
             "bg-(--color-surface-window) bg-gradient-to-b from-(--color-surface-sidebar) to-(--color-surface-sidebar)",
           )}
           viewportTabIndex={0}

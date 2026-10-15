@@ -1,6 +1,7 @@
 import { LoaderCircle } from "lucide-react"
 import { useState, useSyncExternalStore } from "react"
 
+import { pluralize } from "../../../../lib/presentation/text"
 import { Card } from "../../../../components/ui/Card"
 import { PushButton } from "../../../../components/ui/PushButton"
 import { SegmentedControl } from "../../../../components/ui/SegmentedControl"
@@ -19,8 +20,9 @@ import {
 } from "../../../../lib/checkAvailability"
 import type { BurnCheckDetectorId } from "../../../../lib/insightsIpc"
 import { CHECK_DEFINITIONS } from "../../../../lib/presentation/checkDefinitions"
-import type { StepSettingsControlId } from "../../../../lib/stepSettingsTargets"
-import { StepSettingsRow, StepSettingsToggleRow } from "./StepSettingsSearchRows"
+import type { SettingsControlId } from "../../../../lib/settingsSearchTargets"
+import { SettingsRow, SettingsToggleRow } from "../../../settings/SettingsSearchRows"
+
 import { CheckProviderSettings } from "../../../settings/CheckProviderSettings"
 import { providerErrorMessage } from "../../../settings/ProviderSettingsSession"
 
@@ -99,7 +101,7 @@ function historyStatus(state: CheckAvailability): string | null {
     backfill.waitingForData === 0 &&
     backfill.waitingForIdle === 0
   if (finished) {
-    return `Finished ${backfill.completed.toLocaleString()} ${backfill.completed === 1 ? "check job" : "check jobs"}`
+    return `Finished ${backfill.completed.toLocaleString()} ${pluralize(backfill.completed, "check job", "check jobs")}`
   }
   const parts = [
     waiting > 0 ? `${waiting} waiting to be checked` : null,
@@ -208,7 +210,7 @@ export function ChecksStepSettings({
     searchId,
   }: {
     id: BurnCheckDetectorId
-    searchId: StepSettingsControlId
+    searchId: SettingsControlId
   }) {
     const definition = CHECK_DEFINITIONS[id]
     const availability =
@@ -216,7 +218,7 @@ export function ChecksStepSettings({
         ? " Enable Smart Burn Checks with an active provider connection below before this check can run."
         : ""
     return (
-      <StepSettingsToggleRow
+      <SettingsToggleRow
         key={id}
         searchId={searchId}
         description={`${definition.description}${availability}`}
@@ -240,7 +242,7 @@ export function ChecksStepSettings({
 
       <SectionGroup title="Smart Burn Checks">
         <Card>
-          <StepSettingsToggleRow
+          <SettingsToggleRow
             searchId="smartChecksEnabled"
             description="Run smart burn checks using the decision model below."
             checked={state.configured}
@@ -258,7 +260,7 @@ export function ChecksStepSettings({
 
       <SectionGroup title="Past sessions">
         <Card>
-          <StepSettingsRow
+          <SettingsRow
             searchId="checkHistory"
             label="Check history"
             description="Choose a period. Checks start only when you ask."
@@ -300,17 +302,28 @@ export function ChecksStepSettings({
             {(progress || historyRunning || state.backfill.ready > 0) && (
               <div className="mt-3 space-y-1" role="status" aria-live="polite">
                 {historyRunning && (
-                  <StatusText icon={LoaderCircle} iconClassName="animate-spin" tone="secondary">
-                    Running checks; {state.backfill.completed.toLocaleString()}/
-                    {historyTotal.toLocaleString()} check jobs complete
-                  </StatusText>
+                  <div>
+                    <StatusText
+                      icon={LoaderCircle}
+                      iconClassName="animate-spin"
+                      tone="secondary"
+                    >
+                      Reviewing past sessions · {state.backfill.completed.toLocaleString()} of{" "}
+                      {historyTotal.toLocaleString()} session checks finished
+                    </StatusText>
+                    {state.backfill.reviewed > 0 && (
+                      <p className="ml-5 type-footnote tabular-nums text-label-tertiary">
+                        {state.backfill.reviewed.toLocaleString()} items reviewed so far
+                      </p>
+                    )}
+                  </div>
                 )}
                 {!historyRunning && progress && (
                   <p className="type-footnote text-label-secondary">{progress}</p>
                 )}
               </div>
             )}
-          </StepSettingsRow>
+          </SettingsRow>
         </Card>
       </SectionGroup>
 
@@ -324,7 +337,7 @@ export function ChecksStepSettings({
   )
 }
 
-const CHECK_SEARCH_IDS: Record<BurnCheckDetectorId, StepSettingsControlId> = {
+const CHECK_SEARCH_IDS: Record<BurnCheckDetectorId, SettingsControlId> = {
   sessionsOverDepth: "sessionsOverDepthCheck",
   modelOverthinking: "modelOverthinkingCheck",
   overpoweredSubagents: "overpoweredSubagentsCheck",

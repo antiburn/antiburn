@@ -73,7 +73,7 @@ describe("UsageSpendSummary", () => {
           costComplete: true,
           sessionCount: 2,
         })}
-        showApiPricingCaveat
+        hasSubscriptionPlan
       />,
     )
 
@@ -81,6 +81,11 @@ describe("UsageSpendSummary", () => {
       "title",
       "You're on subscription, so these are just estimated dollar values.",
     )
+    const todayTerm = screen.getAllByRole("term").find((term) => term.textContent === "Today")
+    expect(todayTerm).toBeDefined()
+    const today = within(todayTerm!.parentElement!)
+    expect(today.getByText("1.25k").parentElement).toHaveClass("type-title-3", "font-semibold!")
+    expect(today.getByText("$1.25").parentElement).toHaveClass("type-footnote")
   })
 
   it("shows the token count as the figure when nothing could be priced", () => {

@@ -31,6 +31,7 @@ import {
 import { cn } from "../../lib/cn"
 import { agentDisplayName } from "../../lib/presentation/agents"
 import type { SessionHygienePayload } from "../../lib/insightsIpc"
+import type { CalledToolPayload } from "../../lib/sessionIpc"
 import { localSessionKey, sessionIdentityKey } from "../../lib/presentation/localIdentity"
 import { sessionHygieneChecks } from "../../lib/presentation/sessionHygiene"
 import { unusedContextRows as unusedContextRowsFor } from "../../lib/presentation/unusedContext"
@@ -70,6 +71,7 @@ import { CountPill } from "../ui/CountPill"
 import { SegmentedControl } from "../ui/SegmentedControl"
 import { Skeleton } from "../ui/Skeleton"
 import { ChartKey } from "./analysis/ChartKey"
+import { CalledTools } from "./analysis/CalledTools"
 import { CostBreakdown } from "./analysis/CostBreakdown"
 import { CostBurnupChart, type CostSeries } from "./analysis/CostBurnupChart"
 import { ContextTokensChart, type ChartSeries } from "./analysis/ContextTokensChart"
@@ -153,6 +155,12 @@ export interface SessionDetailPresentationProps {
   modelRuns: PresentableModelRun[]
   /** Direct fork relations resolved from local transcripts. */
   relations: LocalSessionRelations | null
+  /**
+   * The tools this session called, most-called first. Null when the source
+   * records no tool evidence. The Tools tab falls back to this list for an
+   * agent that records no startup context.
+   */
+  calledTools?: CalledToolPayload[] | null
   /** This session's quota contributions, for the Cost tab's Quota block. */
   sessionQuota?: SessionQuotaPayload | null
   /** Open one quota window on the Quota screen. Omitted where there is no
@@ -697,6 +705,7 @@ export function SessionDetailPresentation({
   subagentCount,
   modelRuns,
   relations,
+  calledTools = null,
   sessionQuota = null,
   onOpenQuota,
   sessionMemories = null,
@@ -1243,7 +1252,8 @@ export function SessionDetailPresentation({
 
               {tab === "tools" && (
                 <div className="flex flex-col gap-y-4">
-                  {firstSession?.initialContext ? (
+                  {firstSession?.initialContext &&
+                  (firstSession.initialContext.sources.length > 0 || !calledTools?.length) ? (
                     <>
                       {/* The wasted tokens are the finding of this tab, so they
                           head the table they summarize. The figure has no
@@ -1269,6 +1279,8 @@ export function SessionDetailPresentation({
                       )}
                       <SkillsMcpChart breakdown={firstSession.initialContext} columns={2} />
                     </>
+                  ) : calledTools != null && calledTools.length > 0 ? (
+                    <CalledTools tools={calledTools} />
                   ) : (
                     <p className="type-callout text-label-tertiary">
                       No startup context has been recorded for this session.

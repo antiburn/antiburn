@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { memoryCountStore } from "../../../lib/memoryCountStore"
 import type { AgentMemoriesReport, MemoryEditOutcome } from "../../../lib/memoriesIpc"
 import { entry, project, report } from "./memoriesFixtures"
 import { MemoriesSession, sortMemories, type MemoriesAdapter } from "./MemoriesSession"
@@ -42,15 +43,20 @@ beforeEach(() => {
   noteInteraction.mockClear()
   localStorage.clear()
 })
-afterEach(() => localStorage.clear())
+afterEach(() => {
+  localStorage.clear()
+  vi.restoreAllMocks()
+})
 
 describe("MemoriesSession", () => {
   it("loads on the first active subscribe", async () => {
+    const accept = vi.spyOn(memoryCountStore, "acceptReport")
     const { adapter, session } = setup()
     const stop = session.subscribe(() => undefined)
     await flush()
     expect(adapter.listMemories).toHaveBeenCalledTimes(1)
     expect(session.getSnapshot().report).toEqual(report())
+    expect(accept).toHaveBeenCalledWith(report(), expect.any(Number))
     stop()
     session.dispose()
   })
@@ -242,9 +248,11 @@ describe("MemoriesSession edits", () => {
   }
 
   it("archives with the listed size and time, then keeps the row", async () => {
+    const invalidate = vi.spyOn(memoryCountStore, "invalidate")
     const { adapter, session, stop } = await active()
     await session.archive(target, { ...memory, sizeBytes: 12, modifiedMs: 34 })
     expect(adapter.archive).toHaveBeenCalledWith("-p", "a.md", 12, 34)
+    expect(invalidate).toHaveBeenCalledOnce()
     expect(session.getSnapshot().archived.get(memory.path)).toEqual({
       slug: "-p",
       archiveId: "1-a.md",
@@ -276,6 +284,15 @@ describe("MemoriesSession edits", () => {
     expect(session.getSnapshot().archived.size).toBe(0)
     expect(session.getSnapshot().rowErrors.get(memory.path)).toBe("changedOnDisk")
     expect(memoryActions()).toEqual([{ action: "archive", outcome: "changed_on_disk" }])
+    stop()
+  })
+
+  it("refreshes the sidebar count after restore", async () => {
+    const { session, stop } = await active()
+    await session.archive(target, memory)
+    const invalidate = vi.spyOn(memoryCountStore, "invalidate")
+    await session.undo(memory)
+    expect(invalidate).toHaveBeenCalledOnce()
     stop()
   })
 

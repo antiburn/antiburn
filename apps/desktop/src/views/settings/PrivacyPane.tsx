@@ -1,3 +1,4 @@
+import { pluralize } from "../../lib/presentation/text"
 import { Row } from "../../components/ui/Row"
 import { SettingsRow, SettingsToggleRow } from "./SettingsSearchRows"
 import { confirm, save } from "@tauri-apps/plugin-dialog"
@@ -394,9 +395,11 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   <StatusText tone="secondary">
                     {clearState.sessions === 0
                       ? "There was nothing stored to clear."
-                      : `Cleared ${clearState.sessions} ${
-                          clearState.sessions === 1 ? "session" : "sessions"
-                        }. A scan is running to find them again.`}
+                      : `Cleared ${clearState.sessions} ${pluralize(
+                          clearState.sessions,
+                          "session",
+                          "sessions",
+                        )}. A scan is running to find them again.`}
                   </StatusText>
                 ) : (
                   <StatusText tone="secondary">The index could not be cleared.</StatusText>

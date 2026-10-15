@@ -1,6 +1,7 @@
 import { CheckCircle2, CircleDashed, Flame, LoaderCircle } from "lucide-react"
 import { useRef } from "react"
 
+import { pluralize } from "../../lib/presentation/text"
 import { TextRoll } from "../../components/ui/TextRoll"
 import { BurnCheckSummary } from "../../components/burn-checks/BurnCheckSummary"
 import { BurnCheckFlames } from "../../components/burn-checks/BurnCheckFlames"
@@ -215,7 +216,7 @@ export function ChecksPeek({
                     className="animate-spin"
                     aria-hidden="true"
                   />
-                  {`${pendingEvidence} session${pendingEvidence === 1 ? "" : "s"} processing`}
+                  {`${pendingEvidence} ${pluralize(pendingEvidence, "session", "sessions")} processing`}
                 </p>
               )}
             </div>

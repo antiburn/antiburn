@@ -37,7 +37,10 @@ fn publish_into(
 ) -> (Store, SessionKey, i64, i64) {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("opencode.db");
-    let source = rusqlite::Connection::open(&path).unwrap();
+    let mut connection = rusqlite::Connection::open(&path).unwrap();
+    // One transaction keeps fixture setup to a single disk sync. Per-row
+    // commits each force a sync, which is very slow on Windows CI runners.
+    let source = connection.transaction().unwrap();
     source.execute_batch(
         "CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, time_created INTEGER, time_updated INTEGER);
          CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
@@ -97,6 +100,8 @@ fn publish_into(
             )
             .unwrap();
     }
+    source.commit().unwrap();
+    drop(connection);
     let (latest, rows) = tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(db_session_fingerprint(path.clone(), "scope".into()))
@@ -190,12 +195,11 @@ fn publish_into(
 }
 
 #[test]
-fn real_parse_publish_factory_load_keeps_early_scope_and_later_approval() {
+fn real_parse_publish_factory_load_samples_scope_and_keeps_later_approval() {
     let store = Store::open_in_memory(Path::new("/tmp/antiburn-scope-factory-tests")).unwrap();
     let publications = ["native", "wsl:synthetic", "ssh:synthetic"]
         .map(|environment| publish_into(store.clone(), environment, false, None));
     for (store, key, fence, generation) in publications {
-        let environment = &key.environment_key;
         let request = store
             .session_scope_request(&key, fence, generation)
             .unwrap();
@@ -205,10 +209,12 @@ fn real_parse_publish_factory_load_keeps_early_scope_and_later_approval() {
             (602, 1)
         );
         let scope = store.load_session_scope(&key, request).unwrap();
-        assert_eq!(scope.occurrences().len(), 602);
-        assert_eq!(
-            scope.values()[0],
-            format!("{environment}: instruction 0\n  Keep billing unchanged.")
+        assert!(!scope.occurrences().is_empty());
+        assert!(scope.occurrences().len() <= 128);
+        assert!(
+            scope
+                .limitations()
+                .contains(&ScopeMissingReason::AssemblyLimitReached)
         );
         assert_eq!(scope.values().last().unwrap(), "Yes, change billing now.");
         assert_eq!(
@@ -219,14 +225,19 @@ fn real_parse_publish_factory_load_keeps_early_scope_and_later_approval() {
 }
 
 #[test]
-fn factory_rejects_unknown_user_authority_before_selection_drops_it() {
+fn factory_keeps_known_context_without_unknown_user_authority() {
     let (store, key, fence, generation) = publish("native", true);
-    assert!(matches!(
-        store.session_scope_request(&key, fence, generation),
-        Err(ScopeLoadError::Scope(SessionScopeError::Missing(
-            ScopeMissingReason::IncompleteSource
-        )))
-    ));
+    let request = store
+        .session_scope_request(&key, fence, generation)
+        .unwrap();
+    assert!(!request.source_complete);
+    let scope = store.load_session_scope(&key, request).unwrap();
+    assert!(!scope.occurrences().is_empty());
+    assert!(
+        scope
+            .limitations()
+            .contains(&ScopeMissingReason::IncompleteSource)
+    );
 }
 
 #[test]
@@ -257,8 +268,6 @@ fn factory_keeps_lost_history_and_compaction_as_partial_context() {
 fn factory_rejects_invalid_identity_and_forks() {
     for mutation in [
         "UPDATE turn SET thread_id = 'sibling' WHERE turn_index = 10",
-        "UPDATE turn_content SET normalized_fields_json = NULL WHERE turn_rowid IN
-         (SELECT rowid FROM turn WHERE turn_index = 10)",
         "INSERT INTO session_relation (environment_key, agent, session_id, kind, related_id)
          VALUES ('native', 'opencode', 'scope', 'forkParent', 'parent')",
     ] {
@@ -268,7 +277,7 @@ fn factory_rejects_invalid_identity_and_forks() {
             matches!(
                 store.session_scope_request(&key, fence, generation),
                 Err(ScopeLoadError::Scope(SessionScopeError::Missing(
-                    ScopeMissingReason::IncompleteSource
+                    ScopeMissingReason::IncompleteSource | ScopeMissingReason::BranchUnresolved
                 )))
             ),
             "{mutation}"
@@ -285,12 +294,65 @@ fn omitted_native_attachments_cannot_attest_complete_user_history() {
             serde_json::json!({"type": "file", "url": "file:///synthetic/plan.md", "mime": "text/plain"}),
         ),
     );
-    assert!(matches!(
-        store.session_scope_request(&key, fence, generation),
-        Err(ScopeLoadError::Scope(SessionScopeError::Missing(
-            ScopeMissingReason::IncompleteSource
-        )))
+    let request = store
+        .session_scope_request(&key, fence, generation)
+        .unwrap();
+    assert!(!request.source_complete);
+    let scope = store.load_session_scope(&key, request).unwrap();
+    assert!(!scope.values().is_empty());
+    assert!(
+        scope
+            .limitations()
+            .contains(&ScopeMissingReason::IncompleteSource)
+    );
+}
+
+#[test]
+fn malformed_final_user_boundary_keeps_earlier_scope_without_final_authority() {
+    let (store, key, fence, generation) = publish("native", false);
+    store.lock().execute_batch("DELETE FROM turn_content WHERE turn_rowid IN (SELECT rowid FROM turn WHERE turn_index = 602); DELETE FROM turn WHERE turn_index = 602;").unwrap();
+    store.lock().execute("UPDATE turn_content SET normalized_fields_json = NULL WHERE turn_rowid IN (SELECT rowid FROM turn WHERE turn_index = 601)", []).unwrap();
+    let request = store
+        .session_scope_request(&key, fence, generation)
+        .unwrap();
+    assert!(!request.source_complete);
+    let boundary = request.boundary.clone();
+    let scope = store.load_session_scope(&key, request).unwrap();
+    assert_eq!(boundary.turn_index, 601);
+    assert!(scope.occurrences().iter().any(
+        |item| item.authority == antiburn_local::analysis::session_scope::ScopeAuthority::User
     ));
+    assert!(
+        scope
+            .occurrences()
+            .iter()
+            .all(|item| item.reference.turn_index != boundary.turn_index)
+    );
+    assert!(
+        !scope
+            .values()
+            .contains(&serde_json::json!("Yes, change billing now."))
+    );
+}
+
+#[test]
+fn malformed_user_proof_removes_only_its_own_scope_occurrence() {
+    let (store, key, fence, generation) = publish("native", false);
+    store.lock().execute("UPDATE turn_content SET normalized_fields_json = NULL WHERE turn_rowid IN (SELECT rowid FROM turn WHERE turn_index = 10)", []).unwrap();
+    let request = store
+        .session_scope_request(&key, fence, generation)
+        .unwrap();
+    assert!(!request.source_complete);
+    let scope = store.load_session_scope(&key, request).unwrap();
+    assert!(!scope.occurrences().is_empty());
+    assert!(scope.occurrences().len() <= 128);
+    assert!(
+        scope
+            .occurrences()
+            .iter()
+            .all(|item| item.reference.turn_index != 10)
+    );
+    assert_eq!(scope.values().last().unwrap(), "Yes, change billing now.");
 }
 
 #[test]
@@ -576,32 +638,43 @@ fn first_tier_parsed_text_and_optional_scope_evidence_do_not_prove_full_history(
         assert!(user_text > 0, "{agent}");
         assert!(history_proofs < user_text, "{agent}");
         assert_eq!(optional_records > 0, optional, "{agent}");
-        assert!(
-            matches!(
-                store.session_scope_request(&key, fence, generation),
-                Err(ScopeLoadError::Scope(SessionScopeError::Missing(
-                    ScopeMissingReason::UnsupportedSource | ScopeMissingReason::IncompleteSource
-                )))
-            ),
-            "{agent}"
-        );
+        let admitted = match store.session_scope_request(&key, fence, generation) {
+            Ok(request) => {
+                assert!(!request.source_complete, "{agent}");
+                let scope = store.load_session_scope(&key, request).unwrap();
+                assert!(!scope.limitations().is_empty(), "{agent}");
+                true
+            }
+            Err(ScopeLoadError::Scope(SessionScopeError::Missing(
+                ScopeMissingReason::UnsupportedSource
+                | ScopeMissingReason::IncompleteSource
+                | ScopeMissingReason::BranchUnresolved,
+            ))) => false,
+            Err(error) => panic!("{agent}: {error:?}"),
+        };
         for detector in [
             crate::smart_check_inputs::DetectorInput::ScopeCreep,
             crate::smart_check_inputs::DetectorInput::OverExploring,
             crate::smart_check_inputs::DetectorInput::SkillOpportunities,
         ] {
-            assert!(
-                matches!(
-                    store.load_smart_check_inputs(&key, fence, generation, detector),
-                    Err(crate::smart_check_inputs::InputLoadError::Scope(
-                        ScopeLoadError::Scope(SessionScopeError::Missing(
-                            ScopeMissingReason::UnsupportedSource
-                                | ScopeMissingReason::IncompleteSource
+            let input = store.load_smart_check_inputs(&key, fence, generation, detector);
+            if admitted {
+                assert!(!input.unwrap().content().complete, "{agent}: {detector:?}");
+            } else {
+                assert!(
+                    matches!(
+                        input,
+                        Err(crate::smart_check_inputs::InputLoadError::Scope(
+                            ScopeLoadError::Scope(SessionScopeError::Missing(
+                                ScopeMissingReason::UnsupportedSource
+                                    | ScopeMissingReason::IncompleteSource
+                                    | ScopeMissingReason::BranchUnresolved
+                            ))
                         ))
-                    ))
-                ),
-                "{agent} {detector:?}"
-            );
+                    ),
+                    "{agent}: {detector:?}"
+                );
+            }
         }
     }
 }

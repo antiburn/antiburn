@@ -15,34 +15,198 @@ pub(super) fn assessment_work_items(
 ) -> Vec<JevWorkItem> {
     let mut output = Vec::new();
     for window in assessment_windows(comparisons) {
-        let mut pending = vec![window.comparisons];
-        while let Some(targets) = pending.pop() {
-            let id = sha256_hex(
-                &serde_json::to_vec(&(
-                    &window.id,
-                    targets.iter().map(|pair| &pair.id).collect::<Vec<_>>(),
-                ))
-                .expect("serialize window target identities"),
-            );
-            let item = JevWorkItem {
-                id,
-                window: window_with_facts(&targets, context),
-                questions: window_questions(&targets),
-            };
-            let packed = crate::analysis::jev::pack_work_items_with_capabilities(
-                std::slice::from_ref(&item),
-                capabilities,
-            );
-            if targets.len() > 1 && !packed.skipped_item_ids.is_empty() {
-                let middle = targets.len() / 2;
-                pending.push(targets[middle..].to_vec());
-                pending.push(targets[..middle].to_vec());
-            } else {
-                output.push(item);
+        let targets = window.comparisons;
+        if targets
+            .iter()
+            .any(|comparison| !reference_matches(comparison, context))
+        {
+            continue;
+        }
+        if targets
+            .iter()
+            .any(|comparison| !super::reduction::authority_evidence_valid(comparison))
+        {
+            continue;
+        }
+        let id = sha256_hex(
+            &serde_json::to_vec(&(
+                &window.id,
+                targets.iter().map(|pair| &pair.id).collect::<Vec<_>>(),
+            ))
+            .expect("serialize window target identities"),
+        );
+        let mut item = JevWorkItem {
+            id,
+            window: window_with_facts(&targets, context),
+            questions: window_questions(&targets),
+        };
+        item.window.fields = direct_window_fields(&item.window.fields, false);
+        output.push(item);
+    }
+    while !output.is_empty() && !fits_one_request(&output, capabilities) {
+        if output.len() > 1 {
+            output.pop();
+        } else {
+            output[0].window.fields = direct_window_fields(&output[0].window.fields, true);
+            if !fits_one_request(&output, capabilities) {
+                output.clear();
             }
+            break;
         }
     }
     output
+}
+
+fn reference_matches(comparison: &CandidateComparison, context: &JevSessionContext) -> bool {
+    let Some(action) = context.check_context["episode_actions"]
+        .as_array()
+        .and_then(|actions| {
+            actions
+                .iter()
+                .find(|action| action["reference"]["id"] == comparison.reference.action_id)
+        })
+    else {
+        return false;
+    };
+    let Ok(action) = serde_json::from_value::<super::super::ContentAction>(action.clone()) else {
+        return false;
+    };
+    if super::super::content_action_digest(&action) != comparison.reference.action_digest {
+        return false;
+    }
+    let authority_retained = context.check_context["episode_actions"]
+        .as_array()
+        .is_some_and(|actions| {
+            actions
+                .iter()
+                .filter(|event| {
+                    event["authority"] == "user"
+                        && event["reference"]["thread_digest"] == comparison.source_thread_digest
+                        && event["turn_scope"] == comparison.source_turn_scope
+                        && event["reference"]["turn_index"]
+                            .as_u64()
+                            .zip(event["reference"]["part_index"].as_u64())
+                            .is_some_and(|order| {
+                                order
+                                    < (
+                                        action.reference.turn_index,
+                                        u64::from(action.reference.part_index),
+                                    )
+                            })
+                })
+                .all(|event| {
+                    let Ok(source) =
+                        serde_json::from_value::<super::super::ContentAction>(event.clone())
+                    else {
+                        return false;
+                    };
+                    !super::super::selected_context::human_text(&source)
+                        || comparison
+                            .prerequisite_episode
+                            .as_ref()
+                            .is_some_and(|episode| {
+                                episode.events.iter().any(|retained| {
+                                    retained.action_id == source.reference.id
+                                        && retained.text == source.text
+                                        && !retained.truncated
+                                })
+                            })
+                })
+        });
+    if !authority_retained {
+        return false;
+    }
+    context
+        .reference_snapshots
+        .iter()
+        .filter(|snapshot| snapshot.kind == "instruction_snapshot")
+        .any(|snapshot| {
+            let Ok(instructions) = serde_json::from_value::<Vec<super::super::InstructionSnapshot>>(
+                snapshot.fields.clone(),
+            ) else {
+                return false;
+            };
+            instructions.iter().any(|instruction| {
+                instruction.id == comparison.reference.instruction_id
+                    && instruction.digest == comparison.reference.instruction_digest
+                    && instruction.scope == comparison.reference.scope
+                    && instruction.source == comparison.reference.source
+                    && instruction.digest == sha256_hex(instruction.text.as_bytes())
+                    && instruction.provenance == comparison.reference.provenance
+                    && super::super::planning::instruction_scope_matches(instruction, &action)
+                    && instruction.sections.iter().any(|rule| {
+                        rule.id == comparison.reference.rule_id
+                            && rule.text == comparison.rule_text
+                            && rule.context == comparison.instruction_context
+                    })
+                    && comparison.instruction_context.iter().all(|range| {
+                        instruction.text.get(range.start_byte..range.end_byte)
+                            == Some(range.text.as_str())
+                    })
+            })
+        })
+}
+
+fn fits_one_request(items: &[JevWorkItem], capabilities: &ModelCapabilities) -> bool {
+    if items.iter().any(|item| {
+        serde_json::to_vec(&item.window.fields)
+            .expect("state")
+            .len()
+            > 1536
+    }) {
+        return false;
+    }
+    crate::analysis::jev::work_items_fit_one_request(
+        items,
+        capabilities,
+        None,
+        crate::analysis::jev::JevRequestLimits {
+            request_bytes: 6144,
+            estimated_input_tokens: 1536,
+        },
+    )
+    .unwrap_or(false)
+}
+
+fn direct_window_fields(fields: &Value, reduced: bool) -> Value {
+    let compact_event = |event: &Value| {
+        json!({
+            "role": event["role"], "kind": event["kind"], "text": event["text"],
+            "tool_name": event["tool_name"],
+            "recorded_order": event["recorded_order"], "truncated": event["truncated"],
+            "native_context": event["native_context"],
+        })
+    };
+    let targets = fields["instruction_targets"].as_array().expect("instruction targets").iter().map(|target| {
+        let instruction = &target["instruction"];
+        let text = instruction["text"].as_str().expect("instruction text");
+        let rule = instruction["complete_text"].as_str().unwrap_or(text);
+        let mut optional_bytes = if reduced { 0 } else { 192 };
+        let mut optional_events = usize::from(!reduced);
+        let events = target["earlier_counterevidence"].as_array().expect("earlier evidence").iter().filter(|event| {
+            if !event["native_context"].is_null() { return true; }
+            if !matches!(event["kind"].as_str(), Some("assistant" | "assistant_text")) { return false; }
+            let bytes = event["text"].as_str().map_or(0, str::len);
+            if optional_events == 0 || event["truncated"] == true || bytes > optional_bytes { return false; }
+            optional_bytes -= bytes;
+            optional_events -= 1;
+            true
+        }).map(&compact_event).collect::<Vec<_>>();
+        json!({"instruction": {"text": rule, "basis": instruction.get("basis").unwrap_or(&instruction["provenance"]), "scope_directory": instruction["scope_directory"]},
+            "earlier_counterevidence": events})
+    }).collect::<Vec<_>>();
+    let mut action = compact_event(&fields["candidate_action"]);
+    let path_changes = fields
+        .get("requested_path_changes")
+        .unwrap_or(&fields["candidate_action"]["requested_path_changes"]);
+    if path_changes
+        .as_array()
+        .is_some_and(|changes| !changes.is_empty())
+    {
+        action["requested_path_changes"] = path_changes.clone();
+    }
+    json!({"instruction_targets": targets, "candidate_action": action,
+        "command_input_context": fields["command_input_context"]})
 }
 
 pub(super) fn window_with_facts(
@@ -96,10 +260,28 @@ pub(super) fn select_context(
             .map_err(|_| JevError::InvalidCheckContext)?;
     let policy = super::super::PrerequisiteContextPolicy::from_context(context)?;
     for comparison in &mut plan.comparisons {
-        comparison.prerequisite_episode =
-            Some(policy.select(comparison, &actions, capabilities, plan.complete_input));
+        comparison.prerequisite_episode = Some(select_comparison_episode(
+            comparison,
+            &actions,
+            capabilities,
+            plan.complete_input,
+            policy,
+        ));
     }
     Ok(())
+}
+
+pub(in crate::checks::ignored_instructions) fn select_comparison_episode(
+    comparison: &CandidateComparison,
+    actions: &[super::super::ContentAction],
+    capabilities: &ModelCapabilities,
+    complete: bool,
+    policy: super::super::PrerequisiteContextPolicy,
+) -> super::super::PrerequisiteEpisode {
+    let mut selected = comparison.clone();
+    selected.prerequisite_episode =
+        Some(policy.select(comparison, actions, capabilities, complete));
+    selected.prerequisite_episode.expect("selected episode")
 }
 
 pub(super) fn earlier_read_only_actions(

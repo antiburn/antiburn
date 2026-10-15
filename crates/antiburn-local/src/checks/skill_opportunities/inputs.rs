@@ -117,6 +117,123 @@ impl SkillDefinition {
         let (text, coverage) = self.selected_reference(4096);
         coverage.content(&text)
     }
+
+    #[cfg(test)]
+    pub(crate) fn complete_procedure(
+        &self,
+        anchor: &str,
+        max_bytes: usize,
+    ) -> Option<(String, Vec<(usize, usize)>)> {
+        let parsed =
+            crate::analysis::jev::markdown_ranges::MarkdownRanges::parse(&self.description);
+        self.complete_procedure_in(&parsed, anchor, max_bytes)
+    }
+
+    pub(crate) fn complete_procedure_in(
+        &self,
+        parsed: &crate::analysis::jev::markdown_ranges::MarkdownRanges<'_>,
+        anchor: &str,
+        max_bytes: usize,
+    ) -> Option<(String, Vec<(usize, usize)>)> {
+        if parsed.source != self.description
+            || self.description.trim().is_empty()
+            || anchor.trim().is_empty()
+        {
+            return None;
+        }
+        use crate::analysis::jev::markdown_ranges::MarkdownBlockKind;
+        let ranges = if parsed.sections.is_empty() {
+            std::iter::once(0..self.description.len()).collect::<Vec<_>>()
+        } else {
+            parsed
+                .sections
+                .iter()
+                .filter(|section| section.parent.is_none())
+                .map(|section| 0..section.range.end)
+                .collect()
+        };
+        ranges.into_iter().find_map(|range| {
+            let passage = &parsed.source[range.clone()];
+            let steps = parsed
+                .blocks
+                .iter()
+                .filter(|block| {
+                    block.kind == MarkdownBlockKind::Item
+                        && !block.quoted
+                        && block.list_depth == 1
+                        && range.start <= block.range.start
+                        && block.range.end <= range.end
+                })
+                .count();
+            let anchored = anchor
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .all(|line| {
+                    parsed.blocks.iter().any(|block| {
+                        !block.quoted
+                            && range.start <= block.range.start
+                            && block.range.end <= range.end
+                            && (matches!(
+                                block.kind,
+                                MarkdownBlockKind::Paragraph | MarkdownBlockKind::Item
+                            ) || (block.kind == MarkdownBlockKind::CodeBlock
+                                && block.list_depth > 0))
+                            && exact_procedure_anchor(
+                                &parsed.source[block.range.clone()],
+                                line.trim(),
+                            )
+                            && !parsed.blocks.iter().any(|quoted| {
+                                quoted.quoted
+                                    && block.range.start <= quoted.range.start
+                                    && quoted.range.end <= block.range.end
+                                    && exact_procedure_anchor(
+                                        &parsed.source[quoted.range.clone()],
+                                        line.trim(),
+                                    )
+                            })
+                    })
+                });
+            (passage.len() <= max_bytes && anchored && steps >= 2)
+                .then(|| (passage.to_owned(), vec![(range.start, range.end)]))
+        })
+    }
+}
+
+pub(crate) fn complete_procedure_steps(text: &str) -> usize {
+    use crate::analysis::jev::markdown_ranges::{MarkdownBlockKind, MarkdownRanges};
+    MarkdownRanges::parse(text)
+        .blocks
+        .iter()
+        .filter(|block| {
+            block.kind == MarkdownBlockKind::Item && !block.quoted && block.list_depth == 1
+        })
+        .count()
+}
+
+pub(crate) fn exact_procedure_anchor(text: &str, anchor: &str) -> bool {
+    if anchor.trim().is_empty() {
+        return false;
+    }
+    if anchor.lines().count() > 1 {
+        return anchor
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .all(|line| exact_procedure_anchor(text, line.trim()));
+    }
+    text.match_indices(anchor).any(|(start, _)| {
+        let before = text[..start].chars().next_back();
+        let after = text[start + anchor.len()..].chars().next();
+        let boundary = |character: Option<char>| {
+            character.is_none_or(|character| {
+                character.is_whitespace()
+                    || matches!(
+                        character,
+                        '`' | '\'' | '"' | '(' | ')' | '[' | ']' | ';' | ','
+                    )
+            })
+        };
+        boundary(before) && boundary(after)
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -346,6 +463,21 @@ pub enum SkillInputError {
 }
 
 impl SkillOpportunitySnapshot {
+    pub(crate) fn selected_candidate_with_recorded_use(
+        &self,
+        work: &SkillWorkContext,
+        usage: &super::SkillUseSnapshot,
+        skill: &SkillDefinition,
+    ) -> Result<EligibleSkillCandidate, SkillInputError> {
+        Self {
+            scope: self.scope.clone(),
+            skills: vec![skill.clone()],
+            inventory_complete: self.inventory_complete,
+        }
+        .eligible_candidates_with_recorded_use(work, usage)?
+        .pop()
+        .ok_or(SkillInputError::InvalidDefinition)
+    }
     pub fn new(
         scope: SkillScope,
         skills: Vec<SkillDefinition>,

@@ -12,6 +12,7 @@ fn presets_bind_exact_models_routes_and_response_modes() {
         "jev",
         "ollama-nimble",
         "ollama-clef-flash",
+        "ollama-tev-small",
         "cloudflare-clef",
         "cloudflare-clef-flash",
         "custom-jev-direct",
@@ -26,8 +27,14 @@ fn presets_bind_exact_models_routes_and_response_modes() {
         assert_eq!(connection.model, preset.model());
         assert!(connection.credential.is_none());
         let capabilities = connection.capabilities().unwrap();
-        assert!(capabilities.usable_input_tokens().unwrap() > 0);
-        assert!(capabilities.usable_state_tokens().unwrap() > 0);
+        if connection.provider == SystemOneProvider::Ollama && connection.context_override.is_none()
+        {
+            assert_eq!(capabilities.usable_input_tokens(), None);
+            assert_eq!(capabilities.usable_state_tokens(), None);
+        } else {
+            assert!(capabilities.usable_input_tokens().unwrap() > 0);
+            assert!(capabilities.usable_state_tokens().unwrap() > 0);
+        }
         if connection.provider == SystemOneProvider::Custom {
             assert_eq!(
                 connection
@@ -40,7 +47,11 @@ fn presets_bind_exact_models_routes_and_response_modes() {
         } else {
             assert!(connection.context_override.is_none());
         }
-        assert_eq!(batch(&capabilities).work_item_ids, ["exact-work"]);
+        if capabilities.usable_state_tokens().is_some() {
+            assert_eq!(batch(&capabilities).work_item_ids, ["exact-work"]);
+        } else {
+            assert_eq!(connection.provider, SystemOneProvider::Ollama);
+        }
         let endpoint = connection.inference_endpoint().unwrap();
         if preset.local() {
             assert_eq!(endpoint, "http://127.0.0.1:11434/v1/systemone");
@@ -113,7 +124,12 @@ fn batch(capabilities: &ModelCapabilities) -> antiburn_local::analysis::jev::Jev
         .remove(0)
 }
 
-async fn loopback_batch(mode: SystemOneResponseMode, missing_answer: bool, ollama: bool) {
+async fn loopback_batch(
+    mode: SystemOneResponseMode,
+    missing_answer: bool,
+    ollama: bool,
+    context_rejected: bool,
+) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let endpoint = format!("{base}/exact/path?route=validation");
@@ -162,15 +178,22 @@ async fn loopback_batch(mode: SystemOneResponseMode, missing_answer: bool, ollam
             json!({answer_id:{"type":"noul","noul":0.9}})
         };
         let response = json!({"model":"local-model","answers":answers,"usage":{"input_tokens":2048,"output_tokens":1}});
-        let body = if mode == SystemOneResponseMode::CloudflareEnvelope {
+        let body = if context_rejected {
+            json!({"error":"prompt exceeds context; input is never truncated"})
+        } else if mode == SystemOneResponseMode::CloudflareEnvelope {
             json!({"success":true,"result":response})
         } else {
             response
         }
         .to_string();
+        let status = if context_rejected {
+            "400 Bad Request"
+        } else {
+            "200 OK"
+        };
         write!(
             socket,
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )
         .unwrap();
@@ -211,7 +234,11 @@ async fn loopback_batch(mode: SystemOneResponseMode, missing_answer: bool, ollam
     let result =
         super::super::run::evaluate_batch(&client, &usage, "case", "assessment", &batch).await;
     server.join().unwrap();
-    assert_eq!(result.is_err(), missing_answer);
+    let failed = missing_answer || context_rejected;
+    assert_eq!(result.is_err(), failed);
+    if context_rejected {
+        assert_eq!(result, Err(JevError::ContextRejected));
+    }
     let usage = usage.lock().unwrap();
     assert_eq!(usage.requests, 1);
     assert_eq!(usage.calls.len(), 1);
@@ -220,12 +247,12 @@ async fn loopback_batch(mode: SystemOneResponseMode, missing_answer: bool, ollam
         client.configuration.capabilities.model_revision.as_deref(),
         Some("synthetic-digest")
     );
-    if !missing_answer {
+    if !failed {
         assert_eq!(call["response"]["model"], "local-model");
     }
     assert_eq!(call["work_item_ids"], json!(["exact-work"]));
-    assert_eq!(call["response_validated"], !missing_answer);
-    if missing_answer {
+    assert_eq!(call["response_validated"], !failed);
+    if failed {
         assert!(call["usage"].is_null());
         assert!(!call["failure"].is_null());
         assert_eq!(usage.input_tokens, 0);
@@ -238,12 +265,23 @@ async fn loopback_batch(mode: SystemOneResponseMode, missing_answer: bool, ollam
 
 #[tokio::test]
 async fn shared_runner_uses_production_custom_direct_and_envelope_transports() {
-    loopback_batch(SystemOneResponseMode::Direct, false, false).await;
-    loopback_batch(SystemOneResponseMode::CloudflareEnvelope, false, false).await;
+    loopback_batch(SystemOneResponseMode::Direct, false, false, false).await;
+    loopback_batch(
+        SystemOneResponseMode::CloudflareEnvelope,
+        false,
+        false,
+        false,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn shared_runner_uses_production_ollama_transport_and_keeps_failed_usage_unknown() {
-    loopback_batch(SystemOneResponseMode::Direct, false, true).await;
-    loopback_batch(SystemOneResponseMode::Direct, true, true).await;
+    loopback_batch(SystemOneResponseMode::Direct, false, true, false).await;
+    loopback_batch(SystemOneResponseMode::Direct, true, true, false).await;
+}
+
+#[tokio::test]
+async fn ollama_context_rejection_reaches_the_shared_runner_without_claiming_usage() {
+    loopback_batch(SystemOneResponseMode::Direct, false, true, true).await;
 }

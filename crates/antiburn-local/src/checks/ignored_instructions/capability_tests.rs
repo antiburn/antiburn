@@ -1,940 +1,865 @@
 use super::tests::{event, input};
 use super::*;
 use crate::analysis::jev::capabilities::{
-    CapabilityLimit, CapabilitySource, ModelCapabilities, TokenizerIdentity,
+    CapabilityLimit, CapabilitySource, ModelCapabilities, OLLAMA_TEV1_ESTIMATOR, TokenizerIdentity,
 };
 use crate::analysis::jev::{
     pack_work_items_with_capabilities, validate_jev_request_with_capabilities,
 };
 use crate::checks::ignored_instructions::planning::{
-    SamplingLedger, build_jev_context_with_capabilities,
-    extend_jev_context_with_history_and_capabilities,
+    PreparedAssessmentInput, SamplingLedger, SavedComparison, build_jev_context_with_capabilities,
 };
 
-fn hosted_limits(tokens: u64) -> ModelCapabilities {
+fn limits() -> ModelCapabilities {
     let mut limits = ModelCapabilities::jev_default();
-    limits.model = "synthetic-hosted".to_owned();
-    limits.total_input_tokens = CapabilityLimit::known(tokens, CapabilitySource::Manual);
-    limits.state_and_longest_question_tokens = CapabilityLimit::unknown();
-    limits.state_and_longest_question_bytes = CapabilityLimit::unknown();
-    limits.request_body_bytes = CapabilityLimit::known(1024 * 1024, CapabilitySource::Manual);
-    limits.questions_per_request = CapabilityLimit::known(64, CapabilitySource::DocumentedDefault);
+    limits.rendering_reserve_tokens = 304;
+    limits.tokenizer = Some(TokenizerIdentity::ConservativeEstimator(
+        OLLAMA_TEV1_ESTIMATOR.to_owned(),
+    ));
+    limits.runtime_context_tokens = CapabilityLimit::known(2048, CapabilitySource::Manual);
     limits
 }
 
-fn prepare(input: &AssessmentInput, limits: &ModelCapabilities) -> JevCheckPlan<AssessmentPlan> {
+fn command(id: &str, order: i64, text: &str) -> ContentAction {
+    let mut action = event(id, order, "assistant", "main", text);
+    action.kind = "tool_input".to_owned();
+    action.tool_name = Some("Bash".to_owned());
+    action.tool_call_id = Some(id.to_owned());
+    action
+}
+
+fn prepare(source: &AssessmentInput, limits: &ModelCapabilities) -> JevCheckPlan<AssessmentPlan> {
     let context =
-        build_jev_context_with_capabilities(input, &SamplingLedger::default(), limits).unwrap();
+        build_jev_context_with_capabilities(source, &SamplingLedger::default(), limits).unwrap();
     IgnoredInstructionsCheck
         .prepare_with_capabilities(&context, limits)
         .unwrap()
 }
 
-#[test]
-fn saved_dependency_preparation_materializes_only_saved_targets_across_pages() {
-    use crate::checks::ignored_instructions::planning::{
-        PreparedAssessmentInput, SavedComparison, build_reference_context, take_preparation_counts,
-    };
-    use std::time::Instant;
-
-    let mut source = input(
-        (0..240)
-            .map(|index| {
-                event(
-                    &format!("action-{index}"),
-                    index,
-                    "assistant",
-                    "main",
-                    "Published the release.",
-                )
-            })
-            .collect(),
-        "- Run tests before publishing the release.\n- Get approval before publishing.\n- Use the documented release command.\n- Review changes before publishing.\n- Update the release notes.",
+fn assert_fit(plan: &JevCheckPlan<AssessmentPlan>) -> usize {
+    let packed = pack_work_items_with_capabilities(&plan.work_items, &plan.capabilities);
+    assert!(packed.skipped_item_ids.is_empty());
+    assert_eq!(packed.batches.len(), 1);
+    let batch = &packed.batches[0];
+    assert_eq!(batch.work_item_ids.len(), plan.work_items.len());
+    assert!(batch.serialized_bytes <= 6144);
+    assert!(
+        plan.work_items
+            .iter()
+            .all(|item| serde_json::to_vec(&item.window.fields).unwrap().len() <= 1536)
     );
-    let limits = ModelCapabilities::jev_default();
-    take_preparation_counts();
-    let started = Instant::now();
-    let mut previous = Vec::new();
-    loop {
-        let context =
-            build_reference_context(&source, &SamplingLedger::default(), &limits).unwrap();
-        let page = IgnoredInstructionsCheck
-            .prepare_with_capabilities(&context, &limits)
-            .unwrap()
-            .prepared;
-        previous.extend(page.comparisons);
-        source.comparison_after = page.next_comparison_cursor;
-        if source.comparison_after.is_none() {
-            break;
-        }
-    }
-    let old_elapsed = started.elapsed();
-    let old_counts = take_preparation_counts();
-    assert_eq!(previous.len(), MAX_SAMPLED_COMPARISONS_PER_PASS);
-    let saved = previous
-        .iter()
-        .step_by(200)
-        .map(|comparison| comparison.id.clone())
-        .collect::<BTreeSet<_>>();
-    let saved_comparisons = previous
-        .iter()
-        .filter(|comparison| saved.contains(&comparison.id))
-        .map(SavedComparison::from)
-        .collect::<Vec<_>>();
-    // A saved cursor must not limit validation to its page.
-    source.comparison_after = Some("sample:768".to_owned());
-    let started = Instant::now();
-    let mut prepared = PreparedAssessmentInput::new(&source);
-    let validated = prepared.dependency_comparisons(&saved_comparisons, &limits);
-    let new_elapsed = started.elapsed();
-    let new_counts = take_preparation_counts();
-    assert_eq!(new_counts, (1, 0, saved.len()));
-    assert!(new_counts.2 * 5 < old_counts.2);
-    assert_eq!(validated.comparisons.len(), saved.len());
-    for comparison in &validated.comparisons {
-        let original = previous.iter().find(|old| old.id == comparison.id).unwrap();
-        assert_eq!(
-            serde_json::to_value(comparison).unwrap(),
-            serde_json::to_value(original).unwrap()
-        );
-    }
-    let context = prepared
-        .build_context(
-            &SamplingLedger {
-                comparison_ids: saved.clone(),
-                known_action_ids: BTreeSet::new(),
-                comparisons: saved_comparisons
-                    .iter()
-                    .map(|comparison| (comparison.id.clone(), comparison.clone()))
-                    .collect(),
-            },
-            &limits,
+    validate_jev_request_with_capabilities(&batch.request, &plan.capabilities).unwrap();
+    assert!(
+        crate::analysis::jev::estimate_jev_rendered_question_tokens(
+            &batch.request,
+            &plan.capabilities
         )
-        .unwrap();
-    let reused_counts = take_preparation_counts();
-    assert_eq!((reused_counts.0, reused_counts.1), (0, 1));
-    let expected_context = build_jev_context_with_capabilities(
-        &source,
-        &SamplingLedger {
-            comparison_ids: saved.clone(),
-            known_action_ids: BTreeSet::new(),
-            comparisons: saved_comparisons
-                .iter()
-                .map(|comparison| (comparison.id.clone(), comparison.clone()))
-                .collect(),
-        },
-        &limits,
-    )
-    .unwrap();
-    assert_eq!(context.check_context, expected_context.check_context);
-    assert!(
-        context.check_context["episode_actions"]
-            .as_array()
-            .unwrap()
-            .len()
-            >= 240
-    );
-    eprintln!(
-        "saved dependency preparation: actions=240 rules=5 saved={} old_us={} new_us={} old_counts={old_counts:?} new_counts={new_counts:?}",
-        saved.len(),
-        old_elapsed.as_micros(),
-        new_elapsed.as_micros()
-    );
-}
-
-#[test]
-fn saved_dependency_preparation_invalidates_ranking_when_text_limits_change() {
-    use crate::checks::ignored_instructions::planning::{
-        PreparedAssessmentInput, take_preparation_counts,
-    };
-    let source = input(
-        vec![event(
-            "release",
-            1,
-            "assistant",
-            "main",
-            &"Published the release. ".repeat(300),
-        )],
-        "Run tests before publishing.",
-    );
-    let mut prepared = PreparedAssessmentInput::new(&source);
-    let small = ModelCapabilities::jev_default();
-    let large = hosted_limits(65_536);
-    let saved = prepare(&source, &small)
-        .prepared
-        .comparisons
-        .iter()
-        .map(crate::checks::ignored_instructions::SavedComparison::from)
-        .collect::<Vec<_>>();
-    take_preparation_counts();
-    prepared
-        .build_context(&SamplingLedger::default(), &small)
-        .unwrap();
-    assert_eq!(take_preparation_counts().1, 1);
-    prepared.dependency_comparisons(&saved, &small);
-    assert_eq!(take_preparation_counts().1, 0);
-    let context = prepared
-        .build_context(&SamplingLedger::default(), &large)
-        .unwrap();
-    assert_eq!(take_preparation_counts().1, 1);
-    prepared
-        .build_context(&SamplingLedger::default(), &large)
-        .unwrap();
-    assert_eq!(take_preparation_counts().1, 0);
-    assert_eq!(
-        context.check_context,
-        build_jev_context_with_capabilities(&source, &SamplingLedger::default(), &large)
-            .unwrap()
-            .check_context
-    );
-}
-
-#[test]
-fn saved_dependency_preparation_preserves_native_approval_and_result_proofs() {
-    use crate::checks::ignored_instructions::planning::PreparedAssessmentInput;
-    use crate::checks::ignored_instructions::selected_context::tests::{human, test_pair};
-
-    let mut actions = vec![human()];
-    actions.extend(test_pair());
-    actions.push(event(
-        "release",
-        4,
-        "assistant",
-        "main",
-        "Published the release.",
-    ));
-    let source = input(
-        actions,
-        "Publish only after tests pass and the user approves.",
-    );
-    let limits = ModelCapabilities::jev_default();
-    let mut baseline = prepare(&source, &limits).prepared;
-    baseline
-        .comparisons
-        .sort_by(|left, right| left.id.cmp(&right.id));
-    let saved: BTreeSet<_> = baseline
-        .comparisons
-        .iter()
-        .map(|comparison| comparison.id.clone())
-        .collect();
-    let saved_comparisons = baseline
-        .comparisons
-        .iter()
-        .map(crate::checks::ignored_instructions::SavedComparison::from)
-        .collect::<Vec<_>>();
-    for mutation in 0..5 {
-        let mut changed = source.clone();
-        match mutation {
-            0 => {}
-            1 => changed.content.actions[0].metadata.user_text_history = None,
-            2 => changed.content.actions[2].truncated = true,
-            3 => changed.prior_history_complete = false,
-            _ => changed.content.actions[3].text = "Did not publish the release.".to_owned(),
-        }
-        let mut expected = prepare(&changed, &limits).prepared;
-        expected
-            .comparisons
-            .retain(|comparison| saved.contains(&comparison.id));
-        let mut actual = PreparedAssessmentInput::new(&changed)
-            .dependency_comparisons(&saved_comparisons, &limits);
-        expected
-            .comparisons
-            .sort_by(|left, right| left.id.cmp(&right.id));
-        actual
-            .comparisons
-            .sort_by(|left, right| left.id.cmp(&right.id));
-        assert_eq!(
-            serde_json::to_value(&actual.comparisons).unwrap(),
-            serde_json::to_value(&expected.comparisons).unwrap()
-        );
-        if mutation != 0 {
-            assert_ne!(
-                serde_json::to_value(&actual.comparisons).unwrap(),
-                serde_json::to_value(&baseline.comparisons).unwrap()
-            );
-        }
-    }
-}
-
-#[test]
-fn saved_second_sample_dependencies_survive_outside_the_initial_sample() {
-    use crate::checks::ignored_instructions::planning::{
-        PreparedAssessmentInput, SavedComparison, take_selection_counts,
-    };
-    let source = input(
-        (0..240)
-            .map(|index| {
-                event(
-                    &format!("action-{index}"),
-                    index,
-                    "assistant",
-                    "main",
-                    "Published the release.",
-                )
-            })
-            .collect(),
-        "- Run tests before publishing.\n- Get approval before publishing.\n- Update release notes.\n- Review release changes.\n- Use the release command.\n- Follow the release procedure.",
-    );
-    let limits = ModelCapabilities::jev_default();
-    let mut first = PreparedAssessmentInput::new(&source);
-    let mut initial = Vec::new();
-    let mut page_source = source.clone();
-    loop {
-        let plan = crate::checks::ignored_instructions::build_assessment_plan_with_capabilities(
-            page_source.clone(),
-            &SamplingLedger::default(),
-            &limits,
-        );
-        initial.extend(plan.comparisons);
-        page_source.comparison_after = plan.next_comparison_cursor;
-        if page_source.comparison_after.is_none() {
-            break;
-        }
-    }
-    assert_eq!(initial.len(), MAX_SAMPLED_COMPARISONS_PER_PASS);
-    let ledger = SamplingLedger {
-        comparison_ids: initial
-            .iter()
-            .map(|comparison| comparison.id.clone())
-            .collect(),
-        known_action_ids: BTreeSet::new(),
-        comparisons: initial
-            .iter()
-            .map(|comparison| (comparison.id.clone(), SavedComparison::from(comparison)))
-            .collect(),
-    };
-    let context = first.build_context(&ledger, &limits).unwrap();
-    let second = IgnoredInstructionsCheck
-        .prepare_with_capabilities(&context, &limits)
         .unwrap()
-        .prepared;
-    assert!(!second.comparisons.is_empty());
-    assert!(
-        second
-            .comparisons
-            .iter()
-            .all(|comparison| !ledger.comparison_ids.contains(&comparison.id))
+            <= 1536
     );
-    let saved = second
-        .comparisons
-        .iter()
-        .take(8)
-        .map(SavedComparison::from)
-        .collect::<Vec<_>>();
-    take_selection_counts();
-    let validated = first.dependency_comparisons(&saved, &limits);
-    let (scored, retained, identities) = take_selection_counts();
-    assert_eq!((scored, retained), (0, 0));
-    assert_eq!(identities, saved.len() * 2);
-    for comparison in &validated.comparisons {
-        let previous = second
-            .comparisons
-            .iter()
-            .find(|old| old.id == comparison.id)
-            .unwrap();
-        assert_eq!(
-            serde_json::to_value(comparison).unwrap(),
-            serde_json::to_value(previous).unwrap()
-        );
-    }
-    let legacy = saved
-        .iter()
-        .cloned()
-        .map(|mut saved| {
-            saved.coordinate = None;
-            saved
-        })
-        .collect::<Vec<_>>();
-    let legacy_plan = first.dependency_comparisons(&legacy, &limits);
-    assert_eq!(
-        serde_json::to_value(&validated.comparisons).unwrap(),
-        serde_json::to_value(&legacy_plan.comparisons).unwrap()
-    );
-    let mut corrupted = saved;
-    corrupted[0].coordinate.as_mut().unwrap().action_range.1 += 1;
-    assert_eq!(
-        first
-            .dependency_comparisons(&corrupted, &limits)
-            .comparisons
-            .len(),
-        corrupted.len() - 1
-    );
+    batch.serialized_bytes
 }
 
-#[test]
-fn bounded_selection_matches_full_sort_for_ties_probes_tiers_and_backlog() {
-    use crate::checks::ignored_instructions::planning::{SavedComparison, build_reference_plan};
-    for count in [17, 75, 240] {
-        let mut source = input(
-            (0..count)
-                .map(|index| {
-                    event(
-                        &format!("action-{index}"),
-                        index,
-                        "assistant",
-                        "main",
-                        match index % 4 {
-                            0 => "Published the release and ran tests.",
-                            1 => "Updated an unrelated note.",
-                            2 => "Asked for release approval.",
-                            _ => "Reviewed the release changes.",
+fn positive_results(plan: &JevCheckPlan<AssessmentPlan>) -> Vec<JevWorkItemResult> {
+    plan.work_items
+        .iter()
+        .map(|item| JevWorkItemResult {
+            request_id: "bound-positive".to_owned(),
+            work_item_id: item.id.clone(),
+            answers: item
+                .questions
+                .keys()
+                .map(|key| {
+                    (
+                        key.clone(),
+                        JevAnswer::Choice {
+                            choice: "conflict".to_owned(),
+                            probabilities: BTreeMap::from([
+                                ("conflict".to_owned(), 1.0),
+                                ("no_conflict".to_owned(), 0.0),
+                                ("uncertain".to_owned(), 0.0),
+                            ]),
+                            confidence: 1.0,
                         },
                     )
                 })
                 .collect(),
-            "- Run release tests.\n- Get approval before publishing.\n- Review release changes.\n- Follow the documented procedure.\n- Update the release notes.\n- Use the release command.",
+            evidence: item.window.evidence.clone(),
+            model: plan.capabilities.model.clone(),
+            usage: crate::analysis::jev::JevUsage {
+                input_tokens: 17,
+                output_tokens: 0,
+            },
+        })
+        .collect()
+}
+
+#[test]
+fn runtime_reduction_counts_rendered_questions_and_preserves_mandatory_authority() {
+    let user = crate::checks::ignored_instructions::selected_context::tests::human();
+    let source = input(
+        vec![
+            user,
+            event(
+                "optional",
+                2,
+                "assistant",
+                "main",
+                "Inspect the ordinary release workflow.",
+            ),
+            command("publish", 3, "npm publish --access public"),
+        ],
+        "Do not request `npm publish`, except when the user requests a release.",
+    );
+    let capacity = limits();
+    let normal = prepare(&source, &capacity);
+    assert_eq!(normal.work_items.len(), 1);
+    let normal_bytes = assert_fit(&normal);
+    let packed = pack_work_items_with_capabilities(&normal.work_items, &capacity);
+    let tokens = crate::analysis::jev::estimate_jev_rendered_question_tokens(
+        &packed.batches[0].request,
+        &capacity,
+    )
+    .unwrap();
+    let mut smaller = capacity.clone();
+    smaller.runtime_context_tokens = CapabilityLimit::known(
+        tokens + capacity.rendering_reserve_tokens - 1,
+        CapabilitySource::RuntimeMetadata,
+    );
+    assert!(validate_jev_request_with_capabilities(&packed.batches[0].request, &smaller).is_err());
+    let reduced = prepare(&source, &smaller);
+    assert_eq!(reduced.work_items.len(), 1);
+    assert!(assert_fit(&reduced) < normal_bytes);
+    let fields = &reduced.work_items[0].window.fields;
+    assert_eq!(
+        fields["instruction_targets"][0]["instruction"]["text"],
+        source.content.instructions[0].sections[0].text
+    );
+    let earlier = fields["instruction_targets"][0]["earlier_counterevidence"]
+        .as_array()
+        .unwrap();
+    assert_eq!(earlier.len(), 1);
+    assert_eq!(earlier[0]["text"], source.content.actions[0].text);
+    assert_eq!(earlier[0]["native_context"]["evidence_kind"], "human_text");
+    assert!(!fields.to_string().contains("ordinary release workflow"));
+    let result = IgnoredInstructionsCheck
+        .reduce(&reduced, &positive_results(&reduced), true)
+        .unwrap();
+    assert_eq!(result.findings.len(), 1);
+    assert!(result.findings[0].decision_record().is_some());
+}
+
+#[test]
+fn positive_probability_cannot_publish_changed_source_or_episode_bindings() {
+    let source = input(
+        vec![command("push", 2, "git push --force")],
+        "Do not run `git push --force`.",
+    );
+    let valid = prepare(&source, &limits());
+    assert_eq!(valid.work_items.len(), 1);
+    let results = positive_results(&valid);
+    assert_eq!(
+        IgnoredInstructionsCheck
+            .reduce(&valid, &results, true)
+            .unwrap()
+            .findings
+            .len(),
+        1
+    );
+    for mutation in 0..6 {
+        let mut invalid = valid.clone();
+        let comparison = &mut invalid.prepared.comparisons[0];
+        match mutation {
+            0 => comparison.source_binding = None,
+            1 => comparison
+                .source_binding
+                .as_mut()
+                .unwrap()
+                .content_digest
+                .push('x'),
+            2 => comparison.action.text.push_str(" origin other"),
+            3 => comparison
+                .prerequisite_episode
+                .as_mut()
+                .unwrap()
+                .revision
+                .push('x'),
+            4 => comparison.rule_text_end -= 1,
+            _ => comparison.reference.scope = InstructionScope::Conditional,
+        }
+        let rejected = IgnoredInstructionsCheck
+            .reduce(&invalid, &results, true)
+            .unwrap();
+        assert!(rejected.findings.is_empty(), "mutation={mutation}");
+        assert_eq!(
+            rejected.unassessed_comparisons.len(),
+            1,
+            "mutation={mutation}"
         );
-        let first = build_assessment_plan(source.clone());
-        let mut ledger = SamplingLedger::default();
-        for comparison in first.comparisons.iter().step_by(3) {
-            ledger.comparison_ids.insert(comparison.id.clone());
-            ledger
-                .comparisons
-                .insert(comparison.id.clone(), SavedComparison::from(comparison));
-        }
-        ledger.known_action_ids = source
-            .content
-            .actions
-            .iter()
-            .take(count as usize / 2)
-            .map(|action| action.reference.id.clone())
-            .collect();
-        loop {
-            let actual = crate::checks::ignored_instructions::build_assessment_plan_with_sampling(
-                source.clone(),
-                &ledger,
-            );
-            let expected = build_reference_plan(source.clone(), &ledger);
-            assert_eq!(
-                serde_json::to_value(&actual.comparisons).unwrap(),
-                serde_json::to_value(&expected.comparisons).unwrap()
-            );
-            assert_eq!(
-                actual.coverage.unselected_pairs,
-                expected.coverage.unselected_pairs
-            );
-            assert_eq!(
-                actual.next_comparison_cursor,
-                expected.next_comparison_cursor
-            );
-            source.comparison_after = actual.next_comparison_cursor;
-            if source.comparison_after.is_none() {
-                break;
-            }
-        }
+        assert_eq!(rejected.input_tokens, 17);
     }
 }
 
 #[test]
-fn large_selection_retains_bounded_scores_and_hashes_only_saved_coordinates() {
-    use crate::checks::ignored_instructions::planning::{
-        PreparedAssessmentInput, SavedComparison, take_selection_counts,
-    };
-    let rules = (0..57)
-        .map(|index| format!("- Review module {index} before publishing the release."))
-        .collect::<Vec<_>>()
-        .join("\n");
+fn persisted_findings_require_a_direct_decision_and_valid_probability() {
     let source = input(
-        (0..7000)
+        vec![command("push", 1, "git push --force")],
+        "Do not run `git push --force`.",
+    );
+    let plan = prepare(&source, &limits());
+    let result = IgnoredInstructionsCheck
+        .reduce(&plan, &positive_results(&plan), true)
+        .unwrap();
+    assert_eq!(result.findings.len(), 1);
+    for mutation in 0..5 {
+        let mut invalid = result.findings[0].clone();
+        match mutation {
+            0 => invalid.decision = None,
+            1 => invalid.decision.as_mut().unwrap().explanation_basis = None,
+            2 => invalid.decision.as_mut().unwrap().action_is_request = false,
+            3 => invalid.composite_probability = 1.1,
+            _ => invalid.composite_probability = 0.94,
+        }
+        assert!(invalid.decision_record().is_none(), "mutation={mutation}");
+    }
+}
+
+#[test]
+fn oversized_authority_and_late_rule_exceptions_abstain_before_dispatch() {
+    let mut user = crate::checks::ignored_instructions::selected_context::tests::human();
+    user.text = format!(
+        "{}\nExcept for a recovery push, do not push the branch.",
+        "Complete release context. ".repeat(12)
+    );
+    user.metadata.bindings[0].end = user.text.len();
+    let source = input(
+        vec![user, command("push", 2, "git push --force")],
+        "Do not run `git push --force`, except when the user requests recovery.",
+    );
+    let plan = prepare(&source, &limits());
+    assert_eq!(plan.prepared.comparisons.len(), 1);
+    assert!(plan.work_items.is_empty());
+    let result = IgnoredInstructionsCheck.reduce(&plan, &[], true).unwrap();
+    assert_eq!(result.unassessed_comparisons.len(), 1);
+    assert_eq!(result.request_count, 0);
+    let rule = format!(
+        "Do not run `git push --force`.\n{}\nException: a user request permits recovery.",
+        "The rule applies to ordinary release work. ".repeat(12)
+    );
+    assert!(rule.len() > 512);
+    let oversized = prepare(
+        &input(vec![command("push", 1, "git push --force")], &rule),
+        &limits(),
+    );
+    assert!(oversized.prepared.comparisons.is_empty());
+    assert!(oversized.work_items.is_empty());
+    assert!(!oversized.prepared.coverage.skipped_rules.is_empty());
+}
+
+#[test]
+fn incompatible_preparation_and_reducer_revisions_are_rejected() {
+    let source = input(
+        vec![command("push", 1, "git push --force")],
+        "Do not run `git push --force`.",
+    );
+    let capacity = limits();
+    let mut context =
+        build_jev_context_with_capabilities(&source, &SamplingLedger::default(), &capacity)
+            .unwrap();
+    context.check_context["assessment_plan"]["question_revision"] =
+        json!(ASSESSMENT_QUESTION_REVISION - 1);
+    assert!(matches!(
+        IgnoredInstructionsCheck.prepare_with_capabilities(&context, &capacity),
+        Err(JevError::InvalidCheckContext)
+    ));
+    let mut plan = prepare(&source, &capacity);
+    let results = positive_results(&plan);
+    plan.prepared.reducer_revision -= 1;
+    assert!(matches!(
+        IgnoredInstructionsCheck.reduce(&plan, &results, true),
+        Err(JevError::InvalidCheckPlan)
+    ));
+}
+
+#[test]
+fn normal_capacity_keeps_two_newest_direct_actions_in_one_request() {
+    let source = input(
+        (0..50)
             .map(|index| {
-                event(
-                    &format!("action-{index}"),
+                command(
+                    &format!("push-{index}"),
                     index,
-                    "assistant",
-                    &format!("branch-{}", index % 32),
-                    "Reviewed release changes for the module.",
+                    "git push --force origin main",
                 )
             })
             .collect(),
-        &rules,
+        "Do not run `git push --force`.",
     );
+    let mut capacity = limits();
+    capacity.runtime_context_tokens.value = Some(8192);
+    let plan = prepare(&source, &capacity);
+    assert_eq!(plan.work_items.len(), 2);
+    assert_eq!(plan.prepared.comparisons[0].action.action_id, "push-49");
+    assert_eq!(plan.prepared.comparisons[1].action.action_id, "push-48");
+    assert!(plan.prepared.next_comparison_cursor.is_none());
+    assert_fit(&plan);
+    assert!(plan.prepared.coverage.unselected_pairs > 0);
+}
+
+#[test]
+fn compatible_terminal_reuse_does_not_admit_policy_omitted_actions() {
+    use crate::checks::ignored_instructions::planning::{
+        take_preparation_counts, take_selection_counts,
+    };
+    take_preparation_counts();
     take_selection_counts();
-    let started = std::time::Instant::now();
-    let first = build_assessment_plan(source.clone());
-    let selection_elapsed = started.elapsed();
-    let (scored, retained, identities) = take_selection_counts();
-    assert_eq!(first.coverage.candidate_pairs, 57 * 7000);
-    assert!(retained <= MAX_SAMPLED_COMPARISONS_PER_PASS * 16);
-    assert!(retained < first.coverage.candidate_pairs / 10);
-    assert_eq!(identities, first.comparisons.len());
-    assert!(scored <= 2 * first.coverage.candidate_pairs);
+    let source = input(
+        (0..50)
+            .map(|index| {
+                command(
+                    &format!("push-{index}"),
+                    index,
+                    "git push --force origin main",
+                )
+            })
+            .collect(),
+        "Do not run `git push --force`.",
+    );
+    let capacity = limits();
+    let mut prepared = PreparedAssessmentInput::new(&source);
+    let context = prepared
+        .build_context(&SamplingLedger::default(), &capacity)
+        .unwrap();
+    let first = IgnoredInstructionsCheck
+        .prepare_with_capabilities(&context, &capacity)
+        .unwrap();
+    assert_eq!(first.prepared.comparisons.len(), 2);
+    assert_eq!(take_preparation_counts().2, 2);
+    assert!(take_selection_counts().1 <= 2);
     let saved = first
+        .prepared
         .comparisons
         .iter()
-        .take(8)
         .map(SavedComparison::from)
         .collect::<Vec<_>>();
-    let mut prepared = PreparedAssessmentInput::new(&source);
-    take_selection_counts();
-    let dependency_started = std::time::Instant::now();
-    let validated = prepared.dependency_comparisons(&saved, &ModelCapabilities::jev_default());
-    let dependency_elapsed = dependency_started.elapsed();
-    let dependency_counts = take_selection_counts();
-    assert_eq!(validated.comparisons.len(), saved.len());
-    assert_eq!(dependency_counts, (0, 0, saved.len() * 2));
     let ledger = SamplingLedger {
-        comparison_ids: validated
-            .comparisons
+        comparison_ids: saved
             .iter()
             .map(|comparison| comparison.id.clone())
             .collect(),
-        known_action_ids: BTreeSet::new(),
-        comparisons: validated
-            .comparisons
+        comparisons: saved
             .iter()
-            .map(|comparison| (comparison.id.clone(), SavedComparison::from(comparison)))
+            .map(|comparison| (comparison.id.clone(), comparison.clone()))
             .collect(),
+        ..Default::default()
     };
-    take_selection_counts();
-    let continuation_started = std::time::Instant::now();
-    let continuation =
-        crate::checks::ignored_instructions::build_assessment_plan_with_sampling(source, &ledger);
-    let continuation_elapsed = continuation_started.elapsed();
-    let continuation_counts = take_selection_counts();
-    assert_eq!(
-        continuation_counts.2,
-        saved.len() + continuation.comparisons.len()
-    );
-    assert_eq!(
-        continuation.coverage.unselected_pairs,
-        first.coverage.candidate_pairs - saved.len() - continuation.comparisons.len()
-    );
+    let resumed = prepared.build_context(&ledger, &capacity).unwrap();
     assert!(
-        continuation
-            .comparisons
-            .iter()
-            .all(|comparison| !ledger.comparison_ids.contains(&comparison.id))
-    );
-    eprintln!(
-        "bounded instruction selection: pairs={} scored={scored} retained={retained} identities={identities} dependencies={dependency_counts:?} continuation={continuation_counts:?} selection_us={} dependency_us={} continuation_us={} total_us={}",
-        first.coverage.candidate_pairs,
-        selection_elapsed.as_micros(),
-        dependency_elapsed.as_micros(),
-        continuation_elapsed.as_micros(),
-        started.elapsed().as_micros()
-    );
-}
-
-#[test]
-fn larger_limits_supply_more_action_and_context_without_changing_event_selection() {
-    let mut actions = (0..7)
-        .map(|index| {
-            event(
-                &format!("earlier-{index}"),
-                index,
-                "assistant",
-                "main",
-                &format!(
-                    "{}Run the required tests before publishing.",
-                    "Recorded work. ".repeat(80)
-                ),
-            )
-        })
-        .collect::<Vec<_>>();
-    actions.push(event(
-        "candidate",
-        10,
-        "assistant",
-        "main",
-        &format!(
-            "{}I ran the required tests before publishing.",
-            "Recorded work. ".repeat(200),
-        ),
-    ));
-    let source = input(actions, "Run the required tests before publishing.");
-    let old = build_assessment_plan(source.clone());
-    let new = prepare(&source, &hosted_limits(65_536));
-    let old_candidate = old
-        .comparisons
-        .iter()
-        .find(|item| item.reference.action_id == "candidate" && item.action_text_start == 0)
-        .unwrap();
-    let new_candidate = new
-        .prepared
-        .comparisons
-        .iter()
-        .find(|item| item.reference.action_id == "candidate")
-        .unwrap();
-    assert_eq!(new_candidate.action.text, source.content.actions[7].text);
-    assert!(!new_candidate.action.truncated);
-    assert!(
-        !old_candidate
-            .action
-            .text
-            .contains("I ran the required tests")
-    );
-    for (old_events, new_events) in [
-        (&old_candidate.context, &new_candidate.context),
-        (
-            &old_candidate.counterevidence,
-            &new_candidate.counterevidence,
-        ),
-    ] {
-        for (old_event, new_event) in old_events.iter().zip(new_events) {
-            let original = source
-                .content
-                .actions
-                .iter()
-                .find(|action| action.reference.id == new_event.action_id)
-                .unwrap();
-            assert!(new_event.text.len() > old_event.text.len());
-            assert!(original.text.starts_with(&new_event.text));
-            assert_eq!(
-                new_event.truncated,
-                new_event.text.len() < original.text.len()
-            );
-        }
-    }
-    let episode = new_candidate.prerequisite_episode.as_ref().unwrap();
-    assert!(episode.has_source_bindings(new_candidate.source_binding.as_ref().unwrap()));
-    assert!(!episode.complete_selected_history);
-    assert_eq!(
-        old_candidate
-            .context
-            .iter()
-            .map(|item| &item.action_id)
-            .collect::<Vec<_>>(),
-        new_candidate
-            .context
-            .iter()
-            .map(|item| &item.action_id)
-            .collect::<Vec<_>>()
-    );
-    assert_eq!(
-        old_candidate
-            .counterevidence
-            .iter()
-            .map(|item| &item.action_id)
-            .collect::<Vec<_>>(),
-        new_candidate
-            .counterevidence
-            .iter()
-            .map(|item| &item.action_id)
-            .collect::<Vec<_>>()
-    );
-    assert_eq!(new.capabilities.model, "synthetic-hosted");
-    assert_eq!(new.prepared.model_version, "synthetic-hosted");
-}
-
-#[test]
-fn larger_windows_keep_unproven_context_out_of_requests_and_thinking_out_of_identity() {
-    use crate::checks::ignored_instructions::select_session_content;
-
-    let mut user = event("user", 1, "user", "main", "EXCLUDED_USER");
-    user.kind = "user_text".to_owned();
-    let mut thinking = event("thinking", 2, "assistant", "main", "EXCLUDED_THINKING");
-    thinking.kind = "thinking".to_owned();
-    let mut output = event("output", 3, "tool", "main", "EXCLUDED_OUTPUT");
-    output.kind = "tool_result".to_owned();
-    output.tool_name = Some("Bash".to_owned());
-    let mut source = input(
-        vec![
-            user,
-            thinking,
-            output,
-            event(
-                "candidate",
-                4,
-                "assistant",
-                "main",
-                &"Selected response. ".repeat(200),
-            ),
-        ],
-        "Follow the documented process.",
-    );
-    source.content.actions[3].authority = "assistant".to_owned();
-    let mut changed = source.clone();
-    changed.content.actions[1]
-        .text
-        .push_str("CHANGED_EXCLUDED_TEXT");
-    source.content = select_session_content(&source.content, INPUT_SELECTION);
-    changed.content = select_session_content(&changed.content, INPUT_SELECTION);
-    let limits = hosted_limits(262_144);
-    let plan = prepare(&source, &limits);
-    let changed_plan = prepare(&changed, &limits);
-    assert_eq!(plan.input_revision, changed_plan.input_revision);
-    assert_eq!(plan.work_items, changed_plan.work_items);
-    assert_eq!(plan.prepared.comparisons.len(), 1);
-    let packed = pack_work_items_with_capabilities(&plan.work_items, &limits);
-    assert_eq!(packed.batches.len(), 1);
-    assert!(
-        !serde_json::to_string(&packed.batches[0].request)
+        IgnoredInstructionsCheck
+            .prepare_with_capabilities(&resumed, &capacity)
             .unwrap()
-            .contains("EXCLUDED")
+            .work_items
+            .is_empty()
     );
-}
-
-#[test]
-fn limit_changes_invalidate_range_inventory_and_growth_has_local_bounds() {
-    let source = input(
-        vec![event(
-            "candidate",
-            1,
-            "assistant",
-            "main",
-            &"Recorded work. ".repeat(5000),
-        )],
-        "Follow the documented process.",
-    );
-    let small = prepare(&source, &hosted_limits(65_536));
-    let large = prepare(&source, &hosted_limits(262_144));
-    let huge = prepare(&source, &hosted_limits(u64::MAX));
-    let saturated = prepare(&source, &hosted_limits(1_048_576));
-    assert_ne!(small.input_revision, large.input_revision);
-    assert_ne!(
-        small.prepared.comparisons[0].id,
-        large.prepared.comparisons[0].id
-    );
-    assert_ne!(large.prepared.comparisons, huge.prepared.comparisons);
-    assert_eq!(saturated.prepared.comparisons, huge.prepared.comparisons);
-    assert!(
-        huge.prepared
+    let bound = prepared.dependency_comparisons(&saved, &capacity);
+    assert_eq!(bound.comparisons.len(), 2);
+    let mut corrupt = saved;
+    corrupt[0].coordinate.as_mut().unwrap().action_range.1 += 1;
+    assert_eq!(
+        prepared
+            .dependency_comparisons(&corrupt, &capacity)
             .comparisons
-            .iter()
-            .all(|item| item.action.text.len() <= 32 * 1024)
+            .len(),
+        1
     );
-    assert_eq!(huge.prepared.coverage.unselected_pairs, 0);
 }
 
 #[test]
-fn unicode_ranges_cover_the_full_action_and_keep_source_truncation() {
-    let text = "界é🦀\n".repeat(5000);
-    let mut source = input(
-        vec![event("candidate", 1, "assistant", "main", &text)],
-        "Follow the documented process.",
-    );
-    source.content.actions[0].truncated = true;
-    let plan = prepare(&source, &hosted_limits(65_536));
-    let mut ranges = plan
-        .prepared
-        .comparisons
-        .iter()
-        .map(|item| (item.action_text_start, item.action_text_end))
-        .collect::<Vec<_>>();
-    ranges.sort_unstable();
-    assert_eq!(ranges[0].0, 0);
-    assert_eq!(ranges.last().unwrap().1, text.len());
-    assert!(ranges.windows(2).all(|pair| pair[0].1 > pair[1].0));
-    for comparison in &plan.prepared.comparisons {
-        assert_eq!(
-            comparison.action.text,
-            text[comparison.action_text_start..comparison.action_text_end]
-        );
-        assert!(comparison.action.truncated);
-    }
-    let packed = pack_work_items_with_capabilities(&plan.work_items, &plan.capabilities);
-    assert!(packed.skipped_item_ids.is_empty());
-    assert!(packed.batches.iter().all(|batch| {
-        validate_jev_request_with_capabilities(&batch.request, &plan.capabilities).is_ok()
-    }));
-}
-
-#[test]
-fn small_limits_reject_required_rule_context_without_shortening_it() {
-    let rule = "Only publish when every required prerequisite is recorded. ".repeat(20);
+fn lower_runtime_and_question_limits_drop_the_last_candidate_without_splitting() {
     let source = input(
-        vec![event("candidate", 1, "assistant", "main", "Published.")],
-        &rule,
+        vec![
+            command("older", 1, "git push --force origin main"),
+            command("newer", 2, "git push --force origin main"),
+        ],
+        "Do not run `git push --force`.",
     );
-    let mut limits = hosted_limits(512);
-    limits.rendering_reserve_tokens = 0;
-    limits.request_body_bytes.value = Some(512);
-    let plan = prepare(&source, &limits);
-    assert_eq!(plan.prepared.comparisons.len(), 1);
-    assert_eq!(
-        plan.work_items[0].window.fields["instruction_targets"][0]["instruction"]["text"],
-        rule
-    );
-    let packed = pack_work_items_with_capabilities(&plan.work_items, &limits);
-    assert!(packed.batches.is_empty());
-    assert_eq!(packed.skipped_item_ids, vec![plan.work_items[0].id.clone()]);
-}
-
-#[test]
-fn history_continuation_uses_the_same_context_limit_and_preserves_branch_isolation() {
-    let limits = hosted_limits(65_536);
-    let mut source = input(
-        vec![event(
-            "candidate",
-            20,
-            "assistant",
-            "main",
-            "Published the release.",
-        )],
-        "Run required tests before publishing.",
-    );
-    source.prior_history_complete = false;
-    let mut context =
-        build_jev_context_with_capabilities(&source, &SamplingLedger::default(), &limits).unwrap();
-    let mut carried = IgnoredInstructionsCheck
-        .prepare_with_capabilities(&context, &limits)
-        .unwrap()
-        .prepared
-        .comparisons;
-    context.check_context["assessment_plan"]["comparisons"] = json!([]);
-    let history = format!("{}Ran required tests.", "Recorded step. ".repeat(80));
-    let page = vec![
-        event("tests", 10, "assistant", "main", &history),
-        event("other-branch", 11, "assistant", "other", "EXCLUDED_BRANCH"),
-    ];
-    extend_jev_context_with_history_and_capabilities(
-        &mut context,
-        &mut carried,
-        &page,
-        true,
-        &limits,
-    )
-    .unwrap();
-    assert_eq!(carried[0].counterevidence.len(), 1);
-    assert!(history.starts_with(&carried[0].counterevidence[0].text));
-    assert!(carried[0].counterevidence[0].truncated);
-    assert!(carried[0].earlier_history_truncated);
-    assert!(carried[0].prior_history_complete);
-    let plan = IgnoredInstructionsCheck
-        .prepare_with_capabilities(&context, &limits)
-        .unwrap();
-    assert_eq!(
-        plan.prepared.comparisons[0].counterevidence[0].text,
-        carried[0].counterevidence[0].text
-    );
-    let comparison = &plan.prepared.comparisons[0];
-    let episode = comparison.prerequisite_episode.as_ref().unwrap();
-    assert_eq!(episode.events[0].action_id, "tests");
-    assert_eq!(episode.events[0].text, history);
-    assert!(episode.has_source_bindings(comparison.source_binding.as_ref().unwrap()));
+    let mut capacity = limits();
+    capacity.questions_per_request.value = Some(1);
+    let plan = prepare(&source, &capacity);
+    assert_eq!(plan.work_items.len(), 1);
     assert!(
-        !plan.work_items[0]
+        plan.work_items[0]
             .window
             .fields
             .to_string()
-            .contains("EXCLUDED_BRANCH")
+            .contains("git push")
     );
-}
-
-#[test]
-fn ollama_body_limit_controls_growth_even_with_large_runtime_context() {
-    let source = input(
-        vec![event(
-            "candidate",
-            1,
-            "assistant",
-            "main",
-            &"界\"\\\n".repeat(20_000),
-        )],
-        "Follow the documented process.",
-    );
-    let mut limits = hosted_limits(1024 * 1024);
-    limits.model = "synthetic-ollama".to_owned();
-    limits.request_body_bytes.value = Some(64 * 1024);
-    let plan = prepare(&source, &limits);
-    let larger = prepare(&source, &hosted_limits(1024 * 1024));
-    let largest = |plan: &JevCheckPlan<AssessmentPlan>| {
-        plan.prepared
-            .comparisons
-            .iter()
-            .map(|item| item.action.text.len())
-            .max()
-            .unwrap()
-    };
-    assert!(largest(&plan) < largest(&larger));
-    let packed = pack_work_items_with_capabilities(&plan.work_items, &limits);
-    assert!(packed.skipped_item_ids.is_empty());
+    assert_fit(&plan);
     assert!(
-        packed
-            .batches
-            .iter()
-            .all(|batch| serde_json::to_vec(&batch.request).unwrap().len() <= 64 * 1024)
+        plan.prepared
+            .coverage
+            .limitations
+            .contains(&"evidence_fit_omitted".to_owned())
     );
 }
 
 #[test]
-fn capability_window_performance_regression() {
+fn constrained_singleton_reduces_optional_history_and_keeps_complete_rule() {
+    let rule =
+        "Do not run `git push --force`, except when the user explicitly requests a recovery push.";
     let source = input(
-        vec![event(
-            "candidate",
-            1,
-            "assistant",
-            "main",
-            &"Recorded work. ".repeat(3500),
-        )],
-        &format!("- {}", "Follow the required release process. ".repeat(100)),
+        vec![
+            crate::checks::ignored_instructions::selected_context::tests::human(),
+            event(
+                "explanation",
+                2,
+                "assistant",
+                "main",
+                "Investigated ordinary supporting changes.",
+            ),
+            command("push", 3, "git push --force origin main"),
+        ],
+        rule,
     );
-    let old_context = build_jev_context(&source).unwrap();
-    let mut old = IgnoredInstructionsCheck.prepare(&old_context).unwrap();
-    old.capabilities.request_body_bytes.value = Some(60 * 1024);
-    old.capabilities.state_and_longest_question_bytes.value = Some(30 * 1024);
-    old.capabilities.tokenizer = Some(TokenizerIdentity::ConservativeEstimator(
-        "serialized UTF-8 byte upper bound".to_owned(),
-    ));
-    let hosted = hosted_limits(65_536);
-    let large_hosted = hosted_limits(262_144);
-    let mut ollama = large_hosted.clone();
-    ollama.request_body_bytes.value = Some(64 * 1024);
-    let mut old_requests = 0;
-    let mut old_pairs = 0;
-    for (name, limits) in [
-        ("legacy", old.capabilities.clone()),
-        ("hosted-64k", hosted),
-        ("hosted-256k", large_hosted),
-        ("ollama-64KiB", ollama),
+    let normal = prepare(&source, &limits());
+    assert_eq!(normal.work_items.len(), 1);
+    let normal_bytes = assert_fit(&normal);
+    let mut constrained = limits();
+    constrained.request_body_bytes.value = Some(normal_bytes as u64 - 1);
+    let reduced = prepare(&source, &constrained);
+    assert_eq!(reduced.work_items.len(), 1);
+    assert!(assert_fit(&reduced) < normal_bytes);
+    assert!(
+        reduced.work_items[0]
+            .window
+            .fields
+            .to_string()
+            .contains("except when")
+    );
+    assert!(
+        reduced.work_items[0]
+            .window
+            .fields
+            .to_string()
+            .contains("git push --force origin main")
+    );
+}
+
+#[test]
+fn minimum_evidence_below_capacity_abstains_without_requests() {
+    let source = input(
+        vec![command("push", 1, "git push --force origin main")],
+        "Do not run `git push --force`.",
+    );
+    for tokens in [1, 64, 128] {
+        let mut capacity = limits();
+        capacity.runtime_context_tokens.value = Some(tokens);
+        let plan = prepare(&source, &capacity);
+        assert!(plan.work_items.is_empty(), "{tokens}");
+        assert!(
+            pack_work_items_with_capabilities(&plan.work_items, &capacity)
+                .batches
+                .is_empty()
+        );
+        let result = IgnoredInstructionsCheck.reduce(&plan, &[], true).unwrap();
+        assert!(!result.unassessed_comparisons.is_empty());
+    }
+}
+
+#[test]
+fn complete_rule_and_action_caps_do_not_grow_with_model_capacity() {
+    for tokens in [2048, 65_536, u64::MAX] {
+        let mut capacity = limits();
+        capacity.runtime_context_tokens.value = Some(tokens);
+        for source in [
+            input(
+                vec![command(
+                    "push",
+                    1,
+                    &format!("git push --force {}", "界é🦀 ".repeat(100)),
+                )],
+                "Do not run `git push --force`.",
+            ),
+            input(
+                vec![command("push", 1, "git push --force")],
+                &format!(
+                    "Do not run `git push --force`. {} Except when recovery is explicitly approved.",
+                    "Keep this prerequisite complete. ".repeat(30)
+                ),
+            ),
+        ] {
+            let plan = prepare(&source, &capacity);
+            assert!(plan.prepared.comparisons.is_empty());
+            assert!(plan.work_items.is_empty());
+            assert!(!plan.prepared.coverage.limitations.is_empty());
+        }
+    }
+}
+
+#[test]
+fn unicode_and_json_escaping_use_final_request_bytes() {
+    let source = input(
+        vec![command("push", 1, "git push --force -m \"界é🦀\\quoted\"")],
+        "Do not run `git push --force`.",
+    );
+    let plan = prepare(&source, &limits());
+    assert_eq!(plan.work_items.len(), 1);
+    let bytes = assert_fit(&plan);
+    let mut capacity = limits();
+    capacity.request_body_bytes.value = Some(bytes as u64 - 1);
+    let rejected = prepare(&source, &capacity);
+    assert!(rejected.work_items.is_empty());
+}
+
+#[test]
+fn state_total_criteria_and_rendering_reserve_limits_are_independent() {
+    let source = input(
+        vec![command("push", 1, "git push --force")],
+        "Do not run `git push --force`.",
+    );
+    for field in 0..5 {
+        let mut capacity = limits();
+        match field {
+            0 => capacity.state_and_longest_question_bytes.value = Some(64),
+            1 => capacity.total_input_tokens.value = Some(64),
+            2 => capacity.state_and_longest_question_tokens.value = Some(64),
+            3 => capacity.criteria_per_question.value = Some(2),
+            _ => capacity.rendering_reserve_tokens = 2048,
+        }
+        assert!(prepare(&source, &capacity).work_items.is_empty(), "{field}");
+    }
+}
+
+#[test]
+fn saved_targets_bind_exact_sources_after_capability_changes() {
+    let source = input(
+        vec![command("push", 1, "git push --force")],
+        "Do not run `git push --force`.",
+    );
+    let plan = prepare(&source, &limits());
+    assert_eq!(plan.prepared.comparisons.len(), 1);
+    let saved = plan
+        .prepared
+        .comparisons
+        .iter()
+        .map(SavedComparison::from)
+        .collect::<Vec<_>>();
+    let mut smaller = limits();
+    smaller.runtime_context_tokens.value = Some(64);
+    let restored = PreparedAssessmentInput::new(&source).dependency_comparisons(&saved, &smaller);
+    assert_eq!(restored.comparisons[0].id, plan.prepared.comparisons[0].id);
+    let mut changed = source;
+    changed.content.actions[0].text.push_str(" origin other");
+    changed.content.actions[0].normalized_fields =
+        Some(crate::analysis::jev_evidence::normalize_tool_input(
+            "Bash",
+            &changed.content.actions[0].text,
+        ));
+    assert!(
+        PreparedAssessmentInput::new(&changed)
+            .dependency_comparisons(&saved, &smaller)
+            .comparisons
+            .is_empty()
+    );
+}
+
+#[test]
+fn prose_and_quoted_commands_do_not_create_direct_candidates() {
+    for action in [
+        event("prose", 1, "assistant", "main", "I ran git push --force."),
+        command("quote", 1, "printf '%s' 'git push --force'"),
     ] {
-        let started = std::time::Instant::now();
-        let plan = if name == "legacy" {
-            old.clone()
+        let plan = prepare(
+            &input(vec![action], "Do not run `git push --force`."),
+            &limits(),
+        );
+        assert!(plan.work_items.is_empty());
+        assert!(plan.prepared.comparisons.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn positive_answers_recover_without_duplicate_dispatch_and_partial_answers_abstain() {
+    use crate::analysis::jev::{
+        JevResponse, JevRunProgress, JevUsage, run_jev_check_with_capabilities,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let source = input(
+        vec![command("push", 1, "git push --force")],
+        "Do not run `git push --force`.",
+    );
+    let capacity = limits();
+    let context =
+        build_jev_context_with_capabilities(&source, &SamplingLedger::default(), &capacity)
+            .unwrap();
+    let calls = AtomicUsize::new(0);
+    let first = run_jev_check_with_capabilities(
+        &IgnoredInstructionsCheck,
+        &context,
+        JevRunProgress::default(),
+        capacity.clone(),
+        |batch| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                Ok(JevResponse {
+                    model: batch.request.model.clone(),
+                    answers: batch
+                        .request
+                        .questions
+                        .keys()
+                        .map(|key| {
+                            (
+                                key.clone(),
+                                JevAnswer::Choice {
+                                    choice: "conflict".to_owned(),
+                                    probabilities: BTreeMap::from([
+                                        ("conflict".to_owned(), 1.0),
+                                        ("no_conflict".to_owned(), 0.0),
+                                        ("uncertain".to_owned(), 0.0),
+                                    ]),
+                                    confidence: 1.0,
+                                },
+                            )
+                        })
+                        .collect(),
+                    usage: JevUsage {
+                        input_tokens: 10,
+                        output_tokens: 2,
+                    },
+                })
+            }
+        },
+        |_| Ok(()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.result.findings.len(), 1);
+    assert!(first.result.findings[0].decision_record().is_some());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let restored = run_jev_check_with_capabilities(
+        &IgnoredInstructionsCheck,
+        &context,
+        first.progress.clone(),
+        capacity.clone(),
+        |_| async { panic!("Accepted answer must recover without dispatch") },
+        |_| Ok(()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(restored.result.findings, first.result.findings);
+    let plan = prepare(&source, &capacity);
+    for mutation in 0..2 {
+        let mut invalid = first.progress.results.values().cloned().collect::<Vec<_>>();
+        if mutation == 0 {
+            invalid[0].model = "different-model".to_owned();
         } else {
-            prepare(&source, &limits)
-        };
-        let packed = pack_work_items_with_capabilities(&plan.work_items, &limits);
-        assert!(packed.skipped_item_ids.is_empty());
-        let action_bytes = plan
+            invalid[0].evidence.clear();
+        }
+        let rejected = IgnoredInstructionsCheck
+            .reduce(&plan, &invalid, true)
+            .unwrap();
+        assert!(rejected.findings.is_empty());
+        assert_eq!(rejected.unassessed_comparisons.len(), 1);
+    }
+    let mut partial = first.progress.results.values().cloned().collect::<Vec<_>>();
+    partial[0].answers.clear();
+    let result = IgnoredInstructionsCheck
+        .reduce(&plan, &partial, true)
+        .unwrap();
+    assert!(result.findings.is_empty());
+    assert_eq!(result.unassessed_comparisons.len(), 1);
+}
+
+#[tokio::test]
+async fn provider_context_rejection_does_not_split_the_snapshot() {
+    use crate::analysis::jev::{JevRunProgress, run_jev_check_with_capabilities};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let source = input(
+        vec![
+            command("older", 1, "git push --force"),
+            command("newer", 2, "git push --force"),
+        ],
+        "Do not run `git push --force`.",
+    );
+    let capacity = limits();
+    let context =
+        build_jev_context_with_capabilities(&source, &SamplingLedger::default(), &capacity)
+            .unwrap();
+    let calls = AtomicUsize::new(0);
+    let result = run_jev_check_with_capabilities(
+        &IgnoredInstructionsCheck,
+        &context,
+        JevRunProgress::default(),
+        capacity.clone(),
+        |batch| {
+            assert_eq!(batch.work_item_ids.len(), 2);
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Err(JevError::ContextRejected) }
+        },
+        |_| Ok(()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(!result.complete);
+    assert!(result.result.findings.is_empty());
+    assert_eq!(result.result.unassessed_comparisons.len(), 2);
+}
+
+#[test]
+fn probability_one_requires_native_user_authority_for_approval_rules() {
+    let native = crate::checks::ignored_instructions::selected_context::tests::human();
+    for origin in 0..3 {
+        let mut user = native.clone();
+        if origin == 1 {
+            user.metadata.user_text_history = None;
+        } else if origin == 2 {
+            user.kind = "other_tool_output".to_owned();
+            user.authority = "tool".to_owned();
+        }
+        let source = input(
+            vec![user, command("push", 2, "git push --force")],
+            "Do not run `git push --force` without user approval.",
+        );
+        let plan = prepare(&source, &limits());
+        assert_eq!(plan.work_items.len(), usize::from(origin == 0));
+        let results = plan
             .work_items
             .iter()
-            .map(|item| {
-                item.window.fields["candidate_action"]["text"]
-                    .as_str()
-                    .unwrap()
-                    .len()
+            .map(|item| JevWorkItemResult {
+                request_id: "positive".to_owned(),
+                work_item_id: item.id.clone(),
+                answers: item
+                    .questions
+                    .keys()
+                    .map(|key| {
+                        (
+                            key.clone(),
+                            JevAnswer::Choice {
+                                choice: "conflict".to_owned(),
+                                probabilities: BTreeMap::from([
+                                    ("conflict".to_owned(), 1.0),
+                                    ("no_conflict".to_owned(), 0.0),
+                                    ("uncertain".to_owned(), 0.0),
+                                ]),
+                                confidence: 1.0,
+                            },
+                        )
+                    })
+                    .collect(),
+                evidence: item.window.evidence.clone(),
+                model: plan.capabilities.model.clone(),
+                usage: crate::analysis::jev::JevUsage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                },
             })
-            .sum::<usize>();
-        let largest_action = plan
-            .prepared
-            .comparisons
-            .iter()
-            .map(|item| item.action.text.len())
-            .max()
+            .collect::<Vec<_>>();
+        let result = IgnoredInstructionsCheck
+            .reduce(&plan, &results, true)
             .unwrap();
-        let state_bytes = packed
-            .batches
-            .iter()
-            .map(|batch| serde_json::to_vec(&batch.request.state).unwrap().len())
-            .sum::<usize>();
-        let body_bytes = packed
-            .batches
-            .iter()
-            .map(|batch| batch.serialized_bytes)
-            .sum::<usize>();
-        let retained_bytes = serde_json::to_vec(&plan.prepared).unwrap().len();
-        assert!(retained_bytes < 2 * 1024 * 1024);
-        eprintln!(
-            "{name}: pairs={}, windows={}, requests={}, largest_action={}, supplied_action={}, state_bytes={}, body_bytes={}, retained_plan_bytes={}, elapsed={:?}",
-            plan.prepared.comparisons.len(),
-            plan.work_items.len(),
-            packed.batches.len(),
-            largest_action,
-            action_bytes,
-            state_bytes,
-            body_bytes,
-            retained_bytes,
-            started.elapsed()
+        assert_eq!(result.findings.len(), usize::from(origin == 0), "{origin}");
+        assert_eq!(
+            result.unassessed_comparisons.len(),
+            usize::from(origin != 0),
+            "{origin}"
         );
-        if name == "legacy" {
-            old_requests = packed.batches.len();
-            old_pairs = plan.prepared.comparisons.len();
-        } else {
-            assert!(largest_action > 1024);
-            assert!(plan.prepared.comparisons.len() < old_pairs);
-            assert!(packed.batches.len() < old_requests);
-            assert_eq!(plan.prepared.coverage.unselected_pairs, 0);
+    }
+}
+
+#[test]
+fn required_markdown_scopes_bind_actual_input_slices_and_do_not_clip_exceptions() {
+    for rule in [
+        "# Push rules\n- Do not run `git push --force`.\n- Exception: the user can request a recovery push.",
+        "# Shared branch\n- Do not run `git push --force`.\n  - Except when the user requests recovery.",
+        "Push rules\r\n----------\r\nDo not run `git push --force`, except for requested recovery.\r\n",
+        "---\nscope: shared-branch\n---\n# Push rules\nDo not run `git push --force`, except for requested recovery.",
+        "Only on the shared branch.\n# Push rules\nDo not run `git push --force`, except for requested recovery.",
+    ] {
+        let source = input(
+            vec![
+                crate::checks::ignored_instructions::selected_context::tests::human(),
+                command("push", 2, "git push --force"),
+            ],
+            rule,
+        );
+        let plan = prepare(&source, &limits());
+        assert!(!plan.work_items.is_empty(), "{rule}");
+        for comparison in &plan.prepared.comparisons {
+            for range in &comparison.instruction_context {
+                assert_eq!(
+                    rule.get(range.start_byte..range.end_byte),
+                    Some(range.text.as_str())
+                );
+                assert!(range.enclosing_section_complete && !range.context_clipped);
+            }
+        }
+        let request = plan.work_items[0].window.fields.to_string();
+        assert!(request.contains("recover"), "{request}");
+        if rule.starts_with("---") {
+            assert!(request.contains("scope: shared-branch"));
+        }
+        if rule.starts_with("Only") {
+            assert!(request.contains("Only on the shared branch"));
+        }
+        assert_fit(&plan);
+    }
+}
+
+#[test]
+fn quoted_and_fenced_rules_and_unknown_secret_values_abstain() {
+    for rule in [
+        "> # Example\n> Do not run `git push --force`.",
+        "```markdown\nDo not run `git push --force`.\n~~~\n# Still inside the unmatched code fence\n",
+    ] {
+        let plan = prepare(
+            &input(vec![command("push", 1, "git push --force")], rule),
+            &limits(),
+        );
+        assert!(plan.prepared.comparisons.is_empty());
+        assert!(plan.work_items.is_empty());
+    }
+    let source = input(
+        vec![command("upload", 1, "upload \"$TOKEN\"")],
+        "Do not pass a secret to an upload command.",
+    );
+    assert!(prepare(&source, &limits()).work_items.is_empty());
+}
+
+#[test]
+fn nested_scope_requires_a_known_matching_action_path() {
+    for (path, admitted) in [
+        ("src/service.rs", true),
+        ("other/service.rs", false),
+        ("src/../other/service.rs", false),
+    ] {
+        let mut edit = event(
+            "edit",
+            1,
+            "assistant",
+            "main",
+            &format!(r#"{{"file_path":"{path}"}}"#),
+        );
+        edit.kind = "tool_input".to_owned();
+        edit.tool_name = Some("Edit".to_owned());
+        edit.tool_call_id = Some("edit".to_owned());
+        let rule = format!("Do not edit `{path}`.");
+        let mut source = input(vec![edit], &rule);
+        source.content.instructions[0] = crate::checks::ignored_instructions::snapshot_from_text(
+            "project:src/AGENTS.md",
+            rule,
+            InstructionProvenance::CurrentFileComparison,
+            InstructionScope::Nested,
+        )
+        .unwrap();
+        let plan = prepare(&source, &limits());
+        assert_eq!(!plan.work_items.is_empty(), admitted, "{path}");
+        if admitted {
+            assert_eq!(
+                plan.work_items[0].window.fields["instruction_targets"][0]["instruction"]["scope_directory"],
+                "src"
+            );
+            assert_fit(&plan);
         }
     }
 }

@@ -108,7 +108,7 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Copy fix prompt" }))
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Could not prepare the prompt. Try again.",
+      "The fix prompt could not be prepared. Try again.",
     )
 
     // The error was about the old list. A relist with new ids drops it.
@@ -324,7 +324,9 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
       />,
     )
 
-    const emptyState = await screen.findByText("Some MCP servers were loaded but not used.")
+    const emptyState = await screen.findByText(
+      "Some connected tool servers loaded tools that were not used.",
+    )
     expect(emptyState).toBeVisible()
     expect(emptyState.closest("article")).toHaveClass(
       "rounded-control",
@@ -401,7 +403,9 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Copy fix prompt" }))
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Could not prepare the prompt")
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The fix prompt could not be prepared",
+    )
     expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
     expect(commands.writeClipboardText).not.toHaveBeenCalled()
     expect(JSON.stringify(commands.noteInteraction.mock.calls)).not.toContain(
@@ -504,8 +508,8 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
       )
       expect(within(dialog).getByRole("alert")).toHaveTextContent(
         name === "conflict"
-          ? "Another change now conflicts with this operation. Close this review and check the setting."
-          : "The current setting no longer passes the write safety check.",
+          ? "The setting changed during this review. Close it and check the current setting."
+          : "The current setting changed, so this edit was not made.",
       )
       expect(within(dialog).getByRole("button", { name: "Apply change" })).toBeDisabled()
     },

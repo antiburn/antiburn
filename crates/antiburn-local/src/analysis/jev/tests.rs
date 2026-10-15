@@ -2,6 +2,88 @@ use super::tests::{check_revisions, choice, response_for};
 use super::*;
 use std::sync::atomic::Ordering;
 
+#[path = "tests/concurrency.rs"]
+mod concurrency;
+
+struct CompactPolicyCheck(&'static str);
+
+impl JevCheck for CompactPolicyCheck {
+    type Prepared = Value;
+    type Result = Value;
+
+    fn id(&self) -> &'static str {
+        self.0
+    }
+
+    fn revisions(&self) -> JevCheckRevisions {
+        check_revisions(1, 1, 1, 1)
+    }
+
+    fn prepare(&self, context: &JevSessionContext) -> Result<JevCheckPlan<Value>, JevError> {
+        let mut plan = ResumeCheck {
+            revisions: self.revisions(),
+        }
+        .prepare(context)?;
+        plan.check_id = self.id().into();
+        for item in &mut plan.work_items {
+            item.window.fields = json!({"text": "compact evidence"});
+        }
+        Ok(plan)
+    }
+
+    fn reduce(
+        &self,
+        _plan: &JevCheckPlan<Value>,
+        results: &[JevWorkItemResult],
+        complete: bool,
+    ) -> Result<Value, JevError> {
+        Ok(json!({"complete": complete, "answers": results.len()}))
+    }
+}
+
+#[tokio::test]
+async fn four_compact_checks_settle_context_rejection_without_child_calls() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for id in [
+            "ignored_instructions",
+            "scope_creep",
+            "over_exploring",
+            "skill_opportunities",
+        ] {
+            let context = JevSessionContext {
+                input_revision: "compact".into(),
+                session_identity: "compact".into(),
+                check_context: Value::Null,
+                limitations: Vec::new(),
+                evidence_store: JevEvidenceStore::default(),
+                reference_snapshots: Vec::new(),
+            };
+            let calls = std::sync::atomic::AtomicUsize::new(0);
+            let outcome = run_jev_check(
+                &CompactPolicyCheck(id),
+                &context,
+                JevRunProgress::default(),
+                |batch| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(batch.work_item_ids.len(), 2);
+                    async { Err(JevError::ContextRejected) }
+                },
+                |_| Ok(()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "{id}");
+            assert!(!outcome.complete, "{id}");
+            assert_eq!(outcome.failure, None);
+            assert!(outcome.progress.results.is_empty());
+            assert_eq!(outcome.progress.failed_item_ids.len(), 2);
+            assert_eq!(outcome.result["answers"], 0);
+        }
+    })
+    .await
+    .unwrap();
+}
+
 struct ResumeCheck {
     revisions: JevCheckRevisions,
 }

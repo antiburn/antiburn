@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest"
 
 import { defaultConnection, type Connection } from "../../../../lib/smartCheckProviders"
-import { searchApp, resolveStepSettingsSearchTarget } from "../../../../lib/appSearch"
+import { searchApp, resolveSettingsSearchTarget } from "../../../../lib/appSearch"
 import { SettingsTargetFocus } from "../../../settings/SettingsTargetFocus"
 import { StepSettings } from "./StepSettings"
 import { ChecksStepSettings } from "./ChecksStepSettings"
@@ -58,6 +58,8 @@ const emptyAvailability = vi.hoisted(() => ({
     completed: 0,
     skipped: 0,
     failed: 0,
+    reviewed: 0,
+    eligibleItems: 0,
   },
   usage: {
     inputTokens: 0,
@@ -161,16 +163,16 @@ it.each(["macos", "windows", "linux"] as const)(
   "reveals provider limits from the Checks step search destination on %s",
   async (platform) => {
     const result = searchApp("Model limits", platform)[0]!
-    if (result.target.kind !== "stepSetting") throw new Error("Missing step destination")
-    const request = resolveStepSettingsSearchTarget(result.target)
+    if (result.target.kind !== "setting") throw new Error("Missing step destination")
+    const request = resolveSettingsSearchTarget(result.target)
     const { container } = render(
-      <StepSettings step={request.step} control={request.control} targetRevision={1} />,
+      <StepSettings step="checks" control={request.control} targetRevision={1} />,
     )
     await waitFor(() => expect(screen.getByLabelText("TypeSafe API key")).toBeEnabled())
     if (!(container instanceof HTMLDivElement))
       throw new Error("Missing step settings container")
     HTMLElement.prototype.scrollIntoView = vi.fn()
-    new SettingsTargetFocus().attach(container, request.step, request.control, 1)()
+    new SettingsTargetFocus().attach(container, request.pane, request.control, 1)()
     expect(screen.getByRole("button", { name: "Model limits" })).toHaveAttribute(
       "aria-expanded",
       "true",
@@ -482,7 +484,9 @@ it("explains the selected and excluded fields and gives the API key a full-width
   render(<ChecksStepSettings />)
   expect(screen.getByRole("heading", { name: "Smart Burn Checks" })).toBeInTheDocument()
   expect(
-    screen.getByText(/Finds project instructions a session did not follow/),
+    screen.getByText(
+      /Checks selected actions for direct conflicts with current instruction rules/,
+    ),
   ).toBeInTheDocument()
   expect(
     screen.getByText(
@@ -552,7 +556,7 @@ it.each(["ignoredInstructions", "skillOpportunities", "overExploring", "scopeCre
     await waitFor(() => expect(setHistory).toHaveBeenCalledWith(30))
     fireEvent.click(screen.getByRole("button", { name: "Check past sessions" }))
     await waitFor(() => expect(runBackfill).toHaveBeenCalledOnce())
-    expect(screen.getByText("Running checks; 0/4 check jobs complete")).toBeInTheDocument()
+    expect(screen.getByText(/0 of 4 session checks finished/)).toBeInTheDocument()
     expect(screen.queryByText(/added .* to the queue/i)).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Check past sessions" })).toBeDisabled()
     expect(screen.queryByText(/running,.*waiting/)).not.toBeInTheDocument()
@@ -573,7 +577,7 @@ it("keeps the checking denominator stable while sessions change status", async (
     },
   })
   render(<ChecksStepSettings />)
-  await screen.findByText("Running checks; 0/14 check jobs complete")
+  await screen.findByText(/0 of 14 session checks finished/)
 })
 
 it("confirms when every session in the history run finished", async () => {

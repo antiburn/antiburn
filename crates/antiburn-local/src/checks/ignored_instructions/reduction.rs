@@ -2,6 +2,8 @@
 
 use super::*;
 
+const DIRECT_CONFLICT_THRESHOLD: f64 = 0.95;
+
 #[cfg(test)]
 #[path = "reduction/tests.rs"]
 mod tests;
@@ -30,7 +32,7 @@ pub(super) fn reduce_traced(
     diagnostics: &mut Option<&mut Vec<ComparisonDiagnostic>>,
 ) -> AssessmentResult {
     let mut findings = BTreeMap::<String, AssessmentFinding>::new();
-    let mut pending_rules = Vec::new();
+    let mut pending_rules: Vec<PendingRule> = Vec::new();
     let mut unassessed_comparisons = Vec::new();
     let mut coverage = plan.coverage.clone();
     coverage.reassessed_comparison_ids.clear();
@@ -53,14 +55,48 @@ pub(super) fn reduce_traced(
         }
         let binding_valid = comparison.source_binding.as_ref().is_some_and(|binding| {
             binding.matches(comparison)
+                && binding.excerpt.as_ref().is_some_and(|excerpt| {
+                    !excerpt.source_truncated
+                        && excerpt.start_byte == 0
+                        && excerpt.end_byte == excerpt.source_bytes
+                })
                 && comparison
                     .prerequisite_episode
                     .as_ref()
                     .is_none_or(|episode| episode.has_source_bindings(binding))
-        }) && comparison.reference.scope != InstructionScope::Unknown;
+        }) && matches!(
+            comparison.reference.scope,
+            InstructionScope::Global | InstructionScope::Project | InstructionScope::Nested
+        ) && plan.current_rule_ids.contains(&(
+            comparison.reference.instruction_id.clone(),
+            comparison.reference.instruction_digest.clone(),
+            comparison.reference.rule_id.clone(),
+        )) && plan
+            .current_action_digests
+            .get(&comparison.reference.action_id)
+            == Some(&comparison.reference.action_digest)
+            && comparison.action.kind == "tool_input"
+            && !comparison.action.truncated
+            && comparison.reference.action_stable
+            && comparison.action.text.len() <= 512
+            && comparison.rule_text_start == 0
+            && comparison.rule_text_end == comparison.rule_text.len()
+            && comparison.rule_text.len() <= 512
+            && super::super::planning::complete_rule_unit(
+                &comparison.rule_text,
+                &comparison.instruction_context,
+            )
+            .len()
+                <= 512
+            && comparison
+                .instruction_context
+                .iter()
+                .all(|range| !range.context_clipped && range.enclosing_section_complete);
         let decision = response.and_then(valid_decision);
         let reason = if !binding_valid {
             "source_binding_invalid"
+        } else if !authority_evidence_valid(comparison) {
+            "required_user_authority_unavailable"
         } else if let Some((choice, probability)) = decision {
             coverage
                 .reassessed_comparison_ids
@@ -70,16 +106,20 @@ pub(super) fn reduce_traced(
                 .push(comparison.reference.rule_id.clone());
             let id = finding_id_for_reference(&comparison.reference);
             match choice {
-                "conflict" if probability >= DECISION_THRESHOLD => {
-                    coverage.reassessed_finding_ids.push(id.clone());
+                "conflict" if probability >= DIRECT_CONFLICT_THRESHOLD => {
                     let limitations = comparison_limitations(plan, comparison);
+                    let Some(decision) = super::super::decisions::record(
+                        plan,
+                        comparison,
+                        None,
+                        limitations.clone(),
+                    ) else {
+                        unassessed_comparisons.push(comparison.id.clone());
+                        continue;
+                    };
+                    coverage.reassessed_finding_ids.push(id.clone());
                     let finding = AssessmentFinding {
-                        decision: super::super::decisions::record(
-                            plan,
-                            comparison,
-                            None,
-                            limitations.clone(),
-                        ),
+                        decision: Some(decision),
                         id,
                         reference: comparison.reference.clone(),
                         instruction_excerpt: rule_text_fragment(comparison).to_owned(),
@@ -100,16 +140,7 @@ pub(super) fn reduce_traced(
                             .iter()
                             .map(|event| event.action_id.clone())
                             .collect(),
-                        certainty: if matches!(
-                            comparison.reference.provenance,
-                            InstructionProvenance::CurrentFileComparison
-                                | InstructionProvenance::ObservedRead
-                        ) || comparison.action.truncated
-                        {
-                            FindingCertainty::Possible
-                        } else {
-                            FindingCertainty::Likely
-                        },
+                        certainty: FindingCertainty::Possible,
                         composite_probability: probability,
                         limitations,
                     };
@@ -123,19 +154,9 @@ pub(super) fn reduce_traced(
                         .or_insert(finding);
                     "conflict"
                 }
-                "no_issue" => {
+                "no_conflict" => {
                     coverage.reassessed_finding_ids.push(id);
-                    "no_issue"
-                }
-                "pending_completion" => {
-                    pending_rules.push(PendingRule {
-                        instruction_id: comparison.reference.instruction_id.clone(),
-                        instruction_digest: comparison.reference.instruction_digest.clone(),
-                        rule_id: comparison.reference.rule_id.clone(),
-                        heading: comparison.reference.rule_heading.clone(),
-                        reason: "completion_not_observed".to_owned(),
-                    });
-                    "pending_completion"
+                    "no_conflict"
                 }
                 _ => "uncertain",
             }
@@ -144,7 +165,9 @@ pub(super) fn reduce_traced(
         };
         if matches!(
             reason,
-            "source_binding_invalid" | "decision_missing_or_invalid"
+            "source_binding_invalid"
+                | "decision_missing_or_invalid"
+                | "required_user_authority_unavailable"
         ) {
             unassessed_comparisons.push(comparison.id.clone());
         }
@@ -233,6 +256,60 @@ pub(super) fn reduce_traced(
     }
 }
 
+pub(super) fn authority_evidence_valid(comparison: &CandidateComparison) -> bool {
+    comparison
+        .prerequisite_episode
+        .as_ref()
+        .is_none_or(|episode| {
+            let authority = episode.events.iter().filter(|event| {
+                episode.selected_actions.iter().any(|action| {
+                    action.reference.id == event.action_id
+                        && super::super::selected_context::human_text(action)
+                })
+            });
+            !authority.clone().any(|event| event.truncated)
+                && authority.map(|event| event.text.len()).sum::<usize>() <= 256
+        })
+        && (!requires_recorded_user_authority(comparison)
+            || comparison
+                .prerequisite_episode
+                .as_ref()
+                .is_some_and(|episode| {
+                    episode
+                        .selected_actions
+                        .iter()
+                        .any(super::super::selected_context::human_text)
+                        && episode.complete_selected_history
+                }))
+}
+
+fn requires_recorded_user_authority(comparison: &CandidateComparison) -> bool {
+    let rule = format!(
+        "{} {}",
+        super::super::planning::complete_rule_unit(
+            rule_text_fragment(comparison),
+            &comparison.instruction_context,
+        ),
+        comparison.reference.rule_heading
+    )
+    .to_ascii_lowercase();
+    rule.split(|character: char| !character.is_alphanumeric())
+        .any(|word| {
+            matches!(
+                word,
+                "user"
+                    | "users"
+                    | "approval"
+                    | "approved"
+                    | "permission"
+                    | "authorizes"
+                    | "authorises"
+                    | "authorized"
+                    | "authorised"
+            )
+        })
+}
+
 fn valid_decision(result: &JevWorkItemResult) -> Option<(&str, f64)> {
     let JevAnswer::Choice {
         choice,
@@ -242,7 +319,7 @@ fn valid_decision(result: &JevWorkItemResult) -> Option<(&str, f64)> {
     else {
         return None;
     };
-    let options = ["conflict", "no_issue", "pending_completion", "uncertain"];
+    let options = ["conflict", "no_conflict", "uncertain"];
     if !options.contains(&choice.as_str())
         || probabilities.len() != options.len()
         || options.iter().any(|option| {

@@ -1,6 +1,142 @@
 use super::checkpoint_tests::{checkpoint_fixture, checkpoint_fixture_in};
 use super::*;
 
+#[tokio::test(start_paused = true)]
+async fn provider_admission_waits_for_deadline_and_cancels_on_connection_change() {
+    let (_store, input, handle, generation) = checkpoint_fixture();
+    let events = SessionEvents::default();
+    let now = tokio::time::Instant::now();
+    {
+        let mut pacing = provider_pacing(SystemOneProvider::Custom).lock().unwrap();
+        *pacing = ProviderPacing::new(now);
+        assert!(pacing.admit("first", 10, now));
+    }
+    let waiting = wait_for_provider(
+        SystemOneProvider::Custom,
+        "second",
+        10,
+        &handle,
+        generation,
+        &events,
+        &input.key,
+    );
+    tokio::pin!(waiting);
+    std::future::poll_fn(|cx| {
+        assert!(waiting.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    tokio::time::advance(Duration::from_millis(25)).await;
+    assert_eq!(waiting.await, Ok(()));
+    assert_eq!(tokio::time::Instant::now(), now + Duration::from_millis(25));
+
+    provider_pacing(SystemOneProvider::Custom)
+        .lock()
+        .unwrap()
+        .defer(tokio::time::Instant::now(), Duration::from_secs(60));
+    let waiting = wait_for_provider(
+        SystemOneProvider::Custom,
+        "cancelled",
+        10,
+        &handle,
+        generation,
+        &events,
+        &input.key,
+    );
+    tokio::pin!(waiting);
+    std::future::poll_fn(|cx| {
+        assert!(waiting.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    handle.suspend_system_one();
+    assert_eq!(waiting.await, Err(JevError::Cancelled));
+    assert_eq!(tokio::time::Instant::now(), now + Duration::from_millis(25));
+}
+
+#[test]
+fn provider_deadline_observes_spacing_cooldown_and_multiple_token_expiries() {
+    let now = tokio::time::Instant::now();
+    let mut pacing = ProviderPacing::new(now);
+    assert!(pacing.admit("first", 40_000, now));
+    assert_eq!(
+        pacing.next_eligible(10, now),
+        now + Duration::from_millis(25)
+    );
+    assert!(pacing.admit("second", 40_000, now + Duration::from_millis(25)));
+    assert_eq!(
+        pacing.next_eligible(70_000, now + Duration::from_millis(50)),
+        now + Duration::from_millis(1025)
+    );
+    pacing.defer(now, Duration::from_secs(5));
+    assert_eq!(
+        pacing.next_eligible(70_000, now + Duration::from_millis(50)),
+        now + Duration::from_secs(5)
+    );
+    assert!(pacing.admit("after", 70_000, now + Duration::from_secs(5)));
+}
+
+#[tokio::test]
+async fn successful_discovery_caches_unknown_limits_and_accepts_configured_only_limits() {
+    use antiburn_local::analysis::jev::capabilities::CapabilitySource;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for configured in [None, Some(2048)] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let connection = SystemOneConnection {
+                provider: SystemOneProvider::Ollama,
+                endpoint: SystemOneEndpoint::BaseUrl(format!("http://{}", listener.local_addr().unwrap())),
+                model: "tev1:0.8b".into(), credential: None, context_override: None,
+                ..SystemOneConnection::default()
+            };
+            let server = tokio::spawn(async move {
+                for (route, body) in [
+                    ("/api/version", serde_json::json!({"version": "0.35.0"})),
+                    ("/api/tags", serde_json::json!({"models": [{"name": "tev1:0.8b", "digest": "digest"}]})),
+                    ("/api/show", serde_json::json!({"capabilities": ["decision"],
+                        "parameters": configured.map(|value| format!("num_ctx {value}")),
+                        "model_info": {"general.architecture": "test", "test.context_length": 65536}})),
+                    ("/api/ps", serde_json::json!({"models": []})),
+                ] {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut bytes = [0; 4096];
+                    let count = socket.read(&mut bytes).await.unwrap();
+                    assert!(String::from_utf8_lossy(&bytes[..count]).contains(route));
+                    let body = body.to_string();
+                    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                }
+            });
+            let handle = WorkerHandle::default();
+            handle.set_system_one_connection(connection.clone(), None).unwrap();
+            let generation = handle.key_generation.load(Ordering::Acquire);
+            let result = handle.resolve_capabilities(generation).await;
+            server.await.unwrap();
+            let cached = handle.discovery.lock().await.as_ref().unwrap().capabilities.clone();
+            assert_eq!(cached.total_input_tokens.value, configured);
+            assert_eq!(cached.runtime_context_tokens.value, None);
+            if configured.is_some() {
+                assert_eq!(cached.total_input_tokens.source, CapabilitySource::ProviderMetadata);
+                assert_eq!(result.as_ref().unwrap().usable_input_tokens(), Some(1024));
+            } else {
+                assert_eq!(result, Err(JevError::ProviderUnavailable));
+            }
+            assert_eq!(handle.resolve_capabilities(generation).await, result);
+
+            let mut manual_connection = connection;
+            manual_connection.context_override = Some(crate::jev::config::ContextLimitOverride {
+                total_input_tokens: Some(2048), ..Default::default()
+            });
+            handle.set_system_one_connection(manual_connection, None).unwrap();
+            let generation = handle.key_generation.load(Ordering::Acquire);
+            let manual = handle.resolve_capabilities(generation).await.unwrap();
+            assert_eq!(manual.total_input_tokens.source, CapabilitySource::Manual);
+            assert_eq!(manual.usable_input_tokens(), Some(1024));
+            assert_eq!(manual.runtime_context_tokens.value, None);
+        }
+    }).await.unwrap();
+}
+
 fn scheduler_fixture() -> (Store, Vec<BurnCheckInput>) {
     let (store, base, _, _) = checkpoint_fixture();
     let mut inputs = Vec::new();
@@ -80,6 +216,22 @@ fn scheduler_fixture() -> (Store, Vec<BurnCheckInput>) {
         }
     }
     (store, inputs)
+}
+
+#[test]
+fn preflight_blocks_deferred_and_unknown_delivery_before_packing() {
+    assert_eq!(
+        preflight_admission(BurnCheckRequestAdmission::Admitted),
+        Ok(())
+    );
+    assert_eq!(
+        preflight_admission(BurnCheckRequestAdmission::Deferred),
+        Err(JevError::Cancelled)
+    );
+    assert_eq!(
+        preflight_admission(BurnCheckRequestAdmission::Unresolved),
+        Err(JevError::RequestOutcomeUnknown)
+    );
 }
 
 #[test]
@@ -737,8 +889,34 @@ fn provider_retry_after_cooldown_blocks_other_requests_for_same_provider() {
 async fn cached_response_recovers_after_third_transport_attempt() {
     use antiburn_local::analysis::jev::{JevAnswer, JevQuestion, JevRequest, JevUsage};
 
+    tokio::time::timeout(Duration::from_secs(10), async {
+    for provider in [SystemOneProvider::Jev, SystemOneProvider::Ollama] {
     let (store, input, handle, generation) = checkpoint_fixture();
-    let connection = handle.system_one_connection();
+    let mut connection = handle.system_one_connection();
+    let mut generation = generation;
+    let mut capabilities = connection.capabilities().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    if provider == SystemOneProvider::Ollama {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        connection.provider = provider;
+        connection.endpoint = SystemOneEndpoint::BaseUrl(format!("http://{}", listener.local_addr().unwrap()));
+        connection.credential = None;
+        connection.context_override = None;
+        handle.set_system_one_connection(connection.clone(), None).unwrap();
+        generation = handle.key_generation.load(Ordering::Acquire);
+        capabilities.model_revision = Some("accepted-model-digest".into());
+        let failed_discovery = async {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 4096];
+            let count = socket.read(&mut buffer).await.unwrap();
+            assert!(String::from_utf8_lossy(&buffer[..count]).starts_with("GET /api/version "));
+            socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+        };
+        let (discovered, ()) = tokio::join!(handle.resolve_capabilities(generation), failed_discovery);
+        assert_eq!(discovered, Err(JevError::ProviderUnavailable));
+        assert_eq!(handle.resolve_capabilities(generation).await, Err(JevError::ProviderUnavailable));
+        connection.model_revision.clone_from(&capabilities.model_revision);
+    }
     let request = JevRequest {
         model: connection.model.clone(),
         state: serde_json::json!({"activity": "synthetic"}),
@@ -825,9 +1003,9 @@ async fn cached_response_recovers_after_third_transport_attempt() {
             events: &events,
             idle_secs: IDLE_SECS,
             lease_secs: 300,
-            capabilities: &connection.capabilities().unwrap(),
+            capabilities: &capabilities,
         },
-        batch,
+        batch.clone(),
         &notify,
     )
     .await
@@ -835,4 +1013,22 @@ async fn cached_response_recovers_after_third_transport_attempt() {
 
     assert_eq!(cached.answers, response.answers);
     assert_eq!(store.burn_check_dispatch_attempts(&identities).unwrap(), 3);
+    store.lock().execute("DELETE FROM burn_check_response_cache", []).unwrap();
+    assert_eq!(execute_batch(
+        BatchContext {
+            store: &store, input: &input,
+            client: TypeSafeClient::new("synthetic-key".into()).unwrap(),
+            handle: &handle, key_generation: generation, events: &events,
+            idle_secs: IDLE_SECS, lease_secs: 300, capabilities: &capabilities,
+        }, batch, &notify,
+    ).await, Err(JevError::ProviderUnavailable));
+    assert_eq!(store.burn_check_dispatch_attempts(&identities).unwrap(), 3);
+    let accept = listener.accept();
+    tokio::pin!(accept);
+    std::future::poll_fn(|cx| {
+        assert!(accept.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    }).await;
+    }
+    }).await.unwrap();
 }

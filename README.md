@@ -18,19 +18,21 @@
 
 A little free desktop app to check your sessions for the most common causes of token burn - sessions that go too deep, subagents that go too hard, skills and MCPs that go unused, etc etc etc.
 
-antiburn supports Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode, Kiro, Amp, Antigravity, Devin (Windsurf), Pi, and Oh My Pi. See the [support matrix](docs/support.md) for platform limits, discovery details, and local data storage.
+antiburn supports Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode, Kiro, Amp, Antigravity, Devin (Windsurf), Pi, and Oh My Pi. See [supported agents](https://antiburn.com/docs/agents/supported-agents/) for what antiburn reads from each one, and the [support matrix](docs/support.md) for platform limits, discovery details, and local data storage.
 
 ## Checks
 
-- Excess cache rehydration - cache writes are expensive; let's all work out how to avoid too many of them.
-- Fast mode overuse - fast mode is great if you're not close to limit, but be careful if you are.
-- Model overthinking - I know `xhigh` and `ultra` sound cool but they're usually better avoided.
-- Old model usage - worth checking if you're still pinned to old models, especially in subagents.
-- Overpowered subagents - using subagents on premium models is generally a bad idea.
-- Session overdepth - compaction works now, friends don't let friends have 950k context windows.
-- Unused built-in tools - Claude (especially) has a bunch of heavy built-in tools that you should probably disable.
-- Unused MCP servers - MCPs are usually situational, just turn them on when you need them.
-- Unused skills - most of us have skills installed that cost tokens every session, but that we never use any more.
+Each check has a docs page explaining what it measures and how to fix it. The [config guides](https://antiburn.com/guides/) cover the Claude Code, Codex, and Pi settings behind most of them.
+
+- [Excess cache rehydration](https://antiburn.com/docs/findings/excess-cache-rehydration/) - cache writes are expensive; let's all work out how to avoid too many of them.
+- [Fast mode overuse](https://antiburn.com/docs/findings/fast-mode-overuse/) - fast mode is great if you're not close to limit, but be careful if you are.
+- [Model overthinking](https://antiburn.com/docs/findings/model-overthinking/) - I know `xhigh` and `ultra` sound cool but they're usually better avoided.
+- [Old model usage](https://antiburn.com/docs/findings/old-model-usage/) - worth checking if you're still pinned to old models, especially in subagents.
+- [Overpowered subagents](https://antiburn.com/docs/findings/overpowered-subagents/) - using subagents on premium models is generally a bad idea.
+- [Session overdepth](https://antiburn.com/docs/findings/session-overdepth/) - compaction works now, friends don't let friends have 950k context windows.
+- [Unused built-in tools](https://antiburn.com/docs/findings/unused-built-in-tools/) - Claude (especially) has a bunch of heavy built-in tools that you should probably disable.
+- [Unused MCP servers](https://antiburn.com/docs/findings/unused-mcp-servers/) - MCPs are usually situational, just turn them on when you need them.
+- [Unused skills](https://antiburn.com/docs/findings/unused-skills/) - most of us have skills installed that cost tokens every session, but that we never use any more.
 
 Optional [Smart Burn Checks](docs/smart-burn-checks.md) review Ignored Instructions,
 Scope Creep, Over-exploring, and Skill Opportunities through Jev, Ollama,
@@ -44,6 +46,8 @@ excluded; missing evidence and failed requests cannot produce a clean result.
 Hosted requests can incur charges.
 
 ## Install
+
+Full walkthrough: [installation](https://antiburn.com/docs/getting-started/installation/) and [updating](https://antiburn.com/docs/getting-started/updating/).
 
 macOS 13 or later, with Homebrew (Apple silicon and Intel):
 
@@ -101,7 +105,7 @@ See the [desktop guide](apps/desktop/README.md) for app commands and the
 
 antiburn uses no account, server, or backend. It hits agent provider APIs from your machine, using the same methods your harnesses already do.
 
-antiburn has analytics that we use to improve the app, but analytics events never include anything you care about: sessions, prompts, file paths, repository names, credentials, etc. You can turn analytics off, and builds from a clean checkout have no analytics endpoint. See the complete [analytics contract](docs/analytics.md).
+antiburn has analytics that we use to improve the app, but analytics events never include anything you care about: sessions, prompts, file paths, repository names, credentials, etc. You can turn analytics off, and builds from a clean checkout have no analytics endpoint. See [privacy and data](https://antiburn.com/docs/privacy/privacy-and-data/) and the complete [analytics contract](docs/analytics.md).
 
 Open source, so if you're worried, point your coding agent at this repo to audit exactly what data leaves the device.
 
@@ -113,6 +117,10 @@ Bugs and feature requests go in [GitHub issues](https://github.com/antiburn/anti
 
 ## Project links
 
+- [Docs](https://antiburn.com/docs/)
+- [Config guides](https://antiburn.com/guides/)
+- [Resources](https://antiburn.com/resources/)
+- [Release notes](https://antiburn.com/release-notes/)
 - [Contributing](CONTRIBUTING.md)
 - [Support](SUPPORT.md)
 - [Governance](GOVERNANCE.md)

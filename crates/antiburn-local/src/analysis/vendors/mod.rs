@@ -14,7 +14,7 @@ mod cursor;
 mod devin;
 mod generic_jsonl;
 mod kiro;
-mod omp;
+pub(crate) mod omp;
 mod opencode;
 mod passive;
 pub(crate) mod pi;

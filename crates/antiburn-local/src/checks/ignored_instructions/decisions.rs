@@ -43,20 +43,14 @@ impl ActionSourceBinding {
             && self.source.id == comparison.action.action_id
             && !self.content_digest.is_empty()
             && self.content_digest == comparison.reference.action_digest
-            && self.excerpt.as_ref().map_or_else(
-                || {
-                    comparison.action_text_start == 0
-                        && comparison.action_text_end == comparison.action.text.len()
-                },
-                |excerpt| {
-                    excerpt.start_byte == comparison.action_text_start
-                        && excerpt.end_byte == comparison.action_text_end
-                        && excerpt.start_byte < excerpt.end_byte
-                        && excerpt.end_byte <= excerpt.source_bytes
-                        && excerpt.end_byte - excerpt.start_byte == comparison.action.text.len()
-                        && excerpt.text_digest == sha256_hex(comparison.action.text.as_bytes())
-                },
-            )
+            && self.excerpt.as_ref().is_some_and(|excerpt| {
+                excerpt.start_byte == comparison.action_text_start
+                    && excerpt.end_byte == comparison.action_text_end
+                    && excerpt.start_byte < excerpt.end_byte
+                    && excerpt.end_byte <= excerpt.source_bytes
+                    && excerpt.end_byte - excerpt.start_byte == comparison.action.text.len()
+                    && excerpt.text_digest == sha256_hex(comparison.action.text.as_bytes())
+            })
     }
 }
 
@@ -267,6 +261,24 @@ pub struct DecisionRecord {
     pub context_revision: String,
     pub evaluator_revision: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation_basis: Option<InstructionExplanationBasis>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstructionExplanationBasis {
+    pub schema_revision: u32,
+    pub relationship: InstructionMismatch,
+    pub instruction: String,
+    pub action: String,
+    pub instruction_context: Vec<super::instructions::InstructionContextRange>,
+    pub earlier_events: Vec<CounterEvidence>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstructionMismatch {
+    RequirementConflict,
 }
 
 impl DecisionRecord {
@@ -276,7 +288,7 @@ impl DecisionRecord {
             "{}:{}",
             self.rule_action.instruction_id, self.rule_action.rule_id
         );
-        self.schema_revision == 1
+        self.schema_revision == 2
             && self.action_authority == "assistant"
             && !self.context_revision.is_empty()
             && !self.evaluator_revision.is_empty()
@@ -353,13 +365,13 @@ impl DecisionRecord {
     }
 
     pub fn contrast_template(&self) -> Option<&'static str> {
-        self.has_citation_proof().then_some(match (self.prerequisite, self.action_is_request) {
-            (PrerequisiteOutcome::EarlierRequestAbsent, _) =>
-                "No required read request precedes this action in the complete recorded request history.",
-            (PrerequisiteOutcome::SelectedHistoryConflict, _) =>
-                "The selected earlier events and this action conflict with the prerequisite rule.",
-            (_, true) => "The recorded tool request conflicts with this instruction.",
-            (_, false) => "The recorded assistant text conflicts with this instruction.",
+        self.has_citation_proof().then_some(match (self.rule_action.provenance, self.action_is_request) {
+            (super::InstructionProvenance::CurrentFileComparison, true) =>
+                "This recorded tool request conflicts with the current instruction. It does not prove that the requested command succeeded.",
+            (super::InstructionProvenance::CurrentFileComparison, false) =>
+                "This recorded assistant action conflicts with the current instruction. Current-file evidence does not show which rule applied at the time.",
+            (_, true) => "This recorded tool request conflicts with this instruction snapshot. It does not prove that the requested command succeeded.",
+            (_, false) => "This recorded assistant action conflicts with this instruction snapshot.",
         })
     }
 }
@@ -376,22 +388,12 @@ pub(super) fn episode(
 pub(super) fn episode_with_witnesses(
     comparison: &CandidateComparison,
     actions: &[ContentAction],
-    capabilities: &ModelCapabilities,
+    _capabilities: &ModelCapabilities,
     source_complete: bool,
     witnesses: &[String],
 ) -> PrerequisiteEpisode {
-    let budget = [
-        capabilities.usable_state_tokens(),
-        capabilities.request_body_bytes.value,
-        capabilities.state_and_longest_question_bytes.value,
-    ]
-    .into_iter()
-    .flatten()
-    .min()
-    .unwrap_or(16 * 1024)
-    .saturating_sub(4096)
-    .saturating_div(4)
-    .min(4096) as usize;
+    // Keep local bindings stable. The packed request controls model admission.
+    let budget = 4096usize;
     let mut earlier = actions
         .iter()
         .filter(|action| {
@@ -573,7 +575,7 @@ pub(super) fn record(
         });
     }
     let record = DecisionRecord {
-        schema_revision: 1,
+        schema_revision: 2,
         source_generation: plan.source_generation,
         source_fingerprint: plan.source_fingerprint.clone(),
         publication_fence: plan.publication_fence,
@@ -611,6 +613,16 @@ pub(super) fn record(
         ),
         evaluator_revision: super::evaluator_revision(),
         model: plan.model_version.clone(),
+        explanation_basis: Some(InstructionExplanationBasis {
+            schema_revision: 2,
+            relationship: InstructionMismatch::RequirementConflict,
+            instruction: super::planning::rule_text_fragment(comparison).to_owned(),
+            action: comparison.action.text.clone(),
+            instruction_context: comparison.instruction_context.clone(),
+            earlier_events: episode
+                .map(|episode| episode.events.clone())
+                .unwrap_or_default(),
+        }),
     };
     record.has_citation_proof().then_some(record)
 }

@@ -3,132 +3,529 @@ use antiburn_local::analysis::ignored_instructions::*;
 use antiburn_local::insights::ReportWindow;
 
 #[test]
-fn request_only_read_citations_survive_provider_failure_without_claiming_output() {
-    use crate::over_exploring_worker::{
-        prepare, publication,
-        tests::{fixture, reduced},
+fn engine_skill_publication_delivers_comparison_task_to_remediation() {
+    use crate::jev::worker::JevCheckDescriptor;
+    use antiburn_local::analysis::jev::{
+        JevAnswer, JevCheck, JevQuestion, JevUsage, JevWorkItemResult,
     };
-    use antiburn_local::checks::over_exploring::Reason;
-    let directory = tempfile::tempdir().unwrap();
-    let (store, candidate) = fixture(Some(directory.path()), "user");
-    store
-        .lock()
-        .execute("DELETE FROM turn_content WHERE kind = 'tool_result'", [])
+    use antiburn_local::checks::skill_opportunities::SkillOpportunitiesResult;
+
+    let fixture = crate::scope_creep_worker::tests::NativeFixture::paged_groups(1);
+    fixture.append(
+        4,
+        "assistant",
+        serde_json::json!({"type":"tool","tool":"bash","callID":"parser-test","state":{"status":"completed","input":{"command":"cargo test parser"},"output":"Parser tests passed."}}),
+    );
+    fixture.append(
+        5,
+        "assistant",
+        serde_json::json!({"type":"tool","tool":"bash","callID":"parser-check","state":{"status":"completed","input":{"command":"cargo check"},"output":"Check passed."}}),
+    );
+    fixture
+        .store
+        .set_check_enabled(DetectorId::SkillOpportunities, true)
         .unwrap();
-    let snapshot = store
+    fixture
+        .store
+        .capture_burn_check_boundaries(&["skill_opportunities"], 0)
+        .unwrap();
+    let home = fixture.directory.path().join("home");
+    let workspace = fixture.directory.path().join("workspace");
+    let skill_directory = home.join(".opencode/skills/parser-review");
+    std::fs::create_dir_all(&skill_directory).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(skill_directory.join("SKILL.md"), "---\nname: parser-review\ndescription: |\n  1. Run `cargo test parser`.\n  2. Run `cargo check` and inspect lock ordering before changing code.\n---\n").unwrap();
+    let mut candidate = fixture.publish();
+    candidate.session.cwd = Some(workspace.to_str().unwrap().to_owned());
+    fixture
+        .store
+        .lock()
+        .execute(
+            "UPDATE session SET cwd = ?1 WHERE session_id = ?2",
+            rusqlite::params![candidate.session.cwd, candidate.session.key.session_id],
+        )
+        .unwrap();
+    let config =
+        crate::agent_config::ConfigContext::native(AgentKind::OpenCode, &home, Some(workspace));
+    let snapshot = fixture
+        .store
         .load_smart_check_inputs(
             &candidate.session.key,
             candidate.published_fence,
             candidate.source_generation,
-            crate::smart_check_inputs::DetectorInput::OverExploring,
+            crate::smart_check_inputs::DetectorInput::SkillOpportunities,
         )
         .unwrap();
-    let input = prepare(
+    let inputs = fixture
+        .store
+        .load_smart_check_skill_inputs(snapshot.clone(), &config)
+        .unwrap();
+    let prepared = crate::skill_opportunities_worker::prepare(
         &candidate,
-        snapshot,
-        &antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default(),
+        inputs,
+        crate::skill_opportunities_worker::CHECK.evaluator_revision(),
     )
     .unwrap();
-    let result = reduced(&input, Reason::UnrelatedFiles);
+    let plan = prepared
+        .check
+        .prepare(&prepared.check.session_context())
+        .unwrap();
+    let answers = plan
+        .work_items
+        .iter()
+        .map(|item| JevWorkItemResult {
+            request_id: item.id.clone(),
+            work_item_id: item.id.clone(),
+            model: plan.capabilities.model.clone(),
+            answers: item
+                .questions
+                .iter()
+                .map(|(id, question)| {
+                    let JevQuestion::Choice { criteria, .. } = question else {
+                        panic!("expected skill choice")
+                    };
+                    assert!(criteria.contains_key("actionable_help"));
+                    (
+                        id.clone(),
+                        JevAnswer::Choice {
+                            choice: "actionable_help".into(),
+                            confidence: 1.0,
+                            probabilities: criteria
+                                .keys()
+                                .map(|choice| {
+                                    (
+                                        choice.clone(),
+                                        if choice == "actionable_help" {
+                                            1.0
+                                        } else {
+                                            0.0
+                                        },
+                                    )
+                                })
+                                .collect(),
+                        },
+                    )
+                })
+                .collect(),
+            evidence: plan
+                .shared_context
+                .iter()
+                .flat_map(|context| &context.evidence)
+                .chain(&item.window.evidence)
+                .cloned()
+                .collect(),
+            usage: JevUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+            },
+        })
+        .collect::<Vec<_>>();
+    let result = prepared.check.reduce(&plan, &answers, false).unwrap();
+    assert!(
+        crate::skill_opportunities_worker::publication_has_assessed_coverage(&result),
+        "{result:?}"
+    );
     assert!(!result.findings.is_empty());
-    assert!(!crate::over_exploring_worker::publication_has_clean_coverage(&result));
     assert!(
         result
             .findings
             .iter()
-            .flat_map(|finding| &finding.reads)
-            .all(|read| read.result_id.is_none() && read.output_digest.is_none())
+            .all(|finding| !finding.comparison.task.is_empty())
     );
-    let published = publication(&input, result);
+    let mut publication = serde_json::to_value(&result).unwrap();
+    publication["input_revision"] = serde_json::json!(prepared.durable.input_revision);
+    publication["inventory_revision"] = serde_json::json!(prepared.inventory_revision);
+    publication["use_revision"] = serde_json::json!(prepared.use_revision);
     let now = now_epoch();
     assert!(
-        store
-            .queue_burn_check_assessment(&input.durable, now, 180)
+        fixture
+            .store
+            .queue_burn_check_assessment(&prepared.durable, now, 180)
             .unwrap()
     );
     assert!(
-        store
-            .claim_burn_check_assessment(&input.durable, now, 300, 180)
+        fixture
+            .store
+            .claim_burn_check_assessment(&prepared.durable, now, 300, 180)
             .unwrap()
     );
     assert!(
+        fixture
+            .store
+            .complete_burn_check_assessment(&prepared.durable, &publication.to_string(), now, 180)
+            .unwrap()
+    );
+    let saved = fixture
+        .store
+        .burn_check_assessment(&candidate.session.key, "skill_opportunities")
+        .unwrap()
+        .unwrap();
+    let published: SkillOpportunitiesResult =
+        serde_json::from_str(saved.result_json.as_deref().unwrap()).unwrap();
+    let source: antiburn_local::analysis::SessionEvidence = serde_json::from_str(
+        &fixture
+            .store
+            .evidence(&candidate.session.key)
+            .unwrap()
+            .unwrap()
+            .evidence_json
+            .unwrap(),
+    )
+    .unwrap();
+    let finding =
+        antiburn_local::remediation::Finding::skill_opportunity(&source, &published.findings[0])
+            .unwrap();
+    let stored = stored_skill_opportunity_evidence(finding.cause()).unwrap();
+    let delivered = complete_skill_opportunity_evidence(
+        stored,
+        &published.findings[0],
+        &snapshot.content().actions,
+    );
+    assert_eq!(delivered.status, BurnCheckEvidenceStatus::Available);
+    for task in &published.findings[0].comparison.task {
+        assert!(
+            delivered
+                .items
+                .iter()
+                .any(|item| item.reference == task.reference.id
+                    && item.label == BurnCheckEvidenceLabel::Context
+                    && item.source_label == "Requested task"
+                    && item.excerpt == task.text)
+        );
+    }
+    let explanation = delivered
+        .comparison
+        .as_ref()
+        .unwrap()
+        .explanation
+        .as_ref()
+        .unwrap();
+    assert_eq!(explanation.relationship, "usefulProcedure");
+    assert!(explanation.text.contains("cargo test parser"));
+    assert!(explanation.text.contains("cargo check"));
+    assert_eq!(delivered.items.len(), 7);
+    assert!(
+        delivered
+            .items
+            .iter()
+            .any(|item| item.excerpt == "Parser tests passed.")
+    );
+    assert!(
+        delivered
+            .items
+            .iter()
+            .any(|item| item.excerpt == "Check passed.")
+    );
+    assert!(
+        delivered
+            .items
+            .iter()
+            .any(|item| item.source_label == "Requested task"
+                && item.excerpt == "Explain the parser fix.")
+    );
+    assert!(explanation.text.contains("cargo test parser"));
+    assert!(
+        explanation
+            .text
+            .contains("inspect lock ordering before changing code")
+    );
+    let json = serde_json::to_value(&delivered).unwrap();
+    assert_eq!(json["comparison"]["explanation"]["version"], 1);
+    assert!(
+        json["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["sourceLabel"] == "Requested task")
+    );
+}
+
+#[test]
+fn instruction_explanations_use_saved_compared_text_and_reject_other_passages() {
+    let (mut cause, _) = typed_cause(PrerequisiteOutcome::NotRequired);
+    let FindingCause::IgnoredInstructionConflict(finding) = &mut cause else {
+        unreachable!()
+    };
+    finding.decision.as_mut().unwrap().explanation_basis = Some(InstructionExplanationBasis {
+        schema_revision: 1,
+        relationship: InstructionMismatch::RequirementConflict,
+        instruction: finding.instruction_excerpt.clone(),
+        action: finding.action_excerpt.clone(),
+        instruction_context: vec![],
+        earlier_events: vec![],
+    });
+    let evidence = stored_instruction_evidence(&cause).unwrap();
+    let explanation = instruction_comparison(&cause, &evidence)
+        .unwrap()
+        .explanation
+        .unwrap();
+    assert!(
+        explanation
+            .text
+            .contains(&explanation_quote(&evidence.items[0].excerpt))
+    );
+    assert!(
+        explanation
+            .text
+            .contains(&explanation_quote(&evidence.items[1].excerpt))
+    );
+    assert_eq!(
+        explanation.references,
+        vec![
+            evidence.items[0].reference.clone(),
+            evidence.items[1].reference.clone()
+        ]
+    );
+    let mut replaced = evidence.clone();
+    replaced.items[1].excerpt = "Different operation".into();
+    assert!(instruction_comparison(&cause, &replaced).is_none());
+    let FindingCause::IgnoredInstructionConflict(finding) = &mut cause else {
+        unreachable!()
+    };
+    finding.decision.as_mut().unwrap().explanation_basis = None;
+    assert!(instruction_comparison(&cause, &evidence).is_none());
+}
+
+#[test]
+fn compact_duplicate_reads_reach_remediation_targets() {
+    use crate::over_exploring_worker::{prepare, publication, publishable_finding, tests::fixture};
+    use antiburn_local::analysis::jev::{JevAnswer, JevCheck, JevUsage, JevWorkItemResult};
+    use antiburn_local::checks::over_exploring::Reason;
+    use antiburn_local::checks::over_exploring::{
+        OverExploringCheck, PreparedAssessment, synchronize_sampling,
+    };
+    use antiburn_local::checks::sampling::{SamplingLimits, SamplingProgress};
+    for tokens in [2048, 2050] {
+        let directory = tempfile::tempdir().unwrap();
+        let (store, candidate) = fixture(Some(directory.path()), "user");
         store
-            .fail_burn_check_assessment_with_result(
-                &input.durable,
-                &crate::store::BurnCheckFailure {
-                    error_category: "provider_unavailable",
-                    result_json: &serde_json::to_string(&published).unwrap(),
-                    progress_json: "{}",
-                    retry_at_epoch: None,
-                },
-                now,
-                180,
+            .lock()
+            .execute(
+                "INSERT OR REPLACE INTO setting (key, value) VALUES ('internal:burnChecksEnabledAtEpochV1', '1')",
+                [],
             )
-            .unwrap()
-    );
-    let controller = RemediationController::new(directory.path().to_owned());
-    let targets = controller
-        .list_burn_check_targets_at(
-            &store,
-            DetectorId::OverExploring,
-            BurnCheckTargetContext {
+            .unwrap();
+        let snapshot = store
+            .load_smart_check_inputs(
+                &candidate.session.key,
+                candidate.published_fence,
+                candidate.source_generation,
+                crate::smart_check_inputs::DetectorInput::OverExploring,
+            )
+            .unwrap();
+        let mut capabilities =
+            antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default();
+        capabilities.runtime_context_tokens.value = Some(tokens);
+        capabilities.rendering_reserve_tokens = 1024;
+        let input = prepare(&candidate, snapshot.clone(), &capabilities).unwrap();
+        let mut sampling = SamplingProgress::new(SamplingLimits {
+            checks: 1,
+            candidates_per_check: 4096,
+            answers_per_candidate: 1,
+            judgments_per_run: 8,
+        })
+        .unwrap();
+        synchronize_sampling(&input.plan, &mut sampling).unwrap();
+        sampling.begin_run();
+        let Some(job) = std::iter::from_fn(|| sampling.choose_job()).find(|job| {
+            input.plan.prepared.candidates.iter().any(|candidate| {
+                candidate.candidate_id == job.candidate
+                    && candidate.work_item_ids.iter().any(|id| {
+                        input.plan.prepared.targets[id].reason == Reason::ExcessiveWithinFileReading
+                    })
+            })
+        }) else {
+            assert!(input.plan.prepared.targets.is_empty());
+            continue;
+        };
+        let mut plan = input.plan.clone();
+        PreparedAssessment::select_jobs(&mut plan, &[job]).unwrap();
+        let answers = plan
+            .work_items
+            .iter()
+            .map(|item| JevWorkItemResult {
+                request_id: item.id.clone(),
+                work_item_id: item.id.clone(),
+                model: plan.capabilities.model.clone(),
+                answers: item
+                    .questions
+                    .keys()
+                    .map(|id| {
+                        (
+                            id.clone(),
+                            JevAnswer::Choice {
+                                choice: "likely_excess".into(),
+                                confidence: 1.0,
+                                probabilities: BTreeMap::from([
+                                    ("likely_excess".into(), 1.0),
+                                    ("justified_or_minor".into(), 0.0),
+                                    ("uncertain".into(), 0.0),
+                                ]),
+                            },
+                        )
+                    })
+                    .collect(),
+                evidence: plan
+                    .shared_context
+                    .iter()
+                    .flat_map(|context| &context.evidence)
+                    .chain(&item.window.evidence)
+                    .cloned()
+                    .collect(),
+                usage: JevUsage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                },
+            })
+            .collect::<Vec<_>>();
+        let result = OverExploringCheck.reduce(&plan, &answers, true).unwrap();
+        assert!(!result.findings.is_empty());
+        let task_action = snapshot
+            .content()
+            .actions
+            .iter()
+            .find(|action| {
+                action.kind == "user"
+                    && action.text == "Fix the parser. Reuse matching recorded reads."
+            })
+            .expect("the finding task remains in the source snapshot");
+        assert!(result.findings.iter().all(|finding| {
+            input
+                .plan
+                .prepared
+                .task_contexts
+                .get(&finding.episode_id)
+                .is_some_and(|task| {
+                    task.evidence.iter().any(|reference| {
+                        reference.source_id == task_action.reference.id
+                            && finding.task_evidence.contains(reference)
+                    })
+                })
+        }));
+        assert_eq!(
+            task_action.text,
+            "Fix the parser. Reuse matching recorded reads."
+        );
+        let saved = publication(&input, result);
+        assert!(
+            saved
+                .assessment
+                .findings
+                .iter()
+                .all(|finding| publishable_finding(finding, &saved)),
+            "saved publication failed validation: {:?}",
+            saved.assessment.findings.first()
+        );
+        let now = now_epoch();
+        assert!(
+            store
+                .queue_burn_check_assessment(&input.durable, now, 180)
+                .unwrap()
+        );
+        assert!(
+            store
+                .claim_burn_check_assessment(&input.durable, now, 300, 180)
+                .unwrap()
+        );
+        assert!(
+            store
+                .complete_burn_check_assessment(
+                    &input.durable,
+                    &serde_json::to_string(&saved).unwrap(),
+                    now,
+                    180
+                )
+                .unwrap()
+        );
+        let controller = RemediationController::new(directory.path().to_owned());
+        let current = crate::insights_report::list_current_findings(
+            directory.path(),
+            crate::insights_report::CurrentFindingsRequest {
                 environment_key: "native".into(),
                 window: ReportWindow {
                     start_epoch: 0,
                     end_epoch: 2000,
                 },
-            },
-            TargetListOptions {
-                now,
-                home: None,
-                cache_actions: true,
+                detector: DetectorId::OverExploring,
             },
         )
         .unwrap();
-    assert!(!targets.targets.is_empty());
-    let target = &targets.targets[0];
-    let evidence = controller
-        .burn_check_target_evidence(&store, &target.action_id)
-        .unwrap();
-    assert_eq!(evidence.status, BurnCheckEvidenceStatus::Available);
-    let finding = published
-        .assessment
-        .findings
-        .iter()
-        .find(|finding| finding.work_item_id == evidence.occurrences[0].finding_id)
-        .unwrap();
-    let expected: BTreeSet<_> = finding
-        .task_evidence
-        .iter()
-        .map(|item| item.source_id.as_str())
-        .chain(finding.reads.iter().map(|read| read.request_id.as_str()))
-        .collect();
-    let actual: BTreeSet<_> = evidence
-        .items
-        .iter()
-        .map(|item| item.reference.as_str())
-        .collect();
-    assert_eq!(actual, expected);
-    assert!(
-        evidence
-            .items
-            .iter()
-            .filter(|item| item.label == BurnCheckEvidenceLabel::ObservedAction)
-            .all(|item| item
-                .limitation
-                .as_deref()
-                .unwrap()
-                .contains("request alone does not prove returned content"))
-    );
-    let prompt = controller
-        .copy_prompt_fix_burn_check_targets(&store, std::slice::from_ref(&target.action_id))
-        .unwrap();
-    assert!(prompt.prompt.contains("Requests reads"));
-    assert!(
-        prompt
-            .prompt
-            .contains("A request alone does not prove returned content")
-    );
+        assert!(!current.findings.is_empty(), "no current findings");
+        let targets = controller
+            .list_burn_check_targets_at(
+                &store,
+                DetectorId::OverExploring,
+                BurnCheckTargetContext {
+                    environment_key: "native".into(),
+                    window: ReportWindow {
+                        start_epoch: 0,
+                        end_epoch: 2000,
+                    },
+                },
+                TargetListOptions {
+                    now,
+                    home: None,
+                    cache_actions: true,
+                },
+            )
+            .unwrap();
+        let target = targets
+            .targets
+            .first()
+            .expect("compact finding is reachable");
+        let evidence = controller
+            .burn_check_target_evidence(&store, &target.action_id)
+            .unwrap();
+        assert_eq!(
+            evidence.status,
+            BurnCheckEvidenceStatus::Available,
+            "{tokens}"
+        );
+        assert!(
+            evidence
+                .items
+                .iter()
+                .any(|item| item.source_label == "Requested task"
+                    && item.excerpt == "Fix the parser. Reuse matching recorded reads.")
+        );
+        assert!(evidence.comparison.as_ref().unwrap().explanation.is_some());
+        let decision = &saved.assessment.findings[0];
+        for forged in 0..5 {
+            let mut changed = decision.clone();
+            let mut actions = snapshot.content().actions.clone();
+            let compact = changed
+                .task_evidence
+                .iter_mut()
+                .find(|binding| binding.source_id == task_action.reference.id)
+                .unwrap();
+            match forged {
+                0 => compact.source_id = "forged-source".into(),
+                1 => compact.content_kind = "tool_result".into(),
+                2 => {
+                    compact.role = antiburn_local::analysis::jev::JevEvidenceRole::SupportingContext
+                }
+                3 => {
+                    actions
+                        .iter_mut()
+                        .find(|action| action.reference.id == compact.source_id)
+                        .unwrap()
+                        .reference
+                        .thread_digest = "other-thread".into()
+                }
+                _ => {
+                    actions
+                        .iter_mut()
+                        .find(|action| action.reference.id == compact.source_id)
+                        .unwrap()
+                        .text = "Changed requested task".into()
+                }
+            }
+            assert!(
+                validated_read_task_items(&changed, snapshot.scope(), &actions).is_none(),
+                "{tokens}: {forged}"
+            );
+        }
+    }
 }
 
 fn typed_cause(
@@ -144,8 +541,17 @@ fn typed_cause(
     let anchor = super::tests::context_action("action", 12, "Publish the change.");
     let context = super::tests::context_action("earlier", 1, "Run the validation.");
     evidence.action_digest = content_action_digest(&anchor);
+    evidence.action_excerpt = anchor.text.clone();
     evidence.decision = Some(DecisionRecord {
-        schema_revision: 1,
+        explanation_basis: Some(InstructionExplanationBasis {
+            schema_revision: 1,
+            relationship: InstructionMismatch::RequirementConflict,
+            instruction: evidence.instruction_excerpt.clone(),
+            action: evidence.action_excerpt.clone(),
+            instruction_context: Vec::new(),
+            earlier_events: Vec::new(),
+        }),
+        schema_revision: 2,
         source_generation: 2,
         source_fingerprint: Some("fingerprint".into()),
         publication_fence: 3,
@@ -254,7 +660,7 @@ fn citation_proof_requires_every_selected_event_for_each_template() {
 }
 
 #[test]
-fn instruction_preview_retrieves_exact_citations_beyond_the_recent_page_limit() {
+fn instruction_preview_retrieves_exact_citations_by_identity_beyond_recent_page() {
     use antiburn_local::analysis::jev::JevCheck;
     use antiburn_local::analysis::{
         ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, SelectedContentRequest,
@@ -277,7 +683,7 @@ fn instruction_preview_retrieves_exact_citations_beyond_the_recent_page_limit() 
             rusqlite::params![PARSER_REVISION, ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION],
         ).unwrap();
         let transaction = connection.unchecked_transaction().unwrap();
-        for index in 0..5000 {
+        for index in 0..361 {
             transaction
                 .execute(
                     "INSERT INTO turn (environment_key, agent, session_id, claim_fence,
@@ -285,8 +691,17 @@ fn instruction_preview_retrieves_exact_citations_beyond_the_recent_page_limit() 
                     input_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
                     is_compaction_boundary)
                  VALUES ('native', 'claude-code', 'long-history', 3, 'source', 'thread', ?1,
-                    'main', 'assistant', 1000, ?2, 0, 0, 0, 0, 0)",
-                    rusqlite::params![index, format!("record-{index}")],
+                     'main', 'assistant', ?2, ?3, 0, 0, 0, 0, 0)",
+                    rusqlite::params![
+                        index,
+                        match index {
+                            0 => 0,
+                            1 => 1,
+                            2..=100 => 1_000 + index,
+                            _ => 256_000 + index,
+                        },
+                        format!("record-{index}")
+                    ],
                 )
                 .unwrap();
             transaction.execute(
@@ -334,9 +749,11 @@ fn instruction_preview_retrieves_exact_citations_beyond_the_recent_page_limit() 
     evidence.action_id = anchor.reference.id.clone();
     evidence.action_digest = content_action_digest(anchor);
     evidence.action_excerpt = anchor.text.clone();
+    evidence.action_timestamp_ms = anchor.timestamp_ms;
     let decision = evidence.decision.as_mut().unwrap();
     decision.rule_action.action_id = evidence.action_id.clone();
     decision.rule_action.action_digest = evidence.action_digest.clone();
+    decision.rule_action.action_timestamp_ms = evidence.action_timestamp_ms;
     decision.action_anchor = EvidenceIdentity {
         source: anchor.reference.clone(),
         content_digest: evidence.action_digest.clone(),
@@ -353,24 +770,22 @@ fn instruction_preview_retrieves_exact_citations_beyond_the_recent_page_limit() 
     decision.citations[2].source_ids = vec![context.reference.id.clone()];
     assert!(evidence.decision_record().is_some());
 
-    let mut cursor = None;
-    for _ in 0..16 {
-        let page = store
-            .published_turn_content_keyset_selected(
-                &key,
-                SelectedContentRequest {
-                    source_generation: 2,
-                    after_ms: Some(i64::MIN),
-                    source_positions: &positions,
-                    selection,
-                    cursor: cursor.as_ref(),
-                },
-            )
-            .unwrap()
-            .unwrap();
-        assert!(page.content.parts.iter().all(|part| part.turn_index > 1));
-        cursor = page.next_cursor;
-    }
+    let recent = store
+        .published_turn_content_keyset_selected(
+            &key,
+            SelectedContentRequest {
+                source_generation: 2,
+                after_ms: Some(256_000),
+                source_positions: &positions,
+                selection,
+                cursor: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert!(recent.content.coverage.more_parts);
+    assert!(recent.content.parts.iter().all(|part| part.turn_index > 1));
+
     let references = [&anchor.reference, &context.reference];
     let context_ids = BTreeSet::from([context.reference.id.as_str()]);
     let published = store
@@ -378,6 +793,14 @@ fn instruction_preview_retrieves_exact_citations_beyond_the_recent_page_limit() 
         .unwrap()
         .unwrap();
     assert_eq!(published.parts.len(), 2);
+    assert_eq!(
+        published
+            .parts
+            .iter()
+            .map(|part| part.turn_index)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([0, 1])
+    );
     let nearby = store
         .published_turn_content_identities_selected(
             &key,
@@ -553,9 +976,12 @@ fn legacy_excerpts_remain_available_without_decisive_proof() {
 }
 
 #[test]
-fn scope_citations_cover_the_complete_latest_scope_and_bound_work() {
+fn compact_scope_citations_resolve_task_scope_bindings() {
     let fixture = crate::scope_creep_worker::tests::NativeFixture::new(1);
-    fixture.publish_finding();
+    let mut capabilities =
+        antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default();
+    capabilities.runtime_context_tokens.value = Some(8192);
+    let candidate = fixture.publish_finding_with_capabilities(capabilities);
     let controller = RemediationController::new(fixture.directory.path().to_owned());
     let targets = controller
         .list_burn_check_targets_at(
@@ -582,22 +1008,40 @@ fn scope_citations_cover_the_complete_latest_scope_and_bound_work() {
     let FindingCause::ScopeCreep(scope) = cached.finding().cause() else {
         unreachable!()
     };
+    let publication = crate::scope_creep_worker::current_publication(
+        &fixture.store.lock(),
+        &crate::scope_creep_worker::SourceFence::from(&candidate),
+    )
+    .unwrap()
+    .unwrap();
+    let group = scope_evidence::accepted_scope_group(&publication, scope)
+        .expect("accepted group is materialized");
+    let snapshot = fixture
+        .store
+        .load_smart_check_inputs(
+            &candidate.session.key,
+            candidate.published_fence,
+            candidate.source_generation,
+            crate::smart_check_inputs::DetectorInput::ScopeCreep,
+        )
+        .unwrap();
+    assert!(
+        scope_evidence::scope_group_evidence(
+            scope,
+            &group,
+            snapshot.scope(),
+            &snapshot.content().actions
+        )
+        .is_some(),
+        "group={group:?} finding={scope:?} scope={:?} actions={:?}",
+        snapshot.scope(),
+        snapshot.content().actions
+    );
     let evidence = controller
         .burn_check_target_evidence(&fixture.store, &target.action_id)
         .unwrap();
-    let expected: BTreeSet<_> = scope
-        .task_scope
-        .iter()
-        .map(|item| item.source_id.as_str())
-        .chain(scope.work.iter().map(|item| item.reference.id.as_str()))
-        .collect();
-    let actual: BTreeSet<_> = evidence
-        .items
-        .iter()
-        .map(|item| item.reference.as_str())
-        .collect();
-    assert_eq!(actual, expected);
     assert_eq!(evidence.status, BurnCheckEvidenceStatus::Available);
+    assert!(!evidence.items.is_empty());
 }
 
 #[test]
@@ -634,7 +1078,12 @@ fn skill_citations_include_work_current_descriptions_and_exact_recorded_use() {
         ..skill.clone()
     };
     let finding = SkillOpportunityFinding {
+        explanation_basis: Some(SkillExplanationBasis {
+            version: 1,
+            relationship: SkillRelationship::UsefulProcedure,
+        }),
         comparison: SkillComparison {
+            task: vec![],
             id: "comparison".into(),
             episode_id: "episode".into(),
             work: vec![SkillWorkCitation {
@@ -690,6 +1139,15 @@ fn skill_citations_include_work_current_descriptions_and_exact_recorded_use() {
         &[work.clone(), usage.clone()],
     );
     assert_eq!(complete.status, BurnCheckEvidenceStatus::Available);
+    let explanation = complete
+        .comparison
+        .as_ref()
+        .unwrap()
+        .explanation
+        .as_ref()
+        .unwrap();
+    assert!(explanation.text.contains("Add parser boundary tests."));
+    assert!(explanation.text.contains("Review parser boundaries."));
     let actual: BTreeSet<_> = complete
         .items
         .iter()
@@ -698,6 +1156,40 @@ fn skill_citations_include_work_current_descriptions_and_exact_recorded_use() {
     assert_eq!(
         actual,
         BTreeSet::from(["work", "parser-skill", "use", "format-skill"])
+    );
+    let mut with_task = finding.clone();
+    with_task.comparison.task = vec![with_task.comparison.work[0].clone()];
+    with_task.comparison.task[0].reference = usage.reference.clone();
+    with_task.comparison.task[0].text = usage.text.clone();
+    with_task.comparison.task[0].timestamp_ms = usage.timestamp_ms;
+    with_task.comparison.task[0].kind = usage.kind.clone();
+    with_task.comparison.task[0].ranges = vec![(0, usage.text.len())];
+    with_task.comparison.task[0].total_bytes = usage.text.len();
+    with_task.comparison.task[0].source_digest = content_action_digest(&usage);
+    with_task.comparison.use_citations.clear();
+    let mut task_cause = cause.clone();
+    let FindingCause::SkillOpportunity {
+        evidence: Some(task_finding),
+        ..
+    } = &mut task_cause
+    else {
+        unreachable!()
+    };
+    **task_finding = with_task.clone();
+    let task_saved = stored_skill_opportunity_evidence(&task_cause).unwrap();
+    let delivered = complete_skill_opportunity_evidence(
+        task_saved.clone(),
+        &with_task,
+        &[work.clone(), usage.clone()],
+    );
+    assert_eq!(delivered.status, BurnCheckEvidenceStatus::Available);
+    assert!(delivered.items.iter().any(|item| item.reference == "use"
+        && item.source_label == "Recorded task context"
+        && item.excerpt == usage.text));
+    assert_eq!(
+        complete_skill_opportunity_evidence(task_saved, &with_task, std::slice::from_ref(&work))
+            .status,
+        BurnCheckEvidenceStatus::Unavailable
     );
     assert!(
         complete

@@ -203,7 +203,7 @@ describe("BurnChecksView layout", { timeout: 15_000 }, () => {
       ],
     })
 
-    const message = await screen.findByText("No finding in 0 complete sessions.")
+    const message = await screen.findByText("No issue was found in 0 complete sessions.")
     expect(message.parentElement?.querySelector("svg")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Ignored instructions, Passed" })).toBeVisible()
   })
@@ -292,7 +292,7 @@ describe("BurnChecksView layout", { timeout: 15_000 }, () => {
     const { adapter } = setup(unavailable)
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Could not load this check's details.",
+      "The check details did not load.",
     )
     vi.mocked(adapter.getTargets).mockResolvedValueOnce({
       targets: [target],

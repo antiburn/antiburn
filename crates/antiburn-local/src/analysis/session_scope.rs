@@ -3,7 +3,7 @@
 //! Companion bytes need normalized session and version proof. Mutable or missing
 //! references remain unresolved. This module has no filesystem resolver.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -20,9 +20,7 @@ use super::jev_evidence::{
 use super::jev_evidence::{
     JevPlanStatus, JevScopeEvidenceRole, JevUserAnswerOrigin, JevUserAnswerStatus,
 };
-use super::{
-    ContentKind, PublishedContent, PublishedContentBoundary, SelectedContentScope, SourceFormat,
-};
+use super::{PublishedContent, PublishedContentBoundary, SelectedContentScope, SourceFormat};
 
 pub const SCOPE_SELECTION: JevInputSelection = JevInputSelection::from_fields(&[
     JevInputField::UserMessage,
@@ -30,8 +28,8 @@ pub const SCOPE_SELECTION: JevInputSelection = JevInputSelection::from_fields(&[
     JevInputField::UserAnswer,
     JevInputField::PlanReference,
 ]);
-const MAX_SCOPE_BYTES: usize = 16 * 1024 * 1024;
-const MAX_SCOPE_PARTS: usize = 65_536;
+const MAX_SCOPE_BYTES: usize = 32 * 1024;
+const MAX_SCOPE_PARTS: usize = 128;
 
 /// The caller obtains this boundary from the candidate's published source row.
 /// A timestamp is not a branch boundary. An enablement watermark is not scope start.
@@ -126,6 +124,22 @@ pub struct SessionScopeSnapshot {
 }
 
 impl SessionScopeSnapshot {
+    /// Keep exact scope bindings for a selected recent activity window.
+    pub fn retain_from(&mut self, turn_index: u64, part_index: u32) {
+        self.occurrences.retain(|occurrence| {
+            (
+                occurrence.reference.turn_index,
+                occurrence.reference.part_index,
+            ) >= (turn_index, part_index)
+        });
+        let mut values = Vec::new();
+        for occurrence in &mut self.occurrences {
+            values.push(self.values[occurrence.value_index].clone());
+            occurrence.value_index = values.len() - 1;
+        }
+        self.values = values;
+    }
+
     pub fn publication_fence(&self) -> i64 {
         self.publication_fence
     }
@@ -143,18 +157,8 @@ impl SessionScopeSnapshot {
         &self.limitations
     }
 
-    /// Partial inputs keep unknown influences visible without treating them as approvals.
+    /// Keep unknown influences visible without treating them as approvals.
     pub fn scope_creep_context(&self) -> Result<JevSharedRequestContext, SessionScopeError> {
-        if self.source_complete
-            && self
-                .occurrences
-                .iter()
-                .any(|item| item.authority == ScopeAuthority::UnknownInfluence)
-        {
-            return Err(SessionScopeError::Missing(
-                ScopeMissingReason::UnresolvedInfluence,
-            ));
-        }
         Ok(self.user_context())
     }
 
@@ -191,7 +195,6 @@ impl SessionScopeSnapshot {
     }
 
     /// Use the real candidate and questions, including JSON and model overhead.
-    /// Never retry a failed fit with reduced scope.
     pub fn pack_scope_creep(
         &self,
         items: &[JevWorkItem],
@@ -236,28 +239,6 @@ fn pack_context(
             ScopeMissingReason::InvalidEvidence,
         ));
     }
-    // This fit probe is never dispatched. It tests the smallest valid request
-    // envelope, so an oversized activity cannot become a scope-size failure.
-    let minimum = JevWorkItem {
-        id: "scope_fit".into(),
-        window: super::jev::JevInputWindow {
-            fields: json!({}),
-            evidence: Vec::new(),
-        },
-        questions: BTreeMap::from([(
-            "fit".into(),
-            super::jev::JevQuestion::Noul {
-                instructions: json!("Scope"),
-                criteria: None,
-            },
-        )]),
-    };
-    if pack_work_items_with_shared_context(&[minimum], capabilities, shared)
-        .batches
-        .is_empty()
-    {
-        return Err(SessionScopeError::ScopeTooLarge);
-    }
     Ok(pack_work_items_with_shared_context(
         items,
         capabilities,
@@ -272,7 +253,8 @@ pub struct SessionScopeBuilder {
     boundary: SessionScopeBoundary,
     publication_fence: i64,
     source_generation: i64,
-    actions: Vec<ContentAction>,
+    actions: VecDeque<ContentAction>,
+    preceding_user: Option<ContentAction>,
     bytes: usize,
     ended: bool,
     boundary_seen: bool,
@@ -311,7 +293,8 @@ impl SessionScopeBuilder {
             boundary,
             publication_fence,
             source_generation,
-            actions: Vec::new(),
+            actions: VecDeque::new(),
+            preceding_user: None,
             bytes: 0,
             ended: false,
             boundary_seen: false,
@@ -384,11 +367,7 @@ impl SessionScopeBuilder {
             ));
         }
         if !has_next && (content.coverage.parts_capped || content.coverage.bytes_capped) {
-            if self.source_complete {
-                return Err(SessionScopeError::Missing(
-                    ScopeMissingReason::IncompletePaging,
-                ));
-            }
+            self.source_complete = false;
             if !self
                 .limitations
                 .contains(&ScopeMissingReason::IncompletePaging)
@@ -400,11 +379,7 @@ impl SessionScopeBuilder {
             || content.coverage.stored_truncated_parts > 0
             || content.coverage.context_capped
         {
-            if self.source_complete {
-                return Err(SessionScopeError::Missing(
-                    ScopeMissingReason::TruncatedEvidence,
-                ));
-            }
+            self.source_complete = false;
             if !self
                 .limitations
                 .contains(&ScopeMissingReason::TruncatedEvidence)
@@ -429,7 +404,10 @@ impl SessionScopeBuilder {
                     <= (self.boundary.turn_index, self.boundary.part_index)
         });
         content.parts.retain(|item| {
-            if !self.source_complete && (item.context_only || item.part.truncated) {
+            self.boundary_seen |= (item.turn_index, item.part_index)
+                == (self.boundary.turn_index, self.boundary.part_index);
+            if item.context_only || item.part.truncated {
+                self.source_complete = false;
                 if !self
                     .limitations
                     .contains(&ScopeMissingReason::TruncatedEvidence)
@@ -440,34 +418,10 @@ impl SessionScopeBuilder {
             }
             true
         });
-        for item in &content.parts {
-            self.boundary_seen |= (item.turn_index, item.part_index)
-                == (self.boundary.turn_index, self.boundary.part_index);
-            if item.part.kind == ContentKind::Thinking {
-                continue;
-            }
-            if item.context_only || item.part.truncated {
-                return Err(SessionScopeError::Missing(
-                    ScopeMissingReason::TruncatedEvidence,
-                ));
-            }
-            let size = item.part.text.len().saturating_add(
-                serde_json::to_vec(&item.part.metadata)
-                    .map_err(|_| SessionScopeError::Missing(ScopeMissingReason::InvalidEvidence))?
-                    .len(),
-            );
-            self.bytes = self.bytes.saturating_add(size);
-            if self.bytes > MAX_SCOPE_BYTES
-                || self.actions.len().saturating_add(content.parts.len()) > MAX_SCOPE_PARTS
-            {
-                return Err(SessionScopeError::Missing(
-                    ScopeMissingReason::AssemblyLimitReached,
-                ));
-            }
-        }
         // This conversion preserves user and assistant text and native scope metadata.
-        let normalized = prepare_session_content("scope", self.source_format, content, Vec::new());
-        for action in &normalized.actions {
+        let mut normalized =
+            prepare_session_content("scope", self.source_format, content, Vec::new());
+        normalized.actions.retain(|action| {
             if matches!(action.kind.as_str(), "user" | "user_text")
                 && action.authority != "user"
                 && !is_recorded_skill_selection(action)
@@ -477,14 +431,54 @@ impl SessionScopeBuilder {
                     .as_ref()
                     .is_some_and(|fact| fact.matches_action(action, self.source_format))
             {
-                return Err(SessionScopeError::Missing(
-                    ScopeMissingReason::InvalidEvidence,
-                ));
+                self.source_complete = false;
+                if !self
+                    .limitations
+                    .contains(&ScopeMissingReason::UnresolvedInfluence)
+                {
+                    self.limitations
+                        .push(ScopeMissingReason::UnresolvedInfluence);
+                }
+                return false;
+            }
+            true
+        });
+        for action in normalized.actions {
+            if !matches!(action.kind.as_str(), "user" | "assistant")
+                && action.metadata.user_answers.is_empty()
+                && action.metadata.plan_references.is_empty()
+            {
+                continue;
+            }
+            let size = scope_action_bytes(&action)?;
+            if size > MAX_SCOPE_BYTES / 2 {
+                self.mark_sampled();
+                continue;
+            }
+            self.bytes += size;
+            self.actions.push_back(action);
+            while self.bytes > MAX_SCOPE_BYTES / 2 || self.actions.len() >= MAX_SCOPE_PARTS {
+                let removed = self.actions.pop_front().expect("retained scope action");
+                self.bytes -= scope_action_bytes(&removed)?;
+                if removed.kind == "user" && removed.authority == "user" {
+                    self.preceding_user = Some(removed);
+                }
+                self.mark_sampled();
             }
         }
-        self.actions.extend(normalized.actions);
         self.ended = !has_next;
         Ok(())
+    }
+
+    fn mark_sampled(&mut self) {
+        self.source_complete = false;
+        if !self
+            .limitations
+            .contains(&ScopeMissingReason::AssemblyLimitReached)
+        {
+            self.limitations
+                .push(ScopeMissingReason::AssemblyLimitReached);
+        }
     }
 
     pub fn finish(mut self) -> Result<SessionScopeSnapshot, SessionScopeError> {
@@ -501,7 +495,11 @@ impl SessionScopeBuilder {
                 ScopeMissingReason::BoundaryMissing,
             ));
         }
+        if let Some(user) = self.preceding_user {
+            self.actions.push_front(user);
+        }
         self.actions
+            .make_contiguous()
             .sort_by_key(|item| (item.reference.turn_index, item.reference.part_index));
         let mut snapshot = SessionScopeSnapshot {
             publication_fence: self.publication_fence,
@@ -672,15 +670,22 @@ impl SessionScopeBuilder {
             .iter()
             .any(|item| item.authority == ScopeAuthority::User)
         {
-            if snapshot.source_complete {
-                return Err(SessionScopeError::Missing(
-                    ScopeMissingReason::NoUserContext,
-                ));
-            }
+            snapshot.source_complete = false;
             snapshot.limitations.push(ScopeMissingReason::NoUserContext);
         }
         Ok(snapshot)
     }
+}
+
+fn scope_action_bytes(action: &ContentAction) -> Result<usize, SessionScopeError> {
+    serde_json::to_vec(&(
+        &action.reference,
+        &action.text,
+        &action.metadata.user_answers,
+        &action.metadata.plan_references,
+    ))
+    .map(|bytes| bytes.len())
+    .map_err(|_| SessionScopeError::Missing(ScopeMissingReason::InvalidEvidence))
 }
 
 fn version_matches(plan: &super::jev_evidence::JevPlanReference) -> bool {

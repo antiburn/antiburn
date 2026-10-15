@@ -23,10 +23,12 @@ does not prove historical visibility or contents. This local adapter sends no
 requests by itself. The production worker sends selected skill fields and use
 limits to the configured provider. A valid nonempty description is the only
 reference text sent. Missing, null, or blank descriptions and plain Markdown
-use bounded structural chunks of the full Markdown, with byte ranges and a
-partial flag. These fallback chunks can include frontmatter, paths, or other
+use normalized full Markdown as the reference source. The compact check selects
+one complete anchored procedure; ranges address decoded description or normalized
+Markdown, not raw YAML/file bytes. A nonempty generic description cannot expose
+a useful body-only procedure. Selected procedures can include paths or other
 private values. Invalid YAML and non-string descriptions remain unsupported.
-Known used skills follow the same selection. Keep these inputs and native
+Keep these inputs and native
 record/call IDs out of first-party analytics and ordinary report DTOs.
 Select individual reference snapshots rather
 than serialize the entire inventory.
@@ -58,14 +60,14 @@ Instruction-file discovery compares supported files in their current state.
 It does not prove historical contents or activation. Recover historical
 instruction text only from an authoritative session record; do not infer it
 from a matching current path or a read request. Keep unavailable evidence
-unavailable. Ignored Instructions samples up to 8 high-priority rule/action pairs
-per turn by default. This sample is not exhaustive or a spending cap. Clean
-means no finding among sampled comparisons, not that all content is safe. Keep
-provider and evidence errors separate from the remaining sampling gap. Reuse a
-result only when the same instruction rule and action can be identified across
-an append or restart. Alternate risk-ranked new activity with older unchecked
-work across source chronology. Instruction changes govern future actions only;
-the first observed version cannot establish historical activation. The roughly 60-second
+unavailable. Ignored Instructions selects at most two direct rule/action conflicts
+per input snapshot. Keep complete conditions and exceptions; skip oversized required
+units. Broad probing, omissions, and completion deadlines are outside this scope.
+Selection is nonexhaustive. Clean means no finding within eligible selected work,
+not that all content is safe. Keep provider errors and missing evidence separate
+from policy-omitted work. Reuse only exact compatible evidence and decision context.
+Instruction changes govern future actions only; the first observed version cannot
+establish historical activation. The roughly 60-second
 ordinary-session goal after worker start is not a cutoff or guarantee. An
 retryable transport failure can trigger up to three persisted dispatch attempts
 total. Unknown delivery blocks automatic redispatch when safe reconciliation is
@@ -73,19 +75,36 @@ unavailable. An earlier attempt may already have incurred a charge. Describe
 incremental paid requests and compatible answer
 reuse without promising a per-session cost cap.
 
-Each production check descriptor initially targets 50% of eligible targets,
-then continues remaining work. State this as a target fraction, not confidence
-or finding probability. The shared scheduler rotates across all four descriptors,
-prefers initial review for four turns, and prefers continuation on the fifth.
-The other lane can run when the preferred lane is empty. Per-turn target limits
-are 8/4/3/4 for Ignored Instructions, Scope Creep, Over-exploring, and Skill
-Opportunities, respectively. Admit at most two provider dispatch attempts per
-turn, including retries. Persist finite attempt limits in the Store across
-turns and restarts; yielding must not reset them. Reuse typed answers only for
-the exact evidence and decision context, references, model/provider configuration,
-and revisions. Keep private thinking excluded. Count review only after all
-required answers and successful reduction; never use the initial fraction to
-convert incomplete, uncertain, unsupported, exhausted, or failed work into Clean.
+The four compact checks select at most 2/2/3/1 candidates per input snapshot for
+Ignored Instructions, Scope Creep, Over-exploring, and Skill Opportunities.
+Pack retained candidates into one logical request, excluding finite transport
+retries. Zero candidates means zero calls. Drop lower-priority candidates locally
+when packing would overflow; retain complete mandatory units during bounded
+reduction or abstain. Do not split a provider context rejection into child calls.
+Capabilities govern fit, including separate byte, token, wrapper, scoring,
+question, and criteria limits. Ollama loaded context takes priority over configured
+`num_ctx`; unknown discovery does not imply 8,192 tokens. Saving a connection does
+not prove usable assessment capacity. Estimated fit is not actual billed usage.
+
+Positive findings need a unique winning choice at probability 0.95 or higher and
+valid local publication gates. This is not an accuracy claim. Scope Creep needs
+bound performed work and sufficient authorization. Over-exploring checks redundant
+or clearly irrelevant substantial reads, not general breadth or first-read size.
+Skill Opportunities needs one concrete current procedure, intact task/work/outcome
+bindings, and known relevant use context. Current skill inventory cannot prove
+historical availability or whole-session non-use.
+
+The shared scheduler rotates across all four descriptors, prefers initial review
+for four turns, and continuation on the fifth, with the other lane available when
+needed. Its ceiling is eight provider dispatch attempts per turn, including retries;
+it does not expand the one-logical-request snapshot policy. Continuation resumes
+admitted work and does not drain omitted inventory. Persist finite attempt limits
+across turns and restarts. Preserve dispatched evidence and request identity during
+compatible recovery; changed capabilities must not silently repack pending work.
+Recover compatible accepted answers before a new send. Keep private thinking
+excluded. Only validated answers and successful reduction count as reviewed.
+Missing, omitted, uncertain, unsupported, exhausted, or failed work cannot become
+session-wide Clean.
 
 Follow [the reusable Jev check contract](docs/smart-burn-checks.md#reusable-jev-check-contract) when adding a
 check-owned projection, input window, question set, or reducer. See
@@ -145,13 +164,15 @@ pnpm --filter @antiburn/desktop build
 ### Smart Check diagnostics
 
 Use the [Rust eval guide](apps/desktop/src-tauri/eval/README.md). Each check has
-one ignored `live` entry point and shared provider/suite/case/limit/capture support.
-Credentials come only from the authorized shell environment. Select exact cases
-with `ANTIBURN_EVAL_CASES` and bound calls with `ANTIBURN_EVAL_LIMIT`. Reports
-retain errors, abstentions, binding diagnostics, accuracy, usage, and latency.
-Scores are diagnostics, not strict thresholds or delivery gates. No recipe,
-frozen hash, previous passing report, or Python tool is required. Do not run every
-ignored test; imported production transport probes can incur charges.
+an ignored `live` quality eval using shared provider/suite/case/limit/capture
+support and an ignored worker `benchmark_large_sessions` throughput test.
+Credentials come only from the
+authorized shell environment. Select exact cases with `ANTIBURN_EVAL_CASES` and
+bound calls with `ANTIBURN_EVAL_LIMIT`. Reports retain errors, abstentions,
+binding diagnostics, accuracy, usage, and latency. Scores are diagnostics, not
+strict thresholds or delivery gates. No recipe, frozen hash, previous passing
+report, or Python tool is required. Do not run every ignored test; imported
+production transport probes can incur charges.
 
 After coverage edits, run from the repository root:
 

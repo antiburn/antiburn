@@ -9,22 +9,34 @@
 //!
 //! The core is the version 3 session header, `message` rows whose role is
 //! `user`, `assistant`, `toolResult`, or `bashExecution`, `model_change`,
-//! `thinking_level_change`, and `compaction`. Every other OMP row kind, and
-//! every other header version, fails closed as an unrecognized type. Pi
+//! `thinking_level_change`, `compaction`, and `custom` rows whose
+//! `customType` is characterized. The shared handler reads a `custom` row as
+//! inert only when it has no shared parser signal. `title_change`,
+//! `credential_pin`, `ttsr_injection`, and `session_init` are OMP
+//! housekeeping rows: they keep their thread link and carry no analysis
+//! signal. The reader takes the skill listing in a `session_init` system
+//! prompt as the session's startup context, and counts a `read` call of a
+//! `skill://<name>` path as a use of that skill. Every other OMP row kind,
+//! and every other header version, fails closed as an unrecognized type. Pi
 //! accepts more than this, and OMP must not inherit that reach.
+
+use std::collections::HashMap;
+use std::io::{BufReader, Cursor, Read};
 
 use serde_json::Value;
 
+use crate::analysis::initial_context::InitialContextBreakdown;
 use crate::analysis::interface::{
-    RecordSink, ResumedVisit, SessionCollector, SessionInput, SessionReader, VisitOutcome,
+    NormalizedRecord, RecordSink, ResumedVisit, SessionCollector, SessionInput, SessionReader,
+    SessionSummary, VisitOutcome,
 };
 use crate::analysis::resume::StreamSnapshot;
 use crate::analysis::source_validity::{AppendOnlyGuarantee, SourceClaim};
-use crate::analysis::vendors::pi::{PiDialect, PiSessionReader};
+use crate::analysis::vendors::pi::{DialectRow, PiDialect, PiSessionReader};
 use crate::analysis::{SourceCapabilities, SourceFormat};
 
 /// The OMP journal contract: a fixed-width title slot, then the v3 core.
-const OMP: PiDialect = PiDialect::new("omp", is_title_slot, is_omp_core);
+const OMP: PiDialect = PiDialect::new("omp", is_title_slot, classify_omp_row, true);
 
 /// The physical width of the title slot, including its line terminator.
 const TITLE_SLOT_BYTES: usize = 256;
@@ -89,6 +101,36 @@ impl SessionReader for OmpSessionReader {
     }
 }
 
+/// Reads the startup context of a raw OMP journal for the batch pass.
+///
+/// This drives the stream reader over `payload`, so the batch pass applies
+/// the same header admission, fork inheritance, and row rules. Returns no
+/// breakdown and no descriptions when the reader fails.
+pub(crate) fn startup_context(
+    payload: &str,
+) -> (Option<InitialContextBreakdown>, HashMap<String, String>) {
+    struct Discard;
+    impl RecordSink for Discard {
+        fn record(&mut self, _: NormalizedRecord) {}
+        fn finish(&mut self, _: SessionSummary) {}
+    }
+    let suffix: &[u8] = if payload.ends_with('\n') { b"" } else { b"\n" };
+    let source = Cursor::new(payload.as_bytes()).chain(suffix);
+    match PiSessionReader.visit_reader_dialect(
+        BufReader::new(source),
+        &|| false,
+        &mut Discard,
+        crate::analysis::vendors::pi::PiStreamState::default(),
+        OMP,
+    ) {
+        Ok(state) => {
+            let summary = state.finish();
+            (summary.initial_context, summary.skill_descriptions)
+        }
+        Err(_) => (None, HashMap::new()),
+    }
+}
+
 /// Tells if `bytes` is the fixed-width title slot.
 ///
 /// The slot is padded to an exact width, so a `title` record of another
@@ -100,9 +142,9 @@ fn is_title_slot(bytes: &[u8], value: &Value) -> bool {
         && value.get("type").and_then(Value::as_str) == Some("title")
 }
 
-/// Tells if `value` is inside the characterized OMP core.
-fn is_omp_core(value: &Value) -> bool {
-    match value.get("type").and_then(Value::as_str) {
+/// Places `value` in the characterized OMP contract.
+fn classify_omp_row(value: &Value) -> DialectRow {
+    let shared = match value.get("type").and_then(Value::as_str) {
         // OMP writes version 3. Older headers have their own migrations,
         // which no fixture pins yet.
         Some("session") => value.get("version").and_then(Value::as_u64) == Some(3),
@@ -114,7 +156,27 @@ fn is_omp_core(value: &Value) -> bool {
             Some("user" | "assistant" | "toolResult" | "bashExecution")
         ),
         Some("model_change" | "thinking_level_change" | "compaction") => true,
+        // Tool start markers, exit markers, todo state, and goal summaries.
+        // Usage and tool facts come from the message rows, not from these.
+        Some("custom") => matches!(
+            value.get("customType").and_then(Value::as_str),
+            Some(
+                "tool_execution_start"
+                    | "session_exit"
+                    | "todo_hud_state"
+                    | "user_todo_edit"
+                    | "goal-completed"
+            )
+        ),
+        Some("title_change" | "credential_pin" | "ttsr_injection" | "session_init") => {
+            return DialectRow::Housekeeping;
+        }
         _ => false,
+    };
+    if shared {
+        DialectRow::Shared
+    } else {
+        DialectRow::Outside
     }
 }
 
@@ -239,6 +301,285 @@ mod tests {
                 "{row}"
             );
         }
+    }
+
+    /// Real OMP journals interleave these rows with the core. They carry no
+    /// analysis signal, so a session that holds them stays complete.
+    #[test]
+    fn characterized_housekeeping_rows_keep_the_session_complete() {
+        let mut body = core_session();
+        body.push_str(
+            r#"{"type":"title_change","id":"h1","parentId":"m2","timestamp":"2026-01-01T00:00:03.000Z","title":"t","previousTitle":"s","source":"auto","trigger":"auto"}
+{"type":"credential_pin","id":"h2","parentId":"h1","timestamp":"2026-01-01T00:00:03.100Z","provider":"anthropic","hash":"abc"}
+{"type":"custom","customType":"tool_execution_start","data":{"toolCallId":"c1","toolName":"bash","startedAt":"2026-01-01T00:00:03.200Z","args":{"command":"ls"}},"id":"h3","parentId":"h2","timestamp":"2026-01-01T00:00:03.200Z"}
+{"type":"ttsr_injection","id":"h4","parentId":"h3","timestamp":"2026-01-01T00:00:03.300Z","injectedRules":["r"]}
+{"type":"custom","customType":"session_exit","data":{"reason":"dispose","kind":"normal"},"id":"h5","parentId":"h4","timestamp":"2026-01-01T00:00:03.400Z"}
+"#,
+        );
+        assert!(unrecognized_reasons(&body).is_empty());
+    }
+
+    /// Housekeeping admits a row kind only in its inert shape, and an
+    /// uncharacterized `customType` stays outside the contract.
+    #[test]
+    fn housekeeping_with_a_signal_or_an_unknown_custom_type_is_unrecognized() {
+        for row in [
+            r#"{"type":"title_change","id":"h1","parentId":"m2","timestamp":"2026-01-01T00:00:03.000Z","title":"t","usage":{"input":1,"output":1}}"#,
+            r#"{"type":"custom","customType":"tool_execution_start","id":"h1","parentId":"m2","timestamp":"2026-01-01T00:00:03.000Z","model":"x","data":{}}"#,
+            r#"{"type":"custom","customType":"not_characterized","id":"h1","parentId":"m2","timestamp":"2026-01-01T00:00:03.000Z","data":{}}"#,
+        ] {
+            let mut body = core_session();
+            body.push_str(row);
+            body.push('\n');
+            assert!(
+                unrecognized_reasons(&body).contains(&PartialReason::UnrecognizedRecordType),
+                "{row}"
+            );
+        }
+    }
+
+    fn session_init_row() -> &'static str {
+        r#"{"type":"session_init","id":"i1","parentId":"m2","timestamp":"2026-01-01T00:00:03.000Z","systemPrompt":"Intro.\n<skills>\n- deep-research: Research harness.\n- unused-skill: Never read.\n</skills>\nOutro.","task":"t","tools":["read","bash"],"agent":"task","resolvedModel":"anthropic/claude-opus-4-6","readOnly":false,"spawns":"*"}"#
+    }
+
+    fn skill_read_row() -> &'static str {
+        r#"{"type":"message","id":"m3","parentId":"i1","timestamp":"2026-01-01T00:00:04.000Z","message":{"role":"assistant","provider":"anthropic","api":"messages","model":"claude-opus-4-6","timestamp":4,"usage":{"input":10,"output":4,"cacheRead":0,"cacheWrite":0},"content":[{"type":"toolCall","id":"c1","name":"read","arguments":{"path":"skill://deep-research/references/a.md"}},{"type":"toolCall","id":"c2","name":"read","arguments":{"path":"src/lib.rs"}},{"type":"toolCall","id":"c3","name":"read","arguments":{"path":"skill://team_research"}}]}}"#
+    }
+
+    fn stream_summary(body: &str) -> crate::analysis::interface::SessionSummary {
+        let mut sink = SessionCollector::new("omp", "synthetic");
+        PiSessionReader
+            .visit_reader_dialect(
+                std::io::BufReader::new(body.as_bytes()),
+                &|| false,
+                &mut sink,
+                crate::analysis::vendors::pi::PiStreamState::default(),
+                OMP,
+            )
+            .unwrap()
+            .finish()
+    }
+
+    /// A subagent journal records its system prompt in `session_init`. Its
+    /// skill listing is the startup context, and the stream and batch
+    /// passes agree on it.
+    #[test]
+    fn session_init_skill_listing_is_the_startup_context() {
+        let body = format!("{}{}\n", core_session(), session_init_row());
+        assert!(unrecognized_reasons(&body).is_empty());
+
+        let summary = stream_summary(&body);
+        let context = summary.initial_context.expect("startup context");
+        let skills: Vec<_> = context
+            .sources
+            .iter()
+            .map(|source| (source.source.as_str(), source.source_name.as_deref()))
+            .collect();
+        assert_eq!(
+            skills,
+            [
+                ("skill_instructions", Some("deep-research")),
+                ("skill_instructions", Some("unused-skill")),
+            ]
+        );
+        assert_eq!(
+            summary
+                .skill_descriptions
+                .get("deep-research")
+                .map(String::as_str),
+            Some("Research harness.")
+        );
+        assert_eq!(
+            crate::analysis::initial_context::parse_initial_context("omp", &body),
+            Some(context)
+        );
+    }
+
+    /// The stream and batch passes apply one row rule to `session_init`.
+    /// A row with a shared parser signal is rejected in both, and a later
+    /// inert row still supplies the startup context.
+    #[test]
+    fn stream_and_batch_reject_the_same_session_init_rows() {
+        let rejected_row = |field: &str| {
+            let mut row: Value = serde_json::from_str(session_init_row()).unwrap();
+            row["id"] = Value::from("i0");
+            row["systemPrompt"] = Value::from("<skills>\n- rejected-skill: Wrong row.\n</skills>");
+            row[field] = match field {
+                "usage" => serde_json::json!({"input": 1, "output": 1}),
+                _ => Value::from("x"),
+            };
+            row.to_string()
+        };
+        let skill_names = |context: &crate::analysis::initial_context::InitialContextBreakdown| {
+            context
+                .sources
+                .iter()
+                .filter_map(|source| source.source_name.clone())
+                .collect::<Vec<_>>()
+        };
+
+        let valid = format!("{}{}\n", core_session(), session_init_row());
+        let stream = stream_summary(&valid)
+            .initial_context
+            .expect("stream context");
+        assert_eq!(
+            crate::analysis::initial_context::parse_initial_context("omp", &valid).as_ref(),
+            Some(&stream)
+        );
+
+        for field in ["usage", "model", "toolName"] {
+            let only_rejected = format!("{}{}\n", core_session(), rejected_row(field));
+            assert!(
+                unrecognized_reasons(&only_rejected)
+                    .contains(&PartialReason::UnrecognizedRecordType),
+                "{field}"
+            );
+            assert!(
+                stream_summary(&only_rejected).initial_context.is_none(),
+                "{field}"
+            );
+            assert!(
+                crate::analysis::initial_context::parse_initial_context("omp", &only_rejected)
+                    .is_none(),
+                "{field}"
+            );
+
+            let rejected_then_valid = format!(
+                "{}{}\n{}\n",
+                core_session(),
+                rejected_row(field),
+                session_init_row()
+            );
+            let stream = stream_summary(&rejected_then_valid)
+                .initial_context
+                .expect("stream reads the later inert row");
+            let batch = crate::analysis::initial_context::parse_initial_context(
+                "omp",
+                &rejected_then_valid,
+            )
+            .expect("batch reads the later inert row");
+            assert_eq!(batch, stream, "{field}");
+            assert_eq!(
+                skill_names(&batch),
+                ["deep-research", "unused-skill"],
+                "{field}"
+            );
+        }
+    }
+
+    /// Asserts that the stream and batch passes give the same startup
+    /// context for `body`, and returns the skill names of the batch pass.
+    fn agreed_startup_skills(body: &str) -> Option<Vec<String>> {
+        let summary = stream_summary(body);
+        let batch = crate::analysis::initial_context::parse_initial_context("omp", body);
+        let descriptions = crate::analysis::initial_context::parse_skill_descriptions("omp", body);
+        assert_eq!(batch, summary.initial_context);
+        assert_eq!(descriptions, summary.skill_descriptions);
+        assert_eq!(
+            crate::analysis::initial_context::parse_initial_context_and_skill_descriptions(
+                "omp", body
+            ),
+            (batch.clone(), descriptions.clone())
+        );
+        if batch.is_none() {
+            assert!(descriptions.is_empty());
+        }
+        batch.map(|context| {
+            context
+                .sources
+                .into_iter()
+                .filter_map(|source| source.source_name)
+                .collect()
+        })
+    }
+
+    /// The batch pass applies the stream header gate. A journal that the
+    /// stream rejects at its header has no startup context in either pass.
+    #[test]
+    fn a_rejected_header_hides_session_init_in_both_passes() {
+        let valid = format!("{}{}\n", core_session(), session_init_row());
+        assert_eq!(
+            agreed_startup_skills(&valid),
+            Some(vec!["deep-research".to_owned(), "unused-skill".to_owned()])
+        );
+        let rejected = valid.replace(r#""version":3"#, r#""version":2"#);
+        assert_eq!(agreed_startup_skills(&rejected), None);
+    }
+
+    /// The batch pass applies the stream fork gate. A forked journal skips a
+    /// `session_init` row from before the fork, and a row with no
+    /// timestamp, in both passes. A row after the fork stays readable.
+    #[test]
+    fn a_forked_journal_gates_session_init_in_both_passes() {
+        let forked = |fork_ts: &str, init: &str| {
+            let header = r#""cwd":"/tmp/synthetic"}"#;
+            let body = core_session()
+                .replace(
+                    r#""timestamp":"2026-01-01T00:00:00.000Z","cwd""#,
+                    &format!(r#""timestamp":"{fork_ts}","cwd""#),
+                )
+                .replace(
+                    header,
+                    r#""cwd":"/tmp/synthetic","parentSession":"/tmp/parent.jsonl"}"#,
+                );
+            assert!(body.contains("parentSession"));
+            format!("{body}{init}\n")
+        };
+
+        let after_fork = forked("2026-01-01T00:00:00.000Z", session_init_row());
+        assert_eq!(
+            agreed_startup_skills(&after_fork),
+            Some(vec!["deep-research".to_owned(), "unused-skill".to_owned()])
+        );
+
+        let inherited = forked("2026-01-01T00:00:05.000Z", session_init_row());
+        assert_eq!(agreed_startup_skills(&inherited), None);
+
+        let untimed_row =
+            session_init_row().replace(r#""timestamp":"2026-01-01T00:00:03.000Z","#, "");
+        assert!(!untimed_row.contains("timestamp"));
+        let untimed = forked("2026-01-01T00:00:00.000Z", &untimed_row);
+        assert_eq!(agreed_startup_skills(&untimed), None);
+    }
+
+    /// A top-level journal has no `session_init` row, so its startup context
+    /// is unavailable, not empty.
+    #[test]
+    fn a_journal_without_session_init_has_no_startup_context() {
+        assert!(stream_summary(&core_session()).initial_context.is_none());
+        assert!(
+            crate::analysis::initial_context::parse_initial_context("omp", &core_session())
+                .is_none()
+        );
+    }
+
+    /// OMP loads a skill with a `read` of its `skill://` URI. That call is a
+    /// skill use; a `read` of an ordinary path stays a `read`.
+    #[test]
+    fn a_skill_uri_read_is_a_skill_use() {
+        let body = format!(
+            "{}{}\n{}\n",
+            core_session(),
+            session_init_row(),
+            skill_read_row()
+        );
+        let session = OmpSessionReader.normalize(&input(&body)).unwrap();
+        let tools: Vec<_> = session
+            .events
+            .iter()
+            .flat_map(|event| &event.tools)
+            .map(|tool| (tool.name.as_str(), tool.detail.as_deref()))
+            .collect();
+        // OMP matches the URI name exactly, so a name outside Pi's name
+        // rules is still a skill use.
+        assert_eq!(
+            tools,
+            [
+                ("skill", Some("deep-research")),
+                ("read", None),
+                ("skill", Some("team_research")),
+            ]
+        );
     }
 
     #[test]

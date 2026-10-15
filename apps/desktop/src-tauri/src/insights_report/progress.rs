@@ -18,6 +18,57 @@ struct JoinedReviewCounts {
     runnable: usize,
 }
 
+fn context_blocked_count(
+    check_id: &str,
+    json: Option<&str>,
+    error: Option<&str>,
+    skipped: u64,
+) -> Option<u64> {
+    if skipped == 0 {
+        return Some(0);
+    }
+    if matches!(
+        error,
+        Some(
+            "scope_context_too_large"
+                | "work_context_too_large"
+                | "input_context_too_large"
+                | "input_request_too_large"
+        )
+    ) {
+        return Some(skipped);
+    }
+    let saved: serde_json::Value = serde_json::from_str(json?).ok()?;
+    let assessment = saved.get("assessment").unwrap_or(&saved);
+    let (items, field, id) = match check_id {
+        "over_exploring" => (
+            assessment.get("unassessed")?.as_array()?,
+            "limitation",
+            "work_item_id",
+        ),
+        "scope_creep" => (
+            assessment.get("decisions")?.as_array()?,
+            "limitation",
+            "group_id",
+        ),
+        "skill_opportunities" => return None,
+        "ignored_instructions" => return None,
+        _ => return None,
+    };
+    let blocked = items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.get(field).and_then(serde_json::Value::as_str),
+                Some("context_too_large" | "work_context_too_large" | "scope_context_too_large")
+            )
+        })
+        .filter_map(|item| item.get(id).and_then(serde_json::Value::as_str))
+        .collect::<BTreeSet<_>>()
+        .len() as u64;
+    (blocked <= skipped).then_some(blocked)
+}
+
 #[cfg(test)]
 fn all_check_report_progress_with_home(
     data_dir: &Path,
@@ -66,7 +117,8 @@ pub(super) fn check_report_progress_in(
                    checks.check_id,
                    a.input_revision IS NOT NULL AND a.scheduling_revision = a.input_revision
                      AND a.status IN ('queued', 'running', 'completed', 'failed'),
-                   a.eligible_targets, a.reviewed_targets, a.runnable_targets
+                    a.eligible_targets, a.reviewed_targets, a.runnable_targets,
+                     CASE WHEN json_valid(a.progress_json) THEN json_extract(a.progress_json, '$.context_blocked_ids') END
            FROM session s CROSS JOIN checks
          LEFT JOIN session_evidence e ON e.environment_key = s.environment_key AND e.agent = s.agent
            AND e.session_id = s.session_id
@@ -232,6 +284,17 @@ pub(super) fn check_report_progress_in(
                     .map(|(coverage, _)| coverage)
                     .filter(|coverage| coverage.reviewed == counts.reviewed as u64);
                 ChecksReviewCoveragePayload {
+                    skipped: counts.eligible.map(|total| {
+                        total.saturating_sub(counts.reviewed + counts.runnable) as u64
+                    }),
+                    context_blocked: counts.eligible.and_then(|total| {
+                        context_blocked_count(
+                            check_id,
+                            json.as_deref(),
+                            error.as_deref(),
+                            total.saturating_sub(counts.reviewed + counts.runnable) as u64,
+                        )
+                    }),
                     reviewed: counts.reviewed as u64,
                     total: counts.eligible.map(|total| total as u64),
                     uncertain: if counts.reviewed == 0 {
@@ -258,6 +321,17 @@ pub(super) fn check_report_progress_in(
                 }
             },
         };
+        if let Some(skipped) = coverage.skipped
+            && let Some(ids) = row.get::<_, Option<String>>(20)?
+        {
+            let ids: BTreeSet<String> =
+                serde_json::from_str(&ids).context("stored context-blocked targets are invalid")?;
+            let blocked = ids.len() as u64;
+            if blocked > skipped {
+                anyhow::bail!("Burn Check context-blocked count exceeds skipped count");
+            }
+            coverage.context_blocked = Some(blocked);
+        }
         if check_id == "ignored_instructions" {
             let compact: Option<String> = row.get(14)?;
             if let Some((uncertain, pending_completion)) = compact
@@ -271,7 +345,29 @@ pub(super) fn check_report_progress_in(
                 coverage.pending_completion = Some(pending_completion);
             }
         }
+        if coverage
+            .uncertain
+            .is_some_and(|uncertain| uncertain > coverage.reviewed)
+            || coverage
+                .context_blocked
+                .zip(coverage.skipped)
+                .is_some_and(|(blocked, skipped)| blocked > skipped)
+            || coverage
+                .total
+                .zip(coverage.skipped)
+                .is_some_and(|(total, skipped)| coverage.reviewed + skipped > total)
+        {
+            anyhow::bail!("Burn Check review outcome counts are invalid");
+        }
         if let Some(total) = &mut progress.coverage {
+            total.skipped = total
+                .skipped
+                .zip(coverage.skipped)
+                .map(|(left, right)| left + right);
+            total.context_blocked = total
+                .context_blocked
+                .zip(coverage.context_blocked)
+                .map(|(left, right)| left + right);
             total.reviewed += coverage.reviewed;
             total.total = total
                 .total
@@ -433,6 +529,8 @@ fn source_is_partial(json: &str, retained_records: u64, first_role: Option<&str>
 }
 
 pub(super) struct PublishedReviewCoverage {
+    pub skipped: u64,
+    pub context_blocked: Option<u64>,
     pub reviewed: u64,
     pub total: Option<u64>,
     pub uncertain: u64,
@@ -444,6 +542,8 @@ pub(super) struct PublishedReviewCoverage {
 impl From<PublishedReviewCoverage> for ChecksReviewCoveragePayload {
     fn from(coverage: PublishedReviewCoverage) -> Self {
         Self {
+            skipped: Some(coverage.skipped),
+            context_blocked: coverage.context_blocked,
             reviewed: coverage.reviewed,
             total: coverage.total,
             uncertain: Some(coverage.uncertain),
@@ -473,6 +573,8 @@ pub(super) fn published_coverage(
         let partial = ignored_instruction_partial_context(&result.coverage);
         return Some((
             PublishedReviewCoverage {
+                skipped: 0,
+                context_blocked: Some(0),
                 reviewed: result.coverage.selected_comparisons as u64,
                 total: (!result.coverage.processing_limit_reached
                     && result.coverage.skipped_rules.is_empty()
@@ -588,14 +690,26 @@ pub(super) fn published_coverage(
             .len();
         return Some((
             PublishedReviewCoverage {
+                skipped: coverage.skipped_items as u64,
+                context_blocked: context_blocked_count(
+                    check_id,
+                    Some(json),
+                    None,
+                    coverage.skipped_items as u64,
+                ),
                 reviewed: reviewed as u64,
                 total: (!coverage
                     .limitations
                     .iter()
                     .any(|limit| limit == "sampling_inventory_limit"))
-                .then_some((coverage.selected_items + coverage.not_selected_items) as u64),
+                .then_some(
+                    (coverage.selected_items + coverage.not_selected_items + coverage.skipped_items)
+                        as u64,
+                ),
                 uncertain: uncertain as u64,
-                pending: (coverage.selected_items + coverage.not_selected_items)
+                pending: (coverage.selected_items
+                    + coverage.not_selected_items
+                    + coverage.skipped_items)
                     .saturating_sub(reviewed) as u64,
                 pending_completion: Some(0),
                 continuing: false,
@@ -612,6 +726,13 @@ pub(super) fn published_coverage(
         });
     Some((
         PublishedReviewCoverage {
+            skipped: coverage.skipped_items as u64,
+            context_blocked: context_blocked_count(
+                check_id,
+                Some(json),
+                None,
+                coverage.skipped_items as u64,
+            ),
             reviewed: reviewed as u64,
             total: (!coverage
                 .limitations
@@ -648,12 +769,179 @@ mod tests {
     }
 
     #[test]
+    fn native_report_serializes_terminal_counts_and_empty_session_states_for_all_checks() {
+        let directory = tempfile::tempdir().unwrap();
+        let (store, mut candidate) = fixture(Some(directory.path()), "user");
+        candidate.session.cwd = None;
+        store
+            .lock()
+            .execute(
+                "UPDATE session SET cwd = NULL WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![
+                    candidate.session.key.environment_key,
+                    candidate.session.key.agent,
+                    candidate.session.key.session_id
+                ],
+            )
+            .unwrap();
+        let base = crate::smart_check_inputs::cache::source_fence(
+            &candidate,
+            "over_exploring",
+            crate::over_exploring_worker::CHECK.evaluator_revision(),
+        );
+        for check in crate::jev::worker::registered_checks() {
+            let detector = DetectorId::from_key(check.id()).unwrap();
+            store.set_check_enabled(detector, true).unwrap();
+            store
+                .capture_burn_check_boundaries(&[check.id()], 0)
+                .unwrap();
+            let mut input = base.clone();
+            input.check_id = check.id().into();
+            input.evaluator_revision = check.evaluator_revision();
+            input.input_revision = format!("terminal-{}", check.id());
+            assert!(
+                store
+                    .queue_burn_check_assessment(&input, 1000, 180)
+                    .unwrap()
+            );
+            assert!(
+                store
+                    .claim_burn_check_assessment(&input, 1000, 300, 180)
+                    .unwrap()
+            );
+            store
+                .save_burn_check_scheduling(&input, Some(6), 2, 0)
+                .unwrap();
+            store
+                .fail_burn_check_assessment_with_result(
+                    &input,
+                    &crate::store::BurnCheckFailure {
+                        error_category: "sampling_incomplete",
+                        result_json: "{}",
+                        progress_json: r#"{"context_blocked_ids":["fit-a","fit-b"]}"#,
+                        retry_at_epoch: None,
+                    },
+                    1001,
+                    180,
+                )
+                .unwrap();
+            let request = ReportRequest {
+                environment_key: "native".into(),
+                window: ReportWindow {
+                    start_epoch: 0,
+                    end_epoch: i64::MAX,
+                },
+                computed_at_epoch: 1002,
+            };
+            let progress =
+                check_report_progress_with_home(directory.path(), &request, check.id(), None)
+                    .unwrap();
+            assert!(!progress.checking, "{}", check.id());
+            let wire = serde_json::to_value(progress.coverage.unwrap()).unwrap();
+            assert_eq!(wire["reviewed"], 2);
+            assert_eq!(wire["total"], 6);
+            assert_eq!(wire["pending"], 4);
+            assert_eq!(wire["skipped"], 4);
+            assert_eq!(wire["contextBlocked"], 2);
+            assert_eq!(wire["continuing"], false);
+            store
+                .lock()
+                .execute(
+                    "UPDATE burn_check_assessment SET progress_json = ?1 WHERE check_id = ?2",
+                    params![
+                        r#"{"context_blocked_ids":["a","b","c","d","e"]}"#,
+                        check.id()
+                    ],
+                )
+                .unwrap();
+            assert!(
+                check_report_progress_with_home(directory.path(), &request, check.id(), None)
+                    .is_err()
+            );
+            input.input_revision.push_str("-empty");
+            assert!(
+                store
+                    .record_burn_check_no_candidates(&input, "{}", 1002, 180)
+                    .unwrap()
+            );
+            let progress =
+                check_report_progress_with_home(directory.path(), &request, check.id(), None)
+                    .unwrap();
+            let wire = serde_json::to_value(progress.coverage.unwrap()).unwrap();
+            for key in [
+                "reviewed",
+                "total",
+                "pending",
+                "skipped",
+                "contextBlocked",
+                "uncertain",
+            ] {
+                assert_eq!(wire[key], 0, "{}: {key}", check.id());
+            }
+            let statuses = if detector == DetectorId::IgnoredInstructions {
+                super::super::ignored_instructions::ignored_instruction_session_statuses(
+                    directory.path(),
+                    std::slice::from_ref(&candidate.session.key),
+                )
+                .unwrap()
+            } else {
+                super::super::findings::smart_session_statuses(
+                    directory.path(),
+                    std::slice::from_ref(&candidate.session.key),
+                    detector,
+                    false,
+                )
+                .unwrap()
+            };
+            assert_eq!(
+                serde_json::to_value(statuses[0].status).unwrap(),
+                "noCandidates",
+                "{}",
+                check.id()
+            );
+            assert_eq!(statuses[0].reason, Some("no_candidates"));
+            let badge = crate::dto::SessionHygieneBadgePayload {
+                id: match detector {
+                    DetectorId::IgnoredInstructions => "ignoredInstructions",
+                    DetectorId::ScopeCreep => "scopeCreep",
+                    DetectorId::OverExploring => "overExploring",
+                    DetectorId::SkillOpportunities => "skillOpportunities",
+                    _ => unreachable!(),
+                },
+                status: statuses[0].status,
+                not_assessed_reason: None,
+                check_reason: statuses[0].reason,
+                accounting: None,
+                finding_evidence: None,
+            };
+            let wire = serde_json::to_value(badge).unwrap();
+            assert_eq!(wire["status"], "noCandidates");
+            assert_eq!(wire["checkReason"], "no_candidates");
+            assert!(wire.get("findingEvidence").is_none());
+        }
+    }
+
+    #[test]
     fn report_and_all_check_progress_keep_the_snapshot_during_publication() {
         use crate::over_exploring_worker::tests::reduced;
         use antiburn_local::checks::over_exploring::Reason;
 
         let directory = tempfile::tempdir().unwrap();
-        let (store, candidate) = fixture(Some(directory.path()), "user");
+        let (store, mut candidate) = fixture(Some(directory.path()), "user");
+        let workspace = directory.path().to_path_buf();
+        candidate.session.cwd = Some(workspace.to_string_lossy().into_owned());
+        store
+            .lock()
+            .execute(
+                "UPDATE session SET cwd = ?1 WHERE environment_key = ?2 AND agent = ?3 AND session_id = ?4",
+                params![
+                    workspace.to_string_lossy(),
+                    candidate.session.key.environment_key,
+                    candidate.session.key.agent,
+                    candidate.session.key.session_id
+                ],
+            )
+            .unwrap();
         let input = prepare(
             &candidate,
             store
@@ -745,7 +1033,8 @@ mod tests {
             report.report.detectors[DetectorId::OverExploring.index()].finding
         };
         assert_eq!(finding_sessions(&snapshot), 0);
-        assert_eq!(finding_sessions(&current), 1);
+        // The fixture contains first reads, not a qualifying duplicate run.
+        assert_eq!(finding_sessions(&current), 0);
     }
 
     #[test]
@@ -962,6 +1251,7 @@ mod tests {
             ("failed", Some("continuing"), 3, 2),
             ("failed", Some("sampling_incomplete"), 3, 2),
             ("failed", Some("continuing"), 0, 0),
+            ("failed", Some("no_candidates"), 0, 0),
             ("failed", Some("provider_unavailable"), 3, 0),
             ("failed", Some("delivery_unknown"), 3, 0),
             ("completed", None, 3, 0),
@@ -1180,99 +1470,119 @@ mod tests {
     }
 
     #[test]
-    fn over_exploring_uncertainty_counts_targets_in_the_same_episode() {
-        let (store, candidate) = fixture(None, "user");
-        let input = prepare(
-            &candidate,
-            store
-                .load_smart_check_inputs(
-                    &candidate.session.key,
-                    candidate.published_fence,
-                    candidate.source_generation,
-                    DetectorInput::OverExploring,
-                )
-                .unwrap(),
-            &ModelCapabilities::jev_default(),
-        )
-        .unwrap();
-        let mut result = OverExploringCheck.reduce(&input.plan, &[], false).unwrap();
-        assert!(!result.unassessed.is_empty());
-        let first = result.unassessed[0].clone();
-        result.unassessed = vec![first.clone(), first.clone(), first];
-        for (index, item) in result.unassessed.iter_mut().enumerate() {
-            item.work_item_id = Some(format!("reason-{index}"));
-        }
-        for item in &mut result.unassessed {
-            item.limitation = antiburn_local::checks::over_exploring::Abstention::UncertainDecision;
-        }
-        result.completed_work_item_ids = result
-            .unassessed
-            .iter()
-            .filter_map(|item| item.work_item_id.clone())
-            .collect();
-        result.coverage.selected_items = 3;
-        result.coverage.not_selected_items = 0;
-        result.coverage.skipped_items = 0;
-        result.coverage.limitations.clear();
-        let json = serde_json::to_string(&publication(&input, result)).unwrap();
-        let (coverage, _) =
-            published_coverage("over_exploring", &input.durable.input_revision, &json, None)
-                .unwrap();
-        assert_eq!(coverage.reviewed, 3);
-        assert_eq!(coverage.total, Some(3));
-        assert_eq!(coverage.uncertain, 3);
-    }
-
-    #[test]
     fn skill_review_counts_reject_changed_or_unavailable_current_inventory() {
-        let directory = tempfile::tempdir().unwrap();
-        let home = tempfile::tempdir().unwrap();
-        let (store, candidate) = fixture(Some(directory.path()), "user");
-        let input = prepare(
-            &candidate,
-            store
-                .load_smart_check_inputs(
-                    &candidate.session.key,
-                    candidate.published_fence,
-                    candidate.source_generation,
-                    DetectorInput::OverExploring,
-                )
-                .unwrap(),
-            &ModelCapabilities::jev_default(),
-        )
-        .unwrap();
-        let skill_directory = home.path().join(".config/opencode/skills/review");
+        let fixture = crate::scope_creep_worker::tests::NativeFixture::new(1);
+        fixture.append(
+            3,
+            "user",
+            serde_json::json!({"type":"text", "text":"Prepare the release. Run npm run build and npm pack --dry-run."}),
+        );
+        for (index, command) in [(4, "npm run build"), (5, "npm pack --dry-run")] {
+            fixture.append(index, "assistant", serde_json::json!({"type":"tool", "tool":"bash", "callID":format!("release-{index}"), "state":{"status":"completed", "input":{"command":command}, "output":"Release check passed."}}));
+        }
+        let home = fixture.directory.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let store = &fixture.store;
+        store
+            .set_check_enabled(DetectorId::SkillOpportunities, true)
+            .unwrap();
+        let source =
+            rusqlite::Connection::open(fixture.directory.path().join("opencode.db")).unwrap();
+        source.execute_batch("UPDATE message SET time_created = time_created + 4102444800000, time_updated = time_updated + 4102444800000; UPDATE part SET time_created = time_created + 4102444800000, time_updated = time_updated + 4102444800000;").unwrap();
+        store
+            .capture_burn_check_boundaries(&["skill_opportunities"], 0)
+            .unwrap();
+        let candidate = fixture.publish();
+        let skill_directory = home.join(".config/opencode/skills/release-review");
         std::fs::create_dir_all(&skill_directory).unwrap();
         let skill_path = skill_directory.join("SKILL.md");
         std::fs::write(
             &skill_path,
-            "---\nname: review\ndescription: Review parser boundaries.\n---\n",
+            "---\nname: release-review\ndescription: |\n  1. Run `npm run build`.\n  2. Run `npm pack --dry-run`.\n---\n",
         )
         .unwrap();
-        let snapshot =
-            skill_opportunities::current_skill_snapshot("opencode", None, home.path()).unwrap();
-        let result = antiburn_local::checks::skill_opportunities::SkillOpportunitiesResult {
-            findings: Vec::new(),
-            decisions: Vec::new(),
-            complete: true,
-            coverage: antiburn_local::analysis::jev::JevCoverage {
-                selected_items: 2,
-                ..Default::default()
-            },
-        };
+        let skill_input = store
+            .load_smart_check_inputs(
+                &candidate.session.key,
+                candidate.published_fence,
+                candidate.source_generation,
+                DetectorInput::SkillOpportunities,
+            )
+            .unwrap();
+        let agent = AgentKind::from_slug(&candidate.session.key.agent).unwrap();
+        let config = crate::agent_config::ConfigContext::native(agent, &home, None);
+        let skill_inputs = store
+            .load_smart_check_skill_inputs(skill_input, &config)
+            .unwrap();
+        let inventory_names = skill_inputs
+            .inventory()
+            .skills()
+            .iter()
+            .map(|skill| skill.name.clone())
+            .collect::<Vec<_>>();
+        let use_revision = skill_inputs.usage().revision().to_owned();
+        let prepared = crate::skill_opportunities_worker::prepare(
+            &candidate,
+            skill_inputs,
+            crate::skill_opportunities_worker::CHECK.evaluator_revision(),
+        )
+        .unwrap();
+        let session_context = prepared.check.session_context();
+        let plan = prepared.check.prepare(&session_context).unwrap();
+        assert_eq!(
+            plan.work_items.len(),
+            1,
+            "inventory={inventory_names:?}, use_revision={use_revision}, selected_context={:#?}",
+            session_context.check_context
+        );
+        let answers = plan
+            .work_items
+            .iter()
+            .map(|item| antiburn_local::analysis::jev::JevWorkItemResult {
+                request_id: item.id.clone(),
+                work_item_id: item.id.clone(),
+                model: plan.capabilities.model.clone(),
+                answers: item
+                    .questions
+                    .iter()
+                    .map(|(question, definition)| {
+                        let choice = "actionable_help";
+                        let antiburn_local::analysis::jev::JevQuestion::Choice { criteria, .. } =
+                            definition
+                        else {
+                            unreachable!("skill opportunity question is a choice")
+                        };
+                        (
+                            question.clone(),
+                            antiburn_local::analysis::jev::JevAnswer::Choice {
+                                choice: choice.into(),
+                                confidence: 1.0,
+                                probabilities: criteria
+                                    .keys()
+                                    .map(|key| (key.clone(), f64::from(key == choice)))
+                                    .collect(),
+                            },
+                        )
+                    })
+                    .collect(),
+                evidence: item.window.evidence.clone(),
+                usage: antiburn_local::analysis::jev::JevUsage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                },
+            })
+            .collect::<Vec<_>>();
+        let result = prepared.check.reduce(&plan, &answers, true).unwrap();
+        assert!(crate::skill_opportunities_worker::publication_has_assessed_coverage(&result));
+        assert_eq!(result.decisions.len(), 1);
+        let assessed_count = result.decisions.len() as u64;
         let mut json = serde_json::to_value(result).unwrap();
-        json["input_revision"] = serde_json::json!(input.durable.input_revision);
-        json["inventory_revision"] = serde_json::json!(snapshot.revision());
-        json["use_revision"] = serde_json::json!("bound-use");
-        let mut durable = input.durable.clone();
+        json["input_revision"] = serde_json::json!(prepared.durable.input_revision);
+        json["inventory_revision"] = serde_json::json!(prepared.inventory_revision);
+        json["use_revision"] = serde_json::json!(use_revision);
+        let mut durable = prepared.durable.clone();
         durable.check_id = "skill_opportunities".into();
         durable.evaluator_revision = crate::skill_opportunities_worker::CHECK.evaluator_revision();
-        store
-            .set_check_enabled(DetectorId::SkillOpportunities, true)
-            .unwrap();
-        store
-            .capture_burn_check_boundaries(&["skill_opportunities"], 0)
-            .unwrap();
         assert!(
             store
                 .queue_burn_check_assessment(&durable, 1000, 180)
@@ -1298,17 +1608,17 @@ mod tests {
         };
         let read = || {
             check_report_progress_with_home(
-                directory.path(),
+                fixture.directory.path(),
                 &request,
                 "skill_opportunities",
-                Some(home.path()),
+                Some(&home),
             )
             .unwrap()
         };
-        assert_eq!(read().coverage.unwrap().reviewed, 0);
+        assert_eq!(read().coverage.unwrap().reviewed, assessed_count);
         assert!(
             check_report_progress_with_home(
-                directory.path(),
+                fixture.directory.path(),
                 &request,
                 "skill_opportunities",
                 None
@@ -1320,12 +1630,12 @@ mod tests {
         json["use_revision"] = serde_json::json!("");
         store.lock().execute("UPDATE burn_check_assessment SET result_json = ?1 WHERE check_id = 'skill_opportunities'", [json.to_string()]).unwrap();
         assert!(read().coverage.is_none());
-        json["use_revision"] = serde_json::json!("bound-use");
+        json["use_revision"] = serde_json::json!(use_revision);
         store.lock().execute("UPDATE burn_check_assessment SET result_json = ?1 WHERE check_id = 'skill_opportunities'", [json.to_string()]).unwrap();
         assert!(read().coverage.is_some());
         std::fs::write(
             &skill_path,
-            "---\nname: review\ndescription: Review a different procedure.\n---\n",
+            "---\nname: release-review\ndescription: Review a different procedure.\n---\n",
         )
         .unwrap();
         assert!(read().coverage.is_none());

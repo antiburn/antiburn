@@ -755,6 +755,35 @@ pub(super) fn synthetic_evidence() -> SessionEvidence {
     synthetic_evidence_accumulator().evidence(&antiburn_local::analysis::TurnFacts::default())
 }
 
+#[test]
+fn stored_called_tools_reads_only_the_tools_field() {
+    use antiburn_local::analysis::{ToolClass, ToolUse};
+
+    let mut evidence = synthetic_evidence();
+    evidence.tools = EvidenceValue::Complete(ToolEvidence {
+        by_name: [(
+            "Read".to_owned(),
+            ToolUse {
+                calls: 2,
+                class: ToolClass::Unclassified,
+            },
+        )]
+        .into(),
+    });
+    let tools_json = serde_json::to_value(&evidence.tools).expect("tool evidence serializes");
+    let row = evidence_row(crate::store::EvidenceStatus::Ready, Some(evidence));
+    let called = stored_called_tools(Some(&row)).expect("stored tools produce a list");
+    assert_eq!(called.len(), 1);
+    assert_eq!((called[0].name.as_str(), called[0].calls), ("Read", 2));
+
+    // Only `tools` is read, so a row that holds only that field gives the same list.
+    let mut projected = evidence_row(crate::store::EvidenceStatus::Ready, None);
+    projected.evidence_json = Some(serde_json::json!({ "tools": tools_json }).to_string());
+    assert_eq!(stored_called_tools(Some(&projected)), Some(called));
+
+    assert!(stored_called_tools(None).is_none());
+}
+
 // The generation `evidence_row` stamps as `analyzed_generation`. Tests
 // that are not exercising a generation mismatch pass this back as the
 // session's current source generation, so the row reads as current.

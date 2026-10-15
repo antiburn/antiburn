@@ -1,14 +1,123 @@
 use super::*;
 
 #[test]
+fn called_tools_rank_by_calls_and_stay_bounded() {
+    use antiburn_local::analysis::{ToolClass, ToolUse};
+
+    let tools = |entries: &[(&str, u64)]| {
+        EvidenceValue::Complete(ToolEvidence {
+            by_name: entries
+                .iter()
+                .map(|(name, calls)| {
+                    (
+                        (*name).to_string(),
+                        ToolUse {
+                            calls: *calls,
+                            class: ToolClass::Unclassified,
+                        },
+                    )
+                })
+                .collect(),
+        })
+    };
+
+    let ranked = session_called_tools(&tools(&[
+        ("Read", 3),
+        ("Bash", 12),
+        ("Edit", 12),
+        ("Never", 0),
+    ]))
+    .expect("complete tool evidence produces a list");
+    assert_eq!(
+        ranked
+            .iter()
+            .map(|tool| (tool.name.as_str(), tool.calls))
+            .collect::<Vec<_>>(),
+        vec![("Bash", 12), ("Edit", 12), ("Read", 3)],
+        "most-called first, ties by name, and a tool with no call is left out"
+    );
+
+    let many: Vec<(String, u64)> = (0..MAX_CALLED_TOOLS + 10)
+        .map(|index| (format!("tool-{index:03}"), index as u64 + 1))
+        .collect();
+    let capped = session_called_tools(&tools(
+        &many
+            .iter()
+            .map(|(name, calls)| (name.as_str(), *calls))
+            .collect::<Vec<_>>(),
+    ))
+    .expect("complete tool evidence produces a list");
+    assert_eq!(capped.len(), MAX_CALLED_TOOLS);
+    assert_eq!(capped[0].name, "tool-059", "the cap keeps the top callers");
+
+    assert!(
+        session_called_tools(&EvidenceValue::<ToolEvidence>::Unsupported).is_none(),
+        "a source with no tool evidence reports nothing, not an empty list"
+    );
+}
+
+#[test]
+fn called_tools_mark_skill_uses_apart_from_tool_calls() {
+    use antiburn_local::analysis::{ToolClass, ToolUse};
+
+    // An OMP session that read `src/lib.rs` and `skill://research`: the sink
+    // keys the skill read by the skill name.
+    let evidence = EvidenceValue::Complete(ToolEvidence {
+        by_name: [
+            (
+                "read".to_owned(),
+                ToolUse {
+                    calls: 1,
+                    class: ToolClass::Unclassified,
+                },
+            ),
+            (
+                "research".to_owned(),
+                ToolUse {
+                    calls: 1,
+                    class: ToolClass::Skill,
+                },
+            ),
+            (
+                "mcp__docs__search".to_owned(),
+                ToolUse {
+                    calls: 1,
+                    class: ToolClass::Mcp,
+                },
+            ),
+        ]
+        .into(),
+    });
+    let called = session_called_tools(&evidence).expect("complete tool evidence produces a list");
+    assert_eq!(
+        called
+            .iter()
+            .map(|tool| (tool.name.as_str(), tool.kind))
+            .collect::<Vec<_>>(),
+        vec![
+            ("mcp__docs__search", CalledToolKind::Tool),
+            ("read", CalledToolKind::Tool),
+            ("research", CalledToolKind::Skill),
+        ]
+    );
+    assert_eq!(
+        serde_json::to_value(&called[2]).expect("payload serializes"),
+        serde_json::json!({"name": "research", "kind": "skill", "calls": 1})
+    );
+}
+
+#[test]
 fn check_progress_serializes_optional_notices_and_unknown_total() {
-    let category = ChecksCategoryPayload {
+    let mut category = ChecksCategoryPayload {
+        review_state: None,
         id: BurnCheckDetectorId::ScopeCreep,
         sampled: true,
         checking: Some(true),
         checking_count: Some(2),
         partial_context: Some(true),
         review_coverage: Some(ChecksReviewCoveragePayload {
+            skipped: Some(2),
+            context_blocked: Some(1),
             reviewed: 5,
             total: None,
             uncertain: Some(2),
@@ -31,15 +140,48 @@ fn check_progress_serializes_optional_notices_and_unknown_total() {
         value["reviewCoverage"],
         serde_json::json!({
             "reviewed": 5, "total": null, "uncertain": 2, "pending": 3, "pendingCompletion": null, "continuing": true,
+            "skipped": 2, "contextBlocked": 1,
         })
     );
     assert_eq!(value["lifecycle"], serde_json::Value::Null);
     assert_eq!(value["clean"], 0);
+    category.update_review_state();
+    assert_eq!(category.review_state, None);
+    let coverage = category.review_coverage.as_mut().unwrap();
+    coverage.continuing = false;
+    coverage.skipped = Some(3);
+    category.update_review_state();
+    assert_eq!(
+        category.review_state,
+        Some(ChecksReviewStatePayload::Stopped)
+    );
+    assert_eq!(category.checking, Some(false));
+    assert_eq!(category.checking_count, Some(0));
+    assert_eq!(
+        serde_json::to_value(&category).unwrap()["reviewState"],
+        "stopped"
+    );
+    let coverage = category.review_coverage.as_mut().unwrap();
+    coverage.total = Some(0);
+    coverage.reviewed = 0;
+    coverage.pending = Some(0);
+    coverage.skipped = Some(0);
+    coverage.context_blocked = Some(0);
+    category.update_review_state();
+    assert_eq!(
+        category.review_state,
+        Some(ChecksReviewStatePayload::NoMatchingWork)
+    );
+    category.review_coverage.as_mut().unwrap().context_blocked = None;
+    category.update_review_state();
+    assert_eq!(category.review_state, None);
 }
 
 #[test]
 fn review_coverage_serializes_terminal_uncertainty_and_known_total() {
     let coverage = ChecksReviewCoveragePayload {
+        skipped: Some(1),
+        context_blocked: Some(1),
         reviewed: 2,
         total: Some(3),
         uncertain: Some(1),
@@ -51,6 +193,7 @@ fn review_coverage_serializes_terminal_uncertainty_and_known_total() {
         serde_json::to_value(coverage).unwrap(),
         serde_json::json!({
             "reviewed": 2, "total": 3, "uncertain": 1, "pending": 1, "pendingCompletion": 0, "continuing": false,
+            "skipped": 1, "contextBlocked": 1,
         })
     );
 }

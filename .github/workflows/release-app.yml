@@ -20,6 +20,9 @@ name: Release app
 #           run; a release never spends another full matrix proving the same SHA
 #   sbom    dependency inventories, generated with no credentials in scope
 #   build   the only jobs that see signing credentials, one per release target
+#   dependency-checks, installer-tests
+#           dependency bans, licenses, advisories and notices, and the
+#           installer scripts; they run in parallel with build
 #   assemble hashes, attests, and uploads the complete asset set
 #   draft   creates a draft only for tag pushes
 
@@ -909,9 +912,24 @@ jobs:
     with:
       version: ${{ github.event_name == 'workflow_dispatch' && needs.verify.outputs.version || '' }}
 
+  # Advisories change without a code change, so the release checks them
+  # again. The builds run at the same time. Assemble waits for both checks,
+  # so nothing is hashed, attested or uploaded before they pass.
+  dependency-checks:
+    name: Dependency checks
+    needs: verify
+    uses: ./.github/workflows/dependency-checks.yml
+    with:
+      advisories: true
+
+  installer-tests:
+    name: Installer tests
+    needs: verify
+    uses: ./.github/workflows/installer-tests.yml
+
   assemble:
     name: Assemble release assets
-    needs: [verify, sbom, build, remote-helper]
+    needs: [verify, sbom, build, remote-helper, dependency-checks, installer-tests]
     runs-on: ubuntu-24.04
     permissions:
       contents: read

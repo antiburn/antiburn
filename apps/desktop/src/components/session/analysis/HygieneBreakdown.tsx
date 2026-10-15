@@ -225,7 +225,10 @@ export function HygieneBreakdown({
   const passing = assessedChecks.filter((check) => check.status === "clean")
   const findings = assessedChecks.filter((check) => check.status === "finding")
   const pendingChecks = checks.filter(
-    (check) => check.status === "checking" || check.status === "couldntCheck",
+    (check) =>
+      check.status === "checking" ||
+      check.status === "couldntCheck" ||
+      check.status === "noCandidates",
   )
   const rolledChecks = passing
   const assessedCount = passing.length + findings.length

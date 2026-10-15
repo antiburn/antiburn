@@ -84,7 +84,7 @@ pub fn cases(cohort: &str, task: &str, work: &str, path: &str) -> Vec<Case> {
             });
             cases.push(Case {
                 id: format!("{cohort}-adapter-{agent}-{index}"), scenario: "adapter".into(),
-                expected: if proposal { "finding" } else { "unassessed" }.into(), authority_fixture: !proposal,
+                expected: if proposal { "finding" } else { "unassessed" }.into(), policy_admitted: false, authority_fixture: !proposal,
                 task: format!("{task} The retained question or plan is not approved. Do not implement any additional feature."),
                 work: work.into(), path: path.into(), format: if agent == "opencode" { SourceFormat::OpenCodeSqliteV2 } else { format },
                 metadata: Some(metadata),

@@ -117,7 +117,7 @@ fn codex_metadata_root_and_terminal_record_do_not_require_user_roles() {
 }
 
 #[test]
-fn claude_injected_context_and_uncharacterized_producer_remain_unavailable() {
+fn claude_injected_context_and_uncharacterized_producer_do_not_gain_authority() {
     for text in [
         CLAUDE.to_owned(),
         CLAUDE
@@ -129,12 +129,24 @@ fn claude_injected_context_and_uncharacterized_producer_remain_unavailable() {
     ] {
         let (store, key, fence, generation) =
             publish_jsonl("claude", "scope-test", SourceFormat::ClaudeJsonl, &text);
-        assert!(matches!(
-            store.session_scope_request(&key, fence, generation),
-            Err(ScopeLoadError::Scope(SessionScopeError::Missing(
-                ScopeMissingReason::IncompleteSource
-            )))
-        ));
+        let request = store
+            .session_scope_request(&key, fence, generation)
+            .unwrap();
+        let scope = store.load_session_scope(&key, request).unwrap();
+        assert!(
+            scope
+                .limitations()
+                .contains(&ScopeMissingReason::IncompleteSource)
+        );
+        assert!(scope.occurrences().iter().all(|item| item.authority
+            != antiburn_local::analysis::session_scope::ScopeAuthority::User
+            || matches!(
+                scope.values()[item.value_index].as_str(),
+                Some(
+                    "Read three lines and run the API tests. Keep billing unchanged."
+                        | "Stop. Do not make further edits."
+                )
+            )));
     }
 }
 
@@ -167,14 +179,19 @@ fn retained_source_proofs_and_native_ranges_fail_closed_after_storage_changes() 
         ] {
             let (store, key, fence, generation) = publish_jsonl(agent, session, format, &text);
             store.lock().execute(mutation, []).unwrap();
+            let request = store
+                .session_scope_request(&key, fence, generation)
+                .unwrap();
+            let scope = store.load_session_scope(&key, request).unwrap();
             assert!(
-                matches!(
-                    store.session_scope_request(&key, fence, generation),
-                    Err(ScopeLoadError::Scope(SessionScopeError::Missing(
-                        ScopeMissingReason::IncompleteSource
-                    )))
-                ),
+                scope.occurrences().iter().all(|item| item.authority
+                    != antiburn_local::analysis::session_scope::ScopeAuthority::User),
                 "{agent}: {mutation}"
+            );
+            assert!(
+                scope
+                    .limitations()
+                    .contains(&ScopeMissingReason::NoUserContext)
             );
         }
     }
@@ -239,15 +256,8 @@ fn unknown_skill_context_does_not_become_human_scope() {
         store.lock().execute(
             "UPDATE turn_content SET normalized_fields_json = json_remove(normalized_fields_json, '$.metadata.selected_skill') WHERE kind = 'user' AND authority != 'user'", [],
         ).unwrap();
-        assert!(
-            matches!(
-                store.session_scope_request(&key, fence, generation),
-                Err(ScopeLoadError::Scope(SessionScopeError::Missing(
-                    ScopeMissingReason::IncompleteSource
-                )))
-            ),
-            "{agent}"
-        );
+        let scope = super::source_context::partial_scope(&store, &key, fence, generation);
+        assert!(!scope.values().is_empty(), "{agent}");
     }
 }
 
@@ -287,10 +297,10 @@ fn pi_utf8_human_suffix_keeps_native_offsets_and_omits_typed_skill_context() {
     store.lock().execute(
         "UPDATE turn_content SET normalized_fields_json = json_set(normalized_fields_json, '$.metadata.selected_skill.source_format', 'codex_rollout_jsonl') WHERE kind = 'user' AND authority != 'user'", [],
     ).unwrap();
-    assert!(matches!(
-        store.session_scope_request(&key, fence, generation),
-        Err(ScopeLoadError::Scope(SessionScopeError::Missing(
-            ScopeMissingReason::IncompleteSource
-        )))
-    ));
+    let scope = super::source_context::partial_scope(&store, &key, fence, generation);
+    assert!(
+        scope
+            .values()
+            .contains(&serde_json::json!("Do not change café billing."))
+    );
 }

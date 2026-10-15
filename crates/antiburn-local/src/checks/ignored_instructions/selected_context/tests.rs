@@ -229,11 +229,14 @@ fn utf8_pi_human_suffix_keeps_native_offsets_through_selection_and_episode_bindi
     assert!(human_text(&restored));
     assert_eq!(selected, select_session_content(&selected, INPUT_SELECTION));
 
-    let trigger = event("publish", 4, "assistant", "main", "Published the update.");
+    let mut trigger = event("publish", 4, "assistant", "main", "npm publish");
+    trigger.kind = "tool_input".to_owned();
+    trigger.tool_name = Some("Bash".to_owned());
+    trigger.tool_call_id = Some("publish-call".to_owned());
     let mut actions = vec![restored, trigger];
     let plan = build_assessment_plan(input(
         actions.clone(),
-        "Get human approval before publishing.",
+        "Do not request `npm publish` without human approval.",
     ));
     let comparison = plan
         .comparisons
@@ -317,14 +320,12 @@ fn human_authority_needs_native_proof_and_selected_text() {
 fn episodes_keep_observed_results_and_reject_injected_authority() {
     let mut actions = vec![human()];
     actions.extend(test_pair());
-    actions.push(event(
-        "report",
-        4,
-        "assistant",
-        "main",
-        "All focused tests passed.",
-    ));
-    let source = input(actions, "Report test results accurately.");
+    let mut request = event("report", 4, "assistant", "main", "npm publish");
+    request.kind = "tool_input".to_owned();
+    request.tool_name = Some("Bash".to_owned());
+    request.tool_call_id = Some("publish-call".to_owned());
+    actions.push(request);
+    let source = input(actions, "Do not request `npm publish`.");
     let plan = build_assessment_plan(source.clone());
     let comparison = plan
         .comparisons

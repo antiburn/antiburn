@@ -23,6 +23,8 @@ pub struct ScopeCreepDecision {
     pub status: ScopeCreepStatus,
     pub outcome: Option<ScopeAnswer>,
     pub decision_probability: Option<f64>,
+    #[serde(default)]
+    pub unique_positive_winner: bool,
     pub limitation: Option<String>,
     pub reduced_answer_ids: Vec<StableId>,
 }
@@ -41,6 +43,36 @@ pub struct ScopeCreepFinding {
     pub revisions: JevCheckRevisions,
     pub source_generation: i64,
     pub publication_fence: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation_basis: Option<ScopeExplanationBasis>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopeExplanationBasis {
+    pub schema_revision: u32,
+    pub relationship: ScopeRelationship,
+    pub observation_kind: WorkObservationKind,
+    pub excerpts: Vec<ScopeExcerpt>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeRelationship {
+    SeparateObjective,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopeExcerpt {
+    pub source: crate::analysis::jev_evidence::ContentEventReference,
+    pub content_digest: String,
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub text: String,
+    pub authority: String,
+    pub kind: String,
+    pub range_source: String,
+    pub scope_field: Option<JevInputField>,
+    pub native_source: Option<crate::analysis::jev_evidence::JevScopeEvidenceSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -78,6 +110,7 @@ pub(super) fn reduce(
     }
     let mut canonical = check.prepare_groups(check.context(), &plan.capabilities, groups)?;
     canonical.coverage.not_selected_items = plan.coverage.not_selected_items;
+    canonical.coverage.processing_limit_reached |= plan.coverage.not_selected_items > 0;
     if plan
         .coverage
         .limitations
@@ -150,6 +183,7 @@ pub(super) fn reduce(
             status: ScopeCreepStatus::Unassessed,
             outcome: None,
             decision_probability: None,
+            unique_positive_winner: false,
             limitation: group.limitation.clone(),
             reduced_answer_ids: Vec::new(),
         };
@@ -169,13 +203,24 @@ pub(super) fn reduce(
             }
             let outcome = ScopeAnswer::parse(choice).ok_or(JevError::InvalidChoiceDistribution)?;
             let probability = probabilities[choice];
+            let unique_positive = outcome == ScopeAnswer::UnauthorizedExtra
+                && probabilities
+                    .iter()
+                    .filter(|(key, _)| key.as_str() != "unauthorized_extra")
+                    .all(|(_, other)| probability > *other);
             decision.outcome = Some(outcome);
             decision.decision_probability = Some(probability);
+            decision.unique_positive_winner = unique_positive;
             decision.status = match outcome {
-                ScopeAnswer::LikelyScopeExpansion if probability >= DECISION_THRESHOLD => {
+                ScopeAnswer::UnauthorizedExtra
+                    if probability >= DECISION_THRESHOLD
+                        && unique_positive
+                        && group.limitation.is_none()
+                        && group.window_ids.len() == 1 =>
+                {
                     ScopeCreepStatus::Finding
                 }
-                ScopeAnswer::NoIssue if group.limitation.is_none() => ScopeCreepStatus::Clean,
+                ScopeAnswer::InScope if group.limitation.is_none() => ScopeCreepStatus::Clean,
                 _ => ScopeCreepStatus::Uncertain,
             };
             decision.reduced_answer_ids = vec![ScopeCreepCheck::answer_identity(
@@ -204,6 +249,14 @@ pub(super) fn reduce(
                     revisions: REVISIONS,
                     source_generation: plan.prepared.source_generation,
                     publication_fence: plan.prepared.publication_fence,
+                    explanation_basis: (!group.selected_excerpts.is_empty()).then(|| {
+                        ScopeExplanationBasis {
+                            schema_revision: 1,
+                            relationship: ScopeRelationship::SeparateObjective,
+                            observation_kind: group.observation_kind,
+                            excerpts: group.selected_excerpts.clone(),
+                        }
+                    }),
                 });
             }
         }
@@ -220,7 +273,12 @@ pub(super) fn reduce(
     if uncertain {
         coverage.limitations.push("uncertain_decision".into());
     }
-    let remaining_candidates = coverage.not_selected_items + decisions.len() - assessed_candidates;
+    let remaining_candidates = coverage.not_selected_items
+        + decisions
+            .iter()
+            .zip(&plan.prepared.groups)
+            .filter(|(decision, group)| decision.outcome.is_none() && !group.window_ids.is_empty())
+            .count();
     if remaining_candidates > 0 {
         coverage.limitations.push("assessment_incomplete".into());
     }

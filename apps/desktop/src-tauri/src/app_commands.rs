@@ -4,6 +4,7 @@ macro_rules! with_app_commands {
             commands::add_scan_root => "add_scan_root",
             commands::advance_first_run => "advance_first_run",
             remote_sessions::add_remote_host => "add_remote_host",
+            commands::memories::count_agent_memories => "count_agent_memories",
             commands::memories::list_agent_memories => "list_agent_memories",
             commands::memories::archive_agent_memory => "archive_agent_memory",
             commands::memories::restore_agent_memory => "restore_agent_memory",

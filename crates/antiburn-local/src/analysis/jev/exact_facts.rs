@@ -91,6 +91,34 @@ pub fn reference_identifier_facts(
     facts
 }
 
+pub fn direct_command_anchor(rule: &str, command: &str) -> bool {
+    let ignored = [
+        "do", "not", "never", "run", "request", "command", "the", "to",
+    ];
+    let words = |text: &str| {
+        text.split_whitespace()
+            .map(|word| {
+                word.trim_matches(|character: char| {
+                    matches!(
+                        character,
+                        '`' | '\'' | '"' | '.' | ',' | ';' | ':' | '(' | ')'
+                    )
+                })
+                .to_ascii_lowercase()
+            })
+            .filter(|word| !word.is_empty() && !ignored.contains(&word.as_str()))
+            .collect::<Vec<_>>()
+    };
+    let rule_words = words(rule);
+    let command_words = words(command);
+    rule_words
+        .iter()
+        .any(|word| (word.contains('/') || word.contains('-')) && command_words.contains(word))
+        || rule_words
+            .windows(2)
+            .any(|anchor| command_words.windows(2).any(|command| command == anchor))
+}
+
 impl ExactActionFacts {
     pub fn from_store(
         store: &super::JevEvidenceStore,

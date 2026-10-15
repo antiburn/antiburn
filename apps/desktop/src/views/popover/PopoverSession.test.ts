@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../../lib/ipc"
-import type * as InsightsIpc from "../../lib/insightsIpc"
 import type * as OverlayWindow from "../../lib/overlayWindow"
 import {
   EMPTY_PROVIDER_USAGE,
@@ -23,8 +22,6 @@ const getLiveSessionsFor = vi.hoisted(() => vi.fn())
 const onSessionUpdated = vi.hoisted(() => vi.fn())
 const onSessionIndexChanged = vi.hoisted(() => vi.fn())
 const onSessionLifecycleEvent = vi.hoisted(() => vi.fn())
-const onChecksReportChanged = vi.hoisted(() => vi.fn())
-const getChecksReport = vi.hoisted(() => vi.fn())
 const onPopoverShown = vi.hoisted(() => vi.fn())
 const onPopoverHidden = vi.hoisted(() => vi.fn())
 const noteInteraction = vi.hoisted(() => vi.fn())
@@ -53,11 +50,6 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
 vi.mock("../../lib/overlayWindow", async (importOriginal) => {
   const actual = await importOriginal<typeof OverlayWindow>()
   return { ...actual, isCurrentWindowVisible }
-})
-
-vi.mock("../../lib/insightsIpc", async (importOriginal) => {
-  const actual = await importOriginal<typeof InsightsIpc>()
-  return { ...actual, getChecksReport, onChecksReportChanged }
 })
 
 type UpdatedHandler = (update: SessionUpdatedPayload) => void
@@ -195,10 +187,6 @@ beforeEach(() => {
       lifecycleHandlers.delete(handler)
     }
   })
-  onChecksReportChanged.mockReset()
-  onChecksReportChanged.mockResolvedValue(() => {})
-  getChecksReport.mockReset()
-  getChecksReport.mockResolvedValue(null)
   onPopoverShown.mockReset()
   onPopoverShown.mockImplementation(async (handler: () => void) => {
     popoverShownHandler = handler
@@ -239,16 +227,6 @@ describe("PopoverSession surface presentation", () => {
     expect(snapshot).not.toHaveProperty("presentedSession")
     expect(snapshot).not.toHaveProperty("analysis")
     expect(snapshot).not.toHaveProperty("analysisRefreshing")
-  })
-
-  it("ends the initial Checks loading state after a report failure", async () => {
-    getChecksReport.mockRejectedValue(new Error("report failed"))
-    const session = new PopoverSession()
-    const unsubscribe = session.subscribe(() => undefined)
-
-    await vi.waitFor(() => expect(session.getSnapshot().checksUnavailable).toBe(true))
-
-    unsubscribe()
   })
 
   it("does not count a hidden prewarmed renderer as a surface view", async () => {
@@ -671,75 +649,17 @@ describe("PopoverSession surface presentation", () => {
     unsubscribe()
   })
 
-  it("does not refresh allocations or checks for a title-only update", async () => {
+  it("does not refresh allocations for a title-only update", async () => {
     vi.useFakeTimers()
     vi.setSystemTime("2027-01-15T08:00:00Z")
     const session = new PopoverSession()
     const unsubscribe = session.subscribe(() => {})
     await vi.advanceTimersByTimeAsync(0)
     expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
-    const checksBaseline = getChecksReport.mock.calls.length
-
     emitUpdated(changedEntry(), { title: true })
     await vi.advanceTimersByTimeAsync(60_000)
 
     expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
-    expect(getChecksReport).toHaveBeenCalledTimes(checksBaseline)
-    unsubscribe()
-  })
-
-  it("refreshes checks for a checks-facet update", async () => {
-    const session = new PopoverSession()
-    const unsubscribe = session.subscribe(() => {})
-    await vi.waitFor(() => expect(sessionUpdatedHandler).not.toBeNull())
-    await vi.waitFor(() => expect(getChecksReport).toHaveBeenCalled())
-    const baseline = getChecksReport.mock.calls.length
-
-    emitUpdated(changedEntry(), { checks: true })
-
-    await vi.waitFor(() => expect(getChecksReport.mock.calls.length).toBeGreaterThan(baseline))
-    unsubscribe()
-  })
-
-  it("defers hidden checks updates and refreshes once when shown", async () => {
-    const session = new PopoverSession()
-    const unsubscribe = session.subscribe(() => {})
-    await vi.waitFor(() => expect(sessionUpdatedHandler).not.toBeNull())
-    await vi.waitFor(() => expect(getChecksReport).toHaveBeenCalled())
-    const baseline = getChecksReport.mock.calls.length
-
-    popoverHiddenHandler?.()
-    emitUpdated(changedEntry(), { checks: true })
-    indexChangedHandler?.({ seq: ++updateSeq, cause: "scan_pass" })
-    await Promise.resolve()
-    expect(getChecksReport).toHaveBeenCalledTimes(baseline)
-
-    popoverShownHandler?.()
-    await vi.waitFor(() => expect(getChecksReport).toHaveBeenCalledTimes(baseline + 1))
-    unsubscribe()
-  })
-
-  it("keeps a hidden checks update dirty when an earlier report is in flight", async () => {
-    let resolveReport!: (report: null) => void
-    getChecksReport.mockReturnValueOnce(
-      new Promise<null>((resolve) => {
-        resolveReport = resolve
-      }),
-    )
-    const session = new PopoverSession()
-    const unsubscribe = session.subscribe(() => {})
-    await vi.waitFor(() => expect(sessionUpdatedHandler).not.toBeNull())
-    await vi.waitFor(() => expect(getChecksReport).toHaveBeenCalledOnce())
-
-    popoverHiddenHandler?.()
-    emitUpdated(changedEntry(), { checks: true })
-    resolveReport(null)
-    await Promise.resolve()
-    await Promise.resolve()
-    expect(getChecksReport).toHaveBeenCalledOnce()
-
-    popoverShownHandler?.()
-    await vi.waitFor(() => expect(getChecksReport).toHaveBeenCalledTimes(2))
     unsubscribe()
   })
 

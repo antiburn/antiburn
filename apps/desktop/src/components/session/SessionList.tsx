@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-virtual"
 import { useCallback, useRef, useState, type ReactNode } from "react"
 
+import { pluralize } from "../../lib/presentation/text"
 import { cn } from "../../lib/cn"
 import type { BurnCheckDetectorId, SessionHygienePayload } from "../../lib/insightsIpc"
 import {
@@ -121,6 +122,8 @@ export interface SessionListProps {
   hideEmptyToolbar?: boolean
   /** The scrolling viewport, for a host that needs to observe it. */
   viewportRef?: ViewportRef
+  /** Extra classes for a host-specific scroll viewport inset. */
+  viewportClassName?: string
   initialScrollOffset?: number | (() => number)
   initialMeasurementsCache?: VirtualItem[]
   onMeasurementsChange?: (measurements: VirtualItem[]) => void
@@ -188,12 +191,12 @@ function SessionRowTitle({
       )}
       {!!entry.forkChildCount && (
         <Tooltip
-          label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
+          label={`${entry.forkChildCount} direct ${pluralize(entry.forkChildCount, "fork", "forks")}`}
           delayMs={500}
         >
           <span
             className="inline-flex shrink-0 text-label-tertiary"
-            aria-label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
+            aria-label={`${entry.forkChildCount} direct ${pluralize(entry.forkChildCount, "fork", "forks")}`}
           >
             <GitBranchPlus size={12} strokeWidth={2} aria-hidden="true" />
           </span>
@@ -759,6 +762,7 @@ export function SessionList({
   toolbarTopPadding = "default",
   hideEmptyToolbar = false,
   viewportRef,
+  viewportClassName = "",
   initialScrollOffset = 0,
   initialMeasurementsCache,
   onMeasurementsChange,
@@ -1042,7 +1046,11 @@ export function SessionList({
       <ScrollPane
         topEdgeFade
         viewportRef={assignVirtualViewportRef}
-        viewportClassName={cn("px-3", visibleCount === 0 && "[&>div]:h-full")}
+        viewportClassName={cn(
+          "px-3",
+          visibleCount === 0 && "[&>div]:h-full",
+          viewportClassName,
+        )}
       >
         {visibleCount === 0 ? (
           <EmptySessionList

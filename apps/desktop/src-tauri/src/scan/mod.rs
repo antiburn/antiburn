@@ -86,6 +86,7 @@
 //! the process.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -98,6 +99,7 @@ use antiburn_local::discovery::{
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::{home_dir, ignored_paths};
+use antiburn_local::platform::environment::{self, DiscoveryEnvironment};
 use antiburn_local::platform::git;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
@@ -1974,6 +1976,8 @@ async fn describe_with_gate(
     let mut changed = Vec::new();
     let mut list_changed = false;
     let mut gate = GateCounts::default();
+    #[cfg(not(test))]
+    let mut git_hold = GitHold::default();
     let mut read_completed = 0_usize;
     let mut read_total = total_logs;
     let mut read_done = 0_usize;
@@ -2055,25 +2059,18 @@ async fn describe_with_gate(
                         let cwd = cwd.to_string();
                         let mut record = record;
                         let mut changed_record = changed_record;
-                        let root =
-                            match repo_admission(&record, &cwd, include_non_repo_folders).await {
-                                RepoAdmission::Repository(root) => Some(root),
-                                RepoAdmission::InferredRepository(root) => {
-                                    record.cwd = Some(root.to_string_lossy().into_owned());
-                                    // Persist the new CWD, also for a reused record.
-                                    changed_record = true;
-                                    Some(root)
-                                }
-                                RepoAdmission::Folder => {
-                                    gate.folder += 1;
-                                    None
-                                }
-                                RepoAdmission::Rejected => {
-                                    gate.no_repo += 1;
-                                    rejected.push(record.key.clone());
-                                    continue;
-                                }
-                            };
+                        let admission =
+                            repo_admission(&record, &cwd, include_non_repo_folders).await;
+                        let ControlFlow::Continue(root) = apply_repo_admission(
+                            admission,
+                            &mut record,
+                            &mut changed_record,
+                            &mut gate,
+                            &mut rejected,
+                            &mut git_hold,
+                        ) else {
+                            continue;
+                        };
                         if let Some(root) = root {
                             let root = git::canonical_main_repo_root(&root).await;
                             // Apply the shared opt-out gate to both the working
@@ -2104,6 +2101,14 @@ async fn describe_with_gate(
                 Ok((DescribeOutcome::Skip, _)) | Err(_) => {}
             }
         }
+    }
+    #[cfg(not(test))]
+    if let Some(error) = &git_hold.error {
+        ::tracing::warn!(
+            event = "scan_git_unavailable",
+            sessions = git_hold.sessions,
+            error = %error,
+        );
     }
     if gate != GateCounts::default() {
         ::tracing::debug!(
@@ -2169,6 +2174,8 @@ enum RepoAdmission {
     Folder,
     /// No repository applies.
     Rejected,
+    /// Git cannot run, so the gate cannot decide. The string holds the error.
+    GitUnavailable(String),
 }
 
 /// Apply the repository scan gate to one session with the CWD `cwd`.
@@ -2183,7 +2190,7 @@ async fn repo_admission(
         // Only a CWD that Git reports as outside every repository can move
         // to a repository below it or stay as a folder.
         Ok(None) => {}
-        Err(_) => return RepoAdmission::Rejected,
+        Err(error) => return git_error_admission(&error, git_runs(cwd).await),
     }
     if record.source_kind == "file"
         && let Some(root) =
@@ -2197,6 +2204,79 @@ async fn repo_admission(
     } else {
         RepoAdmission::Rejected
     }
+}
+
+/// Sessions that the repository gate holds because Git cannot run.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct GitHold {
+    sessions: usize,
+    /// The first Git error of the pass.
+    error: Option<String>,
+}
+
+/// Apply one [`RepoAdmission`] to `record`.
+///
+/// `Continue` keeps the record, with the repository root to check against the
+/// opt-out list, if any. `Break` drops the record from this pass. A rejected
+/// record also goes into `rejected`, and the scan deletes its stored row. A
+/// held record does not: the scan keeps its stored row, if any, adds no new
+/// row, and admits the session on a later pass when Git runs again.
+fn apply_repo_admission(
+    admission: RepoAdmission,
+    record: &mut SessionRecord,
+    changed_record: &mut bool,
+    gate: &mut GateCounts,
+    rejected: &mut Vec<SessionKey>,
+    git_hold: &mut GitHold,
+) -> ControlFlow<(), Option<std::path::PathBuf>> {
+    match admission {
+        RepoAdmission::Repository(root) => ControlFlow::Continue(Some(root)),
+        RepoAdmission::InferredRepository(root) => {
+            record.cwd = Some(root.to_string_lossy().into_owned());
+            // Persist the new CWD, also for a reused record.
+            *changed_record = true;
+            ControlFlow::Continue(Some(root))
+        }
+        RepoAdmission::Folder => {
+            gate.folder += 1;
+            ControlFlow::Continue(None)
+        }
+        RepoAdmission::Rejected => {
+            gate.no_repo += 1;
+            rejected.push(record.key.clone());
+            ControlFlow::Break(())
+        }
+        RepoAdmission::GitUnavailable(error) => {
+            git_hold.sessions += 1;
+            git_hold.error.get_or_insert(error);
+            ControlFlow::Break(())
+        }
+    }
+}
+
+/// File a session when Git fails for its CWD. A Git that cannot run at all
+/// (for example, macOS blocks `/usr/bin/git` until the Xcode license is
+/// accepted) says nothing about the CWD, so the gate does not reject it.
+fn git_error_admission(error: &anyhow::Error, git_runs: bool) -> RepoAdmission {
+    if git_runs {
+        RepoAdmission::Rejected
+    } else {
+        RepoAdmission::GitUnavailable(format!("{error:#}"))
+    }
+}
+
+/// The environment that runs Git for `cwd`. This is the same selection that
+/// `git::repo_root_if_any_at` uses, so the probe tests the Git that failed.
+fn git_probe_environment(cwd: &std::path::Path) -> DiscoveryEnvironment {
+    environment::environment_from_mounted_path(cwd).unwrap_or_default()
+}
+
+/// True when `git --version` runs and succeeds in the environment for `cwd`.
+/// The probe does not pass `cwd` to Git, so a missing CWD cannot fail it.
+async fn git_runs(cwd: &std::path::Path) -> bool {
+    git::run_git_output_in_environment(&git_probe_environment(cwd), None, &["--version"], &[])
+        .await
+        .is_ok_and(|output| output.status.success())
 }
 
 /// Every session key `previous_records` already held, keyed the way

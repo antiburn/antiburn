@@ -1,9 +1,11 @@
+import { pluralize } from "./text"
 import type {
   ChecksCategoryPayload,
   ChecksReportPayload,
   SessionHygieneEvidenceState,
 } from "../insightsIpc"
 import type { SessionHygieneCheck } from "./sessionHygiene"
+import { smartCheckReviewPresentation } from "./smartCheckReview"
 
 type BurnCheckLifecycle =
   | "pending"
@@ -16,6 +18,7 @@ type BurnCheckLifecycle =
 
 export function checkHasProvisionalResult(category: ChecksCategoryPayload): boolean {
   return (
+    !smartCheckReviewPresentation(category).terminal &&
     category.checking === true &&
     category.finding === 0 &&
     category.lifecycle !== "failing" &&
@@ -183,8 +186,8 @@ function presentation(facts: PresentationFacts): BurnCheckPresentation {
     total === 0
       ? null
       : facts.scope === "sessionChecks"
-        ? `${total} session ${total === 1 ? "check" : "checks"}`
-        : `${total} report ${total === 1 ? "category" : "categories"}`
+        ? `${total} session ${pluralize(total, "check", "checks")}`
+        : `${total} report ${pluralize(total, "category", "categories")}`
   const details = [
     scopeDescription,
     breakdown.length > 0 ? breakdown.map((phrase) => phrase.text).join(", ") : null,
@@ -225,7 +228,7 @@ function sessionAccessibleDescription(
   counts: BurnCheckCounts,
 ): string {
   const assessed = counts.failed + counts.passed
-  const intro = `${assessed} session burn check${assessed === 1 ? "" : "s"}.`
+  const intro = `${assessed} session burn ${pluralize(assessed, "check", "checks")}.`
   const failedTitles = checks
     .filter((check) => check.status === "finding")
     .map((check) => sentenceCaseTitle(check.title))
@@ -282,7 +285,8 @@ export function aggregateBurnCheckPresentation(
 ): BurnCheckPresentation {
   const counts = report.categories.reduce<BurnCheckCounts>(
     (result, category) => {
-      if (category.lifecycle === "failing") result.failed += 1
+      if (smartCheckReviewPresentation(category).terminalLabel != null) result.unassessed += 1
+      else if (category.lifecycle === "failing") result.failed += 1
       else if (category.lifecycle === "passing") result.passed += 1
       else result.unassessed += 1
       return result

@@ -206,6 +206,12 @@ fn ignored_instruction_session_statuses_in(
                 && assessment_evaluator_revision.as_deref()
                     == Some(current_evaluator_revision.as_str());
             if current_assessment && assessment_status.as_deref() == Some("failed") {
+                if assessment_error_category.as_deref() == Some("no_candidates") {
+                    return Ok(ignored_session_status(
+                        crate::dto::SessionHygieneStatus::NoCandidates,
+                        Some("no_candidates"),
+                    ));
+                }
                 if assessment_error_category.as_deref() == Some("continuing") {
                     return Ok(ignored_session_status(
                         crate::dto::SessionHygieneStatus::Checking,
@@ -392,7 +398,7 @@ pub(crate) fn ignored_instruction_result_for(
                 AND check_id = ?4 AND incarnation = ?5 AND source_generation = ?6
                  AND source_fingerprint IS ?7 AND published_fence = ?8
                  AND status IN ('completed', 'failed', 'queued', 'running', 'superseded')
-                 AND result_revision IS NOT NULL",
+                 AND result_revision IS NOT NULL AND evaluator_revision = ?9",
             params![
                 identity.environment_key,
                 identity.agent,
@@ -402,6 +408,7 @@ pub(crate) fn ignored_instruction_result_for(
                 identity.source_generation,
                 identity.source_fingerprint,
                 identity.published_fence,
+                antiburn_local::analysis::ignored_instructions::evaluator_revision(),
             ],
             |row| {
                 Ok((
@@ -416,13 +423,13 @@ pub(crate) fn ignored_instruction_result_for(
     let Some((Some(revision), Some(result_json), input_revision, status)) = stored else {
         return Ok(None);
     };
-    let Ok(mut result) = serde_json::from_str::<
+    let Ok(result) = serde_json::from_str::<
         antiburn_local::analysis::ignored_instructions::AssessmentResult,
     >(&result_json) else {
         return Ok(None);
     };
     if result.input_revision != revision
-        || result.model_version != antiburn_local::analysis::ignored_instructions::ASSESSMENT_MODEL
+        || result.model_version.is_empty()
         || ignored_instruction_findings_for_evidence(evidence, &result).is_none()
     {
         return Ok(None);
@@ -433,15 +440,17 @@ pub(crate) fn ignored_instruction_result_for(
     {
         return Ok(None);
     }
-    for finding in &mut result.findings {
-        if !finding.decision_record().is_some_and(|decision| {
+    if result.findings.iter().any(|finding| {
+        !finding.decision_record().is_some_and(|decision| {
             decision.source_generation == identity.source_generation
+                && decision.evaluator_revision
+                    == antiburn_local::analysis::ignored_instructions::evaluator_revision()
                 && decision.source_fingerprint.as_deref() == identity.source_fingerprint
                 && decision.publication_fence == identity.published_fence
                 && decision.model == result.model_version
-        }) {
-            finding.decision = None;
-        }
+        })
+    }) {
+        return Ok(None);
     }
     Ok(Some(result))
 }
@@ -465,6 +474,7 @@ pub(crate) fn ignored_instruction_findings_for_evidence(
             if !seen.insert(finding.id.as_str()) {
                 return None;
             }
+            finding.decision_record()?;
             Finding::ignored_instruction(evidence, &result.input_revision, finding)
         })
         .collect()
@@ -527,25 +537,17 @@ pub(crate) fn ignored_result_has_scoped_no_issues(
     result: &antiburn_local::analysis::ignored_instructions::AssessmentResult,
     findings: &[Finding],
 ) -> bool {
-    let sampled = sampled_coverage(result);
     findings.is_empty()
-        && (sampled || result.coverage.unselected_pairs == 0)
+        && (result.coverage.unselected_pairs == 0 || sampled_coverage(result))
         && result.coverage.skipped_rules.is_empty()
         && result.coverage.skipped_actions.is_empty()
-        && (sampled || !result.coverage.processing_limit_reached)
-        && result.coverage.limitations.iter().all(|limit| {
-            sampled
-                && matches!(
-                    limit.as_str(),
-                    "sampled_candidate_selection"
-                        | "sampled_content_selection"
-                        | "assessment_candidate_limit"
-                )
+        && !result.coverage.processing_limit_reached
+        && result.coverage.limitations.iter().all(|limitation| {
+            sampled_coverage(result) && limitation == "sampled_candidate_selection"
         })
         && result.pending_rules.is_empty()
         && result.unassessed_comparisons.is_empty()
-        && (result.coverage.selected_comparisons > 0
-            || (result.coverage.eligible_rules == 0 && result.coverage.candidate_pairs == 0))
+        && result.coverage.selected_comparisons > 0
 }
 
 fn sampled_coverage(
@@ -709,12 +711,19 @@ mod tests {
     }
 
     #[test]
-    fn sampled_no_finding_is_ordinary_clean_after_the_bounded_pass() {
+    fn completed_samples_report_scoped_no_issues_but_empty_work_does_not() {
         let result = result();
         assert!(ignored_result_has_scoped_no_issues(&result, &[]));
         let restored: AssessmentResult =
             serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
         assert!(ignored_result_has_scoped_no_issues(&restored, &[]));
+        let mut empty = restored;
+        empty.coverage.eligible_rules = 0;
+        empty.coverage.candidate_pairs = 0;
+        empty.coverage.selected_comparisons = 0;
+        empty.coverage.unselected_pairs = 0;
+        empty.coverage.limitations.clear();
+        assert!(!ignored_result_has_scoped_no_issues(&empty, &[]));
     }
 
     #[test]
@@ -866,7 +875,7 @@ mod tests {
                     environment_key TEXT, agent TEXT, session_id TEXT, check_id TEXT,
                     incarnation INTEGER, source_generation INTEGER, source_fingerprint TEXT,
                     published_fence INTEGER, status TEXT, input_revision TEXT,
-                    result_revision TEXT, result_json TEXT);
+                     result_revision TEXT, result_json TEXT, evaluator_revision TEXT);
                  INSERT INTO session VALUES
                     ('native', 'claude-code', 'sampled', 1, 1, 'fingerprint', 120, NULL);",
             )
@@ -895,8 +904,11 @@ mod tests {
             .execute(
                 "INSERT INTO burn_check_assessment VALUES
                  ('native', 'claude-code', 'sampled', 'ignored_instructions',
-                  1, 1, 'fingerprint', 7, 'completed', 'synthetic', 'synthetic', ?1)",
-                [serde_json::to_string(&sampled).unwrap()],
+                   1, 1, 'fingerprint', 7, 'completed', 'synthetic', 'synthetic', ?1, ?2)",
+                params![
+                    serde_json::to_string(&sampled).unwrap(),
+                    antiburn_local::analysis::ignored_instructions::evaluator_revision()
+                ],
             )
             .unwrap();
         let request = ReportRequest {
