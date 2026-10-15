@@ -22,6 +22,7 @@ import {
   liveDetectionNote,
   liveErrorHasDocs,
   liveErrorNote,
+  liveFailureIsRecoverable,
   liveSourceAge,
   liveUnavailableReason,
   liveWindows,
@@ -284,7 +285,12 @@ function meterNote({
   // A reading and a failure can both be true — a figure from an earlier
   // check that the latest one could not replace — so the row keeps the
   // figure and its own check time, and adds why the latest check failed.
-  if (reading) {
+  // Only a new sign-in can recover this login. The meter does not show the
+  // last reading, so the row does not say "Signed in" either.
+  const signInLost =
+    failure?.category === "authentication" &&
+    !liveFailureIsRecoverable(failure.category, failure.detail)
+  if (reading && !signInLost) {
     const count = liveWindows(reading).length
     const line = `Signed in · ${count} ${pluralize(count, "limit", "limits")} tracked ${liveSourceAge(reading)}`
     return failure
@@ -294,7 +300,7 @@ function meterNote({
   if (failure) {
     // A rate limit is a provider answering — the sign-in worked.
     return failure.category === "rateLimited"
-      ? "Signed in · rate limited · retrying"
+      ? "Signed in · checking again soon"
       : liveErrorNote(failure.category, provider, failure.detail)
   }
   return liveDetectionNote(

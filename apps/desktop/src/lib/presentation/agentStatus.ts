@@ -57,7 +57,9 @@ export function agentStatus(
   if (login) notes.push(login)
 
   const signedInOrInstalled =
-    ownMeter?.detection === "signedIn" || ownMeter?.detection === "installedNotSignedIn"
+    ownMeter?.detection === "signedIn" ||
+    ownMeter?.detection === "signInRequired" ||
+    ownMeter?.detection === "installedNotSignedIn"
   const found = sessionsSeen > 0 || signedInOrInstalled || Boolean(desktopApp)
   const facts =
     sessionsSeen > 0 ? sessionCountLabel(sessionsSeen) : found ? "No sessions yet" : ""
@@ -69,6 +71,8 @@ function loginPart(meter: LiveUsageMeterPayload, desktopApp: boolean): string | 
   switch (meter.detection) {
     case "signedIn":
       return "Signed in"
+    case "signInRequired":
+      return "Need to sign in again"
     case "installedNotSignedIn":
       return desktopApp && meter.shown
         ? `Limits need ${liveToolName(meter)} signed in`

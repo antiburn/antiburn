@@ -152,6 +152,25 @@ pub trait LiveUsageSource: Send + Sync {
     fn analytics_diagnostic(&self) -> Option<AnalyticsDiagnostic> {
         None
     }
+
+    /// Take the login and refresh outcomes this source kept since the last
+    /// call, for anonymised analytics. Callers apply consent first.
+    #[cfg(feature = "analytics")]
+    fn take_login_observations(&self) -> Vec<LoginObservation> {
+        Vec::new()
+    }
+}
+
+/// One login or refresh outcome of a source, as fixed analytics values.
+///
+/// `label` is the outcome, for example `refreshed` or
+/// `keychain_metadata_failed`. `detail` is what started a refresh, for
+/// example `expired`. Neither contains a token, a path, or an account.
+#[cfg(feature = "analytics")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoginObservation {
+    pub label: &'static str,
+    pub detail: Option<&'static str>,
 }
 
 /// A provider diagnostic that can become a closed analytics event.
@@ -334,16 +353,8 @@ pub fn summarize_collected(
     utc_offset_minutes: i32,
 ) -> LiveUsageSummary {
     for meter in &mut meters {
-        if collected
-            .snapshots
-            .iter()
-            .any(|snapshot| snapshot.provider == meter.provider)
-            && !collected
-                .errors
-                .iter()
-                .any(|failure| failure.provider == meter.provider)
-        {
-            meter.detection = Detection::SignedIn;
+        if let Some(detection) = detection_from_outcome(&collected, &meter.provider) {
+            meter.detection = detection;
         }
     }
     let mut observed_tool_providers = Vec::new();
@@ -503,6 +514,34 @@ pub fn summarize_collected(
         meters,
         generated_at: crate::store::iso_from_epoch(Some(now)),
     }
+}
+
+/// The login state this pass proved for `provider`, when it proved one.
+///
+/// A reading without an error proves a usable login. A failure that only a
+/// new sign-in fixes proves [`Detection::SignInRequired`]: the login exists,
+/// but no refresh can recover it. [`SourceErrorDetail::NotSignedIn`] proves
+/// an install without a login. Every other outcome keeps the detection.
+fn detection_from_outcome(collected: &sources::Collected, provider: &str) -> Option<Detection> {
+    let mut failures = collected
+        .errors
+        .iter()
+        .filter(|failure| failure.provider == provider)
+        .peekable();
+    if failures.peek().is_none() {
+        return collected
+            .snapshots
+            .iter()
+            .any(|snapshot| snapshot.provider == provider)
+            .then_some(Detection::SignedIn);
+    }
+    failures.find_map(|failure| match failure.detail {
+        Some(SourceErrorDetail::SignInRequired | SourceErrorDetail::CliMissing) => {
+            Some(Detection::SignInRequired)
+        }
+        Some(SourceErrorDetail::NotSignedIn) => Some(Detection::InstalledNotSignedIn),
+        _ => None,
+    })
 }
 
 /// How far back [`window_samples`] looks for history: a weekly window plus
