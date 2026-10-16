@@ -2,8 +2,7 @@ import {
   cancelChecksReport,
   getChecksReport,
   onChecksReportChanged,
-  type BurnCheckDetectorId,
-  type ChecksCategoryPayload,
+  type CheckId,
   type ChecksReportPayload,
 } from "../../../lib/insightsIpc"
 import {
@@ -24,7 +23,12 @@ import {
 } from "../../../lib/ipc"
 import { getMainWindowVisible, onMainWindowVisibilityChanged } from "../../../lib/mainWindowIpc"
 import { agentDisplayName } from "../../../lib/presentation/agents"
-import { CHECK_LABELS } from "../../../lib/presentation/checkDefinitions"
+import { checkRows, checkLabel, type CheckRow } from "../../../lib/presentation/checkRows"
+import {
+  checkStatusFacts,
+  type CheckStatusFacts,
+} from "../../../lib/presentation/checkRowStatus"
+import { checkHasProvisionalResult } from "../../../lib/presentation/checkStatus"
 import { scanStatusStore } from "../../../lib/scanStatusStore"
 import type { DeferredPermissionDir } from "../../../lib/types/repository"
 import { withViewTransition } from "../../../lib/viewTransition"
@@ -80,10 +84,17 @@ interface ChecksStep {
 }
 
 export type FixStatus =
-  "needsFix" | "awaitingVerification" | "passing" | "notChecked" | "snoozed"
+  | "needsFix"
+  | "awaitingVerification"
+  | "passing"
+  | "checking"
+  | "error"
+  | "waiting"
+  | "notChecked"
+  | "snoozed"
 
-export interface FixCategory {
-  id: BurnCheckDetectorId
+export interface FixCategory extends CheckStatusFacts {
+  id: CheckId
   label: string
   status: FixStatus
   /** Hundredths of one percent; null when the check has no estimate. */
@@ -212,22 +223,29 @@ export function advanceLastPass(previous: LastPass, status: ScanStatus | null): 
   return { lastFound, lastRead }
 }
 
-function toFixCategory(category: ChecksCategoryPayload): FixCategory {
-  const status: FixStatus =
-    category.lifecycle === "failing"
+function toFixCategory(category: CheckRow): FixCategory {
+  const facts = checkStatusFacts(category)
+  const status: FixStatus = facts.terminalLabel
+    ? "notChecked"
+    : facts.lifecycle === "failing"
       ? "needsFix"
-      : category.lifecycle === "awaitingVerification"
+      : facts.lifecycle === "awaitingVerification"
         ? "awaitingVerification"
-        : category.lifecycle === "passing"
+        : facts.lifecycle === "passing" && !checkHasProvisionalResult(category)
           ? "passing"
-          : "notChecked"
+          : facts.checking
+            ? "checking"
+            : (facts.reviewFailed ?? 0) > 0
+              ? "error"
+              : (facts.waitingForDataCount ?? 0) > 0 || (facts.waitingForResultsCount ?? 0) > 0
+                ? "waiting"
+                : "notChecked"
   return {
+    ...facts,
     id: category.id,
-    label: CHECK_LABELS[category.id],
+    label: checkLabel(category),
     status,
     estimatedBurnBasisPoints: category.estimatedTokenBurnBasisPoints ?? null,
-    finding: category.finding,
-    clean: category.clean,
     agents: category.agents ?? [],
   }
 }
@@ -328,7 +346,9 @@ export function deriveOverviewProgress(
           deferredEvidence: inputs.checksReport?.deferredEvidence ?? 0,
         }
 
-  const categories = (inputs.checksReport?.categories ?? []).map(toFixCategory)
+  const categories = inputs.checksReport
+    ? checkRows(inputs.checksReport).map(toFixCategory)
+    : []
   const failingCount = categories.filter((category) => category.status === "needsFix").length
 
   return {
@@ -400,10 +420,15 @@ function recompute(): void {
 }
 
 /** Which result the finished check step shows, for `first_run_step_reached`. */
-function firstRunResult(progress: OverviewProgress): FirstRunResult {
+export function firstRunResult(progress: OverviewProgress): FirstRunResult {
   if (progress.checks.windowSessions === 0) return "empty"
   if (progress.categories.length === 0) return "checks_disabled"
-  return progress.failingCount === 0 ? "clean" : "fixes_found"
+  if (progress.categories.some((category) => category.finding > 0)) return "fixes_found"
+  return progress.categories.some(
+    (category) => category.status === "passing" && category.clean > 0,
+  )
+    ? "clean"
+    : "not_assessed"
 }
 
 // Report completed work once. Report the result only when its step opens.

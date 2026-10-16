@@ -511,6 +511,7 @@ mod insights {
                 "estimatedTokenBurnBasisPoints",
                 "estimatedTokenBurnBasisPointsByDetectorMask",
                 "evidenceSettled",
+                "installedChecks",
                 "pendingEvidence",
                 "smartChecksAvailable",
                 "windowSessions"

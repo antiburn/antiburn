@@ -19,6 +19,31 @@ use crate::discovery::source_version::{
 /// to hash on every resume without a noticeable read.
 pub const RESUME_TAIL_BYTES: u64 = 64 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeFileReadError {
+    Unsupported,
+    InvalidCursor,
+    SourceChanged,
+    Unavailable,
+    Cancelled,
+    ReadFailed,
+}
+
+impl std::fmt::Display for NativeFileReadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Unsupported => "unsupported native file contract",
+            Self::InvalidCursor => "invalid native file cursor",
+            Self::SourceChanged => "native file source changed",
+            Self::Unavailable => "native file source is unavailable",
+            Self::Cancelled => "native file read was cancelled",
+            Self::ReadFailed => "native file read failed",
+        })
+    }
+}
+
+impl std::error::Error for NativeFileReadError {}
+
 /// A verified point to resume a stream from: the byte offset already
 /// consumed, and a hash of the window before it.
 ///
@@ -118,6 +143,9 @@ impl PinnedSource {
         claim: SourceClaim,
         resume: &ResumePoint,
     ) -> anyhow::Result<PinnedOpen> {
+        if u64::from(resume.tail_len) != resume.offset.min(RESUME_TAIL_BYTES) {
+            return Ok(Err(SourceChangedReason::ResumeTailMismatch));
+        }
         let mut file = File::open(path)?;
         let stat = stat_from_handle(&file)?;
         if stat.identity != claim.identity {
@@ -241,6 +269,116 @@ impl PinnedSource {
             return Ok(Some(SourceChangedReason::FingerprintMismatch));
         }
         Ok(None)
+    }
+}
+
+/// Bounded anchors for native file delivery. They do not prove the omitted prefix.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeFileAnchor {
+    pub identity: Option<String>,
+    pub boundary: u64,
+    pub head: ResumePoint,
+    pub tail: ResumePoint,
+}
+
+pub(crate) struct NativeFileSource {
+    file: File,
+    identity: Option<String>,
+    pub size: u64,
+}
+
+impl NativeFileSource {
+    pub fn open(path: &Path, anchor: Option<&NativeFileAnchor>) -> anyhow::Result<Self> {
+        let mut source = Self {
+            file: File::open(path)?,
+            identity: None,
+            size: 0,
+        };
+        let stat = stat_from_handle(&source.file)?;
+        source.identity = stat.identity;
+        source.size = stat.size;
+        if let Some(anchor) = anchor {
+            anyhow::ensure!(
+                source.size >= anchor.boundary,
+                NativeFileReadError::SourceChanged
+            );
+            anyhow::ensure!(
+                source.identity == anchor.identity,
+                NativeFileReadError::SourceChanged
+            );
+            for point in [anchor.head, anchor.tail] {
+                anyhow::ensure!(
+                    u64::from(point.tail_len) == point.offset.min(RESUME_TAIL_BYTES)
+                        && point.offset <= source.size,
+                    NativeFileReadError::SourceChanged
+                );
+                anyhow::ensure!(
+                    source.point(point.offset)? == point,
+                    NativeFileReadError::SourceChanged
+                );
+            }
+        }
+        Ok(source)
+    }
+
+    pub fn read(&mut self, offset: u64, limit: u64) -> io::Result<Vec<u8>> {
+        self.file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = Vec::new();
+        self.file.by_ref().take(limit).read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    pub fn point(&mut self, offset: u64) -> anyhow::Result<ResumePoint> {
+        let tail_len = offset.min(RESUME_TAIL_BYTES);
+        let bytes = self.read(offset - tail_len, tail_len)?;
+        anyhow::ensure!(
+            bytes.len() as u64 == tail_len,
+            NativeFileReadError::SourceChanged
+        );
+        Ok(ResumePoint {
+            offset,
+            tail_len: tail_len as u32,
+            tail_hash: head_hash_of(&bytes),
+        })
+    }
+
+    pub fn anchor(&mut self, head_offset: u64, offset: u64) -> anyhow::Result<NativeFileAnchor> {
+        Ok(NativeFileAnchor {
+            identity: self.identity.clone(),
+            boundary: self.size,
+            head: self.point(head_offset)?,
+            tail: self.point(offset)?,
+        })
+    }
+
+    pub fn recheck(
+        &mut self,
+        path: &Path,
+        anchor: &NativeFileAnchor,
+        offset: u64,
+        bytes: &[u8],
+    ) -> anyhow::Result<()> {
+        let current = SourceStat::from_open_std_file(&File::open(path)?)
+            .ok_or_else(|| anyhow::anyhow!("native file metadata is unavailable"))?;
+        anyhow::ensure!(
+            current.identity == self.identity,
+            NativeFileReadError::SourceChanged
+        );
+        anyhow::ensure!(
+            current.size >= self.size,
+            NativeFileReadError::SourceChanged
+        );
+        for point in [anchor.head, anchor.tail] {
+            anyhow::ensure!(
+                self.point(point.offset)? == point,
+                NativeFileReadError::SourceChanged
+            );
+        }
+        anyhow::ensure!(
+            self.read(offset, bytes.len() as u64)? == bytes,
+            NativeFileReadError::SourceChanged
+        );
+        Ok(())
     }
 }
 

@@ -1,6 +1,10 @@
-import { BookOpen, type LucideIcon } from "lucide-react"
+import { BookOpen, CircleCheck, type LucideIcon } from "lucide-react"
 
-import type { BurnCheckDetectorId } from "../../../lib/insightsIpc"
+import {
+  isInstalledCheckId,
+  type BurnCheckDetectorId,
+  type CheckId,
+} from "../../../lib/insightsIpc"
 import { CHECK_UI } from "../../checks/checkPresentation"
 
 interface CheckCategoryAppearance {
@@ -40,7 +44,8 @@ const CHECK_CATEGORY_APPEARANCE: Record<BurnCheckDetectorId, CheckCategoryAppear
 }
 
 /** The check's colour as a CSS value, for a tint that matches its icon. */
-export function burnCheckCategoryColor(detector: BurnCheckDetectorId): string {
+export function burnCheckCategoryColor(detector: CheckId): string {
+  if (isInstalledCheckId(detector)) return "var(--color-label-secondary)"
   return `var(--color-${CHECK_CATEGORY_APPEARANCE[detector].className.replace(/^text-/, "")})`
 }
 
@@ -49,10 +54,12 @@ export function BurnCheckCategoryIcon({
   detector,
   bare = false,
 }: {
-  detector: BurnCheckDetectorId
+  detector: CheckId
   bare?: boolean
 }) {
-  const { Icon, className } = CHECK_CATEGORY_APPEARANCE[detector]
+  const { Icon, className } = isInstalledCheckId(detector)
+    ? { Icon: CircleCheck, className: "text-label-secondary" }
+    : CHECK_CATEGORY_APPEARANCE[detector]
 
   return (
     <span

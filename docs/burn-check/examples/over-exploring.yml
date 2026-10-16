@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=../schemas/burn-check.schema.json
+# This example judges selected results, not all exploration.
+name: Over-exploring
+description: Detect read and search work that is unrelated to the user's task.
+on:
+  tool_result:
+    tools: [read, search]
+    status: [completed]
+  window:
+    size: 20
+    min: 10
+  cooldown: 120s
+decisions:
+  review:
+    model: typesafe/jev-1.13.0
+    input:
+      requests: ${{ session.requests }}
+      activity: ${{ window.messages }}
+    output:
+      assessment:
+        type: choice
+        question: >-
+          Do the selected reads and searches clearly serve a separate purpose
+          from the user's task, without a plausible supporting relationship?
+          Dependencies, tests, and verification can be useful. A path, import,
+          read count, or unexplained connection alone does not prove waste.
+          Choose uncertain when the purpose or relevance is unclear. Judge only
+          the selected results and requests.
+        criteria:
+          likely_excess: The selected records show a separate purpose without a useful task connection.
+          justified_or_minor: The investigation plausibly supports the task or adds little work.
+          uncertain: The selected records do not establish purpose or relevance.
+actions:
+  - type: status
+    if: decisions.review.outputs.assessment == 'likely_excess' && decisions.review.details.assessment.probabilities.likely_excess >= 0.95
+    input:
+      result: failure
+      message: The selected activity may include investigation unrelated to your task.
+  - type: status
+    if: decisions.review.outputs.assessment == 'justified_or_minor' && decisions.review.details.assessment.probabilities.justified_or_minor >= 0.95
+    input:
+      result: success

@@ -24,8 +24,8 @@ test("runs workspaces in the registry order, whatever the input order", () => {
   });
   const order = [...new Set(plan.steps.map((step) => step.workspace))];
   assert.deepEqual(order, ALL_IDS);
-  assert.equal(order[0], "engine");
-  assert.equal(order[2], "shell");
+  assert.equal(order[0], "checks");
+  assert.equal(order[3], "shell");
   assert.deepEqual(plan.skipped, []);
 });
 

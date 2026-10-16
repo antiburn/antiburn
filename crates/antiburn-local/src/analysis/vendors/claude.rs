@@ -24,7 +24,9 @@ use crate::analysis::initial_context::{ClaudeContextAccumulator, parse_markdown_
 use crate::analysis::interface::{
     ContextSourceKind, ContextWindowSource, EvidenceObservation, NormalizedRecord, RawSource,
     RecordSink, ResumedVisit, SessionCollector, SessionInput, SessionReader, SessionSummary,
-    TurnContent, VisitOutcome,
+    ToolResultChange, ToolResultCompleteness, ToolResultObservation, ToolResultPosition,
+    ToolResultStatus, TurnContent, UserMessage, UserMessageChange, UserMessageCompleteness,
+    UserMessageOrigin, UserMessagePart, UserMessagePosition, UserMessageScope, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall, Usage};
 use crate::analysis::records::{
@@ -583,6 +585,8 @@ fn collect_record_uuids(reader: impl BufRead) -> HashSet<String> {
 
 pub struct ClaudeSessionReader;
 
+pub(crate) mod live;
+
 impl SessionReader for ClaudeSessionReader {
     fn agent(&self) -> &'static str {
         "claude"
@@ -795,8 +799,12 @@ impl ClaudeSessionReader {
             };
             let mut initial_state: ClaudeStreamState = postcard::from_bytes(&resume.adapter.0)
                 .context("decoding Claude adapter snapshot")?;
+            initial_state.session_id = input.session_id.clone();
+            initial_state.source_format =
+                input.source_format_or(crate::analysis::SourceFormat::ClaudeJsonl);
             if !is_root_input(input) {
                 initial_state.retained_root.invalidate();
+                initial_state.user_message_root.invalidate();
             }
             let state = self.visit_reader(
                 BufReader::new(pinned.reader_from(resume.resume.offset, u64::MAX)),
@@ -847,11 +855,14 @@ impl ClaudeSessionReader {
         let mut reader = BoundedJsonlReader::new(reader);
 
         while let Some(record) = reader.next_record(cancel) {
+            let record_index = state.record_offset;
+            state.record_offset = state.record_offset.saturating_add(1);
             match record {
                 FramedRecord::Skipped(skip) => match skip {
                     RecordSkip::Oversized { .. } | RecordSkip::IncompleteTail { .. } => {
                         state.scope.invalidate();
                         state.retained_root.invalidate();
+                        state.user_message_root.invalidate();
                         sink.record(NormalizedRecord::Unusable(skip.partial_reason()));
                     }
                     RecordSkip::ReadFailed { index, kind } => {
@@ -862,11 +873,13 @@ impl ClaudeSessionReader {
                     }
                 },
                 FramedRecord::Complete { bytes, .. } => {
+                    let index = record_index;
                     let record = std::str::from_utf8(bytes)
                         .context("Claude transcript record is not valid UTF-8")?;
                     let Ok(value) = serde_json::from_str::<Value>(record) else {
                         state.scope.invalidate();
                         state.retained_root.invalidate();
+                        state.user_message_root.invalidate();
                         sink.record(NormalizedRecord::Unusable(
                             crate::analysis::framing::PartialReason::MalformedRecord,
                         ));
@@ -886,6 +899,7 @@ impl ClaudeSessionReader {
                         && !state.seen_uuids.insert(uuid)
                     {
                         state.retained_root.check_replay(&value);
+                        state.user_message_root.check_replay(&value);
                         sink.record(NormalizedRecord::Observation(Box::new(
                             EvidenceObservation::ReplayedRecord,
                         )));
@@ -907,6 +921,7 @@ impl ClaudeSessionReader {
                         .is_some_and(|uuid| replayed_uuids.contains(&uuid))
                     {
                         state.retained_root.invalidate();
+                        state.user_message_root.invalidate();
                         if let Some(link) = thread_link_observation(&value) {
                             sink.record(NormalizedRecord::Observation(Box::new(link)));
                         }
@@ -936,6 +951,11 @@ impl ClaudeSessionReader {
 
                     state.scope.observe_record(&value);
                     state.retained_root.observe(&value);
+                    state.user_message_root.observe_user_slot(&value);
+                    if state.user_message_root.admits(&state.session_id) {
+                        emit_user_message(&value, index, &state.session_id, sink);
+                    }
+                    state.capture_native_tool_results(&value, index, sink);
 
                     // Emit the API-error observation before `observe_model`
                     // runs below, so the incident's model comes from the
@@ -1082,10 +1102,68 @@ impl ClaudeSessionReader {
     }
 }
 
+fn emit_user_message(
+    record: &Value,
+    record_index: u64,
+    session_id: &str,
+    sink: &mut dyn RecordSink,
+) {
+    if !retained_root::is_user_content(record) {
+        return;
+    }
+    let texts: Vec<&str> = match &record["message"]["content"] {
+        Value::String(text) => vec![text],
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|block| block["text"].as_str())
+            .collect(),
+        _ => return,
+    };
+    let content = texts
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| {
+            Some(UserMessagePart {
+                item_index: u32::try_from(index).ok()?,
+                native_part_id: None,
+                text: text.to_owned(),
+            })
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(parts) = content else {
+        sink.tool_result_gap();
+        return;
+    };
+    let request = UserMessage {
+        source_format: crate::analysis::SourceFormat::ClaudeJsonl,
+        session_id: session_id.to_owned(),
+        message_id: record["uuid"]
+            .as_str()
+            .expect("admitted record identity")
+            .to_owned(),
+        position: UserMessagePosition::Jsonl { record_index },
+        origin: UserMessageOrigin::ClaudeUserContent,
+        scope: UserMessageScope::MainSession,
+        change: UserMessageChange::Present,
+        completeness: UserMessageCompleteness::Complete,
+        parts,
+        proof_revision: 2,
+    };
+    if request.is_bounded() {
+        sink.user_message(request);
+    } else {
+        sink.tool_result_gap();
+    }
+}
+
+const MAX_NATIVE_TOOL_CALLS: usize = 4096;
+const MAX_NATIVE_TOOL_CALL_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 struct ClaudeStreamState {
     scope: scope::ClaudeScopeState,
     retained_root: retained_root::ClaudeRetainedRoot,
+    user_message_root: retained_root::ClaudeRetainedRoot,
     #[serde(default)]
     tool_identities: crate::analysis::tool_identity::ToolIdentityMap,
     max_usage_by_message_id: HashMap<String, Usage>,
@@ -1105,15 +1183,157 @@ struct ClaudeStreamState {
     /// 16 bytes plus hash overhead per uuid-bearing record, kept for the
     /// life of the stream and carried in the resume snapshot.
     seen_uuids: HashSet<u128>,
+    #[serde(default)]
+    session_id: String,
+    #[serde(default)]
+    source_format: crate::analysis::SourceFormat,
+    #[serde(default)]
+    native_calls: HashMap<String, Option<ClaudeNativeCall>>,
+    #[serde(default)]
+    native_call_bytes: usize,
+    record_offset: u64,
 }
 
 impl ClaudeStreamState {
     fn for_input(input: &SessionInput) -> Self {
-        let mut state = Self::default();
+        let mut state = Self {
+            user_message_root: retained_root::ClaudeRetainedRoot::for_user_slot(),
+            session_id: input.session_id.clone(),
+            source_format: input.source_format_or(crate::analysis::SourceFormat::ClaudeJsonl),
+            ..Self::default()
+        };
         if !is_root_input(input) {
             state.retained_root.invalidate();
+            state.user_message_root.invalidate();
         }
         state
+    }
+
+    fn capture_native_tool_results(
+        &mut self,
+        record: &Value,
+        record_index: u64,
+        sink: &mut dyn RecordSink,
+    ) {
+        let Some(blocks) = record.pointer("/message/content").and_then(Value::as_array) else {
+            return;
+        };
+        let record_type = record["type"].as_str();
+        for (item_index, block) in blocks.iter().enumerate() {
+            match block["type"].as_str() {
+                Some("tool_use") if record_type == Some("assistant") => {
+                    let (Some(call_id), Some(name)) = (
+                        block["id"].as_str().filter(|id| !id.is_empty()),
+                        block["name"].as_str().filter(|name| !name.is_empty()),
+                    ) else {
+                        continue;
+                    };
+                    if let Some(existing) = self.native_calls.get_mut(call_id) {
+                        if let Some(call) = existing.take() {
+                            self.native_call_bytes =
+                                self.native_call_bytes.saturating_sub(call.retained_bytes);
+                        }
+                        continue;
+                    }
+                    if self.native_calls.len() >= MAX_NATIVE_TOOL_CALLS {
+                        continue;
+                    }
+                    let record_id = record["uuid"].as_str().map(str::to_owned);
+                    let arguments = block
+                        .get("input")
+                        .filter(|value| value.is_object())
+                        .and_then(|value| serde_json::to_string(value).ok());
+                    let retained_bytes = name.len()
+                        + record_id.as_ref().map_or(0, String::len)
+                        + arguments.as_ref().map_or(0, String::len);
+                    let total_bytes = call_id.len().saturating_add(retained_bytes);
+                    if total_bytes
+                        > MAX_NATIVE_TOOL_CALL_BYTES.saturating_sub(self.native_call_bytes)
+                    {
+                        continue;
+                    }
+                    self.native_call_bytes += total_bytes;
+                    self.native_calls.insert(
+                        call_id.to_owned(),
+                        Some(ClaudeNativeCall {
+                            record_id,
+                            name: name.to_owned(),
+                            arguments,
+                            retained_bytes,
+                        }),
+                    );
+                }
+                Some("tool_result") if record_type == Some("user") => {
+                    let call_id = block["tool_use_id"]
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_owned);
+                    let parent_id = record["parentUuid"].as_str();
+                    let linked = call_id
+                        .as_deref()
+                        .and_then(|id| self.native_calls.get(id))
+                        .and_then(Option::as_ref)
+                        .filter(|call| {
+                            call.record_id.as_deref().is_some()
+                                && call.record_id.as_deref() == parent_id
+                        });
+                    let (content, content_complete) = claude_result_content(block.get("content"));
+                    let status = match block.get("is_error").and_then(Value::as_bool) {
+                        Some(true) => ToolResultStatus::Error,
+                        Some(false) => ToolResultStatus::Success,
+                        None => ToolResultStatus::Unknown,
+                    };
+                    let complete = record["uuid"].as_str().is_some()
+                        && call_id.is_some()
+                        && linked.is_some()
+                        && linked.is_some_and(|call| call.arguments.is_some())
+                        && content_complete;
+                    let arguments = linked
+                        .and_then(|call| call.arguments.as_deref())
+                        .and_then(|arguments| serde_json::from_str(arguments).ok());
+                    sink.record(NormalizedRecord::ToolResult(Box::new(
+                        ToolResultObservation {
+                            context: Some(crate::analysis::ToolResultContext::pending(
+                                ToolResultPosition::Jsonl {
+                                    record_index,
+                                    item_index: u32::try_from(item_index).unwrap_or(u32::MAX),
+                                },
+                                self.user_message_root.admits(&self.session_id),
+                            )),
+                            source_format: self.source_format,
+                            session_id: self.session_id.clone(),
+                            record_id: record["uuid"].as_str().map(str::to_owned),
+                            call_id,
+                            result_id: block["id"].as_str().map(str::to_owned),
+                            position: ToolResultPosition::Jsonl {
+                                record_index,
+                                item_index: u32::try_from(item_index).unwrap_or(u32::MAX),
+                            },
+                            revision: 1,
+                            change: ToolResultChange::Update,
+                            tool_name: linked.map(|call| call.name.clone()),
+                            tool_category: linked.map(|call| {
+                                crate::analysis::records::tool_call_from_input(
+                                    &call.name,
+                                    arguments.as_ref(),
+                                )
+                                .category
+                            }),
+                            arguments,
+                            content,
+                            status,
+                            finality: true,
+                            completeness: if complete {
+                                ToolResultCompleteness::Complete
+                            } else {
+                                ToolResultCompleteness::Incomplete
+                            },
+                        },
+                    )));
+                }
+                _ => {}
+            }
+        }
     }
 
     fn dedup_usage(&mut self, event: &mut NormalizedEvent) {
@@ -1223,6 +1443,37 @@ impl ClaudeStreamState {
             initial_context,
             skill_descriptions,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ClaudeNativeCall {
+    record_id: Option<String>,
+    name: String,
+    arguments: Option<String>,
+    retained_bytes: usize,
+}
+
+fn claude_result_content(content: Option<&Value>) -> (Option<String>, bool) {
+    match content {
+        Some(Value::String(text)) => (Some(text.clone()), true),
+        Some(Value::Array(blocks)) => {
+            let mut text = String::new();
+            let mut complete = true;
+            for block in blocks {
+                if block["type"].as_str() == Some("text") {
+                    if let Some(part) = block["text"].as_str() {
+                        text.push_str(part);
+                    } else {
+                        complete = false;
+                    }
+                } else {
+                    complete = false;
+                }
+            }
+            (Some(text), complete)
+        }
+        _ => (None, false),
     }
 }
 
@@ -1377,6 +1628,37 @@ mod tests {
         r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"second"}]}}"#,
         "\n",
     );
+
+    #[test]
+    fn native_tool_call_state_is_bounded_and_duplicate_ids_become_ambiguous() {
+        struct Discard;
+        impl RecordSink for Discard {
+            fn record(&mut self, _record: NormalizedRecord) {}
+            fn finish(&mut self, _summary: SessionSummary) {}
+        }
+
+        let mut state = ClaudeStreamState::default();
+        let mut sink = Discard;
+        for index in 0..MAX_NATIVE_TOOL_CALLS + 1 {
+            let record = serde_json::json!({
+                "type":"assistant", "uuid":format!("message-{index}"),
+                "message":{"content":[{"type":"tool_use","id":format!("call-{index}"),
+                    "name":"Bash","input":{"command":"true"}}]}
+            });
+            state.capture_native_tool_results(&record, index as u64, &mut sink);
+        }
+        assert_eq!(state.native_calls.len(), MAX_NATIVE_TOOL_CALLS);
+        assert!(state.native_call_bytes <= MAX_NATIVE_TOOL_CALL_BYTES);
+
+        let duplicate = serde_json::json!({
+            "type":"assistant", "uuid":"message-duplicate",
+            "message":{"content":[{"type":"tool_use","id":"call-0",
+                "name":"Bash","input":{"command":"false"}}]}
+        });
+        state.capture_native_tool_results(&duplicate, 5000, &mut sink);
+        assert!(state.native_calls["call-0"].is_none());
+        assert!(state.native_call_bytes <= MAX_NATIVE_TOOL_CALL_BYTES);
+    }
 
     fn file_input(path: &Path) -> SessionInput {
         SessionInput {
@@ -1555,6 +1837,12 @@ mod tests {
                 resume: EvidenceResumeState::default(),
             },
             next_turn_index: 0,
+            tool_result_observations_json: Vec::new(),
+            native_tool_result_conflicts: Vec::new(),
+            tool_result_observations_complete: true,
+            user_messages_json: Vec::new(),
+            user_message_conflicts: Vec::new(),
+            user_messages_complete: true,
         }
     }
 
@@ -1891,6 +2179,7 @@ mod tests {
             match record {
                 NormalizedRecord::MetricsEvent(event) => self.events.push(*event),
                 NormalizedRecord::TurnContent(_) => self.turn_contents += 1,
+                NormalizedRecord::ToolResult(_) => {}
                 NormalizedRecord::Observation(observation) => {
                     if matches!(*observation, EvidenceObservation::ReplayedRecord) {
                         self.replayed_records += 1;

@@ -1,8 +1,8 @@
 # Privacy policy
 
-Effective: 7 October 2026
+Effective: 15 October 2026
 
-This policy explains first-party analytics and optional Smart Burn Check assessment
+This policy explains first-party analytics and optional model-based Burn Check assessment
 requests sent by the antiburn desktop application.
 Antiburn is operated by **Cadence AI (Vic) Pty Ltd** ("we", "us"). Contact us
 at [support@teamcadence.ai](mailto:support@teamcadence.ai).
@@ -14,92 +14,46 @@ its session index locally. Ordinary session analysis does not upload sessions,
 transcripts, prompts, messages, titles, source code, filenames, paths,
 repository or branch names, working directories, token counts, or costs.
 
-If you enable Smart Burn Checks with a configured provider connection,
-Ignored Instructions sends selected instruction text, assistant text
-excerpts, Bash command input, file-edit paths, read-file paths, search queries
-with scope filters, and other-tool inputs to that provider to assess whether
-instructions were followed. Bash input is the recorded command request, so
-inline scripts, heredocs, and patches included in that command can be sent too.
-Dedicated edit-tool content is excluded; valid OpenCode `apply_patch`
-`patchText` can expose edit paths. Selected user text and Bash output can also
-be sent as bounded context. Accepted human text needs exact source/history/range
-proof. Bash results need a unique matching earlier selected command, exact
-source/thread/scope/call/name/range/digest bindings, and completed or error status.
-Unknown-origin or synthetic text, skill documents, unmatched or truncated results,
-and completion labels alone cannot establish approval or passing tests. Read
-output, search output, other tool results, typed question/plan fields, and private
-thinking stay excluded from this check. Current
-global and project instruction snapshots are comparison inputs, not proof of
-what was active during an older session. Selected paths stay on your computer
-during local analysis, but can leave it in provider requests. Assistant text,
-commands, and other-tool inputs can contain private work content, source code,
-and credentials.
-Jev sends requests to TypeSafe. Ollama, Cloudflare, and Custom send each check's
-selected fields to the configured endpoint. Local Ollama stays on this computer;
-remote Ollama is a remote destination. Each recipient processes requests under
-its own terms, and usage charges can apply. Credentials authenticate
-those requests; they are not part of Antiburn analytics. New activity is checked
-after three minutes of inactivity. Pausing checks keeps saved connections but stops new checks;
-removing a credential is a separate action. Saved connections retain their
-settings when switched. Credentials use native credential storage or memory,
-not the session database. In the Checks step settings, you can choose future sessions only, the last
-7 days, or the last 30 days, then start a check for that period. Historical
-checks send the same selected instruction text and session fields and can
-incur provider usage charges. Pause checks to stop new assessments across all
-connections. Individual check preferences also gate automatic work and explicit
-history requests. Newly introduced checks start off until enabled. Disabling a
-check retains completed local results and incurred usage. Past requests cannot
-be withdrawn from their recipient.
+If you enable **Model-based Checks** in **Settings → Checks**, authored YAML
+definitions can review new local session activity through Jev. **Decision model**
+exposes Jev only. Requests go to TypeSafe and contain the definition's selected
+tool arguments, results, and available user-slot text, not full transcripts.
+These fields can contain private work content, source code, paths, or credentials.
+Private thinking is excluded. User-slot text can include API, extension, or
+synthetic input; it does not prove human approval. Partial history, truncated
+text, and missing fields are identified as quality limits. Missing images are
+not analyzed. See the [supported subset](burn-check/authoring.md#supported-subset)
+and [session coverage](session-coverage.md#burn-check-source-facts).
 
-Scope Creep, Over-exploring, and Skill Opportunities use the shared setting and model
-connection for pinned native Claude Code, Codex, OpenCode SQLite, and Pi sessions.
-Their selected inputs
-can include recorded user task context, supporting work, read requests and
-results, supported question/plan records, current skill names, selected skill
-reference text, and recorded skill-use and time limits. A valid nonempty skill
-description is the only reference text sent. If the description is missing,
-null, or blank, or the file is plain Markdown, selected chunks of the full
-Markdown can be sent instead, including its frontmatter and body. Invalid YAML
-and non-string descriptions remain unsupported. Fallback chunks carry byte
-ranges and a partial flag; they do not claim complete file coverage. This rule
-also applies to known used skills. Work evidence can
-include edit content, command, read, search, and other tool inputs/results where
-the check selects them. Skill selection does not prove execution or past visibility.
-Private thinking is excluded. Selected text and paths can contain private data.
-These are bounded check-specific fields and reference inputs, not an upload of
-all transcripts. Source and completeness limits are in [session coverage](session-coverage.md).
-These provider requests remain separate from first-party analytics.
+TypeSafe processes these requests under its own terms, and usage charges can
+apply. Provider requests and authentication credentials are separate from
+first-party analytics. Credentials use native credential storage or memory,
+not the session database. Turning off Model-based Checks stops new discovery
+and activation while retaining saved connections and local results. Removing a
+credential is a separate action. Past requests cannot be withdrawn from their
+recipient.
 
-Antiburn keeps local assessment progress and compatible answers so a restart or
-session append can reuse completed work. A changed action, instruction snapshot,
-selection, question, or model can require new paid work. A timeout or cancelled
-request after dispatch can have an unknown billing outcome. Antiburn can make up
-to three total dispatch attempts while it tries to recover an unknown result.
-Earlier dispatched attempts may have incurred charges. If the result remains
-unknown after those attempts, Antiburn blocks further dispatch for that work.
-It cannot determine whether a provider charged an earlier attempt. For a finding, Antiburn
-also keeps bounded excerpts of the
-instruction and action used for that comparison so the example remains visible
-if the session changes. These excerpts stay local and are removed with the
-session or local assessment data. Request bounds and usage reservations limit
-local admission, not the total cost of a long session or repeated revisions. Settings shows
-estimated usage, not a spending cap or provider invoice.
+Built-in Ignored Instructions, Scope Creep, Over-exploring, and Skill Opportunities
+execution and historical enrollment are suspended. Their saved results,
+preferences, and compatible evidence remain stored. Saved Ollama, Cloudflare,
+and Custom profiles and retained provider code do not make these routes
+selectable for YAML checks. The native past-session control does not replay
+YAML definitions. Developer replay is an explicit, isolated diagnostic.
 
-The worker compares supported instruction files as they exist now. Changes to
-these files govern future agent actions; an explicit history run can also
-compare older actions to today's rules without claiming they applied then. A
-matching current path does not prove that the file had the same text, or was
-active, when the session action occurred. Historical instruction text remains
-unavailable
-unless a supported authoritative session record contains it; a read-file path
-alone is not that record. A Clean label means no finding in the selected
-review, not that every action was checked or that historical instruction
-activation was proven. Priority selection may leave lower-priority work
-unchecked. Missing historical evidence cannot prove what governed an older
-action. New session actions can be reviewed after an append while compatible
-earlier judgments are reused; this can cause additional paid requests. About
-60 seconds after worker start for an ordinary assessment is a goal, not a
-guarantee.
+Antiburn keeps local assessment progress, frozen selected input, answers, and
+status provenance for recovery. Compatible accepted answers can be reused without
+another provider call. Changed definitions or selected evidence can require new
+paid work. A timeout or cancellation after sending can have an unknown delivery
+and billing outcome; unknown delivery does not permit automatic resend. An
+earlier attempt may have incurred a charge. Request bounds and usage reservations
+limit local admission, not the total cost of a long session or repeated revisions.
+Settings shows estimated usage, not a spending cap or provider invoice.
+
+Explicit success covers the assessed work, not a repaired or clean whole session.
+Current instruction files do not prove historical activation, and current skill
+inventory does not prove historical availability or whole-session non-use. Saved
+built-in findings retain their original evidence limits; see the
+[retained built-in contract](smart-burn-checks.md).
 
 Antiburn keeps bounded local totals for confirmed TypeSafe token usage, calls,
 cache reuse, and unknown request outcomes. The totals include the model and price
@@ -174,11 +128,14 @@ I/O transfer bytes, not physical disk traffic. An unavailable measurement is not
 reported as zero, and the highest memory band is a sampled maximum rather than a
 true peak.
 
-For all four Smart Burn Checks, first-party analytics can report the fixed check
+The retained four-check event schema can report the fixed check
 category, published finding/clean/abstained/failed outcome, visible finding,
 evidence outcome, and prompt preparation/copy outcome. Provider setup and explicit
 tests report only `jev`, `ollama`, `cloudflare`, or `custom` and fixed outcomes.
-These events contain fixed status words only. They contain no endpoint, model,
+Built-in execution is suspended, so schema acceptance does not prove new
+assessment events. Saved-result interactions remain separate. YAML definitions
+do not map arbitrary check identities into these events. These events contain
+fixed status words only. They contain no endpoint, model,
 instruction text,
 session excerpt, finding details, prompt, API key, path, or session identifier.
 The separate provider assessment request is not a first-party analytics event.

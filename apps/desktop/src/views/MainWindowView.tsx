@@ -3,7 +3,7 @@ import { useState, useSyncExternalStore, type ReactNode } from "react"
 import { flushSync } from "react-dom"
 
 import { SidebarNav, type SidebarNavItem } from "../components/ui/SidebarNav"
-import type { BurnCheckDetectorId } from "../lib/insightsIpc"
+import type { CheckId } from "../lib/insightsIpc"
 import { noteInteraction, openSettingsWindow } from "../lib/ipc"
 import { memoryCountStore } from "../lib/memoryCountStore"
 import { MAIN_VIEWS, isMainViewId, type MainViewId } from "../lib/navigation/mainViews"
@@ -107,7 +107,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   // and a future embedding) keeps its own panes and is never gated.
   const takeoverActive = !sections && overview.mode === "firstRun" && overview.flow !== "done"
   // The fixes step's Enhance: Burn Checks, at the first check that needs a fix.
-  const openChecks = (check: BurnCheckDetectorId | undefined) =>
+  const openChecks = (check: CheckId | undefined) =>
     navigationSession.navigate(
       check ? { section: "burnChecks", check } : { section: "burnChecks" },
     )
@@ -250,7 +250,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     if (target.kind === "setting") {
       const destination = resolveSettingsSearchTarget(target)
       await openSettingsWindow(destination.pane, destination.control)
-    } else if (target.kind === "check")
+    } else if (target.kind === "check" || target.kind === "installedCheck")
       navigationSession.navigate({ section: "burnChecks", check: target.check })
     else {
       flushSync(() => {
@@ -269,7 +269,10 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
       })
       document.getElementById(`${target.section}-panel`)?.focus({ preventScroll: true })
     }
-    noteInteraction({ kind: "appSearchResultOpened", category: target.kind })
+    noteInteraction({
+      kind: "appSearchResultOpened",
+      category: target.kind === "installedCheck" ? "check" : target.kind,
+    })
   }
   return (
     <>

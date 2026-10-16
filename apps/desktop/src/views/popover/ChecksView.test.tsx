@@ -38,6 +38,7 @@ const wins = [
 ]
 
 const presentation: ChecksPresentation = {
+  checking: [],
   activeAssessed: [failure, ...wins],
   activeUnavailable: [],
   snoozed: [],
@@ -126,6 +127,7 @@ describe("Checks", () => {
   it("uses failure, pass, and neutral border tones from assessed outcomes", () => {
     const passedCategory = category("sessionsOverDepth")
     const passedPresentation: ChecksPresentation = {
+      checking: [],
       activeAssessed: [passedCategory],
       activeUnavailable: [],
       snoozed: [],
@@ -163,6 +165,7 @@ describe("Checks", () => {
       estimatedTokenBurnBasisPoints: null,
     })
     const unassessedPresentation: ChecksPresentation = {
+      checking: [],
       activeAssessed: [],
       activeUnavailable: [unassessedCategory],
       snoozed: [],
@@ -370,7 +373,8 @@ describe("Checks", () => {
     expect(screen.getByText("16% estimated token burn")).toBeInTheDocument()
     expect(container.querySelectorAll(".text-roll")).toHaveLength(2)
     expect(screen.getByText(/1 check failed/)).toBeInTheDocument()
-    expect(screen.getByText("7/11 sessions failed")).toBeInTheDocument()
+    expect(screen.getByText("7 failed")).toBeInTheDocument()
+    expect(screen.getByText("4 passed")).toBeInTheDocument()
     expect(screen.queryByText(/More evidence is needed/)).not.toBeInTheDocument()
     expect(screen.getByText("Passed checks")).toHaveClass("text-label-tertiary")
     expect(
@@ -395,13 +399,14 @@ describe("Checks", () => {
     expect(screen.queryByRole("button")).not.toBeInTheDocument()
   })
 
-  it("shows in-progress checks with the shared result style and spinner", () => {
+  it("shows in-progress checks with neutral checking text", () => {
     render(
       <ChecksPeek
         presentation={{
           ...presentation,
           failures: [],
-          wins: [
+          wins: [],
+          checking: [
             category("scopeCreep", {
               clean: 0,
               estimatedTokenBurnBasisPoints: null,
@@ -413,9 +418,12 @@ describe("Checks", () => {
       />,
     )
     const row = screen.getByText("Scope creep").closest<HTMLElement>(".grid")!
-    expect(within(row).getByText("No issues found yet")).toHaveClass("text-system-green")
     expect(within(row).getByText("Checking")).toBeVisible()
-    expect(row.querySelector(".lucide-loader-circle")).toBeInTheDocument()
+    expect(
+      screen.getByRole("heading", { name: "Checking" }).closest("section"),
+    ).toContainElement(row)
+    expect(screen.queryByRole("heading", { name: "Passed checks" })).not.toBeInTheDocument()
+    expect(row.querySelector(".lucide-loader-circle")).not.toBeInTheDocument()
     expect(within(row).queryByText("0% estimated burn")).not.toBeInTheDocument()
   })
 
@@ -529,7 +537,7 @@ describe("Checks", () => {
     )
     expect(screen.getByText("7% estimated token burn")).toBeInTheDocument()
     expect(screen.getByText("5% estimated burn")).toBeInTheDocument()
-    expect(screen.getByText("1/1 session failed")).toBeInTheDocument()
+    expect(screen.getByText("1 failed")).toBeInTheDocument()
     expect(container.querySelectorAll(".text-roll")).toHaveLength(2)
 
     rerender(
@@ -552,6 +560,7 @@ describe("Checks", () => {
       <ChecksPeek
         presentation={{
           activeAssessed: wins,
+          checking: [],
           activeUnavailable: [],
           snoozed: [],
           failures: [],
@@ -581,6 +590,7 @@ describe("Checks", () => {
       <ChecksPeek
         presentation={{
           activeAssessed: [category("sessionsOverDepth", { clean: 8, unavailable: 4 })],
+          checking: [],
           activeUnavailable: [],
           snoozed: [],
           failures: [],

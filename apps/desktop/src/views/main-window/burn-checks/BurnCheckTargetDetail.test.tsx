@@ -149,13 +149,13 @@ describe("BurnCheckTargetDetail", () => {
     )
 
     expect(screen.getByText("Reads more of a file than the task needs.")).toBeVisible()
-    expect(screen.getByRole("button", { name: "Show reads under review" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Show reads being checked" })).toHaveAttribute(
       "aria-expanded",
       "false",
     )
     expect(getBurnCheckTargetEvidence).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByRole("button", { name: "Show reads under review" }))
+    fireEvent.click(screen.getByRole("button", { name: "Show reads being checked" }))
     expect(getBurnCheckTargetEvidence).toHaveBeenCalledOnce()
     expect(await screen.findByRole("button", { name: "Show returned content" })).toBeVisible()
   })
@@ -354,7 +354,7 @@ describe("BurnCheckTargetDetail", () => {
             : detector === "scopeCreep"
               ? "task and work"
               : detector === "overExploring"
-                ? "reads under review"
+                ? "reads being checked"
                 : "skill and related work"
         }`,
       })
@@ -413,8 +413,8 @@ describe("BurnCheckTargetDetail", () => {
       />,
     )
     expect(screen.queryByText("Fix the login timeout.")).not.toBeInTheDocument()
-    expect(await screen.findByRole("heading", { name: "Read under review" })).toBeVisible()
-    const reads = screen.getByRole("region", { name: "Reads under review" })
+    expect(await screen.findByRole("heading", { name: "Read being checked" })).toBeVisible()
+    const reads = screen.getByRole("region", { name: "Reads being checked" })
     expect(within(reads).getAllByText("src/login.ts")).toHaveLength(2)
     expect(view.container.querySelectorAll("time")).toHaveLength(1)
     expect(screen.getByText("Requested: line 10 · limit 20 lines")).toBeVisible()

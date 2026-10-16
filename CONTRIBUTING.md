@@ -15,100 +15,43 @@ Thank you for contributing.
 
 ## Privacy and safety
 
-Local Skill Opportunities reference inputs retain bounded current skill names,
-descriptions or full Markdown fallback sources, semantic frontmatter/metadata,
-optional filesystem birth time, and selected native skill-use
-identity/lifecycle/timing. Current inventory
-does not prove historical visibility or contents. This local adapter sends no
-requests by itself. The production worker sends selected skill fields and use
-limits to the configured provider. A valid nonempty description is the only
-reference text sent. Missing, null, or blank descriptions and plain Markdown
-use normalized full Markdown as the reference source. The compact check selects
-one complete anchored procedure; ranges address decoded description or normalized
-Markdown, not raw YAML/file bytes. A nonempty generic description cannot expose
-a useful body-only procedure. Selected procedures can include paths or other
-private values. Invalid YAML and non-string descriptions remain unsupported.
-Keep these inputs and native
-record/call IDs out of first-party analytics and ordinary report DTOs.
-Select individual reference snapshots rather
-than serialize the entire inventory.
-
 antiburn keeps its session index locally and needs no project-operated account.
-When the user enables Smart Burn Checks with Jev, Ollama, Cloudflare, or Custom, the
-current Ignored Instructions check sends selected instruction text, assistant
-text excerpts, Bash command input, file-edit paths, read-file paths, search
-queries with scope filters, and other-tool inputs to that provider. OpenCode
-`apply_patch` requests expose paths from valid `patchText` input. Bash input can
-include inline scripts, heredocs, and patches recorded inside the command.
-Dedicated edit-tool content is excluded. Selected human text and exactly bound
-Bash results can supply bounded context; unknown-origin text and completion labels
-do not prove approval or passing tests. Read/search output, other results, typed
-question/plan fields, and thinking remain excluded from Ignored Instructions.
-Scope Creep, Over-exploring, and Skill Opportunities can send selected task/work,
-edit and tool-result content, supported question/plan records, and current skill
-reference fields. They reach pinned native Claude Code, Codex, OpenCode SQLite,
-and Pi roots; see [session coverage](docs/session-coverage.md).
-Selected paths can leave the machine in provider requests. Keep this
-optional request separate from first-party product analytics. Do not send its
-inputs, responses, keys, findings, or evidence to analytics. Store only bounded
-local Smart Check usage aggregates, including the model and price version used for
-estimates. Do not retain request histories or session identifiers for billing summaries.
+**Model-based Checks** controls YAML discovery and activation in Settings → Checks.
+**Decision model** exposes Jev only. Definitions select tool results and available
+user-slot text under the [supported subset](docs/burn-check/authoring.md#supported-subset).
+Selected arguments, results, messages, and paths can leave the machine in provider
+requests and can contain private data. Do not upload full transcripts or private
+thinking. Keep provider inputs, responses, credentials, findings, evidence, and
+native record/call IDs out of first-party analytics. Store only bounded local
+usage aggregates, including the model and price version used for estimates.
+Do not retain request histories or session identifiers for billing summaries.
 Session deletion keeps already-incurred totals. Clear Local Data removes them
 and the rolling usage reservations.
 
-Instruction-file discovery compares supported files in their current state.
-It does not prove historical contents or activation. Recover historical
-instruction text only from an authoritative session record; do not infer it
-from a matching current path or a read request. Keep unavailable evidence
-unavailable. Ignored Instructions selects at most two direct rule/action conflicts
-per input snapshot. Keep complete conditions and exceptions; skip oversized required
-units. Broad probing, omissions, and completion deadlines are outside this scope.
-Selection is nonexhaustive. Clean means no finding within eligible selected work,
-not that all content is safe. Keep provider errors and missing evidence separate
-from policy-omitted work. Reuse only exact compatible evidence and decision context.
-Instruction changes govern future actions only; the first observed version cannot
-establish historical activation. The roughly 60-second
-ordinary-session goal after worker start is not a cutoff or guarantee. An
-retryable transport failure can trigger up to three persisted dispatch attempts
-total. Unknown delivery blocks automatic redispatch when safe reconciliation is
-unavailable. An earlier attempt may already have incurred a charge. Describe
-incremental paid requests and compatible answer
-reuse without promising a per-session cost cap.
+Terminal result state does not prove complete content or history. Preserve usable
+partial evidence with explicit quality fields. Unsafe identity, scope, order, and
+bindings remain unavailable. Missing required expression values can block one
+candidate without blocking later results. User-slot text can come from an API or
+extension; it does not grant human approval. Exclude explicitly synthetic
+OpenCode parts from request history, preserve real text in mixed messages, and
+mark generated-only replacements partial. Retain exact
+scope, generation, evidence, and frozen-prefix bindings through acceptance.
+Unknown delivery does not permit an automatic resend. Earlier attempts may have
+incurred charges. Explicit status success covers assessed work only, not repair,
+whole-session cleanliness, verification, or savings. A probability threshold is
+author policy, not an accuracy guarantee.
 
-The four compact checks select at most 2/2/3/1 candidates per input snapshot for
-Ignored Instructions, Scope Creep, Over-exploring, and Skill Opportunities.
-Pack retained candidates into one logical request, excluding finite transport
-retries. Zero candidates means zero calls. Drop lower-priority candidates locally
-when packing would overflow; retain complete mandatory units during bounded
-reduction or abstain. Do not split a provider context rejection into child calls.
-Capabilities govern fit, including separate byte, token, wrapper, scoring,
-question, and criteria limits. Ollama loaded context takes priority over configured
-`num_ctx`; unknown discovery does not imply 8,192 tokens. Saving a connection does
-not prove usable assessment capacity. Estimated fit is not actual billed usage.
+Built-in Ignored Instructions, Scope Creep, Over-exploring, and Skill Opportunities
+execution and historical enrollment are suspended. Their saved results,
+preferences, source capabilities, and provider implementations remain. Keep
+engine/helper capability separate from product reachability in coverage claims.
+Current instruction files cannot prove historical activation, and current skill
+inventory cannot prove historical visibility or whole-session non-use. See
+[the retained built-in contract](docs/smart-burn-checks.md) for implementation
+limits and [session coverage](docs/session-coverage.md) for pinned source shapes.
 
-Positive findings need a unique winning choice at probability 0.95 or higher and
-valid local publication gates. This is not an accuracy claim. Scope Creep needs
-bound performed work and sufficient authorization. Over-exploring checks redundant
-or clearly irrelevant substantial reads, not general breadth or first-read size.
-Skill Opportunities needs one concrete current procedure, intact task/work/outcome
-bindings, and known relevant use context. Current skill inventory cannot prove
-historical availability or whole-session non-use.
-
-The shared scheduler rotates across all four descriptors, prefers initial review
-for four turns, and continuation on the fifth, with the other lane available when
-needed. Its ceiling is eight provider dispatch attempts per turn, including retries;
-it does not expand the one-logical-request snapshot policy. Continuation resumes
-admitted work and does not drain omitted inventory. Persist finite attempt limits
-across turns and restarts. Preserve dispatched evidence and request identity during
-compatible recovery; changed capabilities must not silently repack pending work.
-Recover compatible accepted answers before a new send. Keep private thinking
-excluded. Only validated answers and successful reduction count as reviewed.
-Missing, omitted, uncertain, unsupported, exhausted, or failed work cannot become
-session-wide Clean.
-
-Follow [the reusable Jev check contract](docs/smart-burn-checks.md#reusable-jev-check-contract) when adding a
-check-owned projection, input window, question set, or reducer. See
-[how Smart Burn Checks work](docs/smart-burn-checks.md) for the product flow.
+Use [Burn Checks authoring](docs/burn-check/authoring.md) for YAML changes and
+[the architecture](docs/burn-check/architecture.md) for ownership boundaries.
 
 The update check and anonymised application analytics are project-operated
 network channels. Neither is required for the app to work.
@@ -118,10 +61,11 @@ setup completes, Settings → Privacy provides the opt-out, payloads contain no
 work or credentials, identifiers
 rotate, and builds without a configured endpoint send nothing.
 
-For all four Smart Burn Checks, measure saved enablement and provider transitions, completed
-execution outcomes, visible findings, evidence outcomes, and prompt actions
-using closed values only. Exclude historical assessment outcomes from normal
-adoption and automatic execution rates. Measure user-requested history runs separately.
+The retained four-check analytics contract uses closed values only. Suspension
+does not turn schema acceptance or saved results into new execution coverage.
+Do not map arbitrary YAML identities into fixed native check events. Exclude
+historical assessment outcomes from normal adoption and automatic execution
+rates; measure explicit history separately on versions that support enrollment.
 See the [measurement contract](docs/analytics-measurement.md).
 
 Take extra care with operations that modify files, stop processes, or can cost

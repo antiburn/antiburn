@@ -34,16 +34,17 @@ Each check has a docs page explaining what it measures and how to fix it. The [c
 - [Unused MCP servers](https://antiburn.com/docs/findings/unused-mcp-servers/) - MCPs are usually situational, just turn them on when you need them.
 - [Unused skills](https://antiburn.com/docs/findings/unused-skills/) - most of us have skills installed that cost tokens every session, but that we never use any more.
 
-Optional [Smart Burn Checks](docs/smart-burn-checks.md) review Ignored Instructions,
-Scope Creep, Over-exploring, and Skill Opportunities through Jev, Ollama,
-Cloudflare, or Custom. Each initially targets 50% of eligible targets, then
-continues the remaining work. This percentage is a target fraction, not model
-confidence. One scheduler rotates across all four checks, with target limits of
-8/4/3/4 per turn, respectively, and at most two provider dispatch attempts per
-turn including retries. Finite attempt limits persist across turns and restarts.
-Compatible answers require the exact decision context. Private thinking stays
-excluded; missing evidence and failed requests cannot produce a clean result.
-Hosted requests can incur charges.
+Optional [Burn Checks](docs/burn-check/README.md) run authored YAML through Jev.
+Enable **Model-based Checks** in **Settings → Checks** and configure **Decision
+model**. The experimental draft is `v1-prealpha`, with no backward compatibility
+promise. Definitions review selected tool results and available request text
+under the [supported subset](docs/burn-check/authoring.md#supported-subset).
+Private thinking stays excluded; missing evidence, uncertainty, and failed
+requests cannot produce automatic success. Provider requests can incur charges.
+The four built-in [Smart Burn Checks](docs/smart-burn-checks.md)—Ignored
+Instructions, Scope Creep, Over-exploring, and Skill Opportunities—have suspended
+execution and historical enrollment. Their saved results and implementations
+remain.
 
 ## Install
 

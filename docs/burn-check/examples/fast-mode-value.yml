@@ -1,0 +1,48 @@
+# yaml-language-server: $schema=../schemas/burn-check.schema.json
+# Unsupported: requires session-idle events, model/mode filters, measured activity,
+# functions, and message actions.
+# This advises a trial; it does not estimate counterfactual speed or savings.
+name: Fast Mode Value
+description: Suggest a standard-mode trial only from a measured fast-mode period.
+on:
+  session_idle:
+    fast_mode: true
+    models: [anthropic/claude-opus-4-6]
+  cooldown: 120s
+if: >-
+  session.last_activity_period.active_seconds > 0 &&
+  session.last_activity_period.model_in_flight_seconds > 0 &&
+  session.last_activity_period.fast_mode == true &&
+  strictEquals(session.last_activity_period.model, session.model)
+decisions:
+  review:
+    model: typesafe/jev-1.13.0
+    input:
+      requests: ${{ session.requests }}
+      model: ${{ session.last_activity_period.model }}
+      fast_mode: ${{ session.last_activity_period.fast_mode }}
+      activity_period: ${{ session.last_activity_period }}
+    output:
+      value:
+        type: choice
+        question: >-
+          Does this measured activity justify suggesting a trial of standard
+          mode? Look for tool_only_seconds to dominate while
+          model_in_flight_seconds stays small. Model time includes observed
+          queueing, input processing, reasoning, text, and tool-argument
+          generation. Short visible replies alone do not prove little model
+          activity. Model time can overlap tools, so a large model share does
+          not prove it delayed completion. Consider explicit user latency
+          needs. These measurements were taken in fast mode and cannot predict
+          standard-mode duration or savings. Choose uncertain if the period is
+          too small or unknown time could change the conclusion. Judge only the
+          measured period.
+        criteria:
+          try_standard_mode: Tool-only time dominates, model time is small, and no stated latency need argues against a trial.
+          no_clear_trial_signal: The measured activity or user's stated latency needs do not support a trial.
+          uncertain: Timing or task evidence does not support a clear recommendation.
+actions:
+  - type: message
+    if: decisions.review.outputs.value == 'try_standard_mode' && decisions.review.details.value.probabilities.try_standard_mode >= 0.95
+    input:
+      message: This measured fast-mode period spent most active time on tools, with little model activity. Standard mode may be worth trying.

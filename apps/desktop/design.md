@@ -703,14 +703,54 @@ Notes for what isn't expressible as a token:
   these rows hidden by default; the disclosure makes them reachable when needed.
   Start it collapsed; search opens and focuses its target. Collapsing a focused row
   returns focus to the disclosure. Never describe an unassessed row as failed.
-  Put running checks without failures in Passed checks. Keep their row order,
-  selection, and disclosure state stable during continuation. Show `Checking`
-  in monospace without a spinner or an extra status row. Running failures show
-  `43 failed · 0 passed · 2 checking` on one monospace line. When the report
-  does not supply a checking count, show `checking` without a number. Animate
-  only the checking text with the shared `activity-row-title-shimmer` recipe
-  and its existing shimmer token and reduced-motion rule. The Passed disclosure
+  Put running checks without a saved result in a visible neutral Checking group.
+  Keep saved findings and passes in their result groups during new work, errors,
+  and reviews without a status change. Keep selection and keyboard focus on the
+  same check during group transitions. Use one shared concise status presentation
+  in the collection, detail, Overview, reachable popover, and accessible labels.
+  Show Snoozed beside retained results in both visible and accessible status text.
+  Installed checks show one progress label: `Catching up` while source activity
+  or check progress is not current, `Waiting for activity` when ready for new
+  events, or `Checking` while work is queued or running. Show a valid remaining
+  event count only in detail, such as `Needs 3 more tool results.`, after catch-up.
+  Snooze takes priority, then unavailable definitions, running work, actionable
+  errors, catch-up, and event waits. Keep saved outcomes in their result groups and detail
+  content. Do not append source waits, review counts, or no-write outcomes to the
+  progress label. Use monospace without a spinner or an extra status row. Waiting
+  text stays still. Only checking text animates, with `activity-row-title-shimmer`.
+  The loop stops under reduced motion. Built-in checks keep their supplied checking counts and
+  use `Verifying` for verification waits. Announce
+  selected-check status changes with a polite live region. The Passed disclosure
   counts its rows; assessed-result summaries count only confirmed passes.
+  Installed definition and execution errors use short card statuses such as
+  `Input too large` or `Check needs fixing`; keep explanations out of card labels.
+  Their detail panels reuse the passing-panel geometry: `rounded-control`,
+  `bg-surface-card/75`, `p-4`, a `gap-3` leading icon, and `type-callout` content.
+  Use a decorative 14px `CircleAlert` in `text-system-red` for an execution or
+  definition error, not the failure palette that represents an assessed concern.
+  Show a semibold `text-label` title, a short `text-label-secondary` explanation,
+  and the available YAML path and line/column in wrapping caption text.
+  Put the keyboard-accessible `Open check file` action with an external-open icon
+  with the location. Open the file in its default application; do not imply an
+  editor line jump. Keep open failures inline beside the action and preserve the
+  diagnostic. Put the safe diagnostic code and available typed decision, field,
+  input path, fitting reason, and local budget details in an accessible disclosure.
+  Do not display raw failure strings or provider bodies. Label estimated tokens
+  as estimates. Distinguish a preparation resource stop from exhausted fitting;
+  it does not prove that further permitted reductions could not fit. Keep its
+  card status short, such as `Could not check`.
+  Show errors before empty or passing content, retain earlier valid findings, and
+  group repeated errors without hiding distinct file/decision locations. Do not
+  add a session-open link for definition or fitting errors. Successful shortened
+  inputs use the same panel with a tertiary information icon and the title
+  `Input shortened`; they are not failures. Clear stale errors after repair. Keep
+  error and waiting labels still; only Checking animates. Show a retry promise
+  only when retry work is scheduled.
+  Search keeps its last loaded check destinations after an availability error.
+  Show `Could not load checks.` with a keyboard-accessible `Retry` action for
+  failed reads, failed availability events, or subscription failures. Keep other
+  destinations usable. A successful current snapshot clears the read error;
+  a failed subscription also needs a successful subscription retry.
   When Ignored Instructions reports priority sampling, place a small tertiary
   information icon next to its detail title. Its shared tooltip explains that
   likely conflicts are checked first and later checks can reduce the remaining
@@ -737,6 +777,15 @@ Notes for what isn't expressible as a token:
   evidence responses do not emit reader events. Keep the complete snapshot after
   a refresh error. Show task context and decisive earlier events with their source
   labels only inside the disclosure.
+  Installed findings show `Assessed input` and optional `Input omissions` for the
+  assessment that wrote the displayed status. Render these as generic JSON values
+  with their original nested structure, scalar/null meaning, backend explanation,
+  and limitations. Do not apply tool/request heuristics or show full original
+  output as assessed input after fitting. Keep raw JSON in an optional disclosure.
+  Legacy evidence without saved preparation uses explicit `Original source`
+  labels and the limitation that exact assessed input was not saved. Its request
+  text, tool names, arguments, and results retain readable source fields. Show each finding
+  observation once. Snooze failures retain the report and offer an action-specific retry.
   Show review counts once at check level. Keep skipped comparisons separate from
   reviewed answers. Terminal zero-target work uses Nothing to assess in neutral
   ink and stays outside Passed checks. A context-blocked review shows the model

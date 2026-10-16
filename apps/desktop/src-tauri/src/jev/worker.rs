@@ -20,6 +20,12 @@ use tokio::sync::Notify;
 
 use crate::jev::client::TypeSafeClient;
 use crate::jev::config::{SystemOneConnection, SystemOneEndpoint, SystemOneProvider};
+#[cfg(test)]
+use crate::jev::dispatch::{GLOBAL_REQUEST_BYTES, ProviderPacing};
+use crate::jev::dispatch::{
+    apply_provider_cooldown, provider_pacing, request_bytes, request_slots, request_with_deadline,
+    try_admit_provider_request,
+};
 use crate::session_lifecycle::{SessionEvents, SessionRef};
 use crate::store::{
     BurnCheckCandidate, BurnCheckInput, BurnCheckRequestAdmission, BurnCheckReservation,
@@ -33,8 +39,6 @@ const POLL_SECS: u64 = 60;
 pub(crate) const CANDIDATES_PER_WAKE: usize = 16;
 const CANDIDATE_WORKERS: usize = 4;
 const DISPATCHES_PER_TURN: u64 = 8;
-const REQUEST_DEADLINE: Duration = Duration::from_secs(60);
-const GLOBAL_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 
 pub(crate) async fn run_blocking_preparation<T: Send + 'static>(
     prepare: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
@@ -59,140 +63,6 @@ pub(crate) async fn run_blocking_preparation<T: Send + 'static>(
         result
     })
     .await?
-}
-
-fn request_bytes() -> &'static tokio::sync::Semaphore {
-    static BYTES: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
-    BYTES.get_or_init(|| tokio::sync::Semaphore::new(GLOBAL_REQUEST_BYTES))
-}
-
-fn request_slots() -> &'static tokio::sync::Semaphore {
-    // Direct desktop callers use this guard. The engine uses a separate semaphore.
-    static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
-    SLOTS.get_or_init(|| {
-        tokio::sync::Semaphore::new(antiburn_local::analysis::jev::MAX_PARALLEL_REQUESTS)
-    })
-}
-
-const GLOBAL_INPUT_TOKENS_PER_SECOND: u64 = 100_000;
-// Keep the existing conservative admission estimate; provider limits are not
-// inferred from undocumented or changing API rate limits.
-const PROVIDER_START_INTERVAL: Duration = Duration::from_millis(25);
-
-struct TokenStart {
-    reservation_id: String,
-    started: tokio::time::Instant,
-    tokens: u64,
-}
-
-struct ProviderPacing {
-    next_start: tokio::time::Instant,
-    cooldown_until: tokio::time::Instant,
-    starts: std::collections::VecDeque<TokenStart>,
-}
-
-impl ProviderPacing {
-    fn new(now: tokio::time::Instant) -> Self {
-        Self {
-            next_start: now,
-            cooldown_until: now,
-            starts: std::collections::VecDeque::new(),
-        }
-    }
-
-    fn admit(
-        &mut self,
-        reservation_id: &str,
-        estimated_tokens: u64,
-        now: tokio::time::Instant,
-    ) -> bool {
-        while self.starts.front().is_some_and(|start| {
-            now.saturating_duration_since(start.started) >= Duration::from_secs(1)
-        }) {
-            self.starts.pop_front();
-        }
-        let tokens = self.starts.iter().map(|start| start.tokens).sum::<u64>();
-        let estimated_tokens = estimated_tokens.clamp(1, MAX_REQUEST_TOKENS);
-        if now < self.cooldown_until
-            || now < self.next_start
-            || tokens.saturating_add(estimated_tokens) > GLOBAL_INPUT_TOKENS_PER_SECOND
-        {
-            return false;
-        }
-        self.starts.push_back(TokenStart {
-            reservation_id: reservation_id.to_owned(),
-            started: now,
-            tokens: estimated_tokens,
-        });
-        self.next_start = now + PROVIDER_START_INTERVAL;
-        true
-    }
-
-    fn next_eligible(
-        &mut self,
-        estimated_tokens: u64,
-        now: tokio::time::Instant,
-    ) -> tokio::time::Instant {
-        while self.starts.front().is_some_and(|start| {
-            now.saturating_duration_since(start.started) >= Duration::from_secs(1)
-        }) {
-            self.starts.pop_front();
-        }
-        let estimated_tokens = estimated_tokens.clamp(1, MAX_REQUEST_TOKENS);
-        let mut used_tokens = self.starts.iter().map(|start| start.tokens).sum::<u64>();
-        let mut deadline = self.cooldown_until.max(self.next_start);
-        for start in &self.starts {
-            if used_tokens.saturating_add(estimated_tokens) <= GLOBAL_INPUT_TOKENS_PER_SECOND {
-                break;
-            }
-            used_tokens = used_tokens.saturating_sub(start.tokens);
-            deadline = deadline.max(start.started + Duration::from_secs(1));
-        }
-        deadline.max(now)
-    }
-
-    fn settle(&mut self, reservation_id: &str, tokens: u64) {
-        if let Some(start) = self
-            .starts
-            .iter_mut()
-            .find(|start| start.reservation_id == reservation_id)
-        {
-            start.tokens = tokens.min(MAX_REQUEST_TOKENS);
-        }
-    }
-
-    fn defer(&mut self, now: tokio::time::Instant, duration: Duration) {
-        self.cooldown_until = self.cooldown_until.max(now + duration);
-    }
-}
-
-struct ProviderPacingSet {
-    jev: std::sync::Mutex<ProviderPacing>,
-    ollama: std::sync::Mutex<ProviderPacing>,
-    cloudflare: std::sync::Mutex<ProviderPacing>,
-    custom: std::sync::Mutex<ProviderPacing>,
-}
-
-impl ProviderPacingSet {
-    fn new(now: tokio::time::Instant) -> Self {
-        Self {
-            jev: std::sync::Mutex::new(ProviderPacing::new(now)),
-            ollama: std::sync::Mutex::new(ProviderPacing::new(now)),
-            cloudflare: std::sync::Mutex::new(ProviderPacing::new(now)),
-            custom: std::sync::Mutex::new(ProviderPacing::new(now)),
-        }
-    }
-}
-
-fn provider_pacing(provider: SystemOneProvider) -> &'static std::sync::Mutex<ProviderPacing> {
-    static PACING: std::sync::OnceLock<ProviderPacingSet> = std::sync::OnceLock::new();
-    let pacing = PACING.get_or_init(|| ProviderPacingSet::new(tokio::time::Instant::now()));
-    match provider {
-        SystemOneProvider::Jev => &pacing.jev,
-        SystemOneProvider::Ollama => &pacing.ollama,
-        SystemOneProvider::Cloudflare => &pacing.cloudflare,
-        SystemOneProvider::Custom => &pacing.custom,
-    }
 }
 
 pub(crate) type WorkerFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
@@ -357,6 +227,11 @@ pub(crate) fn registered_check_ids() -> Vec<DetectorId> {
         .iter()
         .map(|check| DetectorId::from_key(check.id()).expect("registered checks have detector IDs"))
         .collect()
+}
+
+/// Built-in smart checks are paused while their replacement behavior is developed.
+pub(crate) fn executable_checks() -> &'static [&'static dyn JevCheckDescriptor] {
+    &[]
 }
 
 /// Shared credential and wake state for the Jev worker.
@@ -768,7 +643,7 @@ pub(crate) fn wake(app: &tauri::AppHandle) {
 pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let checks = registered_checks();
+        let checks = executable_checks();
         let mut lifecycle = app.state::<SessionEvents>().subscribe();
         let mut poll = tokio::time::interval(Duration::from_secs(POLL_SECS));
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -777,6 +652,18 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
         loop {
             let handle = app.state::<WorkerHandle>();
             let store = (*app.state::<Store>()).clone();
+            if checks.is_empty() {
+                tokio::select! {
+                    () = handle.wake.notified() => {},
+                    _ = poll.tick() => {},
+                    event = lifecycle.recv() => {
+                        if matches!(event, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
+                            return;
+                        }
+                    }
+                }
+                continue;
+            }
             let now = unix_now();
             let retry_at = match store.next_burn_check_retry_at(now) {
                 Ok(retry_at) => retry_at,
@@ -877,7 +764,9 @@ pub(crate) fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<
             let mut scheduled = 0;
             loop {
                 while scheduled < CANDIDATES_PER_WAKE && jobs.len() < CANDIDATE_WORKERS {
-                    if !handle.key_is_current(key_generation) {
+                    if !handle.key_is_current(key_generation)
+                        || crate::installed_checks::has_priority_work(&app)
+                    {
                         break;
                     }
                     let selected = match schedule_candidate_turn(
@@ -1855,28 +1744,6 @@ async fn execute_batch_inner(
     }
 }
 
-fn apply_provider_cooldown(
-    pacing: &mut ProviderPacing,
-    error: &JevError,
-    now: tokio::time::Instant,
-) {
-    if matches!(
-        error,
-        JevError::RateLimited { .. } | JevError::ProviderOverloaded { .. }
-    ) && let Some(delay) = retry_delay(error, 0)
-    {
-        pacing.defer(now, delay);
-    }
-}
-
-async fn request_with_deadline(
-    call: impl Future<Output = Result<JevResponse, JevError>>,
-) -> Result<JevResponse, JevError> {
-    tokio::time::timeout(REQUEST_DEADLINE, call)
-        .await
-        .unwrap_or(Err(JevError::RequestOutcomeUnknown))
-}
-
 async fn wait_for_provider(
     provider: SystemOneProvider,
     reservation_id: &str,
@@ -1895,13 +1762,8 @@ async fn wait_for_provider(
             return Err(JevError::Cancelled);
         }
         let now = tokio::time::Instant::now();
-        let (admitted, next_eligible) = {
-            let mut pacing = provider_pacing(provider)
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            let admitted = pacing.admit(reservation_id, estimated_tokens, now);
-            (admitted, pacing.next_eligible(estimated_tokens, now))
-        };
+        let (admitted, next_eligible) =
+            try_admit_provider_request(provider, reservation_id, estimated_tokens, now);
         if admitted {
             return Ok(());
         }
@@ -2031,8 +1893,8 @@ pub(crate) fn retry_delay(error: &JevError, attempt: usize) -> Option<Duration> 
     }
     let backoff = Duration::from_secs(if attempt == 0 { 5 } else { 30 });
     match error {
-        JevError::RateLimited { retry_after } | JevError::ProviderOverloaded { retry_after } => {
-            Some(retry_after.unwrap_or_default().max(backoff))
+        JevError::RateLimited { .. } | JevError::ProviderOverloaded { .. } => {
+            crate::jev::dispatch::provider_cooldown_delay(error).map(|delay| delay.max(backoff))
         }
         JevError::ProviderUnavailable => Some(backoff),
         _ => None,
@@ -3543,56 +3405,6 @@ mod checkpoint_tests {
     }
 
     #[test]
-    fn provider_pacing_reserves_tokens_then_uses_measured_usage_and_shared_backoff() {
-        let now = tokio::time::Instant::now();
-        let mut pacing = ProviderPacing::new(now);
-        assert!(pacing.admit("first", 30_000, now));
-        assert!(pacing.admit("second", 30_000, now + Duration::from_millis(100)));
-        assert!(pacing.admit("third", 30_000, now + Duration::from_millis(200)));
-        assert!(!pacing.admit("fourth", 30_000, now + Duration::from_millis(300)));
-        pacing.settle("first", 10_000);
-        pacing.settle("second", 0);
-        pacing.settle("third", 0);
-        assert!(pacing.admit("fourth", 20_000, now + Duration::from_millis(300)));
-        assert_eq!(
-            pacing.starts.iter().map(|start| start.tokens).sum::<u64>(),
-            30_000
-        );
-        pacing.next_start = now + Duration::from_secs(12);
-        assert!(!pacing.admit("fifth", 30_000, now + Duration::from_secs(1)));
-        assert!(pacing.admit("fifth", 30_000, now + Duration::from_secs(12)));
-        assert_eq!(pacing.starts.len(), 1);
-        println!(
-            "provider pacing estimated request tokens allows bounded concurrency within rolling limit"
-        );
-    }
-
-    #[test]
-    fn provider_pacing_returns_the_next_token_window_deadline() {
-        let now = tokio::time::Instant::now();
-        let mut pacing = ProviderPacing::new(now);
-        assert!(pacing.admit("first", 60_000, now));
-        let blocked_at = now + Duration::from_millis(25);
-        assert!(!pacing.admit("second", 50_000, blocked_at));
-        assert_eq!(
-            pacing.next_eligible(50_000, blocked_at),
-            now + Duration::from_secs(1)
-        );
-        assert!(pacing.admit("second", 50_000, now + Duration::from_secs(1)));
-    }
-
-    #[test]
-    fn provider_pacing_buckets_do_not_share_admission_state() {
-        let now = tokio::time::Instant::now();
-        let pacing = ProviderPacingSet::new(now);
-        let mut jev = pacing.jev.lock().unwrap();
-        let mut custom = pacing.custom.lock().unwrap();
-        assert!(jev.admit("jev", GLOBAL_INPUT_TOKENS_PER_SECOND, now));
-        assert!(!jev.admit("jev-next", 1, now));
-        assert!(custom.admit("custom", 1, now));
-    }
-
-    #[test]
     fn stale_success_records_measured_usage_once_without_cache() {
         let store = Store::open_in_memory(std::path::Path::new("synthetic-state")).unwrap();
         store.set_internal_value("internal:burnCheckUsageLedgerV1", &serde_json::json!({
@@ -3863,38 +3675,6 @@ mod checkpoint_tests {
             Some(Duration::from_secs(5))
         );
         assert_eq!(retry_delay(&JevError::ProviderUnavailable, 2), None);
-    }
-
-    #[test]
-    fn headerless_rate_limit_and_overload_apply_provider_cooldown() {
-        let now = tokio::time::Instant::now();
-        for error in [
-            JevError::RateLimited { retry_after: None },
-            JevError::ProviderOverloaded { retry_after: None },
-        ] {
-            let mut pacing = ProviderPacing::new(now);
-            apply_provider_cooldown(&mut pacing, &error, now);
-            assert!(!pacing.admit("during", 10, now + Duration::from_secs(4)));
-            assert!(pacing.admit("after", 10, now + Duration::from_secs(5)));
-        }
-    }
-
-    #[test]
-    fn cooldown_is_provider_scoped_and_retry_after_dominates_backoff() {
-        let now = tokio::time::Instant::now();
-        let mut limited_provider = ProviderPacing::new(now);
-        let mut other_provider = ProviderPacing::new(now);
-        apply_provider_cooldown(
-            &mut limited_provider,
-            &JevError::RateLimited {
-                retry_after: Some(Duration::from_secs(17)),
-            },
-            now,
-        );
-
-        assert!(!limited_provider.admit("before", 10, now + Duration::from_secs(16)));
-        assert!(other_provider.admit("isolated", 10, now));
-        assert!(limited_provider.admit("retry-after", 10, now + Duration::from_secs(17)));
     }
 
     #[test]

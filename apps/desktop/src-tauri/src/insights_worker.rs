@@ -20,8 +20,12 @@ use crate::first_run_gate::{FirstRunGate, FirstRunStage};
 use crate::fork_lineage;
 use crate::store::{
     EvidenceClaim, EvidenceCompletion, EvidenceFailure, FencedTurnRowStore, PublishedEvidence,
-    RelationKind, RelationRecord, SessionKey, SessionRecord, Store,
+    RelationKind, RelationRecord, SessionKey, SessionRecord, Store, ToolResultBatch,
+    ToolResultPublishOptions,
 };
+
+pub(crate) mod file_live;
+pub(crate) mod journal;
 
 pub(crate) const LEASE_SECS: i64 = 300;
 pub(crate) const LEASE_RENEW_SECS: u64 = 60;
@@ -215,6 +219,13 @@ fn run_record_pass_with(
     // time, not cached on `record`. A lookup failure reads the same as "no
     // parent known yet" — the pass still runs, just without the skip set.
     let fork_parent_session_id = store.fork_parent(&record.key).ok().flatten();
+    let signal = if journal::owns_session(record)
+        || crate::store::native_tool_results::file_delivery::owns_session(record)
+    {
+        signal.with_journal_delivery()
+    } else {
+        signal
+    };
     let writer: Arc<dyn TurnRowStore> = Arc::new(FencedTurnRowStore::new(
         store,
         record.key.clone(),
@@ -243,6 +254,10 @@ pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let restore_store = app.state::<Store>().inner().clone();
+        if let Err(error) = restore_store.recover_opencode_journal_claims() {
+            ::tracing::error!(event = "journal_claim_recovery_failed", error = %error);
+            return;
+        }
         if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
             crate::remote_cache::restore_fork_companions(&restore_store)
         })
@@ -252,6 +267,11 @@ pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
             ::tracing::warn!(event = "remote_fork_companion_restore_failed", error = %error);
         }
         let mut workers = JoinSet::new();
+        if let Err(error) = app.state::<Store>().recover_native_file_claims() {
+            ::tracing::error!(event = "native_file_claim_recovery_failed", error = %error);
+            return;
+        }
+        workers.spawn(run_live_worker(app.clone()));
         workers.spawn(run_worker(app.clone()));
         let handle = app.state::<WorkerHandle>();
         let (reason, elapsed) =
@@ -298,6 +318,7 @@ async fn run_worker(app: tauri::AppHandle) {
     // The worker reports a typed fact only. The projection worker
     // rebuilds the rich row and emits the frontend events.
     let announce = move |key: &SessionKey| {
+        crate::installed_checks::wake(&announce_app);
         crate::jev::worker::wake(&announce_app);
         crate::session_lifecycle::report(
             &announce_app,
@@ -372,6 +393,74 @@ async fn run_worker(app: tauri::AppHandle) {
         &report_ingested,
     )
     .await;
+}
+
+async fn run_live_worker(app: tauri::AppHandle) {
+    let store = app.state::<Store>();
+    let gate = app.state::<FirstRunGate>();
+    let mut next_lane = 0;
+    let announce = |key: &SessionKey| {
+        crate::installed_checks::wake(&app);
+        crate::session_lifecycle::report(
+            &app,
+            crate::session_lifecycle::SyncObservation::RowChanged {
+                session: key.clone(),
+                facets: crate::session_lifecycle::UpdateFacets {
+                    analysis: true,
+                    ..Default::default()
+                },
+                at: unix_now(),
+            },
+        );
+        let _ = app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
+    };
+    loop {
+        gate.wait_until(FirstRunStage::Checks, || false).await;
+        if !crate::installed_checks::live_delivery_ready(&app) {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            continue;
+        }
+        let result = process_next_live(
+            &mut next_lane,
+            &|| journal::process_next(&store, &unix_now, &announce, &|| {}),
+            &|| file_live::process_next(&store, &unix_now, &announce),
+        )
+        .await;
+        match result {
+            Ok(true) => tokio::task::yield_now().await,
+            Ok(false) => tokio::time::sleep(Duration::from_secs(1)).await,
+            Err(error) => {
+                ::tracing::error!(event = "native_delivery_failed", error = %error);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
+async fn process_next_live<J, F, JF, FF>(
+    next_lane: &mut usize,
+    journal: &J,
+    file: &F,
+) -> anyhow::Result<bool>
+where
+    J: Fn() -> JF,
+    F: Fn() -> FF,
+    JF: Future<Output = anyhow::Result<bool>>,
+    FF: Future<Output = anyhow::Result<bool>>,
+{
+    let first = *next_lane;
+    *next_lane = (first + 1) % 2;
+    for offset in 0..2 {
+        let worked = if (first + offset).is_multiple_of(2) {
+            journal().await?
+        } else {
+            file().await?
+        };
+        if worked {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn wake(app: &tauri::AppHandle) {
@@ -475,13 +564,28 @@ pub(crate) fn apply_outcome(
                 .and_then(|row| row.evidence_json)
                 .and_then(|json| serde_json::from_str::<SessionEvidence>(&json).ok());
             let verified_source_fingerprint = pass.source_fingerprint.as_deref();
-            let applied = store.publish_projections_with_source_fingerprint(
+            let source_format = pass.native_tool_result_source_format.ok_or_else(|| {
+                anyhow::anyhow!("published evidence pass has no admitted source format")
+            })?;
+            let tool_results = ToolResultBatch {
+                source_format,
+                results: pass.tool_result_observations.clone(),
+                complete: pass.tool_result_observations_complete,
+            };
+            let native_delivery = store.session(&claim.key)?.as_ref().is_some_and(|record| {
+                journal::owns_session(record)
+                    || crate::store::native_tool_results::file_delivery::owns_session(record)
+            });
+            let applied = store.publish_projections_with_native_tool_results(
                 &record,
                 pass.analysis.started_at_epoch,
                 &completion,
                 &relations,
                 &pass.source_outcomes,
-                verified_source_fingerprint,
+                ToolResultPublishOptions {
+                    source_fingerprint: verified_source_fingerprint,
+                    batch: (!native_delivery).then_some(&tool_results),
+                },
             )?;
             let ingested = applied
                 .then(|| {
@@ -670,6 +774,7 @@ pub(crate) async fn process_next(
     Ok(true)
 }
 
+#[cfg(test)]
 pub(crate) async fn process_next_work(
     store: &Store,
     clock: &(dyn Fn() -> i64 + Send + Sync),
@@ -678,44 +783,72 @@ pub(crate) async fn process_next_work(
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
     on_claimed: &(dyn Fn() + Send + Sync),
 ) -> anyhow::Result<bool> {
-    let now = clock();
-    if let Some(recovery) = store.next_remediation_write_recovery(now)? {
-        on_claimed();
-        crate::remediation::recover_uncertain_write(store, &recovery, now)?;
-        return Ok(true);
-    }
-    let remediation_first = store.take_remediation_work_turn();
-    if remediation_first && let Some(remediation) = store.next_dirty_remediation()? {
-        on_claimed();
-        let _ = crate::remediation::evaluate_dirty_remediation(
-            store.state_dir(),
-            store,
-            &remediation,
-            clock(),
-        )?;
-        return Ok(true);
-    }
-    let processed = process_next(
+    process_next_work_with_journal(
         store,
         clock,
         run_pass,
         announce,
         report_ingested,
         on_claimed,
+        &|| journal::process_next(store, clock, announce, on_claimed),
     )
-    .await?;
-    if processed {
+    .await
+}
+
+async fn process_next_work_with_journal<F, Fut>(
+    store: &Store,
+    clock: &(dyn Fn() -> i64 + Send + Sync),
+    run_pass: &PassRunner<'_>,
+    announce: &(dyn Fn(&SessionKey) + Send + Sync),
+    report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
+    on_claimed: &(dyn Fn() + Send + Sync),
+    run_journal: &F,
+) -> anyhow::Result<bool>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = anyhow::Result<bool>> + Send,
+{
+    let now = clock();
+    if let Some(recovery) = store.next_remediation_write_recovery(now)? {
+        on_claimed();
+        crate::remediation::recover_uncertain_write(store, &recovery, now)?;
         return Ok(true);
     }
-    if !remediation_first && let Some(remediation) = store.next_dirty_remediation()? {
-        on_claimed();
-        let _ = crate::remediation::evaluate_dirty_remediation(
-            store.state_dir(),
-            store,
-            &remediation,
-            clock(),
-        )?;
-        return Ok(true);
+    let first = store.take_insights_work_turn();
+    for offset in 0..3 {
+        match (first + offset) % 3 {
+            0 => {
+                if let Some(remediation) = store.next_dirty_remediation()? {
+                    on_claimed();
+                    crate::remediation::evaluate_dirty_remediation(
+                        store.state_dir(),
+                        store,
+                        &remediation,
+                        clock(),
+                    )?;
+                    return Ok(true);
+                }
+            }
+            1 => {
+                if run_journal().await? {
+                    return Ok(true);
+                }
+            }
+            _ => {
+                if process_next(
+                    store,
+                    clock,
+                    run_pass,
+                    announce,
+                    report_ingested,
+                    on_claimed,
+                )
+                .await?
+                {
+                    return Ok(true);
+                }
+            }
+        }
     }
     Ok(false)
 }
@@ -772,13 +905,14 @@ pub(crate) async fn worker_loop(
         // debug reset can lower the stage while this loop is already
         // running, and the next claim must wait for it to reopen.
         (signals.gate)().await;
-        match process_next_work(
+        match process_next_work_with_journal(
             store,
             clock,
             run_pass,
             announce,
             report_ingested,
             &on_claimed,
+            &|| async { Ok(false) },
         )
         .await
         {
@@ -806,9 +940,18 @@ pub(crate) async fn worker_loop(
                     report_dirty = false;
                     (signals.report_changed)();
                 }
+                let wait = match store.next_opencode_journal_attempt(clock()) {
+                    Ok(Some(at)) => Duration::from_secs(at.saturating_sub(clock()).max(1) as u64)
+                        .min(Duration::from_secs(IDLE_POLL_SECS)),
+                    Ok(None) => Duration::from_secs(IDLE_POLL_SECS),
+                    Err(error) => {
+                        ::tracing::warn!(event = "journal_schedule_read_failed", error = %error);
+                        Duration::from_secs(IDLE_POLL_SECS)
+                    }
+                };
                 tokio::select! {
                     () = handle.wake.notified() => {}
-                    () = tokio::time::sleep(Duration::from_secs(IDLE_POLL_SECS)) => {}
+                    () = tokio::time::sleep(wait) => {}
                 }
             }
             Err(error) => {

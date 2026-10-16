@@ -126,7 +126,7 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
   it("keeps an open review when the expiring action handle rotates", async () => {
     const { rerender } = render(<BurnCheckTargetActions target={target} refresh={vi.fn()} />)
     fireEvent.click(screen.getByRole("button", { name: "Fix" }))
-    const dialog = await screen.findByRole("dialog", { name: "Review change" })
+    const dialog = await screen.findByRole("dialog", { name: "Confirm change" })
 
     // The finding is unchanged (same findingId, no watch), so the action
     // handle rotation carries the open review forward.
@@ -174,7 +174,7 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
       })
     })
 
-    expect(screen.getByRole("dialog", { name: "Review change" })).toBeVisible()
+    expect(screen.getByRole("dialog", { name: "Confirm change" })).toBeVisible()
   })
 
   it("ignores a deferred prepare from an attempt that recurred", async () => {
@@ -263,7 +263,7 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
     commands.apply.mockReturnValueOnce(pending.promise)
     const { rerender } = render(<BurnCheckTargetActions target={target} refresh={vi.fn()} />)
     fireEvent.click(screen.getByRole("button", { name: "Fix" }))
-    const dialog = await screen.findByRole("dialog", { name: "Review change" })
+    const dialog = await screen.findByRole("dialog", { name: "Confirm change" })
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
 
     rerender(
@@ -500,7 +500,7 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
       commands.apply.mockResolvedValueOnce(outcome)
       render(<BurnCheckTargetActions target={target} refresh={vi.fn()} />)
       fireEvent.click(screen.getByRole("button", { name: "Fix" }))
-      const dialog = await screen.findByRole("dialog", { name: "Review change" })
+      const dialog = await screen.findByRole("dialog", { name: "Confirm change" })
       fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
 
       await waitFor(() =>
@@ -508,7 +508,7 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
       )
       expect(within(dialog).getByRole("alert")).toHaveTextContent(
         name === "conflict"
-          ? "The setting changed during this review. Close it and check the current setting."
+          ? "The setting changed during this check. Close it and check the current setting."
           : "The current setting changed, so this edit was not made.",
       )
       expect(within(dialog).getByRole("button", { name: "Apply change" })).toBeDisabled()

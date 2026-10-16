@@ -1,0 +1,33 @@
+{
+  "effectiveId": "installed:failed-retry-loop",
+  "name": "Failed Retry Loop",
+  "aliases": ["Failed Retry Loop", "repeated failures"],
+  "description": "Detects repeated failures without recovery.",
+  "availability": { "status": "available" },
+  "diagnostic": null,
+  "diagnostics": [],
+  "explanation": "Review the recorded work.",
+  "finding": 1,
+  "clean": 1,
+  "unavailable": 0,
+  "reviewFailed": 0,
+  "reviewedWithoutStatus": 1,
+  "checkingCount": 0,
+  "waitingForDataCount": 0,
+  "waitingForResultsCount": 2,
+  "waitingForEvents": { "event": "toolResult", "count": 1, "catchingUp": false },
+  "agents": ["claude-code"],
+  "targets": [
+    {
+      "id": "{\"check\":\"failed-retry-loop\",\"activation_scope_key\":\"{\\\"environment\\\":\\\"native\\\",\\\"session_cwd\\\":\\\"/workspace/demo\\\",\\\"run\\\":\\\"Live\\\"}\",\"branch\":\"branch-a\",\"generation\":1,\"assessment\":\"assessment-1\"}",
+      "title": "Failed Retry Loop",
+      "agent": "claude-code",
+      "projectName": "demo",
+      "sourcePath": ".antiburn/checks/retries.yaml",
+      "observation": "Review the recorded work.",
+      "evidenceAvailable": true,
+      "samples": []
+    }
+  ],
+  "targetsTruncated": false
+}

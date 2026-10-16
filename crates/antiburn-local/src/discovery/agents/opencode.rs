@@ -2808,6 +2808,44 @@ pub(crate) fn db_session_fingerprint_connection(
             }
         }
     }
+    if [
+        ("event_sequence", &["aggregate_id", "seq", "owner_id"][..]),
+        ("event", &["aggregate_id", "seq", "id", "type", "data"][..]),
+    ]
+    .iter()
+    .all(|(table, columns)| {
+        columns
+            .iter()
+            .all(|column| db_table_has_column(conn, table, column))
+    }) {
+        for (table, columns, order) in [
+            (
+                "event_sequence",
+                "aggregate_id, seq, owner_id",
+                "aggregate_id",
+            ),
+            (
+                "event",
+                "aggregate_id, seq, id, type, data",
+                "aggregate_id, seq",
+            ),
+        ] {
+            hash.write_bytes(table.as_bytes());
+            let mut statement = conn
+                .prepare(&format!(
+                    "{cluster} SELECT {columns} FROM {table}
+                 WHERE aggregate_id IN (SELECT id FROM cluster) ORDER BY {order}"
+                ))
+                .ok()?;
+            let mut query = statement.query([root_session_id]).ok()?;
+            while let Some(row) = query.next().ok()? {
+                rows = rows.saturating_add(1);
+                for index in 0..row.as_ref().column_count() {
+                    hash.write_value(row.get_ref(index).ok()?);
+                }
+            }
+        }
+    }
     (rows > 0).then(|| (hash.finish(), rows))
 }
 

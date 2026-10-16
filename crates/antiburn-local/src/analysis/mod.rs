@@ -35,6 +35,7 @@ mod evidence;
 mod evidence_query;
 mod evidence_replay;
 mod evidence_sink;
+pub mod file_live;
 mod framing;
 pub use crate::checks::ignored_instructions;
 mod initial_context;
@@ -89,7 +90,9 @@ pub use evidence_query::{
 };
 pub use evidence_replay::evidence_from_facts;
 pub use evidence_sink::{
-    CompositeSink, EvidenceResumeState, RETAINED_EVIDENCE_BYTES_BOUND, SessionEvidenceAccumulator,
+    CompositeSink, EvidenceResumeState, MAX_TOOL_RESULT_BYTES, MAX_TOOL_RESULT_OBSERVATIONS,
+    MAX_USER_MESSAGE_COLLECTION_BYTES, MAX_USER_MESSAGE_OBSERVATIONS,
+    RETAINED_EVIDENCE_BYTES_BOUND, SessionEvidenceAccumulator,
 };
 pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
@@ -100,10 +103,13 @@ pub use initial_context::{
 };
 pub use interface::{
     ContentAuthority, ContentKind, ContentPart, ContextSourceKind, ContextWindowSource,
-    EvidenceObservation, MAX_CONTENT_PART_BYTES, MAX_PROVIDER_HINTS, NormalizedRecord,
-    ProviderHint, RawSource, RecordCoverage, RecordSink, RelationProvenance, ResumedVisit,
-    SessionCollector, SessionInput, SessionReader, SessionSummary, SourceChangedReason,
-    TurnContent, VisitOutcome,
+    EvidenceObservation, MAX_CONTENT_PART_BYTES, MAX_PROVIDER_HINTS, MAX_USER_MESSAGE_BYTES,
+    MAX_USER_MESSAGE_PARTS, NormalizedRecord, ProviderHint, RawSource, RecordCoverage, RecordSink,
+    RelationProvenance, ResumedVisit, SessionCollector, SessionInput, SessionReader,
+    SessionSummary, SourceChangedReason, ToolResultAdmission, ToolResultChange,
+    ToolResultCompleteness, ToolResultContext, ToolResultObservation, ToolResultPosition,
+    ToolResultStatus, TurnContent, UserMessage, UserMessageChange, UserMessageCompleteness,
+    UserMessageOrigin, UserMessagePart, UserMessagePosition, UserMessageScope, VisitOutcome,
 };
 pub use jev::capabilities::{
     CapabilityLimit, CapabilitySource, ModelCapabilities, ModelLimitOverride, TokenizerIdentity,
@@ -152,6 +158,11 @@ pub use source_validity::{
     SourceClaim, append_only_guarantee,
 };
 pub use vendors::claude::ClaudeSessionReader;
+pub use vendors::opencode::journal::{
+    OpenCodeJournalCursor, OpenCodeJournalReadError, OpenCodeToolResultPage,
+    opencode_journal_has_new_events, read_opencode_live_tool_result_page,
+    read_opencode_tool_result_page,
+};
 pub use vendors::pi::PiSessionReader;
 pub use vendors::{has_dedicated_reader, reader_for, reader_for_input};
 
@@ -248,7 +259,9 @@ pub use vendors::{has_dedicated_reader, reader_for, reader_for_input};
 // Reparse native retained roots, selected skills, and observed result bindings.
 // +1 for OMP housekeeping and `custom` rows, `session_init` startup skills, and
 // `skill://` reads. Reparse completed OMP sessions to collect them.
-pub const PARSER_REVISION: i64 = 53;
+// Reparse bounded native call joins and chained OpenCode journal prefixes.
+// Refresh native delivery bindings and exclude generated OpenCode request text.
+pub const PARSER_REVISION: i64 = 57;
 
 /// Source admission still requires a validated retained-root snapshot.
 pub fn smart_check_source_supported(agent: &str, format: SourceFormat) -> bool {
@@ -364,10 +377,8 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 6;
 /// invalidates every persisted snapshot: a snapshot's adapter and sink
 /// state was built under the old rules, and resuming it would keep
 /// producing rows, metrics, or evidence the new rules never agreed to.
-/// Phase 3b's persistence layer enforces this by checking every revision
-/// before it restores a snapshot; this constant and the rule are
-/// documented here so a future revision bump remembers to bump this one
-/// too, when the change touches resumable state.
+/// The persistence layer checks every revision before it restores a
+/// snapshot. Bump this value when a change touches resumable state.
 // +1 because PiStreamState gained its source-admission state.
 // +1 because `ClaudeStreamState` gained a `context_window_source` field.
 // +1 because parent evidence now includes delegated model control observations.
@@ -379,7 +390,11 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 6;
 // +1 because a merged slot keeps one priced entry per pricing key.
 // +1 for bounded Claude, Codex, and Pi scope state and cross-record native bindings.
 // +1 because the Pi-family stream state now keeps OMP startup context.
-pub const RESUME_SNAPSHOT_REVISION: i64 = 14;
+// +1 because snapshots now retain bounded native tool-result observations.
+// +1 because snapshots now retain bounded native human-request observations.
+// Pi snapshots retain typed native results; Claude and Codex bound call joins.
+// Pi snapshots exclude results that the parser has already emitted.
+pub const RESUME_SNAPSHOT_REVISION: i64 = 20;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

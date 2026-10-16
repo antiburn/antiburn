@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core"
 
-export const SMART_CHECK_PROVIDERS = {
+const SMART_CHECK_PROVIDERS = {
   jev: { label: "Jev (recommended)", endpointLabel: null, model: "jev-1.13.0" },
   ollama: { label: "Ollama", endpointLabel: "Base URL", model: "" },
   cloudflare: { label: "Cloudflare", endpointLabel: "Account ID", model: "clef" },
@@ -29,7 +29,7 @@ export type ConnectionDraft = {
   connection: Connection
   credential: string | null
 }
-export type CapabilitySource =
+type CapabilitySource =
   "provider_metadata" | "runtime_metadata" | "documented_default" | "manual" | "unknown"
 type CapabilityLimit = { value: number | null; source: CapabilitySource }
 export type ModelCapabilities = {

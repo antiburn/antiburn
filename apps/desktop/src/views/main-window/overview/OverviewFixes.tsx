@@ -2,9 +2,11 @@ import { ArrowRight } from "lucide-react"
 import { type CSSProperties } from "react"
 
 import { BurnCheckFlame } from "../../../components/burn-checks/BurnCheckFlames"
+import { CheckStatusText } from "../../../components/burn-checks/CheckStatusText"
+import { checkResultStatus } from "../../../lib/presentation/checkRowStatus"
 import { renderAgentIcon } from "../../../lib/agentIcon"
 import { cn } from "../../../lib/cn"
-import type { BurnCheckDetectorId } from "../../../lib/insightsIpc"
+import type { CheckId } from "../../../lib/insightsIpc"
 import { agentIconName, GENERIC_AGENT_ICON } from "../../../lib/presentation/agents"
 import { formatTokenBurnPercent } from "../../../lib/presentation/checkReport"
 import {
@@ -14,28 +16,16 @@ import {
 import { type FixCategory, type FixStatus } from "./overviewProgressStore"
 import { useOverviewProgress } from "./useOverviewProgress"
 
-function statusLabel(status: FixStatus): string {
-  switch (status) {
-    case "needsFix":
-      return "Needs fix"
-    case "awaitingVerification":
-      return "Awaiting verification"
-    case "passing":
-      return "Passed"
-    case "notChecked":
-      return "Not checked"
-    case "snoozed":
-      return "Snoozed"
-  }
-}
-
 /** Failing checks first, highest estimated burn first. Ties keep report order. */
 const STATUS_ORDER: Record<FixStatus, number> = {
   needsFix: 0,
   awaitingVerification: 1,
-  notChecked: 2,
-  passing: 3,
-  snoozed: 4,
+  checking: 2,
+  error: 3,
+  waiting: 3,
+  notChecked: 4,
+  passing: 5,
+  snoozed: 6,
 }
 
 function byUrgency(a: FixCategory, b: FixCategory): number {
@@ -45,22 +35,16 @@ function byUrgency(a: FixCategory, b: FixCategory): number {
   )
 }
 
-/**
- * The persistent config checks grid. The first-run takeover and its docked
- * steps and fixes result live in `FirstRunTakeover.tsx` and
- * the main sidebar; this keeps only the steady checklist, in its permanent
- * style, so it shows the same way in `firstRun` and `steady` mode alike.
- */
 export function OverviewFixes({
   onOpenCheck,
 }: {
-  onOpenCheck: (check: BurnCheckDetectorId | undefined) => void
+  onOpenCheck: (check: CheckId | undefined) => void
 }) {
   const progress = useOverviewProgress()
   return (
-    <section aria-label="Fixes" className="flex flex-col gap-(--space-sm)">
+    <section aria-label="Checks" className="flex flex-col gap-(--space-sm)">
       <div className="flex items-baseline justify-between">
-        <h2 className="type-caption text-label-secondary">Config checks</h2>
+        <h2 className="type-caption text-label-secondary">Checks</h2>
         <button
           type="button"
           onClick={() => onOpenCheck(undefined)}
@@ -85,9 +69,22 @@ function CheckCard({
   onOpen,
 }: {
   category: FixCategory
-  onOpen: (check: BurnCheckDetectorId) => void
+  onOpen: (check: CheckId) => void
 }) {
   const needsFix = category.status === "needsFix"
+  const status = checkResultStatus(
+    {
+      ...category,
+      lifecycle:
+        category.lifecycle ??
+        (category.status === "awaitingVerification"
+          ? "awaitingVerification"
+          : category.status === "passing"
+            ? "passing"
+            : null),
+    },
+    category.status === "snoozed",
+  )
   const agents = [
     ...new Map(
       category.agents
@@ -103,6 +100,7 @@ function CheckCard({
         type="button"
         onClick={() => onOpen(category.id)}
         data-status={category.status}
+        aria-label={`${category.label}, ${status.text}`}
         // On hover, a faint tint of the icon's colour lies over the card fill.
         style={{ "--check-tint": burnCheckCategoryColor(category.id) } as CSSProperties}
         className={cn(
@@ -127,21 +125,7 @@ function CheckCard({
         <BurnCheckCategoryIcon detector={category.id} bare />
         <span className="relative z-10 flex min-w-0 flex-col gap-0.5">
           <span className="type-body font-medium! text-label">{category.label}</span>
-          <span className="font-mono type-footnote tabular-nums">
-            {needsFix ? (
-              <>
-                <span className="font-semibold! text-burn-check-failure-text">
-                  {category.finding} failed
-                </span>
-                <span className="mx-0.5 text-label-tertiary" aria-hidden="true">
-                  ·
-                </span>
-                <span className="text-label-secondary">{category.clean} passed</span>
-              </>
-            ) : (
-              <span className="text-label-secondary">{statusLabel(category.status)}</span>
-            )}
-          </span>
+          <CheckStatusText status={status} />
           {needsFix && burn != null && (
             <span className="inline-flex items-center gap-1 type-footnote tabular-nums text-label-tertiary">
               <BurnCheckFlame basisPoints={burn} />

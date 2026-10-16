@@ -4,10 +4,11 @@
 //! continue a stream from a verified byte offset instead of starting over.
 //! State for one session lives in three places — the adapter (a
 //! whole-stream buffer like `ClaudeStreamState`), the metrics accumulator
-//! (a reorder window, deferred cache patches, duration heaps), and the
-//! evidence accumulator (ordering and thread-link state a row query cannot
-//! answer) — so the snapshot bundles all three, plus the row sink's next
-//! index and the [`ResumePoint`] the offset reader verifies on reopen.
+//! (a reorder window, deferred cache patches, duration heaps), the evidence
+//! accumulator (ordering and thread-link state a row query cannot answer),
+//! and the tool-result and user-message collections — so the snapshot
+//! bundles them all, plus the row sink's next index and the [`ResumePoint`]
+//! the offset reader verifies on reopen.
 //!
 //! An adapter builds only its own half ([`AdapterResume`]); it never sees
 //! the sink's concrete accumulator types, only `&mut dyn RecordSink`. The
@@ -19,6 +20,8 @@
 //! `crates/antiburn-local/tests/resume_parity.rs` for the proof.
 
 use serde::{Deserialize, Serialize};
+
+pub(crate) mod identity_filter;
 
 use crate::analysis::evidence::SessionCoverageRecord;
 use crate::analysis::evidence_sink::EvidenceResumeState;
@@ -59,7 +62,8 @@ pub struct EvidenceSnapshot {
 
 /// Everything needed to resume a stream exactly where a prior pass left
 /// off: the verified byte offset, the adapter's own whole-stream state, the
-/// metrics and evidence accumulators, and the row sink's next index.
+/// metrics and evidence accumulators, tool-result and user-message
+/// observations with their completeness, and the row sink's next index.
 ///
 /// `SessionSummary` fields an adapter can only state after its last record
 /// (`context_window`, `model`, `initial_context`, …) need no snapshot field
@@ -76,6 +80,24 @@ pub struct StreamSnapshot {
     pub metrics: SessionMetricsAccumulator,
     pub evidence: EvidenceSnapshot,
     pub next_turn_index: u64,
+    /// Native tool-result observations encoded as JSON text because postcard
+    /// cannot encode `serde_json::Value` directly.
+    pub tool_result_observations_json: Vec<String>,
+    /// Stable identity keys whose revisions had conflicting observations.
+    /// An empty key means conflict tracking overflowed and blocks later results.
+    pub native_tool_result_conflicts: Vec<String>,
+    /// False when the observation limit, encoding, or conflicting input
+    /// prevented the snapshot from retaining a complete collection.
+    pub tool_result_observations_complete: bool,
+    /// User-message observations encoded one per JSON string. Restore
+    /// can reject an unreadable fact without discarding the rest of the snapshot.
+    pub user_messages_json: Vec<String>,
+    /// Stable identity keys whose observations conflicted. An empty key means
+    /// conflict tracking overflowed and blocks later requests.
+    pub user_message_conflicts: Vec<String>,
+    /// False when a request was unreadable, the collection limit was reached,
+    /// or an identity conflict prevented complete retention.
+    pub user_messages_complete: bool,
 }
 
 impl StreamSnapshot {
@@ -137,6 +159,12 @@ mod tests {
                 resume: EvidenceResumeState::default(),
             },
             next_turn_index: 0,
+            tool_result_observations_json: Vec::new(),
+            native_tool_result_conflicts: Vec::new(),
+            tool_result_observations_complete: true,
+            user_messages_json: Vec::new(),
+            user_message_conflicts: Vec::new(),
+            user_messages_complete: true,
         }
     }
 

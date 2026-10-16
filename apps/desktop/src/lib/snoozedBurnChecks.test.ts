@@ -130,6 +130,18 @@ describe("snoozed burn checks", () => {
     expect(result.current.records.map((record) => record.detector)).toContain("cacheChurn")
   })
 
+  it("rejects a failed save while retaining the ready report preferences", async () => {
+    const { result } = renderHook(() => useSnoozedBurnChecks())
+    await act(async () => undefined)
+    const before = result.current
+    invoke.mockRejectedValueOnce(new Error("write failed"))
+    await act(async () => {
+      await expect(snoozeBurnCheck("cacheChurn", "forever")).rejects.toThrow("write failed")
+    })
+    expect(result.current).toEqual(before)
+    expect(result.current.status).toBe("ready")
+  })
+
   it("ignores an older read that resolves after a newer read", async () => {
     const older = deferred<unknown[]>()
     const newerRead = deferred<unknown[]>()

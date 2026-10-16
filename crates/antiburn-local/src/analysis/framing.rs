@@ -7,6 +7,8 @@ use std::io::{self, BufRead};
 
 use serde::{Deserialize, Serialize};
 
+pub(crate) mod live;
+
 pub const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
 pub const SCAN_QUANTUM_BYTES: usize = 64 * 1024;
 

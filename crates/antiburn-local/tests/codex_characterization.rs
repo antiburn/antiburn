@@ -153,6 +153,243 @@ impl antiburn_local::analysis::RecordSink for ContentCapturingSink {
     fn finish(&mut self, _summary: antiburn_local::analysis::SessionSummary) {}
 }
 
+#[derive(Default)]
+struct NativeResultCapturingSink {
+    results: Vec<antiburn_local::analysis::ToolResultObservation>,
+}
+
+impl antiburn_local::analysis::RecordSink for NativeResultCapturingSink {
+    fn record(&mut self, record: antiburn_local::analysis::NormalizedRecord) {
+        if let antiburn_local::analysis::NormalizedRecord::ToolResult(result) = record {
+            self.results.push(*result);
+        }
+    }
+
+    fn finish(&mut self, _summary: antiburn_local::analysis::SessionSummary) {}
+}
+
+#[test]
+fn native_results_preserve_call_links_output_order_and_host_status() {
+    use antiburn_local::analysis::{
+        SourceFormat, ToolResultCompleteness as Completeness, ToolResultPosition as Position,
+        ToolResultStatus as Status,
+    };
+
+    let input = input("response_item_native_shapes");
+    let mut sink = NativeResultCapturingSink::default();
+    reader_for("codex")
+        .visit(&input, &mut sink)
+        .expect("native-shape fixture must stream");
+
+    assert_eq!(sink.results.len(), 6);
+    let command = &sink.results[0];
+    assert_eq!(command.source_format, SourceFormat::CodexRolloutJsonl);
+    assert_eq!(command.session_id, "response_item_native_shapes");
+    assert_eq!(command.call_id.as_deref(), Some("fn-exact-1"));
+    assert_eq!(command.tool_name.as_deref(), Some("exec_command"));
+    assert!(command.tool_category.is_some());
+    assert_eq!(command.arguments, Some(json!({"cmd":"printf synthetic"})));
+    assert_eq!(command.content.as_deref(), Some("synthetic command output"));
+    assert_eq!(command.status, Status::Unknown);
+    assert!(command.finality);
+    assert_eq!(command.completeness, Completeness::Complete);
+    assert_eq!(
+        command.position,
+        Position::Jsonl {
+            record_index: 5,
+            item_index: 0
+        }
+    );
+
+    let custom = &sink.results[1];
+    assert_eq!(custom.call_id.as_deref(), Some("custom-exact-2"));
+    assert_eq!(custom.tool_name.as_deref(), Some("exec"));
+    assert_eq!(
+        custom.arguments,
+        Some(json!(
+            "tools.apply_patch(\"*** Begin Patch\\n*** Add File: synthetic.txt\\n+synthetic body\\n*** End Patch\")"
+        ))
+    );
+    assert_eq!(custom.content.as_deref(), Some("synthetic patch result"));
+    assert_eq!(custom.completeness, Completeness::Complete);
+    assert_eq!(
+        custom.position,
+        Position::Jsonl {
+            record_index: 7,
+            item_index: 0
+        }
+    );
+
+    let search = &sink.results[2];
+    assert_eq!(search.call_id.as_deref(), Some("search-exact-4"));
+    assert_eq!(search.tool_name.as_deref(), Some("tool_search"));
+    assert_eq!(
+        search.arguments,
+        Some(json!({"query":"synthetic tool query"}))
+    );
+    assert_eq!(search.content.as_deref(), Some("synthetic tool result"));
+    assert_eq!(search.completeness, Completeness::Complete);
+    assert_eq!(
+        search.position,
+        Position::Jsonl {
+            record_index: 10,
+            item_index: 0
+        }
+    );
+
+    let web = &sink.results[3];
+    assert_eq!(web.call_id.as_deref(), Some("web-exact-5"));
+    assert_eq!(web.tool_name.as_deref(), Some("web_search"));
+    assert_eq!(web.arguments, Some(json!({"query":"synthetic web query"})));
+    assert_eq!(web.content.as_deref(), Some("synthetic web result"));
+    assert_eq!(web.completeness, Completeness::Complete);
+    assert_eq!(
+        web.position,
+        Position::Jsonl {
+            record_index: 12,
+            item_index: 0
+        }
+    );
+
+    let calendar = &sink.results[4];
+    assert_eq!(calendar.call_id.as_deref(), Some("mcp-object-6"));
+    assert_eq!(calendar.tool_name.as_deref(), Some("mcp__Calendar__read"));
+    assert_eq!(
+        calendar.content.as_deref(),
+        Some("synthetic calendar result")
+    );
+    assert_eq!(calendar.completeness, Completeness::Complete);
+    assert_eq!(
+        calendar.position,
+        Position::Jsonl {
+            record_index: 17,
+            item_index: 0
+        }
+    );
+
+    let nested = &sink.results[5];
+    assert_eq!(nested.call_id.as_deref(), Some("fn-object-7"));
+    assert_eq!(
+        nested.arguments,
+        Some(json!({"cmd":"printf nested-object","workdir":"/synthetic"}))
+    );
+    assert_eq!(
+        nested.position,
+        Position::Jsonl {
+            record_index: 19,
+            item_index: 0
+        }
+    );
+    assert_eq!(nested.completeness, Completeness::Complete);
+
+    let missing_input = SessionInput {
+        agent: "codex".to_owned(),
+        session_id: "missing-native-result-content".to_owned(),
+        source: RawSource::Jsonl(
+            concat!(
+                r#"{"timestamp":"2026-10-14T00:00:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"unknown-call"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-10-14T00:00:01Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"cargo test\"}","call_id":"call-status"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-10-14T00:00:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-status","status":"failed","output":"the command text says success"}}"#,
+            )
+            .to_owned(),
+        ),
+        fork_parent_session_id: None,
+        source_format: Default::default(),
+    };
+    let mut missing_sink = NativeResultCapturingSink::default();
+    reader_for("codex")
+        .visit(&missing_input, &mut missing_sink)
+        .expect("missing-result fixture must stream");
+    assert_eq!(missing_sink.results.len(), 2);
+    assert_eq!(missing_sink.results[0].content, None);
+    assert_eq!(missing_sink.results[0].status, Status::Unknown);
+    assert_eq!(
+        missing_sink.results[0].completeness,
+        Completeness::Incomplete
+    );
+    assert_eq!(
+        missing_sink.results[1].content.as_deref(),
+        Some("the command text says success")
+    );
+    assert_eq!(missing_sink.results[1].status, Status::Error);
+    assert_eq!(missing_sink.results[1].completeness, Completeness::Complete);
+}
+
+#[test]
+fn completed_items_emit_native_results_with_item_identity_and_terminal_status() {
+    use antiburn_local::analysis::{
+        SourceFormat, ToolResultCompleteness as Completeness, ToolResultPosition as Position,
+        ToolResultStatus as Status,
+    };
+
+    let input = SessionInput {
+        agent: "codex".to_owned(),
+        session_id: "synthetic-root".to_owned(),
+        source: RawSource::Jsonl(
+            include_str!("fixtures/codex_characterization/paginated_completed.jsonl").to_owned(),
+        ),
+        fork_parent_session_id: None,
+        source_format: Default::default(),
+    };
+    let mut sink = NativeResultCapturingSink::default();
+    reader_for("codex")
+        .visit(&input, &mut sink)
+        .expect("completed-item fixture must stream");
+
+    assert_eq!(sink.results.len(), 3);
+    let edit = &sink.results[0];
+    assert_eq!(edit.source_format, SourceFormat::CodexRolloutJsonl);
+    assert_eq!(edit.session_id, "synthetic-root");
+    assert_eq!(edit.record_id.as_deref(), Some("edit-1"));
+    assert_eq!(edit.call_id.as_deref(), Some("edit-1"));
+    assert_eq!(edit.result_id.as_deref(), Some("edit-1"));
+    assert_eq!(edit.tool_name.as_deref(), Some("apply_patch"));
+    assert_eq!(edit.content.as_deref(), Some("Updated sample.py\n"));
+    assert_eq!(edit.status, Status::Success);
+    assert_eq!(edit.completeness, Completeness::Complete);
+    assert_eq!(
+        edit.position,
+        Position::Jsonl {
+            record_index: 6,
+            item_index: 0
+        }
+    );
+
+    let failed_command = &sink.results[1];
+    assert_eq!(failed_command.record_id.as_deref(), Some("test-1"));
+    assert_eq!(failed_command.call_id.as_deref(), Some("test-1"));
+    assert_eq!(failed_command.tool_name.as_deref(), Some("exec_command"));
+    assert_eq!(
+        failed_command.content.as_deref(),
+        Some("FAILED (failures=1)\n")
+    );
+    assert_eq!(failed_command.status, Status::Error);
+    assert_eq!(failed_command.completeness, Completeness::Complete);
+    assert_eq!(
+        failed_command.position,
+        Position::Jsonl {
+            record_index: 7,
+            item_index: 0
+        }
+    );
+
+    let read = &sink.results[2];
+    assert_eq!(read.record_id.as_deref(), Some("read-1"));
+    assert_eq!(read.call_id.as_deref(), Some("read-1"));
+    assert_eq!(read.content.as_deref(), Some("     2\t    return 7\n"));
+    assert_eq!(read.status, Status::Success);
+    assert_eq!(read.completeness, Completeness::Complete);
+    assert_eq!(
+        read.position,
+        Position::Jsonl {
+            record_index: 8,
+            item_index: 0
+        }
+    );
+}
+
 #[test]
 fn response_item_native_shapes_preserve_authority_inputs_and_exact_result_joins() {
     use antiburn_local::analysis::{ContentAuthority, ContentKind};

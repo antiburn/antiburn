@@ -26,11 +26,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
-    AppendOnlyGuarantee, ClaudeSessionReader, CompositeSink, EvidenceSnapshot, EvidenceSource,
-    FenceScope, MemoryTurnRowStore, RESUME_SNAPSHOT_REVISION, RawSource, ResumePoint,
-    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SourceCapabilities,
-    SourceChangedReason, SourceClaim, SourceKind, StreamSnapshot, TurnRowSink, TurnRowStore,
-    TurnSessionKey, VisitOutcome, query_turn_facts, query_turn_rows, reader_for,
+    AdapterResume, AdapterSnapshot, AppendOnlyGuarantee, ClaudeSessionReader, CompositeSink,
+    EvidenceSnapshot, EvidenceSource, FenceScope, MemoryTurnRowStore, RESUME_SNAPSHOT_REVISION,
+    RawSource, RecordSink, ResumePoint, SessionEvidenceAccumulator, SessionInput,
+    SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceChangedReason,
+    SourceClaim, SourceFormat, SourceKind, StreamSnapshot, TurnRowSink, TurnRowStore,
+    TurnSessionKey, UserMessage, UserMessageChange, UserMessageCompleteness, UserMessageOrigin,
+    UserMessagePart, UserMessagePosition, UserMessageScope, VisitOutcome, query_turn_facts,
+    query_turn_rows, reader_for,
 };
 use antiburn_local::discovery::source_version::head_hash_of;
 use antiburn_local::discovery::{FingerprintInputs, SourceStat};
@@ -84,6 +87,12 @@ fn fresh_snapshot(
             resume: Default::default(),
         },
         next_turn_index: 0,
+        tool_result_observations_json: Vec::new(),
+        native_tool_result_conflicts: Vec::new(),
+        tool_result_observations_complete: true,
+        user_messages_json: Vec::new(),
+        user_message_conflicts: Vec::new(),
+        user_messages_complete: true,
     }
 }
 
@@ -192,7 +201,79 @@ fn restored_composite(
         None,
     )
     .with_start_index(snapshot.next_turn_index);
-    CompositeSink::with_turn_rows(metrics, evidence, turn_rows)
+    let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
+    composite.restore_tool_result_observations(snapshot);
+    composite.restore_user_messages(snapshot);
+    composite
+}
+
+fn user_message(
+    source_format: SourceFormat,
+    session_id: &str,
+    message_id: &str,
+    position: UserMessagePosition,
+    origin: UserMessageOrigin,
+) -> UserMessage {
+    UserMessage {
+        source_format,
+        session_id: session_id.to_owned(),
+        message_id: message_id.to_owned(),
+        position,
+        origin,
+        scope: UserMessageScope::MainSession,
+        change: UserMessageChange::Present,
+        completeness: UserMessageCompleteness::Complete,
+        parts: vec![UserMessagePart {
+            item_index: 0,
+            native_part_id: (source_format == SourceFormat::OpenCodeSqliteV2)
+                .then(|| "part-1".to_owned()),
+            text: format!("Request for {message_id}."),
+        }],
+        proof_revision: 1,
+    }
+}
+
+fn snapshot_with_user_messages(
+    agent: &str,
+    session_id: &str,
+    source_kind: SourceKind,
+    capabilities: SourceCapabilities,
+    requests: &[UserMessage],
+) -> StreamSnapshot {
+    let store = MemoryTurnRowStore::new(agent, session_id);
+    let mut sink = CompositeSink::with_turn_rows(
+        SessionMetricsAccumulator::new(agent, session_id),
+        SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: agent.to_owned(),
+            session_id: session_id.to_owned(),
+            kind: source_kind,
+            capabilities,
+        }),
+        TurnRowSink::new(
+            Arc::clone(&store) as Arc<dyn TurnRowStore>,
+            session_id.to_owned(),
+            None,
+        ),
+    );
+    for request in requests {
+        sink.user_message(request.clone());
+    }
+    sink.record(antiburn_local::analysis::NormalizedRecord::MetricsEvent(
+        Box::new(antiburn_local::analysis::NormalizedEvent::new(
+            antiburn_local::analysis::Role::Assistant,
+        )),
+    ));
+    sink.observe_source_outcome(VisitOutcome::AcceptedFull);
+    sink.finish(SessionSummary::default());
+    sink.snapshot(AdapterResume {
+        point: ResumePoint {
+            offset: 0,
+            tail_hash: 0,
+            tail_len: 0,
+        },
+        adapter: AdapterSnapshot(Vec::new()),
+    })
+    .expect("composite sink snapshot")
 }
 
 /// Runs the full path (one `visit_claimed` pass over `path`'s current
@@ -362,7 +443,6 @@ fn assert_resume_parity(
             resumed_evidence, full_evidence,
             "{agent}/{session_id} step {index}: SessionEvidence"
         );
-
         match visit.resume {
             Some(resume) => {
                 snapshot = resumed.snapshot(resume).unwrap_or_else(|| {
@@ -370,6 +450,8 @@ fn assert_resume_parity(
                         "{agent}/{session_id} step {index}: resumed pass must publish a snapshot to carry state forward"
                     )
                 });
+                snapshot = StreamSnapshot::decode(&snapshot.encode())
+                    .expect("snapshot with native tool results must round trip");
             }
             None => {
                 resumed_store = MemoryTurnRowStore::new(agent, session_id);
@@ -473,6 +555,339 @@ fn resume_replay_resumes_identically_when_split_inside_the_replay_run() {
         SourceCapabilities::claude(),
         &[step_1, step_2],
     );
+}
+
+#[test]
+fn tool_result_observations_survive_snapshot_resume_and_remain_private() {
+    use antiburn_local::analysis::{
+        SessionSummary, SourceFormat, ToolResultChange, ToolResultCompleteness,
+        ToolResultObservation, ToolResultPosition, ToolResultStatus,
+    };
+
+    let session_id = "native-tool-result-resume";
+    let store = MemoryTurnRowStore::new("claude", session_id);
+    let mut sink = CompositeSink::with_turn_rows(
+        SessionMetricsAccumulator::new("claude", session_id),
+        SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "claude".to_owned(),
+            session_id: session_id.to_owned(),
+            kind: SourceKind::Jsonl,
+            capabilities: SourceCapabilities::claude(),
+        }),
+        TurnRowSink::new(
+            Arc::clone(&store) as Arc<dyn TurnRowStore>,
+            session_id.to_owned(),
+            None,
+        ),
+    );
+    let result = ToolResultObservation {
+        context: None,
+        source_format: SourceFormat::ClaudeJsonl,
+        session_id: session_id.to_owned(),
+        record_id: Some("record-1".to_owned()),
+        call_id: Some("call-1".to_owned()),
+        result_id: Some("result-1".to_owned()),
+        position: ToolResultPosition::Jsonl {
+            record_index: 1,
+            item_index: 0,
+        },
+        revision: 1,
+        change: ToolResultChange::Update,
+        tool_name: Some("Bash".to_owned()),
+        tool_category: None,
+        arguments: Some(serde_json::json!({"command": "true"})),
+        content: Some("ok".to_owned()),
+        status: ToolResultStatus::Success,
+        finality: true,
+        completeness: ToolResultCompleteness::Complete,
+    };
+    sink.record(antiburn_local::analysis::NormalizedRecord::ToolResult(
+        Box::new(result.clone()),
+    ));
+    sink.record(antiburn_local::analysis::NormalizedRecord::MetricsEvent(
+        Box::new(antiburn_local::analysis::NormalizedEvent::new(
+            antiburn_local::analysis::Role::Assistant,
+        )),
+    ));
+    sink.observe_source_outcome(VisitOutcome::AcceptedFull);
+    sink.finish(SessionSummary::default());
+    let snapshot = sink
+        .snapshot(antiburn_local::analysis::AdapterResume {
+            point: ResumePoint {
+                offset: 0,
+                tail_hash: 0,
+                tail_len: 0,
+            },
+            adapter: reader_for("claude")
+                .empty_resume_state()
+                .expect("Claude supports resume"),
+        })
+        .expect("sink snapshot");
+    let snapshot = StreamSnapshot::decode(&snapshot.encode()).expect("decode snapshot");
+
+    let mut resumed = restored_composite(&store, session_id, &snapshot);
+    resumed.record(antiburn_local::analysis::NormalizedRecord::ToolResult(
+        Box::new(result),
+    ));
+    assert_eq!(resumed.tool_result_observations().len(), 1);
+    assert!(resumed.tool_result_observations_complete());
+
+    let fixture = claude_fixture::read_fixture("native_tool_shapes");
+    let directory = TempDir::new().expect("tempdir");
+    let path = directory.path().join("native-tool-results.jsonl");
+    std::fs::write(&path, fixture).expect("write native result fixture");
+    let (_, _, _, _, _, evidence) =
+        run_full_pass("claude", session_id, &path, SourceCapabilities::claude());
+    assert!(
+        !serde_json::to_string(&evidence)
+            .expect("serialize public evidence")
+            .contains("tool_result_observations")
+    );
+}
+
+#[test]
+fn pi_branch_append_invalidates_results_restored_from_a_snapshot() {
+    use antiburn_local::analysis::ToolResultAdmission;
+
+    let prefix = concat!(
+        "{\"type\":\"session\",\"version\":3,\"id\":\"s\",\"timestamp\":100}\n",
+        "{\"type\":\"message\",\"id\":\"request\",\"parentId\":null,\"timestamp\":200,\"message\":{\"role\":\"user\",\"content\":\"Inspect the failure.\"}}\n",
+        "{\"type\":\"message\",\"id\":\"call\",\"parentId\":\"request\",\"timestamp\":300,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"tool\",\"name\":\"bash\",\"arguments\":{\"command\":\"false\"}}]}}\n",
+        "{\"type\":\"message\",\"id\":\"result\",\"parentId\":\"call\",\"timestamp\":400,\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"tool\",\"toolName\":\"bash\",\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":\"failed\"}]}}\n",
+    );
+    let directory = TempDir::new().unwrap();
+    let path = directory.path().join("branch.jsonl");
+    let store = MemoryTurnRowStore::new("pi", "s");
+    let mut snapshot = fresh_snapshot("pi", "s", SourceCapabilities::pi());
+    for (index, source) in [prefix.to_owned(), format!("{prefix}{{\"type\":\"label\",\"id\":\"branch\",\"parentId\":\"call\",\"timestamp\":500}}\n")].iter().enumerate() {
+        std::fs::write(&path, source).unwrap();
+        let mut sink = restored_composite(&store, "s", &snapshot);
+        let input = SessionInput { source_format: SourceFormat::PiV3Jsonl, ..session_input("pi", "s", &path) };
+        let visit = reader_for("pi").visit_claimed_resumed(&input, &claim_for(&path), &snapshot, &|| false, &mut sink).unwrap();
+        sink.observe_source_outcome(visit.outcome);
+        assert_eq!(sink.tool_result_observations().len(), 1);
+        let result = &sink.tool_result_observations()[0];
+        assert_eq!(result.admission(), if index == 0 { ToolResultAdmission::Admitted } else { ToolResultAdmission::UnsafeOrder });
+        assert_eq!(result.result_id.as_deref(), Some("result"));
+        snapshot = sink.snapshot(visit.resume.unwrap()).unwrap();
+        snapshot = StreamSnapshot::decode(&snapshot.encode()).unwrap();
+    }
+}
+
+#[test]
+fn user_messages_keep_native_identity_and_position_across_snapshot_resume() {
+    let cases = [
+        (
+            "claude",
+            "native-request-claude",
+            SourceKind::Jsonl,
+            SourceCapabilities::claude(),
+            user_message(
+                SourceFormat::ClaudeJsonl,
+                "native-request-claude",
+                "claude-message",
+                UserMessagePosition::Jsonl { record_index: 7 },
+                UserMessageOrigin::ClaudeUserContent,
+            ),
+        ),
+        (
+            "codex",
+            "native-request-codex",
+            SourceKind::Jsonl,
+            SourceCapabilities::codex(),
+            user_message(
+                SourceFormat::CodexRolloutJsonl,
+                "native-request-codex",
+                "codex-message",
+                UserMessagePosition::Jsonl { record_index: 11 },
+                UserMessageOrigin::CodexRetainedUserText,
+            ),
+        ),
+        (
+            "opencode",
+            "native-request-opencode",
+            SourceKind::Sqlite,
+            SourceCapabilities::opencode(),
+            user_message(
+                SourceFormat::OpenCodeSqliteV2,
+                "native-request-opencode",
+                "opencode-message",
+                UserMessagePosition::OpenCodeSqlite {
+                    created_at_ms: 1234,
+                },
+                UserMessageOrigin::OpenCodeUserText,
+            ),
+        ),
+    ];
+
+    for (agent, session_id, kind, capabilities, request) in cases {
+        let snapshot = snapshot_with_user_messages(
+            agent,
+            session_id,
+            kind,
+            capabilities,
+            std::slice::from_ref(&request),
+        );
+        let snapshot = StreamSnapshot::decode(&snapshot.encode()).expect("decode snapshot");
+        let mut restored = CompositeSink::new(
+            SessionMetricsAccumulator::new(agent, session_id),
+            SessionEvidenceAccumulator::new(EvidenceSource {
+                agent: agent.to_owned(),
+                session_id: session_id.to_owned(),
+                kind,
+                capabilities,
+            }),
+        );
+        restored.restore_user_messages(&snapshot);
+        restored.user_message(request.clone());
+
+        assert_eq!(restored.user_messages(), &[request]);
+        assert!(restored.user_messages_complete());
+
+        let mut unreadable = snapshot.clone();
+        unreadable.user_messages_json[0] = "not-json".to_owned();
+        let mut restored_unreadable = CompositeSink::new(
+            SessionMetricsAccumulator::new(agent, session_id),
+            SessionEvidenceAccumulator::new(EvidenceSource {
+                agent: agent.to_owned(),
+                session_id: session_id.to_owned(),
+                kind,
+                capabilities,
+            }),
+        );
+        restored_unreadable.restore_user_messages(&unreadable);
+        assert!(restored_unreadable.user_messages().is_empty());
+        assert!(!restored_unreadable.user_messages_complete());
+    }
+}
+
+#[test]
+fn user_message_conflicts_survive_snapshot_resume() {
+    let request = user_message(
+        SourceFormat::ClaudeJsonl,
+        "native-request-conflict",
+        "claude-message",
+        UserMessagePosition::Jsonl { record_index: 7 },
+        UserMessageOrigin::ClaudeUserContent,
+    );
+    let mut conflicting = request.clone();
+    conflicting.parts[0].text.push_str(" changed");
+    let snapshot = snapshot_with_user_messages(
+        "claude",
+        "native-request-conflict",
+        SourceKind::Jsonl,
+        SourceCapabilities::claude(),
+        &[request, conflicting],
+    );
+    let snapshot = StreamSnapshot::decode(&snapshot.encode()).expect("decode snapshot");
+    let mut restored = CompositeSink::new(
+        SessionMetricsAccumulator::new("claude", "native-request-conflict"),
+        SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "claude".to_owned(),
+            session_id: "native-request-conflict".to_owned(),
+            kind: SourceKind::Jsonl,
+            capabilities: SourceCapabilities::claude(),
+        }),
+    );
+    restored.restore_user_messages(&snapshot);
+    assert!(restored.user_messages().is_empty());
+    assert!(!restored.user_messages_complete());
+}
+
+#[test]
+fn result_context_and_user_messages_match_full_parse_at_every_resume_boundary() {
+    for (agent, session_id, format, capabilities, source) in [
+        (
+            "claude",
+            "scope-test",
+            SourceFormat::ClaudeJsonl,
+            SourceCapabilities::claude(),
+            include_str!("fixtures/claude_characterization/retained_native_results.jsonl"),
+        ),
+        (
+            "codex",
+            "synthetic-root",
+            SourceFormat::CodexRolloutJsonl,
+            SourceCapabilities::codex(),
+            include_str!("fixtures/codex_characterization/paginated_completed.jsonl"),
+        ),
+        (
+            "pi",
+            "synthetic",
+            SourceFormat::PiV3Jsonl,
+            SourceCapabilities::pi(),
+            include_str!("fixtures/pi_characterization/core_linear_v3.jsonl"),
+        ),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        std::fs::write(&path, source).unwrap();
+        let mut input = session_input(agent, session_id, &path);
+        input.source_format = format;
+        let reader = reader_for(agent);
+        let fresh = fresh_snapshot(agent, session_id, capabilities);
+        let full_store = MemoryTurnRowStore::new(agent, session_id);
+        let mut full = restored_composite(&full_store, session_id, &fresh);
+        reader.visit(&input, &mut full).unwrap();
+        assert!(!full.tool_result_observations().is_empty(), "{agent}");
+        assert!(!full.user_messages().is_empty(), "{agent}");
+        let resumed_store = MemoryTurnRowStore::new(agent, session_id);
+        let mut snapshot = fresh;
+        for prefix in record_aligned_steps(source, source.lines().count()) {
+            std::fs::write(&path, prefix).unwrap();
+            let mut sink = restored_composite(&resumed_store, session_id, &snapshot);
+            let resumed = reader
+                .visit_claimed_resumed(&input, &claim_for(&path), &snapshot, &|| false, &mut sink)
+                .unwrap();
+            sink.observe_source_outcome(resumed.outcome);
+            snapshot = sink
+                .snapshot(resumed.resume.expect("retained root resumes"))
+                .unwrap();
+            snapshot = StreamSnapshot::decode(&snapshot.encode()).unwrap();
+        }
+        let restored = restored_composite(&resumed_store, session_id, &snapshot);
+        assert_eq!(
+            full.tool_result_observations(),
+            restored.tool_result_observations(),
+            "{agent}"
+        );
+        assert_eq!(full.user_messages(), restored.user_messages(), "{agent}");
+    }
+}
+
+#[test]
+fn conflict_tracking_overflow_keeps_retained_requests_across_snapshot_resume() {
+    let request = user_message(
+        SourceFormat::ClaudeJsonl,
+        "native-request-overflow",
+        "claude-message",
+        UserMessagePosition::Jsonl { record_index: 7 },
+        UserMessageOrigin::ClaudeUserContent,
+    );
+    let mut snapshot = snapshot_with_user_messages(
+        "claude",
+        "native-request-overflow",
+        SourceKind::Jsonl,
+        SourceCapabilities::claude(),
+        std::slice::from_ref(&request),
+    );
+    snapshot.user_message_conflicts.push(String::new());
+    snapshot.user_messages_complete = false;
+    let snapshot = StreamSnapshot::decode(&snapshot.encode()).expect("decode snapshot");
+    let mut restored = CompositeSink::new(
+        SessionMetricsAccumulator::new("claude", "native-request-overflow"),
+        SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "claude".to_owned(),
+            session_id: "native-request-overflow".to_owned(),
+            kind: SourceKind::Jsonl,
+            capabilities: SourceCapabilities::claude(),
+        }),
+    );
+
+    restored.restore_user_messages(&snapshot);
+
+    assert_eq!(restored.user_messages(), &[request]);
+    assert!(!restored.user_messages_complete());
 }
 
 /// Every `.jsonl` fixture name (without extension) directly inside

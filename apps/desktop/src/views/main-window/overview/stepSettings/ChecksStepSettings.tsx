@@ -1,27 +1,19 @@
-import { LoaderCircle } from "lucide-react"
-import { useState, useSyncExternalStore } from "react"
+import { useRef, useState, useSyncExternalStore } from "react"
 
-import { pluralize } from "../../../../lib/presentation/text"
 import { Card } from "../../../../components/ui/Card"
-import { PushButton } from "../../../../components/ui/PushButton"
-import { SegmentedControl } from "../../../../components/ui/SegmentedControl"
 import { SectionGroup } from "../../../../components/ui/SectionGroup"
-import { StatusText } from "../../../../components/ui/StatusText"
 import {
   emptyCheckAvailability,
   getCheckAvailability,
   onCheckAvailabilityChanged,
-  runCheckBackfill,
   setCheckEnabled,
-  setCheckHistoryDays,
   setSmartBurnChecksEnabled,
   type CheckAvailability,
   type CheckAvailabilityEvent,
 } from "../../../../lib/checkAvailability"
 import type { BurnCheckDetectorId } from "../../../../lib/insightsIpc"
 import { CHECK_DEFINITIONS } from "../../../../lib/presentation/checkDefinitions"
-import type { SettingsControlId } from "../../../../lib/settingsSearchTargets"
-import { SettingsRow, SettingsToggleRow } from "../../../settings/SettingsSearchRows"
+import { SettingsToggleRow } from "../../../settings/SettingsSearchRows"
 
 import { CheckProviderSettings } from "../../../settings/CheckProviderSettings"
 import { providerErrorMessage } from "../../../settings/ProviderSettingsSession"
@@ -90,34 +82,6 @@ function subscribe(listener: () => void) {
   }
 }
 
-function historyStatus(state: CheckAvailability): string | null {
-  const { backfill } = state
-  const waiting = backfill.ready + backfill.queued
-  const finished =
-    backfill.total > 0 &&
-    backfill.completed === backfill.total &&
-    backfill.running === 0 &&
-    waiting === 0 &&
-    backfill.waitingForData === 0 &&
-    backfill.waitingForIdle === 0
-  if (finished) {
-    return `Finished ${backfill.completed.toLocaleString()} ${pluralize(backfill.completed, "check job", "check jobs")}`
-  }
-  const parts = [
-    waiting > 0 ? `${waiting} waiting to be checked` : null,
-    backfill.waitingForData > 0
-      ? `${backfill.waitingForData} waiting for session analysis`
-      : null,
-    backfill.waitingForIdle > 0
-      ? `${backfill.waitingForIdle} waiting for session to be idle`
-      : null,
-    backfill.completed > 0 ? `${backfill.completed} check jobs complete` : null,
-    backfill.skipped > 0 ? `${backfill.skipped} not eligible` : null,
-    backfill.failed > 0 ? `${backfill.failed} failed` : null,
-  ].filter((part): part is string => part !== null)
-  return parts.length > 0 ? parts.join(" · ") : null
-}
-
 export function ChecksStepSettings({
   control,
   targetRevision,
@@ -131,35 +95,14 @@ export function ChecksStepSettings({
     () => initial,
   )
   const [busy, setBusy] = useState(false)
+  const pending = useRef(new Set<BurnCheckDetectorId>())
   const [pendingChecks, setPendingChecks] = useState<ReadonlySet<BurnCheckDetectorId>>(
     new Set(),
   )
+  const [checkErrors, setCheckErrors] = useState<Partial<Record<BurnCheckDetectorId, string>>>(
+    {},
+  )
   const [error, setError] = useState<string | null>(null)
-
-  async function saveHistoryDays(days: 0 | 7 | 30) {
-    setBusy(true)
-    setError(null)
-    try {
-      publish(await setCheckHistoryDays(days))
-    } catch {
-      setError("Could not save the history period.")
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function runHistory() {
-    setBusy(true)
-    setError(null)
-    try {
-      const result = await runCheckBackfill()
-      publish(result.availability)
-    } catch {
-      setError("Could not start checks. Check the active provider connection and try again.")
-    } finally {
-      setBusy(false)
-    }
-  }
 
   async function toggleChecks(enabled: boolean) {
     setBusy(true)
@@ -170,7 +113,7 @@ export function ChecksStepSettings({
       setError(
         providerErrorMessage(
           reason,
-          "Could not update Smart Burn Checks. Check the active provider connection.",
+          "Could not update Model-based Checks. Check the Jev connection.",
         ),
       )
     } finally {
@@ -179,51 +122,36 @@ export function ChecksStepSettings({
   }
 
   async function toggleCheck(detector: BurnCheckDetectorId, enabled: boolean) {
-    setPendingChecks((current) => new Set(current).add(detector))
-    setError(null)
+    if (pending.current.has(detector)) return
+    pending.current.add(detector)
+    setPendingChecks(new Set(pending.current))
+    setCheckErrors((errors) => ({ ...errors, [detector]: undefined }))
     try {
       publish(await setCheckEnabled(detector, enabled))
     } catch {
-      setError(
-        `Could not ${enabled ? "enable" : "disable"} ${CHECK_DEFINITIONS[detector].label}.`,
-      )
+      setCheckErrors((errors) => ({
+        ...errors,
+        [detector]: `Could not ${enabled ? "enable" : "disable"} ${CHECK_DEFINITIONS[detector].label}. Try again.`,
+      }))
     } finally {
-      setPendingChecks((current) => {
-        const next = new Set(current)
-        next.delete(detector)
-        return next
-      })
+      pending.current.delete(detector)
+      setPendingChecks(new Set(pending.current))
     }
   }
 
-  const historyValue = String(state.historyDays)
-  const progress = historyStatus(state)
-  const historyRunning = state.backfill.queued + state.backfill.running > 0
-  const historyTotal = state.backfill.total
   const enabledById = new Map(state.checks.map((check) => [check.id, check.enabled]))
-  const localChecks = checkRows("local")
-  const smartChecks = checkRows("smart")
-  const enabledSmartChecks = smartChecks.some(({ id }) => enabledById.get(id) === true)
+  const localChecks = checkRows()
 
-  function renderCheck({
-    id,
-    searchId,
-  }: {
-    id: BurnCheckDetectorId
-    searchId: SettingsControlId
-  }) {
+  function renderCheck(id: keyof typeof CHECK_SEARCH_IDS) {
     const definition = CHECK_DEFINITIONS[id]
-    const availability =
-      definition.kind === "smart" && !state.configured
-        ? " Enable Smart Burn Checks with an active provider connection below before this check can run."
-        : ""
     return (
       <SettingsToggleRow
         key={id}
-        searchId={searchId}
-        description={`${definition.description}${availability}`}
+        searchId={CHECK_SEARCH_IDS[id]}
+        description={definition.description}
         checked={enabledById.get(id) === true}
         disabled={pendingChecks.has(id)}
+        aria-busy={pendingChecks.has(id)}
         onChange={(enabled) => void toggleCheck(id, enabled)}
       />
     )
@@ -237,95 +165,40 @@ export function ChecksStepSettings({
         </p>
       )}
       <SectionGroup title="Local Checks">
-        <Card>{localChecks.map(renderCheck)}</Card>
+        <Card>{localChecks.map(({ id }) => renderCheck(id))}</Card>
+        {Object.entries(checkErrors).map(
+          ([id, message]) =>
+            message && (
+              <p key={id} role="alert" className="mt-2 type-footnote text-system-red-text">
+                {message}
+              </p>
+            ),
+        )}
       </SectionGroup>
 
-      <SectionGroup title="Smart Burn Checks">
+      <SectionGroup title="Model-based Checks">
         <Card>
           <SettingsToggleRow
             searchId="smartChecksEnabled"
-            description="Run smart burn checks using the decision model below."
-            checked={state.configured}
+            description="Run installed checks on new session activity."
+            checked={state.yamlEnabled}
             disabled={busy}
+            aria-busy={busy}
             onChange={(enabled) => void toggleChecks(enabled)}
           />
-          {smartChecks.map(renderCheck)}
         </Card>
+        <p className="mt-2 type-footnote text-label-secondary">
+          {state.installedChecks?.length ?? 0} installed{" "}
+          {state.installedChecks?.length === 1 ? "check" : "checks"}. To install a check, add
+          its YAML file to <code>.antiburn/checks/</code> in a project or{" "}
+          <code>~/.antiburn/checks/</code>.
+        </p>
       </SectionGroup>
       {(error || state.error) && (
         <p role="alert" className="type-footnote text-system-red-text">
           {error || state.error}
         </p>
       )}
-
-      <SectionGroup title="Past sessions">
-        <Card>
-          <SettingsRow
-            searchId="checkHistory"
-            label="Check history"
-            description="Choose a period. Checks start only when you ask."
-          >
-            <SegmentedControl
-              ariaLabel="Check history window"
-              value={historyValue}
-              onChange={(value) => {
-                if (value === "0") void saveHistoryDays(0)
-                else if (value === "7") void saveHistoryDays(7)
-                else if (value === "30") void saveHistoryDays(30)
-              }}
-              disabled={busy}
-              equalWidth
-              variant="native-tabs"
-              className="mt-2 w-full"
-              options={[
-                { value: "0", label: "Future only" },
-                { value: "7", label: "7 days" },
-                { value: "30", label: "30 days" },
-              ]}
-            />
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <PushButton
-                variant="primary"
-                disabled={
-                  busy ||
-                  historyRunning ||
-                  !state.configured ||
-                  !enabledSmartChecks ||
-                  state.historyDays === 0
-                }
-                onClick={() => void runHistory()}
-              >
-                Check past sessions
-              </PushButton>
-              <StatusText tone="secondary">Provider charges may apply.</StatusText>
-            </div>
-            {(progress || historyRunning || state.backfill.ready > 0) && (
-              <div className="mt-3 space-y-1" role="status" aria-live="polite">
-                {historyRunning && (
-                  <div>
-                    <StatusText
-                      icon={LoaderCircle}
-                      iconClassName="animate-spin"
-                      tone="secondary"
-                    >
-                      Reviewing past sessions · {state.backfill.completed.toLocaleString()} of{" "}
-                      {historyTotal.toLocaleString()} session checks finished
-                    </StatusText>
-                    {state.backfill.reviewed > 0 && (
-                      <p className="ml-5 type-footnote tabular-nums text-label-tertiary">
-                        {state.backfill.reviewed.toLocaleString()} items reviewed so far
-                      </p>
-                    )}
-                  </div>
-                )}
-                {!historyRunning && progress && (
-                  <p className="type-footnote text-label-secondary">{progress}</p>
-                )}
-              </div>
-            )}
-          </SettingsRow>
-        </Card>
-      </SectionGroup>
 
       <CheckProviderSettings
         control={control}
@@ -337,7 +210,7 @@ export function ChecksStepSettings({
   )
 }
 
-const CHECK_SEARCH_IDS: Record<BurnCheckDetectorId, SettingsControlId> = {
+const CHECK_SEARCH_IDS = {
   sessionsOverDepth: "sessionsOverDepthCheck",
   modelOverthinking: "modelOverthinkingCheck",
   overpoweredSubagents: "overpoweredSubagentsCheck",
@@ -347,18 +220,11 @@ const CHECK_SEARCH_IDS: Record<BurnCheckDetectorId, SettingsControlId> = {
   oldModelUsage: "oldModelUsageCheck",
   overuseOfFastMode: "overuseOfFastModeCheck",
   cacheChurn: "cacheChurnCheck",
-  ignoredInstructions: "ignoredInstructions",
-  skillOpportunities: "skillOpportunitiesCheck",
-  overExploring: "overExploringCheck",
-  scopeCreep: "scopeCreepCheck",
-}
+} as const
 
-function checkRows(kind: "local" | "smart") {
-  return (
-    Object.entries(CHECK_DEFINITIONS) as Array<
-      [BurnCheckDetectorId, (typeof CHECK_DEFINITIONS)[BurnCheckDetectorId]]
-    >
-  )
-    .filter(([, definition]) => definition.kind === kind)
-    .map(([id]) => ({ id, searchId: CHECK_SEARCH_IDS[id] }))
+function checkRows() {
+  return (Object.keys(CHECK_SEARCH_IDS) as Array<keyof typeof CHECK_SEARCH_IDS>).map((id) => ({
+    id,
+    searchId: CHECK_SEARCH_IDS[id],
+  }))
 }

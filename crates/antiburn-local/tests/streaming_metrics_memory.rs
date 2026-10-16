@@ -624,15 +624,10 @@ fn disk_bytes_per_row_stay_bounded_with_content_enabled() {
 /// from it.
 #[test]
 fn a_serialized_snapshot_for_the_largest_corpus_tier_stays_bounded() {
-    /// Measured: a 4 MiB synthetic session's `StreamSnapshot` encodes to
-    /// 520,777 bytes (about 509 KiB) with `postcard`, versus 2,002,215
-    /// bytes (about 1.9 MiB) for the same snapshot as JSON — `postcard`'s
-    /// compact varint and length-prefixed encoding does not re-expand this
-    /// type's interned name IDs and packed slot indices into full field
-    /// names and strings the way JSON does. This bound rounds the measured
-    /// size up generously (over 2x), the same margin
-    /// `RETAINED_EVIDENCE_BYTES_BOUND`'s own doc comment uses.
-    const RESUMED_SNAPSHOT_BYTES_BOUND: usize = 1_100 * 1024;
+    /// Measured: the 4 MiB synthetic session encodes to 1,147,189 bytes.
+    /// The snapshot now includes source-result observations and native call joins.
+    /// Keep a 1,250 KiB ceiling for this corpus, with about 12% headroom.
+    const RESUMED_SNAPSHOT_BYTES_BOUND: usize = 1_250 * 1024;
 
     let session = generate_session_of_bytes(901, 0, 4 * 1024 * 1024);
     let directory = tempfile::TempDir::new().expect("tempdir");
@@ -672,6 +667,12 @@ fn a_serialized_snapshot_for_the_largest_corpus_tier_stays_bounded() {
             resume: Default::default(),
         },
         next_turn_index: 0,
+        tool_result_observations_json: Vec::new(),
+        native_tool_result_conflicts: Vec::new(),
+        tool_result_observations_complete: true,
+        user_messages_json: Vec::new(),
+        user_message_conflicts: Vec::new(),
+        user_messages_complete: true,
     };
 
     let store = MemoryTurnRowStore::new("claude", &session.session_id);
@@ -770,6 +771,12 @@ fn a_serialized_codex_snapshot_for_the_largest_fixture_stays_bounded() {
             resume: Default::default(),
         },
         next_turn_index: 0,
+        tool_result_observations_json: Vec::new(),
+        native_tool_result_conflicts: Vec::new(),
+        tool_result_observations_complete: true,
+        user_messages_json: Vec::new(),
+        user_message_conflicts: Vec::new(),
+        user_messages_complete: true,
     };
 
     let store = MemoryTurnRowStore::new("codex", "codex-snapshot-bound");

@@ -97,6 +97,7 @@ name = "antiburn"
 version = "0.10.0"
 dependencies = [
  "antiburn-anchored-window",
+ "antiburn-checks",
  "antiburn-hud",
  "antiburn-local",
  "antiburn-main-window",
@@ -165,6 +166,16 @@ dependencies = [
  "tracing",
  "url",
  "windows",
+]
+
+[[package]]
+name = "antiburn-checks"
+version = "0.1.0"
+dependencies = [
+ "saphyr-parser",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -305,6 +316,12 @@ dependencies = [
  "wl-clipboard-rs",
  "x11rb",
 ]
+
+[[package]]
+name = "arraydeque"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
 
 [[package]]
 name = "arrayvec"
@@ -4570,6 +4587,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "saphyr-parser"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b76a6d2c15f6fe77217c21796e39cd406ddc5f192d5c8a2a1ddecb672abedcd"
+dependencies = [
+ "arraydeque",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

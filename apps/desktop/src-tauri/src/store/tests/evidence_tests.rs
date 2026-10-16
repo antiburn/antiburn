@@ -603,6 +603,9 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
                 evidence: None,
                 outcome: crate::analysis::PassOutcome::SourceMissing,
                 source_outcomes: Vec::new(),
+                tool_result_observations: Vec::new(),
+                native_tool_result_source_format: None,
+                tool_result_observations_complete: false,
             }
         }) as crate::insights_worker::PassFuture
     };

@@ -24,6 +24,7 @@ const MAX_CALL_BYTES: usize = 8 * 1024 * 1024;
 pub(super) struct PiNativeState {
     active: bool,
     invalid: bool,
+    publication_order_invalid: bool,
     last_id: Option<String>,
     session_id: Option<String>,
     calls: HashMap<String, NativeCall>,
@@ -53,10 +54,19 @@ impl PiNativeState {
 
     pub(super) fn invalidate(&mut self) {
         self.invalid = true;
+        self.publication_order_invalid = true;
     }
 
     pub(super) fn incomplete(&self) -> bool {
         self.active && self.invalid
+    }
+
+    pub(super) fn publication_order_incomplete(&self) -> bool {
+        self.active && self.publication_order_invalid
+    }
+
+    pub(super) fn mark_content_incomplete(&mut self) {
+        self.invalid = true;
     }
 
     pub(super) fn observe_entry(&mut self, value: &Value, sink: &mut dyn RecordSink) {
@@ -74,10 +84,10 @@ impl PiNativeState {
             kind,
             Some("model_change" | "thinking_level_change" | "message" | "session_info" | "label")
         );
-        if id.is_none()
-            || !parent_matches
-            || id == self.last_id.as_deref()
-            || !supported
+        let invalid_order =
+            id.is_none() || !parent_matches || id == self.last_id.as_deref() || !supported;
+        self.publication_order_invalid |= invalid_order;
+        if invalid_order
             || !complete(value)
             || (value["message"]["role"] == "user" && !text_only_user(value))
             || value["message"]["content"]

@@ -55,7 +55,8 @@ describe("Checks presentation", () => {
     const source = report([check])
     const before = structuredClone(source)
     const presented = checksPresentation(source)
-    expect(presented.wins).toEqual([check])
+    expect(presented.wins).toEqual([])
+    expect(presented.checking).toEqual([check])
     expect(presented.activeUnavailable).toEqual([])
     expect(presented.burnChecks.counts).toEqual({ failed: 0, passed: 0, unassessed: 1 })
     expect(checksHeroPresentation(presented).summary).toBeNull()
@@ -69,7 +70,8 @@ describe("Checks presentation", () => {
         category({ id: "oldModelUsage", finding: 0, clean: 2 }),
       ]),
     )
-    expect(presentation.wins).toHaveLength(2)
+    expect(presentation.wins).toHaveLength(1)
+    expect(presentation.checking).toHaveLength(1)
     expect(checksHeroPresentation(presentation).summary).toBe("1 check passed")
     expect(presentation.burnChecks.counts).toEqual({ failed: 0, passed: 1, unassessed: 1 })
   })

@@ -12,18 +12,15 @@ import {
   Sparkles,
   Target,
   Wrench,
+  CircleCheck,
   type LucideIcon,
 } from "lucide-react"
 
-import { pluralize } from "../../lib/presentation/text"
-import type {
-  BurnCheckDetectorId,
-  BurnCheckTargetPayload,
-  ChecksCategoryPayload,
-} from "../../lib/insightsIpc"
+import type { BurnCheckDetectorId, BurnCheckTargetPayload } from "../../lib/insightsIpc"
+import { isInstalledCheck, checkLabel, type CheckRow } from "../../lib/presentation/checkRows"
 import { checkHasProvisionalResult } from "../../lib/presentation/checkStatus"
+import { checkRowStatus, checkStatusFacts } from "../../lib/presentation/checkRowStatus"
 import {
-  CHECK_LABELS,
   formatApiEquivalentUsd,
   formatTokenBurnPercent,
   tokenBurnTone,
@@ -110,16 +107,7 @@ const CHECK_ICONS: Record<BurnCheckDetectorId, LucideIcon> = {
   ignoredInstructions: CHECK_UI.ignoredInstructions.icon,
 }
 
-function failedSessionSummary(category: ChecksCategoryPayload): string {
-  if (category.lifecycle === "awaitingVerification") return "Awaiting verification"
-  if (category.lifecycle === "passing") return "Passed"
-  const assessed = category.finding + category.clean
-  return assessed > 0
-    ? `${category.finding}/${assessed} ${pluralize(assessed, "session", "sessions")} failed`
-    : "Check failed"
-}
-
-function tokenBurnLabel(category: ChecksCategoryPayload): string | null {
+function tokenBurnLabel(category: CheckRow): string | null {
   return category.estimatedTokenBurnBasisPoints == null
     ? null
     : `${formatTokenBurnPercent(category.estimatedTokenBurnBasisPoints)} estimated burn`
@@ -141,21 +129,19 @@ function summedCostLine(targets: readonly BurnCheckTargetPayload[] | undefined):
 }
 
 export function checkRowPresentation(
-  category: ChecksCategoryPayload,
+  category: CheckRow,
   targets?: readonly BurnCheckTargetPayload[],
 ) {
   const failed = category.lifecycle === "failing"
   const provisional = checkHasProvisionalResult(category)
+  const status = checkStatusFacts(category)
   const metric =
     failed && category.id !== "ignoredInstructions" ? tokenBurnLabel(category) : null
   return {
-    Icon: CHECK_ICONS[category.id],
-    label: CHECK_LABELS[category.id],
+    Icon: isInstalledCheck(category) ? CircleCheck : CHECK_ICONS[category.id],
+    label: checkLabel(category),
     provisional,
-    checking:
-      category.checking === true &&
-      category.lifecycle !== "awaitingVerification" &&
-      category.reviewState == null,
+    checking: status.checking === true,
     coverage: category.reviewCoverage
       ? [
           category.reviewCoverage.total == null
@@ -171,7 +157,7 @@ export function checkRowPresentation(
             {
               label: "This check has been sampled",
               details: [
-                "This check reviews a sample of matching items. No issue in the sample does not mean every item is clear.",
+                "This check samples matching items. No issue in the sample does not mean every item is clear.",
                 ...(category.checking && category.reviewCoverage?.continuing
                   ? ["Review is continuing."]
                   : []),
@@ -190,21 +176,13 @@ export function checkRowPresentation(
           ]
         : []),
     ],
-    summary: provisional
-      ? "No issues found yet"
-      : failed
-        ? failedSessionSummary(category)
-        : category.lifecycle === "passing"
-          ? "Passed"
-          : category.lifecycle === "awaitingVerification"
-            ? "Awaiting verification"
-            : "Not assessed",
+    summary: checkRowStatus(category).text,
     metric,
     costLine: failed ? summedCostLine(targets) : null,
     iconTone:
       category.lifecycle === "failing"
         ? "bg-system-red/10 text-system-red-text"
-        : category.lifecycle === "passing" || provisional
+        : status.lifecycle === "passing" && !provisional
           ? "bg-system-green/10 text-system-green"
           : "bg-surface-card text-label-secondary",
     metricTone:

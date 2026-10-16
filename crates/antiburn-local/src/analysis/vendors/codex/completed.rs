@@ -37,6 +37,20 @@ pub(super) struct CompletedState {
 }
 
 impl CompletedState {
+    pub(super) fn live_seam(&mut self, ordinal: Option<u64>) {
+        self.ordinal = ordinal.and_then(|ordinal| ordinal.checked_sub(1));
+    }
+
+    pub(super) fn compact_live_identities(&mut self) {
+        self.items.clear();
+        self.messages.clear();
+        self.replaced_calls.clear();
+    }
+
+    pub(super) fn admits(&self, session_id: &str) -> bool {
+        self.root && self.native_header && self.session_id.as_deref() == Some(session_id)
+    }
+
     pub(super) fn observe(
         &mut self,
         record: &Value,

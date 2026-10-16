@@ -236,7 +236,7 @@ export function BurnCheckTargetActions({
         reviewBlocked: true,
         status:
           outcome?.outcome === "conflict"
-            ? "The setting changed during this review. Close it and check the current setting."
+            ? "The setting changed during this check. Close it and check the current setting."
             : outcome?.outcome === "unavailable"
               ? "The current setting changed, so this edit was not made."
               : null,

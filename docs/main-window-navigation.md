@@ -76,7 +76,32 @@ changes only the visible step and does not lower the backend scan gate.
 Settings panes, Settings controls, agent session filters, and checks own their
 descriptors. Search combines these descriptors without maintaining independent
 label or alias lists. Settings panes share sidebar order and require exhaustive
-icon and renderer bindings. Check descriptors use the existing detector IDs.
+icon and renderer bindings. Native check descriptors retain their existing
+detector IDs. YAML definitions supply their runtime names, aliases, and
+availability to the same local search experience. See
+[Burn Checks authoring](burn-check/authoring.md) for the current draft and support.
+
+Burn Checks use the lowercase filename stem as logical identity. The temporary
+internal `installed:<filename-stem>` namespace keeps it distinct from native
+detector IDs; it is not a product label or an extension to `DetectorId`. Resolve
+global/project overrides within each scope, then aggregate collection/search
+rows by that logical ID. Multiple project activations of one global definition
+must not create ambiguous duplicate destinations. Keep scope, generation,
+branch, and evidence ownership on the underlying targets.
+
+The existing Checks collection owns one selection and keyboard inventory for
+both native checks and discovered definitions. They share groups, header totals,
+the right detail pane, source details, and session navigation. The header counts
+logical check types, including snoozed rows. The sidebar and active summaries
+exclude snoozed failures. Search reveals the target's existing group and focuses
+its ordinary row; it does not create an inline detail or history view.
+
+Whole-check snoozes use the same one-week, one-month, Forever, and Unsnooze
+actions. Dynamic identities remain separate at the persistence boundary, so
+native snooze preferences and detector masks stay compatible. Snooze changes
+presentation, not runtime enablement or activation. Discovered definitions do
+not acquire native fix prompts, Auto Fix, verification watches, burn estimates,
+or savings through navigation or row reuse.
 
 The Agents, Sessions, and Checks Settings panes render the same components as
 the first run's "Show settings" disclosure. Their controls are ordinary

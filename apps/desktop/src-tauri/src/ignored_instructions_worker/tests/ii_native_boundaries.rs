@@ -366,7 +366,8 @@ async fn four_native_agents_prepare_publish_and_report_without_invented_authorit
         store
             .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
             .unwrap();
-        publish_native_source(&store, agent, id, source, format, "native-v1", 100).unwrap();
+        publish_native_source(&store, agent, id, source, format, "native-v1", 100)
+            .unwrap_or_else(|error| panic!("{agent} source publication failed: {error:#}"));
         let mut candidate = store
             .burn_check_candidates(CHECK_ID, NOW, IDLE_SECS, 16)
             .unwrap()

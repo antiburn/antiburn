@@ -1121,12 +1121,6 @@ describe("SettingsView", () => {
           const row = container.querySelector(`[data-settings-control="${control}"]`)
           expect(row, control).not.toBeNull()
           expect(row!.contains(document.activeElement), control).toBe(true)
-          if (control === "smartCheckLimits") {
-            expect(screen.getByRole("button", { name: "Model limits" })).toHaveAttribute(
-              "aria-expanded",
-              "true",
-            )
-          }
         })
       }
       expect(invoke).not.toHaveBeenCalledWith("set_settings", expect.anything())

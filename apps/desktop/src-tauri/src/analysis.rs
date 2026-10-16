@@ -20,14 +20,15 @@ use antiburn_local::analysis::{
     ANALYZER_REVISION, ActiveSessionsSummary, AdapterResume, AppendOnlyGuarantee,
     COVERAGE_SCHEMA_REVISION, CompositeSink, EVIDENCE_SCHEMA_REVISION, EfficiencyTotals,
     EvidenceResumeState, EvidenceSnapshot, EvidenceSource, InitialContextBreakdown,
-    MAX_PROVIDER_HINTS, METRICS_SCHEMA_REVISION, ModelRun, PARSER_REVISION, ProviderHint,
-    RESUME_SNAPSHOT_REVISION, RawSource, ResumePoint, ResumeRevisions, ResumedVisit, SessionCost,
-    SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
+    MAX_PROVIDER_HINTS, METRICS_SCHEMA_REVISION, ModelRun, NormalizedRecord, OpenCodeJournalCursor,
+    OpenCodeJournalReadError, OpenCodeToolResultPage, PARSER_REVISION, ProviderHint,
+    RESUME_SNAPSHOT_REVISION, RawSource, RecordSink, ResumePoint, ResumeRevisions, ResumedVisit,
+    SessionCost, SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
     SessionMetricsAccumulator, SessionReader, SessionSummary, SourceCapabilities,
     SourceChangedReason, SourceClaim, SourceFormat, SourceKind, StoredResume, StreamSnapshot,
-    TurnRow, TurnRowSink, TurnRowStore, TurnScope, VisitOutcome, aggregate_metrics,
-    append_only_guarantee, evidence_from_facts, merge_metrics, metrics_by_source,
-    metrics_from_rows, price_breakdown, pricing_generation, reader_for_input,
+    ToolResultObservation, TurnRow, TurnRowSink, TurnRowStore, TurnScope, VisitOutcome,
+    aggregate_metrics, append_only_guarantee, evidence_from_facts, merge_metrics,
+    metrics_by_source, metrics_from_rows, price_breakdown, pricing_generation, reader_for_input,
 };
 use antiburn_local::discovery::source_version::claude_sidecar_fingerprint;
 use antiburn_local::discovery::{
@@ -87,6 +88,7 @@ impl CancelFlag {
 pub struct PassSignal {
     cancel: Arc<AtomicBool>,
     progress: Arc<AtomicU64>,
+    journal_delivery: bool,
 }
 
 impl PassSignal {
@@ -94,11 +96,21 @@ impl PassSignal {
         Self {
             cancel: Arc::new(AtomicBool::new(false)),
             progress: Arc::new(AtomicU64::new(0)),
+            journal_delivery: false,
         }
     }
 
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn with_journal_delivery(mut self) -> Self {
+        self.journal_delivery = true;
+        self
     }
 
     pub fn progress(&self) -> u64 {
@@ -137,6 +149,12 @@ pub struct EvidencePass {
     /// Each source this pass read, and how — see [`StreamedSession::
     /// source_outcomes`]. Empty for every outcome but `Published`.
     pub source_outcomes: Vec<SourcePublishOutcome>,
+    /// Source-native result observations gathered in the parent parse pass.
+    pub tool_result_observations: Vec<ToolResultObservation>,
+    /// False when the parser could not retain a complete source-result set.
+    pub tool_result_observations_complete: bool,
+    /// Source format selected by discovery for the parent session.
+    pub native_tool_result_source_format: Option<SourceFormat>,
 }
 
 pub struct StreamedSession {
@@ -162,6 +180,10 @@ pub struct StreamedSession {
     /// pass with no `turn_row_store`: only the durable worker resumes a
     /// source or persists its snapshot.
     pub source_outcomes: Vec<SourcePublishOutcome>,
+    /// Source-native result observations from the main session only.
+    pub tool_result_observations: Vec<ToolResultObservation>,
+    /// False when the parent parser could not retain the complete result set.
+    pub tool_result_observations_complete: bool,
 }
 
 /// `inclusive_model_breakdown` and `model_runs`, derived from published
@@ -179,6 +201,67 @@ pub struct RowProjections {
     pub model_breakdown: std::collections::BTreeMap<String, ModelTokens>,
     pub pricing_breakdown: std::collections::BTreeMap<String, ModelTokens>,
     pub model_runs: Vec<ModelRun>,
+}
+
+struct JournalProjectionSink<'a>(&'a mut CompositeSink);
+
+impl RecordSink for JournalProjectionSink<'_> {
+    fn tool_results_requested(&self) -> bool {
+        false
+    }
+
+    fn record(&mut self, record: NormalizedRecord) {
+        if !matches!(record, NormalizedRecord::ToolResult(_)) {
+            self.0.record(record);
+        }
+    }
+
+    fn finish(&mut self, summary: SessionSummary) {
+        self.0.tool_result_gap();
+        self.0.finish(summary);
+    }
+}
+
+pub(crate) async fn read_opencode_journal_page(
+    source: SessionSource,
+    session: String,
+    cursor: Option<OpenCodeJournalCursor>,
+    baseline: Option<u64>,
+    requires_full_read: bool,
+    signal: PassSignal,
+) -> anyhow::Result<Option<OpenCodeToolResultPage>> {
+    let SessionSource::ProviderDb {
+        agent: AgentKind::OpenCode,
+        db_path,
+        session_id,
+    } = source
+    else {
+        return Err(OpenCodeJournalReadError::Unavailable.into());
+    };
+    anyhow::ensure!(
+        session_id == session,
+        OpenCodeJournalReadError::SourceChanged
+    );
+    tokio::task::spawn_blocking(move || {
+        if !requires_full_read
+            && let Some(cursor) = &cursor
+            && !antiburn_local::analysis::opencode_journal_has_new_events(
+                &db_path, &session, cursor,
+            )?
+        {
+            return Ok(None);
+        }
+        // Discovery changes require source validation, not historical replay.
+        antiburn_local::analysis::read_opencode_live_tool_result_page(
+            &db_path,
+            &session,
+            cursor.as_ref(),
+            baseline,
+            &|| signal.observe(),
+        )
+        .map(Some)
+    })
+    .await?
 }
 
 /// Why a pass could not read its parent source through to a publishable
@@ -265,6 +348,8 @@ enum ComputedAnalysis {
         row_projections: Option<Box<RowProjections>>,
         source_summaries: Option<BTreeMap<String, SessionSummary>>,
         source_outcomes: Vec<SourcePublishOutcome>,
+        tool_result_observations: Vec<ToolResultObservation>,
+        tool_result_observations_complete: bool,
     },
     SourceChanged,
     Missing,
@@ -1122,6 +1207,12 @@ fn bootstrap_snapshot(
             resume: EvidenceResumeState::default(),
         },
         next_turn_index: 0,
+        tool_result_observations_json: Vec::new(),
+        native_tool_result_conflicts: Vec::new(),
+        tool_result_observations_complete: true,
+        user_messages_json: Vec::new(),
+        user_message_conflicts: Vec::new(),
+        user_messages_complete: true,
     })
 }
 
@@ -1245,6 +1336,8 @@ fn delete_then_full_read(
             TurnRowSink::new(Arc::clone(store), input.session_id.clone(), context.scope)
                 .with_start_index(snapshot.next_turn_index),
         );
+        bootstrap_sink.restore_tool_result_observations(&snapshot);
+        bootstrap_sink.restore_user_messages(&snapshot);
         match adapter.visit_claimed_resumed(input, claim, &snapshot, cancelled, &mut bootstrap_sink)
         {
             Ok(visit) => {
@@ -1287,6 +1380,24 @@ fn stream_vendor_with_hooks(
     database_claim: Option<&str>,
     turn_row_store: Option<Arc<dyn TurnRowStore>>,
 ) -> StreamOutcome {
+    stream_vendor_with_delivery(
+        inputs,
+        cancelled,
+        after_claim,
+        database_claim,
+        turn_row_store,
+        false,
+    )
+}
+
+fn stream_vendor_with_delivery(
+    inputs: &[SessionInput],
+    cancelled: &dyn Fn() -> bool,
+    after_claim: &dyn Fn(usize, &std::path::Path),
+    database_claim: Option<&str>,
+    turn_row_store: Option<Arc<dyn TurnRowStore>>,
+    journal_delivery: bool,
+) -> StreamOutcome {
     let sidecars = inputs
         .iter()
         .skip(1)
@@ -1322,6 +1433,8 @@ fn stream_vendor_with_hooks(
     // see `stream_snapshot_to_attempt`. Threaded to `Store::publish_projections`
     // through `StreamedSession::source_outcomes`.
     let mut source_outcomes: Vec<SourcePublishOutcome> = Vec::new();
+    let mut tool_result_observations = Vec::new();
+    let mut tool_result_observations_complete = true;
     let current_revisions = resume_revisions();
     for (index, input) in inputs.iter().enumerate() {
         if cancelled() {
@@ -1413,6 +1526,8 @@ fn stream_vendor_with_hooks(
                         TurnRowSink::new(Arc::clone(store), input.session_id.clone(), scope)
                             .with_start_index(snapshot.next_turn_index),
                     );
+                    resumed.restore_tool_result_observations(&snapshot);
+                    resumed.restore_user_messages(&snapshot);
                     match adapter.visit_claimed_resumed(
                         input,
                         &claim,
@@ -1541,11 +1656,21 @@ fn stream_vendor_with_hooks(
                 continue;
             }
             RawSource::Sqlite(_) if index == 0 => {
-                let outcome = match database_claim {
-                    Some(fingerprint) => {
+                let outcome = match (input.source_format, database_claim, journal_delivery) {
+                    (SourceFormat::OpenCodeSqliteV2, Some(fingerprint), true) => adapter
+                        .visit_db_claimed(
+                            input,
+                            fingerprint,
+                            cancelled,
+                            &mut JournalProjectionSink(&mut accumulator),
+                        ),
+                    (SourceFormat::OpenCodeSqliteV2, None, true) => {
+                        adapter.visit(input, &mut JournalProjectionSink(&mut accumulator))
+                    }
+                    (_, Some(fingerprint), _) => {
                         adapter.visit_db_claimed(input, fingerprint, cancelled, &mut accumulator)
                     }
-                    None => adapter.visit(input, &mut accumulator),
+                    (_, None, _) => adapter.visit(input, &mut accumulator),
                 };
                 if database_claim.is_some() {
                     parent_fingerprint = database_claim.map(str::to_owned);
@@ -1664,6 +1789,17 @@ fn stream_vendor_with_hooks(
                     && let Some(summary) = accumulator.summary()
                 {
                     source_summaries.insert(input.session_id.clone(), summary.clone());
+                }
+                if index == 0 {
+                    tool_result_observations.extend(
+                        accumulator
+                            .tool_result_observations()
+                            .iter()
+                            .filter(|result| result.session_id == input.session_id)
+                            .cloned(),
+                    );
+                    tool_result_observations_complete &=
+                        accumulator.tool_result_observations_complete();
                 }
                 // `CompositeSink::snapshot` needs `&accumulator`, so this
                 // must run before `into_parts` consumes it below. Both
@@ -1871,6 +2007,8 @@ fn stream_vendor_with_hooks(
             row_projections,
             source_summaries,
             source_outcomes,
+            tool_result_observations,
+            tool_result_observations_complete,
         }),
         parent_fingerprint,
     }
@@ -2038,13 +2176,25 @@ pub async fn analyze_located_for_evidence(
     let signal_for_pass = signal.clone();
     let computed = tauri::async_runtime::spawn_blocking(move || {
         let cancelled = || signal_for_pass.observe();
-        match stream_vendor_with_hooks(
-            &inputs,
-            &cancelled,
-            &no_after_claim,
-            database_claim.as_deref(),
-            turn_row_store,
-        ) {
+        let streamed = if signal_for_pass.journal_delivery {
+            stream_vendor_with_delivery(
+                &inputs,
+                &cancelled,
+                &no_after_claim,
+                database_claim.as_deref(),
+                turn_row_store,
+                true,
+            )
+        } else {
+            stream_vendor_with_hooks(
+                &inputs,
+                &cancelled,
+                &no_after_claim,
+                database_claim.as_deref(),
+                turn_row_store,
+            )
+        };
+        match streamed {
             StreamOutcome::Published {
                 session,
                 parent_fingerprint,
@@ -2058,6 +2208,8 @@ pub async fn analyze_located_for_evidence(
                 row_projections: session.row_projections.map(Box::new),
                 source_summaries: session.source_summaries,
                 source_outcomes: session.source_outcomes,
+                tool_result_observations: session.tool_result_observations,
+                tool_result_observations_complete: session.tool_result_observations_complete,
             },
             StreamOutcome::SourceChanged => ComputedAnalysis::SourceChanged,
             StreamOutcome::ParentMissing => ComputedAnalysis::Missing,
@@ -2094,6 +2246,8 @@ pub async fn analyze_located_for_evidence(
         row_projections,
         source_summaries,
         source_outcomes,
+        tool_result_observations,
+        tool_result_observations_complete,
     ) = match computed {
         ComputedAnalysis::Published {
             parent,
@@ -2105,6 +2259,8 @@ pub async fn analyze_located_for_evidence(
             row_projections,
             source_summaries,
             source_outcomes,
+            tool_result_observations,
+            tool_result_observations_complete,
         } => (
             *parent,
             *merged,
@@ -2115,6 +2271,8 @@ pub async fn analyze_located_for_evidence(
             row_projections.map(|projections| *projections),
             source_summaries,
             source_outcomes,
+            tool_result_observations,
+            tool_result_observations_complete,
         ),
         ComputedAnalysis::SourceChanged => {
             return EvidencePass {
@@ -2128,6 +2286,9 @@ pub async fn analyze_located_for_evidence(
                 evidence: None,
                 outcome: PassOutcome::SourceChanged,
                 source_outcomes: Vec::new(),
+                tool_result_observations: Vec::new(),
+                tool_result_observations_complete: false,
+                native_tool_result_source_format: None,
             };
         }
         ComputedAnalysis::Missing => {
@@ -2169,6 +2330,9 @@ pub async fn analyze_located_for_evidence(
             evidence: None,
             outcome: PassOutcome::SourceChanged,
             source_outcomes: Vec::new(),
+            tool_result_observations: Vec::new(),
+            tool_result_observations_complete: false,
+            native_tool_result_source_format: None,
         };
     }
     let analyzed_generation = attributed_generation(&claimed, parent_fingerprint.as_deref());
@@ -2198,6 +2362,9 @@ pub async fn analyze_located_for_evidence(
         evidence,
         outcome: PassOutcome::Published,
         source_outcomes,
+        tool_result_observations,
+        tool_result_observations_complete,
+        native_tool_result_source_format: Some(admitted_format),
     }
 }
 
@@ -2529,6 +2696,9 @@ pub(crate) fn unavailable_evidence_pass(
         evidence: None,
         outcome,
         source_outcomes: Vec::new(),
+        tool_result_observations: Vec::new(),
+        tool_result_observations_complete: false,
+        native_tool_result_source_format: None,
     }
 }
 
@@ -2568,6 +2738,8 @@ fn evidence_pass_with_hook(
                 started_at_epoch,
                 source_summaries,
                 source_outcomes,
+                tool_result_observations,
+                tool_result_observations_complete,
                 ..
             } = *session;
             EvidencePass {
@@ -2581,6 +2753,9 @@ fn evidence_pass_with_hook(
                 evidence,
                 outcome: PassOutcome::Published,
                 source_outcomes,
+                tool_result_observations,
+                tool_result_observations_complete,
+                native_tool_result_source_format: inputs.first().map(|input| input.source_format),
             }
         }
         StreamOutcome::SourceChanged => {

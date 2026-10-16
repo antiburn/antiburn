@@ -1,6 +1,12 @@
 use super::checkpoint_tests::{checkpoint_fixture, checkpoint_fixture_in};
 use super::*;
 
+#[test]
+fn built_in_descriptors_remain_registered_but_cannot_execute() {
+    assert_eq!(registered_checks().len(), 4);
+    assert!(executable_checks().is_empty());
+}
+
 #[tokio::test(start_paused = true)]
 async fn provider_admission_waits_for_deadline_and_cancels_on_connection_change() {
     let (_store, input, handle, generation) = checkpoint_fixture();

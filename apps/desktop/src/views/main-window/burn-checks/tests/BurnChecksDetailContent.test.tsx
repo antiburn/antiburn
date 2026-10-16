@@ -122,7 +122,7 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
     })
     fireEvent.click(
       await screen.findByRole("button", {
-        name: /Ignored instructions, Awaiting verification/,
+        name: /Ignored instructions, .*Verifying/,
       }),
     )
     expect(
@@ -624,7 +624,7 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
     await waitFor(() => expect(commands.copyBatch).toHaveBeenCalledWith(["action-fresh"]))
     expect(commands.writeClipboardText).toHaveBeenCalledWith("Batch backend prompt")
     expect(screen.getByRole("region", { name: "Burn check details" })).toHaveTextContent(
-      "1 failed·2 passed",
+      "1 failed · 2 passed",
     )
     expect(
       screen.queryByRole("heading", { name: "Burn checks", level: 2 }),
@@ -938,7 +938,7 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Fix" }))
 
-    expect(await screen.findByRole("dialog", { name: "Review change" })).toHaveTextContent(
+    expect(await screen.findByRole("dialog", { name: "Confirm change" })).toHaveTextContent(
       "mcp_servers.reviewed.enabled",
     )
   })

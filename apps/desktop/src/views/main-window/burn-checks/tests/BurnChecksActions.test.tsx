@@ -79,7 +79,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     fireEvent.click(fix)
     expect(commands.prepare).toHaveBeenCalledOnce()
     await act(async () => undefined)
-    const dialog = screen.getByRole("dialog", { name: "Review change" })
+    const dialog = screen.getByRole("dialog", { name: "Confirm change" })
     expect(dialog).toHaveTextContent("Claude Code · Model · Global configuration")
     expect(dialog).toHaveTextContent("~/.claude/settings.json · model")
     expect(dialog).toHaveTextContent("claude-opus-4-6 → claude-sonnet-5")
@@ -192,11 +192,11 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     expect(fix.parentElement?.parentElement).toBe(prompt.parentElement?.parentElement)
     fireEvent.click(fix)
     let dialog = await screen.findByRole("dialog", { name: "Choose changes" })
-    expect(within(dialog).getByRole("button", { name: "Review 0 changes" })).toBeDisabled()
+    expect(within(dialog).getByRole("button", { name: "Check 0 changes" })).toBeDisabled()
     fireEvent.click(within(dialog).getByRole("button", { name: "Select all" }))
-    fireEvent.click(within(dialog).getByRole("button", { name: "Review 3 changes" }))
+    fireEvent.click(within(dialog).getByRole("button", { name: "Check 3 changes" }))
 
-    dialog = await screen.findByRole("dialog", { name: "Review 3 changes" })
+    dialog = await screen.findByRole("dialog", { name: "Check 3 changes" })
     expect(within(dialog).getByText("model-0")).toBeVisible()
     expect(within(dialog).getByText("model-1")).toBeVisible()
     expect(within(dialog).getByText("model-2")).toBeVisible()
@@ -245,9 +245,9 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     fireEvent.click(screen.getByRole("button", { name: "Fix" }))
     let dialog = await screen.findByRole("dialog", { name: "Choose changes" })
     fireEvent.click(within(dialog).getByRole("button", { name: "Select all" }))
-    fireEvent.click(within(dialog).getByRole("button", { name: "Review 2 changes" }))
+    fireEvent.click(within(dialog).getByRole("button", { name: "Check 2 changes" }))
 
-    dialog = await screen.findByRole("dialog", { name: "Review 2 changes" })
+    dialog = await screen.findByRole("dialog", { name: "Check 2 changes" })
     const values = within(dialog).getAllByText(`${currentValue} → ${proposedValue}`)
     expect(values).toHaveLength(2)
     for (const value of values) {
@@ -280,8 +280,8 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     fireEvent.click(screen.getByRole("button", { name: "Fix" }))
     let dialog = await screen.findByRole("dialog", { name: "Choose changes" })
     fireEvent.click(within(dialog).getByRole("checkbox", { name: /model-1/ }))
-    fireEvent.click(within(dialog).getByRole("button", { name: "Review 1 change" }))
-    dialog = await screen.findByRole("dialog", { name: "Review 1 change" })
+    fireEvent.click(within(dialog).getByRole("button", { name: "Check 1 change" }))
+    dialog = await screen.findByRole("dialog", { name: "Check 1 change" })
     expect(within(dialog).getByText("model-1")).toBeVisible()
     expect(within(dialog).queryByText("model-0")).not.toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply 1 change" }))
@@ -347,7 +347,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     expect(screen.getByRole("button", { name: "Copied" })).toBeEnabled()
     fireEvent.click(screen.getByRole("button", { name: "Fix" }))
     await act(async () => undefined)
-    const dialog = screen.getByRole("dialog", { name: "Review change" })
+    const dialog = screen.getByRole("dialog", { name: "Confirm change" })
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
     await act(async () => undefined)
     expect(screen.getByRole("button", { name: "Change applied" })).toBeDisabled()
@@ -458,7 +458,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Fix" }))
-    const dialog = await screen.findByRole("dialog", { name: "Review change" })
+    const dialog = await screen.findByRole("dialog", { name: "Confirm change" })
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
 
     await waitFor(() =>
@@ -466,7 +466,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
         "The result could not be confirmed. Check the setting before trying again.",
       ),
     )
-    expect(screen.getByRole("dialog", { name: "Review change" })).toBeVisible()
+    expect(screen.getByRole("dialog", { name: "Confirm change" })).toBeVisible()
     await waitFor(() =>
       expect(commands.noteInteraction).toHaveBeenCalledWith({
         kind: "burnCheckAutoFixCompleted",
@@ -499,13 +499,13 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Fix" }))
-    const dialog = await screen.findByRole("dialog", { name: "Review change" })
+    const dialog = await screen.findByRole("dialog", { name: "Confirm change" })
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
 
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled()
     fireEvent.keyDown(dialog, { key: "Escape" })
     fireEvent.mouseDown(dialog.parentElement!)
-    expect(screen.getByRole("dialog", { name: "Review change" })).toHaveAttribute(
+    expect(screen.getByRole("dialog", { name: "Confirm change" })).toHaveAttribute(
       "aria-busy",
       "true",
     )
@@ -527,7 +527,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     )
     const fix = screen.getByRole("button", { name: "Fix" })
     fireEvent.click(fix)
-    const dialog = await screen.findByRole("dialog", { name: "Review change" })
+    const dialog = await screen.findByRole("dialog", { name: "Confirm change" })
     const cancel = within(dialog).getByRole("button", { name: "Cancel" })
     const apply = within(dialog).getByRole("button", { name: "Apply change" })
 
@@ -553,7 +553,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
         />,
       )
       fireEvent.click(screen.getByRole("button", { name: "Fix" }))
-      const dialog = await screen.findByRole("dialog", { name: "Review change" })
+      const dialog = await screen.findByRole("dialog", { name: "Confirm change" })
 
       expect(dialog).toHaveClass("bg-surface-card", "text-label")
       expect(dialog.querySelector("dl")).toBeNull()

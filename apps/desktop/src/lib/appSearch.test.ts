@@ -46,6 +46,22 @@ describe("static app search", () => {
       check: "overExploring",
     })
   })
+  it("searches installed check names and routes to their effective identity", () => {
+    const result = searchApp("repeated failures", "macos", true, [
+      {
+        effectiveId: "installed:failed-retry-loop",
+        name: "Failed Retry Loop",
+        aliases: ["repeated failures"],
+        availability: { status: "invalid", reason: "Invalid YAML" },
+      },
+    ])[0]
+    expect(result).toMatchObject({
+      id: "installed-check:installed:failed-retry-loop",
+      label: "Failed Retry Loop",
+      detail: "Checks",
+      target: { kind: "installedCheck", check: "installed:failed-retry-loop" },
+    })
+  })
   it.each(["Scope Creep", "scopeCreep", "scope_creep"])("resolves %s", (query) => {
     expect(searchApp(query)[0]?.target).toEqual({ kind: "check", check: "scopeCreep" })
   })

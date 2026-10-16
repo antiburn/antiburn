@@ -194,9 +194,14 @@ export function isPureEngineReleaseChange(files, readAtRef) {
  */
 export const CROSS_WORKSPACE_INPUTS = {
   "apps/desktop/interface-scale.json": ["shell"],
+  "apps/desktop/src/views/main-window/burn-checks/tests/fixtures/installed-check-report.json":
+    ["shell"],
   "apps/desktop/src/views/SettingsView.tsx": ["shell"],
   "apps/desktop/src/views/settings/PrivacyPane.tsx": ["shell"],
   "docs/analytics.md": ["shell"],
+  "docs/burn-check/examples/failed-retry-loop.yml": ["checks", "shell"],
+  "docs/burn-check/examples/over-exploring.yml": ["checks"],
+  "docs/burn-check/examples/scope-creep.yml": ["checks"],
   "docs/check-coverage.md": ["engine", "shell"],
   "docs/privacy-policy.md": ["shell"],
   "docs/session-coverage.md": ["engine"],

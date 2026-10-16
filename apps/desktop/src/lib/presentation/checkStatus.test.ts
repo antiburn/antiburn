@@ -60,6 +60,15 @@ describe("provisional category results", () => {
     )
     expect(checkHasProvisionalResult({ ...check, lifecycle: "failing" })).toBe(false)
   })
+
+  it("keeps confirmed passes visible while additional sessions are checking", () => {
+    const check = { ...category(0, 3), checking: true, lifecycle: "passing" as const }
+    expect(checkHasProvisionalResult(check)).toBe(false)
+    expect(aggregateBurnCheckPresentation(report([check], false))).toMatchObject({
+      counts: { failed: 0, passed: 1, unassessed: 0 },
+      evidenceComplete: false,
+    })
+  })
 })
 
 describe("sessionBurnCheckPresentation", () => {

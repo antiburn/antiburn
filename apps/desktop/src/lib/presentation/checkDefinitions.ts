@@ -5,13 +5,13 @@ export const CHECK_DEFINITIONS = {
     label: "Session overdepth",
     aliases: ["long sessions", "context depth", "conversation length"],
     kind: "local",
-    description: "Checks recorded context depth against reviewed limits.",
+    description: "Checks recorded context depth against documented limits.",
   },
   modelOverthinking: {
     label: "Model overthinking",
     aliases: ["reasoning effort", "thinking budget"],
     kind: "local",
-    description: "Checks recorded reasoning settings and usage against reviewed limits.",
+    description: "Checks recorded reasoning settings and usage against documented limits.",
   },
   overpoweredSubagents: {
     label: "Overpowered subagents",
@@ -41,7 +41,7 @@ export const CHECK_DEFINITIONS = {
     label: "Old model usage",
     aliases: ["outdated models", "model versions"],
     kind: "local",
-    description: "Checks recorded model versions against reviewed replacements.",
+    description: "Checks recorded model versions against documented replacements.",
   },
   skillOpportunities: {
     label: "Skill opportunities",
@@ -66,7 +66,7 @@ export const CHECK_DEFINITIONS = {
     label: "Fast mode overuse",
     aliases: ["fast mode", "priority", "speed"],
     kind: "local",
-    description: "Checks recorded fast-tier use against reviewed limits.",
+    description: "Checks recorded fast-tier use against documented limits.",
   },
   cacheChurn: {
     label: "Excess cache rehydration",

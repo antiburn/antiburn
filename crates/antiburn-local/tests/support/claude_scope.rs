@@ -628,6 +628,12 @@ fn resumed_parts(values: &[Value], boundaries: &[usize]) -> Vec<ContentPart> {
             resume: Default::default(),
         },
         next_turn_index: 0,
+        tool_result_observations_json: Vec::new(),
+        native_tool_result_conflicts: Vec::new(),
+        tool_result_observations_complete: true,
+        user_messages_json: Vec::new(),
+        user_message_conflicts: Vec::new(),
+        user_messages_complete: true,
     };
     let mut sink = ClaudeContentSink::default();
     assert_eq!(boundaries.last(), Some(&values.len()));

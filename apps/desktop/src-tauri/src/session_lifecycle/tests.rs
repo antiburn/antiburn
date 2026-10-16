@@ -1988,7 +1988,7 @@ fn sync_report_callers_are_the_pinned_list() {
         (
             "insights_worker.rs",
             include_str!("../insights_worker.rs"),
-            1,
+            2,
         ),
         ("retention.rs", include_str!("../retention.rs"), 1),
         (

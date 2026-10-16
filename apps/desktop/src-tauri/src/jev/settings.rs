@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 use crate::dto::BurnCheckDetectorId;
+use crate::insights_report::installed_checks::{
+    InstalledCheckAvailabilityPayload, InstalledCheckDefinition, availability_rows,
+};
 use crate::jev::config::{
     CredentialReference, SystemOneConnection, SystemOneEndpoint, SystemOneProvider,
 };
@@ -12,6 +15,7 @@ use crate::jev::worker::WorkerHandle;
 use crate::store::{BurnCheckHistoryStatus, BurnCheckUsageSummary, Store};
 
 const ENABLED_AT_KEY: &str = "internal:burnChecksEnabledAtEpochV1";
+const YAML_DISCOVERY_ENABLED_KEY: &str = "internal:yamlBurnChecksDiscoveryEnabledV1";
 const SAVED_KEY_KEY: &str = "internal:typesafeKeySavedV1";
 const HISTORY_DAYS_KEY: &str = "internal:jevBurnCheckHistoryDaysV1";
 const AUTH_REJECTED_KEY: &str = "internal:typesafeAuthRejectedV1";
@@ -35,11 +39,14 @@ fn enroll_registered_checks(store: &Store) -> Result<(), &'static str> {
     let enabled = store
         .enabled_checks()
         .map_err(|_| "Could not read check preferences.")?;
-    let ids = crate::jev::worker::registered_checks()
+    let ids = crate::jev::worker::executable_checks()
         .iter()
         .filter(|check| DetectorId::from_key(check.id()).is_some_and(|id| enabled.contains(&id)))
         .map(|check| check.id())
         .collect::<Vec<_>>();
+    if ids.is_empty() {
+        return Ok(());
+    }
     store
         .capture_burn_check_boundaries(&ids, time::OffsetDateTime::now_utc().unix_timestamp())
         .map(|_| ())
@@ -48,7 +55,7 @@ fn enroll_registered_checks(store: &Store) -> Result<(), &'static str> {
 
 fn registered_history_status(store: &Store) -> anyhow::Result<BurnCheckHistoryStatus> {
     let enabled = store.enabled_checks()?;
-    let checks = crate::jev::worker::registered_checks()
+    let checks = crate::jev::worker::executable_checks()
         .iter()
         .filter(|check| DetectorId::from_key(check.id()).is_some_and(|id| enabled.contains(&id)))
         .map(|check| {
@@ -59,10 +66,21 @@ fn registered_history_status(store: &Store) -> anyhow::Result<BurnCheckHistorySt
             )
         })
         .collect::<Vec<_>>();
+    if checks.is_empty() {
+        return Ok(BurnCheckHistoryStatus::default());
+    }
     store.historical_burn_check_status_for_checks(
         &checks,
         time::OffsetDateTime::now_utc().unix_timestamp(),
     )
+}
+
+pub(crate) fn yaml_discovery_enabled(store: &Store) -> bool {
+    match store.internal_value(YAML_DISCOVERY_ENABLED_KEY).as_deref() {
+        Some("true") => true,
+        Some("false") => false,
+        _ => store.internal_value(ENABLED_AT_KEY).is_some(),
+    }
 }
 
 #[cfg(feature = "analytics")]
@@ -78,6 +96,7 @@ fn history_window_label(days: u8) -> Option<&'static str> {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CheckAvailability {
+    yaml_enabled: bool,
     configured: bool,
     saved_key: bool,
     error: Option<&'static str>,
@@ -85,7 +104,18 @@ pub(crate) struct CheckAvailability {
     history_days: u8,
     backfill: BurnCheckBackfillSummary,
     checks: Vec<CheckChoice>,
+    installed_checks: Vec<InstalledCheckAvailabilityPayload>,
     revision: u64,
+}
+
+impl CheckAvailability {
+    pub(crate) fn with_installed_checks(
+        mut self,
+        definitions: &[InstalledCheckDefinition],
+    ) -> Self {
+        self.installed_checks = availability_rows(definitions);
+        self
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -393,7 +423,8 @@ fn persist_connection_profile(
         None => Ok(None),
     }
     .map_err(|_| "Credential storage is unavailable.")?;
-    let checks_enabled = store.internal_value(ENABLED_AT_KEY).is_some();
+    let checks_enabled =
+        store.internal_value(ENABLED_AT_KEY).is_some() || yaml_discovery_enabled(store);
     let replacing = credential.is_some();
     let credential_changed = replacing && previous_secret != credential;
     store
@@ -542,7 +573,9 @@ fn restore_saved_key(
         return Err("TypeSafe credential removal is incomplete. Retry it in Settings → Checks.");
     }
     let connection = active_connection(store)?;
-    if store.internal_value(ENABLED_AT_KEY).is_none() {
+    let checks_enabled =
+        store.internal_value(ENABLED_AT_KEY).is_some() || yaml_discovery_enabled(store);
+    if !checks_enabled {
         return worker
             .install_system_one_connection(connection, None, false)
             .map_err(|_| "Saved Smart Burn Checks provider settings are invalid.");
@@ -774,7 +807,8 @@ fn save_connection(
     connection_entry(&id)?;
     let mut saved = profiles(store)?;
     ensure_no_pending_removal(store)?;
-    let checks_enabled = store.internal_value(ENABLED_AT_KEY).is_some();
+    let checks_enabled =
+        store.internal_value(ENABLED_AT_KEY).is_some() || yaml_discovery_enabled(store);
     let (connection, credential, changed) = persist_connection_profile(
         store,
         &mut saved,
@@ -853,7 +887,8 @@ fn switch_connection(
     connection
         .validate()
         .map_err(|_| "Saved connection settings are invalid.")?;
-    let checks_enabled = store.internal_value(ENABLED_AT_KEY).is_some();
+    let checks_enabled =
+        store.internal_value(ENABLED_AT_KEY).is_some() || yaml_discovery_enabled(store);
     if checks_enabled {
         enroll_registered_checks(store)?;
     }
@@ -1045,6 +1080,7 @@ pub(crate) fn restore_at_launch(app: &AppHandle) {
             *STARTUP_ERROR
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error);
+            crate::installed_checks::credentials_restored(&app);
             changed(&app);
             return;
         }
@@ -1052,6 +1088,7 @@ pub(crate) fn restore_at_launch(app: &AppHandle) {
             *STARTUP_ERROR
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error);
+            crate::installed_checks::credentials_restored(&app);
             changed(&app);
             return;
         }
@@ -1069,6 +1106,7 @@ pub(crate) fn restore_at_launch(app: &AppHandle) {
         *STARTUP_ERROR
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = error;
+        crate::installed_checks::credentials_restored(&app);
         changed(&app);
     });
 }
@@ -1098,6 +1136,7 @@ pub(crate) fn read_check_availability(
         .map_err(|_| "Could not read check history from the local database.")?;
     let backfill = BurnCheckBackfillSummary::from(status);
     Ok(CheckAvailability {
+        yaml_enabled: yaml_discovery_enabled(store),
         configured,
         saved_key,
         error,
@@ -1117,6 +1156,7 @@ pub(crate) fn read_check_availability(
                 enabled: enabled_checks.contains(&detector),
             })
             .collect(),
+        installed_checks: Vec::new(),
         revision,
     })
 }
@@ -1155,6 +1195,7 @@ fn availability(app: &AppHandle) -> Result<CheckAvailability, &'static str> {
         saved_key_marker(&store),
         error,
     )
+    .map(|availability| availability.with_installed_checks(&crate::installed_checks::metadata(app)))
 }
 
 impl From<BurnCheckHistoryStatus> for BurnCheckBackfillSummary {
@@ -1176,6 +1217,7 @@ impl From<BurnCheckHistoryStatus> for BurnCheckBackfillSummary {
 }
 
 pub(crate) fn changed(app: &AppHandle) {
+    crate::installed_checks::wake(app);
     let event = match availability(app) {
         Ok(snapshot) => CheckAvailabilityEvent::Updated(Box::new(snapshot)),
         Err(_) => CheckAvailabilityEvent::Failed,
@@ -1202,13 +1244,20 @@ pub(crate) async fn set_smart_burn_checks_enabled(
     let _change = CREDENTIAL_CHANGE.lock().await;
     let store = app.state::<Store>().inner().clone();
     let connection = active_connection(&store).map_err(str::to_owned)?;
-    let was_enabled = store.internal_value(ENABLED_AT_KEY).is_some();
+    let was_enabled = yaml_discovery_enabled(&store);
     if !enabled {
         preserve_saved_key_marker(&store).map_err(str::to_owned)?;
+        store
+            .set_internal_value_checked(YAML_DISCOVERY_ENABLED_KEY, "false")
+            .map_err(|_| "Could not pause YAML Burn Checks.".to_owned())?;
         app.state::<WorkerHandle>().suspend_system_one();
         store
             .disable_burn_checks()
             .map_err(|_| "Could not pause Smart Burn Checks.".to_owned())?;
+        if let Err(error) = crate::installed_checks::settle_disable(&app).await {
+            changed(&app);
+            return Err(error.to_string());
+        }
     } else {
         ensure_no_pending_removal(&store).map_err(str::to_owned)?;
         if store
@@ -1253,6 +1302,9 @@ pub(crate) async fn set_smart_burn_checks_enabled(
         if !app.state::<WorkerHandle>().is_available() {
             return Err("The selected model provider needs a valid credential.".to_owned());
         }
+        store
+            .set_internal_value_checked(YAML_DISCOVERY_ENABLED_KEY, "true")
+            .map_err(|_| "Could not enable YAML Burn Checks.".to_owned())?;
         store.set_internal_value(AUTH_REJECTED_KEY, "false");
     }
     if was_enabled != enabled {
@@ -1290,7 +1342,9 @@ pub(crate) fn set_check_enabled(
     {
         return availability(&app).map_err(str::to_owned);
     }
-    let smart = crate::jev::worker::registered_check_ids().contains(&detector);
+    let smart = crate::jev::worker::executable_checks()
+        .iter()
+        .any(|check| DetectorId::from_key(check.id()) == Some(detector));
     let save = || {
         store.set_check_enabled_with_smart_transition(
             detector,
@@ -1372,10 +1426,7 @@ pub(crate) async fn set_typesafe_api_key(
     let key = key.map(|key| key.trim().to_owned());
     let replacing = key.is_some();
     let was_configured = saved_key_marker(&app.state::<Store>());
-    let was_enabled = app
-        .state::<Store>()
-        .internal_value(ENABLED_AT_KEY)
-        .is_some();
+    let was_enabled = yaml_discovery_enabled(&app.state::<Store>());
     if key
         .as_ref()
         .is_some_and(|key| key.is_empty() || key.len() > 4096 || key.chars().any(char::is_control))
@@ -1409,6 +1460,9 @@ pub(crate) async fn set_typesafe_api_key(
     let resume_after_save = resume_after_key_save(was_enabled, replacing, was_configured);
     if resume_after_save {
         enroll_registered_checks(&store).map_err(str::to_owned)?;
+        store
+            .set_internal_value_checked(YAML_DISCOVERY_ENABLED_KEY, "true")
+            .map_err(|_| "Could not enable YAML Burn Checks.".to_owned())?;
     }
     if replacing {
         store
@@ -1464,7 +1518,7 @@ pub(crate) async fn remove_typesafe_api_key(
     let store = app.state::<Store>();
     let active = active_connection(&store).map_err(str::to_owned)?;
     #[cfg(feature = "analytics")]
-    let was_enabled = store.internal_value(ENABLED_AT_KEY).is_some();
+    let was_enabled = yaml_discovery_enabled(&store);
     let active_uses_legacy_key =
         matches!(active.credential, Some(CredentialReference::LegacyTypeSafe));
     let retrying_legacy_removal = legacy_removal_pending(&store);
@@ -1581,23 +1635,23 @@ pub(crate) fn run_check_backfill(
         .filter(|days| matches!(days, 7 | 30))
         .ok_or_else(|| "Choose the last 7 or 30 days first.".to_owned())?;
     let store = app.state::<Store>();
+    let enabled = store
+        .enabled_checks()
+        .map_err(|_| "Could not read check preferences.".to_owned())?;
+    let checks = crate::jev::worker::executable_checks()
+        .iter()
+        .filter(|check| DetectorId::from_key(check.id()).is_some_and(|id| enabled.contains(&id)))
+        .map(|check| (check.id(), check.evaluator_revision()))
+        .collect::<Vec<_>>();
+    if checks.is_empty() {
+        return Err("Built-in smart checks are temporarily unavailable.".to_owned());
+    }
     store
         .reconcile_evidence_revisions(
             &crate::agents::evidence_cohort(),
             crate::analysis::projection_revisions(),
         )
         .map_err(|_| "Could not refresh session evidence for this check.".to_owned())?;
-    let enabled = store
-        .enabled_checks()
-        .map_err(|_| "Could not read check preferences.".to_owned())?;
-    let checks = crate::jev::worker::registered_checks()
-        .iter()
-        .filter(|check| DetectorId::from_key(check.id()).is_some_and(|id| enabled.contains(&id)))
-        .map(|check| (check.id(), check.evaluator_revision()))
-        .collect::<Vec<_>>();
-    if checks.is_empty() {
-        return Err("Turn on a Smart Burn Check before checking past sessions.".to_owned());
-    }
     let queued = app
         .state::<Store>()
         .enqueue_burn_checks_for_revisions(
@@ -1648,15 +1702,15 @@ mod tests {
     use super::{
         AUTH_REJECTED_KEY, CONNECTION_PENDING_KEY, CONNECTION_PROFILES_KEY,
         CREDENTIAL_CHANGE_PENDING_KEY, CheckAvailabilityEvent, CredentialVault, ENABLED_AT_KEY,
-        PROVIDER_MIGRATION_KEY, active_connection, delete_credential, migrate_provider_state,
-        persist_connection_profile, preserve_saved_key_marker, restore_saved_key, saved_key_marker,
-        write_credential,
+        PROVIDER_MIGRATION_KEY, SAVED_KEY_KEY, YAML_DISCOVERY_ENABLED_KEY, active_connection,
+        delete_credential, migrate_provider_state, persist_connection_profile,
+        preserve_saved_key_marker, restore_saved_key, saved_key_marker, write_credential,
     };
     use crate::jev::worker::WorkerHandle;
     use crate::store::Store;
 
     #[test]
-    fn restore_and_save_enroll_the_current_registry_without_resetting_legacy_state() {
+    fn restore_and_save_preserve_legacy_preferences_without_enrolling_disabled_checks() {
         for restore in [true, false] {
             let store =
                 Store::open_in_memory(Path::new("/tmp/antiburn-registry-settings-test")).unwrap();
@@ -1680,28 +1734,35 @@ mod tests {
                 )
                 .unwrap();
             }
-            let epochs = crate::jev::worker::registered_checks()
-                .iter()
-                .map(|check| {
-                    let key = format!("internal:burnCheckEnabledAtEpochV1:{}", check.id());
-                    let epoch = store
-                        .internal_value(&key)
-                        .expect("every registered check has an epoch with zero sessions");
-                    if check.id() == "ignored_instructions" {
-                        assert_eq!(epoch, "123");
-                    } else {
-                        assert!(epoch.parse::<i64>().unwrap() > 123);
-                    }
-                    (key, epoch)
-                })
-                .collect::<Vec<_>>();
-            super::enroll_registered_checks(&store).unwrap();
-            for (key, epoch) in epochs {
-                assert_eq!(store.internal_value(&key), Some(epoch));
+            for check in crate::jev::worker::registered_checks().iter() {
+                let key = format!("internal:burnCheckEnabledAtEpochV1:{}", check.id());
+                assert_eq!(store.internal_value(&key), None);
             }
+            super::enroll_registered_checks(&store).unwrap();
             assert_eq!(store.internal_value(ENABLED_AT_KEY).as_deref(), Some("123"));
+            for detector in crate::jev::worker::registered_check_ids() {
+                assert!(store.check_enabled(detector).unwrap());
+            }
+            assert_eq!(store.internal_value(YAML_DISCOVERY_ENABLED_KEY), None);
             assert!(worker.is_available());
         }
+    }
+
+    #[test]
+    fn yaml_discovery_setting_tracks_master_state_and_migrates_legacy_enablement() {
+        let store =
+            Store::open_in_memory(Path::new("/tmp/antiburn-yaml-discovery-setting")).unwrap();
+        assert!(!super::yaml_discovery_enabled(&store));
+        store.set_internal_value(ENABLED_AT_KEY, "123");
+        assert!(super::yaml_discovery_enabled(&store));
+        store
+            .set_internal_value_checked(YAML_DISCOVERY_ENABLED_KEY, "false")
+            .unwrap();
+        assert!(!super::yaml_discovery_enabled(&store));
+        store
+            .set_internal_value_checked(YAML_DISCOVERY_ENABLED_KEY, "true")
+            .unwrap();
+        assert!(super::yaml_discovery_enabled(&store));
     }
 
     #[derive(Default)]
@@ -2608,6 +2669,21 @@ mod tests {
         restore_saved_key(&store, &worker, || Ok(Some("rejected-key".to_owned())))
             .expect("rejected key read");
         assert!(!worker.is_available());
+    }
+
+    #[test]
+    fn startup_restores_jev_for_yaml_checks_without_legacy_enablement() {
+        let store =
+            Store::open_in_memory(Path::new("/tmp/antiburn-yaml-jev-restored")).expect("store");
+        let worker = WorkerHandle::default();
+        store.set_internal_value(YAML_DISCOVERY_ENABLED_KEY, "true");
+        store.set_internal_value(SAVED_KEY_KEY, "true");
+
+        restore_saved_key(&store, &worker, || Ok(Some("synthetic-key".to_owned())))
+            .expect("yaml setting restores the Jev connection");
+
+        assert!(worker.is_available());
+        assert!(store.internal_value(ENABLED_AT_KEY).is_none());
     }
 
     #[test]

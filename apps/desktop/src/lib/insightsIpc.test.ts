@@ -9,6 +9,8 @@ import {
   listBurnCheckTargets,
   openBurnCheckSample,
   prepareAutoFixBurnCheckTarget,
+  getInstalledCheckEvidence,
+  openInstalledCheckDefinition,
 } from "./insightsIpc"
 
 const invoke = vi.hoisted(() => vi.fn())
@@ -16,7 +18,9 @@ const invoke = vi.hoisted(() => vi.fn())
 vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
 
 describe("burn check IPC", () => {
-  beforeEach(() => invoke.mockReset())
+  beforeEach(() => {
+    invoke.mockReset()
+  })
 
   it("sends only the detector when listing", async () => {
     invoke.mockResolvedValue({ targets: [], truncated: false })
@@ -25,6 +29,22 @@ describe("burn check IPC", () => {
 
     expect(invoke).toHaveBeenCalledWith("list_burn_check_targets", {
       detector: "oldModelUsage",
+    })
+  })
+
+  it("uses only the exact read-only installed evidence target", async () => {
+    invoke.mockResolvedValue({ status: "unavailable", items: [] })
+    await getInstalledCheckEvidence("installed-check-target")
+    expect(invoke).toHaveBeenCalledWith("get_installed_check_evidence", {
+      targetId: "installed-check-target",
+    })
+  })
+
+  it("opens the definition with the backend source reference", async () => {
+    invoke.mockResolvedValue(undefined)
+    await openInstalledCheckDefinition("definition-reference")
+    expect(invoke).toHaveBeenCalledWith("open_installed_check_definition", {
+      sourceReference: "definition-reference",
     })
   })
 

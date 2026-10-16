@@ -70,6 +70,8 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Strict installed-check parsing, runtime selection, and decision contracts.
+antiburn-checks = { path = "../../../crates/antiburn-checks" }
 # The local engine. The shell adds windows, tray, and IPC around it and owns
 # no analysis logic of its own.
 antiburn-local = { path = "../../../crates/antiburn-local" }
@@ -131,7 +133,7 @@ rusqlite = { version = "0.32.1", features = ["bundled"] }
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 # Required by `tauri::generate_context!`, which expands to code in this crate.
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 # Preserves Codex comments and layout during narrow configuration edits.
 toml_edit = "0.25"
 # Supplies SHA-256 to the provider account HMAC.

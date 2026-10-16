@@ -1,22 +1,91 @@
 # Smart Check diagnostics
 
-These evals are a repeatable prompt testbed. Scores describe the selected
+These evals are a repeatable prompt testbed. Built-in smart-check execution and
+historical enrollment are suspended in the app; their diagnostic harnesses and
+provider implementations remain. YAML replay uses Jev only. Diagnostic provider
+support does not establish a selectable app route or new built-in findings.
+Scores describe the selected
 synthetic cases; they are not delivery gates or population accuracy estimates.
 Production evidence validation and deterministic correctness tests still apply.
 
-| Cargo target           | Purpose                                                |
-| ---------------------- | ------------------------------------------------------ |
-| `ignored_instructions` | Instruction/action comparisons                         |
-| `scope_creep`          | Performed work against recorded task scope             |
-| `over_exploring`       | Redundant recorded output and clearly irrelevant reads |
-| `skill_opportunities`  | Concrete current procedures for selected workflows     |
-| `provider_validation`  | One Choice/Noul protocol request                       |
+| Cargo target           | Purpose                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------ |
+| `ignored_instructions` | Instruction/action comparisons                                                 |
+| `scope_creep`          | Performed work against recorded task scope                                     |
+| `over_exploring`       | Redundant recorded output and clearly irrelevant reads                         |
+| `skill_opportunities`  | Concrete current procedures for selected workflows                             |
+| `provider_validation`  | One Choice/Noul protocol request                                               |
+| Library `replay::`     | Burn Checks replay through production publication, engine, SQLite, and reports |
 
 Each check has one ignored `live` entry point. Run it explicitly:
 
 ```sh
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --offline --test scope_creep live -- --ignored --exact --nocapture --test-threads=1
 ```
+
+### Session replay
+
+The [replay suite](replay/README.md) has one synthetic session-evidence builder,
+one case registry, one offline scripted runner, and one ignored `replay::live`
+entry point. It compiles the maintained YAML and feeds `ToolResultBatch` records
+with frozen request context through production claim-fenced Store publication,
+`StorePublishedEvidenceReader`, `FileEventSource`, core replay, and
+`StoreCheckStore`. Each case gets a temporary Store and replay activation.
+`RunScope::Replay` and `SequentialReplay` retain isolated, sequential prefix
+acceptance. Burn Checks uses the `v1-prealpha` specification: experimental,
+not standardized, and subject to breaking changes.
+
+The six cases cover repeated failure, recovery, requested polling, uncertainty
+after a failure, usable partial request context, and unavailable result context.
+The source envelope exists
+only to satisfy current evidence types. It makes no native parser, agent, or
+producer-version coverage claim. The suite verifies production session-to-domain
+conversion, exact selected inputs and request prefixes, and actual persisted
+`burn_check_current_status` rows and writing-assessment provenance after every
+settled prefix. The runner also checks replay activation isolation.
+
+Run offline correctness first, then explicitly select the live diagnostic:
+
+```sh
+cargo nextest run --manifest-path apps/desktop/src-tauri/Cargo.toml --offline --lib replay::
+ANTIBURN_EVAL_CASES=rolling-recovery ANTIBURN_EVAL_LIMIT=1 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --offline --lib replay::live -- --ignored --exact --nocapture --test-threads=1
+```
+
+Use the shared `ANTIBURN_EVAL_CASES`, positive `ANTIBURN_EVAL_LIMIT`, and
+`ANTIBURN_EVAL_OUTPUT_DIR` controls. The suite is `development`. The live runner
+allows at most six cases, seven evaluations, and fourteen attempts. An offline
+test verifies that the entire registry fits these same bounds. Each case has
+at most 16 applied events, its declared evaluation count, twice that number of
+attempts, and a 180-second execution deadline. The selection capture declares
+aggregate bounds before dispatch. Partial request context still reaches assessment
+with explicit quality limits; it is not a zero-call gate. Fatal errors stop
+further cases and retain a summary. The separate missing-result-context case
+must produce zero calls, attempts, accepted assessments, and status rows.
+
+The declared model route currently requires `jev` and an inherited `TYPESAFE_API_KEY`.
+Provider/model substitutions are rejected. Captures under
+`target/eval-captures/replay/development/` retain actual inputs, labels,
+probabilities, action outcomes, persisted status rows, provider usage, errors,
+and latency. Live label and action quality is diagnostic; valid accepted results
+and finite bounds are required. No broad dataset, frozen score, prior capture,
+or dogfood-equivalence gate controls execution. Dogfood and eval definitions are
+independent. This runner accepts synthetic evidence only.
+
+Core Choice validation and the supported TypeSafe transport accept rounded
+probability maps when `abs(sum - 1.0) <= 0.02` under `f64` arithmetic. Every
+declared label must occur exactly once, the output must be declared, and every
+individual probability must be finite and in `[0, 1]`. The adapter preserves
+each raw probability. It does not normalize, clamp, or change the authored 0.95
+action thresholds. For example, a 0.99 sum is accepted, but a raw concern
+probability of 0.949 still fails the 0.95 gate. Sums outside tolerance and invalid
+individual values remain permanent validation failures with available usage.
+This intentional tolerance covers the supported provider's rounded maps; it is
+not an accuracy or calibration claim for another provider.
+
+The evaluator's `with_cancellation` callback is checked during shared admission
+and while the request is in flight. Cancellation before sending returns a known
+cancelled failure. Cancellation after sending returns unknown delivery and does
+not permit an automatic resend. Runtime code supplies the callback.
 
 Keep three test boundaries: unit tests and focused correctness integration tests,
 case-by-case `live` quality evals, and desktop throughput benchmarks.

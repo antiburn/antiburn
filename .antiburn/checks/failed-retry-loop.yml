@@ -1,0 +1,54 @@
+# yaml-language-server: $schema=../../docs/burn-check/schemas/burn-check.schema.json
+name: Failed Retry Loop
+description: Detect repeated attempts that encounter the same unresolved failure.
+on:
+  tool_result:
+  window:
+    size: 5
+    min: 3
+  cooldown: 60s
+decisions:
+  review:
+    model: typesafe/jev-1.13.0
+    input:
+      requests: ${{ session.requests }}
+      request_history_complete: ${{ session.requests_complete }}
+      source_coverage: ${{ session.source_coverage }}
+      activity: ${{ window.messages }}
+    fit:
+      "activity[*].tool.result.content": truncate
+    output:
+      verdict:
+        type: choice
+        question: >-
+          At the end of this activity window, is the agent still repeating an
+          unresolved failure without a useful reason? Read activity in order and
+          judge the current state, not whether an earlier prefix contained errors.
+          Choose clear if the latest relevant attempt succeeds, if a recorded
+          corrective change resolves the failure, or if the user requests these
+          retries or polling. These clear cases take priority over earlier failures.
+          Choose uncertain if the results do not identify the failure cause or do
+          not establish that the attempts repeat the same operation and failure.
+          Choose stuck only when at least three attempts clearly repeat the same
+          operation and specific failure, the latest attempt still has that failure,
+          and no recorded correction or requested polling justifies the repetition.
+          Use available linked arguments, observed results, requests, and source
+          quality as evidence. Missing values are not proof that an operation or
+          recovery did not happen. Review available evidence even when it is
+          partial. Input-fitting omissions can hide relevant output; do not infer
+          what omitted text contains. Choose uncertain when the loop or current
+          outcome cannot be established from the retained evidence.
+        criteria:
+          stuck: At least three attempts repeat the same specific failure, which is still unresolved at the end; no correction or requested retry justifies it.
+          clear: The latest relevant attempt succeeds, a corrective change resolves the failure, the user requests the retries or polling, or the window shows no current loop. Earlier failures do not override recovery or requested polling.
+          uncertain: The cause, operation relationship, or current outcome is not established. Generic failure text alone does not prove the same unresolved failure.
+actions:
+  - type: status
+    if: decisions.review.outputs.verdict == 'stuck' && decisions.review.details.verdict.probabilities.stuck >= 0.95
+    input:
+      result: failure
+      message: The agent may be stuck repeating a failed operation. Review the latest attempts before it continues.
+  - type: status
+    if: decisions.review.outputs.verdict == 'clear' && decisions.review.details.verdict.probabilities.clear >= 0.95
+    input:
+      result: success

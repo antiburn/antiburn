@@ -5,9 +5,11 @@ import { pluralize } from "../../lib/presentation/text"
 import { TextRoll } from "../../components/ui/TextRoll"
 import { BurnCheckSummary } from "../../components/burn-checks/BurnCheckSummary"
 import { BurnCheckFlames } from "../../components/burn-checks/BurnCheckFlames"
+import { CheckStatusText } from "../../components/burn-checks/CheckStatusText"
+import { checkRowStatus } from "../../lib/presentation/checkRowStatus"
 import "../../components/burn-checks/burn-check-summary.css"
 import { measureAnchorRegion } from "../../lib/anchorRegion"
-import type { ChecksCategoryPayload } from "../../lib/insightsIpc"
+import type { CheckRow } from "../../lib/presentation/checkRows"
 import {
   checksHeroPresentation,
   formatTokenBurnPercent,
@@ -113,7 +115,7 @@ export function ChecksSummary({
   )
 }
 
-function CheckRows({ checks }: { checks: readonly ChecksCategoryPayload[] }) {
+function CheckRows({ checks }: { checks: readonly CheckRow[] }) {
   return (
     <div className="mt-2 overflow-hidden rounded-control border border-separator">
       {checks.map((check) => {
@@ -133,17 +135,7 @@ function CheckRows({ checks }: { checks: readonly ChecksCategoryPayload[] }) {
               <span className="block truncate type-body font-medium! text-label">
                 {row.label}
               </span>
-              <span
-                className={`flex min-w-0 items-center gap-1.5 truncate font-mono type-footnote tabular-nums ${row.provisional ? "text-system-green" : check.lifecycle === "failing" ? "text-burn-check-failure-text" : check.lifecycle === "passing" ? "text-burn-check-pass-fill" : "text-label-tertiary"}`}
-              >
-                {row.summary}
-                {row.checking && (
-                  <span className="inline-flex shrink-0 items-center gap-1 text-label-tertiary">
-                    <LoaderCircle size={13} className="animate-spin" aria-hidden="true" />
-                    Checking
-                  </span>
-                )}
-              </span>
+              <CheckStatusText status={checkRowStatus(check)} />
             </span>
             {row.metric && (
               <span
@@ -236,7 +228,7 @@ export function ChecksPeek({
       {awaiting.length > 0 && (
         <section className="mt-4" aria-labelledby="awaiting-checks">
           <h2 id="awaiting-checks" className="px-1 type-caption text-label-tertiary">
-            Awaiting verification
+            Verifying
           </h2>
           <CheckRows checks={awaiting} />
         </section>
@@ -248,6 +240,22 @@ export function ChecksPeek({
             Passed checks
           </h2>
           <CheckRows checks={wins} />
+        </section>
+      )}
+      {presentation.checking.length > 0 && (
+        <section className="mt-4" aria-labelledby="checking-checks">
+          <h2 id="checking-checks" className="px-1 type-caption text-label-tertiary">
+            Checking
+          </h2>
+          <CheckRows checks={presentation.checking} />
+        </section>
+      )}
+      {presentation.activeUnavailable.length > 0 && (
+        <section className="mt-4" aria-labelledby="unassessed-checks">
+          <h2 id="unassessed-checks" className="px-1 type-caption text-label-tertiary">
+            Not assessed
+          </h2>
+          <CheckRows checks={presentation.activeUnavailable} />
         </section>
       )}
     </div>

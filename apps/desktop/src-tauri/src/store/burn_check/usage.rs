@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "../burn_checks/usage.rs"]
+mod installed;
+
 const MAX_USAGE_AGGREGATES: usize = 8;
 const MAX_USAGE_RESERVATIONS: usize = 4096;
 const PINNED_PRICE_VERSION: &str = "typesafe-model-catalog-2026-09-25";

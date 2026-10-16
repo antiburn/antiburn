@@ -1,39 +1,57 @@
 # Smart Burn Checks
 
-Smart Burn Checks are like deterministic Burn Checks: both look for signs of
-known issues in coding sessions. Smart Burn Checks send selected parts
-of a session to the configured provider for an assessment. Antiburn combines those assessments
-with its local rules. The result describes evidence of an issue; it does not
-judge a person's intent.
+Model-based Burn Checks currently run authored YAML through Jev. Enable
+**Model-based Checks** in **Settings → Checks**, then configure Jev under
+**Decision model**. Jev is the only exposed decision route. See the
+[setup guide](burn-check/README.md) and [supported subset](burn-check/authoring.md#supported-subset).
 
-Smart Burn Checks means all provider-powered Burn Checks. Each check declares its
-own evidence selection, questions, and result policy. All four use the shared
-framework; Ignored Instructions does not define the other checks' selection.
+The four built-in smart checks—Ignored Instructions, Scope Creep,
+Over-exploring, and Skill Opportunities—have suspended execution and historical
+enrollment. Their saved results, preferences, compatible evidence, transport
+code, and check implementations remain. Saved enablement does not restart them.
+YAML definitions with similar names are separate checks with their own supported
+inputs; they do not inherit the built-ins' capabilities or remediation.
 
-The four checks are Ignored Instructions, Scope Creep, Over-exploring, and Skill
-Opportunities. Jev uses a TypeSafe API key. Ollama, Cloudflare, and Custom
-connections use the same check flow. Hosted requests can incur charges; local
-usage estimates are not a spending cap or provider invoice.
+This document describes the retained built-in implementation, evidence
+capabilities, and saved-result validation. Its worker, history, provider, and
+budget descriptions do not establish current product reachability. The
+[product coverage matrix](check-coverage.md#first-tier-product-matrix) records
+that gate separately from source capabilities.
 
 ## Setup, controls, and local data
 
-Open the **Checks** step settings to choose checks. Each local and Smart Burn
-Check has an app-wide enabled preference. Existing local checks retain their
-enabled behavior when this control is introduced; Ignored Instructions retains
-the consent already saved for its group. Newly introduced checks start off
-until the reader opts in.
+The master **Model-based Checks** setting controls YAML discovery and activation.
+It does not resume built-in workers or enroll built-in history. Local
+deterministic checks retain their individual controls. Jev credentials use native
+credential storage or memory, not the session database. Provider requests can
+incur charges; usage estimates are not a spending cap or provider invoice.
 
-Smart Burn Checks also require the Smart Checks group to be active and a
-configured provider connection. The group control and provider setup do not
-replace or reset the individual choices.
-Jev is the default. **Use Ollama or another provider** opens Ollama, Cloudflare,
-and Custom setup. Saved connections retain their settings when switched. Model
-capabilities govern preparation, packing, transport, validation, and reduction.
-A connection test proves protocol acceptance, not check accuracy. Ollama can use
-a local or remote base URL serving `/v1/systemone`; an ordinary chat endpoint
-does not establish this protocol. Cloudflare accepts Clef or Clef Flash with an
-account ID and credential. Custom uses the exact endpoint with direct System One
-or Cloudflare-envelope response decoding.
+YAML requests contain the definition's selected tool results and available
+user-slot text, not full transcripts. Quality fields identify partial history,
+truncated text, and missing fields. Terminal results can contain partial evidence.
+OpenCode synthetic text is excluded from request history; mixed messages retain
+real user parts. A generated replacement without real request text leaves history
+partial. YAML category filters support `shell`, `read`, `search`, `edit`, and
+`other`; draft `write`, `delegate`, `skill`, and `mcp` filters fail compilation.
+Neither unmatched action conditions nor uncertain answers create success. A
+valid no-write assessment advances accepted progress while preserving the earlier
+status and its evidence.
+Fresh YAML attachment can assess one latest bounded recent window from an active
+native main session. Restart resumes saved progress; it does not replay each
+historical window. Native live delivery reads bounded suffixes independently of
+legacy metrics. Its validation samples do not prove all old payloads unchanged;
+strict historical replay has a separate integrity contract.
+Unsafe identity or order remains unavailable. See
+[source coverage](session-coverage.md#burn-check-source-facts) for accepted shapes
+and [authoring](burn-check/authoring.md#diagnose-and-interpret-results) for result limits.
+
+The retained built-in transport supports Jev, Ollama, Cloudflare, and Custom.
+Saved alternative-provider profiles do not make these routes selectable for YAML
+checks. Model capabilities still govern diagnostic preparation, packing,
+transport, validation, and reduction. A connection test proves protocol
+acceptance, not check accuracy. Ollama requires `/v1/systemone`; a chat endpoint
+alone does not establish that protocol. Cloudflare uses its supported response
+envelope; Custom retains direct System One and Cloudflare-envelope decoding.
 
 All four checks use compact evidence and short questions. Capabilities determine
 fit before dispatch, not model names. Ollama discovery distinguishes a matching
@@ -45,7 +63,7 @@ explicit manual limits; saving a connection is separate from assessment admissio
 If discovery has no context limit, assessment admission and connection tests load
 the idle model with an empty `/api/generate` request, then read discovery again.
 No session content is sent in the load request. If limits remain unknown, set a
-manual context override and test the connection before enabling checks.
+manual context override and test the diagnostic connection before assessment.
 For Ollama 0.40.1, verified `tev1` metadata and either a passthrough
 template or the pinned Qwen3.5 template enable renderer-specific accounting.
 That path estimates each rendered question with its state and options, reserves
@@ -55,22 +73,11 @@ encoding, or template contracts retain conservative accounting. Request-body
 byte limits remain separate from rendered-question context limits. Offline
 2,048- and 2,050-token fixtures do not prove live model accuracy or latency.
 
-An earlier, pre-compact-policy local evaluation used `tev1:0.8b` with a configured 2,050-token
-context. All 48 requests fit the estimated 1,746-token input budget and were
-accepted by the production runner. The model missed all six selected positive
-cases across the four checks and returned no unsafe findings. This confirms
-request fit, not useful finding recall. The installed environment did not have
-`tev1:0.9b`, so its behavior is unverified. A successful connection or fitting
-request does not show that a model can make useful judgments. That capture does
-not establish the current compact policy's quality or a measured speedup.
+A fitting request does not prove useful model judgments. Built-in 7- and 30-day
+history enrollment is suspended. The native past-session control does not replay
+YAML definitions; developer replay uses isolated state and explicit finite bounds.
 
-You can choose future sessions or start a 7- or 30-day
-history review there. A history request includes only enabled eligible Smart
-Checks. Enabling a check does not silently add the disabled interval to a
-history run. The history window applies to the requested review; it does not
-prove which instructions were active during older actions.
-
-Pause checks to stop new assessments while keeping saved connections. Credentials
+Turn off **Model-based Checks** to stop new YAML activation while keeping saved connections. Credentials
 use native credential storage or memory, not the session database. Removing a
 required credential prevents new requests through that connection. Remove a
 session to delete its local check state; already-incurred usage remains in the
@@ -79,22 +86,24 @@ Data** also removes local sessions, check state, unresolved requests, and usage
 totals. See the [privacy policy](privacy-policy.md) for retention and data
 handling details.
 
-Disabling one check stops its check-specific work and hides its active findings,
+Disabling one local deterministic check stops its check-specific work and hides its active findings,
 counts, and actions. Antiburn retains completed results, compatible cached
 answers, remediation history, and incurred usage. Re-enabling can make retained
 compatible results eligible again; local checks can recompute from retained
-evidence. If every check is off, the product reports that no checks are enabled
+evidence. Saved built-in preferences do not resume suspended execution.
+If every check is off, the product reports that no checks are enabled
 and does not describe the sessions as Clean or Passed.
 
 ## Registered checks
 
-The shared worker runs all four checks. Scope Creep, Over-exploring, and Skill
-Opportunities accept native Claude Code, Codex, OpenCode SQLite v2, and Pi
+The retained shared worker registers all four checks, but execution is suspended.
+Scope Creep, Over-exploring, and Skill Opportunities have characterized native
+Claude Code, Codex, OpenCode SQLite v2, and Pi
 sources under the pinned retained-root contracts in
 [session coverage](session-coverage.md#retained-root-smart-check-inputs).
-They use individual enabled preferences, the same master setting, provider
-connection, history controls, and Checks views. Four descriptors use
-one worker, including Ignored Instructions.
+Their saved preferences and report/evidence paths remain separate from YAML
+activation. Four descriptors share the retained worker, including Ignored
+Instructions.
 
 Scope Creep selects at most two bound material work groups, newest first. It asks
 whether performed work adds a substantial separate objective outside the task and
@@ -195,12 +204,12 @@ context rejection remains unassessed without child requests or a larger fallback
 
 The product caps are upper bounds, not minimum supported model windows:
 
-| Check | Candidates per snapshot | State bytes per candidate | Packed request bytes | Estimated input fit ceiling |
-| --- | ---: | ---: | ---: | ---: |
-| Ignored Instructions | 2 | 1,536 | 6,144 | 1,536 |
-| Scope Creep | 2 | 2,048 | 8,192 | 2,048 |
-| Over-exploring | 3 | 1,024 | 6,144 | 1,536 |
-| Skill Opportunities | 1 | 2,048 | 4,096 | 1,024 |
+| Check                | Candidates per snapshot | State bytes per candidate | Packed request bytes | Estimated input fit ceiling |
+| -------------------- | ----------------------: | ------------------------: | -------------------: | --------------------------: |
+| Ignored Instructions |                       2 |                     1,536 |                6,144 |                       1,536 |
+| Scope Creep          |                       2 |                     2,048 |                8,192 |                       2,048 |
+| Over-exploring       |                       3 |                     1,024 |                6,144 |                       1,536 |
+| Skill Opportunities  |                       1 |                     2,048 |                4,096 |                       1,024 |
 
 Each applicable provider limit can lower these bounds. Total input, state plus
 longest question, serialized bytes, question count, and criteria count remain
@@ -619,14 +628,10 @@ validators still apply. Live calls are explicit and can incur charges. Do not
 run every ignored test. See the [eval guide](../apps/desktop/src-tauri/eval/README.md)
 and [provider presets](../apps/desktop/src-tauri/eval/support/README.md).
 
-Bounded diagnostics on 2026-10-07 completed selected cases for all four checks
-with Jev and representative Ignored Instructions cases through Ollama,
-Cloudflare, and Custom direct/envelope routes. Some expected findings or clean
-results abstained. Nimble retained an incomplete Ignored Instructions execution
-and a Skill Opportunities advisory false positive. These results do not
-establish broad model quality, native parser reachability, or every provider/check
-combination. Retain weak scores and failures; rerun affected cases when request
-preparation, transport, or reduction changes.
+Diagnostic transport success does not establish broad model quality, current
+product reachability, or every provider/check combination. Retain weak scores and
+failures; rerun affected cases when request preparation, transport, or reduction
+changes.
 
 An ordinary assessment in about 60 seconds after worker start is a performance
 goal, not a deadline or guarantee. Preparation, provider admission, request
@@ -650,8 +655,6 @@ and a measured shortlist. They do not validate Ignored Instructions accuracy.
 
 ## Ignored Instructions selected-input coverage
 
-Audit date: 2026-10-07.
-
 This matrix records the twelve normalized session fields and their current
 field capability and selection for Ignored Instructions. User text and Bash
 output are selected, but accepted context needs the exact normalized proofs
@@ -659,7 +662,8 @@ above. Field capability alone does not prove context eligibility.
 Other Smart Burn Checks can select a
 different subset. It complements the exact native-source inventory in
 [`session-coverage.md`](session-coverage.md) and the reachable finding contract
-in [`check-coverage.md`](check-coverage.md).
+in [`check-coverage.md`](check-coverage.md). It describes retained source
+capabilities, not runnable built-in checks.
 
 `S` means the accepted adapter can supply the field. `C` means the field is
 conditional on the native record. `U` means this check does not accept the
@@ -678,16 +682,16 @@ anchors. Loader admission alone does not establish finding or Clean support.
 
 | `SourceFormat`                 | UserMessage | AssistantMessage | BashCommandInput | BashCommandOutput | FileEditPath | FileEditContent | ReadFilePath | ReadFileOutput | SearchFilesQuery | SearchFilesOutput | OtherToolInput | OtherToolOutput |
 | ------------------------------ | ----------- | ---------------- | ---------------- | ----------------- | ------------ | --------------- | ------------ | -------------- | ---------------- | ----------------- | -------------- | --------------- |
-| `ClaudeJsonl` | S | S | C | C | S | N | S | N | C | N | C | N |
-| `CodexRolloutJsonl` | S | S | C | C | S | N | S | N | C | N | C | N |
-| `PiV3Jsonl` | S | S | C | C | S | N | S | N | C | N | C | N |
-| `OpenCodeSqliteV2` | S | S | C | C | S | N | S | N | C | N | C | N |
-| `CursorCliAgentJsonl` | S | S | C | C | S | N | S | N | C | N | C | N |
-| `CursorCliStoreDb` | S | S | U | U | U | U | U | U | U | U | U | U |
-| `CursorChatStoreDb` | S | S | U | U | U | U | U | U | U | U | U | U |
-| `CursorIdeComposer` | S | S | U | U | U | U | U | U | U | U | U | U |
-| `AntigravityBrainJsonl` | S | S | C | C | S | N | S | N | C | N | C | N |
-| `AntigravitySqlite` | S | S | C | C | S | N | S | N | C | N | C | N |
+| `ClaudeJsonl`                  | S           | S                | C                | C                 | S            | N               | S            | N              | C                | N                 | C              | N               |
+| `CodexRolloutJsonl`            | S           | S                | C                | C                 | S            | N               | S            | N              | C                | N                 | C              | N               |
+| `PiV3Jsonl`                    | S           | S                | C                | C                 | S            | N               | S            | N              | C                | N                 | C              | N               |
+| `OpenCodeSqliteV2`             | S           | S                | C                | C                 | S            | N               | S            | N              | C                | N                 | C              | N               |
+| `CursorCliAgentJsonl`          | S           | S                | C                | C                 | S            | N               | S            | N              | C                | N                 | C              | N               |
+| `CursorCliStoreDb`             | S           | S                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
+| `CursorChatStoreDb`            | S           | S                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
+| `CursorIdeComposer`            | S           | S                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
+| `AntigravityBrainJsonl`        | S           | S                | C                | C                 | S            | N               | S            | N              | C                | N                 | C              | N               |
+| `AntigravitySqlite`            | S           | S                | C                | C                 | S            | N               | S            | N              | C                | N                 | C              | N               |
 | `OpenCodeJsonl`                | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `OmpV3Jsonl`                   | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `CursorJsonl`                  | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
@@ -720,8 +724,8 @@ row. Raw request content remains local; selected
 paths, commands, queries, and other eligible tool input form the assessment
 input. Dedicated edit-tool bodies are excluded from Ignored Instructions, while
 inline Bash scripts and patches can be selected as command input.
-Schema migration 63 adds normalized fields. Parser revision 46 refreshes older
-rows for operation metadata, native field bindings, recorded path context, and
+Normalized fields use private local storage. Parser revision 56 includes
+operation metadata, native field bindings, recorded path context, and
 truncated-request isolation and exact result joins. Metadata uses the existing
 private normalized JSON column.
 

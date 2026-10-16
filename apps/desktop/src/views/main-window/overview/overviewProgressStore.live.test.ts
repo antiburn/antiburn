@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { DEFAULT_SETTINGS } from "../../../lib/ipc"
 import type { ScanPhase, ScanStatus } from "../../../lib/ipcPayloads"
+import { installedCheckFixture } from "../burn-checks/tests/installedCheckFixture"
 
 type Handler = (event: { payload: unknown }) => void
 
@@ -605,60 +606,68 @@ describe("overviewProgressStore's first-run analytics", () => {
       .map(([, args]) => args as { interaction: Record<string, unknown> })
   }
 
-  it("reports each funnel step once, then the result and the finish", async () => {
-    const invoke = mocks.invoke.getMockImplementation()!
-    mocks.invoke.mockImplementation(async (command, args) => {
-      if (command === "get_settings")
-        return { ...DEFAULT_TEST_SETTINGS, onboardingCompleted: false }
-      return invoke(command, args)
-    })
+  it.each(["checks_disabled", "not_assessed"] as const)(
+    "reports each funnel step once, then %s and the finish",
+    async (expectedResult) => {
+      const invoke = mocks.invoke.getMockImplementation()!
+      mocks.invoke.mockImplementation(async (command, args) => {
+        if (command === "get_settings")
+          return { ...DEFAULT_TEST_SETTINGS, onboardingCompleted: false }
+        if (command === "get_checks_report" && expectedResult === "not_assessed")
+          return {
+            ...SETTLED_REPORT,
+            installedChecks: [{ ...installedCheckFixture, finding: 0, clean: 0, targets: [] }],
+          }
+        return invoke(command, args)
+      })
 
-    const { subscribeOverviewProgress, overviewProgress, skipLiveLimits, nextStep } =
-      await import("./overviewProgressStore")
-    stops.push(subscribeOverviewProgress(() => undefined))
-    await waitForListener("scan:finished")
+      const { subscribeOverviewProgress, overviewProgress, skipLiveLimits, nextStep } =
+        await import("./overviewProgressStore")
+      stops.push(subscribeOverviewProgress(() => undefined))
+      await waitForListener("scan:finished")
 
-    runLaunchPass()
+      runLaunchPass()
 
-    await vi.waitFor(() => expect(overviewProgress().mode).toBe("firstRun"))
-    await vi.waitFor(() => expect(overviewProgress().agents.done).toBe(true))
+      await vi.waitFor(() => expect(overviewProgress().mode).toBe("firstRun"))
+      await vi.waitFor(() => expect(overviewProgress().agents.done).toBe(true))
 
-    await nextStep()
-    await vi.waitFor(() => expect(overviewProgress().flow).toBe("agents"))
-    await nextStep()
-    await vi.waitFor(() => expect(overviewProgress().flow).toBe("limits"))
-    skipLiveLimits()
-    await vi.waitFor(() => expect(overviewProgress().flow).toBe("sessions"))
-    await vi.waitFor(() => expect(overviewProgress().stepShown).toBe(true))
-    await vi.waitFor(() => expect(overviewProgress().sessions.done).toBe(true))
-    await nextStep()
-    await vi.waitFor(() => expect(overviewProgress().flow).toBe("checks"))
-    await vi.waitFor(() => expect(overviewProgress().checks.done).toBe(true))
-    await nextStep()
-    await vi.waitFor(() => expect(overviewProgress().flow).toBe("fixes"))
-    await nextStep()
-    await vi.waitFor(() => expect(overviewProgress().flow).toBe("done"))
-    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("finish_first_run"))
+      await nextStep()
+      await vi.waitFor(() => expect(overviewProgress().flow).toBe("agents"))
+      await nextStep()
+      await vi.waitFor(() => expect(overviewProgress().flow).toBe("limits"))
+      skipLiveLimits()
+      await vi.waitFor(() => expect(overviewProgress().flow).toBe("sessions"))
+      await vi.waitFor(() => expect(overviewProgress().stepShown).toBe(true))
+      await vi.waitFor(() => expect(overviewProgress().sessions.done).toBe(true))
+      await nextStep()
+      await vi.waitFor(() => expect(overviewProgress().flow).toBe("checks"))
+      await vi.waitFor(() => expect(overviewProgress().checks.done).toBe(true))
+      await nextStep()
+      await vi.waitFor(() => expect(overviewProgress().flow).toBe("fixes"))
+      await nextStep()
+      await vi.waitFor(() => expect(overviewProgress().flow).toBe("done"))
+      await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("finish_first_run"))
 
-    const steps = noteInteractionCalls().filter(
-      ({ interaction }) => interaction.kind === "firstRunStepReached",
-    )
-    expect(steps.filter((call) => call.interaction.step === "started")).toHaveLength(1)
-    const found = steps.filter((call) => call.interaction.step === "found")
-    expect(found).toHaveLength(1)
-    expect(found[0]?.interaction.sessions).toBe(49)
-    expect(steps.filter((call) => call.interaction.step === "read")).toHaveLength(1)
-    expect(steps.filter((call) => call.interaction.step === "checked")).toHaveLength(1)
-    const result = steps.filter((call) => call.interaction.step === "result")
-    expect(result).toHaveLength(1)
-    expect(result[0]?.interaction.result).toBe("checks_disabled")
-    // The shell command records `first_run_finished` after it saves.
-    expect(
-      noteInteractionCalls().filter(
-        ({ interaction }) => interaction.kind === "firstRunFinished",
-      ),
-    ).toHaveLength(0)
-  })
+      const steps = noteInteractionCalls().filter(
+        ({ interaction }) => interaction.kind === "firstRunStepReached",
+      )
+      expect(steps.filter((call) => call.interaction.step === "started")).toHaveLength(1)
+      const found = steps.filter((call) => call.interaction.step === "found")
+      expect(found).toHaveLength(1)
+      expect(found[0]?.interaction.sessions).toBe(49)
+      expect(steps.filter((call) => call.interaction.step === "read")).toHaveLength(1)
+      expect(steps.filter((call) => call.interaction.step === "checked")).toHaveLength(1)
+      const result = steps.filter((call) => call.interaction.step === "result")
+      expect(result).toHaveLength(1)
+      expect(result[0]?.interaction.result).toBe(expectedResult)
+      // The shell command records `first_run_finished` after it saves.
+      expect(
+        noteInteractionCalls().filter(
+          ({ interaction }) => interaction.kind === "firstRunFinished",
+        ),
+      ).toHaveLength(0)
+    },
+  )
 
   it("reports nothing in steady mode, where the funnel never shows", async () => {
     // onboardingCompleted stays true (the default fixture), so the device

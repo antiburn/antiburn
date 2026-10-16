@@ -4,6 +4,7 @@ import { createElement } from "react"
 import { searchApp } from "../../../lib/appSearch"
 import { BurnChecksView } from "../BurnChecksView"
 import { aggregate, deferred, report, setup } from "./tests/burnChecksTestSupport"
+import { installedCheckFixture } from "./tests/installedCheckFixture"
 
 describe("smart check report integration", () => {
   it("shows running failure counts inline and animates only checking text", async () => {
@@ -21,16 +22,46 @@ describe("smart check report integration", () => {
       ],
     })
     const row = await screen.findByRole("button", {
-      name: "Ignored instructions, 43 failed · 0 passed · 2 checking",
+      name: "Ignored instructions, 43 failed · 2 checking",
     })
     const checking = within(row).getByText("2 checking")
-    expect(checking.closest(".font-mono")).toHaveTextContent("43 failed·0 passed·2 checking")
+    expect(checking.closest(".font-mono")).toHaveTextContent("43 failed · 2 checking")
     expect(row.querySelectorAll(".activity-row-title-shimmer")).toHaveLength(1)
     expect(checking).toHaveAttribute("data-text", "2 checking")
     expect(within(row).getByText("43 failed")).not.toHaveClass("activity-row-title-shimmer")
     expect(row.querySelector(".animate-spin")).toBeNull()
     expect(screen.getByRole("region", { name: "Failed checks 1" })).toContainElement(row)
     expect(screen.queryByRole("region", { name: "Checks in progress" })).toBeNull()
+  })
+
+  it("shows passed assessments with the checking count and omits duplicate detail progress", async () => {
+    const checkingPass = {
+      ...report.categories[2]!,
+      id: "ignoredInstructions" as const,
+      finding: 0,
+      clean: 3,
+      lifecycle: "passing" as const,
+      checking: true,
+      checkingCount: 4,
+      reviewCoverage: {
+        reviewed: 3,
+        total: 8,
+        uncertain: 0,
+        pending: 5,
+        continuing: true,
+      },
+    }
+    setup(null, false, aggregate, { ...report, categories: [checkingPass] })
+    const row = await screen.findByRole("button", {
+      name: "Ignored instructions, Passed · 4 checking",
+    })
+    expect(within(row).getByText("4 checking")).toHaveAttribute("data-text", "4 checking")
+    expect(row.querySelectorAll(".activity-row-title-shimmer")).toHaveLength(1)
+    expect(screen.queryByText("3 of 8 reviewed")).not.toBeInTheDocument()
+    const detail = document.getElementById("burn-check-ignoredInstructions-detail")
+    expect(detail).not.toBeNull()
+    expect(within(detail!).getByText("4 checking")).toHaveAttribute("data-text", "4 checking")
+    expect(detail).toHaveTextContent("Passed · 4 checking")
   })
 
   it("keeps running and passed rows stable across continuation and completion", async () => {
@@ -42,11 +73,11 @@ describe("smart check report integration", () => {
     }
     const initial = { ...report, categories: [check, report.categories[1]!] }
     const { adapter, session } = setup(null, false, aggregate, initial)
-    const row = await screen.findByRole("button", { name: "Ignored instructions, Checking" })
-    const group = screen.getByRole("region", { name: "Passed checks 2" })
+    const row = await screen.findByRole("button", { name: "Ignored instructions, 2 checking" })
+    const group = screen.getByRole("region", { name: "Checking 1" })
     expect(group).toContainElement(row)
-    expect(within(row).getByText("Checking").closest(".font-mono")).toHaveTextContent(
-      /^Checking$/,
+    expect(within(row).getByText("2 checking").closest(".font-mono")).toHaveTextContent(
+      /^2 checking$/,
     )
     expect(row.querySelector(".animate-spin")).toBeNull()
     row.focus()
@@ -60,13 +91,19 @@ describe("smart check report integration", () => {
         categories: [updated, report.categories[1]!],
       })
       await act(async () => session.refresh())
-      expect(screen.getByRole("button", { name: /Ignored instructions, / })).toBe(row)
-      expect(row).toHaveFocus()
-      expect(row).toHaveAttribute("aria-pressed", "true")
+      const currentRow = screen.getByRole("button", { name: /Ignored instructions, / })
+      await waitFor(() => expect(currentRow).toHaveFocus())
+      expect(currentRow).toHaveAttribute("aria-pressed", "true")
       expect(document.getElementById("burn-check-ignoredInstructions-detail")).toBe(detail)
-      expect(within(group).getAllByRole("button").slice(1)[0]).toBe(row)
+      expect(screen.getByRole("region", { name: "Passed checks 2" })).toContainElement(
+        currentRow,
+      )
     }
-    expect(within(row).getByText("Passed")).toBeVisible()
+    expect(
+      within(screen.getByRole("button", { name: /Ignored instructions, / })).getByText(
+        "Passed",
+      ),
+    ).toBeVisible()
   })
 
   it("keeps detail focus when a previously focused checking row fails", async () => {
@@ -98,7 +135,13 @@ describe("smart check report integration", () => {
   })
 
   it("keeps the Passed disclosure collapsed during continuation", async () => {
-    const check = { ...report.categories[2]!, id: "scopeCreep" as const, checking: true }
+    const check = {
+      ...report.categories[2]!,
+      id: "scopeCreep" as const,
+      checking: true,
+      clean: 1,
+      lifecycle: "passing" as const,
+    }
     const { adapter, session } = setup(null, false, aggregate, {
       ...report,
       categories: [check],
@@ -111,9 +154,9 @@ describe("smart check report integration", () => {
     })
     await act(async () => session.refresh())
     expect(trigger).toHaveAttribute("aria-expanded", "false")
-    expect(screen.queryByRole("button", { name: "Scope creep, Checking" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Scope creep, Passed · Checking" })).toBeNull()
     fireEvent.click(trigger)
-    expect(screen.getByRole("button", { name: "Scope creep, Checking" })).toBeVisible()
+    expect(screen.getByRole("button", { name: "Scope creep, Passed · Checking" })).toBeVisible()
   })
 
   it("keeps passed checks visible when a new finding arrives", async () => {
@@ -161,7 +204,7 @@ describe("smart check report integration", () => {
     })
     fireEvent.click(row)
     expect(within(row).getByText("No matching work")).toBeVisible()
-    expect(screen.getByText("No matching work and skills were found to review.")).toBeVisible()
+    expect(screen.getByText("No matching work and skills were found to check.")).toBeVisible()
     expect(screen.queryByText("Checking")).not.toBeInTheDocument()
     expect(screen.queryByText("Passed")).not.toBeInTheDocument()
     expect(adapter.getTargets).not.toHaveBeenCalled()
@@ -225,13 +268,13 @@ describe("smart check report integration", () => {
       })
       fireEvent.click(await screen.findByRole("button", { name: "Not assessed (1)" }))
       fireEvent.click(
-        await screen.findByRole("button", { name: "Over-exploring, Review stopped" }),
+        await screen.findByRole("button", { name: "Over-exploring, Check stopped" }),
       )
       expect(
-        screen.getByText("0 of 4 reviewed · 4 not reviewed · 4 too large for this model"),
-      ).toBeVisible()
+        screen.queryByText("0 of 4 reviewed · 4 not reviewed · 4 too large for this model"),
+      ).not.toBeInTheDocument()
       expect(
-        screen.getByText("Some items were too large for the selected model to review."),
+        screen.getByText("Some items were too large for the selected model to check."),
       ).toBeVisible()
       expect(screen.queryByText("Checking")).not.toBeInTheDocument()
       expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
@@ -266,10 +309,10 @@ describe("smart check report integration", () => {
       const row = await screen.findByRole("button", { name: /^Scope creep, .*failed/ })
       fireEvent.click(row)
       expect(
-        screen.getByText("2 of 5 reviewed · 3 not reviewed · 1 too large for this model"),
-      ).toBeVisible()
+        screen.queryByText("2 of 5 reviewed · 3 not reviewed · 1 too large for this model"),
+      ).not.toBeInTheDocument()
       expect(
-        screen.getByText("Some items were too large for the selected model to review."),
+        screen.getByText("Some items were too large for the selected model to check."),
       ).toBeVisible()
       expect(screen.queryByText("Checking")).not.toBeInTheDocument()
       expect(within(row).queryByText(/checking/i)).not.toBeInTheDocument()
@@ -374,11 +417,11 @@ describe("smart check report integration", () => {
       fireEvent.focus(notice)
       const tooltip = await screen.findByRole("tooltip")
       expect(
-        within(tooltip).getByText("67% of matching items have been reviewed."),
+        within(tooltip).getByText("67% of matching items have been checked."),
       ).toBeVisible()
       expect(
         within(tooltip).getByText(
-          "The check aims to review half of matching items. This is a sample, not proof that the rest are clear.",
+          "The check samples half of matching items. No issue in the sample does not mean every item is clear.",
         ),
       ).toBeVisible()
       fireEvent.blur(notice)
@@ -440,7 +483,7 @@ describe("smart check report integration", () => {
       categories: [{ ...check, finding: 1, lifecycle: "failing" }],
     })
     await act(async () => session.refresh())
-    await screen.findByRole("button", { name: /1 failed · 0 passed · checking/ })
+    await screen.findByRole("button", { name: /1 failed · Checking/ })
     expect(screen.queryByText("No issues found yet")).not.toBeInTheDocument()
   })
   it.each([
@@ -584,6 +627,55 @@ describe("smart check report integration", () => {
     ).not.toContain("Over-exploring")
   })
 
+  it("searches an installed check into the normal failure group and current detail pane", async () => {
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+    const installedCheck = {
+      ...installedCheckFixture,
+    }
+    const { session, view, adapter } = setup(null, false, aggregate, {
+      ...report,
+      installedChecks: [installedCheck],
+    })
+
+    const destination = searchApp("repeated failures", "macos", true, [
+      {
+        effectiveId: installedCheck.effectiveId,
+        name: installedCheck.name,
+        aliases: installedCheck.aliases,
+        availability: installedCheck.availability,
+      },
+    ])[0]!
+    expect(destination.target).toEqual({
+      kind: "installedCheck",
+      check: installedCheck.effectiveId,
+    })
+    view.rerender(
+      createElement(BurnChecksView, {
+        active: true,
+        session,
+        focusedCheck: installedCheck.effectiveId,
+        focusRevision: 1,
+      }),
+    )
+    const row = await screen.findByRole("button", {
+      name: "Failed Retry Loop, Waiting for activity",
+    })
+    expect(row).toBeVisible()
+    await waitFor(() => expect(row).toHaveFocus())
+    expect(adapter.getReport).toHaveBeenCalledOnce()
+    fireEvent.click(row)
+    expect(row).toHaveAttribute("aria-pressed", "true")
+    const detail = within(screen.getByRole("region", { name: "Burn check details" }))
+    expect(detail.getByRole("heading", { name: installedCheck.name, level: 2 })).toBeVisible()
+    expect(detail.getAllByText("Review the recorded work.")[0]).toBeVisible()
+    expect(screen.queryByText("Installed checks")).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(/Probabilities:|Assessment history|Generation:/),
+    ).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: /Old model usage, / }))
+    expect(detail.getByRole("heading", { name: "Old model usage", level: 2 })).toBeVisible()
+  })
+
   it.each(["skillOpportunities", "overExploring", "scopeCreep"] as const)(
     "limits a sampled %s pass to assessed evidence",
     async (id) => {
@@ -593,7 +685,7 @@ describe("smart check report integration", () => {
       })
       expect(
         await screen.findByText(
-          "No issue was found in the reviewed sample across 3 sessions. Other work may not have been checked.",
+          "No issue was found in the checked sample across 3 sessions. Other work may not have been checked.",
         ),
       ).toBeVisible()
       const info = screen.getByLabelText("This check has been sampled")

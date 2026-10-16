@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::jev::config::SystemOneResponseMode;
 use crate::jev::config::system_one_endpoint;
 use antiburn_local::analysis::jev::{
-    JevAnswer, JevError, JevRequest, JevResponse, MAX_RESPONSE_BYTES,
+    JevAnswer, JevError, JevRequest, JevResponse, JevUsage, MAX_RESPONSE_BYTES,
     capabilities::ModelCapabilities, highest_probability_choice,
     validate_jev_request_with_capabilities, validate_jev_response_with_capabilities,
 };
@@ -56,6 +56,18 @@ impl TypeSafeClient {
         request: &JevRequest,
         endpoint: &str,
         capabilities: &ModelCapabilities,
+    ) -> Result<JevResponse, JevError> {
+        self.evaluate_at_with_capabilities_and_usage(request, endpoint, capabilities, |_| Ok(()))
+            .await
+    }
+
+    /// Records available provider usage before validating the answer.
+    pub(crate) async fn evaluate_at_with_capabilities_and_usage(
+        &self,
+        request: &JevRequest,
+        endpoint: &str,
+        capabilities: &ModelCapabilities,
+        record_usage: impl Fn(JevUsage) -> Result<(), JevError>,
     ) -> Result<JevResponse, JevError> {
         let body = JevSystemOneAdapter::encode_request(request, capabilities)?;
         let send_started = Instant::now();
@@ -114,6 +126,13 @@ impl TypeSafeClient {
         }
         let body_elapsed_ms = body_started.elapsed().as_millis();
         let validation_started = Instant::now();
+        #[derive(serde::Deserialize)]
+        struct UsageEnvelope {
+            usage: JevUsage,
+        }
+        if let Ok(envelope) = serde_json::from_slice::<UsageEnvelope>(&body) {
+            record_usage(envelope.usage)?;
+        }
         let response = JevSystemOneAdapter::decode_response(&body, request, capabilities)?;
         let (mismatch_count, largest_gap) = choice_mismatches(&response);
         if mismatch_count > 0 {

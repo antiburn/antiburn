@@ -1300,6 +1300,12 @@ fn assert_resume_parity(records: Vec<Value>) {
             resume: Default::default(),
         },
         next_turn_index: 0,
+        tool_result_observations_json: Vec::new(),
+        native_tool_result_conflicts: Vec::new(),
+        tool_result_observations_complete: true,
+        user_messages_json: Vec::new(),
+        user_message_conflicts: Vec::new(),
+        user_messages_complete: true,
     };
     let mut sink = ContentCapturingSink::default();
     let records = provider_input(records);

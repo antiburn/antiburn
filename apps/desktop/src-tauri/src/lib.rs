@@ -55,6 +55,7 @@ mod agents;
 mod analysis;
 mod analytics;
 mod app_presence;
+pub mod check_store;
 mod commands;
 mod consent;
 mod diagnostics_export;
@@ -70,8 +71,10 @@ mod ignored_instructions_worker;
 mod insights_ipc;
 mod insights_report;
 mod insights_worker;
+mod installed_checks;
 mod interface_scale;
 mod jev;
+pub mod published_evidence_reader;
 pub use jev::client::evaluate_custom as evaluate_custom_system_one;
 pub use jev::config as jev_config;
 pub mod jev_cloudflare;
@@ -91,6 +94,9 @@ pub mod remediation;
 mod remote_cache;
 mod remote_sessions;
 mod remote_sync;
+#[cfg(test)]
+#[path = "../eval/replay/mod.rs"]
+mod replay;
 mod repositories;
 mod retention;
 mod runtime_pricing;
@@ -272,6 +278,7 @@ pub fn run() {
         app.manage(runtime_pricing::PricingState::load(&data_dir));
         app.manage(insights_worker::WorkerHandle::default());
         app.manage(jev::worker::WorkerHandle::default());
+        app.manage(installed_checks::InstalledChecks::default());
         app.manage(insights_ipc::InsightsController::default());
         jev::settings::restore_at_launch(app.handle());
         let evidence_reconcile_started = std::time::Instant::now();
@@ -440,6 +447,7 @@ pub fn run() {
             schedulers.push(retention::spawn_scheduler(app.handle()));
             schedulers.push(insights_worker::spawn(app.handle()));
             schedulers.push(jev::worker::spawn(app.handle()));
+            installed_checks::start(app.handle());
             schedulers.push(updates::spawn_scheduler(app.handle()));
             schedulers.push(usage_alerts::spawn_scheduler(app.handle()));
             schedulers.push(disk_monitor::spawn_disk_monitor(app.handle().clone()));
@@ -495,6 +503,7 @@ pub fn run() {
         // A deliberate quit: stop the background tasks before the store
         // they write to is dropped.
         RunEvent::Exit => {
+            installed_checks::shutdown(app);
             #[cfg(target_os = "macos")]
             if let Some(manager) = app.try_state::<popover_peek::PopoverPeekManager>() {
                 manager.shutdown();
@@ -1022,6 +1031,9 @@ mod tests {
                     evidence: None,
                     outcome: PassOutcome::SourceMissing,
                     source_outcomes: Vec::new(),
+                    tool_result_observations: Vec::new(),
+                    tool_result_observations_complete: false,
+                    native_tool_result_source_format: None,
                 }
             }) as PassFuture
         };

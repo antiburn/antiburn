@@ -20,6 +20,8 @@ type DraftState = {
   capabilities: ModelCapabilities | null
 }
 type Snapshot = {
+  loading: boolean
+  action: "test" | "save" | "refresh" | "remove" | "switch" | null
   saved: ProviderSettings | null
   selectedId: string
   drafts: Record<string, DraftState>
@@ -89,6 +91,8 @@ export class ProviderSettingsSession {
   private listeners = new Set<() => void>()
   private generation = 0
   private state: Snapshot = {
+    loading: true,
+    action: null,
     saved: null,
     selectedId: "jev",
     drafts: {},
@@ -100,23 +104,26 @@ export class ProviderSettingsSession {
   subscribe = (listener: () => void) => {
     this.listeners.add(listener)
     if (this.listeners.size === 1) {
-      const generation = ++this.generation
-      void getProviderSettings()
-        .then((saved) => {
-          if (generation !== this.generation) return
-          if (!saved?.profiles[saved.activeId]) throw new Error("Missing active connection")
-          this.load(saved)
-        })
-        .catch(() => {
-          if (generation === this.generation)
-            this.publish({
-              error: "Could not load saved connections. Reopen Settings to try again.",
-            })
-        })
+      void this.refresh()
     }
     return () => {
       this.listeners.delete(listener)
       if (!this.listeners.size) this.generation++
+    }
+  }
+  refresh = async () => {
+    const generation = ++this.generation
+    this.publish({ loading: true, error: null })
+    try {
+      const saved = await getProviderSettings()
+      if (generation !== this.generation) return
+      if (!saved?.profiles[saved.activeId]) throw new Error("Missing active connection")
+      this.load(saved)
+    } catch {
+      if (generation === this.generation)
+        this.publish({ error: "Could not load the Jev connection. Retry loading it." })
+    } finally {
+      if (generation === this.generation) this.publish({ loading: false })
     }
   }
   private publish(update: Partial<Snapshot>) {
@@ -134,10 +141,18 @@ export class ProviderSettingsSession {
         },
       ]),
     )
-    this.publish({ saved, selectedId: saved.activeId, drafts, error: null })
+    if (!drafts.jev) {
+      const connection = defaultConnection("jev")
+      drafts.jev = {
+        draft: { connection_id: "jev", connection, credential: null },
+        tested: false,
+        capabilities: null,
+      }
+    }
+    this.publish({ saved, selectedId: "jev", drafts, error: null })
   }
   select(id: string) {
-    if (this.state.busy) return
+    if (this.state.busy || this.state.loading) return
     this.publish({ selectedId: id, error: null, status: null })
   }
   selectProvider(provider: SmartCheckProvider) {
@@ -164,7 +179,7 @@ export class ProviderSettingsSession {
     this.select(id)
   }
   edit(connection: Connection, credential: string | null) {
-    if (this.state.busy) return
+    if (this.state.busy || this.state.loading || !this.state.saved) return
     const id = this.state.selectedId
     this.publish({
       drafts: {
@@ -196,7 +211,7 @@ export class ProviderSettingsSession {
     })
   }
   async run(action: "test" | "save" | "refresh" | "remove" | "switch") {
-    if (this.state.busy) return
+    if (this.state.busy || this.state.loading || !this.state.saved) return
     const id = this.state.selectedId
     let current = this.state.drafts[id]
     if (!current) return
@@ -204,6 +219,7 @@ export class ProviderSettingsSession {
     if (action === "refresh") current = { ...current, capabilities: null }
     this.publish({
       busy: true,
+      action,
       error: null,
       status: null,
       drafts: { ...this.state.drafts, [id]: current },
@@ -225,7 +241,7 @@ export class ProviderSettingsSession {
           action === "save"
             ? await saveProviderConnection(current.draft)
             : await switchProviderConnection(id)
-        this.acceptSaved(saved, id, "Connection saved and selected for Smart Burn Checks.")
+        this.acceptSaved(saved, id, "Connection saved and selected for Model-based Checks.")
       } else {
         this.publish({
           drafts: {
@@ -259,7 +275,7 @@ export class ProviderSettingsSession {
         }
       }
     } finally {
-      this.publish({ busy: false })
+      this.publish({ busy: false, action: null })
     }
   }
 }

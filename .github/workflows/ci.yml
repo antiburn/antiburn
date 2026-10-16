@@ -253,7 +253,8 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
-            crates/antiburn-local -> ../../target/ci
+            crates/antiburn-checks -> ../../target/ci
+            crates/antiburn-local
             crates/antiburn-remote
           shared-key: ci-engine-${{ matrix.name }}
           cache-bin: false

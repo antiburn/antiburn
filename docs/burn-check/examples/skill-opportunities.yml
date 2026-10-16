@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=../schemas/burn-check.schema.json
+# Unsupported: requires effective skill snapshots and message actions.
+# This is inventory-level advice, not a specific skill pick.
+name: Skill Opportunities
+description: Suggest whether supplied skill descriptions offer a useful next step.
+on:
+  tool_result:
+  window:
+    size: 20
+    min: 3
+  cooldown: 120s
+decisions:
+  review:
+    model: typesafe/jev-1.13.0
+    input:
+      requests: ${{ session.requests }}
+      activity: ${{ window.messages }}
+      skills: ${{ agent.skills }}
+    output:
+      opportunity:
+        type: choice
+        question: >-
+          Does a supplied skill description identify a concrete next step that
+          could help with the user's task and the selected results, beyond the
+          steps already shown? Generic advice is not added guidance. Judge
+          usefulness now, not whether a skill was available or used earlier.
+          Paths identify files; their contents are not supplied. Choose
+          uncertain when a description or the selected task context does not
+          support a clear answer. Do not claim a specific skill was never used.
+        criteria:
+          actionable_help: A supplied description identifies a useful next step beyond those shown.
+          already_adequate_or_unrelated: The supplied skills add no useful step for this task.
+          uncertain: The selected descriptions or task context do not support a clear answer.
+actions:
+  - type: message
+    if: decisions.review.outputs.opportunity == 'actionable_help' && decisions.review.details.opportunity.probabilities.actionable_help >= 0.95
+    input:
+      message: A skill available in this session may offer a useful next step for your task.

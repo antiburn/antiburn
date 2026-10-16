@@ -263,6 +263,14 @@ the next time it looks.
 
 ## Network
 
+**Model-based Checks** can send an authored YAML check's selected tool results,
+arguments, and available user-slot text to TypeSafe through Jev. Configure it in
+**Settings → Checks → Decision model**. Jev is the only exposed decision route.
+Partial history and fields are identified; missing images are not analyzed.
+Provider usage charges can apply. Built-in smart-check execution and historical
+enrollment are suspended, with saved results and preferences retained. See
+[Burn Checks](burn-check/README.md) and the [privacy policy](privacy-policy.md).
+
 antiburn needs no account or backend for its main work. The connections it makes
 beyond analytics and updates are yours, not ours: reading
 a provider's own figures with your own credentials is traffic between this machine

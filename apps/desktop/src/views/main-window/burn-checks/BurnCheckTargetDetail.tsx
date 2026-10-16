@@ -1,4 +1,4 @@
-import { useCallback, useId, useRef, useState } from "react"
+import { useCallback, useId, useRef, useState, type ReactNode } from "react"
 import { Info } from "lucide-react"
 
 import { pluralize } from "../../../lib/presentation/text"
@@ -35,7 +35,7 @@ export function targetCostLine(target: BurnCheckTargetPayload): string | null {
   return `Estimated ${formatApiEquivalentUsd(opportunity.value)} in cache reads across ${occurrences} ${pluralize(occurrences, "occurrence", "occurrences")}, including helper requests.`
 }
 
-function EvidenceExcerpt({
+export function EvidenceExcerpt({
   item,
   showMetadata = true,
   showExplanation = true,
@@ -100,6 +100,36 @@ function EvidenceExcerpt({
         excerpt(shownText)
       )}
     </div>
+  )
+}
+
+export function CheckTargetHeading({
+  agent,
+  title,
+  children,
+}: {
+  agent: string
+  title: string
+  children: ReactNode
+}) {
+  return (
+    <>
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-1">
+        <div className="min-w-0 flex-1 basis-56">
+          <h3 className="burn-check-resource-title type-title-3 text-label">
+            <span className="burn-check-resource-icon">{renderAgentIcon(agent, 16)}</span>
+            <span className="flex min-w-0 items-baseline gap-1.5">
+              <span className="min-w-0 wrap-anywhere">{title}</span>
+            </span>
+          </h3>
+        </div>
+      </div>
+      <div className="burn-check-resource-metadata min-w-0">
+        <div className="flex items-center gap-1.5 type-callout text-label-tertiary">
+          {children}
+        </div>
+      </div>
+    </>
   )
 }
 
@@ -275,7 +305,7 @@ function ReadEvidence({
             ? "Assessed file set"
             : reads.length === 0
               ? "Recorded read evidence"
-              : "Reads under review"
+              : "Reads being checked"
         }
         className="min-w-0 space-y-2"
       >
@@ -284,7 +314,7 @@ function ReadEvidence({
             ? "Files assessed as a group"
             : reads.length === 0
               ? "Read records used for this finding"
-              : "Read under review"}
+              : "Read being checked"}
         </h4>
         {reads.length === 0 ? (
           <ol className="min-w-0 space-y-2">
@@ -543,7 +573,7 @@ function evidenceDisclosure(detector: BurnCheckTargetPayload["finding"]["detecto
     case "ignoredInstructions":
       return "instruction and action"
     case "overExploring":
-      return "reads under review"
+      return "reads being checked"
     case "scopeCreep":
       return "task and work"
     case "skillOpportunities":
@@ -751,51 +781,35 @@ export function BurnCheckTargetDetail({
           : "min-w-0 rounded-control bg-surface-card/75 p-4"
       }
     >
-      <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-1">
-        <div className="min-w-0 flex-1 basis-56">
-          <h3 className="burn-check-resource-title type-title-3 text-label">
-            <span className="burn-check-resource-icon">
-              {renderAgentIcon(target.finding.agent, 16)}
-            </span>
-            <span className="flex min-w-0 items-baseline gap-1.5">
-              <span className="min-w-0 wrap-anywhere">{targetTitle(target)}</span>
-            </span>
-          </h3>
-        </div>
-      </div>
-      <div className="burn-check-resource-metadata min-w-0">
-        <div className="flex items-center gap-1.5 type-callout text-label-tertiary">
-          <span className="min-w-0 wrap-anywhere">
-            {reportRow && smartCheck
-              ? (target.projectName ?? "")
-              : scopeLabel(target.display.scopeKind)}
-            {sourcePath &&
-              (!ignoredInstructions || !hasInstructionExcerpt) &&
-              ` (${sourcePath})`}
-            {reportRow && target.projectName && !(reportRow && smartCheck) && (
-              <span className="text-label"> · {target.projectName}</span>
-            )}
-          </span>
-          {reportRow && projectPath && (
-            <ProjectFolderActions
-              key={projectPath}
-              path={projectPath}
-              onOpen={() =>
-                performProjectFolderAction(projectPath, "open", {
-                  kind: "burnCheck",
-                  actionId: target.actionId,
-                })
-              }
-              onCopy={() =>
-                performProjectFolderAction(projectPath, "copy", {
-                  kind: "burnCheck",
-                  actionId: target.actionId,
-                })
-              }
-            />
+      <CheckTargetHeading agent={target.finding.agent} title={targetTitle(target)}>
+        <span className="min-w-0 wrap-anywhere">
+          {reportRow && smartCheck
+            ? (target.projectName ?? "")
+            : scopeLabel(target.display.scopeKind)}
+          {sourcePath && (!ignoredInstructions || !hasInstructionExcerpt) && ` (${sourcePath})`}
+          {reportRow && target.projectName && !(reportRow && smartCheck) && (
+            <span className="text-label"> · {target.projectName}</span>
           )}
-        </div>
-      </div>
+        </span>
+        {reportRow && projectPath && (
+          <ProjectFolderActions
+            key={projectPath}
+            path={projectPath}
+            onOpen={() =>
+              performProjectFolderAction(projectPath, "open", {
+                kind: "burnCheck",
+                actionId: target.actionId,
+              })
+            }
+            onCopy={() =>
+              performProjectFolderAction(projectPath, "copy", {
+                kind: "burnCheck",
+                actionId: target.actionId,
+              })
+            }
+          />
+        )}
+      </CheckTargetHeading>
       <div className={reportRow ? "burn-check-resource-body" : undefined}>
         {smartCheck && (
           <p className="mt-2 type-callout text-label-secondary">{target.finding.observation}</p>

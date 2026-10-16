@@ -2,7 +2,11 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "./tauriEvents"
 
 import { hasShell } from "./ipc"
-import type { BurnCheckDetectorId } from "./insightsIpc"
+import type {
+  BurnCheckDetectorId,
+  InstalledCheckAvailability,
+  InstalledCheckId,
+} from "./insightsIpc"
 import { CHECK_DEFINITIONS } from "./presentation/checkDefinitions"
 
 type CheckUsageSummary = {
@@ -15,9 +19,18 @@ type CheckUsageSummary = {
   lastUsedAtEpoch: number | null
 }
 
+export interface InstalledCheckAvailabilityPayload {
+  effectiveId: InstalledCheckId
+  name: string
+  aliases: string[]
+  availability: InstalledCheckAvailability
+}
+
 export type CheckAvailability = {
   revision: number
+  yamlEnabled: boolean
   checks: Array<{ id: BurnCheckDetectorId; enabled: boolean }>
+  installedChecks?: InstalledCheckAvailabilityPayload[]
   configured: boolean
   savedKey: boolean
   error: string | null
@@ -53,6 +66,8 @@ const emptyUsage: CheckUsageSummary = {
 
 export const emptyCheckAvailability: CheckAvailability = {
   revision: 0,
+  yamlEnabled: false,
+  installedChecks: [],
   checks: Object.keys(CHECK_DEFINITIONS).map((id) => ({
     id: id as BurnCheckDetectorId,
     enabled: false,
@@ -83,6 +98,7 @@ export async function getCheckAvailability(): Promise<CheckAvailability> {
   if (
     !value ||
     typeof value.configured !== "boolean" ||
+    typeof value.yamlEnabled !== "boolean" ||
     typeof value.revision !== "number" ||
     !Array.isArray(value.checks)
   ) {

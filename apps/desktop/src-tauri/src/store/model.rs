@@ -182,6 +182,12 @@ pub struct RemediationResult {
 }
 
 impl SessionKey {
+    /// Encodes exact session ownership for branch IDs, persistence, and deletion.
+    pub(crate) fn to_identity_json(&self) -> String {
+        serde_json::to_string(&(&self.environment_key, &self.agent, &self.session_id))
+            .expect("session identity serializes")
+    }
+
     pub fn for_origin(
         agent: &str,
         session_id: &str,

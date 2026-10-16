@@ -747,6 +747,6 @@ fn reparsing_legacy_path_only_rows_restores_ranges_without_changing_selected_ins
     assert_eq!(request.extent.offset, Some(2));
     assert_eq!(request.extent.limit, Some(2));
     assert_eq!(legacy, query(&reparsed, ignored_selection));
-    assert_eq!(PARSER_REVISION, 53);
+    assert_eq!(PARSER_REVISION, 57);
     assert_eq!(EVIDENCE_SCHEMA_REVISION, 22);
 }

@@ -27,6 +27,8 @@ use antiburn_local::remediation::SAVINGS_METHOD_REVISION;
 
 mod findings;
 mod ignored_instructions;
+#[path = "installed_checks_report.rs"]
+pub(crate) mod installed_checks;
 mod over_exploring;
 mod progress;
 mod queries;

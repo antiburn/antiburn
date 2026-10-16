@@ -22,7 +22,9 @@ use crate::analysis::framing::{
 use crate::analysis::interface::{
     ContentAuthority, ContentKind, ContentPart, ContextWindowSource, EvidenceObservation,
     NormalizedRecord, ProviderHint, RawSource, RecordSink, RelationProvenance, SessionCollector,
-    SessionInput, SessionReader, SessionSummary, TurnContent, VisitOutcome, push_provider_hint,
+    SessionInput, SessionReader, SessionSummary, TurnContent, UserMessage, UserMessageChange,
+    UserMessageCompleteness, UserMessageOrigin, UserMessagePart, UserMessagePosition,
+    UserMessageScope, VisitOutcome, push_provider_hint,
 };
 use crate::analysis::model::{
     CompactionTrigger, EventSource, NormalizedEvent, NormalizedSession, Role, ToolCall,
@@ -34,6 +36,8 @@ use crate::discovery::agents::opencode::{
 };
 use crate::discovery::source_version::provider_db_fingerprint;
 
+pub(crate) mod journal;
+mod request_context;
 mod scope;
 
 const MAX_MESSAGE_PART_BYTES: usize = MAX_RECORD_BYTES;
@@ -83,9 +87,13 @@ impl SessionReader for OpenCodeSessionReader {
                 let source = Cursor::new(content.as_bytes()).chain(suffix);
                 self.visit_reader(BufReader::new(source), &|| false, sink)?
             }
-            RawSource::Sqlite(path) => {
-                self.visit_database(path, &input.session_id, &|| false, sink)?
-            }
+            RawSource::Sqlite(path) => self.visit_database(
+                path,
+                &input.session_id,
+                input.source_format_or(crate::analysis::SourceFormat::OpenCodeSqliteV2),
+                &|| false,
+                sink,
+            )?,
             RawSource::ClineBundle { .. } => {
                 anyhow::bail!("Cline bundle is not an OpenCode source")
             }
@@ -124,28 +132,42 @@ impl SessionReader for OpenCodeSessionReader {
         validate_database_schema(&conn)?;
         let actual = db_session_fingerprint_connection(&conn, &input.session_id)
             .map(|(latest, rows)| provider_db_fingerprint(latest, rows));
-        if actual.as_deref() != Some(claimed_fingerprint) {
+        // A journal claim schedules work. The transaction pins the evidence
+        // snapshot; later appends do not invalidate that accepted prefix.
+        if actual.as_deref() != Some(claimed_fingerprint)
+            && !(input.source_format == crate::analysis::SourceFormat::OpenCodeSqliteV2
+                && journal::has_schema(&conn))
+        {
             return Ok(VisitOutcome::SourceChanged(
                 SourceChangedReason::FingerprintMismatch,
             ));
         }
-        let mut summary = visit_database_connection(&conn, &input.session_id, cancel, sink)?;
+        let mut summary = visit_database_connection(
+            &conn,
+            &input.session_id,
+            input.source_format,
+            cancel,
+            false,
+            sink,
+        )?;
+        if input.source_format == crate::analysis::SourceFormat::OpenCodeSqliteV2
+            && sink.tool_results_requested()
+            && !visit_native_tool_results(
+                &conn,
+                &input.session_id,
+                input.fork_parent_session_id.is_none(),
+                cancel,
+                sink,
+            )?
+        {
+            sink.tool_result_gap();
+        }
         if input.fork_parent_session_id.is_some() {
             summary
                 .coverage_gaps
                 .push(PartialReason::AttributionIncomplete);
         }
         conn.execute_batch("COMMIT")?;
-        // Reopen after the transaction. A writer can commit after the initial
-        // fingerprint but before this read completes, including through WAL.
-        let verification = open_database(path)?;
-        let observed = db_session_fingerprint_connection(&verification, &input.session_id)
-            .map(|(latest, rows)| provider_db_fingerprint(latest, rows));
-        if observed.as_deref() != Some(claimed_fingerprint) {
-            return Ok(VisitOutcome::SourceChanged(
-                SourceChangedReason::FingerprintMismatch,
-            ));
-        }
         sink.finish(summary);
         Ok(VisitOutcome::AcceptedFull)
     }
@@ -192,13 +214,15 @@ impl OpenCodeSessionReader {
         &self,
         path: &Path,
         session_id: &str,
+        source_format: crate::analysis::SourceFormat,
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<SessionSummary> {
         let conn = open_database(path)?;
         conn.execute_batch("BEGIN")?;
         validate_database_schema(&conn)?;
-        let summary = visit_database_connection(&conn, session_id, cancel, sink)?;
+        let summary =
+            visit_database_connection(&conn, session_id, source_format, cancel, true, sink)?;
         conn.execute_batch("COMMIT")?;
         Ok(summary)
     }
@@ -210,6 +234,35 @@ fn open_database(path: &Path) -> anyhow::Result<Connection> {
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .with_context(|| format!("opening OpenCode database {}", path.display()))
+}
+
+fn visit_native_tool_results(
+    connection: &Connection,
+    session_id: &str,
+    main_session: bool,
+    cancel: &dyn Fn() -> bool,
+    sink: &mut dyn RecordSink,
+) -> anyhow::Result<bool> {
+    let Some(page) = journal::read(
+        connection,
+        session_id,
+        None,
+        journal::ReadMode::Tail,
+        cancel,
+    )?
+    else {
+        return Ok(false);
+    };
+    for mut result in page.results {
+        if !main_session {
+            result.completeness = crate::analysis::ToolResultCompleteness::UnsafeOwnership;
+            if let Some(context) = &mut result.context {
+                context.main_session = false;
+            }
+        }
+        sink.record(NormalizedRecord::ToolResult(Box::new(result)));
+    }
+    Ok(page.complete)
 }
 
 fn validate_input(input: &SessionInput) -> anyhow::Result<()> {
@@ -295,7 +348,9 @@ fn query_root_timestamp(
 fn visit_database_connection(
     conn: &Connection,
     root_session_id: &str,
+    source_format: crate::analysis::SourceFormat,
     cancel: &dyn Fn() -> bool,
+    snapshot_requests: bool,
     sink: &mut dyn RecordSink,
 ) -> anyhow::Result<SessionSummary> {
     let session_columns = table_columns(conn, "session")?;
@@ -392,7 +447,8 @@ fn visit_database_connection(
             task_incomplete: false,
             sqlite_v2: true,
         };
-        let text_complete = visit_db_parts(&mut parts, &mut pending, cancel, sink)?;
+        let (text_complete, user_content_complete) =
+            visit_db_parts(&mut parts, &mut pending, cancel, sink)?;
         if standalone_root
             && session_id == root_session_id
             && root_session_id.len() <= EVIDENCE_STRING_CAP
@@ -414,6 +470,77 @@ fn visit_database_connection(
                         message_id: pending.id.clone(),
                         revision: 1,
                     });
+            }
+        }
+        if snapshot_requests {
+            let created_ms = created.and_then(parse_db_ts);
+            let unchanged_time = updated.is_none_or(|updated| Some(updated) == created);
+            let user_message = source_format == crate::analysis::SourceFormat::OpenCodeSqliteV2
+                && standalone_root
+                && session_id == root_session_id
+                && created_ms.is_some()
+                && unchanged_time
+                && pending.event.role == Role::User
+                && user_content_complete
+                && pending
+                    .content
+                    .iter()
+                    .any(|part| part.authority == ContentAuthority::User)
+                && pending
+                    .content
+                    .iter()
+                    .all(|part| part.kind == ContentKind::UserText && !part.truncated);
+            if user_message {
+                let parts = pending
+                    .content
+                    .iter()
+                    .filter(|part| part.authority == ContentAuthority::User)
+                    .enumerate()
+                    .map(|(index, part)| {
+                        Some(UserMessagePart {
+                            item_index: u32::try_from(index).ok()?,
+                            native_part_id: None,
+                            text: part.text.clone(),
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>();
+                if let (Some(created_at_ms), Some(parts)) = (created_ms, parts) {
+                    let request = UserMessage {
+                        source_format,
+                        session_id: root_session_id.to_owned(),
+                        message_id: pending.id.clone(),
+                        position: UserMessagePosition::OpenCodeSqlite { created_at_ms },
+                        origin: UserMessageOrigin::OpenCodeUserText,
+                        scope: UserMessageScope::MainSession,
+                        change: UserMessageChange::Present,
+                        completeness: UserMessageCompleteness::Complete,
+                        parts,
+                        proof_revision: 1,
+                    };
+                    if request.is_bounded() {
+                        sink.user_message(request);
+                    } else {
+                        sink.tool_result_gap();
+                    }
+                } else {
+                    sink.tool_result_gap();
+                }
+            } else if standalone_root
+                && session_id == root_session_id
+                && pending.event.role == Role::User
+                && (updated.is_some_and(|updated| Some(updated) != created)
+                    || pending.content.iter().any(|part| {
+                        part.kind == ContentKind::UserText
+                            && part.authority == ContentAuthority::Unknown
+                    })
+                    || text_complete
+                        && pending.content.iter().any(|part| {
+                            part.kind == ContentKind::UserText
+                                && part.authority == ContentAuthority::User
+                                && part.metadata.user_text_history.is_some()
+                        }))
+            {
+                sink.tool_result_gap();
             }
         }
         state.pending = Some(pending);
@@ -496,8 +623,9 @@ fn visit_db_parts(
     pending: &mut PendingMessage,
     cancel: &dyn Fn() -> bool,
     sink: &mut dyn RecordSink,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<(bool, bool)> {
     let mut text_complete = true;
+    let mut user_content_complete = true;
     let mut rows = statement.query(params![pending.id, MAX_RECORD_BYTES as i64])?;
     while let Some(row) = rows.next()? {
         if cancel() {
@@ -510,6 +638,7 @@ fn visit_db_parts(
         pending.part_bytes = row.get::<_, Option<i64>>(5)?.unwrap_or(0).max(0) as usize;
         if data_len > MAX_RECORD_BYTES || pending.part_bytes > MAX_MESSAGE_PART_BYTES {
             text_complete = false;
+            user_content_complete = false;
             if !pending.parts_oversized {
                 sink.record(NormalizedRecord::Unusable(PartialReason::Oversized));
                 pending.parts_oversized = true;
@@ -518,11 +647,13 @@ fn visit_db_parts(
         }
         let Some(data) = data else {
             text_complete = false;
+            user_content_complete = false;
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             continue;
         };
         let Ok(mut value) = serde_json::from_str::<Value>(&data) else {
             text_complete = false;
+            user_content_complete = false;
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             continue;
         };
@@ -536,7 +667,7 @@ fn visit_db_parts(
             }
         }
         let content_start = pending.content.len();
-        text_complete &= value.get("type").and_then(Value::as_str) == Some("text")
+        let complete = value.get("type").and_then(Value::as_str) == Some("text")
             && value
                 .get("messageID")
                 .is_none_or(|id| id.as_str() == Some(&pending.id))
@@ -548,11 +679,10 @@ fn visit_db_parts(
                 .and_then(Value::as_str)
                 .is_some_and(|text| !text.is_empty())
             && value
-                .get("synthetic")
-                .is_none_or(|value| value == &Value::Bool(false))
-            && value
                 .get("ignored")
                 .is_none_or(|value| value == &Value::Bool(false));
+        user_content_complete &= complete;
+        text_complete &= complete && value.get("synthetic").is_none_or(|value| value == false);
         apply_part(
             &value,
             created.or(updated).and_then(parse_db_ts),
@@ -569,7 +699,7 @@ fn visit_db_parts(
             }
         }
     }
-    Ok(text_complete)
+    Ok((text_complete, user_content_complete))
 }
 
 fn bind_sqlite_content(value: &Value, pending: &mut PendingMessage, start: usize) {

@@ -83,12 +83,334 @@ impl SessionInput {
 pub enum NormalizedRecord {
     MetricsEvent(Box<NormalizedEvent>),
     Observation(Box<EvidenceObservation>),
+    ToolResult(Box<ToolResultObservation>),
     /// One turn's captured message content. An adapter emits this
     /// immediately after the `MetricsEvent` it belongs to, and only when it
     /// has at least one part. The metrics and evidence sinks ignore it; only
     /// [`crate::analysis::rows::TurnRowSink`] reads it.
     TurnContent(Box<TurnContent>),
     Unusable(PartialReason),
+}
+
+/// One source-native observation of a tool result or a change to that result.
+///
+/// This value preserves producer identity and ordering for check-facing
+/// consumers. Vendor readers emit it from the same parse pass as metrics and
+/// private content. A result can be incomplete; consumers must not treat
+/// absent content as an empty successful result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResultObservation {
+    /// Exact source contract selected by discovery.
+    pub source_format: crate::analysis::SourceFormat,
+    /// Native session identity that owns the record.
+    pub session_id: String,
+    /// Native record or message identity.
+    pub record_id: Option<String>,
+    /// Native tool-call identity, when the source records it.
+    pub call_id: Option<String>,
+    /// Native result or part identity, when distinct from the record identity.
+    pub result_id: Option<String>,
+    /// Position in source order. This is not a timestamp or database row ID.
+    pub position: ToolResultPosition,
+    /// Mutation number for this logical result. Corrections retain result identity.
+    pub revision: u64,
+    /// Whether this observation updates or removes the logical result.
+    pub change: ToolResultChange,
+    /// Native tool name, when the source binds one to the result.
+    pub tool_name: Option<String>,
+    /// Normalized tool category, when the source contract can identify it.
+    pub tool_category: Option<crate::analysis::model::ToolCategory>,
+    /// Linked native JSON arguments. `None` means the join or payload is unknown.
+    pub arguments: Option<serde_json::Value>,
+    /// Recorded result text. `None` means no complete textual result is proven.
+    pub content: Option<String>,
+    /// Producer-reported result status, separate from content and command meaning.
+    pub status: ToolResultStatus,
+    /// True only when the source marks this result terminal.
+    pub finality: bool,
+    /// Whether required identity, join, and content facts are complete.
+    pub completeness: ToolResultCompleteness,
+    /// Immutable request prefix and source admission. Old payloads stay unavailable.
+    #[serde(default)]
+    pub context: Option<ToolResultContext>,
+}
+
+/// Source-proven context at one logical result's first terminal position.
+///
+/// JSONL producers supply admission with an incomplete prefix. `CompositeSink`
+/// fills the prefix from the same parse pass before publication. Journal readers
+/// can supply an already frozen prefix. Resume retains this value unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResultContext {
+    /// Stable first-terminal order, separate from the current mutation position.
+    pub result_position: ToolResultPosition,
+    /// The producer proves that this result belongs to the admitted root session.
+    pub main_session: bool,
+    /// All accepted requests through `result_position` are retained without gaps.
+    pub complete_through_event: bool,
+    /// User-slot messages with their source pattern, position, and parser revision.
+    pub user_messages: Vec<UserMessage>,
+}
+
+impl ToolResultContext {
+    pub(crate) fn pending(result_position: ToolResultPosition, main_session: bool) -> Self {
+        Self {
+            result_position,
+            main_session,
+            complete_through_event: false,
+            user_messages: Vec::new(),
+        }
+    }
+}
+
+/// Maximum UTF-8 text bytes retained for one user-slot message.
+pub const MAX_USER_MESSAGE_BYTES: usize = MAX_CONTENT_PART_BYTES;
+
+/// Maximum text blocks retained for one user-slot message.
+pub const MAX_USER_MESSAGE_PARTS: usize = 1024;
+
+/// One bounded user-slot message from a native source, including API and extension input.
+///
+/// This is a source observation. It does not prove that a desktop store has
+/// published an immutable history or that the source retained deleted rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserMessage {
+    /// Exact source contract selected by discovery.
+    pub source_format: SourceFormat,
+    /// Native session identity that owns the message.
+    pub session_id: String,
+    /// Stable native message or record identity.
+    pub message_id: String,
+    /// Position from native record order, not a timestamp-derived estimate.
+    pub position: UserMessagePosition,
+    /// Source field pattern that identifies the user slot, not its sender.
+    pub origin: UserMessageOrigin,
+    /// Source proof that the message belongs to the main session.
+    pub scope: UserMessageScope,
+    /// Current presence, source removal, or conflicting identity observation.
+    pub change: UserMessageChange,
+    /// Whether this message's native content and identity are complete.
+    pub completeness: UserMessageCompleteness,
+    /// Complete user-text blocks in native order. Agent task text, tool input,
+    /// and tool output are not request content.
+    pub parts: Vec<UserMessagePart>,
+    /// Revision of the parser's accepted request-proof contract.
+    pub proof_revision: u32,
+}
+
+impl UserMessage {
+    /// Returns false when this fact exceeds its retained identity or content bounds.
+    pub fn is_bounded(&self) -> bool {
+        use crate::analysis::SourceFormat;
+        use crate::analysis::evidence::EVIDENCE_STRING_CAP;
+
+        let contract_matches = matches!(
+            (self.source_format, self.position, self.origin),
+            (
+                SourceFormat::ClaudeJsonl,
+                UserMessagePosition::Jsonl { .. },
+                UserMessageOrigin::ClaudeUserContent
+            ) | (
+                SourceFormat::CodexRolloutJsonl,
+                UserMessagePosition::Jsonl { .. },
+                UserMessageOrigin::CodexRetainedUserText
+            ) | (
+                SourceFormat::OpenCodeSqliteV2,
+                UserMessagePosition::OpenCodeSqlite { .. },
+                UserMessageOrigin::OpenCodeUserText
+            ) | (
+                SourceFormat::OpenCodeSqliteV2,
+                UserMessagePosition::OpenCodeEvent { .. },
+                UserMessageOrigin::OpenCodeUserText
+            ) | (
+                SourceFormat::PiV3Jsonl,
+                UserMessagePosition::Jsonl { .. },
+                UserMessageOrigin::PiUserContent
+            )
+        );
+        let byte_contract_matches = matches!(self.position,
+            UserMessagePosition::FileBytes { record_start, record_end } if record_start < record_end)
+            && matches!(
+                (self.source_format, self.origin),
+                (
+                    SourceFormat::ClaudeJsonl,
+                    UserMessageOrigin::ClaudeUserContent
+                ) | (
+                    SourceFormat::CodexRolloutJsonl,
+                    UserMessageOrigin::CodexRetainedUserText
+                ) | (SourceFormat::PiV3Jsonl, UserMessageOrigin::PiUserContent)
+            );
+        if !(contract_matches || byte_contract_matches)
+            || self.session_id.is_empty()
+            || self.session_id.len() > EVIDENCE_STRING_CAP
+            || self.message_id.is_empty()
+            || self.message_id.len() > EVIDENCE_STRING_CAP
+            || self.parts.len() > MAX_USER_MESSAGE_PARTS
+            || self.proof_revision == 0
+        {
+            return false;
+        }
+        if matches!(
+            self.change,
+            UserMessageChange::Removal | UserMessageChange::Conflict
+        ) && !self.parts.is_empty()
+        {
+            return false;
+        }
+        if self.change == UserMessageChange::Present
+            && self.completeness == UserMessageCompleteness::Complete
+            && self.parts.is_empty()
+        {
+            return false;
+        }
+        let mut bytes = 0_usize;
+        self.parts.iter().enumerate().all(|(index, part)| {
+            part.item_index as usize == index
+                && !part.text.is_empty()
+                && part.text.len() <= MAX_USER_MESSAGE_BYTES
+                && part
+                    .native_part_id
+                    .as_ref()
+                    .is_none_or(|id| !id.is_empty() && id.len() <= EVIDENCE_STRING_CAP)
+                && {
+                    bytes = bytes.saturating_add(part.text.len());
+                    bytes <= MAX_USER_MESSAGE_BYTES
+                }
+        })
+    }
+}
+
+/// Change for one stable user-message identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UserMessageChange {
+    /// The source currently contains this request.
+    Present,
+    /// A source lifecycle event removed this request.
+    Removal,
+    /// The same native identity has conflicting request content.
+    Conflict,
+}
+
+/// Whether one user-message observation has complete native content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UserMessageCompleteness {
+    Complete,
+    Incomplete,
+}
+
+/// Position of one user-slot message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UserMessagePosition {
+    /// Physical JSONL record index.
+    Jsonl { record_index: u64 },
+    /// Exact source record byte range for bounded native file delivery.
+    FileBytes { record_start: u64, record_end: u64 },
+    /// OpenCode's native message creation time. The stable message ID breaks ties.
+    OpenCodeSqlite { created_at_ms: i64 },
+    /// Durable journal position at which the complete native request is visible.
+    OpenCodeEvent { sequence: u64 },
+}
+
+/// Native field pattern that identifies user-slot content without sender attribution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UserMessageOrigin {
+    /// Claude's user message content outside tool envelopes.
+    ClaudeUserContent,
+    /// Codex's complete retained `user.text` message.
+    CodexRetainedUserText,
+    /// OpenCode's non-synthetic text parts on a native `user` message.
+    OpenCodeUserText,
+    /// Pi's user-role message content, including extension and API messages.
+    PiUserContent,
+}
+
+/// Native proof that the request belongs to the main session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UserMessageScope {
+    MainSession,
+}
+
+/// One native text block in a user-slot message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserMessagePart {
+    /// Index in the native message content sequence.
+    pub item_index: u32,
+    /// Native part identity when the source stores one.
+    pub native_part_id: Option<String>,
+    /// Exact recorded UTF-8 text.
+    pub text: String,
+}
+
+/// Source-native ordering for a tool-result observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolResultPosition {
+    /// Physical JSONL record index and item order within that parsed record.
+    Jsonl { record_index: u64, item_index: u32 },
+    /// Exact source record byte range and native item order.
+    FileBytes {
+        record_start: u64,
+        record_end: u64,
+        item_index: u32,
+    },
+    /// Durable per-session OpenCode journal sequence and item order within it.
+    OpenCodeEvent { sequence: u64, item_index: u32 },
+}
+
+/// The mutation applied to one logical result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolResultChange {
+    Update,
+    Removal,
+}
+
+/// Tool-result status as recorded by the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolResultStatus {
+    Success,
+    Error,
+    Interrupted,
+    Unknown,
+}
+
+/// Whether a native result observation has all required evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolResultCompleteness {
+    Complete,
+    Incomplete,
+    /// Native identities conflict. Partial content cannot repair this binding.
+    UnsafeIdentity,
+    /// The source does not prove the result's order or branch membership.
+    UnsafeOrder,
+    /// The source does not prove ownership by the admitted main session.
+    UnsafeOwnership,
+}
+
+/// Admission for a pre-alpha result, independent of available result content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolResultAdmission {
+    Admitted,
+    Unavailable,
+    UnsafeIdentity,
+    UnsafeOrder,
+    UnsafeOwnership,
+}
+
+impl ToolResultObservation {
+    /// Consumers must check admission before using complete or partial content.
+    pub fn admission(&self) -> ToolResultAdmission {
+        match self.completeness {
+            ToolResultCompleteness::UnsafeIdentity => ToolResultAdmission::UnsafeIdentity,
+            ToolResultCompleteness::UnsafeOrder => ToolResultAdmission::UnsafeOrder,
+            ToolResultCompleteness::UnsafeOwnership => ToolResultAdmission::UnsafeOwnership,
+            ToolResultCompleteness::Complete | ToolResultCompleteness::Incomplete => {
+                match &self.context {
+                    Some(context) if context.main_session => ToolResultAdmission::Admitted,
+                    Some(_) => ToolResultAdmission::UnsafeOwnership,
+                    None => ToolResultAdmission::Unavailable,
+                }
+            }
+        }
+    }
 }
 
 /// Cap on one [`ContentPart`]'s byte length. [`ContentPart::new`] truncates
@@ -456,8 +778,28 @@ pub struct SessionSummary {
 }
 
 pub trait RecordSink {
+    /// Projection-only consumers can leave journal delivery to its durable reader.
+    fn tool_results_requested(&self) -> bool {
+        true
+    }
+
     /// The adapter calls this once per framed record, in transcript order.
     fn record(&mut self, record: NormalizedRecord);
+
+    /// The adapter calls this for each user-slot message it observes.
+    /// Implementations that publish these facts must also use the enclosing
+    /// source outcome and coverage to reject incomplete or conflicting batches.
+    fn user_message(&mut self, _message: UserMessage) {}
+
+    /// The adapter cannot prove complete tool-result publication history.
+    /// This does not change legacy metrics or snapshot attribution.
+    fn tool_result_gap(&mut self) {}
+
+    /// A source-wide identity, order, or ownership defect also invalidates
+    /// observations restored from an earlier resume snapshot.
+    fn tool_result_admission_gap(&mut self, _admission: ToolResultAdmission) {
+        self.tool_result_gap();
+    }
 
     /// The adapter calls this once after the last record.
     fn finish(&mut self, summary: SessionSummary);
@@ -530,6 +872,7 @@ impl RecordSink for SessionCollector {
         match record {
             NormalizedRecord::MetricsEvent(event) => self.events.push(*event),
             NormalizedRecord::Observation(_) => {}
+            NormalizedRecord::ToolResult(_) => {}
             NormalizedRecord::TurnContent(_) => {}
             NormalizedRecord::Unusable(reason) => {
                 self.partial_reasons.insert(reason);

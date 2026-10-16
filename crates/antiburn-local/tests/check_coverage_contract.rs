@@ -3,7 +3,9 @@ use std::path::Path;
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, CoverageReason, EVIDENCE_SCHEMA_REVISION, EvidenceCoverage, EvidenceSource,
-    EvidenceValue, PARSER_REVISION, SessionEvidence, SessionEvidenceAccumulator, SignalCoverage,
+    EvidenceValue, MAX_CONTENT_PART_BYTES, MAX_TOOL_RESULT_BYTES, MAX_TOOL_RESULT_OBSERVATIONS,
+    MAX_USER_MESSAGE_COLLECTION_BYTES, MAX_USER_MESSAGE_OBSERVATIONS, PARSER_REVISION,
+    RESUME_SNAPSHOT_REVISION, SessionEvidence, SessionEvidenceAccumulator, SignalCoverage,
     SourceCapabilities, SourceFormat, SourceKind, TurnFacts,
 };
 use antiburn_local::insights::{
@@ -444,6 +446,76 @@ fn coverage_documents_list_every_source_format_once_with_valid_statuses() {
 }
 
 #[test]
+fn documented_journal_state_limits_match_the_current_source_contract() {
+    let session_coverage = coverage_document("session-coverage.md");
+    let rows = markdown_table_rows(
+        &session_coverage,
+        "### Journal delivery limits",
+        "### Journal admission and metadata gaps",
+    );
+    let expected = BTreeMap::from([
+        (
+            "Parser revision",
+            usize::try_from(PARSER_REVISION).expect("positive parser revision"),
+        ),
+        (
+            "Resume snapshot revision",
+            usize::try_from(RESUME_SNAPSHOT_REVISION).expect("positive resume revision"),
+        ),
+        ("Result observations", MAX_TOOL_RESULT_OBSERVATIONS),
+        ("Result payload bytes", MAX_TOOL_RESULT_BYTES),
+        ("Request history records", MAX_USER_MESSAGE_OBSERVATIONS),
+        ("Request history bytes", MAX_USER_MESSAGE_COLLECTION_BYTES),
+        ("Frozen request context bytes", MAX_TOOL_RESULT_BYTES / 2),
+        ("Result field bytes", MAX_CONTENT_PART_BYTES),
+    ]);
+    assert_eq!(rows.len(), expected.len(), "one row per source-state limit");
+    let mut documented = BTreeMap::new();
+    for row in &rows {
+        assert_eq!(row.len(), 3, "limit row has value and scope: {row:?}");
+        assert!(!row[2].is_empty(), "source-state limit needs a scope");
+        assert!(
+            documented
+                .insert(
+                    row[0].as_str(),
+                    row[1].parse::<usize>().expect("integer source-state limit"),
+                )
+                .is_none(),
+            "duplicate source-state limit: {row:?}"
+        );
+    }
+    assert_eq!(documented, expected);
+}
+
+#[test]
+fn opencode_source_rows_link_to_the_bounded_journal_contract() {
+    let session_coverage = coverage_document("session-coverage.md");
+    let check_coverage = coverage_document("check-coverage.md");
+    let session_rows =
+        markdown_table_rows(&session_coverage, "## Source Matrix", "## Provider Routes");
+    let inventory_rows =
+        markdown_table_rows(&check_coverage, "## Source Inventory", "## Coverage Matrix");
+    for (rows, column, link) in [
+        (&session_rows, 3, "(#opencode-journal-delivery)"),
+        (
+            &inventory_rows,
+            2,
+            "(session-coverage.md#opencode-journal-delivery)",
+        ),
+    ] {
+        let row = rows
+            .iter()
+            .find(|row| row[0] == "OpenCodeSqliteV2")
+            .expect("OpenCode source contract");
+        assert!(row[column].contains(link), "journal contract link: {row:?}");
+        assert!(
+            row[column].contains("53d1eabb61e21162157817bf677da0a4ad3332e3"),
+            "journal claims require the accepted producer pin: {row:?}"
+        );
+    }
+}
+
+#[test]
 fn first_tier_product_matrix_has_one_typed_row_per_agent_and_check() {
     let check_coverage = coverage_document("check-coverage.md");
     const AGENTS: &[&str] = &[
@@ -636,6 +708,46 @@ fn first_tier_matrix_matches_engine_gates_and_reachable_routes() {
             .find(|row| row[0] == agent && row[1] == check)
             .unwrap_or_else(|| panic!("missing policy fixture {agent}/{check}"));
         assert_eq!(parse_product_support_columns(row).auto_fix, expected);
+    }
+}
+
+#[test]
+fn suspended_built_in_smart_checks_have_no_new_product_routes() {
+    let document = coverage_document("check-coverage.md");
+    let rows = markdown_table_rows(
+        &document,
+        "## First-Tier Product Matrix",
+        "## Second-Tier Product Coverage",
+    );
+    let suspended = BTreeSet::from([
+        DetectorId::IgnoredInstructions,
+        DetectorId::SkillOpportunities,
+        DetectorId::OverExploring,
+        DetectorId::ScopeCreep,
+    ]);
+    let mut count = 0;
+    for row in rows {
+        if suspended.contains(&detector_from_code(&row[1]).expect("known check")) {
+            count += 1;
+            assert_eq!(
+                parse_product_support_columns(&row),
+                support(
+                    FindingSupport::Unavailable,
+                    PromptSupport::Unavailable,
+                    AutoFixSupport::Unavailable,
+                    VerificationSupport::Unavailable,
+                    BurnEstimateSupport::Unavailable,
+                ),
+                "suspended product route: {row:?}"
+            );
+        }
+    }
+    assert_eq!(count, 24, "six agents and four suspended checks");
+    for row in remediation_matrix_rows(&document) {
+        assert!(
+            parse_check_set(&row[1]).is_disjoint(&suspended),
+            "suspended prompt route: {row:?}"
+        );
     }
 }
 

@@ -816,7 +816,7 @@ test("lists every file that a workspace reads outside the Cargo workspaces", () 
   }).trim();
   const sources = execFileSync(
     "git",
-    ["ls-files", "--", "crates/*.rs", "apps/desktop/src-tauri/*.rs"],
+    ["ls-files", "--", "crates/**/*.rs", "apps/desktop/src-tauri/**/*.rs"],
     { cwd: root, encoding: "utf8" },
   )
     .split("\n")

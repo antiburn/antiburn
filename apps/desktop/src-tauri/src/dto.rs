@@ -1129,6 +1129,8 @@ pub struct ChecksReportPayload {
     /// Aggregate burn for each detector bit mask in canonical `DetectorId` order.
     pub estimated_token_burn_basis_points_by_detector_mask: Vec<Option<u16>>,
     pub categories: Vec<ChecksCategoryPayload>,
+    pub(crate) installed_checks:
+        Vec<crate::insights_report::installed_checks::InstalledCheckReportPayload>,
 }
 
 /// One accepted detector identifier on the remediation IPC boundary.
@@ -1158,6 +1160,44 @@ pub struct BurnCheckSnoozePayload {
     /// This release supports the whole check. The field reserves target scope.
     pub scope: BurnCheckSnoozeScope,
     /// Milliseconds since the Unix epoch. `None` means the reader chose forever.
+    pub until: Option<i64>,
+}
+
+/// Reader identity. Installed IDs never enter native detector masks or remediation.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum CheckSnoozeId {
+    Native(BurnCheckDetectorId),
+    Installed(InstalledCheckId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InstalledCheckId(String);
+
+impl<'de> Deserialize<'de> for InstalledCheckId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        let valid = value.strip_prefix("installed:").is_some_and(|id| {
+            !id.is_empty()
+                && id.len() <= 255
+                && id.as_bytes()[0].is_ascii_lowercase()
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        });
+        if !valid {
+            return Err(serde::de::Error::custom("invalid installed check identity"));
+        }
+        Ok(Self(value))
+    }
+}
+
+/// Backward-compatible wire shape for native and installed reader snoozes.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckSnoozePayload {
+    pub detector: CheckSnoozeId,
+    pub scope: BurnCheckSnoozeScope,
     pub until: Option<i64>,
 }
 
@@ -2998,6 +3038,7 @@ impl ChecksReportPayload {
             estimated_token_burn_basis_points,
             estimated_token_burn_basis_points_by_detector_mask,
             categories,
+            installed_checks: Vec::new(),
         }
     }
 }

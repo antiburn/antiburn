@@ -35,8 +35,8 @@ use crate::consent;
 use crate::dto::{
     ActivityEntry, AgentScanState, AggregateWinsPayload, AppInfo,
     ApplyPreparedBurnCheckOperationOutcome, AutoFixUnavailableReason, BurnCheckDetectorId,
-    BurnCheckRemediationProgressPayload, BurnCheckSnoozePayload, BurnCheckTargetListPayload,
-    CalledToolPayload, ChecksReportPayload, CopyPromptFixBurnCheckOutcome,
+    BurnCheckRemediationProgressPayload, BurnCheckTargetListPayload, CalledToolPayload,
+    CheckSnoozeId, CheckSnoozePayload, ChecksReportPayload, CopyPromptFixBurnCheckOutcome,
     CopyPromptFixBurnCheckTargetOutcome, DeferredPermissionDir, InsightsBacklog, LiveUsageSummary,
     OrchestrationStatus, PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason,
     ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload,
@@ -1493,9 +1493,23 @@ pub async fn get_checks_report(
         crate::analytics::record_quota_incidents(app, &reduced.report.quota_pressure);
         crate::analytics::record_provider_incidents(app, &reduced.report.provider_incidents);
         let mut payload = ChecksReportPayload::from_reduced_report(&reduced);
-        payload.smart_checks_available = app
-            .state::<crate::jev::worker::WorkerHandle>()
-            .is_available();
+        payload.installed_checks =
+            crate::insights_report::installed_checks::read_installed_checks_in_window(
+                &store,
+                &crate::installed_checks::metadata(app),
+                &request,
+            )
+            .map_err(fail)?;
+        crate::insights_report::installed_checks::enrich_samples(
+            &app.state::<crate::main_window::MainWindowState>(),
+            &store,
+            &mut payload.installed_checks,
+            epoch_now(),
+            app.state::<crate::jev::worker::WorkerHandle>()
+                .is_available(),
+        )
+        .map_err(fail)?;
+        payload.smart_checks_available = false;
         for (id, check_id) in [
             (
                 BurnCheckDetectorId::SkillOpportunities,
@@ -1611,10 +1625,10 @@ pub async fn get_checks_report(
     .await
 }
 
-fn current_burn_check_snoozes(store: &Store) -> CommandResult<Vec<BurnCheckSnoozePayload>> {
+fn current_burn_check_snoozes(store: &Store) -> CommandResult<Vec<CheckSnoozePayload>> {
     let now_ms = epoch_now() * 1_000;
     Ok(store
-        .burn_check_snoozes()
+        .check_snoozes()
         .map_err(fail)?
         .into_iter()
         .filter(|snooze| snooze.until.is_none_or(|until| until > now_ms))
@@ -1625,7 +1639,7 @@ fn current_burn_check_snoozes(store: &Store) -> CommandResult<Vec<BurnCheckSnooz
 #[tauri::command]
 pub async fn list_burn_check_snoozes(
     app: tauri::AppHandle,
-) -> CommandResult<Vec<BurnCheckSnoozePayload>> {
+) -> CommandResult<Vec<CheckSnoozePayload>> {
     let store = app.state::<Store>().inner().clone();
     run_blocking(move || current_burn_check_snoozes(&store)).await
 }
@@ -1634,17 +1648,12 @@ pub async fn list_burn_check_snoozes(
 #[tauri::command]
 pub async fn set_burn_check_snooze(
     app: tauri::AppHandle,
-    snooze: BurnCheckSnoozePayload,
-) -> CommandResult<Vec<BurnCheckSnoozePayload>> {
+    snooze: CheckSnoozePayload,
+) -> CommandResult<Vec<CheckSnoozePayload>> {
     let store = app.state::<Store>().inner().clone();
     let saved = run_blocking(move || {
-        let mut snoozes = current_burn_check_snoozes(&store)?;
-        snoozes.retain(|current| current.detector != snooze.detector);
-        snoozes.push(snooze);
-        store
-            .save_burn_check_snoozes(&serde_json::to_string(&snoozes).map_err(fail)?)
-            .map_err(fail)?;
-        Ok(snoozes)
+        store.set_check_snooze(&snooze).map_err(fail)?;
+        current_burn_check_snoozes(&store)
     })
     .await?;
     let _ = app.emit(BURN_CHECK_SNOOZES_CHANGED_EVENT, &saved);
@@ -1655,16 +1664,12 @@ pub async fn set_burn_check_snooze(
 #[tauri::command]
 pub async fn clear_burn_check_snooze(
     app: tauri::AppHandle,
-    detector: BurnCheckDetectorId,
-) -> CommandResult<Vec<BurnCheckSnoozePayload>> {
+    detector: CheckSnoozeId,
+) -> CommandResult<Vec<CheckSnoozePayload>> {
     let store = app.state::<Store>().inner().clone();
     let saved = run_blocking(move || {
-        let mut snoozes = current_burn_check_snoozes(&store)?;
-        snoozes.retain(|snooze| snooze.detector != detector);
-        store
-            .save_burn_check_snoozes(&serde_json::to_string(&snoozes).map_err(fail)?)
-            .map_err(fail)?;
-        Ok(snoozes)
+        store.clear_check_snooze(&detector).map_err(fail)?;
+        current_burn_check_snoozes(&store)
     })
     .await?;
     let _ = app.emit(BURN_CHECK_SNOOZES_CHANGED_EVENT, &saved);
@@ -1725,6 +1730,25 @@ pub async fn list_burn_check_targets(
     })
     .await
     .map_err(|_| "unable to list burn check targets".to_owned())?
+}
+
+#[tauri::command]
+pub(crate) async fn get_installed_check_evidence(
+    window: tauri::WebviewWindow,
+    target_id: String,
+) -> CommandResult<BurnCheckTargetEvidence> {
+    ensure_checks_window(window.label())?;
+    let app = window.app_handle().clone();
+    run_blocking(move || {
+        crate::insights_report::installed_checks::read_evidence(
+            &app.state::<Store>(),
+            &crate::installed_checks::metadata(&app),
+            &insights_report_request(epoch_now()),
+            &target_id,
+        )
+        .map_err(fail)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2458,6 +2482,7 @@ pub const SESSION_UPDATED_EVENT: &str = "session:updated";
 /// Only the projection bridge emits membership changes and invalidations on this scope.
 pub const SESSION_INDEX_CHANGED_EVENT: &str = "session:index-changed";
 pub const CHECKS_REPORT_CHANGED_EVENT: &str = "checks:report-changed";
+
 /// Only the insights worker pool emits this on a pool-wide backlog start/drain.
 pub const INSIGHTS_BACKLOG_CHANGED_EVENT: &str = "insights-backlog-changed";
 pub const BURN_CHECK_SNOOZES_CHANGED_EVENT: &str = "checks:snoozes-changed";
@@ -3056,7 +3081,7 @@ pub async fn open_project_folder(
     .await
 }
 
-fn reject_remote_cache_path(app: &tauri::AppHandle, target: &Path) -> CommandResult<()> {
+pub(crate) fn reject_remote_cache_path(app: &tauri::AppHandle, target: &Path) -> CommandResult<()> {
     let root = crate::remote_sessions::directory(app)?;
     let root = std::fs::canonicalize(root)
         .map_err(|_| "Remote session storage is unavailable".to_owned())?;
@@ -3098,7 +3123,7 @@ fn revealable_path(path: &str) -> Result<PathBuf, String> {
 /// several shells and file managers refuse to open. Strip the prefix back off
 /// for presentation; everything else is unchanged.
 #[cfg(windows)]
-fn presentable(path: PathBuf) -> PathBuf {
+pub(crate) fn presentable(path: PathBuf) -> PathBuf {
     let text = path.to_string_lossy().to_string();
     match text.strip_prefix(r"\\?\") {
         Some(rest) => match rest.strip_prefix(r"UNC\") {
@@ -3110,7 +3135,7 @@ fn presentable(path: PathBuf) -> PathBuf {
 }
 
 #[cfg(not(windows))]
-fn presentable(path: PathBuf) -> PathBuf {
+pub(crate) fn presentable(path: PathBuf) -> PathBuf {
     path
 }
 

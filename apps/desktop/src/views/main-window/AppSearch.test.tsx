@@ -2,8 +2,54 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import { useState } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AppSearch } from "./AppSearch"
+import type * as CheckAvailabilityModule from "../../lib/checkAvailability"
+import {
+  emptyCheckAvailability,
+  getCheckAvailability,
+  onCheckAvailabilityChanged,
+  type CheckAvailability,
+  type CheckAvailabilityEvent,
+} from "../../lib/checkAvailability"
+
+vi.mock("../../lib/checkAvailability", async (importOriginal) => ({
+  ...(await importOriginal<typeof CheckAvailabilityModule>()),
+  getCheckAvailability: vi.fn(),
+  onCheckAvailabilityChanged: vi.fn(),
+}))
+
+let availabilityEvent: (event: CheckAvailabilityEvent) => void
+const availableChecks: CheckAvailability = {
+  ...emptyCheckAvailability,
+  revision: 1,
+  configured: true,
+  installedChecks: [
+    {
+      effectiveId: "installed:retry-loop",
+      name: "Retry loop",
+      aliases: [],
+      availability: { status: "available" },
+    },
+  ],
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: Error) => void
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done
+    reject = fail
+  })
+  return { promise, resolve, reject }
+}
 
 beforeEach(() => {
+  vi.mocked(getCheckAvailability).mockReset().mockResolvedValue(emptyCheckAvailability)
+  vi.mocked(onCheckAvailabilityChanged)
+    .mockReset()
+    .mockImplementation(async (callback) => {
+      availabilityEvent = callback
+      return vi.fn<() => void>()
+    })
   Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
     configurable: true,
     value: function (this: HTMLDialogElement) {
@@ -117,5 +163,89 @@ describe("app search palette", () => {
     })
     expect(choose).toHaveBeenCalledOnce()
     await act(async () => resolve())
+  })
+
+  it("shows an initial availability error and retries without blocking other destinations", async () => {
+    vi.mocked(getCheckAvailability)
+      .mockRejectedValueOnce(new Error("IPC failed"))
+      .mockResolvedValueOnce(availableChecks)
+    const input = open()
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load checks.")
+    fireEvent.change(input, { target: { value: "sound" } })
+    expect(screen.getByRole("option", { name: /Sound/ })).toBeVisible()
+    expect(screen.getByRole("alert")).toBeVisible()
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Retry" })))
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    fireEvent.change(input, { target: { value: "Retry loop" } })
+    expect(screen.getByRole("option", { name: /Retry loop/ })).toBeVisible()
+  })
+
+  it("retains good destinations after failed events and failed retries, then recovers", async () => {
+    vi.mocked(getCheckAvailability)
+      .mockResolvedValueOnce(availableChecks)
+      .mockRejectedValueOnce(new Error("refresh failed"))
+    const input = open()
+    fireEvent.change(input, { target: { value: "Retry loop" } })
+    expect(await screen.findByRole("option", { name: /Retry loop/ })).toBeVisible()
+    act(() => availabilityEvent({ status: "failed" }))
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Retry" })))
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load checks.")
+    expect(screen.getByRole("option", { name: /Retry loop/ })).toBeVisible()
+    act(() => availabilityEvent({ status: "updated", snapshot: availableChecks }))
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it.each(["resolve", "reject"] as const)(
+    "ignores a stale initial request that later %ss after a newer event",
+    async (settle) => {
+      const request = deferred<CheckAvailability>()
+      vi.mocked(getCheckAvailability).mockReturnValueOnce(request.promise)
+      const input = open()
+      await act(async () => {})
+      act(() => availabilityEvent({ status: "updated", snapshot: availableChecks }))
+      await act(async () => {
+        if (settle === "resolve") request.resolve(emptyCheckAvailability)
+        else request.reject(new Error("old failure"))
+      })
+      fireEvent.change(input, { target: { value: "Retry loop" } })
+      expect(screen.getByRole("option", { name: /Retry loop/ })).toBeVisible()
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    },
+  )
+
+  it("retries a failed subscription while keeping a successful snapshot", async () => {
+    vi.mocked(onCheckAvailabilityChanged).mockRejectedValueOnce(new Error("listen failed"))
+    vi.mocked(getCheckAvailability).mockResolvedValue(availableChecks)
+    const input = open()
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load checks.")
+    fireEvent.change(input, { target: { value: "Retry loop" } })
+    expect(screen.getByRole("option", { name: /Retry loop/ })).toBeVisible()
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Retry" })))
+    expect(onCheckAvailabilityChanged).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("releases a subscription that finishes registering after unmount", async () => {
+    const subscription = deferred<() => void>()
+    const stop = vi.fn()
+    vi.mocked(onCheckAvailabilityChanged).mockReturnValueOnce(subscription.promise)
+    open()
+    fireEvent.click(screen.getByRole("button", { name: "Close search" }))
+    await act(async () => subscription.resolve(stop))
+    expect(stop).toHaveBeenCalledOnce()
+    expect(getCheckAvailability).not.toHaveBeenCalled()
+  })
+
+  it("keeps a closed palette's response out of the next palette", async () => {
+    const request = deferred<CheckAvailability>()
+    vi.mocked(getCheckAvailability).mockReturnValueOnce(request.promise)
+    open()
+    await act(async () => {})
+    fireEvent.click(screen.getByRole("button", { name: "Close search" }))
+    fireEvent.click(screen.getByRole("button", { name: "Search" }))
+    await act(async () => request.resolve(availableChecks))
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "Retry loop" } })
+    expect(screen.queryByRole("option", { name: /Retry loop/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
 })

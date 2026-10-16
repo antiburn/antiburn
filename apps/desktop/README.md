@@ -12,39 +12,13 @@ server, or backend.
 
 ## Data and network requests
 
-- **Smart assessments:** The Checks step settings configure Ignored Instructions, Scope
-  Creep, Over-exploring, and Skill Opportunities through Jev, Ollama, Cloudflare,
-  or Custom. Each check has an enabled preference; Smart Checks also require
-  the group control and a configured connection. Newly introduced checks start
-  off until enabled. Jev is the default; saved connections retain their settings when
-  switched. Credentials use native storage or memory. Ignored Instructions
-  sends selected instruction text, assistant excerpts, Bash command input,
-  file-edit and read paths, search queries with scope filters, and other-tool
-  input. A valid OpenCode `apply_patch` request can expose its paths. Dedicated
-  edit-tool content, read/search output, other tool output, typed question/plan
-  fields, and thinking stay excluded. Selected human text and exactly bound Bash
-  results can supply bounded context. Unknown-origin text, skill documents, and
-  completion labels do not establish approval or passing tests.
-  Inline scripts, heredocs, and patches recorded in Bash input can be sent.
-  Selected paths can leave the device. Provider usage charges can apply.
-- **Other smart assessments:** Pinned native Claude Code, Codex, OpenCode SQLite,
-  and Pi retained roots can use
-  Scope Creep, Over-exploring, and Skill Opportunities through the same master setting and
-  provider connection. These checks can send recorded user task context,
-  selected work, edit content and tool results, supported question/plan records,
-  current skill names, selected reference text, and use/time limits. Skill
-  Opportunities sends only a valid nonempty description as reference text.
-  Missing, null, or blank descriptions and plain Markdown use normalized full
-  Markdown as the reference source. The check sends one complete anchored
-  procedure, with ranges in decoded description or normalized Markdown. A generic
-  nonempty description does not expose a body-only procedure. Invalid YAML and
-  non-string descriptions remain unsupported. Private thinking stays excluded.
-  Results are source-limited;
-  Skill Opportunities does not prove past skill visibility or execution. Each
-  request sends bounded selected fields, not all transcripts. All four checks
-  offer prompt-only guidance, with no Auto Fix, verification watch, or savings
-  estimate. A remote Ollama or Custom endpoint is a remote destination. Hosted
-  charges can apply.
+- **Model-based Checks:** Settings → Checks controls authored YAML discovery and
+  review of new local session activity. **Decision model** exposes Jev only. The connection
+  uses native credential storage. Requests contain selected tool results and
+  available user-slot text, not full transcripts. Partial fields, truncated text,
+  and source gaps are identified for the model; missing images are not analyzed.
+  Provider usage charges can apply. Built-in smart-check execution and historical
+  enrollment are suspended; saved results, preferences, and implementations remain.
 - **Model prices:** The app downloads public prices from models.dev at startup
   and once an hour while it runs. The request contains no session data or
   credentials.
@@ -189,46 +163,28 @@ and IPC. The Rust analytics module tests consent, endpoint injection, and the
 payload schema. `cargo-deny` rejects known telemetry dependencies in the local
 engine. Release and dependency checks run through the required CI gate.
 
-Smart Checks use the configured Jev, Ollama, Cloudflare, or Custom connection,
-separate from analytics. Hosted requests can incur charges. Per input snapshot,
-Ignored Instructions selects at most two direct rule/action conflicts, Scope Creep
-two substantial performed-work groups, Over-exploring three redundant or clearly
-irrelevant read targets, and Skill Opportunities one concrete current procedure
-and workflow. General file breadth, large first reads, omission/deadline inference,
-and broad skill inventory paging are outside the compact policy.
+YAML Burn Checks use Jev, separate from analytics. Hosted requests can incur
+charges. The master **Model-based Checks** setting controls discovery and
+activation; **Decision model** configures Jev. Built-in Ignored Instructions,
+Scope Creep, Over-exploring, and Skill Opportunities do not run or enroll history.
+Their saved results and alternative-provider profiles remain; these profiles do
+not add YAML decision routes.
 
-Retained candidates fit one logical request per check/input snapshot, excluding
-finite transport retries. Zero qualifying candidates means zero calls. Capabilities
-can reduce evidence or cause zero-call abstention. Required rule, task, authority,
-and procedure units stay intact. Context rejection does not create child calls.
-Ollama uses matching loaded context before configured `num_ctx`, bounded by known
-model limits and lower overrides. Missing discovery does not create an 8,192-token
-budget. Connection setup is separate from admission. Fit estimates include wrappers
-and scoring overhead. When context is unknown, admission loads the idle model with
-an empty request and repeats discovery. If no limit is reported, configure a manual
-context override and test the connection. Fit estimates
-are not actual usage or model-quality claims.
+Terminal results with safe identity and order can enter a live window even when
+optional fields or retained history are partial. Quality fields preserve those
+limits. A missing required expression value can make one candidate not assessable
+without blocking later results. User-slot text can include extension/API input;
+it is not proof of human approval. OpenCode synthetic parts are excluded, mixed
+messages retain real user text, and generated-only replacements leave request
+history partial. Unknown delivery does not
+permit an automatic resend. Explicit success covers assessed work, not a repaired
+or clean whole session. See the [Burn Checks guide](../../docs/burn-check/README.md).
 
-Findings need a unique positive Choice at probability 0.95 or higher plus local
-binding and evidence gates. Current files do not prove historical instruction
-activation, and current skills do not prove past availability or whole-session
-non-use. Scope Creep needs sufficient authority and bound outcome evidence. Clean
-covers eligible selected comparisons, not omitted candidates or all session work.
-Selection is nonexhaustive; later turns do not drain policy-omitted inventory.
-
-Compatible typed answers persist when exact source, input, reference, provider,
-and evaluator identities match. Pending dispatched evidence cannot silently change
-shape on recovery. The shared scheduler allows at most eight dispatch attempts
-per turn, including retries; this does not expand the snapshot request policy.
-Retryable transport failures have at most three persisted attempts for exact work.
-Unknown delivery blocks automatic redispatch when safe reconciliation is unavailable.
-An earlier attempt may already have incurred a charge. About 60 seconds after worker
-start is a goal, not a guarantee or measured speedup.
-The source and finding limits are in
+The source and result limits are in
 [`session-coverage.md`](../../docs/session-coverage.md) and
 [`check-coverage.md`](../../docs/check-coverage.md). The
-[Smart Burn Checks guide](../../docs/smart-burn-checks.md) explains how the
-check divides and assesses session data.
+[Smart Burn Checks guide](../../docs/smart-burn-checks.md) records the retained
+built-in implementation and its separate evidence capabilities.
 
 Burn Check remediation stays local. After a separate review and confirmation,
 each Auto Fix changes one winning control. It uses the global or user control

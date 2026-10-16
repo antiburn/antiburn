@@ -44,6 +44,7 @@
 //! record is skipped with `Complete` coverage; see its doc comment and
 //! `is_recognized_eventless`'s for the allowlist and the structural proof.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
 
@@ -61,7 +62,10 @@ use crate::analysis::initial_context::CodexContextAccumulator;
 use crate::analysis::interface::{
     ContentKind, ContentPart, ContextSourceKind, ContextWindowSource, EvidenceObservation,
     NormalizedRecord, RawSource, RecordSink, RelationProvenance, ResumedVisit, SessionInput,
-    SessionReader, SessionSummary, TurnContent, VisitOutcome,
+    SessionReader, SessionSummary, ToolResultChange, ToolResultCompleteness, ToolResultObservation,
+    ToolResultPosition, ToolResultStatus, TurnContent, UserMessage, UserMessageChange,
+    UserMessageCompleteness, UserMessageOrigin, UserMessagePart, UserMessagePosition,
+    UserMessageScope, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, ToolCall, Usage};
 use crate::analysis::records::{
@@ -76,6 +80,7 @@ const MAX_PENDING_FORK_BYTES: usize = 1024 * 1024;
 
 mod completed;
 mod environment;
+pub(crate) mod live;
 mod scope;
 
 pub struct CodexSessionReader;
@@ -120,7 +125,7 @@ impl SessionReader for CodexSessionReader {
                     BufReader::new(File::open(path)?),
                     &|| false,
                     sink,
-                    CodexStreamState::default(),
+                    CodexStreamState::for_input(input),
                 )?,
                 RawSource::Jsonl(content) => {
                     let suffix: &[u8] = if content.ends_with('\n') { b"" } else { b"\n" };
@@ -129,7 +134,7 @@ impl SessionReader for CodexSessionReader {
                         BufReader::new(source),
                         &|| false,
                         sink,
-                        CodexStreamState::default(),
+                        CodexStreamState::for_input(input),
                     )?
                 }
                 RawSource::Sqlite(path) => {
@@ -223,7 +228,7 @@ impl CodexSessionReader {
                 BufReader::new(pinned.reader(limit)),
                 cancel,
                 sink,
-                CodexStreamState::default(),
+                CodexStreamState::for_input(input),
             )?;
             let outcome = match guarantee {
                 AppendOnlyGuarantee::Evidenced => match pinned.recheck_prefix()? {
@@ -294,6 +299,10 @@ impl CodexSessionReader {
             };
             let initial_state: CodexStreamState = postcard::from_bytes(&resume.adapter.0)
                 .context("decoding Codex adapter snapshot")?;
+            let mut initial_state = initial_state;
+            initial_state.session_id = input.session_id.clone();
+            initial_state.source_format =
+                input.source_format_or(crate::analysis::SourceFormat::CodexRolloutJsonl);
             let state = self.visit_reader(
                 BufReader::new(pinned.reader_from(resume.resume.offset, u64::MAX)),
                 cancel,
@@ -355,6 +364,8 @@ impl CodexSessionReader {
         let mut reader = BoundedJsonlReader::new(reader);
 
         while let Some(record) = reader.next_record(cancel) {
+            let record_index = state.record_offset;
+            state.record_offset = state.record_offset.saturating_add(1);
             match record {
                 FramedRecord::Skipped(skip) => match skip {
                     RecordSkip::Oversized { .. } | RecordSkip::IncompleteTail { .. } => {
@@ -376,7 +387,7 @@ impl CodexSessionReader {
                         sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
                         continue;
                     };
-                    state.observe(value, bytes.len(), sink);
+                    state.observe(value, bytes.len(), record_index, sink);
                 }
             }
         }
@@ -438,7 +449,27 @@ struct CodexStreamState {
     tool_identities: crate::analysis::tool_identity::ToolIdentityMap,
     scope: scope::CodexScopeState,
     completed: completed::CompletedState,
+    #[serde(default)]
+    session_id: String,
+    #[serde(default)]
+    source_format: crate::analysis::SourceFormat,
+    #[serde(default)]
+    #[serde(with = "json_text_codec")]
+    native_calls: HashMap<String, Option<CodexNativeCall>>,
+    #[serde(default)]
+    native_call_bytes: usize,
+    record_offset: u64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CodexNativeCall {
+    name: String,
+    arguments: Option<Value>,
+    retained_bytes: usize,
+}
+
+const MAX_NATIVE_TOOL_CALLS: usize = 4096;
+const MAX_NATIVE_TOOL_CALL_BYTES: usize = 8 * 1024 * 1024;
 
 /// Snapshot codec for a `CodexStreamState` field whose type carries
 /// `serde_json::Value` data at any depth (`pending_rows`,
@@ -475,7 +506,21 @@ mod json_text_codec {
 }
 
 impl CodexStreamState {
-    fn observe(&mut self, value: Value, record_bytes: usize, sink: &mut dyn RecordSink) {
+    fn for_input(input: &SessionInput) -> Self {
+        Self {
+            session_id: input.session_id.clone(),
+            source_format: input.source_format_or(crate::analysis::SourceFormat::CodexRolloutJsonl),
+            ..Self::default()
+        }
+    }
+
+    fn observe(
+        &mut self,
+        value: Value,
+        record_bytes: usize,
+        record_index: u64,
+        sink: &mut dyn RecordSink,
+    ) {
         if record_to_event(&value).is_some_and(|event| event.ts_ms.is_none()) {
             self.scope.invalidate();
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
@@ -525,13 +570,19 @@ impl CodexStreamState {
         }
 
         if self.ownership == ForkOwnership::Pending {
-            self.observe_pending(value, record_bytes, sink);
+            self.observe_pending(value, record_bytes, record_index, sink);
         } else {
-            self.process_value(value, true, sink);
+            self.process_value(value, true, Some(record_index), sink);
         }
     }
 
-    fn observe_pending(&mut self, value: Value, record_bytes: usize, sink: &mut dyn RecordSink) {
+    fn observe_pending(
+        &mut self,
+        value: Value,
+        record_bytes: usize,
+        record_index: u64,
+        sink: &mut dyn RecordSink,
+    ) {
         let record_type = value.get("type").and_then(Value::as_str);
         let payload_type = value.pointer("/payload/type").and_then(Value::as_str);
 
@@ -543,12 +594,12 @@ impl CodexStreamState {
                 .is_some_and(|(replay, current)| current > replay)
         {
             for pending in std::mem::take(&mut self.pending_rows) {
-                self.process_value(pending, false, sink);
+                self.process_value(pending, false, None, sink);
             }
             self.pending_bytes = 0;
             self.pending_owned_start = None;
             self.ownership = ForkOwnership::Owned;
-            self.process_value(value, true, sink);
+            self.process_value(value, true, Some(record_index), sink);
             return;
         }
 
@@ -571,7 +622,7 @@ impl CodexStreamState {
                 .is_some_and(|(recipient, path)| recipient == path);
         if self.fork_attribution_incomplete {
             self.pending_owned_start = None;
-            self.process_value(value, false, sink);
+            self.process_value(value, false, Some(record_index), sink);
             if addressed_to_child {
                 self.ownership = ForkOwnership::Owned;
             }
@@ -582,12 +633,12 @@ impl CodexStreamState {
             || self.pending_bytes.saturating_add(record_bytes) > MAX_PENDING_FORK_BYTES
         {
             for pending in std::mem::take(&mut self.pending_rows) {
-                self.process_value(pending, false, sink);
+                self.process_value(pending, false, None, sink);
             }
             self.pending_bytes = 0;
             self.pending_owned_start = None;
             self.fork_attribution_incomplete = true;
-            self.process_value(value, false, sink);
+            self.process_value(value, false, Some(record_index), sink);
             if addressed_to_child {
                 self.ownership = ForkOwnership::Owned;
             }
@@ -603,7 +654,7 @@ impl CodexStreamState {
                 .unwrap_or(self.pending_rows.len() - 1);
             let pending_rows = std::mem::take(&mut self.pending_rows);
             for (index, value) in pending_rows.into_iter().enumerate() {
-                self.process_value(value, index >= owned_start, sink);
+                self.process_value(value, index >= owned_start, None, sink);
             }
             self.pending_bytes = 0;
             self.pending_owned_start = None;
@@ -611,19 +662,47 @@ impl CodexStreamState {
         }
     }
 
-    fn process_value(&mut self, value: Value, usage_is_owned: bool, sink: &mut dyn RecordSink) {
+    fn process_value(
+        &mut self,
+        value: Value,
+        usage_is_owned: bool,
+        record_index: Option<u64>,
+        sink: &mut dyn RecordSink,
+    ) {
         let mut native_sink = CompletedRecordSink {
             sink,
             model: self.current_model.as_deref(),
             provider: self.current_provider.as_deref(),
             thinking_mode: self.current_thinking_mode.as_deref(),
             speed: &self.current_speed,
+            source_format: self.source_format,
+            session_id: &self.session_id,
+            record_index,
+            completed_item: value["type"] == "event_msg"
+                && value["payload"]["type"] == "item_completed",
+            completed_item_id: value["payload"]["item"]["id"].as_str().map(str::to_owned),
+            completed_status: codex_host_status(value["payload"]["item"]["status"].as_str()),
+            results: Vec::new(),
         };
-        if self
+        let completed = self
             .completed
-            .observe(&value, usage_is_owned, &mut native_sink)
-        {
+            .observe(&value, usage_is_owned, &mut native_sink);
+        let results = std::mem::take(&mut native_sink.results);
+        for mut result in results {
+            result.context = Some(crate::analysis::ToolResultContext::pending(
+                result.position,
+                self.completed.admits(&self.session_id),
+            ));
+            sink.record(NormalizedRecord::ToolResult(Box::new(result)));
+        }
+        if completed {
             return;
+        }
+        if usage_is_owned
+            && let Some(record_index) = record_index
+            && !self.completed.replaces_exec_content(&value)
+        {
+            self.capture_native_tool_result(&value, record_index, sink);
         }
         observe_resource_evidence(&value, usage_is_owned, sink);
         let record_type = value.get("type").and_then(Value::as_str);
@@ -708,6 +787,9 @@ impl CodexStreamState {
             } else {
                 self.scope.capture(&value, &mut content_parts, sink);
             }
+            if let Some(record_index) = record_index {
+                emit_user_message(record_index, &content_parts, sink);
+            }
             self.tool_identities
                 .bind_parts(self.agent_path.as_deref(), &mut content_parts);
             sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
@@ -749,6 +831,150 @@ impl CodexStreamState {
                     PartialReason::UnrecognizedRecordType,
                 ));
             }
+        }
+    }
+
+    fn capture_native_tool_result(
+        &mut self,
+        record: &Value,
+        record_index: u64,
+        sink: &mut dyn RecordSink,
+    ) {
+        if record["type"] != "response_item" {
+            return;
+        }
+        let payload = &record["payload"];
+        match payload["type"].as_str() {
+            Some("function_call" | "custom_tool_call" | "tool_search_call" | "web_search_call") => {
+                let inferred_name = match payload["type"].as_str() {
+                    Some("tool_search_call") => Some("tool_search"),
+                    Some("web_search_call") => Some("web_search"),
+                    _ => None,
+                };
+                let (Some(call_id), Some(name)) = (
+                    payload["call_id"]
+                        .as_str()
+                        .or_else(|| payload["callId"].as_str())
+                        .filter(|id| !id.is_empty()),
+                    payload["name"]
+                        .as_str()
+                        .filter(|name| !name.is_empty())
+                        .or(inferred_name),
+                ) else {
+                    return;
+                };
+                let raw_arguments = payload
+                    .get("arguments")
+                    .or_else(|| payload.get("input"))
+                    .or_else(|| payload.get("query"));
+                let arguments = raw_arguments.and_then(|value| match value {
+                    Value::Object(_) => Some(value.clone()),
+                    Value::String(text) => serde_json::from_str::<Value>(text)
+                        .ok()
+                        .filter(Value::is_object)
+                        .or_else(|| {
+                            (payload["type"] == "custom_tool_call"
+                                && payload.get("input") == Some(value))
+                            .then(|| value.clone())
+                        })
+                        .or_else(|| {
+                            (payload.get("query") == Some(value))
+                                .then(|| serde_json::json!({"query": value}))
+                        }),
+                    _ => None,
+                });
+                if let Some(existing) = self.native_calls.get_mut(call_id) {
+                    if let Some(call) = existing.take() {
+                        self.native_call_bytes =
+                            self.native_call_bytes.saturating_sub(call.retained_bytes);
+                    }
+                    return;
+                }
+                if self.native_calls.len() >= MAX_NATIVE_TOOL_CALLS {
+                    return;
+                }
+                let retained_bytes = name.len()
+                    + arguments
+                        .as_ref()
+                        .and_then(|value| serde_json::to_vec(value).ok())
+                        .map_or(0, |bytes| bytes.len());
+                let total_bytes = call_id.len().saturating_add(retained_bytes);
+                if total_bytes > MAX_NATIVE_TOOL_CALL_BYTES.saturating_sub(self.native_call_bytes) {
+                    return;
+                }
+                self.native_call_bytes += total_bytes;
+                self.native_calls.insert(
+                    call_id.to_owned(),
+                    Some(CodexNativeCall {
+                        name: name.to_owned(),
+                        arguments,
+                        retained_bytes,
+                    }),
+                );
+            }
+            Some(
+                "function_call_output"
+                | "custom_tool_call_output"
+                | "tool_search_output"
+                | "mcp_tool_call_output"
+                | "web_search_output",
+            ) => {
+                let call_id = payload["call_id"]
+                    .as_str()
+                    .or_else(|| payload["callId"].as_str())
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_owned);
+                let linked = call_id
+                    .as_deref()
+                    .and_then(|id| self.native_calls.get(id))
+                    .and_then(Option::as_ref);
+                let (content, content_complete) = codex_result_content(payload);
+                let status = match payload["status"].as_str() {
+                    Some("completed" | "success") => ToolResultStatus::Success,
+                    Some("failed" | "error") => ToolResultStatus::Error,
+                    Some("interrupted" | "cancelled") => ToolResultStatus::Interrupted,
+                    _ => ToolResultStatus::Unknown,
+                };
+                let complete = call_id.is_some()
+                    && linked.is_some_and(|call| call.arguments.is_some())
+                    && content_complete;
+                sink.record(NormalizedRecord::ToolResult(Box::new(
+                    ToolResultObservation {
+                        context: Some(crate::analysis::ToolResultContext::pending(
+                            ToolResultPosition::Jsonl {
+                                record_index,
+                                item_index: 0,
+                            },
+                            self.completed.admits(&self.session_id),
+                        )),
+                        source_format: self.source_format,
+                        session_id: self.session_id.clone(),
+                        record_id: payload["id"].as_str().map(str::to_owned),
+                        call_id,
+                        result_id: payload["id"].as_str().map(str::to_owned),
+                        position: ToolResultPosition::Jsonl {
+                            record_index,
+                            item_index: 0,
+                        },
+                        revision: 1,
+                        change: ToolResultChange::Update,
+                        tool_name: linked.map(|call| call.name.clone()),
+                        tool_category: linked.map(|call| {
+                            tool_call_from_input(&call.name, call.arguments.as_ref()).category
+                        }),
+                        arguments: linked.and_then(|call| call.arguments.clone()),
+                        content,
+                        status,
+                        finality: true,
+                        completeness: if complete {
+                            ToolResultCompleteness::Complete
+                        } else {
+                            ToolResultCompleteness::Incomplete
+                        },
+                    },
+                )));
+            }
+            _ => {}
         }
     }
 
@@ -846,7 +1072,7 @@ impl CodexStreamState {
                 self.fork_attribution_incomplete = true;
             }
             for value in std::mem::take(&mut self.pending_rows) {
-                self.process_value(value, !inherited_only, sink);
+                self.process_value(value, !inherited_only, None, sink);
             }
         }
         self.completed.finish(sink);
@@ -885,15 +1111,36 @@ impl CodexStreamState {
 }
 
 struct CompletedRecordSink<'a> {
+    results: Vec<ToolResultObservation>,
     sink: &'a mut dyn RecordSink,
     model: Option<&'a str>,
     provider: Option<&'a str>,
     thinking_mode: Option<&'a str>,
     speed: &'a Option<String>,
+    source_format: crate::analysis::SourceFormat,
+    session_id: &'a str,
+    record_index: Option<u64>,
+    completed_item: bool,
+    completed_item_id: Option<String>,
+    completed_status: ToolResultStatus,
 }
 
 impl RecordSink for CompletedRecordSink<'_> {
     fn record(&mut self, mut record: NormalizedRecord) {
+        if self.completed_item
+            && let Some(record_index) = self.record_index
+            && let NormalizedRecord::TurnContent(content) = &record
+            && let Some(result) = completed_native_result(
+                content,
+                self.completed_item_id.as_deref(),
+                self.source_format,
+                self.session_id,
+                record_index,
+                self.completed_status,
+            )
+        {
+            self.results.push(result);
+        }
         if let NormalizedRecord::MetricsEvent(event) = &mut record {
             event.model = self.model.map(str::to_owned);
             event.provider = self.provider.map(str::to_owned);
@@ -907,6 +1154,130 @@ impl RecordSink for CompletedRecordSink<'_> {
     }
     fn finish(&mut self, summary: SessionSummary) {
         self.sink.finish(summary);
+    }
+}
+
+fn completed_native_result(
+    content: &TurnContent,
+    item_id: Option<&str>,
+    source_format: crate::analysis::SourceFormat,
+    session_id: &str,
+    record_index: u64,
+    status: ToolResultStatus,
+) -> Option<ToolResultObservation> {
+    let input = content
+        .parts
+        .iter()
+        .filter(|part| part.kind == ContentKind::ToolInput)
+        .collect::<Vec<_>>();
+    let results = content
+        .parts
+        .iter()
+        .filter(|part| part.kind == ContentKind::ToolResult)
+        .collect::<Vec<_>>();
+    if input.len() != 1 || results.len() != 1 {
+        return None;
+    }
+    let input = input[0];
+    let result = results[0];
+    let arguments = serde_json::from_str::<Value>(&input.text)
+        .ok()
+        .filter(Value::is_object);
+    let call_id = result.tool_call_id.clone();
+    let complete = item_id.is_some()
+        && call_id.is_some()
+        && call_id == input.tool_call_id
+        && arguments.is_some()
+        && !input.truncated
+        && !result.truncated;
+    Some(ToolResultObservation {
+        context: None,
+        source_format,
+        session_id: session_id.to_owned(),
+        record_id: item_id.map(str::to_owned),
+        call_id,
+        result_id: item_id.map(str::to_owned),
+        position: ToolResultPosition::Jsonl {
+            record_index,
+            item_index: 0,
+        },
+        revision: 1,
+        change: ToolResultChange::Update,
+        tool_name: result.tool_name.clone(),
+        tool_category: input
+            .tool_name
+            .as_deref()
+            .map(|name| tool_call_from_input(name, arguments.as_ref()).category),
+        arguments,
+        content: Some(result.text.clone()),
+        status,
+        finality: true,
+        completeness: if complete {
+            ToolResultCompleteness::Complete
+        } else {
+            ToolResultCompleteness::Incomplete
+        },
+    })
+}
+
+fn codex_host_status(status: Option<&str>) -> ToolResultStatus {
+    match status {
+        Some("completed" | "success") => ToolResultStatus::Success,
+        Some("failed" | "error") => ToolResultStatus::Error,
+        Some("interrupted" | "cancelled") => ToolResultStatus::Interrupted,
+        _ => ToolResultStatus::Unknown,
+    }
+}
+
+fn emit_user_message(record_index: u64, parts: &[ContentPart], sink: &mut dyn RecordSink) {
+    use crate::analysis::interface::ContentAuthority;
+
+    let Some(proof) = parts
+        .first()
+        .and_then(|part| part.metadata.user_text_history.as_ref())
+        .filter(|proof| proof.source_format == crate::analysis::SourceFormat::CodexRolloutJsonl)
+    else {
+        return;
+    };
+    if parts.iter().any(|part| {
+        part.kind != ContentKind::UserText
+            || part.authority != ContentAuthority::User
+            || part.truncated
+            || part.metadata.user_text_history.as_ref() != Some(proof)
+    }) {
+        return;
+    }
+    let Some(parts) = parts
+        .iter()
+        .enumerate()
+        .map(|(index, part)| {
+            Some(UserMessagePart {
+                item_index: u32::try_from(index).ok()?,
+                native_part_id: None,
+                text: part.text.clone(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        sink.record(NormalizedRecord::Unusable(PartialReason::Oversized));
+        return;
+    };
+    let request = UserMessage {
+        source_format: proof.source_format,
+        session_id: proof.session_id.clone(),
+        message_id: proof.message_id.clone(),
+        position: UserMessagePosition::Jsonl { record_index },
+        origin: UserMessageOrigin::CodexRetainedUserText,
+        scope: UserMessageScope::MainSession,
+        change: UserMessageChange::Present,
+        completeness: UserMessageCompleteness::Complete,
+        parts,
+        proof_revision: proof.revision,
+    };
+    if request.is_bounded() {
+        sink.user_message(request);
+    } else {
+        sink.record(NormalizedRecord::Unusable(PartialReason::Oversized));
     }
 }
 
@@ -1861,6 +2232,30 @@ fn tool_output_content_parts(payload: &Map<String, Value>) -> Vec<ContentPart> {
         .collect()
 }
 
+fn codex_result_content(payload: &Value) -> (Option<String>, bool) {
+    let output = payload.get("output").or_else(|| payload.get("content"));
+    match output {
+        Some(Value::String(text)) => (Some(text.clone()), true),
+        Some(Value::Array(parts)) => {
+            let mut text = String::new();
+            let mut complete = true;
+            for part in parts {
+                if matches!(part["type"].as_str(), Some("output_text" | "text")) {
+                    if let Some(part_text) = part["text"].as_str() {
+                        text.push_str(part_text);
+                    } else {
+                        complete = false;
+                    }
+                } else {
+                    complete = false;
+                }
+            }
+            (Some(text), complete)
+        }
+        _ => (None, false),
+    }
+}
+
 fn message_event(payload: &Map<String, Value>, ts: Option<i64>) -> Option<NormalizedEvent> {
     let role = match payload.get("role").and_then(|r| r.as_str()) {
         Some("assistant") => Role::Assistant,
@@ -2565,6 +2960,36 @@ mod tests {
     use super::*;
     use crate::analysis::SessionCollector;
 
+    #[test]
+    fn native_tool_call_state_is_bounded_and_duplicate_ids_become_ambiguous() {
+        struct Discard;
+        impl RecordSink for Discard {
+            fn record(&mut self, _record: NormalizedRecord) {}
+            fn finish(&mut self, _summary: SessionSummary) {}
+        }
+
+        let mut state = CodexStreamState::default();
+        let mut sink = Discard;
+        for index in 0..MAX_NATIVE_TOOL_CALLS + 1 {
+            let record = serde_json::json!({
+                "type":"response_item", "payload":{"type":"function_call",
+                    "call_id":format!("call-{index}"), "name":"exec_command",
+                    "arguments":{"cmd":"true"}}
+            });
+            state.capture_native_tool_result(&record, index as u64, &mut sink);
+        }
+        assert_eq!(state.native_calls.len(), MAX_NATIVE_TOOL_CALLS);
+        assert!(state.native_call_bytes <= MAX_NATIVE_TOOL_CALL_BYTES);
+
+        let duplicate = serde_json::json!({
+            "type":"response_item", "payload":{"type":"function_call",
+                "call_id":"call-0", "name":"exec_command", "arguments":{"cmd":"false"}}
+        });
+        state.capture_native_tool_result(&duplicate, 5000, &mut sink);
+        assert!(state.native_calls["call-0"].is_none());
+        assert!(state.native_call_bytes <= MAX_NATIVE_TOOL_CALL_BYTES);
+    }
+
     /// One synthetic record per CODEX reader `is_inert_codex_record` mirrors,
     /// each asserted evidence-bearing under the strict (any-depth) scan, plus
     /// the exemptions the scan deliberately leaves inert. Mirrors
@@ -2803,7 +3228,11 @@ mod tests {
         // items are content records, not echoes. Live protocol events stay excluded.
         // Output arrays use the existing output key. Paginated completed items
         // use their pinned reader before the legacy echo classification.
-        const EXPECTED_FINGERPRINT: u64 = 11_328_100_960_055_477_445;
+        // Native tool-result observations are emitted from those accepted
+        // output records and do not change the eventless or inertness gates.
+        // Source facts use the new type names and bounded user-slot callback.
+        // These changes do not change the eventless or inertness gates.
+        const EXPECTED_FINGERPRINT: u64 = 1_643_323_657_805_475_238;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();
@@ -3461,6 +3890,7 @@ mod tests {
                 }
             }),
             100,
+            0,
             &mut sink,
         );
 
@@ -3468,6 +3898,7 @@ mod tests {
             state.observe(
                 serde_json::json!({"type": "world_state", "payload": {"index": index}}),
                 100,
+                index as u64 + 1,
                 &mut sink,
             );
             assert!(state.pending_rows.len() <= MAX_PENDING_FORK_ROWS);
@@ -3718,7 +4149,9 @@ mod tests {
                     self.observations.push(*observation);
                 }
                 NormalizedRecord::Unusable(reason) => self.unusable.push(reason),
-                NormalizedRecord::MetricsEvent(_) | NormalizedRecord::TurnContent(_) => {}
+                NormalizedRecord::MetricsEvent(_)
+                | NormalizedRecord::ToolResult(_)
+                | NormalizedRecord::TurnContent(_) => {}
             }
         }
 
@@ -3905,6 +4338,12 @@ mod tests {
                     resume: EvidenceResumeState::default(),
                 },
                 next_turn_index: 0,
+                tool_result_observations_json: Vec::new(),
+                native_tool_result_conflicts: Vec::new(),
+                tool_result_observations_complete: true,
+                user_messages_json: Vec::new(),
+                user_message_conflicts: Vec::new(),
+                user_messages_complete: true,
             }
         }
 

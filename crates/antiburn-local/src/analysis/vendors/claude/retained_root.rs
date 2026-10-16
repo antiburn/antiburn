@@ -23,9 +23,25 @@ pub(super) struct ClaudeRetainedRoot {
     fingerprints: BTreeMap<String, [u8; 32]>,
     invalid: bool,
     characterized: bool,
+    user_slot: bool,
 }
 
 impl ClaudeRetainedRoot {
+    pub(super) fn for_user_slot() -> Self {
+        Self {
+            user_slot: true,
+            ..Self::default()
+        }
+    }
+    pub(super) fn observe_user_slot(&mut self, record: &Value) {
+        self.user_slot = true;
+        self.observe(record);
+    }
+
+    pub(super) fn admits(&self, session_id: &str) -> bool {
+        self.characterized && !self.invalid && self.session.as_deref() == Some(session_id)
+    }
+
     pub(super) fn invalidate(&mut self) {
         self.invalid = true;
     }
@@ -64,7 +80,11 @@ impl ClaudeRetainedRoot {
         let parent_matches = if root {
             record.get("parentUuid") == Some(&Value::Null)
                 && record.get("logicalParentUuid").is_none_or(Value::is_null)
-                && (is_human(record) || is_informational_root(record))
+                && ((if self.user_slot {
+                    is_user_content(record)
+                } else {
+                    is_human(record)
+                }) || is_informational_root(record))
         } else {
             record["parentUuid"].as_str() == self.last.as_deref()
                 && record.get("logicalParentUuid").is_none_or(Value::is_null)
@@ -164,7 +184,23 @@ fn is_human(record: &Value) -> bool {
         && !has_injection_flags(record)
 }
 
-fn is_informational_root(record: &Value) -> bool {
+pub(super) fn is_user_content(record: &Value) -> bool {
+    record["type"] == "user"
+        && record.pointer("/message/role").and_then(Value::as_str) == Some("user")
+        && record.get("toolUseResult").is_none()
+        && match record.pointer("/message/content") {
+            Some(Value::String(_)) => true,
+            Some(Value::Array(blocks)) => {
+                !blocks.is_empty()
+                    && blocks
+                        .iter()
+                        .all(|block| block["type"] == "text" && block["text"].is_string())
+            }
+            _ => false,
+        }
+}
+
+pub(super) fn is_informational_root(record: &Value) -> bool {
     record["type"] == "system"
         && record["subtype"] == "informational"
         && record["level"] == "notice"

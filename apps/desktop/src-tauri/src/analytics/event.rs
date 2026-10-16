@@ -87,6 +87,10 @@ pub enum EventName {
     /// A verified or recurred result appeared during a deliberate exposure.
     #[cfg(feature = "analytics")]
     BurnCheckOutcomeObserved,
+    /// A new installed-check input preparation was saved.
+    BurnCheckInputPrepared,
+    /// An explicit installed-check definition open request settled.
+    BurnCheckDefinitionOpened,
     /// The Sessions sidebar filter changed to a different selection.
     #[cfg(feature = "analytics")]
     SessionFilterSelected,
@@ -184,6 +188,8 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::BurnCheckPromptPrepared,
     EventName::BurnCheckPromptCopied,
     EventName::BurnCheckOutcomeObserved,
+    EventName::BurnCheckInputPrepared,
+    EventName::BurnCheckDefinitionOpened,
     EventName::SessionFilterSelected,
     EventName::SessionFiltersChanged,
     EventName::RemoteHostConnectionChecked,
@@ -233,6 +239,8 @@ impl EventName {
             EventName::BurnCheckPromptPrepared => "antiburn.burn_check_prompt_prepared",
             EventName::BurnCheckPromptCopied => "antiburn.burn_check_prompt_copied",
             EventName::BurnCheckOutcomeObserved => "antiburn.burn_check_outcome_observed",
+            EventName::BurnCheckInputPrepared => "antiburn.burn_check_input_prepared",
+            EventName::BurnCheckDefinitionOpened => "antiburn.burn_check_definition_opened",
             EventName::ProjectFolderAction => "antiburn.project_folder_action",
             EventName::MemoryAction => "antiburn.memory_action",
             EventName::SessionFilterSelected => "antiburn.session_filter_selected",
@@ -272,6 +280,7 @@ impl EventName {
             | EventName::BurnCheckAutoFixConfirmed
             | EventName::BurnCheckPromptPrepared
             | EventName::BurnCheckPromptCopied
+            | EventName::BurnCheckDefinitionOpened
             | EventName::SessionFilterSelected
             | EventName::SessionFiltersChanged
             | EventName::RemoteHostConnectionChecked
@@ -319,6 +328,7 @@ impl EventName {
             | EventName::ResourceUsageObserved
             | EventName::BurnCheckAutoFixCompleted
             | EventName::BurnCheckOutcomeObserved
+            | EventName::BurnCheckInputPrepared
             | EventName::QuotaIncidentsObserved
             | EventName::ProviderIncidentsObserved
             | EventName::ProviderIncidentsIngested
@@ -497,6 +507,87 @@ pub struct Facts {
     pub resource_usage: Option<super::resources::schema::ResourceUsageSummary>,
     /// Sanitized transcript record type names. See [`Properties::unrecognized_types`].
     pub unrecognized_types: Option<Vec<String>>,
+}
+
+/// A saved local preparation outcome. No authored value enters this type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BurnCheckPreparationOutcome {
+    Unchanged,
+    Shortened,
+    InputTooLarge,
+    InvalidFit,
+    InputUnavailable,
+    ResourceLimit,
+    InvalidInput,
+    InvalidRequest,
+}
+
+impl BurnCheckPreparationOutcome {
+    pub(crate) fn from_record(
+        preparation: &antiburn_checks::fit::PreparationRecord,
+    ) -> Option<Self> {
+        use antiburn_checks::fit::{PreparationFailureCode, PreparationRecord};
+        Some(match preparation {
+            PreparationRecord::Ready(prepared) if prepared.report.omissions.is_empty() => {
+                Self::Unchanged
+            }
+            PreparationRecord::Ready(_) => Self::Shortened,
+            PreparationRecord::Rejected(error) => match error.code {
+                PreparationFailureCode::ConditionFalse => return None,
+                PreparationFailureCode::InputUnavailable
+                | PreparationFailureCode::ProviderUnavailable
+                | PreparationFailureCode::IncompatibleProfile => Self::InputUnavailable,
+                PreparationFailureCode::InvalidInput => Self::InvalidInput,
+                PreparationFailureCode::InvalidRequest => Self::InvalidRequest,
+                PreparationFailureCode::NoFit => Self::InputTooLarge,
+                PreparationFailureCode::PreparationResourceLimit => Self::ResourceLimit,
+                PreparationFailureCode::InvalidFit => Self::InvalidFit,
+            },
+        })
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Unchanged => "unchanged",
+            Self::Shortened => "shortened",
+            Self::InputTooLarge => "input_too_large",
+            Self::InvalidFit => "invalid_fit",
+            Self::InputUnavailable => "input_unavailable",
+            Self::ResourceLimit => "resource_limit",
+            Self::InvalidInput => "invalid_input",
+            Self::InvalidRequest => "invalid_request",
+        }
+    }
+
+    pub(crate) fn facts(self) -> Facts {
+        Facts {
+            detail: Some(self.as_str()),
+            ..Facts::default()
+        }
+    }
+}
+
+/// Native completion categories do not accept a path, reference, or private error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BurnCheckDefinitionOpenOutcome {
+    Succeeded,
+    Missing,
+    Unavailable,
+    OpenFailed,
+}
+
+impl BurnCheckDefinitionOpenOutcome {
+    pub(crate) fn facts(self) -> Facts {
+        Facts {
+            detail: Some(match self {
+                Self::Succeeded => "succeeded",
+                Self::Missing => "missing",
+                Self::Unavailable => "unavailable",
+                Self::OpenFailed => "open_failed",
+            }),
+            ..Facts::default()
+        }
+    }
 }
 
 #[cfg(feature = "analytics")]
@@ -1148,6 +1239,7 @@ pub enum FirstRunStep {
 pub enum FirstRunResult {
     Empty,
     ChecksDisabled,
+    NotAssessed,
     Clean,
     FixesFound,
 }
@@ -1557,6 +1649,7 @@ wire_values!(FirstRunStep, {
 wire_values!(FirstRunResult, {
     FirstRunResult::Empty => "empty",
     FirstRunResult::ChecksDisabled => "checks_disabled",
+    FirstRunResult::NotAssessed => "not_assessed",
     FirstRunResult::Clean => "clean",
     FirstRunResult::FixesFound => "fixes_found",
 });
@@ -1973,6 +2066,175 @@ mod tests {
         "over_exploring",
         "skill_opportunities",
     ];
+
+    const PREPARATION_OUTCOMES: &[(BurnCheckPreparationOutcome, &str)] = &[
+        (BurnCheckPreparationOutcome::Unchanged, "unchanged"),
+        (BurnCheckPreparationOutcome::Shortened, "shortened"),
+        (
+            BurnCheckPreparationOutcome::InputTooLarge,
+            "input_too_large",
+        ),
+        (BurnCheckPreparationOutcome::InvalidFit, "invalid_fit"),
+        (
+            BurnCheckPreparationOutcome::InputUnavailable,
+            "input_unavailable",
+        ),
+        (BurnCheckPreparationOutcome::ResourceLimit, "resource_limit"),
+        (BurnCheckPreparationOutcome::InvalidInput, "invalid_input"),
+        (
+            BurnCheckPreparationOutcome::InvalidRequest,
+            "invalid_request",
+        ),
+    ];
+
+    const DEFINITION_OPEN_OUTCOMES: &[(BurnCheckDefinitionOpenOutcome, &str)] = &[
+        (BurnCheckDefinitionOpenOutcome::Succeeded, "succeeded"),
+        (BurnCheckDefinitionOpenOutcome::Missing, "missing"),
+        (BurnCheckDefinitionOpenOutcome::Unavailable, "unavailable"),
+        (BurnCheckDefinitionOpenOutcome::OpenFailed, "open_failed"),
+    ];
+
+    #[test]
+    fn installed_check_payloads_have_only_closed_outcomes_and_correct_session_classification() {
+        for &(outcome, detail) in PREPARATION_OUTCOMES {
+            let name = EventName::BurnCheckInputPrepared;
+            assert!(!name.is_user_oriented(&outcome.facts()));
+            assert_smart_check_payload((name, outcome.facts()), name.as_str(), None, Some(detail));
+        }
+        for &(outcome, detail) in DEFINITION_OPEN_OUTCOMES {
+            let name = EventName::BurnCheckDefinitionOpened;
+            assert!(name.is_user_oriented(&outcome.facts()));
+            assert_smart_check_payload((name, outcome.facts()), name.as_str(), None, Some(detail));
+        }
+    }
+
+    #[test]
+    fn installed_check_preparation_excludes_content_paths_counts_and_false_conditions() {
+        use antiburn_checks::fit::{
+            FitOmission, FitReport, FitStrategy, PreparationFailure, PreparationFailureCode,
+            PreparationRecord, PreparedDecision,
+        };
+        let mut prepared = PreparedDecision {
+            profile: "private-provider-profile".into(),
+            input: serde_json::json!({"private_input_name": "private transcript"}),
+            request: Some(serde_json::json!({"private_yaml_value": "private request"})),
+            report: FitReport::default(),
+        };
+        assert_eq!(
+            BurnCheckPreparationOutcome::from_record(&PreparationRecord::Ready(prepared.clone())),
+            Some(BurnCheckPreparationOutcome::Unchanged)
+        );
+        prepared.report.omissions.push(FitOmission {
+            path: "private_input_name[*].private_path".into(),
+            strategy: FitStrategy::Truncate,
+            original_count: 982_451_653,
+            retained_count: 256,
+        });
+        assert_eq!(
+            BurnCheckPreparationOutcome::from_record(&PreparationRecord::Ready(prepared.clone())),
+            Some(BurnCheckPreparationOutcome::Shortened)
+        );
+        for (code, expected) in [
+            (PreparationFailureCode::ConditionFalse, None),
+            (
+                PreparationFailureCode::InputUnavailable,
+                Some(BurnCheckPreparationOutcome::InputUnavailable),
+            ),
+            (
+                PreparationFailureCode::InvalidInput,
+                Some(BurnCheckPreparationOutcome::InvalidInput),
+            ),
+            (
+                PreparationFailureCode::InvalidRequest,
+                Some(BurnCheckPreparationOutcome::InvalidRequest),
+            ),
+            (
+                PreparationFailureCode::NoFit,
+                Some(BurnCheckPreparationOutcome::InputTooLarge),
+            ),
+            (
+                PreparationFailureCode::PreparationResourceLimit,
+                Some(BurnCheckPreparationOutcome::ResourceLimit),
+            ),
+            (
+                PreparationFailureCode::InvalidFit,
+                Some(BurnCheckPreparationOutcome::InvalidFit),
+            ),
+            (
+                PreparationFailureCode::ProviderUnavailable,
+                Some(BurnCheckPreparationOutcome::InputUnavailable),
+            ),
+            (
+                PreparationFailureCode::IncompatibleProfile,
+                Some(BurnCheckPreparationOutcome::InputUnavailable),
+            ),
+        ] {
+            let record = PreparationRecord::Rejected(PreparationFailure {
+                code,
+                detail: "private error /private/check.yml".into(),
+                report: Some(prepared.report.clone()),
+                context: Box::new(antiburn_checks::fit::PreparationFailureContext {
+                    decision: Some("private decision name".into()),
+                    input_path: Some("private_input_name".into()),
+                    ..Default::default()
+                }),
+            });
+            let outcome = BurnCheckPreparationOutcome::from_record(&record);
+            assert_eq!(outcome, expected);
+            if let Some(outcome) = outcome {
+                assert_smart_check_payload(
+                    (EventName::BurnCheckInputPrepared, outcome.facts()),
+                    "antiburn.burn_check_input_prepared",
+                    None,
+                    Some(outcome.as_str()),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn installed_check_events_are_native_only_and_the_catalog_lists_every_outcome() {
+        for (kind, outcome) in [
+            ("burnCheckInputPrepared", "shortened"),
+            ("burnCheckDefinitionOpened", "succeeded"),
+        ] {
+            assert!(
+                serde_json::from_value::<Interaction>(serde_json::json!({
+                    "kind": kind, "outcome": outcome,
+                }))
+                .is_err()
+            );
+            assert!(
+                serde_json::from_value::<Interaction>(serde_json::json!({
+                    "kind": kind, "outcome": "arbitrary-code", "sourceReference": "private-path"
+                }))
+                .is_err()
+            );
+        }
+        let catalog = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../docs/analytics.md"
+        ));
+        let section = catalog
+            .split("### YAML input fitting and definition opens\n")
+            .nth(1)
+            .expect("Document the installed-check contract")
+            .split("\n### ")
+            .next()
+            .unwrap();
+        for detail in PREPARATION_OUTCOMES
+            .iter()
+            .map(|(_, detail)| detail)
+            .chain(DEFINITION_OPEN_OUTCOMES.iter().map(|(_, detail)| detail))
+        {
+            assert!(
+                section.contains(&format!("`{detail}`")),
+                "Missing outcome: {detail}"
+            );
+        }
+        assert!(section.contains("antiburn.burn_check_input_prepared"));
+        assert!(section.contains("antiburn.burn_check_definition_opened"));
+    }
 
     #[test]
     fn smart_check_enablement_preserves_the_existing_global_contract() {
@@ -2831,6 +3093,8 @@ mod tests {
                 | EventName::BurnCheckPromptPrepared
                 | EventName::BurnCheckPromptCopied
                 | EventName::BurnCheckOutcomeObserved
+                | EventName::BurnCheckInputPrepared
+                | EventName::BurnCheckDefinitionOpened
                 | EventName::ProjectFolderAction
                 | EventName::MemoryAction
                 | EventName::SessionFilterSelected
@@ -2858,7 +3122,7 @@ mod tests {
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            43,
+            45,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -3361,6 +3625,7 @@ mod tests {
         for (result, expected) in [
             (FirstRunResult::Empty, "empty"),
             (FirstRunResult::ChecksDisabled, "checks_disabled"),
+            (FirstRunResult::NotAssessed, "not_assessed"),
             (FirstRunResult::Clean, "clean"),
             (FirstRunResult::FixesFound, "fixes_found"),
         ] {
@@ -3373,6 +3638,11 @@ mod tests {
             assert_eq!(facts.label, Some("result"));
             assert_eq!(facts.bucket, None);
             assert_eq!(facts.detail, Some(expected));
+            let accepted: Interaction = serde_json::from_value(serde_json::json!({
+                "kind": "firstRunStepReached", "step": "result", "result": expected
+            }))
+            .expect("a documented first-run result is accepted");
+            assert_eq!(accepted.resolve().1.detail, Some(expected));
         }
     }
 
