@@ -378,7 +378,7 @@ export function ClaudeProfilesSection({
             />
           ))}
           {claudeProfiles.suggestions.length > 0 && !atLimit ? (
-            <div className="px-4 pt-2">
+            <div className="px-4 py-3">
               <p className="type-footnote text-label-secondary">Found on this computer</p>
               <ul className="mt-1 space-y-1">
                 {claudeProfiles.suggestions.map((suggestion) => (

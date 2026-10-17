@@ -26,6 +26,15 @@ for (const theme of ["light", "dark"] as const) {
     await expect(section.getByText("Claude Work", { exact: true })).toBeVisible()
     await expect(section.getByText("Found on this computer")).toBeVisible()
     await expect(section.getByText("2 profiles")).toBeVisible()
+    const addButton = section.getByRole("button", {
+      name: "Add /Users/fixture/.claude-side as a Claude profile",
+    })
+    const gaps = await addButton.evaluate((button) => {
+      const block = button.closest("ul")!.parentElement!.getBoundingClientRect()
+      return { below: block.bottom - button.getBoundingClientRect().bottom }
+    })
+    // The suggestion's Add button keeps the card's padding below it.
+    expect(gaps.below).toBeGreaterThanOrEqual(8)
     await section.screenshot({ path: testInfo.outputPath(`claude-profiles-${theme}.png`) })
   })
 }
@@ -110,7 +119,9 @@ for (const theme of ["light", "dark"] as const) {
     await expect(limits.getByText(/account \d/i)).toHaveCount(0)
     await expect(limits.locator(".bg-separator")).toHaveCount(3)
     await expect(limits.getByRole("status")).toHaveText(/^Try again after .+\.$/)
-    await expect(limits.getByRole("button", { name: "Retry Claude Side limits" })).toBeDisabled()
+    await expect(
+      limits.getByRole("button", { name: "Retry Claude Side limits" }),
+    ).toBeDisabled()
     await limits.screenshot({ path: testInfo.outputPath(`overview-limits-${theme}.png`) })
   })
 }
