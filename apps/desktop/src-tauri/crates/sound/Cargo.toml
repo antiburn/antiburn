@@ -26,7 +26,7 @@ path = "src/lib.rs"
 fundsp = "0.23"
 # Playback and mixing, so two sounds landing together don't fight. No decoder
 # features: we generate every sample and never read an audio file.
-rodio = { version = "0.22", default-features = false, features = ["playback"] }
+rodio = { version = "0.23", default-features = false, features = ["playback"] }
 # Facade only — the app installs the subscriber. Audio failures are logged and
 # swallowed rather than propagated, so the log is the only way to find out that
 # a machine has no working output device.
