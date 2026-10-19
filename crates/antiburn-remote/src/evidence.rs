@@ -31,6 +31,8 @@ pub const MAX_DIRECTORY_ENTRIES: usize = 50_000;
 pub const MAX_CANDIDATES_INSPECTED: usize = 10_000;
 /// One transcript preview stays small enough to avoid loading large histories.
 pub const MAX_PREVIEW_BYTES_PER_FILE: u64 = 1024 * 1024;
+/// A targeted lookup reads this prefix to skip files that cannot be the target.
+pub const MAX_PROBE_BYTES_PER_FILE: u64 = 64 * 1024;
 /// All transcript previews in one request share this memory and I/O allowance.
 pub const MAX_PREVIEW_BYTES: u64 = 64 * 1024 * 1024;
 /// Companion titles use a smaller prefix than session metadata.
@@ -134,6 +136,10 @@ impl RequestBudget {
 
     pub(crate) fn read_preview(&mut self, file: &File) -> Result<BoundedRead> {
         self.read(file, ReadClass::Preview, MAX_PREVIEW_BYTES_PER_FILE)
+    }
+
+    pub(crate) fn read_probe(&mut self, file: &File) -> Result<BoundedRead> {
+        self.read(file, ReadClass::Preview, MAX_PROBE_BYTES_PER_FILE)
     }
 
     pub(crate) fn read_origin(&mut self, file: &File) -> Result<BoundedRead> {

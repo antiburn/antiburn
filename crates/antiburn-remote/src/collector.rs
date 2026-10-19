@@ -185,6 +185,19 @@ fn codex_origin(preview: &str) -> (Option<String>, bool, bool) {
     (parent, subagent, internal)
 }
 
+fn names_target(relative: &Path, target_id: &str) -> bool {
+    relative
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.contains(target_id))
+}
+
+fn contains_identity(bytes: &[u8], identity: &str) -> bool {
+    bytes
+        .windows(identity.len())
+        .any(|window| window == identity.as_bytes())
+}
+
 fn modified_epoch(source: &AdmittedFile) -> i64 {
     source
         .stat
@@ -210,6 +223,16 @@ fn inspect_candidate(
         let origin = budget.read_origin(&source.file)?;
         let (parent, subagent, internal) = codex_origin(&origin.text());
         if !subagent || internal || parent.as_deref() != Some(target_id) {
+            return Ok(None);
+        }
+    } else if let Some((_, target_id)) = target
+        && !names_target(relative, target_id)
+    {
+        // A full preview of each recent file can use all of the preview budget
+        // on a busy host. Then every export fails. The target and its Codex
+        // children write the target identity at the start of the file.
+        let probe = budget.read_probe(&source.file)?;
+        if !contains_identity(&probe.bytes, target_id) {
             return Ok(None);
         }
     }
@@ -716,6 +739,62 @@ mod tests {
         assert_eq!(
             resolve_matching(target).unwrap().session.session_id,
             "parent"
+        );
+    }
+
+    #[test]
+    fn targeted_scan_probes_unrelated_recent_files_instead_of_previewing_them() {
+        let store = tempfile::tempdir().unwrap();
+        let projects = store.path().join(".claude/projects");
+        std::fs::create_dir_all(projects.join("project")).unwrap();
+        let write_large = |name: &str, id: &str| {
+            let path = projects.join(format!("project/{name}.jsonl"));
+            std::fs::write(
+                &path,
+                format!(
+                    r#"{{"type":"user","sessionId":"{id}","message":{{"role":"user","content":"fixture"}}}}
+"#
+                ),
+            )
+            .unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_len(1024 * 1024)
+                .unwrap();
+        };
+        for index in 0..10 {
+            write_large(&format!("other-{index}"), &format!("other-{index}"));
+        }
+        // The file name does not name the session, so only the probe finds it.
+        write_large("renamed", "target");
+        let root = RootSpec {
+            agent_type: AgentKind::Claude,
+            root: TrustedRoot::open(&projects).unwrap(),
+            start: PathBuf::new(),
+        };
+        let limits = BudgetLimits {
+            preview_bytes: 3 * 1024 * 1024,
+            ..BudgetLimits::default()
+        };
+
+        let list = enumerate_from_roots(
+            &mut RequestBudget::with_limits(limits),
+            None,
+            std::slice::from_ref(&root),
+        );
+        assert!(list.truncated);
+
+        let target = enumerate_from_roots(
+            &mut RequestBudget::with_limits(limits),
+            Some(("claude-code", "target")),
+            &[root],
+        );
+        assert!(!target.scan_truncated);
+        assert_eq!(
+            resolve_matching(target).unwrap().session.session_id,
+            "target"
         );
     }
 

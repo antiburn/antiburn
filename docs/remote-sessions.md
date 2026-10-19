@@ -65,7 +65,9 @@ Each scan returns at most 200 supported sessions from the last seven days,
 ordered newest first within bounded discovery. Directory-entry, candidate,
 preview-byte, and elapsed-time budgets also bound discovery work, so a crowded
 store can return a truncated result. A session missing from this bounded list
-is not treated as deleted.
+is not treated as deleted. When the helper exports one session, it reads only a
+64 KiB prefix of recent transcripts whose file name does not name that session,
+so a crowded store can still export each listed session.
 Previously synced sessions remain readable offline under the desktop's retention
 policy. The host row counts all saved sessions, including sessions outside the
 discovery window; opening that list keeps the Sessions date filter. A rejected
