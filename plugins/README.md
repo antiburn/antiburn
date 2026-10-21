@@ -1,6 +1,6 @@
 # antiburn plugin
 
-Native tools for getting more from your coding-agent sessions. antiburn is vendor-agnostic, with a shared foundation and an adapter for each agent. **Claude Code is the first rollout:** account usage, reset times and pace above its prompt, in both Terminal and the Code tab of Claude Desktop.
+Stop hitting your limits! This plugin and mod for Claude (many more coming soon) lets you see HOW much you're into your usage quota, and WHERE you would be if you just used usage linearly. You can also hover to see the next reset time.
 
 The plugin works without the antiburn desktop app or CLI. The current public release is **0.2.1**; other agent adapters are not published yet.
 
