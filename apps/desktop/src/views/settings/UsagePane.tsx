@@ -28,6 +28,7 @@ import {
   useLiveUsage,
   WorkingWeekSection,
 } from "../main-window/overview/stepSettings/LimitsStepSettings"
+import { ClaudePluginSettingsRow } from "./ClaudePluginSettingsRow"
 import type { AppSettingsController } from "./useAppSettings"
 
 /**
@@ -98,6 +99,12 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
   return (
     <Pane title="Usage">
       <PlanLimitsSection settings={settings} update={update} />
+
+      <SectionGroup title="Claude Code">
+        <Card>
+          <ClaudePluginSettingsRow />
+        </Card>
+      </SectionGroup>
 
       <WorkingWeekSection settings={settings} update={update} />
 

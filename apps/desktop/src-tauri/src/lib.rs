@@ -56,6 +56,7 @@ mod analysis;
 mod analytics;
 mod app_presence;
 pub mod check_store;
+mod claude_plugin;
 mod commands;
 mod consent;
 mod diagnostics_export;

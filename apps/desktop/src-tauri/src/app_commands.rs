@@ -93,6 +93,8 @@ macro_rules! with_app_commands {
             commands::note_interaction => "note_interaction",
             commands::open_analytics_documentation => "open_analytics_documentation",
             commands::open_claude_desktop_limits_docs => "open_claude_desktop_limits_docs",
+            commands::open_claude_plugin_page => "open_claude_plugin_page",
+            commands::get_claude_plugin_status => "get_claude_plugin_status",
             commands::open_folder_access_settings => "open_folder_access_settings",
             commands::open_github_repo => "open_github_repo",
             installed_checks::opener::open_installed_check_definition => "open_installed_check_definition",

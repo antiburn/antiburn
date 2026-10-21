@@ -132,6 +132,9 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
             let _ = direction;
         }
         event::Interaction::AppSearchOpened {} => {}
+        event::Interaction::ClaudePluginOffer { action, placement } => {
+            let _ = (action, placement);
+        }
         event::Interaction::AppSearchResultOpened { category } => {
             let _ = category;
         }

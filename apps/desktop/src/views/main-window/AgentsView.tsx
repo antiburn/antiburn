@@ -7,6 +7,7 @@ import { renderAgentIcon } from "../../lib/agentIcon"
 import { relativeTime } from "../../lib/presentation/relativeTime"
 import { overviewProgress } from "./overview/overviewProgressStore"
 import { subscribeAgentsProgress } from "./overview/agentsProgress"
+import { ClaudePluginAgentsPanel } from "./ClaudePluginAgentsPanel"
 
 function subscribeInactive() {
   return () => undefined
@@ -87,6 +88,7 @@ export function AgentsView({
             )
           })}
         </div>
+        <ClaudePluginAgentsPanel active={active} />
         {other.length > 0 && (
           <details className="type-callout text-label-secondary">
             <summary className="cursor-pointer">Other agents checked ({other.length})</summary>

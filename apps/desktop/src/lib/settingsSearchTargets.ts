@@ -238,6 +238,11 @@ export const SETTINGS_SEARCH_TARGETS = {
     label: "Track Limits for",
     aliases: ["usage meters", "provider limits", "anthropic", "openai", "google"],
   },
+  claudePlugin: {
+    pane: "usage",
+    label: "Claude Code plugin",
+    aliases: ["plugin", "install", "claude code", "mod", "prompt", "status line"],
+  },
   softwareUpdate: {
     pane: "about",
     label: "Software update",

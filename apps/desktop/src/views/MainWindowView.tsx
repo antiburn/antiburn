@@ -20,6 +20,9 @@ import { MainWindowNavigationSession } from "./main-window/MainWindowNavigationS
 import { MainOverviewSession } from "./main-window/MainOverviewSession"
 import { OverviewView } from "./main-window/OverviewView"
 import { AgentsView } from "./main-window/AgentsView"
+import { ClaudePluginSidebarCard } from "../components/claudePlugin/ClaudePluginOffer"
+import { useClaudePlugin } from "../lib/claudePluginStore"
+import { mainClaudePluginStore } from "./main-window/mainClaudePluginStore"
 import { useOverviewProgress } from "./main-window/overview/useOverviewProgress"
 import { sidebarProgress } from "./main-window/overview/sidebarProgress"
 import { MemoriesSession } from "./main-window/memories/MemoriesSession"
@@ -106,6 +109,9 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   // inert and the workspace stays on Overview. A `sections` override (tests,
   // and a future embedding) keeps its own panes and is never gated.
   const takeoverActive = !sections && overview.mode === "firstRun" && overview.flow !== "done"
+  // The sidebar's plugin card. Quiet during the first run and under a
+  // `sections` override, which keeps its own panes.
+  const plugin = useClaudePlugin(mainClaudePluginStore, "sidebar", !sections && !takeoverActive)
   // The fixes step's Enhance: Burn Checks, at the first check that needs a fix.
   const openChecks = (check: CheckId | undefined) =>
     navigationSession.navigate(
@@ -305,6 +311,15 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
             className="main-window-sidebar min-h-0 flex-1"
             footer={
               <>
+                {plugin.offer === "offer" && (
+                  <ClaudePluginSidebarCard
+                    onInstall={() => {
+                      closeNavigation()
+                      selectSection("agents")
+                    }}
+                    onDismiss={mainClaudePluginStore.dismiss}
+                  />
+                )}
                 <div className="mb-2 h-px bg-separator" />
 
                 {settingsError && (

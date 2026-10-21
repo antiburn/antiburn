@@ -13,6 +13,7 @@ import {
   type InterfaceScaleChange,
   type InterfaceScaleSource,
 } from "./interfaceScale"
+import type { ClaudePluginStatusPayload } from "./claudePluginOffer"
 import type { SettingsPane } from "./settingsPanes"
 import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
 import type {
@@ -300,6 +301,22 @@ export async function openClaudeDesktopLimitsDocs(): Promise<void> {
   await invoke("open_claude_desktop_limits_docs")
 }
 
+/** Open the Claude Code plugin guide in the system browser. */
+export async function openClaudePluginPage(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("open_claude_plugin_page")
+}
+
+/**
+ * Whether the antiburn Claude Code plugin is installed on this machine. The
+ * shell reads only Claude Code's plugin registry and settings: names and
+ * versions, never credentials. Null without a shell: no offer in a browser.
+ */
+export async function getClaudePluginStatus(): Promise<ClaudePluginStatusPayload | null> {
+  if (!hasShell()) return null
+  return invoke<ClaudePluginStatusPayload>("get_claude_plugin_status")
+}
+
 /** Open the public analytics documentation in the system browser. */
 export async function openAnalyticsDocumentation(): Promise<void> {
   if (!hasShell()) return
@@ -402,6 +419,18 @@ export type Interaction =
       kind: "stepSettingsViewed"
       label: StepSettingsAnalyticsLabel
       detail: StepSettingsDetail
+    }
+  | {
+      kind: "claudePluginOffer"
+      action:
+        | "shown"
+        | "copy_session_command"
+        | "copy_shell_command"
+        | "open_plugin_page"
+        | "dismissed"
+        | "installed_detected"
+      /** Where it happened. `startup` only with `installed_detected`. */
+      placement: "sidebar" | "agents" | "usage_settings" | "startup"
     }
 
 export type SmartCheck =

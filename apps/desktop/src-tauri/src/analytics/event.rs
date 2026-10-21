@@ -155,6 +155,10 @@ pub enum EventName {
     /// settings" disclosure opened.
     #[cfg(feature = "analytics")]
     StepSettingsViewed,
+    /// The Claude Code plugin offer was shown, acted on, dismissed, or found
+    /// installed.
+    #[cfg(feature = "analytics")]
+    ClaudePluginOffer,
 }
 
 /// Every event this application may send.
@@ -212,6 +216,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::IgnoredInstructionLifecycle,
     EventName::CheckEnablementSaved,
     EventName::StepSettingsViewed,
+    EventName::ClaudePluginOffer,
 ];
 
 #[cfg(feature = "analytics")]
@@ -263,6 +268,7 @@ impl EventName {
             EventName::IgnoredInstructionLifecycle => "antiburn.ignored_instruction_lifecycle",
             EventName::CheckEnablementSaved => "antiburn.check_enablement_saved",
             EventName::StepSettingsViewed => "antiburn.step_settings_viewed",
+            EventName::ClaudePluginOffer => "antiburn.claude_plugin_offer",
         }
     }
 
@@ -295,6 +301,9 @@ impl EventName {
             | EventName::IgnoredInstructionObserved
             | EventName::CheckEnablementSaved
             | EventName::StepSettingsViewed => true,
+            // `installed_detected` is a startup fact. Every other label follows
+            // an exposure or a press of the reader.
+            EventName::ClaudePluginOffer => facts.label != Some("installed_detected"),
             EventName::SurfaceViewed => facts.detail == Some("user"),
             EventName::RemoteSyncCompleted => facts.detail == Some("manual"),
             // `started`, `found`, `read`, and `checked` are reported as the
@@ -745,6 +754,12 @@ pub enum Interaction {
     StepSettingsViewed {
         label: StepSettingsLabel,
         detail: StepSettingsDetail,
+    },
+    /// The Claude Code plugin offer. `action` says what happened and
+    /// `placement` says where. Neither carries a version or a path.
+    ClaudePluginOffer {
+        action: ClaudePluginOfferAction,
+        placement: ClaudePluginOfferPlacement,
     },
 }
 
@@ -1277,6 +1292,27 @@ pub enum StepSettingsDetail {
     FirstRun,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudePluginOfferAction {
+    Shown,
+    CopySessionCommand,
+    CopyShellCommand,
+    OpenPluginPage,
+    Dismissed,
+    InstalledDetected,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudePluginOfferPlacement {
+    Sidebar,
+    Agents,
+    UsageSettings,
+    /// Only `installed_detected` uses this placement.
+    Startup,
+}
+
 /// A privacy-safe result from checking one remote host connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteConnectionOutcome {
@@ -1518,6 +1554,14 @@ impl Interaction {
                     ..Facts::default()
                 },
             ),
+            Interaction::ClaudePluginOffer { action, placement } => (
+                EventName::ClaudePluginOffer,
+                Facts {
+                    label: Some(action.as_str()),
+                    detail: Some(placement.as_str()),
+                    ..Facts::default()
+                },
+            ),
         }
     }
 }
@@ -1745,6 +1789,24 @@ wire_values!(StepSettingsLabel, {
 #[cfg(feature = "analytics")]
 wire_values!(StepSettingsDetail, {
     StepSettingsDetail::FirstRun => "first_run",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(ClaudePluginOfferAction, {
+    ClaudePluginOfferAction::Shown => "shown",
+    ClaudePluginOfferAction::CopySessionCommand => "copy_session_command",
+    ClaudePluginOfferAction::CopyShellCommand => "copy_shell_command",
+    ClaudePluginOfferAction::OpenPluginPage => "open_plugin_page",
+    ClaudePluginOfferAction::Dismissed => "dismissed",
+    ClaudePluginOfferAction::InstalledDetected => "installed_detected",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(ClaudePluginOfferPlacement, {
+    ClaudePluginOfferPlacement::Sidebar => "sidebar",
+    ClaudePluginOfferPlacement::Agents => "agents",
+    ClaudePluginOfferPlacement::UsageSettings => "usage_settings",
+    ClaudePluginOfferPlacement::Startup => "startup",
 });
 
 #[cfg(feature = "analytics")]
@@ -3115,7 +3177,8 @@ mod tests {
                 | EventName::FirstRunAction
                 | EventName::FirstRunFinished
                 | EventName::CheckEnablementSaved
-                | EventName::StepSettingsViewed => true,
+                | EventName::StepSettingsViewed
+                | EventName::ClaudePluginOffer => true,
                 EventName::IgnoredInstructionObserved | EventName::IgnoredInstructionLifecycle => {
                     true
                 }
@@ -3123,7 +3186,7 @@ mod tests {
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            45,
+            46,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -3530,6 +3593,47 @@ mod tests {
             "repository": "private-name",
         });
         assert!(serde_json::from_value::<Interaction>(extra_filter_property).is_err());
+    }
+
+    /// The plugin offer carries only its closed action and placement words,
+    /// and the renderer cannot smuggle a version or path through it.
+    #[test]
+    fn claude_plugin_offer_carries_closed_action_and_placement() {
+        let (name, facts) = Interaction::ClaudePluginOffer {
+            action: ClaudePluginOfferAction::CopySessionCommand,
+            placement: ClaudePluginOfferPlacement::Sidebar,
+        }
+        .resolve();
+        assert_eq!(name, EventName::ClaudePluginOffer);
+        assert_eq!(name.as_str(), "antiburn.claude_plugin_offer");
+        assert_eq!(facts.label, Some("copy_session_command"));
+        assert_eq!(facts.detail, Some("sidebar"));
+        assert_eq!(facts.origin, None);
+        assert!(name.is_user_oriented(&facts));
+
+        let (name, facts) = Interaction::ClaudePluginOffer {
+            action: ClaudePluginOfferAction::InstalledDetected,
+            placement: ClaudePluginOfferPlacement::Startup,
+        }
+        .resolve();
+        assert_eq!(facts.label, Some("installed_detected"));
+        assert_eq!(facts.detail, Some("startup"));
+        assert!(!name.is_user_oriented(&facts));
+
+        let accepted = serde_json::json!({
+            "kind": "claudePluginOffer",
+            "action": "dismissed",
+            "placement": "usage_settings"
+        });
+        assert!(serde_json::from_value::<Interaction>(accepted).is_ok());
+        for value in [
+            serde_json::json!({"kind":"claudePluginOffer","action":"installed","placement":"sidebar"}),
+            serde_json::json!({"kind":"claudePluginOffer","action":"shown","placement":"overview"}),
+            serde_json::json!({"kind":"claudePluginOffer","action":"shown","placement":"sidebar","version":"0.2.1"}),
+            serde_json::json!({"kind":"claudePluginOffer","action":"shown"}),
+        ] {
+            assert!(serde_json::from_value::<Interaction>(value).is_err());
+        }
     }
 
     #[test]

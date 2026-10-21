@@ -1124,3 +1124,32 @@ with sessions is `ready`; completed discovery without sessions is `empty`.
 Unsettled discovery can report `loading_timeout` after ten seconds. Leaving the
 page ends the exposure. These events contain no agent names, counts, or paths and
 do not establish that a session link was followed.
+
+## Claude Code plugin offer (2026-10-21)
+
+The desktop app offers its Claude Code plugin to readers who use Claude Code
+and do not have the plugin installed. The offer is a dismissible card in the
+main-window sidebar footer, a permanent status panel on the Agents page, and a
+searchable row in Settings → Usage. Each shows the slash command and the two
+shell commands with copy buttons, and a link to the plugin page.
+
+Question: do Claude Code users who see the offer install the plugin, and which
+placement gets them there?
+Metric: a funnel over `antiburn.claude_plugin_offer` per reporting installation:
+`shown` (any placement) → `copy_session_command` or `copy_shell_command` or
+`open_plugin_page` → `installed_detected` on a later main-window run. Split the
+copy and open steps by `detail` to compare placements. The sidebar `dismissed`
+rate against sidebar `shown` says whether the card is a nuisance.
+
+`shown` reports once per placement per main-window run, from the store's
+subscribe wrapper, only when the status is `absent` and Claude Code is present.
+A hidden or `unknown` status reports nothing, so installations whose registry
+antiburn cannot read drop out of the denominator rather than inflating it.
+`installed_detected` reports once per main-window run with `detail: "startup"`,
+from the main-window store only; the Settings row's store is silent so a
+Settings visit cannot double-count. It is not user-oriented. `installed_detected`
+is a state read, so an installation that installs the plugin by another route
+also reports it: the funnel measures reach of the installed state among
+offered readers, not attribution to one copy click. The Rust boundary rejects an
+unlisted action or placement and any extra field
+(`claude_plugin_offer_carries_closed_action_and_placement`).

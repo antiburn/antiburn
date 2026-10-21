@@ -2887,6 +2887,23 @@ pub fn open_github_repo(app: tauri::AppHandle) -> CommandResult<()> {
         .map_err(fail)
 }
 
+/// Open the Claude Code plugin guide in the system browser.
+#[tauri::command]
+pub fn open_claude_plugin_page(app: tauri::AppHandle) -> CommandResult<()> {
+    app.opener()
+        .open_url(
+            "https://github.com/antiburn/antiburn/tree/main/plugins",
+            None::<&str>,
+        )
+        .map_err(fail)
+}
+
+/// Whether the antiburn Claude Code plugin is installed on this machine.
+#[tauri::command]
+pub async fn get_claude_plugin_status() -> CommandResult<crate::claude_plugin::ClaudePluginStatus> {
+    run_blocking(|| Ok(crate::claude_plugin::read_status())).await
+}
+
 /// Open the official releases page used by the manual remote-helper setup.
 #[tauri::command]
 pub fn open_remote_helper_downloads(app: tauri::AppHandle) -> CommandResult<()> {
