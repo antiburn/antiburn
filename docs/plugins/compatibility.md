@@ -7,7 +7,15 @@
 
 The unpublished discovery adapters check executable availability, not app connection or session analysis. A supported explicit route does not establish automatic startup support. Native host acceptance is separate from static package validation and simulated adapter tests.
 
-## Candidate modes
+## Predefined session checks
+
+Local candidates now include native saved-result delivery hooks. Their protocol,
+versioned acceptance record and evaluation limits are documented in
+[session checks](session-checks.md). The historical discovery modes below do not
+certify these newer routes. Codex/Cursor now have native check-hook entries in
+addition to their explicit skills. No other-agent public release is implied.
+
+## Historical discovery candidate modes
 
 | Host        | Candidate integration                         | Invocation                         | Certification boundary                                                                           |
 | ----------- | --------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------ |

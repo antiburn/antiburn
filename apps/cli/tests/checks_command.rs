@@ -451,3 +451,63 @@ fn ordinary_yaml_reads_do_not_consume_native_delivery() {
     let delivery = delivery_call(temp.path(), &config, "claude-code:context", None);
     assert_eq!(delivery["updates"][0]["kind"], "finding");
 }
+
+#[test]
+fn saved_ready_findings_remain_deliverable_during_reassessment() {
+    let temp = tempdir().unwrap();
+    let (connection, _, config) = delivery_fixture(temp.path());
+    connection.execute("INSERT INTO burn_check_candidate SELECT check_id, activation_scope_key, generation, '[\"native\",\"claude-code\",\"s1\"]', 'pending' FROM burn_check_activation", []).unwrap();
+    let first = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert_eq!(first["state"], "ready");
+    assert_eq!(first["snapshot"][0]["eligibility"], "ready");
+    assert_eq!(first["snapshot"][0]["checking"], true);
+    assert_eq!(first["freshness_evaluated"], false);
+    assert_eq!(first["updates"][0]["kind"], "finding");
+    delivery_call(
+        temp.path(),
+        &config,
+        "claude-code:context",
+        first["receipt"].as_str(),
+    );
+    connection
+        .execute(
+            "UPDATE burn_check_assessment_history SET accepted_at_epoch = 456",
+            [],
+        )
+        .unwrap();
+    let repeated = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert_eq!(repeated["snapshot"][0]["assessed_at_epoch"], 456);
+    assert_eq!(repeated["updates"], json!([]));
+}
+
+#[test]
+fn source_invalidation_withdraws_advice_and_recovery_retriggers_it() {
+    let temp = tempdir().unwrap();
+    let (connection, _, config) = delivery_fixture(temp.path());
+    let first = delivery_call(temp.path(), &config, "claude-code:context", None);
+    delivery_call(
+        temp.path(),
+        &config,
+        "claude-code:context",
+        first["receipt"].as_str(),
+    );
+    connection
+        .execute("UPDATE native_file_delivery SET blocked = 1", [])
+        .unwrap();
+    let unavailable = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert!(unavailable["snapshot"][0]["message"].is_null());
+    assert!(unavailable["snapshot"][0]["status"].is_null());
+    assert_eq!(unavailable["updates"][0]["kind"], "invalidated");
+    delivery_call(
+        temp.path(),
+        &config,
+        "claude-code:context",
+        unavailable["receipt"].as_str(),
+    );
+    connection
+        .execute("UPDATE native_file_delivery SET blocked = 0", [])
+        .unwrap();
+    let recovered = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert_eq!(recovered["updates"][0]["kind"], "finding");
+    assert_eq!(recovered["updates"][0]["message"], "Try another approach.");
+}
