@@ -19,6 +19,10 @@ async function loadAdapter(name, stub = '', denyDiscovery = false) {
     '../../../packages/antiburn-plugin-core/',
     pathToFileURL(resolve(root, 'packages/antiburn-plugin-core')).href + '/',
   )
+  source = source.replaceAll(
+    "'./session-checks.mjs'",
+    `'${pathToFileURL(resolve(root, 'integrations/antiburn/opencode/session-checks.mjs')).href}'`,
+  )
   return import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'))
 }
 
@@ -32,7 +36,7 @@ test('Pi registers without discovery, uses session_start and no model messages',
     on: (event, handler) => events.set(event, handler),
   }
   mod.default(pi)
-  assert.deepEqual([...events.keys()], ['session_start'])
+  assert.deepEqual([...events.keys()], ['session_start', 'before_agent_start'])
   assert.equal(notices.length, 0)
   const ctx = {
     mode: 'tui',
@@ -47,6 +51,27 @@ test('Pi registers without discovery, uses session_start and no model messages',
   await commands.get('antiburn').handler('help --ascii', ctx)
   assert.match(notices.at(-1), /^`antiburn`/)
   assert.match(notices.at(-1), /App connection: Not checked/)
+})
+
+test('Pi adds hidden context only while preparing a user-started run', async () => {
+  const mod = await loadAdapter('pi/antiburn.mjs')
+  const calls = []
+  const read = async (options) => {
+    calls.push(options)
+    return { message: 'Antiburn context', receipt: 'c'.repeat(64) }
+  }
+  const acknowledgements = []
+  const acknowledge = (options) => acknowledgements.push(options)
+  assert.deepEqual(await mod.piSessionCheckMessage('custom', 'session-1', read), undefined)
+  assert.deepEqual(await mod.piSessionCheckMessage('user', 'session-1', read, acknowledge), {
+    customType: 'antiburn-session-checks',
+    content: 'Antiburn context',
+    display: false,
+  })
+  assert.deepEqual(acknowledgements, [
+    { host: 'pi', sessionId: 'session-1', consumer: 'context', receipt: 'c'.repeat(64) },
+  ])
+  assert.deepEqual(calls, [{ host: 'pi', sessionId: 'session-1', consumer: 'context' }])
 })
 
 test('OpenCode candidate only handles root session creation on loopback and deduplicates', async () => {
@@ -71,6 +96,34 @@ test('OpenCode candidate only handles root session creation on loopback and dedu
   const remote = await Antiburn({ client, serverUrl: new URL('https://example.com') })
   await remote.event({ event: { ...event, properties: { info: { id: 'remote' } } } })
   assert.equal(notices.length, 1)
+})
+
+test('OpenCode appends context at the session-bound system transform', async () => {
+  const module = await loadAdapter('opencode/antiburn.mjs')
+  const helpers = await loadAdapter('opencode/session-checks.mjs')
+  assert.deepEqual(Object.keys(module), ['Antiburn'])
+  assert.equal(Object.values(module).filter((value) => typeof value === 'function').length, 1)
+  const { opencodeSessionCheckContext } = helpers
+  const calls = []
+  const output = { system: ['You are an agent.'] }
+  const acknowledgements = []
+  await opencodeSessionCheckContext(
+    'session-1',
+    output,
+    async (options) => {
+      calls.push(options)
+      return { message: 'Antiburn context', receipt: 'd'.repeat(64) }
+    },
+    (options) => acknowledgements.push(options),
+  )
+  assert.deepEqual(output.system, ['You are an agent.', 'Antiburn context'])
+  assert.deepEqual(calls, [{ host: 'opencode', sessionId: 'session-1', consumer: 'context' }])
+  assert.deepEqual(acknowledgements, [
+    { host: 'opencode', sessionId: 'session-1', consumer: 'context', receipt: 'd'.repeat(64) },
+  ])
+  await opencodeSessionCheckContext(undefined, output, async () => {
+    throw new Error('must not poll without a session id')
+  })
 })
 
 test('Pi RPC notifies without stdout and unsupported print avoids discovery', async () => {

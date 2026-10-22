@@ -112,17 +112,87 @@ export async function assemble(output = defaultOutput) {
       )
       add(
         `${host}/README.md`,
-        `# antiburn ${VERSION}\n\nLocal ${host} candidate; runtime certification is unverified. See docs/plugins in the source repository for installation and lifecycle gates.\n\nChecks executable availability only. App connection: Not checked. No antiburn process is launched. No transcript reads, app requests, background polling, or credentials.\n\n${host === 'claude' ? 'Claude mods API target: 2.1.301. Node >=22 on host PATH runs only the bundled resolver. Native command keeps the name returned by the host. Session state deduplicates notices across reload. Native color is unverified; plain text is used.' : host === 'pi' ? 'Pi API target: 0.80.3. Register extensions/antiburn.mjs. Native TUI startup and explicit TUI/RPC command use the host notification API. Print/JSON output is unsupported. Process-local deduplication covers reload; persistence across host restart is not claimed.' : host === 'opencode' ? 'The commands/antiburn.md asset is the explicit model-mediated fallback. Runtime API target: @opencode-ai/plugin 1.19.2; runtime/antiburn.mjs is an opt-in, uncertified startup candidate. It only notifies root session.created events on a loopback host SDK. Resume visibility and reload behavior require host testing. Install the command separately; npm does not install it.' : 'Explicit model-mediated help/status may use model capacity. No startup hooks are bundled.'}\n\nThe default brand uses a flame emoji and code delimiters around antiburn. Use status --ascii to omit the emoji; --flame remains a default-style alias. No automatic font detection or orange color certification is claimed.\n`,
+        `# antiburn ${VERSION}\n\nLocal ${host} candidate; runtime certification is unverified. See docs/plugins in the source repository for installation and lifecycle gates.\n\n${host === 'claude' ? 'Claude mods API target: 2.1.301. This candidate is generated from the public usage plugin and does not include the separate development checks mod.' : host === 'pi' ? 'Pi API target: 0.80.3. Register extensions/antiburn.mjs. Native TUI startup and explicit TUI/RPC command use the host notification API. User prompts receive Antiburn context before the model call; print/JSON output is unsupported.' : host === 'opencode' ? 'The commands/antiburn.md asset is the explicit model-mediated help/status command. Runtime API target: @opencode-ai/plugin 1.19.2; runtime/antiburn.mjs adds session checks to the session-bound system prompt on loopback hosts.' : host === 'codex' ? 'The native UserPromptSubmit hook reads staged Antiburn findings and adds them as context without starting a model turn. Codex requires reviewing and trusting plugin hooks. Run node hooks/session-check-status.mjs --host codex --session SESSION_ID for a read-only delivery status.' : 'The native postToolUse hook adds staged Antiburn findings after a tool result. It does not start a new turn. Run node hooks/session-check-status.mjs --host cursor --session SESSION_ID for a read-only delivery status.'}\n\nThe default brand uses a flame emoji and code delimiters around antiburn. Use status --ascii to omit the emoji; --flame remains a default-style alias. No automatic font detection or orange color certification is claimed.\n`,
       )
     }
-    for (const host of ['pi', 'opencode']) {
+    for (const host of ['pi', 'opencode', 'codex', 'cursor']) {
       for (const source of ['core.mjs', 'discovery.mjs', 'probe.mjs'])
+        add(`${host}/lib/${source}`, await read(`packages/antiburn-plugin-core/${source}`))
+      for (const source of [
+        'session-checks.mjs',
+        'session-checks-validation.mjs',
+        'native-hook.mjs',
+      ])
         add(`${host}/lib/${source}`, await read(`packages/antiburn-plugin-core/${source}`))
     }
     const claudeFiles = releaseFiles(root)
     for (const [name, content] of claudeFiles) add(`claude/${name}`, content)
     const adapter = async (source) =>
-      (await read(source)).replaceAll('../../../packages/antiburn-plugin-core/', '../lib/')
+      (await read(source))
+        .replaceAll('../../../packages/antiburn-plugin-core/', '../lib/')
+        .replaceAll('../../packages/antiburn-plugin-core/', '../lib/')
+    const claudeChecksPlugin = 'claude-session-checks'
+    const claudeChecksFiles = new Map([
+      [
+        '.claude-plugin/plugin.json',
+        json({
+          name: 'antiburn-session-checks',
+          version: VERSION,
+          description: 'Local-only delivery of predefined Antiburn session checks.',
+          author: { name: 'antiburn' },
+          hooks: './hooks/hooks.json',
+        }),
+      ],
+      [
+        'hooks/hooks.json',
+        json({
+          hooks: {
+            UserPromptSubmit: [
+              {
+                hooks: [
+                  {
+                    type: 'command',
+                    command: 'node "$CLAUDE_PLUGIN_ROOT/hooks/session-check-hook.mjs"',
+                    timeout: 5,
+                  },
+                ],
+              },
+            ],
+            PostToolUse: [
+              {
+                hooks: [
+                  {
+                    type: 'command',
+                    command: 'node "$CLAUDE_PLUGIN_ROOT/hooks/session-check-hook.mjs"',
+                    timeout: 5,
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+      ],
+      [
+        'hooks/session-check-hook.mjs',
+        await adapter('integrations/antiburn/claude/session-check-hook.mjs'),
+      ],
+      [
+        'lib/session-checks.mjs',
+        await read('packages/antiburn-plugin-core/session-checks.mjs'),
+      ],
+      [
+        'lib/session-checks-validation.mjs',
+        await read('packages/antiburn-plugin-core/session-checks-validation.mjs'),
+      ],
+      ['lib/native-hook.mjs', await read('packages/antiburn-plugin-core/native-hook.mjs')],
+      ['LICENSE', license],
+      [
+        'README.md',
+        '# Antiburn session checks for Claude Code\n\nLocal-only candidate. Install it from the `claude-session-checks` local marketplace with `/plugin marketplace add <path-to-catalogs/claude-session-checks>` and `/plugin install antiburn-session-checks@antiburn-session-checks-local`. Review its hooks before enabling it. This candidate is separate from the public `antiburn` usage plugin. It reads predefined check state on `UserPromptSubmit` and `PostToolUse`; it does not evaluate checks or start another model turn.\n',
+      ],
+    ])
+    for (const [path, content] of claudeChecksFiles)
+      add(`${claudeChecksPlugin}/${path}`, content)
     add(
       'codex/plugin.json',
       json({
@@ -130,8 +200,61 @@ export async function assemble(output = defaultOutput) {
         ...metadata,
       }),
     )
+    add(
+      'codex/.codex-plugin/plugin.json',
+      json({
+        name: 'antiburn',
+        version: VERSION,
+        description: metadata.description,
+        hooks: './hooks/hooks.json',
+      }),
+    )
+    add(
+      'codex/hooks/hooks.json',
+      json({
+        hooks: {
+          UserPromptSubmit: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command: 'node "$PLUGIN_ROOT/hooks/session-check-hook.mjs"',
+                  command_windows: 'node "$env:PLUGIN_ROOT\\hooks\\session-check-hook.mjs"',
+                  timeout: 5,
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    )
+    add(
+      'codex/hooks/session-check-hook.mjs',
+      await adapter('integrations/antiburn/codex/session-check-hook.mjs'),
+    )
+    add(
+      'codex/hooks/session-check-status.mjs',
+      await adapter('integrations/antiburn/status-command.mjs'),
+    )
     add('codex/skills/antiburn/SKILL.md', instructions('codex', '$antiburn'))
     add('cursor/.cursor-plugin/plugin.json', json(metadata))
+    add(
+      'cursor/hooks/hooks.json',
+      json({
+        version: 1,
+        hooks: {
+          postToolUse: [{ command: 'node ./hooks/session-check-hook.mjs' }],
+        },
+      }),
+    )
+    add(
+      'cursor/hooks/session-check-hook.mjs',
+      await adapter('integrations/antiburn/cursor/session-check-hook.mjs'),
+    )
+    add(
+      'cursor/hooks/session-check-status.mjs',
+      await adapter('integrations/antiburn/status-command.mjs'),
+    )
     add('cursor/skills/antiburn/SKILL.md', instructions('cursor', '/antiburn'))
     add(
       'opencode/commands/antiburn.md',
@@ -140,6 +263,10 @@ export async function assemble(output = defaultOutput) {
     add(
       'opencode/runtime/antiburn.mjs',
       await adapter('integrations/antiburn/opencode/antiburn.mjs'),
+    )
+    add(
+      'opencode/runtime/session-checks.mjs',
+      await adapter('integrations/antiburn/opencode/session-checks.mjs'),
     )
     add(
       'opencode/package.json',
@@ -226,6 +353,24 @@ export async function assemble(output = defaultOutput) {
           }),
         )
     }
+    for (const [path, content] of claudeChecksFiles)
+      add(`catalogs/claude-session-checks/plugins/antiburn-session-checks/${path}`, content)
+    add(
+      'catalogs/claude-session-checks/.claude-plugin/marketplace.json',
+      json({
+        name: 'antiburn-session-checks-local',
+        description: 'Local development marketplace for Antiburn predefined session checks.',
+        owner: { name: 'antiburn' },
+        plugins: [
+          {
+            name: 'antiburn-session-checks',
+            source: './plugins/antiburn-session-checks',
+            version: VERSION,
+            description: 'Local-only delivery of predefined Antiburn session checks.',
+          },
+        ],
+      }),
+    )
     const entries = [...files].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     const manifest = {
       owner: 'antiburn-shell-assembler-v1',
