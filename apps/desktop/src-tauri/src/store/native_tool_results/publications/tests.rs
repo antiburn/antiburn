@@ -10,6 +10,9 @@ use super::{ToolResultPublicationOutcome, ToolResultPublishOptions};
 use crate::store::model::{AnalysisRecord, EvidenceCompletion, PublishedEvidence, SessionRecord};
 use crate::store::*;
 
+#[path = "outcome_tests.rs"]
+mod outcome_tests;
+
 fn store() -> Store {
     Store::open_in_memory(Path::new("/tmp/antiburn-native-tool-result-test"))
         .expect("in-memory store")
@@ -36,8 +39,10 @@ fn session() -> SessionRecord {
 
 fn result(content: &str, revision: u64, change: ToolResultChange) -> ToolResultObservation {
     ToolResultObservation {
+        outcome: None,
+        provider_executed: None,
         context: None,
-        source_format: SourceFormat::OpenCodeSqliteV2,
+        source_format: SourceFormat::OpenCodeSqliteV1,
         session_id: "session-1".into(),
         record_id: Some("message-1".into()),
         call_id: Some("call-1".into()),
@@ -118,6 +123,57 @@ fn publish(
         .unwrap()
 }
 
+#[test]
+fn v2_event_positions_use_the_v2_baseline_for_live_eligibility() {
+    let store = store();
+    let (_record, claim) = claim_and_record(&store);
+    let make_v2 = |call_id: &str, sequence| {
+        let mut result = result("output", 0, ToolResultChange::Update);
+        result.source_format = SourceFormat::OpenCodeSqliteV2;
+        result.call_id = Some(call_id.to_owned());
+        result.position = ToolResultPosition::OpenCodeV2Event {
+            sequence,
+            item_index: 0,
+        };
+        result
+    };
+    let batch = ToolResultBatch {
+        source_format: SourceFormat::OpenCodeSqliteV2,
+        results: vec![make_v2("before", 7), make_v2("after", 8)],
+        complete: false,
+    };
+    let mut connection = store.lock();
+    let tx = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    super::reconcile_with_policy(
+        &tx,
+        &claim.key,
+        claim.source_generation,
+        claim.claim_fence,
+        &batch,
+        super::PublicationPolicy {
+            baseline: Some(7),
+            history_complete: None,
+            gap_reason: None,
+            suppress_coverage: true,
+            live_eligible: None,
+        },
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    drop(connection);
+
+    let publications = store.native_tool_result_publications_after(0, 100).unwrap();
+    let mut eligible = publications
+        .iter()
+        .filter(|publication| publication.outcome == ToolResultPublicationOutcome::Update)
+        .map(|publication| publication.live_eligible)
+        .collect::<Vec<_>>();
+    eligible.sort();
+    assert_eq!(eligible, [Some(false), Some(true)]);
+}
+
 fn next_claim(store: &Store, key: &SessionKey) -> (AnalysisRecord, EvidenceClaim) {
     mark_evidence_pending_in(&store.lock(), key).unwrap();
     let claim = store
@@ -144,7 +200,7 @@ fn next_claim(store: &Store, key: &SessionKey) -> (AnalysisRecord, EvidenceClaim
 }
 
 fn batch(results: Vec<ToolResultObservation>, complete: bool) -> ToolResultBatch {
-    batch_with_format(SourceFormat::OpenCodeSqliteV2, results, complete)
+    batch_with_format(SourceFormat::OpenCodeSqliteV1, results, complete)
 }
 
 fn batch_with_format(

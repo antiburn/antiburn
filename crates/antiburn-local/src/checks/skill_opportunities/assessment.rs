@@ -1299,7 +1299,9 @@ fn absence_assessable(usage: &SkillUseSnapshot) -> bool {
         && usage.events().iter().all(|event| {
             !matches!(
                 event.skill,
-                RecordedSkillIdentity::Unknown | RecordedSkillIdentity::InferredName { .. }
+                RecordedSkillIdentity::Unknown
+                    | RecordedSkillIdentity::InferredName { .. }
+                    | RecordedSkillIdentity::NativeId { .. }
             ) && event.lifecycle != super::SkillUseLifecycle::Unknown
         })
 }
@@ -1855,7 +1857,7 @@ fn recorded_name(identity: &RecordedSkillIdentity) -> Option<&str> {
         RecordedSkillIdentity::Name { name }
         | RecordedSkillIdentity::InferredName { name }
         | RecordedSkillIdentity::Document { name, .. } => Some(name),
-        RecordedSkillIdentity::Unknown => None,
+        RecordedSkillIdentity::Unknown | RecordedSkillIdentity::NativeId { .. } => None,
     }
 }
 

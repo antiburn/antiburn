@@ -186,7 +186,7 @@ fn opencode_sqlite_excludes_synthetic_user_slot_text() {
         request.parts[0].text,
         "Review the API. Keep billing unchanged."
     );
-    assert_eq!(request.source_format, SourceFormat::OpenCodeSqliteV2);
+    assert_eq!(request.source_format, SourceFormat::OpenCodeSqliteV1);
     assert_eq!(request.session_id, "root");
     assert_eq!(
         request.position,
@@ -342,7 +342,7 @@ fn opencode_input() -> (TempDir, SessionInput) {
         agent: "opencode".to_owned(),
         session_id: "root".to_owned(),
         source: RawSource::Sqlite(path),
-        source_format: SourceFormat::OpenCodeSqliteV2,
+        source_format: SourceFormat::OpenCodeSqliteV1,
         fork_parent_session_id: None,
     };
     (directory, input)

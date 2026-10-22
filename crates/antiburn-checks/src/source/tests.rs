@@ -35,6 +35,8 @@ fn result() -> PublishedToolResult {
         category: Some("shell".to_owned()),
         arguments: Some(serde_json::json!({"command":"true"})),
         content: Some("done".to_owned()),
+        outcome: None,
+        provider_executed: None,
         status: PublishedResultStatus::Completed,
         finality: true,
         payload_complete: true,
@@ -107,6 +109,68 @@ fn keeps_corrections_removals_and_coverage_gaps_explicit() {
         batch.events[3],
         SourceEvent::CoverageRestored { .. }
     ));
+}
+
+#[test]
+fn program_outcome_and_provider_execution_do_not_change_tool_status() {
+    for outcome in [
+        serde_json::json!({"kind":"shell","exit":7}),
+        serde_json::json!({"kind":"code_mode","error":true}),
+        serde_json::json!({"kind":"subagent","state":"running"}),
+    ] {
+        let mut result = result();
+        result.outcome = Some(outcome.clone());
+        result.provider_executed = Some(false);
+        let normalized = normalize(event(1, PublishedEvidenceChange::Upsert(result))).unwrap();
+        let SourceEvent::Observation { observation, .. } = normalized else {
+            panic!("expected a result");
+        };
+        let ObservationKind::ToolResult {
+            message, status, ..
+        } = observation.kind
+        else {
+            panic!("expected a tool result");
+        };
+        assert_eq!(status, "completed");
+        assert_eq!(message.value["tool"]["result"]["outcome"], outcome);
+        assert_eq!(message.value["tool"]["provider_executed"], false);
+    }
+    let value = serde_json::to_value(result()).unwrap();
+    assert!(value.get("outcome").is_none());
+    assert!(value.get("provider_executed").is_none());
+}
+
+#[test]
+fn continuity_reset_stays_distinct_from_partial_coverage() {
+    let normalized = normalize(event(
+        12,
+        PublishedEvidenceChange::SegmentReset {
+            reason: "capture-lost".into(),
+        },
+    ))
+    .unwrap();
+    assert_eq!(
+        normalized,
+        SourceEvent::SegmentReset {
+            cursor: PublicationCursor(12),
+            branch: BranchId("env/agent/session/main".into()),
+            reason: "capture-lost".into(),
+        }
+    );
+    assert_eq!(
+        normalize(event(
+            13,
+            PublishedEvidenceChange::Gap {
+                reason: "request-history-incomplete".into()
+            }
+        ))
+        .unwrap(),
+        SourceEvent::Gap {
+            cursor: PublicationCursor(13),
+            branch: BranchId("env/agent/session/main".into()),
+            reason: "request-history-incomplete".into(),
+        }
+    );
 }
 
 #[test]
@@ -235,6 +299,9 @@ fn evidence_validity_is_separate_from_missing_payload_fields() {
         "unsafe_ownership",
         "context",
         "scope",
+        "branch",
+        "session",
+        "agent",
         "identity",
         "order",
     ] {
@@ -242,6 +309,9 @@ fn evidence_validity_is_separate_from_missing_payload_fields() {
         match unavailable {
             "context" => source.context = None,
             "scope" => source.context.as_mut().unwrap().main_session = false,
+            "branch" => source.branch.clear(),
+            "session" => source.context.as_mut().unwrap().session_id.clear(),
+            "agent" => source.context.as_mut().unwrap().agent_name.clear(),
             field => {
                 let PublishedEvidenceChange::Upsert(result) = &mut source.change else {
                     unreachable!()
@@ -257,10 +327,18 @@ fn evidence_validity_is_separate_from_missing_payload_fields() {
                 }
             }
         }
-        assert!(
-            matches!(normalize(source).unwrap(), SourceEvent::Gap { .. }),
-            "{unavailable}"
-        );
+        let branch = BranchId(source.branch.clone());
+        let SourceEvent::UnsafeUpdate {
+            cursor,
+            branch: normalized_branch,
+            reason,
+        } = normalize(source).unwrap()
+        else {
+            panic!("{unavailable} must revoke unsafe evidence")
+        };
+        assert_eq!(cursor, PublicationCursor(2), "{unavailable}");
+        assert_eq!(normalized_branch, branch, "{unavailable}");
+        assert!(!reason.is_empty(), "{unavailable}");
     }
 }
 

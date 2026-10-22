@@ -489,6 +489,8 @@ pub enum AutoFixSetting {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoFixEffect {
+    FutureModelDefault,
+    SkillAdvertising,
     ModelSelection,
     ReasoningEffort,
     SessionCompaction,
@@ -501,6 +503,8 @@ pub enum AutoFixEffect {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoFixSideEffect {
+    ActiveSessionsKeepTheirModel,
+    ExplicitSkillUseRemainsAvailable,
     ModelBehaviorMayChange,
     ResponsesMayUseLessReasoning,
     EarlierSessionSummarization,

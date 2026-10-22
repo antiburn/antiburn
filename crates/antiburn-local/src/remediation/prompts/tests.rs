@@ -25,6 +25,7 @@ fn causes() -> Vec<FindingCause> {
             worker_model: "model-b".to_owned(),
             worker_ordinal: 1,
             parent_call_id: Some("call-a".to_owned()),
+            config_binding: None,
         },
         FindingCause::UnusedMcpServer {
             server: "server-a".to_owned(),
@@ -402,6 +403,86 @@ fn advisory_core_tools_are_not_remediation_targets() {
 }
 
 #[test]
+fn native_v2_recommendations_have_source_specific_limits_and_do_not_admit_export() {
+    for mut cause in causes() {
+        let detector = cause.detector();
+        let supported = matches!(
+            detector,
+            DetectorId::SessionsOverDepth
+                | DetectorId::OverpoweredSubagents
+                | DetectorId::UnusedMcpServers
+                | DetectorId::UnusedBuiltInTools
+                | DetectorId::UnusedSkills
+                | DetectorId::OldModelUsage
+                | DetectorId::CacheChurn
+        );
+        assert_eq!(
+            recommendation_support("opencode", SourceFormat::OpenCodeSqliteV2, detector).is_ok(),
+            supported,
+            "{detector:?}"
+        );
+        assert_eq!(
+            recommendation_support("opencode", SourceFormat::OpenCodeV2SessionExport, detector),
+            Err(RemediationUnavailableReason::UnsupportedSourceFormat)
+        );
+        if supported {
+            if let FindingCause::UnusedBuiltInTool { tool, .. } = &mut cause {
+                *tool = "websearch".into();
+            }
+            let prompt =
+                build_prompt(AgentKind::OpenCode, SourceFormat::OpenCodeSqliteV2, &cause).unwrap();
+            assert!(prompt.as_str().contains("Native V2"));
+            assert!(!prompt.as_str().contains("not CoreV2 session_message"));
+            assert!(prompt.as_str().len() <= MAX_PROMPT_BYTES);
+        }
+    }
+}
+
+#[test]
+fn native_v2_core_tools_remain_protected() {
+    for tool in ["read", "edit", "bash", "subagent"] {
+        let finding = Finding::advisory_resource(
+            AgentKind::OpenCode,
+            SourceFormat::OpenCodeSqliteV2,
+            FindingCause::UnusedBuiltInTool {
+                tool: tool.into(),
+                tokens: BuiltInToolTokens::Definition(10),
+                cost_usd: None,
+                pricing_revision: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            remediation_prompt(&finding),
+            Err(RemediationUnavailableReason::ProtectedBuiltInTool)
+        );
+    }
+}
+
+#[test]
+fn native_optional_tool_without_measured_tokens_does_not_claim_zero_cost() {
+    let cause = FindingCause::UnusedBuiltInTool {
+        tool: "webfetch".into(),
+        tokens: BuiltInToolTokens::Unavailable,
+        cost_usd: None,
+        pricing_revision: None,
+    };
+    let prompt = build_prompt(AgentKind::OpenCode, SourceFormat::OpenCodeSqliteV2, &cause).unwrap();
+    assert!(prompt.as_str().contains("token cost is unavailable"));
+    assert!(!prompt.as_str().contains("0 context tokens"));
+    let finding =
+        Finding::advisory_resource(AgentKind::OpenCode, SourceFormat::OpenCodeSqliteV2, cause)
+            .unwrap();
+    assert!(
+        finding
+            .display()
+            .unwrap()
+            .observation
+            .contains("token cost is unavailable")
+    );
+}
+
+#[test]
 fn finding_prompts_have_clear_human_readable_sections() {
     for cause in causes() {
         let prompt = build_prompt(AgentKind::Claude, SourceFormat::ClaudeJsonl, &cause).unwrap();
@@ -508,6 +589,7 @@ fn every_essential_prompt_identity_rejects_private_values() {
             worker_model: private.to_owned(),
             worker_ordinal: 1,
             parent_call_id: None,
+            config_binding: None,
         },
         FindingCause::UnusedMcpServer {
             server: private.to_owned(),
@@ -639,7 +721,7 @@ fn prompt_support_matrix_matches_agent_capabilities() {
         ),
         (
             "opencode",
-            &[SourceFormat::OpenCodeJsonl, SourceFormat::OpenCodeSqliteV2][..],
+            &[SourceFormat::OpenCodeJsonl, SourceFormat::OpenCodeSqliteV1][..],
             [
                 true, false, true, true, true, true, true, false, true, false, false, false, false,
             ],
@@ -689,7 +771,7 @@ fn prompt_support_matrix_matches_agent_capabilities() {
                         (agent, source),
                         ("claude", SourceFormat::ClaudeJsonl)
                             | ("codex", SourceFormat::CodexRolloutJsonl)
-                            | ("opencode", SourceFormat::OpenCodeSqliteV2)
+                            | ("opencode", SourceFormat::OpenCodeSqliteV1)
                             | ("pi", SourceFormat::PiV3Jsonl)
                             | ("cursor", SourceFormat::CursorCliAgentJsonl)
                             | ("antigravity", SourceFormat::AntigravityBrainJsonl)
@@ -704,7 +786,7 @@ fn prompt_support_matrix_matches_agent_capabilities() {
                         (agent, source),
                         ("claude", SourceFormat::ClaudeJsonl)
                             | ("codex", SourceFormat::CodexRolloutJsonl)
-                            | ("opencode", SourceFormat::OpenCodeSqliteV2)
+                            | ("opencode", SourceFormat::OpenCodeSqliteV1)
                             | ("pi", SourceFormat::PiV3Jsonl)
                     )
                 } else {
@@ -821,7 +903,7 @@ fn skill_opportunity_prompt_only_advises_future_instructions() {
         selected_window_limit: "Only the selected session window was assessed".into(),
     };
 
-    let prompt = build_prompt(AgentKind::OpenCode, SourceFormat::OpenCodeSqliteV2, &cause).unwrap();
+    let prompt = build_prompt(AgentKind::OpenCode, SourceFormat::OpenCodeSqliteV1, &cause).unwrap();
     for fact in [
         "Resource: \"review\"",
         "Skill description: \"Review code changes\"",

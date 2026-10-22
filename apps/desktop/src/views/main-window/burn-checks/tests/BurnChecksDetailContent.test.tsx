@@ -832,6 +832,20 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
   it.each([
     ["model", "modelSelection", "modelBehaviorMayChange", "Model", "Responses can change"],
     [
+      "model",
+      "futureModelDefault",
+      "activeSessionsKeepTheirModel",
+      "Model",
+      "Active sessions keep their selected model",
+    ],
+    [
+      "skill",
+      "skillAdvertising",
+      "explicitSkillUseRemainsAvailable",
+      "Skill",
+      "Explicit skill use remains available",
+    ],
+    [
       "reasoning",
       "reasoningEffort",
       "responsesMayUseLessReasoning",

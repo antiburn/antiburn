@@ -247,6 +247,8 @@ fn event_cursor(event: &SourceEvent) -> PublicationCursor {
         | SourceEvent::Observation { cursor, .. }
         | SourceEvent::Removal { cursor, .. }
         | SourceEvent::Gap { cursor, .. }
+        | SourceEvent::UnsafeUpdate { cursor, .. }
+        | SourceEvent::SegmentReset { cursor, .. }
         | SourceEvent::CoverageRestored { cursor, .. } => *cursor,
     }
 }

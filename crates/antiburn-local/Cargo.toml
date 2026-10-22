@@ -42,7 +42,7 @@ async-trait = "0.1"
 # nothing and cost every SQLx-embedding consumer a build. A bump needs SQLx to
 # widen its own requirement first. `.github/dependabot.yml` ignores this crate
 # for the same reason.
-rusqlite = { version = "0.32.1", features = ["bundled"] }
+rusqlite = { version = "0.32.1", features = ["bundled", "hooks", "limits"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
@@ -60,6 +60,8 @@ tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt",
 # Logging facade only. Emits nothing unless the embedding application installs
 # a subscriber, and performs no I/O of its own.
 tracing = "0.1"
+# Capture epochs need an unambiguous identity across process restarts.
+uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(unix)'.dependencies]
 # Process-group signalling when a bounded child misses its deadline.
@@ -68,8 +70,6 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 # Durable renames, the kill-on-close process host, and windowless consoles.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_System_Threading"] }
-# Unforgeable per-spawn marker for the process host's PATH hand-off.
-uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 # Bench harness for the pipeline measurement baseline (issue #224). Kept

@@ -293,7 +293,7 @@ async fn four_native_agents_prepare_publish_and_report_without_invented_authorit
     for (agent, id, format, records) in native_sources().into_iter().chain([(
         "opencode",
         "ii-native",
-        SourceFormat::OpenCodeSqliteV2,
+        SourceFormat::OpenCodeSqliteV1,
         "",
     )]) {
         let directory = tempfile::tempdir().unwrap();

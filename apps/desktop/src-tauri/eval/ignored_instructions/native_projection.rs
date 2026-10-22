@@ -72,7 +72,7 @@ fn four_native_agents_project_human_command_and_exact_output_through_store() {
         ("claude", SourceFormat::ClaudeJsonl),
         ("codex", SourceFormat::CodexRolloutJsonl),
         ("pi", SourceFormat::PiV3Jsonl),
-        ("opencode", SourceFormat::OpenCodeSqliteV2),
+        ("opencode", SourceFormat::OpenCodeSqliteV1),
     ] {
         let directory = tempfile::tempdir().expect("temporary native fixture");
         let source = if agent == "opencode" {

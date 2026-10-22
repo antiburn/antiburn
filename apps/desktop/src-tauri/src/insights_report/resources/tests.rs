@@ -210,6 +210,61 @@ fn exact_use_suppresses_one_candidate_across_the_window() {
 }
 
 #[test]
+fn opencode_jsonl_and_sqlite_v1_share_mcp_candidate_identity() {
+    let mut builder = ResourceAssessmentBuilder::default();
+    let mcp = candidate(
+        AgentKind::OpenCode,
+        ResourceKind::McpServer,
+        "docs",
+        ResourceScope::Global,
+    );
+    // Both V1 sources expose the same current inventory authority.
+    builder.observe_inventory_for_source(
+        inventory(AgentKind::OpenCode, vec![mcp.clone()]),
+        None,
+        SourceFormat::OpenCodeJsonl,
+    );
+    builder.observe_inventory_for_source(
+        inventory(AgentKind::OpenCode, vec![mcp.clone()]),
+        None,
+        SourceFormat::OpenCodeSqliteV1,
+    );
+    let state = builder.candidates.values().next().unwrap();
+    assert_eq!(state.source_format, SourceFormat::OpenCodeJsonl);
+    assert_eq!(state.resource.provenance, mcp.provenance);
+    assert_ne!(
+        source_key(SourceFormat::OpenCodeSqliteV2),
+        source_key(SourceFormat::OpenCodeV2SessionExport)
+    );
+
+    let mut session = evidence(AgentKind::OpenCode, "sqlite-use");
+    session.capabilities.source_format = SourceFormat::OpenCodeSqliteV1;
+    set_complete_empty_sources(&mut session);
+    session.tools.as_complete_mut().unwrap().by_name.insert(
+        "docs_search".into(),
+        ToolUse {
+            calls: 1,
+            class: ToolClass::Unclassified,
+        },
+    );
+    builder.observe_session(
+        "native",
+        AgentKind::OpenCode,
+        "sqlite-use",
+        None,
+        &session,
+        None,
+    );
+
+    let assessment = builder.finish(&report());
+    let detector = assessment.detector(DetectorId::UnusedMcpServers).unwrap();
+    assert_eq!(detector.candidate_count, 1);
+    assert_eq!(detector.used_count, 1);
+    assert_eq!(detector.unused_count, 0);
+    assert!(detector.targets.is_empty());
+}
+
+#[test]
 fn project_use_does_not_suppress_the_same_name_in_another_repository() {
     let temporary = tempfile::tempdir().unwrap();
     let project_a = temporary.path().join("a");

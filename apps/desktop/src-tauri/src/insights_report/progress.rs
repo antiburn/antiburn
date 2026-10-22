@@ -514,7 +514,7 @@ fn source_is_partial(json: &str, retained_records: u64, first_role: Option<&str>
         || retained_records != source.diagnostics.records_observed
         || (matches!(
             source.capabilities.source_format,
-            SourceFormat::ClaudeJsonl | SourceFormat::OpenCodeSqliteV2
+            SourceFormat::ClaudeJsonl | SourceFormat::OpenCodeSqliteV1
         ) && first_role != Some("user"))
         || !source.summary_observed
         || source.record_loss_reason.is_some()

@@ -33,6 +33,7 @@ fn session_record(session_id: &str, fingerprint: &str) -> SessionRecord {
 
 fn turn_row(turn_index: u64, uuid: Option<&str>) -> TurnRow {
     TurnRow {
+        accounting: None,
         source_key: "s1".into(),
         thread_id: "s1".into(),
         turn_index,

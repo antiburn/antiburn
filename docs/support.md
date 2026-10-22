@@ -74,7 +74,8 @@ retain its own permission and historical login-item records after removal.
 
 ## Agents
 
-antiburn reads session data that a coding agent has already written to disk.
+antiburn reads existing session data from supported local stores and registered
+OpenCode services.
 Plan limits are separate: antiburn can ask a provider for those figures as
 described in [Network](#network).
 
@@ -82,7 +83,7 @@ described in [Network](#network).
 | -------------- | ------------------------ | ------------------------------------- | ------------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Claude Code    | Supported                | Supported                             | Supported                | Supported     |                                                                                                                                                                                                                                      |
 | Codex          | Supported                | Supported                             | Supported                | Supported     |                                                                                                                                                                                                                                      |
-| OpenCode       | Supported                | Supported                             | Supported                | Supported     | WSL discovery uses bounded OpenCode CLI export. It is not disk-only access.                                                                                                                                                          |
+| OpenCode       | Supported                | Supported                             | Supported                | Supported     | WSL V1 uses the existing CLI export bridge. Bounded V2 stored reads require Linux curl and the default running `2.0.32` service. They have no native live-check eligibility; see [source limits](session-coverage.md). Real WSL runtime remains unverified. |
 | Cursor         | Supported                | Supported on characterized surfaces   | Finding-only O support   | Not supported | Other surfaces fail closed.                                                                                                                                                                                                          |
 | GitHub Copilot | Supported                | Supported for accepted CLI v1 bundles | Supported for S/O        | Not supported | Requires the strict event and schema-v7 request-store bundle. D is unavailable because request depth is not retained. IDE chat remains fail closed. Prompts, content, and tool arguments are not read.                               |
 | Cline          | Supported                | Partial                               | Finding-only S/O         | Not supported | Terminal messages-contract-v1 bundles support model and child findings; legacy sources fail closed.                                                                                                                                  |
@@ -96,6 +97,22 @@ described in [Network](#network).
 **Disk-only** means sessions come from the agent's own documented local files; the
 live language-server APIs those two editors expose aren't read, so a session that
 exists only in memory will not appear.
+
+### OpenCode V2 live connection
+
+Stored sessions do not need a running OpenCode service. Live YAML checks need the
+supported registered local service and proof that its process has the selected
+database open. Antiburn does not start or replace that service.
+
+Burn checks shows a local diagnostic when the service is unavailable, rejects its
+credential, uses a different source, has an unsupported version, or exceeds a
+capture limit. These states do not count as a passed check. A capture gap records
+missed activity. After reconnect, safe future results can run, but missed results
+do not replay. Earlier assessments keep the input they actually checked.
+
+Connection diagnostics contain closed error codes and safe action text. They do
+not include credentials, raw event bodies, or database paths. Connection outcomes
+stay local; shared OpenCode surface events do not measure V2 connection success.
 
 ## Burn Check remediation
 

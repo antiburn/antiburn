@@ -4,7 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analysis::SourceFormat;
 use crate::analysis::jev::{JevInputField, JevInputSelection};
-use crate::analysis::jev_evidence::{ContentAction, ContentEventReference, SessionContentEvidence};
+use crate::analysis::jev_evidence::{
+    ContentAction, ContentEventReference, JevNativeSkillBody, JevRecordedSkillResult,
+    SessionContentEvidence,
+};
 use crate::checks::ignored_instructions::sha256_hex;
 use serde::Serialize;
 use serde_json::Value;
@@ -43,10 +46,21 @@ pub struct ParsedSkillRecord<'a> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RecordedSkillIdentity {
-    Name { name: String },
-    InferredName { name: String },
-    Document { name: String, path_digest: String },
+    Name {
+        name: String,
+    },
+    InferredName {
+        name: String,
+    },
+    Document {
+        name: String,
+        path_digest: String,
+    },
     Unknown,
+    NativeId {
+        id: String,
+        display_name: Option<String>,
+    },
 }
 
 impl RecordedSkillIdentity {
@@ -56,6 +70,7 @@ impl RecordedSkillIdentity {
                 Some(name)
             }
             Self::Unknown => None,
+            Self::NativeId { id, .. } => Some(id),
         }
     }
 }
@@ -68,6 +83,8 @@ pub enum SkillUseProducer {
     CodexSkillDocumentE7637306,
     PiExplicitSkillRequest,
     Unknown,
+    /// opencode/tool/plugin/skill.ts@843a6c514e606b436a7fe713422ace0a93ad3d61
+    OpenCodeV2Skill843a6c51,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -83,6 +100,8 @@ pub struct RecordedSkillUse {
     pub authority: String,
     pub turn_scope: String,
     pub producer: SkillUseProducer,
+    pub injected_context: bool,
+    pub native_body: Option<JevNativeSkillBody>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -99,6 +118,8 @@ pub enum SkillUseLimit {
     IncompleteSelectedContent,
     RequiredFieldNotSelected,
     UnsupportedSource,
+    DuplicateNativeSkillId,
+    NativeSkillIdentityCollision,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -180,11 +201,21 @@ impl SkillUseSnapshot {
         native_index(content, native_records)?;
         let mut events = Vec::new();
         if supported {
+            if is_opencode_v2(content.source_format)
+                && content.actions.iter().any(|action| {
+                    action.tool_name.as_deref() == Some("skill")
+                        && matches!(action.kind.as_str(), "tool_input" | "tool_result")
+                        && action.metadata.recorded_skill_result.is_none()
+                })
+            {
+                limits.insert(SkillUseLimit::NativeMetadataUnavailable);
+            }
             collect_requests(content, boundary, &mut events, &mut limits);
             collect_results(content, boundary, &mut events, &mut limits);
             collect_documents(content, boundary, &mut events, &mut limits);
         }
         events.sort_by(|a, b| position(&a.reference).cmp(&position(&b.reference)));
+        native_identity_limits(&events, &mut limits);
         let ordering = ordering(&events, &mut limits);
         let status = if !supported {
             SkillUseStatus::Unsupported
@@ -206,6 +237,7 @@ impl SkillUseSnapshot {
             // Native names do not establish the identity of a current mutable file.
             events: events
                 .iter()
+                .filter(|event| !event.injected_context)
                 .map(|event| SkillUseEvent {
                     identity: event.skill.name().unwrap_or("").to_owned(),
                     identity_kind: SkillUseIdentity::Inferred,
@@ -359,7 +391,9 @@ fn source_matches(source: SourceFormat, agent: crate::model::AgentKind) -> bool 
     matches!(
         (source, agent),
         (SourceFormat::ClaudeJsonl, AgentKind::Claude)
+            | (SourceFormat::OpenCodeSqliteV1, AgentKind::OpenCode)
             | (SourceFormat::OpenCodeSqliteV2, AgentKind::OpenCode)
+            | (SourceFormat::OpenCodeV2SessionExport, AgentKind::OpenCode)
             | (SourceFormat::CodexRolloutJsonl, AgentKind::Codex)
             | (SourceFormat::PiV3Jsonl, AgentKind::Pi)
     )
@@ -431,7 +465,10 @@ fn native_bytes(record: &Value) -> Result<usize, SkillInputError> {
 fn producer(source: SourceFormat) -> SkillUseProducer {
     match source {
         SourceFormat::ClaudeJsonl => SkillUseProducer::ClaudeSkillEnvelope,
-        SourceFormat::OpenCodeSqliteV2 => SkillUseProducer::OpenCodeSkill77239205,
+        SourceFormat::OpenCodeSqliteV1 => SkillUseProducer::OpenCodeSkill77239205,
+        SourceFormat::OpenCodeSqliteV2 | SourceFormat::OpenCodeV2SessionExport => {
+            SkillUseProducer::OpenCodeV2Skill843a6c51
+        }
         SourceFormat::CodexRolloutJsonl => SkillUseProducer::CodexSkillDocumentE7637306,
         SourceFormat::PiV3Jsonl => SkillUseProducer::PiExplicitSkillRequest,
         _ => SkillUseProducer::Unknown,
@@ -457,6 +494,18 @@ fn recorded(
         authority: action.authority.clone(),
         turn_scope: action.turn_scope.clone(),
         producer: producer(source),
+        injected_context: action
+            .metadata
+            .recorded_skill_result
+            .as_ref()
+            .and_then(|fact| fact.native_skill.as_ref())
+            .is_some_and(|proof| proof.origin.is_injected()),
+        native_body: action
+            .metadata
+            .recorded_skill_result
+            .as_ref()
+            .and_then(|fact| fact.native_skill.as_ref())
+            .map(|proof| proof.body),
     }
 }
 
@@ -478,6 +527,7 @@ fn collect_requests(
             continue;
         }
         if !fact.matches_action(action, content.source_format)
+            || !native_v2_session_matches(content.source_format, action, boundary)
             || fact
                 .session_id
                 .as_deref()
@@ -488,7 +538,7 @@ fn collect_requests(
             limits.insert(SkillUseLimit::IncompleteSelectedContent);
             continue;
         }
-        let skill = super::native_skill_results::identity(fact);
+        let skill = skill_identity(fact);
         if matches!(
             skill,
             RecordedSkillIdentity::Unknown | RecordedSkillIdentity::InferredName { .. }
@@ -581,10 +631,13 @@ fn collect_results(
             .recorded_skill_result
             .as_ref()
             .expect("selected skill request");
-        let requested = super::native_skill_results::identity(request_fact);
-        let identity = super::native_skill_results::identity(fact);
+        let requested = skill_identity(request_fact);
+        let identity = skill_identity(fact);
         let bound = fact.matches_action(result, content.source_format)
             && request_fact.matches_action(request, content.source_format)
+            && native_v2_session_matches(content.source_format, request, boundary)
+            && native_v2_session_matches(content.source_format, result, boundary)
+            && native_v2_call_matches(content.source_format, request, result)
             && request_fact
                 .session_id
                 .as_deref()
@@ -633,6 +686,108 @@ fn collect_results(
     }
 }
 
+fn is_opencode_v2(source: SourceFormat) -> bool {
+    matches!(
+        source,
+        SourceFormat::OpenCodeSqliteV2 | SourceFormat::OpenCodeV2SessionExport
+    )
+}
+
+fn native_v2_session_matches(
+    source: SourceFormat,
+    action: &ContentAction,
+    boundary: &SkillUseBoundary,
+) -> bool {
+    !is_opencode_v2(source)
+        || action.reference.thread_digest == sha256_hex(boundary.native_session_id.as_bytes())
+}
+
+fn native_v2_call_matches(
+    source: SourceFormat,
+    request: &ContentAction,
+    result: &ContentAction,
+) -> bool {
+    if !is_opencode_v2(source) {
+        return true;
+    }
+    if request.reference.native_record_id != result.reference.native_record_id {
+        return false;
+    }
+    let Some(input) = request
+        .metadata
+        .recorded_skill_result
+        .as_ref()
+        .and_then(|fact| fact.ranges.first())
+        .and_then(|range| range.pointer.strip_suffix("/input/id"))
+    else {
+        return false;
+    };
+    result
+        .metadata
+        .recorded_skill_result
+        .as_ref()
+        .is_some_and(|fact| {
+            fact.ranges
+                .iter()
+                .any(|range| range.pointer == format!("{input}/input/id"))
+        })
+}
+
+fn skill_identity(fact: &JevRecordedSkillResult) -> RecordedSkillIdentity {
+    if let Some(proof) = &fact.native_skill {
+        RecordedSkillIdentity::NativeId {
+            id: proof.id.clone(),
+            display_name: proof.display_name.clone(),
+        }
+    } else {
+        super::native_skill_results::identity(fact)
+    }
+}
+
+fn native_identity_limits(events: &[RecordedSkillUse], limits: &mut BTreeSet<SkillUseLimit>) {
+    let mut injected = BTreeSet::new();
+    let mut names_by_id = BTreeMap::new();
+    let mut ids_by_name = BTreeMap::new();
+    let ids: BTreeSet<_> = events
+        .iter()
+        .filter_map(|event| match &event.skill {
+            RecordedSkillIdentity::NativeId { id, .. } => Some((
+                &event.reference.source_key_digest,
+                &event.reference.thread_digest,
+                id,
+            )),
+            _ => None,
+        })
+        .collect();
+    for event in events {
+        let RecordedSkillIdentity::NativeId { id, display_name } = &event.skill else {
+            continue;
+        };
+        let scope = (
+            &event.reference.source_key_digest,
+            &event.reference.thread_digest,
+        );
+        if event.injected_context
+            && !injected.insert((scope, &event.reference.native_record_id, id))
+        {
+            limits.insert(SkillUseLimit::DuplicateNativeSkillId);
+        }
+        let Some(name) = display_name else {
+            continue;
+        };
+        if names_by_id
+            .insert((scope, id), name)
+            .is_some_and(|previous| previous != name)
+            || ids_by_name
+                .insert((scope, name), id)
+                .is_some_and(|previous| previous != id)
+            || name != id && ids.contains(&(scope.0, scope.1, name))
+        {
+            limits.insert(SkillUseLimit::NativeSkillIdentityCollision);
+        }
+    }
+}
+
 fn collect_documents(
     content: &SessionContentEvidence,
     boundary: &SkillUseBoundary,
@@ -644,6 +799,31 @@ fn collect_documents(
             continue;
         };
         if fact.field != JevInputField::UserMessage {
+            continue;
+        }
+        if fact
+            .native_skill
+            .as_ref()
+            .is_some_and(|proof| proof.origin.is_injected())
+        {
+            if !fact.matches_action(action, content.source_format)
+                || !native_v2_session_matches(content.source_format, action, boundary)
+                || fact.session_id.as_deref() != Some(boundary.native_session_id.as_str())
+                || !action.reference.stable
+            {
+                limits.insert(SkillUseLimit::IncompleteSelectedContent);
+                continue;
+            }
+            if !fact.complete || fact.truncated {
+                limits.insert(SkillUseLimit::IncompleteSelectedContent);
+            }
+            events.push(recorded(
+                action,
+                content.source_format,
+                skill_identity(fact),
+                SkillUseLifecycle::Unknown,
+                None,
+            ));
             continue;
         }
         if action.truncated

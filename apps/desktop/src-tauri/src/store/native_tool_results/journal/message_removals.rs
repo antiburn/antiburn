@@ -124,7 +124,7 @@ fn reconcile_result(
         generation,
         claim.claim_fence,
         &ToolResultBatch {
-            source_format: SourceFormat::OpenCodeSqliteV2,
+            source_format: SourceFormat::OpenCodeSqliteV1,
             results: vec![result.clone()],
             complete: false,
         },
@@ -157,7 +157,7 @@ fn stored_removals(
         key.environment_key,
         key.agent,
         key.session_id,
-        serde_json::to_string(&SourceFormat::OpenCodeSqliteV2)?,
+        serde_json::to_string(&SourceFormat::OpenCodeSqliteV1)?,
         lower,
         upper
     ])?;
@@ -167,7 +167,7 @@ fn stored_removals(
         let mut result: ToolResultObservation = serde_json::from_str(row.get_ref(1)?.as_str()?)?;
         ensure!(
             result.session_id == key.session_id
-                && result.source_format == SourceFormat::OpenCodeSqliteV2
+                && result.source_format == SourceFormat::OpenCodeSqliteV1
                 && result.record_id.as_deref() == Some(removal.message_id.as_str()),
             "OpenCode message removal does not match its stored binding"
         );

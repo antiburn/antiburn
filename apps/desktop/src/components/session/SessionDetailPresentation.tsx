@@ -73,6 +73,7 @@ import { Skeleton } from "../ui/Skeleton"
 import { ChartKey } from "./analysis/ChartKey"
 import { CalledTools } from "./analysis/CalledTools"
 import { CostBreakdown } from "./analysis/CostBreakdown"
+import { NativeAccountingDetails } from "./NativeAccountingDetails"
 import { CostBurnupChart, type CostSeries } from "./analysis/CostBurnupChart"
 import { ContextTokensChart, type ChartSeries } from "./analysis/ContextTokensChart"
 import { EfficiencyBreakdown } from "./analysis/EfficiencyBreakdown"
@@ -86,7 +87,7 @@ import type { AgentIconRenderer } from "./orchestration/SubagentRosterRow"
 import { SubagentBadge } from "./orchestration/SubagentBadge"
 import { SessionQuotaSection, type SessionQuotaOpenTarget } from "./SessionQuotaSection"
 import { tokensCardModel, type TokensCostSplit } from "./tokensCard"
-import type { SessionQuotaPayload } from "../../lib/ipc"
+import { smartCheckForDetector, type SessionQuotaPayload } from "../../lib/ipc"
 
 /**
  * Skeleton anti-flash timing. A fast load finishes before the delay elapses,
@@ -753,11 +754,15 @@ export function SessionDetailPresentation({
   const firstModel = modelPairs[0]
   const snoozes = useSnoozedBurnChecks()
   const snoozedDetectors = snoozedDetectorIds(snoozes.records)
-  const hygieneChecks =
+  const costHygieneChecks =
     snoozes.status === "ready"
-      ? visibleSessionHygieneChecks(sessionHygieneChecks(hygiene), snoozedDetectors)
+      ? visibleSessionHygieneChecks(sessionHygieneChecks(hygiene), snoozedDetectors).filter(
+          (check) => smartCheckForDetector(check.id) === undefined,
+        )
       : []
-  const hasAssessedHygieneChecks = hygieneChecks.some((check) => check.status !== "notAssessed")
+  const hasAssessedHygieneChecks = costHygieneChecks.some(
+    (check) => check.status !== "notAssessed",
+  )
   const unusedContextRows =
     snoozes.status === "ready"
       ? visibleUnusedContextRows(unusedContextRowsFor(hygiene), snoozedDetectors)
@@ -1048,7 +1053,9 @@ export function SessionDetailPresentation({
         <CostBreakdown cost={cost} split={tokensCard.split} onOpenSubagent={onOpenSubagent} />
       ) : (
         <p className="type-callout text-label-tertiary">
-          No cost has been recorded for this session.
+          {summary?.sessions[0]?.accounting
+            ? "A catalog cost estimate is unavailable for this session."
+            : "No cost has been recorded for this session."}
         </p>
       )}
     </section>
@@ -1189,6 +1196,12 @@ export function SessionDetailPresentation({
               {tab === "cost" && (
                 <div className="session-detail-cost flex min-h-full flex-col gap-6">
                   {costSection}
+                  <NativeAccountingDetails
+                    accounting={summary.sessions[0]?.accounting}
+                    modelRuns={modelRuns}
+                    tokenReconciliation={summary.sessions[0]?.tokenReconciliation}
+                    costReconciliation={summary.sessions[0]?.costReconciliation}
+                  />
                   <section className="flex min-h-48 flex-1 flex-col gap-y-5">
                     <TabSectionHeading>Cost over time</TabSectionHeading>
                     {/* The column has a minimum height, not a fixed one, so the
@@ -1217,7 +1230,7 @@ export function SessionDetailPresentation({
                     <section className="shrink-0">
                       <TabSectionHeading>Checks</TabSectionHeading>
                       <HygieneBreakdown
-                        checks={hygieneChecks}
+                        checks={costHygieneChecks}
                         collapsePassing={false}
                         inlineGuidance
                       />

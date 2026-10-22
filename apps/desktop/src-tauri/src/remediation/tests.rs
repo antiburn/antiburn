@@ -417,7 +417,7 @@ fn instruction_context_rejects_stale_publications_and_excludes_private_thinking(
     };
     let prepared = validated_instruction_content(
         "local\0opencode\0session",
-        SourceFormat::OpenCodeSqliteV2,
+        SourceFormat::OpenCodeSqliteV1,
         published.clone(),
         7,
         3,
@@ -428,7 +428,7 @@ fn instruction_context_rejects_stale_publications_and_excludes_private_thinking(
     assert!(
         validated_instruction_content(
             "local\0opencode\0session",
-            SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::OpenCodeSqliteV1,
             published.clone(),
             8,
             3
@@ -438,7 +438,7 @@ fn instruction_context_rejects_stale_publications_and_excludes_private_thinking(
     assert!(
         validated_instruction_content(
             "local\0opencode\0session",
-            SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::OpenCodeSqliteV1,
             published,
             7,
             4
@@ -447,12 +447,15 @@ fn instruction_context_rejects_stale_publications_and_excludes_private_thinking(
     );
 }
 
-const SOURCE_FORMATS: [SourceFormat; 32] = [
+const SOURCE_FORMATS: [SourceFormat; 35] = [
     SourceFormat::ClaudeJsonl,
     SourceFormat::CodexRolloutJsonl,
     SourceFormat::OpenCodeJsonl,
+    SourceFormat::OpenCodeSqliteV1,
     SourceFormat::OpenCodeSqliteV2,
+    SourceFormat::OpenCodeV2SessionExport,
     SourceFormat::PiV3Jsonl,
+    SourceFormat::OmpV3Jsonl,
     SourceFormat::CursorJsonl,
     SourceFormat::CursorCliAgentJsonl,
     SourceFormat::CursorCliStoreDb,
@@ -544,7 +547,7 @@ fn publication_attribution_covers_supported_vendor_sources_and_settings() {
         },
         Case {
             agent: AgentKind::OpenCode,
-            source: SourceFormat::OpenCodeSqliteV2,
+            source: SourceFormat::OpenCodeSqliteV1,
             config_path: ".config/opencode/opencode.json",
             config: r#"{"model":"openai/gpt-5.6-sol"}"#,
             provider: "openai",
@@ -635,7 +638,7 @@ fn publication_attribution_covers_supported_vendor_sources_and_settings() {
         .unwrap();
         assert_eq!(
             attribution.model.as_ref().map(|value| value.2.as_str()),
-            Some(case.effective_model),
+            (case.agent != AgentKind::OpenCode).then_some(case.effective_model),
             "{:?} {:?}",
             case.agent,
             case.source
@@ -649,7 +652,7 @@ fn publication_attribution_covers_supported_vendor_sources_and_settings() {
         );
         assert_eq!(
             attribution.records.len(),
-            1 + usize::from(case.reasoning.is_some()),
+            usize::from(case.agent != AgentKind::OpenCode) + usize::from(case.reasoning.is_some()),
             "{:?} {:?}",
             case.agent,
             case.source
@@ -701,7 +704,7 @@ fn automatic_editor_matrix_covers_all_agents_scopes_sources_and_platforms() {
             }
         }
     }
-    assert_eq!(supported.len(), 112);
+    assert_eq!(supported.len(), 132);
     assert!(
         supported
             .iter()
@@ -727,7 +730,9 @@ fn automatic_editor_matrix_covers_all_agents_scopes_sources_and_platforms() {
                                 | ConfigSetting::SubagentModel
                                 | ConfigSetting::McpServer
                                 | ConfigSetting::Skill,
-                            SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV2
+                            SourceFormat::OpenCodeJsonl
+                                | SourceFormat::OpenCodeSqliteV1
+                                | SourceFormat::OpenCodeSqliteV2
                         )
                         | (
                             AgentKind::Pi,
@@ -773,6 +778,7 @@ fn indexed_resource_target_enables_auto_fix_for_the_exact_effective_entry() {
     let controller = RemediationController::new(temporary.path().join("data"));
     let target = insights_report::UnusedResourceTarget {
         agent: AgentKind::Claude,
+        source_format: SourceFormat::ClaudeJsonl,
         kind: crate::agent_config::ResourceKind::McpServer,
         canonical_name: "docs".into(),
         scope: insights_report::ResourceAssessmentScope::Global,
@@ -827,6 +833,7 @@ fn disabled_check_watch_is_dequeued_without_replacing_its_result() {
     let controller = RemediationController::new(temporary.path().join("data"));
     let target = insights_report::UnusedResourceTarget {
         agent: AgentKind::Claude,
+        source_format: SourceFormat::ClaudeJsonl,
         kind: crate::agent_config::ResourceKind::McpServer,
         canonical_name: "docs".into(),
         scope: insights_report::ResourceAssessmentScope::Global,
@@ -915,6 +922,7 @@ fn advisory_resource_target_stays_prompt_only() {
     let controller = RemediationController::new(temporary.path().join("data"));
     let target = insights_report::UnusedResourceTarget {
         agent: AgentKind::Claude,
+        source_format: SourceFormat::ClaudeJsonl,
         kind: crate::agent_config::ResourceKind::McpServer,
         canonical_name: "docs".into(),
         scope: insights_report::ResourceAssessmentScope::Global,
@@ -948,6 +956,7 @@ fn advisory_resource_target_stays_prompt_only() {
 fn resource_revalidation_keeps_the_indexed_provenance_requirement() {
     let indexed = insights_report::UnusedResourceTarget {
         agent: AgentKind::OpenCode,
+        source_format: SourceFormat::OpenCodeJsonl,
         kind: crate::agent_config::ResourceKind::Skill,
         canonical_name: "review".into(),
         scope: insights_report::ResourceAssessmentScope::Global,
@@ -964,12 +973,23 @@ fn resource_revalidation_keeps_the_indexed_provenance_requirement() {
 
     assert!(!resource_target_matches(&indexed, &advisory));
     assert!(resource_target_matches(&advisory, &indexed));
+    let native = insights_report::UnusedResourceTarget {
+        source_format: SourceFormat::OpenCodeSqliteV2,
+        ..indexed.clone()
+    };
+    assert!(!resource_target_matches(&indexed, &native));
+    let different_case = insights_report::UnusedResourceTarget {
+        canonical_name: "REVIEW".into(),
+        ..native.clone()
+    };
+    assert!(!resource_target_matches(&native, &different_case));
 }
 
 #[test]
 fn resource_targets_do_not_expose_supporting_sessions_as_samples() {
     let target = insights_report::UnusedResourceTarget {
         agent: AgentKind::Claude,
+        source_format: SourceFormat::ClaudeJsonl,
         kind: crate::agent_config::ResourceKind::Skill,
         canonical_name: "review".into(),
         scope: insights_report::ResourceAssessmentScope::Global,
@@ -1044,6 +1064,7 @@ fn a_new_prompt_cycle_does_not_reuse_a_recurred_prompt_group() {
         resource: Some(CachedResourceTarget {
             target: insights_report::UnusedResourceTarget {
                 agent: AgentKind::Claude,
+                source_format: SourceFormat::ClaudeJsonl,
                 kind: crate::agent_config::ResourceKind::Skill,
                 canonical_name: "review".into(),
                 scope: insights_report::ResourceAssessmentScope::Global,
@@ -1572,13 +1593,19 @@ fn verification_availability_matches_all_documented_source_cells() {
             let agent = match source_format {
                 SourceFormat::ClaudeJsonl => AgentKind::Claude,
                 SourceFormat::CodexRolloutJsonl => AgentKind::Codex,
-                SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV2 => AgentKind::OpenCode,
+                SourceFormat::OpenCodeJsonl
+                | SourceFormat::OpenCodeSqliteV1
+                | SourceFormat::OpenCodeSqliteV2
+                | SourceFormat::OpenCodeV2SessionExport => AgentKind::OpenCode,
                 SourceFormat::PiV3Jsonl => AgentKind::Pi,
+                SourceFormat::OmpV3Jsonl => AgentKind::Omp,
                 _ => AgentKind::Claude,
             };
             let engine_supported = verification_evidence_supported(detector, source_format);
             let desktop_supported = desktop_watch_verification_supported(detector, source_format);
-            let expected = engine_supported && desktop_supported;
+            let expected = engine_supported
+                && desktop_supported
+                && source_format != SourceFormat::OpenCodeSqliteV2;
             assert_eq!(
                 watch_verification_available(
                     &definition(detector, source_format),
@@ -1690,6 +1717,7 @@ fn current_config_controls_use_the_workspace_scope_when_available() {
         worker_model: "worker".into(),
         worker_ordinal: 1,
         parent_call_id: Some("call".into()),
+        config_binding: None,
     };
 
     for cause in [&depth, &worker] {
@@ -2870,6 +2898,7 @@ fn prepared_auto_fix_expires_across_a_check_off_on_cycle() {
     let controller = RemediationController::new(directory.path().to_owned());
     let resource = insights_report::UnusedResourceTarget {
         agent: AgentKind::Claude,
+        source_format: SourceFormat::ClaudeJsonl,
         kind: crate::agent_config::ResourceKind::McpServer,
         canonical_name: "docs".into(),
         scope: insights_report::ResourceAssessmentScope::Global,
@@ -2917,7 +2946,7 @@ fn prepared_auto_fix_expires_across_a_check_off_on_cycle() {
     state.prepared.push_back(PreparedAutoFix {
         id: prepared_operation_id.clone(),
         target,
-        prepared: Some(prepared),
+        prepared: Some(PreparedConfigOperation::Generic(prepared)),
         retained_bytes,
         check_preferences_revision,
         smart_master_generation: None,

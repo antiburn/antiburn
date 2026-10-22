@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, InitialContextBreakdown, METRICS_SCHEMA_REVISION,
-    PARSER_REVISION, SessionEvidence,
+    PARSER_REVISION, SessionEvidence, SourceFormat,
 };
 use antiburn_local::insights::{
     CoverageBucket, CoverageCounts, DetectorFindings, DetectorId, DetectorSelection,
@@ -206,6 +206,34 @@ fn reduce_with_selection_on_snapshot(
     resource_home: Option<&Path>,
     enabled_detectors: DetectorSelection,
 ) -> Result<ReducedReport> {
+    reduce_with_resource_authority_on_snapshot(
+        data_dir,
+        request,
+        after_denominator,
+        cancel,
+        turn_probe,
+        enabled_detectors,
+        ResourceAuthority {
+            home: resource_home,
+            config: None,
+        },
+    )
+}
+
+struct ResourceAuthority<'a> {
+    home: Option<&'a Path>,
+    config: Option<&'a crate::agent_config::opencode_config_authority::CurrentConfigAuthority>,
+}
+
+fn reduce_with_resource_authority_on_snapshot(
+    data_dir: &Path,
+    request: ReportRequest,
+    after_denominator: &mut dyn FnMut(),
+    cancel: &AtomicBool,
+    turn_probe: &mut dyn FnMut(),
+    enabled_detectors: DetectorSelection,
+    resource_authority: ResourceAuthority<'_>,
+) -> Result<ReducedReport> {
     ensure_not_cancelled(cancel)?;
     let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
     let transaction = connection.unchecked_transaction()?;
@@ -251,7 +279,8 @@ fn reduce_with_selection_on_snapshot(
         resource_builder.mark_window_incomplete();
     }
     let repository_roots = trusted_repository_roots(&transaction, &mut resource_builder)?;
-    let mut inventory_contexts = BTreeSet::new();
+    let mut inventory_contexts = BTreeMap::new();
+    let mut inventory_sources = BTreeMap::new();
     let mut ignored_finding_sessions = 0_u64;
     let mut ignored_eligible = 0_u64;
     let mut ignored_assessed = 0_u64;
@@ -431,8 +460,9 @@ fn reduce_with_selection_on_snapshot(
                 if let Some(agent_kind) = agent_kind
                     .filter(|agent| resources::resource_assessment_agents().contains(agent))
                 {
-                    resource_builder.observe_turn(
+                    resource_builder.observe_turn_for_source(
                         agent_kind,
+                        evidence.capabilities.source_format,
                         project_root,
                         resource_session_index,
                         context_tokens,
@@ -472,18 +502,22 @@ fn reduce_with_selection_on_snapshot(
                     &evidence,
                     initial_context.as_ref(),
                 );
-                resource_builder.observe_resource_estimates(
+                resource_builder.observe_resource_estimates_for_source(
                     agent_kind,
+                    evidence.capabilities.source_format,
                     project_root,
                     resource_session_index,
                     &token_evidence,
                 );
+                let source_format = evidence.capabilities.source_format;
+                let source_key = resources::source_key(source_format);
+                inventory_sources.insert((agent_kind, source_key.clone()), source_format);
                 if let (Some(cwd), Some(root)) = (cwd.as_deref(), project_root) {
-                    let context = (agent_kind, PathBuf::from(cwd), root.to_owned());
-                    if inventory_contexts.contains(&context)
+                    let context = (agent_kind, source_key, PathBuf::from(cwd), root.to_owned());
+                    if inventory_contexts.contains_key(&context)
                         || inventory_contexts.len() < MAX_RESOURCE_INVENTORY_CONTEXTS
                     {
-                        inventory_contexts.insert(context);
+                        inventory_contexts.insert(context, source_format);
                     } else {
                         resource_builder.mark_scan_failed(agent_kind);
                     }
@@ -583,7 +617,8 @@ fn reduce_with_selection_on_snapshot(
         report.context.coverage.actively_growing <= report.context.coverage.ready,
         "actively growing coverage exceeds ready coverage"
     );
-    let check_progress = progress::check_report_progress_in(&transaction, &request, resource_home)?;
+    let check_progress =
+        progress::check_report_progress_in(&transaction, &request, resource_authority.home)?;
     let sampled_instructions =
         ignored_instructions::has_published_sampled_instruction_assessment_in(
             &transaction,
@@ -592,8 +627,14 @@ fn reduce_with_selection_on_snapshot(
     ensure_not_cancelled(cancel)?;
     drop(transaction);
     drop(connection);
-    if let Some(home) = resource_home {
-        scan_resource_inventories(&mut resource_builder, home, inventory_contexts);
+    if let Some(home) = resource_authority.home {
+        scan_resource_inventories(
+            &mut resource_builder,
+            home,
+            inventory_sources,
+            inventory_contexts,
+            resource_authority.config,
+        );
     } else {
         for agent in resources::resource_assessment_agents() {
             resource_builder.mark_scan_failed(agent);
@@ -665,30 +706,46 @@ fn trusted_repository_for_cwd<'a>(cwd: &Path, roots: &'a [PathBuf]) -> Option<&'
 fn scan_resource_inventories(
     builder: &mut resources::ResourceAssessmentBuilder,
     home: &Path,
-    contexts: BTreeSet<(AgentKind, PathBuf, PathBuf)>,
+    sources: BTreeMap<(AgentKind, String), SourceFormat>,
+    contexts: BTreeMap<(AgentKind, String, PathBuf, PathBuf), SourceFormat>,
+    authority: Option<&crate::agent_config::opencode_config_authority::CurrentConfigAuthority>,
 ) {
-    for agent in resources::resource_assessment_agents() {
+    for ((agent, _), source_format) in sources {
+        if matches!(
+            source_format,
+            SourceFormat::OpenCodeSqliteV2 | SourceFormat::OpenCodeV2SessionExport
+        ) {
+            continue;
+        }
         let mut context = crate::agent_config::ConfigContext::native(agent, home, None);
+        context.source_format = Some(source_format);
         context.runtime_override_present = crate::remediation::runtime_override_present(agent);
         context.managed_configuration_present =
             crate::remediation::managed_configuration_present(agent, home);
         match crate::agent_config::advisory_resource_inventory(&context, []) {
-            Ok(inventory) => builder.observe_inventory(inventory, None),
+            Ok(inventory) => builder.observe_inventory_for_source(inventory, None, source_format),
             Err(_) => builder.mark_scan_failed(agent),
         }
     }
-    for (agent, cwd, root) in contexts {
+    for ((agent, _, cwd, root), source_format) in contexts {
         let Some(mut context) =
             crate::remediation::config_context(agent, home, Some(&cwd), Some(&root))
         else {
             builder.mark_scan_failed(agent);
             continue;
         };
+        context.source_format = Some(source_format);
         context.runtime_override_present = crate::remediation::runtime_override_present(agent);
         context.managed_configuration_present =
             crate::remediation::managed_configuration_present(agent, home);
-        match crate::agent_config::advisory_resource_inventory(&context, []) {
-            Ok(inventory) => builder.observe_inventory(inventory, Some(&root)),
+        match crate::agent_config::ResourceInventory::discover_with_authority(
+            &context,
+            [],
+            authority,
+        ) {
+            Ok(inventory) => {
+                builder.observe_inventory_for_source(inventory, Some(&root), source_format)
+            }
             Err(_) => builder.mark_scan_failed(agent),
         }
     }
@@ -1014,6 +1071,7 @@ pub(crate) mod tests {
             .unwrap();
         let writer = FencedTurnRowStore::new(store.clone(), session.key.clone(), claim.claim_fence);
         let turn = |index: u64, scope: TurnScope, model: &str| TurnRow {
+            accounting: None,
             source_key: "synthetic".to_owned(),
             thread_id: "synthetic".to_owned(),
             turn_index: index,
@@ -1354,6 +1412,7 @@ pub(crate) mod tests {
                 FencedTurnRowStore::new(store.clone(), session.key.clone(), claim.claim_fence);
             let turns = (0..turn_count)
                 .map(|turn_index| TurnRow {
+                    accounting: None,
                     source_key: "synthetic".to_owned(),
                     thread_id: "synthetic".to_owned(),
                     turn_index: turn_index as u64,
@@ -1929,55 +1988,44 @@ pub(crate) mod tests {
     }
 
     #[cfg(not(windows))]
-    #[test]
-    fn opencode_and_pi_old_model_controller_applies_once_to_temporary_configs() {
-        for (fixture, path, config) in [
-            (
-                RoutedModelFixture {
-                    agent: AgentKind::OpenCode,
-                    capabilities: SourceCapabilities::opencode(),
-                    api: "responses",
-                },
-                ".config/opencode/opencode.json",
-                r#"{"model":"openai/gpt-5.5"}"#,
-            ),
-            (
-                RoutedModelFixture {
-                    agent: AgentKind::Pi,
-                    capabilities: SourceCapabilities::pi(),
-                    api: "openai-responses",
-                },
-                ".pi/agent/settings.json",
-                r#"{"defaultProvider":"openai","defaultModel":"gpt-5.5"}"#,
-            ),
-        ] {
-            let agent = fixture.agent;
-            let data_dir = TempDir::new().unwrap();
-            let home = data_dir.path().join("home");
-            let config_path = home.join(path);
-            std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
-            std::fs::write(&config_path, config).unwrap();
-            let store = Store::open(data_dir.path()).unwrap();
-            publish_routed_attributed_model_turn(
-                data_dir.path(),
-                &store,
-                fixture,
-                "old-model",
-                2_000_000_000,
-                2_000_000_000_000,
-                "gpt-5.5",
-            );
-            let key = SessionKey::new("native", agent.slug(), "old-model");
-            let evidence_json: String = store
-                .lock()
-                .query_row(
-                    "SELECT evidence_json FROM session_evidence
-                      WHERE environment_key = 'native' AND agent = ?1 AND session_id = 'old-model'",
-                    [agent.slug()],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            let attribution = crate::remediation::publication_config_attribution_with_home(
+    fn old_model_controller_fixture(
+        data_dir: &Path,
+        fixture: RoutedModelFixture,
+        path: &str,
+        config: &str,
+    ) -> (
+        Store,
+        crate::remediation::RemediationController,
+        String,
+        PathBuf,
+    ) {
+        let agent = fixture.agent;
+        let home = data_dir.join("home");
+        let config_path = home.join(path);
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(&config_path, config).unwrap();
+        let store = Store::open(data_dir).unwrap();
+        publish_routed_attributed_model_turn(
+            data_dir,
+            &store,
+            fixture,
+            "old-model",
+            2_000_000_000,
+            2_000_000_000_000,
+            "gpt-5.5",
+        );
+        let key = SessionKey::new("native", agent.slug(), "old-model");
+        let evidence_json: String = store
+            .lock()
+            .query_row(
+                "SELECT evidence_json FROM session_evidence
+                  WHERE environment_key = 'native' AND agent = ?1 AND session_id = 'old-model'",
+                [agent.slug()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if let Some(attribution) =
+            crate::remediation::config::publication_config_attribution_with_home(
                 &store,
                 &key,
                 PublishedEvidence::Ready,
@@ -1986,7 +2034,7 @@ pub(crate) mod tests {
             )
             .unwrap()
             .model
-            .unwrap();
+        {
             store
                 .lock()
                 .execute(
@@ -1996,46 +2044,105 @@ pub(crate) mod tests {
                     params![attribution.0, attribution.1, attribution.2, agent.slug()],
                 )
                 .unwrap();
-            let controller = crate::remediation::RemediationController::new(data_dir.path().into());
-            let listed = controller
-                .list_burn_check_targets_with_home(
-                    &store,
-                    DetectorId::OldModelUsage,
-                    crate::remediation::BurnCheckTargetContext {
-                        environment_key: "native".into(),
-                        window: ReportWindow {
-                            start_epoch: 1_900_000_000,
-                            end_epoch: 2_100_000_000,
-                        },
-                    },
-                    &home,
-                )
-                .unwrap();
-            assert_eq!(listed.targets.len(), 1, "{agent:?}");
-            assert_eq!(
-                listed.targets[0].auto_fix,
-                crate::remediation::AutoFixAvailability::Available
-            );
-            let review = controller
-                .prepare_auto_fix_burn_check_target(&store, &listed.targets[0].action_id)
-                .unwrap();
-            assert_eq!(review.current_value, "openai/gpt-5.5");
-            assert_eq!(review.proposed_value, "openai/gpt-5.6-sol");
-            let applied = controller
-                .apply_prepared_burn_check_operation(&store, &review.prepared_operation_id)
-                .unwrap();
-            assert_eq!(
-                controller
-                    .apply_prepared_burn_check_operation(&store, &review.prepared_operation_id)
-                    .unwrap(),
-                applied
-            );
-            assert!(
-                std::fs::read_to_string(config_path)
-                    .unwrap()
-                    .contains("gpt-5.6-sol")
-            );
         }
+        let controller = crate::remediation::RemediationController::new(data_dir.into());
+        let listed = controller
+            .list_burn_check_targets_with_home(
+                &store,
+                DetectorId::OldModelUsage,
+                crate::remediation::BurnCheckTargetContext {
+                    environment_key: "native".into(),
+                    window: ReportWindow {
+                        start_epoch: 1_900_000_000,
+                        end_epoch: 2_100_000_000,
+                    },
+                },
+                &home,
+            )
+            .unwrap();
+        assert_eq!(listed.targets.len(), 1, "{agent:?}");
+        assert_eq!(
+            listed.targets[0].auto_fix,
+            if agent == AgentKind::OpenCode {
+                crate::remediation::AutoFixAvailability::Unavailable(
+                    crate::remediation::AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
+                )
+            } else {
+                crate::remediation::AutoFixAvailability::Available
+            }
+        );
+        (
+            store,
+            controller,
+            listed.targets[0].action_id.clone(),
+            config_path,
+        )
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn opencode_v1_old_model_controller_does_not_write_without_consumer_authority() {
+        let data_dir = TempDir::new().unwrap();
+        let config = r#"{"model":"openai/gpt-5.5"}"#;
+        let (store, controller, action_id, config_path) = old_model_controller_fixture(
+            data_dir.path(),
+            RoutedModelFixture {
+                agent: AgentKind::OpenCode,
+                capabilities: SourceCapabilities::opencode(),
+                api: "responses",
+            },
+            ".config/opencode/opencode.json",
+            config,
+        );
+
+        assert!(matches!(
+            controller.prepare_auto_fix_burn_check_target(&store, &action_id),
+            Err(crate::remediation::ControllerError::AutoFixUnavailable(
+                crate::remediation::AutoFixUnavailableReason::UnsupportedOrUnprovenTarget
+            ))
+        ));
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), config);
+        assert_eq!(
+            std::fs::read_dir(config_path.parent().unwrap())
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn pi_old_model_controller_applies_once_to_a_temporary_config() {
+        let data_dir = TempDir::new().unwrap();
+        let (store, controller, action_id, config_path) = old_model_controller_fixture(
+            data_dir.path(),
+            RoutedModelFixture {
+                agent: AgentKind::Pi,
+                capabilities: SourceCapabilities::pi(),
+                api: "openai-responses",
+            },
+            ".pi/agent/settings.json",
+            r#"{"defaultProvider":"openai","defaultModel":"gpt-5.5"}"#,
+        );
+        let review = controller
+            .prepare_auto_fix_burn_check_target(&store, &action_id)
+            .unwrap();
+        assert_eq!(review.current_value, "openai/gpt-5.5");
+        assert_eq!(review.proposed_value, "openai/gpt-5.6-sol");
+        let applied = controller
+            .apply_prepared_burn_check_operation(&store, &review.prepared_operation_id)
+            .unwrap();
+        assert_eq!(
+            controller
+                .apply_prepared_burn_check_operation(&store, &review.prepared_operation_id)
+                .unwrap(),
+            applied
+        );
+        assert!(
+            std::fs::read_to_string(config_path)
+                .unwrap()
+                .contains("gpt-5.6-sol")
+        );
     }
 
     #[test]

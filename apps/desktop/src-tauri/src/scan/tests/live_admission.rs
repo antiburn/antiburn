@@ -41,6 +41,7 @@ fn native_source(home: &std::path::Path, id: &str) -> (SyntheticJournal, Session
             agent: AgentKind::OpenCode,
             db_path: source.path.clone(),
             session_id: id.into(),
+            source_format: Some(antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1),
         },
         updated_at: Some(unix_now()),
         environment: DiscoveryEnvironment::Native,

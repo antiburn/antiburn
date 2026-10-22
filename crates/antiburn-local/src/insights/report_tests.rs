@@ -23,7 +23,7 @@ fn source_format_serde_keys_are_stable() {
         (SourceFormat::ClaudeJsonl, "claude_jsonl"),
         (SourceFormat::CodexRolloutJsonl, "codex_rollout_jsonl"),
         (SourceFormat::OpenCodeJsonl, "open_code_jsonl"),
-        (SourceFormat::OpenCodeSqliteV2, "open_code_sqlite_v2"),
+        (SourceFormat::OpenCodeSqliteV1, "open_code_sqlite_v2"),
         (SourceFormat::PiV3Jsonl, "pi_v3_jsonl"),
         (SourceFormat::OmpV3Jsonl, "omp_v3_jsonl"),
         (SourceFormat::CursorJsonl, "cursor_jsonl"),
@@ -2078,7 +2078,7 @@ fn coverage_contract_partial_sessions_never_read_clean_from_complete_groups() {
         crate::analysis::SourceFormat::ClaudeJsonl,
         crate::analysis::SourceFormat::CodexRolloutJsonl,
         crate::analysis::SourceFormat::OpenCodeJsonl,
-        crate::analysis::SourceFormat::OpenCodeSqliteV2,
+        crate::analysis::SourceFormat::OpenCodeSqliteV1,
         crate::analysis::SourceFormat::PiV3Jsonl,
     ] {
         let mut row = complete_row("partial-session-contract");
@@ -2261,6 +2261,7 @@ fn coverage_contract_pi_observed_delegation_needs_no_blanket_capabilities() {
                     child_model: EvidenceValue::Unsupported,
                     confidence: RelationConfidence::Observed,
                     provenance: RelationProvenance::TaskToolUse,
+                    config_binding: None,
                 }],
                 examples: Vec::new(),
             },

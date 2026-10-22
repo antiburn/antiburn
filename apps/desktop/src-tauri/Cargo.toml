@@ -286,7 +286,15 @@ keyring = { version = "3.6.3", default-features = false, features = [
 winreg = "0.56"
 # Reads the Antigravity CLI credential from the current user's Credential
 # Manager. The source never writes or deletes credentials.
-windows-sys = { version = "0.61", features = ["Win32_Security_Credentials"] }
+# Proves that a local OpenCode process has the selected SQLite database open.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security_Credentials",
+  "Win32_Storage_FileSystem",
+  "Win32_System_RestartManager",
+  "Win32_System_Threading",
+  "Win32_System_WindowsProgramming",
+] }
 
 [dev-dependencies]
 # This dev-dependency resolves the engine counters for test builds only.

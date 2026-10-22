@@ -11,10 +11,10 @@ use super::*;
 #[test]
 fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pin the count so each new migration requires an explicit test update.
-    assert_eq!(super::schema::MIGRATIONS.len(), 80);
+    assert_eq!(super::schema::MIGRATIONS.len(), 83);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 80);
+    assert_eq!(store.schema_version().unwrap(), 83);
     let index_exists = store
         .lock()
         .query_row(
@@ -74,7 +74,7 @@ fn v50_removes_legacy_live_usage_history_but_preserves_snapshot() {
     )
     .unwrap();
 
-    assert_eq!(store.schema_version().unwrap(), 80);
+    assert_eq!(store.schema_version().unwrap(), 83);
     assert_eq!(store.internal_value("internal:liveUsageHistoryV2"), None);
     assert_eq!(
         store.internal_value("internal:liveUsageSnapshotV2"),
@@ -289,21 +289,27 @@ fn compact_model_pages_distinguish_missing_unpublished_and_reused_fences() {
     unpublished.ts_ms = Some(9_000);
     unpublished.model = Some("unpublished-model".into());
     unpublished.provider = Some("unpublished-route".into());
-    insert_turn_rows(
-        &store.lock(),
-        &turn_session_key(&record.key),
-        claim.claim_fence + 1,
-        &[unpublished],
-    )
-    .unwrap();
-    assert_eq!(store.published_models_for_keys(&keys).unwrap().0, first);
-    store
-        .lock()
-        .execute(
-            "UPDATE session_evidence SET status = 'processing' WHERE session_id = 'model-page'",
-            [],
-        )
+    store.requeue_session_evidence(&record.key).unwrap();
+    let in_flight = store
+        .claim_next_evidence(&["claude-code"], 1_100, 60)
+        .unwrap()
         .unwrap();
+    let in_flight_sink =
+        FencedTurnRowStore::new(store.clone(), record.key.clone(), in_flight.claim_fence);
+    in_flight_sink.write_turn_rows(&[unpublished]).unwrap();
+    assert_eq!(store.published_models_for_keys(&keys).unwrap().0, first);
+    let claim = store
+        .claim_next_evidence(&["claude-code"], 1_161, 60)
+        .unwrap()
+        .unwrap();
+    assert!(sink.write_turn_rows(&[row.clone()]).is_err());
+    assert!(in_flight_sink.write_turn_rows(&[row.clone()]).is_err());
+    let sink = FencedTurnRowStore::new(store.clone(), record.key.clone(), claim.claim_fence);
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     row.turn_index = 1;
     row.model = Some("new".into());
     row.provider = Some("anthropic".into());
@@ -319,13 +325,12 @@ fn compact_model_pages_distinguish_missing_unpublished_and_reused_fences() {
     assert_eq!(second[0].model.as_deref(), Some("new"));
     assert_eq!(second[0].provider.as_deref(), Some("anthropic"));
     assert_eq!(second[0].incarnation, incarnation);
-    store
-        .lock()
-        .execute(
-            "UPDATE session_evidence SET status = 'processing' WHERE session_id = 'model-page'",
-            [],
-        )
+    store.requeue_session_evidence(&record.key).unwrap();
+    let claim = store
+        .claim_next_evidence(&["claude-code"], 1_200, 60)
+        .unwrap()
         .unwrap();
+    let sink = FencedTurnRowStore::new(store.clone(), record.key.clone(), claim.claim_fence);
     let mut tie = turn_row(2);
     tie.ts_ms = row.ts_ms;
     tie.model = Some("tie-winner".into());
@@ -334,7 +339,17 @@ fn compact_model_pages_distinguish_missing_unpublished_and_reused_fences() {
     empty.ts_ms = Some(3_000);
     empty.model = Some(String::new());
     empty.provider = Some("must-not-cross-join".into());
-    sink.write_turn_rows(&[tie, empty]).unwrap();
+    sink.write_turn_rows(&[row, tie, empty]).unwrap();
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
     assert_eq!(
         store.published_models_for_keys(&keys).unwrap().0[0]
             .model
@@ -446,26 +461,19 @@ fn sessions_owning_turn_uuids_query_plan_uses_the_turn_uuid_index() {
 #[test]
 fn a_fenced_turn_row_writer_inserts_rows_the_store_can_count() {
     let store = store();
-    let mut record = session("turn-rows-writer", 1_000);
-    record.source_fingerprint = Some("sv1:turn-rows-writer".into());
-    store
-        .upsert_sessions(
-            std::slice::from_ref(&record),
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
+    let (record, claim) = claimed_projection(&store, "turn-rows-writer", 100, 60);
     let key = record.key.clone();
 
-    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), 7);
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
 
     let connection = store.lock();
     assert_eq!(
-        count_turn_rows(&connection, &turn_session_key(&key), 7).unwrap(),
+        count_turn_rows(&connection, &turn_session_key(&key), claim.claim_fence).unwrap(),
         2
     );
     assert_eq!(
-        count_turn_rows(&connection, &turn_session_key(&key), 8).unwrap(),
+        count_turn_rows(&connection, &turn_session_key(&key), claim.claim_fence + 1).unwrap(),
         0
     );
 }
@@ -672,26 +680,26 @@ fn turn_row_with_content(turn_index: u64, text: &str) -> TurnRow {
 #[test]
 fn deleting_a_session_removes_turn_content_written_through_the_fenced_writer() {
     let store = store();
-    let key = SessionKey::new("native", "claude-code", "turn-content-delete-session");
-    store
-        .upsert_sessions(
-            &[session("turn-content-delete-session", 1_000)],
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
-    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), 1);
+    let (record, claim) = claimed_projection(&store, "turn-content-delete-session", 100, 60);
+    let key = record.key;
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer
         .write_turn_rows(&[turn_row_with_content(0, "PRIVATE_TURN_CONTENT")])
         .unwrap();
     assert_eq!(
-        count_turn_content_rows(&store.lock(), &turn_session_key(&key), 1).unwrap(),
+        count_turn_content_rows(&store.lock(), &turn_session_key(&key), claim.claim_fence).unwrap(),
         1
     );
 
     assert!(store.delete_session(&key).unwrap().is_some());
+    assert!(
+        writer
+            .write_turn_rows(&[turn_row_with_content(1, "late content")])
+            .is_err()
+    );
 
     assert_eq!(
-        count_turn_content_rows(&store.lock(), &turn_session_key(&key), 1).unwrap(),
+        count_turn_content_rows(&store.lock(), &turn_session_key(&key), claim.claim_fence).unwrap(),
         0
     );
 }
@@ -699,25 +707,23 @@ fn deleting_a_session_removes_turn_content_written_through_the_fenced_writer() {
 #[test]
 fn clearing_local_session_data_removes_turn_content_written_through_the_fenced_writer() {
     let store = store();
-    let mut record = session("turn-content-clear", 1_000);
-    record.source_fingerprint = Some("sv1:turn-content-clear".into());
-    store
-        .upsert_sessions(
-            std::slice::from_ref(&record),
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
+    let (record, claim) = claimed_projection(&store, "turn-content-clear", 100, 60);
     let key = record.key.clone();
-    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), 1);
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer
         .write_turn_rows(&[turn_row_with_content(0, "PRIVATE_TURN_CONTENT")])
         .unwrap();
     assert_eq!(
-        count_turn_content_rows(&store.lock(), &turn_session_key(&key), 1).unwrap(),
+        count_turn_content_rows(&store.lock(), &turn_session_key(&key), claim.claim_fence).unwrap(),
         1
     );
 
     store.clear_local_session_data().unwrap();
+    assert!(
+        writer
+            .write_turn_rows(&[turn_row_with_content(1, "late content")])
+            .is_err()
+    );
 
     let remaining: i64 = store
         .lock()

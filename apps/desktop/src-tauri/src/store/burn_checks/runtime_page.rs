@@ -83,13 +83,14 @@ impl StoreCheckStore {
         );
         let mut observations = Vec::new();
         let mut sequences = Vec::new();
-        let mut gaps = Vec::new();
-        gaps.extend(
+        let mut invalidated_branches = Vec::new();
+        invalidated_branches.extend(
             committed
                 .iter()
                 .filter(|item| item.window_invalidated)
                 .map(|item| item.observation.branch.0.clone()),
         );
+        let mut reset_branches = Vec::new();
         let mut triggers = BTreeMap::new();
         for event in &page.events {
             let cursor = match event {
@@ -159,11 +160,17 @@ impl StoreCheckStore {
                     });
                     *cursor
                 }
-                SourceEvent::Gap { cursor, branch, .. } => {
-                    gaps.push(branch.0.clone());
+                SourceEvent::SegmentReset { cursor, branch, .. } => {
+                    reset_branches.push(branch.0.clone());
                     *cursor
                 }
-                SourceEvent::CoverageRestored { cursor, .. } => *cursor,
+                SourceEvent::UnsafeUpdate { cursor, branch, .. } => {
+                    invalidated_branches.push(branch.0.clone());
+                    *cursor
+                }
+                SourceEvent::Gap { cursor, .. } | SourceEvent::CoverageRestored { cursor, .. } => {
+                    *cursor
+                }
             };
             sequences.push(integer(cursor.0)?);
         }
@@ -226,7 +233,8 @@ impl StoreCheckStore {
                 expected: &expected_json,
                 next: &next_json,
                 scope: &self.scope,
-                gaps: &gaps,
+                invalidated_branches: &invalidated_branches,
+                reset_branches: &reset_branches,
                 coalesce_pending: activation.compiled.trigger.window.is_some(),
             }),
         )?;

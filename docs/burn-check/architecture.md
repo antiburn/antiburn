@@ -26,7 +26,7 @@ native discovery and bounded live reader
 `CheckEngine` owns transitions. Expression evaluation and action planning remain
 pure. Watch notifications request reconciliation; they are not result events.
 Use the native adapters through bounded live readers. Claude, Codex, and Pi use
-`read_native_file_page`; OpenCode uses `read_opencode_live_tool_result_page`.
+`read_native_file_page`; OpenCode V1 uses `read_opencode_live_tool_result_page`.
 A reserved native-delivery task rotates file and journal turns, independently of
 legacy metric indexing. Projection passes do not also publish native result
 snapshots for sources owned by live delivery. Source publication starts after
@@ -52,6 +52,24 @@ and the consumed page. OpenCode checks owner, session, parser/state revision,
 frontier, and bounded origin/current-boundary samples. These checks do not prove
 all old payloads unchanged. The strict OpenCode replay reader retains full-prefix
 hash validation and rejects live cursors.
+
+OpenCode V2 uses a separate capture worker for the pinned stock `v2.0.32`
+contract. It reads the existing local service registration, proves that the
+registered process has the selected SQLite file open, and subscribes to
+`/api/event`. It does not start OpenCode or require a plugin. The worker consumes
+the feed before taking a read-only SQLite transaction with per-session
+`event_sequence` boundaries. Events at or before a boundary can seed joins but
+cannot create new attempts. Only later, safely joined terminal events enter the
+shared publication outbox. Snapshot timestamps do not prove completion order.
+
+The V2 feed has no replay cursor, and stock OpenCode does not persist event
+bodies. A disconnect or lost buffer therefore ends continuity. A new capture
+epoch records a gap, resets affected selection windows, and admits safe future
+results without replaying missed work. Request history before attachment stays
+partial. V2 capture leases and sequence receipts do not reuse V1 journal state.
+Stored-session parsing remains available when the live service is unavailable
+or its database binding cannot be proven. Remote and WSL sources do not enter
+this native live route.
 
 ## Identity, order, and frozen evidence
 

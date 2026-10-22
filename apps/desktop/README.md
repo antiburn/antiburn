@@ -12,6 +12,18 @@ server, or backend.
 
 ## Data and network requests
 
+- **OpenCode V2 sessions:** Native stored analysis reads a bounded, read-only SQLite
+  snapshot. Live YAML Checks can observe the existing registered local service
+  over authenticated HTTP after Antiburn proves that its process has the selected
+  database open. Credentials stay in memory. Antiburn does not start the service,
+  install a plugin, or change its database. A feed disconnect creates an evidence
+  gap; later safe results can resume from a new boundary without replaying missed
+  work. Request history before attachment stays partial. Bounded WSL stored reads
+  require existing Linux curl and an already-running default registered OpenCode 2
+  service. They use a separate transfer format without native live-check
+  eligibility. See [source coverage](../../docs/session-coverage.md) for limits.
+  OpenCode 2 releases are admitted by default. Required data shapes and source
+  identity checks, not an exact release allowlist, control reader eligibility.
 - **Model-based Checks:** Settings → Checks controls authored YAML discovery and
   review of new local session activity. **Decision model** exposes Jev only. The connection
   uses native credential storage. Requests contain selected tool results and

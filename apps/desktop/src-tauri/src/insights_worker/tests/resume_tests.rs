@@ -333,15 +333,31 @@ async fn a_stale_snapshot_revision_row_is_ignored_and_replaced() {
         key.clone(),
         evidence.claim_fence,
     ));
-    let mut stale = fenced
+    let stored = fenced
         .read_resume(id)
         .unwrap()
         .expect("a published pass must store a resume snapshot");
-    stale.snapshot_revision -= 1;
-    fenced.write_resume(id, stale).unwrap();
+    assert_eq!(
+        store
+            .lock()
+            .execute(
+                "UPDATE source_resume SET snapshot_revision = ?5
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND source_key = ?4",
+                rusqlite::params![
+                    key.environment_key,
+                    key.agent,
+                    key.session_id,
+                    id,
+                    stored.snapshot_revision - 1
+                ],
+            )
+            .unwrap(),
+        1
+    );
 
     std::fs::write(&parent_path, lines("stale", 0..6, 0)).unwrap();
-    run_worker_step(&store, id, 1_770_300_001, false, &parent_path, None).await;
+    let modes = run_worker_step(&store, id, 1_770_300_001, false, &parent_path, None).await;
+    assert_eq!(modes.get(id), Some(&SourcePublishMode::Full));
 
     let reference = fresh_full_read(id, 1_770_300_001, &parent_path, None).await;
     assert_projections_match(&store, &reference, id, "after a stale resume row");

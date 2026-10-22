@@ -18,10 +18,14 @@ use super::*;
 
 #[path = "runtime_failure_tests.rs"]
 mod failures;
+#[path = "runtime_gap_tests.rs"]
+mod gaps;
 #[path = "runtime_preparation_tests.rs"]
 mod preparation;
 #[path = "runtime_selection_tests.rs"]
 mod selection;
+#[path = "runtime_unsafe_update_tests.rs"]
+mod unsafe_updates;
 
 const CHECK: &str = "name: Retry\non:\n  tool_result:\ndecisions:\n  review:\n    model: typesafe/jev-1.13.0\n    input: {activity: \"${{ message.tool.result.status }}\"}\n    output:\n      verdict:\n        type: choice\n        question: Is this useful?\n        criteria: {yes: Yes., no: No.}\nactions:\n  - type: status\n    if: ${{ decisions.review.details.verdict.probabilities.yes > 0.9 }}\n    input: {result: failure}\n";
 
@@ -1503,6 +1507,7 @@ fn normalized_partial_result_exposes_authored_identity_and_remains_assessable() 
                 first_terminal_publication: None,
                 identity: "one".into(), native_order: NativeOrderKey("native-one".into()), revision: 1,
                 tool_name: None, category: None, arguments: None, content: Some("Useful partial result".into()),
+                outcome: None, provider_executed: None,
                 status: PublishedResultStatus::Error, finality: true, payload_complete: false, validity: EvidenceValidity::Valid,
             }),
         }], next: PublicationCursor(1), has_more: false,

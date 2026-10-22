@@ -1,8 +1,5 @@
 # Burn Check Remediation
 
-Implementation status: complete as of 2026-09-10. Real-machine validation is a
-release check.
-
 This guide describes the current implementation. See
 [`check-coverage.md`](check-coverage.md) for evidence limits and
 [`session-coverage.md`](session-coverage.md) for source parsing.
@@ -82,8 +79,10 @@ same global control. Prepare and apply revalidate every grouped project context
 against that same scope, physical target, selector, and expected value. A stale
 or diverged context blocks the edit instead of being dropped or retargeted.
 
-For D only, the editor can enable an existing automatic-compaction control or
-lower an existing numeric compaction limit to the finding depth cap. It does not
+For D only, supported editors can enable an existing automatic-compaction control
+or lower an existing numeric compaction limit to the finding depth cap. OpenCode
+V2 only enables an existing disabled automatic-compaction control. It does not
+change numeric limits. No editor can
 create a compaction control, change an enabled in-range control, or infer that
 ordinary session growth or fixed instructions have a configurable cause.
 
@@ -91,18 +90,36 @@ ordinary session growth or fixed instructions have a configurable cause.
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
 | Claude Code | `.claude/settings.local.json`, then `.claude/settings.json`; the selected file must contain the setting                                                | `~/.claude/settings.json`                                                                                            |
 | Codex       | `<root>/.codex/config.toml`; the setting must exist; the global config must mark the exact root as trusted                                             | `~/.codex/config.toml`                                                                                               |
-| OpenCode    | Merge `opencode.json` then `opencode.jsonc` from the trusted root through the actual cwd; then merge `.opencode` directories from cwd back to the root | Merge `config.json`, `opencode.json`, and `opencode.jsonc` under the effective config root; then merge `~/.opencode` |
+| OpenCode V2 | Resolve the running consumer's ordered config entries. Direct configs merge from the filesystem root to the actual cwd, then `.opencode` configs merge in the same direction. | Resolve the consumer's global, system, explicit, inline, managed, and policy inputs before choosing one writable file. |
 | Pi          | `<cwd>/.pi/settings.json` when it contains both `defaultProvider` and `defaultModel`; reasoning can use the project model map or default level         | The effective Pi agent directory `settings.json`                                                                     |
 | Cursor      | `<root>/.cursor/cli.json`                                                                                                                              | `~/.cursor/cli-config.json`                                                                                          |
 | Antigravity | No project model target is registered                                                                                                                  | `~/.gemini/antigravity-cli/settings.json`                                                                            |
 
 For Claude built-in tools, a project settings file is an exact project target
 only when its `permissions.allow` array contains the bare canonical tool name.
-An inherited tool uses the global settings target. OpenCode uses the last
-matching model value in its reviewed merge order. Pi
+An inherited tool uses the global settings target. OpenCode uses the winning
+physical key from its reviewed merge order. Pi
 rejects a split provider and model route. Codex rejects an active profile and a
 nested cwd. Claude reasoning prefers a per-model `modelSettings` value, then a
 top-level `effortLevel`.
+
+OpenCode edits require fresh proof of the running config consumer. A historical
+V1 or V2 session alone does not prove which program now reads a shared config
+file. Missing or ambiguous proof blocks the edit, including edits from saved V1
+findings. A file outside the trusted write boundary can affect precedence but
+cannot become an edit target. Inline, dynamic, managed, or policy-controlled
+values do not authorize a substitute edit in another layer.
+
+The V2 resolver preserves accepted V1-shaped settings. It does not convert a file
+just to edit it. Native controls include `agents`, `mcp.servers`, ordered
+`permissions`, and `compaction`. A model edit changes future defaults; it does not
+switch an active session's selected model. A subagent model edit needs the exact
+configured agent identity as well as its observed model and provider route.
+
+An MCP edit disables the complete winning entry so it does not replace a lower
+entry with an incomplete override. A skill edit hides its model advertising but
+keeps explicit skill use available. It does not deny invocation or remove the
+skill. Native Windows and WSL config edits remain unavailable.
 
 The trusted root and actual cwd are separate facts. The trusted root comes from
 the enabled, accessible repository inventory. It sets the file safety boundary.
@@ -269,14 +286,16 @@ agents. Source coverage can still block a finding for one session.
 | --------------------------------------------------------------------------------------------------------- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Claude Code, `ClaudeJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Codex, `CodexRolloutJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| OpenCode, `OpenCodeJsonl` or `OpenCodeSqliteV2`                                                           | Yes | No  | Yes | Yes | Yes | Yes | Yes | No  | Yes |
+| OpenCode, `OpenCodeJsonl` or `OpenCodeSqliteV1`                                                           | Yes | No  | Yes | Yes | Yes | Yes | Yes | No  | Yes |
+| OpenCode, `OpenCodeSqliteV2`                                                                              | Yes | No  | Yes | No  | No  | No  | Yes | No  | Yes |
 | Pi, `PiV3Jsonl`                                                                                           | Yes | Yes | Yes | Yes | No  | Yes | Yes | No  | No  |
 | Antigravity, `AntigravityJson`, `AntigravityBrainJsonl`, `AntigravityCascadeJson`, or `AntigravitySqlite` | Yes | No  | No  | No  | No  | No  | Yes | No  | No  |
 | Cursor, characterized Cursor JSONL and store sources                                                      | No  | No  | No  | No  | No  | No  | Yes | No  | No  |
 
 `AntigravityWorkspaceChatJson` is uncharacterized and has no prompt support.
-Other source formats have no remediation prompt support. Cursor prompt support
-is limited to characterized O findings and remains source-gated.
+Other source formats have no remediation prompt support. V2 findings are partial
+and cannot prove a clean result. Cursor prompt support is limited to characterized
+O findings and remains source-gated.
 
 ### Auto Fix
 
@@ -284,7 +303,7 @@ is limited to characterized O findings and remains source-gated.
 | ----------- | ----------- | -------------------- | -------------------------------------------------- |
 | Claude Code | Auto Fix    | Auto Fix to `medium` | `ClaudeJsonl`                                      |
 | Codex       | Auto Fix    | Auto Fix to `medium` | `CodexRolloutJsonl`                                |
-| OpenCode    | Auto Fix    | Unavailable          | `OpenCodeJsonl`, `OpenCodeSqliteV2`                |
+| OpenCode    | Auto Fix    | Unavailable          | `OpenCodeJsonl`, `OpenCodeSqliteV1`, `OpenCodeSqliteV2` |
 | Pi          | Auto Fix    | Auto Fix to `medium` | `PiV3Jsonl`                                        |
 | Antigravity | Unavailable | Unavailable          | No accepted source binds one safe physical control |
 
@@ -300,6 +319,10 @@ OpenCode when its production policy and exact binding both resolve. Claude appen
 findings; inventory-only or unresolved targets remain prompt-only. Antigravity
 remains unavailable until public source and precedence evidence identify one
 winning persisted field. Cursor never edits its private store or invokes its CLI.
+For `OpenCodeSqliteV2`, Auto Fix supports O model edits and S worker edits only
+when an exact current-consumer target resolves. V2 has no M, B, or K finding
+support. O verification stays unavailable because saved evidence does not prove
+the provider API route. Native smart checks remain suspended.
 B can disable one exact optional specialized Claude Code built-in tool from a standard
 settings file. A project target requires the exact bare tool name in
 `permissions.allow`; inherited tools use the global target. It can add a missing
@@ -313,8 +336,10 @@ tools never become B targets.
 Codex B Auto Fix is unavailable because its documented app-tool controls do not
 identify one built-in tool. OpenCode skill targets can receive Auto Fix when
 indexed provenance and one exact standard skill winner resolve to the V2
-permission control. Other skill, worker, depth, speed, and cache edits remain
-prompt-only or unavailable.
+permission control for V1 sources. V2 has no K finding support. Its supported
+Auto Fix paths are O model edits and S worker edits, each only when an exact
+current-consumer target resolves. Other skill, depth, speed, and cache edits
+remain prompt-only or unavailable.
 
 The B detector and prompt policy has a stricter scope than vendor controls:
 Claude Code `WebSearch`, `WebFetch`, `Workflow`, `ReportFindings`, and `ScheduleWakeup`, Codex `web_search`, and OpenCode
@@ -364,7 +389,8 @@ physical model target.
 T requires a complete later assessment with an explicit lower level on the same
 route and model. F requires an explicit standard tier on the same route, model,
 and delegated scope. O requires actual replacement use on the same attributed
-physical target, scope, provider, and API.
+physical target, scope, provider, and API. OpenCode V2 lacks evidence for the API
+route, so its O verification remains unavailable.
 
 ## Verification And Recurrence
 

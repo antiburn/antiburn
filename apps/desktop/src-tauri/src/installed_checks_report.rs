@@ -14,6 +14,10 @@ use crate::remediation::{
     BurnCheckEvidenceItem, BurnCheckEvidenceLabel, BurnCheckEvidenceStatus, BurnCheckSampleSession,
     BurnCheckTargetEvidence,
 };
+use crate::store::native_tool_results::opencode_v2_status::{
+    OpenCodeV2SourceStatus, SOURCE_SQL as OPENCODE_V2_SOURCE_SQL, live_capture_sql,
+    source_status_sql,
+};
 use crate::store::{SessionKey, Store};
 
 const MAX_DEFINITIONS: usize = 128;
@@ -421,6 +425,7 @@ struct BranchResult {
     assessment: Option<String>,
     actions: Option<String>,
     has_frozen: bool,
+    source_ready: bool,
 }
 
 #[derive(Default)]
@@ -746,8 +751,15 @@ fn preparation_details(
 
 // Journal receipts stay current when discovery observes later appends.
 pub(crate) fn source_ready_sql(parser: usize, analyzer: usize, evidence: usize) -> String {
-    format!("CASE WHEN s.environment_key = 'native' AND s.agent = 'opencode'
-          AND s.source_kind = 'providerDb' THEN EXISTS (
+    source_ready_at_sql(parser, analyzer, evidence, "unixepoch()")
+}
+
+fn source_ready_at_sql(parser: usize, analyzer: usize, evidence: usize, now: &str) -> String {
+    let v2 = live_capture_sql(now);
+    format!("CASE WHEN s.agent = 'opencode' AND s.source_kind = 'providerDb'
+          AND s.source_label = 'opencode:' || s.session_id || ':open_code_v2_sqlite' THEN ({v2})
+          WHEN s.environment_key = 'native' AND s.agent = 'opencode'
+          AND s.source_kind = 'providerDb' AND s.source_label = 'opencode:' || s.session_id THEN EXISTS (
             SELECT 1 FROM opencode_journal_delivery d
              WHERE d.environment_key = s.environment_key AND d.agent = s.agent AND d.session_id = s.session_id
                AND d.incarnation = s.incarnation AND d.source_label = s.source_label AND d.cwd IS s.cwd
@@ -797,6 +809,10 @@ pub(crate) fn source_can_arrive_sql(parser: usize, active_since: usize) -> Strin
           OR d.cwd IS NOT s.cwd) AND d.cursor_json IS NULL) OR d.parser_revision <> ?{parser}"
         ),
     );
+    let v2 = live_capture_sql(&format!(
+        "?{active_since} + {}",
+        antiburn_local::discovery::ACTIVE_SESSION_WINDOW_SECS
+    ));
     format!(
         "s.environment_key = 'native' AND s.wsl_distro IS NULL
       AND s.cwd IS NOT NULL AND s.cwd <> ''
@@ -804,7 +820,10 @@ pub(crate) fn source_can_arrive_sql(parser: usize, active_since: usize) -> Strin
         WHERE r.environment_key = s.environment_key AND r.agent = s.agent
           AND ((r.session_id = s.session_id AND r.kind = 'forkParent')
             OR (r.related_id = s.session_id AND r.kind = 'subagent')))
-      AND CASE WHEN s.agent = 'opencode' AND s.source_kind = 'providerDb' THEN {journal}
+       AND CASE WHEN s.agent = 'opencode' AND s.source_kind = 'providerDb'
+         AND s.source_label = 'opencode:' || s.session_id || ':open_code_v2_sqlite' THEN ({v2})
+         WHEN s.agent = 'opencode' AND s.source_kind = 'providerDb'
+         AND s.source_label = 'opencode:' || s.session_id THEN {journal}
         WHEN s.agent IN ('claude-code', 'codex', 'pi') AND s.source_kind = 'file' THEN {file}
         ELSE e.status IS NULL OR e.status NOT IN ('failed', 'unsupported') END"
     )
@@ -817,6 +836,7 @@ struct CurrentSession {
     data_can_arrive: bool,
     journal_owned: bool,
     catching_up: bool,
+    v2_status: Option<OpenCodeV2SourceStatus>,
 }
 
 fn current_sessions(
@@ -825,8 +845,9 @@ fn current_sessions(
     request: &ReportRequest,
 ) -> Result<Vec<CurrentSession>> {
     let scope: ActivationScope = serde_json::from_str(&definition.activation_scope_key)?;
-    let ready = source_ready_sql(5, 6, 7);
+    let ready = source_ready_at_sql(5, 6, 7, "?12");
     let can_arrive = source_can_arrive_sql(5, 11);
+    let v2_status = source_status_sql("?12");
     let mut statement = connection.prepare(&format!(
         "SELECT s.agent, s.session_id, ({ready}),
                 EXISTS(SELECT 1 FROM burn_check_candidate c
@@ -836,7 +857,8 @@ fn current_sessions(
                     AND json_extract(c.session_key_json, '$[2]') = s.session_id
                     AND c.state IN ('pending', 'claimed', 'dispatching', 'answered')),
                 ({can_arrive}),
-                s.environment_key = 'native' AND s.agent = 'opencode' AND s.source_kind = 'providerDb',
+                 s.environment_key = 'native' AND s.agent = 'opencode' AND s.source_kind = 'providerDb'
+                   AND s.source_label = 'opencode:' || s.session_id,
                  ((NOT ({ready}) AND ({can_arrive}))
                     OR (({ready}) AND (s.updated_at_epoch >= ?11
                       OR EXISTS(SELECT 1 FROM native_tool_result_publication p
@@ -846,7 +868,8 @@ fn current_sessions(
                           AND p.session_id = s.session_id AND p.publication_sequence > a.bootstrap_sequence
                           AND (p.session_incarnation IS NULL OR
                             (p.session_incarnation = s.incarnation AND p.project_cwd = s.cwd))))
-                      AND ((s.agent = 'opencode' AND s.source_kind = 'providerDb')
+                       AND ((s.agent = 'opencode' AND s.source_kind = 'providerDb'
+                           AND s.source_label = 'opencode:' || s.session_id)
                        OR (s.agent IN ('claude-code', 'codex', 'pi') AND s.source_kind = 'file'))
                      AND NOT EXISTS(SELECT 1 FROM burn_check_session_attachment t
                        WHERE t.check_id = ?8 AND t.activation_scope_key = ?9 AND t.generation = ?10
@@ -859,7 +882,8 @@ fn current_sessions(
                        AND p.session_id = s.session_id AND p.publication_sequence > a.applied_sequence
                        AND (p.session_incarnation IS NULL OR
                          (p.session_incarnation = s.incarnation AND p.project_cwd = s.cwd)))
-                   OR (s.environment_key = 'native' AND s.agent = 'opencode' AND s.source_kind = 'providerDb'
+                    OR (s.environment_key = 'native' AND s.agent = 'opencode' AND s.source_kind = 'providerDb'
+                      AND s.source_label = 'opencode:' || s.session_id
                      AND EXISTS(SELECT 1 FROM opencode_journal_delivery d
                       WHERE d.environment_key = s.environment_key AND d.agent = s.agent
                         AND d.session_id = s.session_id AND d.incarnation = s.incarnation
@@ -874,7 +898,8 @@ fn current_sessions(
                          AND d.source_label = s.source_label AND d.cwd IS s.cwd
                          AND d.parser_revision = ?5 AND d.blocked = 0
                           AND ({can_arrive})
-                          AND (d.pending = 1 OR d.observed_generation <> s.source_generation))))
+                           AND (d.pending = 1 OR d.observed_generation <> s.source_generation)))),
+                  ({v2_status})
            FROM session s LEFT JOIN session_evidence e USING(environment_key, agent, session_id)
            WHERE s.environment_key = ?1 AND s.cwd = ?2
              AND COALESCE(s.updated_at_epoch, s.started_at_epoch) >= ?3
@@ -883,13 +908,23 @@ fn current_sessions(
                WHERE c.check_id = ?8 AND c.activation_scope_key = ?9 AND c.generation = ?10
                   AND c.session_key_json = json_array(s.environment_key, s.agent, s.session_id)
                   AND c.state IN ('pending', 'claimed', 'dispatching', 'answered'))
-                OR EXISTS(SELECT 1 FROM native_tool_result_publication p
+                 OR EXISTS(SELECT 1 FROM native_tool_result_publication p
                   JOIN burn_check_activation a ON a.check_id = ?8 AND a.activation_scope_key = ?9
                     AND a.generation = ?10 AND a.enabled = 1
                   WHERE p.environment_key = s.environment_key AND p.agent = s.agent
                     AND p.session_id = s.session_id AND p.publication_sequence > a.applied_sequence
                     AND (p.session_incarnation IS NULL OR
-                      (p.session_incarnation = s.incarnation AND p.project_cwd = s.cwd))))
+                       (p.session_incarnation = s.incarnation AND p.project_cwd = s.cwd)))
+                 OR EXISTS(SELECT 1 FROM opencode_v2_source_status d
+                   WHERE ({OPENCODE_V2_SOURCE_SQL}) AND d.environment_key = s.environment_key
+                     AND d.agent = s.agent AND d.session_id = s.session_id
+                     AND d.incarnation = s.incarnation
+                     AND d.source_label = s.source_label AND d.cwd = s.cwd)
+                 OR EXISTS(SELECT 1 FROM opencode_v2_capture d
+                   WHERE ({OPENCODE_V2_SOURCE_SQL}) AND d.environment_key = s.environment_key
+                     AND d.agent = s.agent AND d.session_id = s.session_id
+                     AND d.incarnation = s.incarnation
+                     AND d.source_label = s.source_label AND d.cwd = s.cwd))
              AND s.environment_key = 'native' AND s.wsl_distro IS NULL
              AND s.agent IN ('claude-code', 'codex', 'pi', 'opencode')
              AND NOT EXISTS(SELECT 1 FROM session_relation r
@@ -912,24 +947,41 @@ fn current_sessions(
                 definition.activation_scope_key,
                 definition.generation,
                 request.computed_at_epoch - antiburn_local::discovery::ACTIVE_SESSION_WINDOW_SECS,
+                request.computed_at_epoch,
             ],
             |row| {
-                Ok(CurrentSession {
-                    key: SessionKey::new(
-                        scope.environment.clone(),
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                    ),
-                    ready: row.get(2)?,
-                    checking: row.get(3)?,
-                    data_can_arrive: row.get(4)?,
-                    journal_owned: row.get(5)?,
-                    catching_up: row.get(6)?,
-                })
+                Ok((
+                    CurrentSession {
+                        key: SessionKey::new(
+                            scope.environment.clone(),
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                        ),
+                        ready: row.get(2)?,
+                        checking: row.get(3)?,
+                        data_can_arrive: row.get(4)?,
+                        journal_owned: row.get(5)?,
+                        catching_up: row.get(6)?,
+                        v2_status: None,
+                    },
+                    row.get::<_, Option<String>>(7)?,
+                ))
             },
         )?
         .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+        .map_err(anyhow::Error::from)?
+        .into_iter()
+        .map(|(mut session, code)| {
+            session.v2_status = code
+                .as_deref()
+                .map(OpenCodeV2SourceStatus::from_code)
+                .transpose()?;
+            if session.v2_status.is_some() && !session.ready {
+                session.catching_up = false;
+            }
+            Ok(session)
+        })
+        .collect()
 }
 
 fn current_branches(
@@ -941,7 +993,7 @@ fn current_branches(
         return Ok(Vec::new());
     }
     let scope: ActivationScope = serde_json::from_str(&definition.activation_scope_key)?;
-    let ready = source_ready_sql(6, 7, 8);
+    let ready = source_ready_at_sql(6, 7, 8, "?11");
     let mut statement = connection.prepare(&format!(
         "WITH ranked AS (
           SELECT c.*, ROW_NUMBER() OVER (
@@ -984,7 +1036,8 @@ fn current_branches(
                           AND o.observation_id = d.observation_id AND o.session_key_json = d.session_key_json
                         WHERE d.candidate_id = started.candidate_id
                           AND (o.source_format IS NOT d.source_format OR o.native_revision IS NOT d.native_revision
-                            OR o.evidence_version IS NOT d.evidence_version OR o.removed IS NOT 0 OR d.removed <> 0)))
+                             OR o.evidence_version IS NOT d.evidence_version OR o.removed IS NOT 0 OR d.removed <> 0))),
+                  ({ready})
          FROM ranked c
          JOIN session s ON s.environment_key = json_extract(c.session_key_json, '$[0]')
            AND s.agent = json_extract(c.session_key_json, '$[1]')
@@ -1004,7 +1057,7 @@ fn current_branches(
           WHERE c.rank = 1 AND s.environment_key = ?9 AND s.cwd = ?10
            AND COALESCE(s.updated_at_epoch, s.started_at_epoch) >= ?4
            AND COALESCE(s.updated_at_epoch, s.started_at_epoch) < ?5
-            AND ({ready})
+             AND (({ready}) OR ({OPENCODE_V2_SOURCE_SQL}))
           ORDER BY c.branch_key",
     ))?;
     statement
@@ -1020,6 +1073,7 @@ fn current_branches(
                 EVIDENCE_SCHEMA_REVISION,
                 scope.environment,
                 scope.session_cwd,
+                request.computed_at_epoch,
             ],
             |row| {
                 Ok(BranchResult {
@@ -1038,6 +1092,7 @@ fn current_branches(
                     latest_preparation: row.get(12)?,
                     latest_diagnostic: row.get(13)?,
                     has_started: row.get(14)?,
+                    source_ready: row.get(15)?,
                 })
             },
         )?
@@ -1131,6 +1186,58 @@ fn current_activation(
     )
 }
 
+fn opencode_v2_diagnostic(
+    status: OpenCodeV2SourceStatus,
+    ready: bool,
+) -> Option<InstalledCheckDiagnostic> {
+    use OpenCodeV2SourceStatus::*;
+    let (code, title, message) = match status {
+        Live => return None,
+        ServiceUnavailable => (
+            "opencode-v2-service-unavailable",
+            "Open OpenCode to resume live checks",
+            "The registered local OpenCode V2 service is unavailable. Open OpenCode for this project, then select Rescan in Sessions settings.",
+        ),
+        AuthenticationRejected => (
+            "opencode-v2-authentication-rejected",
+            "Reconnect the OpenCode V2 service",
+            "OpenCode rejected the local service credential. Restart OpenCode, then select Rescan in Sessions settings.",
+        ),
+        SourceMismatch => (
+            "opencode-v2-source-mismatch",
+            "Check the OpenCode V2 source",
+            "antiburn could not verify that the local service uses this session's database. Open this project in the service for its local database, then select Rescan in Sessions settings.",
+        ),
+        VersionUnsupported => (
+            "opencode-v2-version-unsupported",
+            "Use a supported OpenCode V2 version",
+            "This service, database, or event version is not supported. Update antiburn or use a supported OpenCode V2 version.",
+        ),
+        CaptureGap => (
+            "opencode-v2-capture-gap",
+            "OpenCode V2 capture missed activity",
+            "Live checks cannot replay missed events. Keep OpenCode and antiburn running to capture future results. Earlier assessments cover only their saved input.",
+        ),
+        SourceLimit => (
+            "opencode-v2-source-limit",
+            "Reduce the OpenCode V2 capture size",
+            "Live capture reached a local source limit. Close unused active sessions or start a smaller session, then select Rescan in Sessions settings.",
+        ),
+    };
+    Some(crate::installed_checks::diagnostics::payload(
+        code,
+        if ready {
+            InstalledCheckDiagnosticSeverity::Info
+        } else {
+            InstalledCheckDiagnosticSeverity::Error
+        },
+        title,
+        &format!("{message} Stored-session analysis does not require this live connection."),
+        None,
+        Vec::new(),
+    ))
+}
+
 fn read_row(
     connection: &Connection,
     definitions: &[&InstalledCheckDefinition],
@@ -1168,7 +1275,14 @@ fn read_row(
                 });
             }
             for session in active {
-                if !session.ready && !session.data_can_arrive {
+                if let Some(status) = session.v2_status {
+                    if let Some(diagnostic) = opencode_v2_diagnostic(status, session.ready) {
+                        diagnostics.add(
+                            diagnostic,
+                            Some((session.key.agent.clone(), session.key.session_id.clone())),
+                        )?;
+                    }
+                } else if !session.ready && !session.data_can_arrive {
                     let (title, message) = if session.journal_owned {
                         (
                             "Session journal is unavailable",
@@ -1216,7 +1330,7 @@ fn read_row(
                 .entry((branch.agent.clone(), branch.session_id.clone()))
                 .or_default();
             counts.finding |= branch.status.as_deref() == Some("failure");
-            counts.clean |= branch.status.as_deref() == Some("success");
+            counts.clean |= branch.source_ready && branch.status.as_deref() == Some("success");
             counts.checking |= branch.checking;
             counts.review_failed |= matches!(
                 branch.latest_outcome.as_deref(),
@@ -1235,7 +1349,11 @@ fn read_row(
                     .iter()
                     .any(|action| matches!(action.outcome, StoredActionOutcome::Applied { .. }));
             }
-            if let Some(status) = branch.status.as_deref() {
+            if let Some(status) = branch
+                .status
+                .as_deref()
+                .filter(|status| *status == "failure" || branch.source_ready)
+            {
                 let message = status_message(branch.actions.as_deref(), status)?;
                 messages.insert((status == "failure", message.clone()));
                 if status == "failure" {

@@ -159,14 +159,14 @@ fn opencode_content(
         agent: "opencode".into(),
         session_id: "root".into(),
         source: RawSource::Sqlite(path),
-        source_format: SourceFormat::OpenCodeSqliteV2,
+        source_format: SourceFormat::OpenCodeSqliteV1,
         fork_parent_session_id: None,
     };
     let store = store(&input);
     let content = selected(
         &store,
         "opencode",
-        SourceFormat::OpenCodeSqliteV2,
+        SourceFormat::OpenCodeSqliteV1,
         "root",
         1,
     );
@@ -223,7 +223,7 @@ fn opencode_selected_skill_requires_native_completed_metadata_and_full_document(
         .recorded_skill_result
         .as_ref()
         .expect("selected SQLite result retains its typed proof");
-    assert_eq!(proof.source_format, SourceFormat::OpenCodeSqliteV2);
+    assert_eq!(proof.source_format, SourceFormat::OpenCodeSqliteV1);
     assert_eq!(proof.session_id.as_deref(), Some("root"));
     assert_eq!(proof.message_id.as_deref(), Some("skill-message"));
     assert_eq!(proof.call_id.as_deref(), Some("skill-call"));

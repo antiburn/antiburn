@@ -46,6 +46,84 @@ fn unchanged_acceptance_is_once_only_and_binds_the_database_path() {
 }
 
 #[test]
+fn opencode_format_switch_invalidates_the_old_source_generation_and_fingerprint() {
+    let store = store();
+    let mut record = session("format-switch", 1_000);
+    record.key.agent = "opencode".into();
+    record.source_kind = "providerDb".into();
+    record.source_label = "opencode:format-switch".into();
+    record.source_fingerprint = Some("same-fingerprint".into());
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
+    let source_generation = || {
+        store
+            .lock()
+            .query_row(
+                "SELECT source_generation FROM session
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![
+                    record.key.environment_key,
+                    record.key.agent,
+                    record.key.session_id
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    let v1_generation = source_generation();
+
+    record.source_label = "opencode:format-switch:open_code_v2_sqlite".into();
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
+    let v2_generation = source_generation();
+    assert!(v2_generation > v1_generation);
+    assert_eq!(
+        store
+            .session(&record.key)
+            .unwrap()
+            .unwrap()
+            .source_fingerprint,
+        None
+    );
+
+    record.source_kind = "inline".into();
+    record.source_label = "opencode-v2-export:format-switch".into();
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
+    let export_generation = source_generation();
+    assert!(export_generation > v2_generation);
+    assert_eq!(
+        store
+            .session(&record.key)
+            .unwrap()
+            .unwrap()
+            .source_fingerprint,
+        None
+    );
+
+    record.source_kind = "providerDb".into();
+    record.source_label = "opencode:format-switch".into();
+    record.source_fingerprint = Some("same-fingerprint".into());
+    assert!(
+        store
+            .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+            .is_err()
+    );
+    assert_eq!(source_generation(), export_generation);
+    assert_eq!(
+        store
+            .session(&record.key)
+            .unwrap()
+            .unwrap()
+            .source_fingerprint,
+        None
+    );
+}
+
+#[test]
 fn retention_preserves_physical_bindings_for_surviving_sessions() {
     const NOW: i64 = 2_000_000_000;
     let store = store();

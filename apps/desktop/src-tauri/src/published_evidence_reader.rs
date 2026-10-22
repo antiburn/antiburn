@@ -112,6 +112,54 @@ impl<'a> StorePublishedEvidenceReader<'a> {
             .map_err(|error| SourceError::Reader(error.to_string()))
     }
 
+    fn needs_v2_attachment(
+        &self,
+        publication: &ToolResultPublication,
+    ) -> Result<bool, SourceError> {
+        let Some(activation) = self.activation.filter(|_| self.live) else {
+            return Ok(false);
+        };
+        if publication.outcome != ToolResultPublicationOutcome::Update
+            || publication.live_eligible != Some(true)
+            || !publication.payload.as_ref().is_some_and(|result| {
+                result.source_format == antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2
+            })
+        {
+            return Ok(false);
+        }
+        let source = crate::store::native_tool_results::opencode_v2_status::SOURCE_SQL;
+        self.store
+            .lock()
+            .query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM session s
+               WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
+                 AND ({source})
+                 AND s.cwd = json_extract(?5, '$.session_cwd')
+                 AND json_extract(?5, '$.run') = 'Live'
+                 AND EXISTS(SELECT 1 FROM opencode_v2_capture v
+                   WHERE v.environment_key = s.environment_key AND v.agent = s.agent
+                     AND v.session_id = s.session_id AND v.incarnation = s.incarnation
+                     AND v.source_label = s.source_label AND v.cwd = s.cwd
+                     AND v.capture_epoch <> '' AND v.claim_fence > 0)
+                 AND NOT EXISTS(SELECT 1 FROM burn_check_session_attachment t
+                   WHERE t.check_id = ?4 AND t.activation_scope_key = ?5 AND t.generation = ?6
+                     AND t.branch_key = ?7 AND t.incarnation = s.incarnation))"
+                ),
+                rusqlite::params![
+                    publication.session.environment_key,
+                    publication.session.agent,
+                    publication.session.session_id,
+                    activation.definition_id,
+                    crate::check_store::StoreCheckStore::activation_scope_key(&activation.scope),
+                    activation.generation.0,
+                    publication.session.to_identity_json()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(|error| SourceError::Reader(error.to_string()))
+    }
+
     fn first_terminal_publication(
         &self,
         publication: &ToolResultPublication,
@@ -172,12 +220,14 @@ impl<'a> StorePublishedEvidenceReader<'a> {
                 AND c.is_removed = 0 AND json_extract(c.payload_json, '$.finality') = 1
                 AND (p.session_incarnation IS NULL OR
                   (p.session_incarnation = s.incarnation AND p.project_cwd IS s.cwd))
-              ORDER BY COALESCE(json_extract(c.payload_json, '$.context.result_position.FileBytes.record_start'),
-                  json_extract(c.payload_json, '$.context.result_position.Jsonl.record_index'),
-                  json_extract(c.payload_json, '$.context.result_position.OpenCodeEvent.sequence')) DESC,
-                COALESCE(json_extract(c.payload_json, '$.context.result_position.FileBytes.item_index'),
-                  json_extract(c.payload_json, '$.context.result_position.Jsonl.item_index'),
-                  json_extract(c.payload_json, '$.context.result_position.OpenCodeEvent.item_index')) DESC
+               ORDER BY COALESCE(json_extract(c.payload_json, '$.context.result_position.FileBytes.record_start'),
+                   json_extract(c.payload_json, '$.context.result_position.Jsonl.record_index'),
+                   json_extract(c.payload_json, '$.context.result_position.OpenCodeEvent.sequence'),
+                   json_extract(c.payload_json, '$.context.result_position.OpenCodeV2Event.sequence')) DESC,
+                 COALESCE(json_extract(c.payload_json, '$.context.result_position.FileBytes.item_index'),
+                   json_extract(c.payload_json, '$.context.result_position.Jsonl.item_index'),
+                   json_extract(c.payload_json, '$.context.result_position.OpenCodeEvent.item_index'),
+                   json_extract(c.payload_json, '$.context.result_position.OpenCodeV2Event.item_index')) DESC
               LIMIT 40",
         ).and_then(|mut statement| statement.query_map(
             rusqlite::params![session.environment_key, session.agent, session.session_id],
@@ -260,13 +310,22 @@ impl PublishedEvidenceReader for StorePublishedEvidenceReader<'_> {
                 .store
                 .native_tool_result_publications_after(after, limit),
         };
-        let publications =
+        let mut publications =
             read(after, request.limit).map_err(|error| SourceError::Reader(error.to_string()))?;
+        let mut waiting_for_attachment = false;
+        for (index, publication) in publications.iter().enumerate() {
+            if self.needs_v2_attachment(publication)? {
+                publications.truncate(index);
+                waiting_for_attachment = true;
+                break;
+            }
+        }
         let next = match publications.last() {
             Some(publication) => PublicationCursor(
                 u64::try_from(publication.publication_sequence)
                     .map_err(|error| SourceError::Reader(error.to_string()))?,
             ),
+            None if waiting_for_attachment => request.after,
             None => match global_high_water {
                 Some(high_water) => PublicationCursor(
                     request.after.0.max(
@@ -279,9 +338,10 @@ impl PublishedEvidenceReader for StorePublishedEvidenceReader<'_> {
         };
         let next_sequence =
             i64::try_from(next.0).map_err(|error| SourceError::Reader(error.to_string()))?;
-        let has_more = !read(next_sequence, 1)
-            .map_err(|error| SourceError::Reader(error.to_string()))?
-            .is_empty();
+        let has_more = !waiting_for_attachment
+            && !read(next_sequence, 1)
+                .map_err(|error| SourceError::Reader(error.to_string()))?
+                .is_empty();
         let events = publications
             .into_iter()
             .map(|publication| self.convert_publication(publication))
@@ -349,6 +409,18 @@ fn publication_event(
                 category: result.tool_category.map(category_name),
                 arguments: result.arguments,
                 content: result.content,
+                outcome: result
+                    .outcome
+                    .map(|outcome| {
+                        let mut value = serde_json::to_value(outcome)?;
+                        if let serde_json::Value::Object(fields) = &mut value {
+                            fields.retain(|_, value| !value.is_null());
+                        }
+                        Ok::<_, serde_json::Error>(value)
+                    })
+                    .transpose()
+                    .map_err(|error| SourceError::Reader(error.to_string()))?,
+                provider_executed: result.provider_executed,
                 status: match result.status {
                     antiburn_local::analysis::ToolResultStatus::Success => {
                         PublishedResultStatus::Completed
@@ -379,11 +451,18 @@ fn publication_event(
             })?)
             .map_err(|error| SourceError::Reader(error.to_string()))?,
         },
-        ToolResultPublicationOutcome::CoverageGap => PublishedEvidenceChange::Gap {
-            reason: publication
+        ToolResultPublicationOutcome::CoverageGap => {
+            let reason = publication
                 .gap_reason
-                .unwrap_or_else(|| "published source membership is incomplete".to_owned()),
-        },
+                .unwrap_or_else(|| "published source membership is incomplete".to_owned());
+            if publication.source_format.as_deref() == Some("\"open_code_v2_sqlite\"")
+                && reason != "v2-history-incomplete"
+            {
+                PublishedEvidenceChange::SegmentReset { reason }
+            } else {
+                PublishedEvidenceChange::Gap { reason }
+            }
+        }
         ToolResultPublicationOutcome::CoverageRestored => PublishedEvidenceChange::CoverageRestored,
     };
     Ok(PublishedEvidenceEvent {

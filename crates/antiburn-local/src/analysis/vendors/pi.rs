@@ -1219,6 +1219,8 @@ impl PiStreamState {
         let identity_safe =
             pending.record_id.is_some() && pending.call_id.is_some() && call.is_some();
         ToolResultObservation {
+            outcome: None,
+            provider_executed: None,
             context: Some(crate::analysis::ToolResultContext::pending(
                 ToolResultPosition::Jsonl {
                     record_index: pending.record_index,
@@ -1340,6 +1342,7 @@ impl PiStreamState {
                     parent_call_id: Some(format!("{id}:0")),
                     child_model: None,
                     provenance: crate::analysis::interface::RelationProvenance::TaskToolUse,
+                    config_binding: None,
                 },
             )));
         }
@@ -1390,6 +1393,7 @@ impl PiStreamState {
                         parent_call_id: Some(format!("{id}:{worker_index}")),
                         child_model: None,
                         provenance: crate::analysis::interface::RelationProvenance::TaskToolUse,
+                        config_binding: None,
                     },
                 )));
             }
@@ -1736,6 +1740,7 @@ impl PiStreamState {
         coverage_gaps.dedup();
         let (initial_context, skill_descriptions) = self.startup_context.finish();
         SessionSummary {
+            accounting: None,
             cache_write_tokens_available: self.cache_write_tokens_available.unwrap_or(true),
             context_window: None,
             context_window_source: ContextWindowSource::Inferred,

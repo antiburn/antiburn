@@ -297,6 +297,7 @@ pub(super) fn upsert_sessions_locked(
 }
 
 fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<UpsertedSession> {
+    selected_source::persist_selection_in(connection, record)?;
     let admission_revision = (record.key.environment_key == "native"
         && record.key.agent == "opencode"
         && record.source_kind == "providerDb"
@@ -384,14 +385,19 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
                  ELSE excluded.activity_source
              END,
              subagent_count = excluded.subagent_count,
-              source_fingerprint = CASE
-                  WHEN excluded.admission_revision IS NOT NULL AND
-                       (session.admission_revision IS NOT excluded.admission_revision
-                        OR session.source_label IS NOT excluded.source_label)
+               source_fingerprint = CASE
+                   WHEN excluded.agent = 'opencode'
+                        AND session.source_label IS NOT excluded.source_label THEN NULL
+                   WHEN excluded.admission_revision IS NOT NULL AND
+                        (session.admission_revision IS NOT excluded.admission_revision
+                         OR session.source_label IS NOT excluded.source_label)
                       THEN NULL
                   ELSE COALESCE(excluded.source_fingerprint, session.source_fingerprint) END,
-              source_generation = CASE
-                  WHEN excluded.admission_revision IS NOT NULL AND
+               source_generation = CASE
+                   WHEN excluded.agent = 'opencode'
+                        AND session.source_label IS NOT excluded.source_label
+                       THEN session.source_generation + 1
+                   WHEN excluded.admission_revision IS NOT NULL AND
                        (session.admission_revision IS NOT excluded.admission_revision
                         OR session.source_label IS NOT excluded.source_label)
                       THEN session.source_generation + 1
@@ -400,8 +406,10 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
                      THEN session.source_generation
                  ELSE session.source_generation + 1
               END,
-               strict_fingerprint_pending = CASE
-                   WHEN excluded.admission_revision IS NOT NULL AND
+                strict_fingerprint_pending = CASE
+                    WHEN excluded.agent = 'opencode'
+                         AND session.source_label IS NOT excluded.source_label THEN 1
+                    WHEN excluded.admission_revision IS NOT NULL AND
                         (session.admission_revision IS NOT excluded.admission_revision
                          OR session.source_label IS NOT excluded.source_label
                          OR session.fingerprint_source_path IS NOT excluded.fingerprint_source_path)
@@ -410,20 +418,26 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
                   ELSE session.strict_fingerprint_pending END,
               admission_revision = excluded.admission_revision,
               fingerprint_source_path = excluded.fingerprint_source_path,
-               fingerprint_next_attempt_at_epoch = CASE
-                    WHEN excluded.admission_revision IS NOT NULL AND
+                fingerprint_next_attempt_at_epoch = CASE
+                     WHEN excluded.agent = 'opencode'
+                          AND session.source_label IS NOT excluded.source_label THEN NULL
+                     WHEN excluded.admission_revision IS NOT NULL AND
                          (session.admission_revision IS NOT excluded.admission_revision
                           OR session.fingerprint_source_path IS NOT excluded.fingerprint_source_path
                           OR session.source_label IS NOT excluded.source_label) THEN NULL
                    ELSE session.fingerprint_next_attempt_at_epoch END,
-               fingerprint_retry_count = CASE
+                fingerprint_retry_count = CASE
+                    WHEN excluded.agent = 'opencode'
+                         AND session.source_label IS NOT excluded.source_label THEN 0
                     WHEN excluded.admission_revision IS NOT NULL AND
                          (session.admission_revision IS NOT excluded.admission_revision
                           OR session.fingerprint_source_path IS NOT excluded.fingerprint_source_path
                           OR session.source_label IS NOT excluded.source_label) THEN 0
                    ELSE session.fingerprint_retry_count END,
-              fingerprint_in_flight = CASE
-                  WHEN session.admission_revision IS NOT excluded.admission_revision THEN 0
+               fingerprint_in_flight = CASE
+                   WHEN session.admission_revision IS NOT excluded.admission_revision
+                        OR (excluded.agent = 'opencode'
+                            AND session.source_label IS NOT excluded.source_label) THEN 0
                   ELSE session.fingerprint_in_flight END,
               last_seen_at = excluded.last_seen_at",
         params![
@@ -448,6 +462,21 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
             source_path,
         ],
     )?;
+
+    if record.key.agent == "opencode"
+        && (record.source_kind != "providerDb"
+            || record.source_label != format!("opencode:{}", record.key.session_id))
+    {
+        connection.execute(
+            "DELETE FROM opencode_journal_delivery
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )?;
+    }
 
     // A fork parent is written only when the caller actually observed one.
     //
@@ -718,6 +747,9 @@ pub(super) fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sess
 
 /// Writes and reads turn rows for one claimed evidence pass.
 ///
+/// Mutations require the matching evidence claim to remain `processing`.
+/// Completed, requeued, superseded, and deleted claims cannot write again.
+///
 /// Holds an owned [`Store`] handle (cheap: it shares the app's one
 /// connection, see [`Store`]'s doc comment) plus the session key and claim
 /// fence the durable worker already knows for this pass. `Store` cannot
@@ -743,6 +775,30 @@ impl FencedTurnRowStore {
             claim_fence,
             resumed_sources: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    fn require_active_claim(&self, connection: &Connection) -> Result<(), TurnRowError> {
+        let active = connection.query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM session_evidence AS evidence
+                 JOIN session USING (environment_key, agent, session_id)
+                  WHERE evidence.environment_key = ?1 AND evidence.agent = ?2
+                    AND evidence.session_id = ?3 AND evidence.claim_fence = ?4
+                    AND evidence.status = 'processing'
+                    AND evidence.published_fence IS NOT ?4
+             )",
+            params![
+                self.key.environment_key,
+                self.key.agent,
+                self.key.session_id,
+                self.claim_fence,
+            ],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !active {
+            return Err(TurnRowError("evidence claim is no longer active".into()));
+        }
+        Ok(())
     }
 
     /// The source keys the worker has told this pass genuinely resumed so
@@ -785,6 +841,7 @@ impl TurnRowStore for FencedTurnRowStore {
         // one for each row, and the lock is held only for the batch.
         let mut connection = self.store.lock();
         let transaction = connection.transaction()?;
+        self.require_active_claim(&transaction)?;
         insert_turn_rows(
             &transaction,
             &turn_session_key(&self.key),
@@ -850,13 +907,16 @@ impl TurnRowStore for FencedTurnRowStore {
     }
 
     fn write_coverage_record(&self, record: &SessionCoverageRecord) -> Result<(), TurnRowError> {
-        let connection = self.store.lock();
+        let mut connection = self.store.lock();
+        let transaction = connection.transaction()?;
+        self.require_active_claim(&transaction)?;
         insert_coverage_record(
-            &connection,
+            &transaction,
             &turn_session_key(&self.key),
             self.claim_fence,
             record,
         )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -884,30 +944,39 @@ impl TurnRowStore for FencedTurnRowStore {
     }
 
     fn write_resume(&self, source_key: &str, resume: StoredResume) -> Result<(), TurnRowError> {
-        let connection = self.store.lock();
+        let mut connection = self.store.lock();
+        let transaction = connection.transaction()?;
+        self.require_active_claim(&transaction)?;
         insert_source_resume(
-            &connection,
+            &transaction,
             &turn_session_key(&self.key),
             source_key,
             &resume,
         )?;
+        transaction.commit()?;
         Ok(())
     }
 
     fn drop_resume(&self, source_key: &str) -> Result<(), TurnRowError> {
-        let connection = self.store.lock();
-        delete_source_resume(&connection, &turn_session_key(&self.key), source_key)?;
+        let mut connection = self.store.lock();
+        let transaction = connection.transaction()?;
+        self.require_active_claim(&transaction)?;
+        delete_source_resume(&transaction, &turn_session_key(&self.key), source_key)?;
+        transaction.commit()?;
         Ok(())
     }
 
     fn delete_rows_for_source(&self, source_key: &str) -> Result<(), TurnRowError> {
-        let connection = self.store.lock();
+        let mut connection = self.store.lock();
+        let transaction = connection.transaction()?;
+        self.require_active_claim(&transaction)?;
         delete_source_rows_at_fence(
-            &connection,
+            &transaction,
             &turn_session_key(&self.key),
             source_key,
             self.claim_fence,
         )?;
+        transaction.commit()?;
         Ok(())
     }
 

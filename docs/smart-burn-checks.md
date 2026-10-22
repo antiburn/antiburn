@@ -522,7 +522,7 @@ Thinking cannot supply these records.
 Both fields require explicit opt-in. `JevInputSelection::ALL` retains its legacy
 text-only mask. Ignored Instructions excludes these typed scope fields; changes
 to excluded fields do not change its selected digest at the same publication.
-The fields are conditional for `OpenCodeSqliteV2`, `ClaudeJsonl`,
+The fields are conditional for `OpenCodeSqliteV1`, `ClaudeJsonl`,
 `CodexRolloutJsonl`, and `PiV3Jsonl` under the fixture-backed contracts in
 `session-coverage.md`. Other sources remain
 unavailable. Claude retains structured answer strings with unknown human origin
@@ -685,7 +685,7 @@ anchors. Loader admission alone does not establish finding or Clean support.
 | `ClaudeJsonl`                  | S           | S                | C                | C                 | S            | N               | S            | N              | C                | N                 | C              | N               |
 | `CodexRolloutJsonl`            | S           | S                | C                | C                 | S            | N               | S            | N              | C                | N                 | C              | N               |
 | `PiV3Jsonl`                    | S           | S                | C                | C                 | S            | N               | S            | N              | C                | N                 | C              | N               |
-| `OpenCodeSqliteV2`             | S           | S                | C                | C                 | S            | N               | S            | N              | C                | N                 | C              | N               |
+| `OpenCodeSqliteV1`             | S           | S                | C                | C                 | S            | N               | S            | N              | C                | N                 | C              | N               |
 | `CursorCliAgentJsonl`          | S           | S                | C                | C                 | S            | N               | S            | N              | C                | N                 | C              | N               |
 | `CursorCliStoreDb`             | S           | S                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `CursorChatStoreDb`            | S           | S                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |

@@ -1,6 +1,24 @@
 use super::*;
 
 #[test]
+fn opencode_sqlite_dto_names_distinguish_v1_from_true_v2() {
+    assert_eq!(
+        serde_json::to_value(BurnCheckSourceFormat::from(
+            antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
+        ))
+        .unwrap(),
+        "openCodeSqliteV1"
+    );
+    assert_eq!(
+        serde_json::to_value(BurnCheckSourceFormat::from(
+            antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+        ))
+        .unwrap(),
+        "openCodeSqliteV2"
+    );
+}
+
+#[test]
 fn called_tools_rank_by_calls_and_stay_bounded() {
     use antiburn_local::analysis::{ToolClass, ToolUse};
 
@@ -724,6 +742,8 @@ mod insights {
             AutoFixSetting::FastMode,
         ];
         let effects = [
+            AutoFixEffect::FutureModelDefault,
+            AutoFixEffect::SkillAdvertising,
             AutoFixEffect::ModelSelection,
             AutoFixEffect::ReasoningEffort,
             AutoFixEffect::SessionCompaction,
@@ -734,6 +754,8 @@ mod insights {
             AutoFixEffect::ServiceTierSelection,
         ];
         let side_effects = [
+            AutoFixSideEffect::ActiveSessionsKeepTheirModel,
+            AutoFixSideEffect::ExplicitSkillUseRemainsAvailable,
             AutoFixSideEffect::ModelBehaviorMayChange,
             AutoFixSideEffect::ResponsesMayUseLessReasoning,
             AutoFixSideEffect::EarlierSessionSummarization,
@@ -743,8 +765,36 @@ mod insights {
             AutoFixSideEffect::SkillWillNotBeAvailable,
             AutoFixSideEffect::ResponsesMayTakeLonger,
         ];
-        assert_eq!(settings.len(), effects.len());
-        assert_eq!(settings.len(), side_effects.len());
+        assert_eq!(
+            serde_json::to_value(effects).unwrap(),
+            serde_json::json!([
+                "futureModelDefault",
+                "skillAdvertising",
+                "modelSelection",
+                "reasoningEffort",
+                "sessionCompaction",
+                "workerModelSelection",
+                "mcpAvailability",
+                "toolAvailability",
+                "skillAvailability",
+                "serviceTierSelection"
+            ])
+        );
+        assert_eq!(
+            serde_json::to_value(side_effects).unwrap(),
+            serde_json::json!([
+                "activeSessionsKeepTheirModel",
+                "explicitSkillUseRemainsAvailable",
+                "modelBehaviorMayChange",
+                "responsesMayUseLessReasoning",
+                "earlierSessionSummarization",
+                "workerBehaviorMayChange",
+                "serverWillNotBeAvailable",
+                "toolWillNotBeAvailable",
+                "skillWillNotBeAvailable",
+                "responsesMayTakeLonger"
+            ])
+        );
         for value in settings {
             assert!(serde_json::to_value(value).unwrap().is_string());
         }
@@ -902,6 +952,7 @@ mod insights {
             child_model: EvidenceValue::Unsupported,
             confidence: RelationConfidence::Observed,
             provenance: RelationProvenance::TaskToolUse,
+            config_binding: None,
         });
 
         let EvidenceValue::Complete(cache) = &mut evidence.cache else {
@@ -1117,6 +1168,7 @@ fn subagent_member_serializes_with_camel_case_cost_tokens_and_model_runs() {
             cache_creation_tokens: 0,
         }),
         model_runs: vec![ModelRun {
+            native_variant: None,
             model: "claude-3-5-haiku-20241022".to_string(),
             thinking_mode: None,
         }],

@@ -22,6 +22,8 @@ use crate::store::{
 
 mod analytics;
 mod journal_delivery;
+mod opencode_v2_fairness;
+mod opencode_v2_source_gates;
 mod selection_live;
 mod session_identity;
 
@@ -39,16 +41,16 @@ fn scope_work_includes_admitted_pending_delivery_but_not_stale_reset_work() {
         run: RunScope::Live,
     };
     store.lock().execute(
-        "INSERT INTO session (environment_key, agent, session_id, source_kind, source_label,
-          cwd, updated_at_epoch, started_at_epoch, first_seen_at, last_seen_at, incarnation)
-         VALUES ('native', 'opencode', 'main', 'providerDb', 'test', '/workspace/demo', 1, 1, '', '', 7)",
+         "INSERT INTO session (environment_key, agent, session_id, source_kind, source_label,
+           cwd, updated_at_epoch, started_at_epoch, first_seen_at, last_seen_at, incarnation)
+         VALUES ('native', 'opencode', 'main', 'providerDb', 'opencode:main', '/workspace/demo', 1, 1, '', '', 7)",
         [],
     ).unwrap();
     assert!(!scope_has_work(&store, &scope).unwrap());
     store.lock().execute(
-        "INSERT INTO opencode_journal_delivery (environment_key, agent, session_id, incarnation,
-          source_label, cwd, parser_revision, pending, main_session)
-         VALUES ('native', 'opencode', 'main', 7, 'test', '/workspace/demo', ?1, 1, 1)",
+         "INSERT INTO opencode_journal_delivery (environment_key, agent, session_id, incarnation,
+           source_label, cwd, parser_revision, pending, main_session)
+          VALUES ('native', 'opencode', 'main', 7, 'opencode:main', '/workspace/demo', ?1, 1, 1)",
         [antiburn_local::analysis::PARSER_REVISION],
     ).unwrap();
     assert!(scope_has_work(&store, &scope).unwrap());

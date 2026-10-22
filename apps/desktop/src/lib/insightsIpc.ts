@@ -198,7 +198,9 @@ type BurnCheckSourceFormat =
   | "claudeJsonl"
   | "codexRolloutJsonl"
   | "openCodeJsonl"
+  | "openCodeSqliteV1"
   | "openCodeSqliteV2"
+  | "openCodeV2SessionExport"
   | "piV3Jsonl"
   | "cursorJsonl"
   | "cursorCliAgentJsonl"
@@ -483,6 +485,8 @@ export interface AutoFixReviewPayload {
   proposedValue: string
   behaviorOverrideWarning: boolean
   effect:
+    | "futureModelDefault"
+    | "skillAdvertising"
     | "modelSelection"
     | "reasoningEffort"
     | "sessionCompaction"
@@ -492,6 +496,8 @@ export interface AutoFixReviewPayload {
     | "skillAvailability"
     | "serviceTierSelection"
   sideEffect:
+    | "activeSessionsKeepTheirModel"
+    | "explicitSkillUseRemainsAvailable"
     | "modelBehaviorMayChange"
     | "responsesMayUseLessReasoning"
     | "earlierSessionSummarization"

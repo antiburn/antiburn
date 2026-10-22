@@ -102,7 +102,7 @@ fn records(agent: &str, output: &str) -> Vec<Value> {
 fn six_native_source_boundaries_do_not_inherit_opencode_observed_extents() {
     let output = "<path>lib/conversion.py</path>\n<type>file</type>\n<content>\n1: def minutes(seconds):\n2:     return seconds / 60\n3: # Preserve fractional minutes.\n\n(End of file - total 3 lines)\n</content>";
     for (agent, format) in [
-        ("opencode", SourceFormat::OpenCodeSqliteV2),
+        ("opencode", SourceFormat::OpenCodeSqliteV1),
         ("claude", SourceFormat::ClaudeJsonl),
         ("codex", SourceFormat::CodexRolloutJsonl),
         ("pi", SourceFormat::PiV3Jsonl),

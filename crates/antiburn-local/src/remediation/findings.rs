@@ -28,6 +28,8 @@ pub enum BuiltInToolTokens {
     Definition(u64),
     /// Definition tokens repeated across compatible main turns.
     Replicated(u128),
+    /// The source does not retain the definition size or request count.
+    Unavailable,
 }
 
 /// Typed evidence for one actionable finding target.
@@ -51,6 +53,7 @@ pub enum FindingCause {
         worker_model: String,
         worker_ordinal: u32,
         parent_call_id: Option<String>,
+        config_binding: Option<crate::analysis::SubagentConfigBinding>,
     },
     UnusedMcpServer {
         server: String,
@@ -326,6 +329,17 @@ impl Finding {
             } => serde_json::json!({
                 "base": base("route"), "scope": scope, "provider": provider,
                 "api": api, "model": model, "reasoning": reasoning,
+            })
+            .to_string(),
+            FindingCause::OverpoweredSubagents {
+                parent_model,
+                worker_model,
+                config_binding: Some(binding),
+                ..
+            } => serde_json::json!({
+                "base": base("workerPolicy"), "scope": scope,
+                "parentModel": parent_model, "workerModel": worker_model,
+                "configuredAgent": binding,
             })
             .to_string(),
             FindingCause::OverpoweredSubagents {

@@ -24,6 +24,43 @@ import {
 
 afterEach(cleanup)
 
+it("shows native accounting in the existing cost tab without mapping variants to effort", () => {
+  const tokens = {
+    inputTokens: 10,
+    visibleOutputTokens: 3,
+    reasoningTokens: 2,
+    cacheReadTokens: 7,
+    cacheWriteTokens: 5,
+  }
+  render(
+    <SessionDetailPresentation
+      {...presentationProps({
+        summary: summary({
+          sessions: [
+            metrics({
+              accounting: {
+                aggregateTokens: tokens,
+                retainedTokens: tokens,
+                aggregateCalculatedCost: { usd: 0, provenance: "producerCalculated" },
+                retainedCalculatedCost: { usd: 0, provenance: "producerCalculated" },
+              },
+            }),
+          ],
+        }),
+        modelRuns: [{ model: "native-model", nativeVariant: "native-high" }],
+      })}
+    />,
+  )
+  fireEvent.click(screen.getByRole("tab", { name: "Cost" }))
+  const detail = screen.getByRole("region", { name: "Native accounting" })
+  expect(
+    screen.getByText("A catalog cost estimate is unavailable for this session."),
+  ).toBeInTheDocument()
+  expect(within(detail).getByText("native-model#native-high")).toBeInTheDocument()
+  expect(within(detail).getAllByText(/Visible output 3 · Reasoning 2/)).toHaveLength(2)
+  expect(within(detail).getByText(/not billed amounts/)).toBeInTheDocument()
+})
+
 // jsdom never measures a real layout size, so recharts' `ResponsiveContainer`
 // renders no children for either analysis chart here (see ContextTokensChart
 // and CostBurnupChart's own test files for their real rendered content). This
@@ -170,6 +207,13 @@ function view(over: Partial<SessionDetailPresentationProps> = {}) {
 }
 
 describe("SessionDetailPresentation — chrome", () => {
+  const legacySmartChecks = [
+    { id: "ignoredInstructions", name: "Ignored instructions" },
+    { id: "scopeCreep", name: "Scope creep" },
+    { id: "overExploring", name: "Over-exploring" },
+    { id: "skillOpportunities", name: "Skill opportunities" },
+  ] as const
+
   it("renders the settled view: title, overview stats, and the tab strip", () => {
     view({ cost: cost() })
     expect(screen.getByText("Fix the flaky test")).toBeTruthy()
@@ -239,6 +283,73 @@ describe("SessionDetailPresentation — chrome", () => {
       "Passed",
     )
   })
+
+  it.each(["finding", "clean", "checking", "couldntCheck", "noCandidates"] as const)(
+    "hides all legacy smart checks with %s status from the Cost tab",
+    (status) => {
+      view({
+        hygiene: {
+          badges: [
+            ...legacySmartChecks.map(({ id }) => ({
+              id,
+              status,
+              notAssessedReason: null,
+              checkReason: "Saved smart-check detail",
+            })),
+            { id: "sessionOverdepth", status: "finding", notAssessedReason: null },
+            { id: "modelOverthinking", status: "clean", notAssessedReason: null },
+          ],
+          evidenceState: "ready",
+          unusedResources: null,
+        },
+      })
+
+      fireEvent.click(screen.getByRole("tab", { name: "Cost" }))
+
+      const checks = screen.getByLabelText("Session hygiene checks")
+      expect(checks.children).toHaveLength(2)
+      expect(screen.getByRole("group", { name: "Session overdepth" })).toHaveTextContent(
+        "Failed",
+      )
+      expect(screen.getByRole("group", { name: "Session overdepth" })).toHaveAttribute(
+        "tabindex",
+        "0",
+      )
+      expect(screen.getByRole("group", { name: "Model overthinking" })).toHaveTextContent(
+        "Passed",
+      )
+      for (const { name } of legacySmartChecks) {
+        expect(screen.queryByRole("group", { name })).toBeNull()
+        expect(screen.queryByRole("button", { name: `${name} details` })).toBeNull()
+        expect(screen.queryByRole("region", { name: `${name} guidance` })).toBeNull()
+      }
+      expect(screen.getByRole("tabpanel")).not.toHaveTextContent(
+        /Ignored instructions|Checking instructions|Scope creep|Over-exploring|Skill opportunities|Saved smart-check detail/i,
+      )
+    },
+  )
+
+  it.each(["finding", "checking"] as const)(
+    "omits the Checks section when only legacy smart checks have %s status",
+    (status) => {
+      view({
+        hygiene: {
+          badges: legacySmartChecks.map(({ id }) => ({
+            id,
+            status,
+            notAssessedReason: null,
+          })),
+          evidenceState: "ready",
+          unusedResources: null,
+        },
+      })
+
+      fireEvent.click(screen.getByRole("tab", { name: "Cost" }))
+
+      expect(screen.queryByText("Checks")).toBeNull()
+      expect(screen.queryByLabelText("Session hygiene checks")).toBeNull()
+    },
+  )
 
   it("shows unavailable instead of check results when the snooze load fails", () => {
     const hook = vi

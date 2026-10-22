@@ -13,7 +13,10 @@
 use anyhow::Result;
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 
-use super::{EvidenceClaim, EvidenceFailure, SessionKey, Store};
+use super::{
+    EvidenceClaim, EvidenceFailure, SessionKey, Store, delete_turn_rows_for_fence,
+    read_published_fence, turn_session_key,
+};
 
 impl Store {
     /// Claim the next eligible evidence row for an enabled agent.
@@ -239,7 +242,9 @@ impl Store {
         Ok(updated > 0)
     }
 
-    /// Record a retry or terminal failure for a current claim.
+    /// Record a retry or terminal failure and discard this pass's unpublished rows.
+    /// A superseded claim can discard its own rows without changing the current claim.
+    /// Call after the pass stops.
     pub fn fail_evidence(
         &self,
         claim: &EvidenceClaim,
@@ -309,9 +314,36 @@ impl Store {
                 ],
             )?,
         };
+        discard_evidence_claim_rows_in(&transaction, &claim.key, claim.claim_fence)?;
         transaction.commit()?;
         Ok(updated > 0)
     }
+
+    /// Discard only this claim's unpublished turn rows, content, and coverage.
+    /// Call after the pass stops so it cannot write another batch after cleanup.
+    pub fn discard_evidence_claim_rows(&self, claim: &EvidenceClaim) -> Result<usize> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let removed = discard_evidence_claim_rows_in(&transaction, &claim.key, claim.claim_fence)?;
+        transaction.commit()?;
+        Ok(removed)
+    }
+}
+
+/// The caller holds a write transaction across the fence check and deletion.
+pub(super) fn discard_evidence_claim_rows_in(
+    transaction: &Transaction<'_>,
+    key: &SessionKey,
+    claim_fence: i64,
+) -> Result<usize> {
+    if read_published_fence(transaction, key)? == Some(claim_fence) {
+        return Ok(0);
+    }
+    Ok(delete_turn_rows_for_fence(
+        transaction,
+        &turn_session_key(key),
+        claim_fence,
+    )?)
 }
 
 /// Take the next claim fence. It is higher than every fence any claim has

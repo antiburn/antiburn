@@ -10,7 +10,8 @@ pub(super) struct RuntimeCheckpoint<'a> {
     pub expected: &'a str,
     pub next: &'a str,
     pub scope: &'a antiburn_checks::domain::ActivationScope,
-    pub gaps: &'a [String],
+    pub invalidated_branches: &'a [String],
+    pub reset_branches: &'a [String],
     pub coalesce_pending: bool,
 }
 
@@ -296,9 +297,15 @@ impl Store {
             )?;
         }
         if let Some(checkpoint) = &checkpoint {
-            for branch in checkpoint.gaps {
+            for branch in checkpoint.invalidated_branches {
                 tx.execute("UPDATE burn_check_current_status SET evidence_valid = 0 WHERE check_id = ?1 AND activation_scope_key = ?2 AND branch_key = ?3", params![check_id, activation_scope_key, branch])?;
                 tx.execute("UPDATE burn_check_assessment_history SET evidence_valid = 0 WHERE check_id = ?1 AND activation_scope_key = ?2 AND branch_key = ?3", params![check_id, activation_scope_key, branch])?;
+            }
+            for branch in checkpoint
+                .invalidated_branches
+                .iter()
+                .chain(checkpoint.reset_branches)
+            {
                 tx.execute("UPDATE burn_check_candidate SET state = 'stale' WHERE check_id = ?1 AND activation_scope_key = ?2 AND branch_key = ?3 AND state IN ('pending', 'claimed', 'dispatching', 'answered')", params![check_id, activation_scope_key, branch])?;
             }
         }

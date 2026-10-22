@@ -142,7 +142,7 @@ fn publish_into(
         agent: "opencode".into(),
         session_id: "scope".into(),
         source: RawSource::Sqlite(path),
-        source_format: SourceFormat::OpenCodeSqliteV2,
+        source_format: SourceFormat::OpenCodeSqliteV1,
         fork_parent_session_id: None,
     };
     let reader = reader_for("opencode");
@@ -203,7 +203,7 @@ fn real_parse_publish_factory_load_samples_scope_and_keeps_later_approval() {
         let request = store
             .session_scope_request(&key, fence, generation)
             .unwrap();
-        assert_eq!(request.source_format, SourceFormat::OpenCodeSqliteV2);
+        assert_eq!(request.source_format, SourceFormat::OpenCodeSqliteV1);
         assert_eq!(
             (request.boundary.turn_index, request.boundary.part_index),
             (602, 1)

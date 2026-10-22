@@ -128,7 +128,7 @@ fn production_reader_uses_serialized_prefix_and_keeps_it_frozen_on_correction() 
 }
 
 #[test]
-fn production_reader_rejects_missing_context_and_child_scope_as_gaps() {
+fn production_reader_rejects_missing_context_and_child_scope_as_unsafe_updates() {
     for child in [false, true] {
         let store = store();
         let (record, claim) = claim_and_record(&store);
@@ -142,13 +142,13 @@ fn production_reader_rejects_missing_context_and_child_scope_as_gaps() {
         let source = FileEventSource::new(StorePublishedEvidenceReader::new(&store), 20).unwrap();
         let page = source.read_batch(PublicationCursor(0)).unwrap();
         assert_eq!(page.events.len(), 1);
-        let SourceEvent::Gap {
+        let SourceEvent::UnsafeUpdate {
             cursor,
             branch,
             reason,
         } = &page.events[0]
         else {
-            panic!("unsafe source admission must produce a gap");
+            panic!("unsafe source admission must revoke prior evidence");
         };
         assert_eq!(*cursor, PublicationCursor(1));
         assert_eq!(

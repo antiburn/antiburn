@@ -17,6 +17,7 @@ pub(super) fn owns_session(record: &super::SessionRecord) -> bool {
         && record.wsl_distro.is_none()
         && record.key.agent == "opencode"
         && record.source_kind == "providerDb"
+        && record.source_label == format!("opencode:{}", record.key.session_id)
 }
 
 type SourceFuture = Pin<Box<dyn Future<Output = Option<SessionSource>> + Send>>;

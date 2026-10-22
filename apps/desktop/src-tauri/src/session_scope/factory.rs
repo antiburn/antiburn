@@ -48,7 +48,7 @@ impl Store {
                 (key.agent.as_str(), format, coverage.source_kind),
                 (
                     "opencode",
-                    SourceFormat::OpenCodeSqliteV2,
+                    SourceFormat::OpenCodeSqliteV1,
                     SourceKind::Sqlite
                 ) | (
                     "codex",
@@ -106,7 +106,7 @@ impl Store {
             if thread_id.is_empty()
                 || matches!(
                     format,
-                    SourceFormat::OpenCodeSqliteV2 | SourceFormat::CodexRolloutJsonl
+                    SourceFormat::OpenCodeSqliteV1 | SourceFormat::CodexRolloutJsonl
                 ) && thread_id != key.session_id
             {
                 return Ok(Err(missing(ScopeMissingReason::IncompleteSource)));
@@ -127,7 +127,7 @@ impl Store {
                     key.agent,
                     key.session_id,
                     fence,
-                    format == SourceFormat::OpenCodeSqliteV2,
+                    format == SourceFormat::OpenCodeSqliteV1,
                     thread_id
                 ],
                 |row| Ok((row.get(0)?, row.get(1)?)),
@@ -166,7 +166,7 @@ impl Store {
                 && !retained_context_loss
                 && (!matches!(
                     format,
-                    SourceFormat::OpenCodeSqliteV2 | SourceFormat::ClaudeJsonl
+                    SourceFormat::OpenCodeSqliteV1 | SourceFormat::ClaudeJsonl
                 ) || first_role == "user")
                 && coverage.source_acceptance == SourceAcceptance::AcceptedFull
                 && coverage.summary_observed

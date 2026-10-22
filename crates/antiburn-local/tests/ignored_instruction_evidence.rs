@@ -337,7 +337,7 @@ fn cases() -> Vec<Case> {
         },
         Case {
             agent: "opencode",
-            format: SourceFormat::OpenCodeSqliteV2,
+            format: SourceFormat::OpenCodeSqliteV1,
             source: RawSource::Sqlite(Default::default()),
             content_marker: "OPENCODE-USER",
         },
@@ -400,7 +400,7 @@ async fn native_routes_produce_findings_or_preserve_unsupported_evidence() {
         let session_id = format!("ignored-instructions-{index}");
         let sqlite = if matches!(
             case.format,
-            SourceFormat::OpenCodeSqliteV2 | SourceFormat::AntigravitySqlite
+            SourceFormat::OpenCodeSqliteV1 | SourceFormat::AntigravitySqlite
         ) {
             Some(tempfile::tempdir().expect("synthetic database directory"))
         } else {
@@ -955,8 +955,8 @@ fn capabilities(format: SourceFormat) -> SourceCapabilities {
         SourceFormat::ClaudeJsonl => SourceCapabilities::claude(),
         SourceFormat::CodexRolloutJsonl => SourceCapabilities::codex(),
         SourceFormat::PiV3Jsonl => SourceCapabilities::pi(),
-        SourceFormat::OpenCodeSqliteV2 => SourceCapabilities {
-            source_format: SourceFormat::OpenCodeSqliteV2,
+        SourceFormat::OpenCodeSqliteV1 => SourceCapabilities {
+            source_format: SourceFormat::OpenCodeSqliteV1,
             ..SourceCapabilities::opencode()
         },
         SourceFormat::CursorCliAgentJsonl => SourceCapabilities::cursor(),

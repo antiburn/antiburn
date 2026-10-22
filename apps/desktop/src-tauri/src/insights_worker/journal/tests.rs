@@ -19,7 +19,7 @@ impl SyntheticJournal {
         Self::named(request_bytes, "native-session")
     }
 
-    fn named(request_bytes: usize, session_id: &str) -> Self {
+    pub(crate) fn named(request_bytes: usize, session_id: &str) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("opencode.db");
         let connection = Connection::open(&path).unwrap();
@@ -120,6 +120,7 @@ impl SyntheticJournal {
             agent: antiburn_local::model::AgentKind::OpenCode,
             db_path: self.path.clone(),
             session_id: self.session_id.clone(),
+            source_format: Some(antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1),
         }
     }
 

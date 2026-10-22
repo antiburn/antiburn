@@ -848,6 +848,36 @@ fn session_hygiene_preserves_queue_states_without_a_false_clean_result() {
 }
 
 #[test]
+fn session_hygiene_shows_a_failed_attempt_instead_of_running_during_retry_backoff() {
+    for error in [
+        "source-unreadable:adapter-failed",
+        "worker-pass-panicked",
+        "worker-publication-failed",
+    ] {
+        let mut row = evidence_row(crate::store::EvidenceStatus::Pending, None);
+        row.last_error = Some(error.into());
+        row.next_attempt_at_epoch = Some(200);
+        let payload = session_hygiene_payload(Some(row), SYNTHETIC_GENERATION);
+        assert_eq!(payload.evidence_state, "failed", "{error}");
+    }
+
+    for error in ["source-changed", "worker-claim-lost"] {
+        let mut row = evidence_row(crate::store::EvidenceStatus::Pending, None);
+        row.last_error = Some(error.into());
+        let payload = session_hygiene_payload(Some(row), SYNTHETIC_GENERATION);
+        assert_eq!(payload.evidence_state, "pending", "{error}");
+    }
+
+    let mut row = evidence_row(
+        crate::store::EvidenceStatus::Pending,
+        Some(synthetic_evidence()),
+    );
+    row.last_error = Some("source-unreadable:adapter-failed".into());
+    let payload = session_hygiene_payload(Some(row), SYNTHETIC_GENERATION);
+    assert_eq!(payload.evidence_state, "stale");
+}
+
+#[test]
 fn session_hygiene_omits_every_result_when_no_checks_are_enabled() {
     let payload = session_hygiene_payload_with_selection(
         Some(evidence_row(

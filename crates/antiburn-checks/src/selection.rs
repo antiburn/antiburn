@@ -453,6 +453,12 @@ impl SelectionState {
         selection.coverage_complete = false;
     }
 
+    /// Starts a new selection segment without restoring missing historical coverage.
+    pub fn reset_segment(&mut self, branch: &BranchId) {
+        self.retire_window(branch);
+        self.mark_coverage_gap(branch);
+    }
+
     /// Starts a fresh rolling window after the source proves coverage is complete.
     pub fn restore_coverage(&mut self, branch: &BranchId) {
         self.retire_window(branch);
@@ -898,6 +904,75 @@ mod tests {
             state.apply_published(&activation, "message-11", 1, &third),
             SelectionOutcome::Candidate(_)
         ));
+    }
+
+    #[test]
+    fn segment_reset_retires_only_affected_window_and_resumes_with_partial_history() {
+        let activation = activation();
+        let mut state = SelectionState::default();
+        for position in 6..=7 {
+            state.apply_published(
+                &activation,
+                &format!("message-{position}"),
+                1,
+                &result(position),
+            );
+        }
+        let mut other = update(8, "other-result", true);
+        other.branch = BranchId("other-session".into());
+        state.apply_published(&activation, "other-result", 1, &other);
+        let other_before = state.branches[&other.branch].clone();
+
+        let branch = BranchId("main-session".into());
+        state.reset_segment(&branch);
+        assert!(window_ids(&state).is_empty());
+        assert!(!state.branches[&branch].coverage_complete);
+        assert_eq!(state.branches[&other.branch], other_before);
+        assert_eq!(
+            state.seen_results[&(branch.clone(), "message-6".into())].membership,
+            ResultMembership::Retired
+        );
+
+        let progress = crate::check_store::SourceProgress {
+            selection: state,
+            ..Default::default()
+        };
+        let mut state = crate::check_store::SourceProgress::decode(&progress.encode().unwrap())
+            .unwrap()
+            .selection;
+        let mut correction = result(6);
+        correction.position = ObservationPosition(9);
+        correction.version = EvidenceVersion("corrected-old-segment".into());
+        assert_eq!(
+            state.apply_published(&activation, "message-6", 2, &correction),
+            SelectionOutcome::Updated
+        );
+        assert!(window_ids(&state).is_empty());
+        for position in 10..=11 {
+            assert_eq!(
+                state.apply_published(
+                    &activation,
+                    &format!("message-{position}"),
+                    1,
+                    &result(position)
+                ),
+                SelectionOutcome::Updated
+            );
+        }
+        let SelectionOutcome::Candidate(candidate) =
+            state.apply_published(&activation, "message-12", 1, &result(12))
+        else {
+            panic!("future results must form a new window without coverage restoration")
+        };
+        assert_eq!(
+            window_ids(&state),
+            ["message-10", "message-11", "message-12"]
+        );
+        assert_eq!(
+            candidate.context.value["session"]["source_coverage"],
+            "partial"
+        );
+        assert_eq!(state.branches[&other.branch], other_before);
     }
 
     #[test]

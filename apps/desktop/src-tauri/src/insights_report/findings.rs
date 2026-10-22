@@ -1085,7 +1085,7 @@ mod tests {
             antiburn_local::analysis::SourceFormat::ClaudeJsonl,
             antiburn_local::analysis::SourceFormat::CodexRolloutJsonl,
             antiburn_local::analysis::SourceFormat::PiV3Jsonl,
-            antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+            antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
             antiburn_local::analysis::SourceFormat::CursorCliAgentJsonl,
             antiburn_local::analysis::SourceFormat::AntigravityBrainJsonl,
         ] {
@@ -1186,7 +1186,7 @@ mod tests {
             },
             ParserCase {
                 agent: "opencode",
-                format: SourceFormat::OpenCodeSqliteV2,
+                format: SourceFormat::OpenCodeSqliteV1,
                 source: RawSource::Sqlite(Default::default()),
             },
             ParserCase {
@@ -1222,7 +1222,7 @@ mod tests {
         for (index, case) in cases.into_iter().enumerate() {
             let description = format!("{} {:?}", case.agent, case.format);
             let session_id = format!("persisted-parser-{index}");
-            let sqlite = if case.format == SourceFormat::OpenCodeSqliteV2 {
+            let sqlite = if case.format == SourceFormat::OpenCodeSqliteV1 {
                 Some(tempfile::tempdir().unwrap())
             } else {
                 None
@@ -1388,8 +1388,8 @@ mod tests {
             SourceFormat::ClaudeJsonl => SourceCapabilities::claude(),
             SourceFormat::CodexRolloutJsonl => SourceCapabilities::codex(),
             SourceFormat::PiV3Jsonl => SourceCapabilities::pi(),
-            SourceFormat::OpenCodeSqliteV2 => SourceCapabilities {
-                source_format: SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::OpenCodeSqliteV1 => SourceCapabilities {
+                source_format: SourceFormat::OpenCodeSqliteV1,
                 ..SourceCapabilities::opencode()
             },
             SourceFormat::CursorCliAgentJsonl => SourceCapabilities {

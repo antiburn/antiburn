@@ -143,12 +143,15 @@ mod tests {
     use super::*;
     use antiburn_local::analysis::TurnCounts;
 
-    const SOURCE_FORMATS: [SourceFormat; 31] = [
+    const SOURCE_FORMATS: [SourceFormat; 35] = [
         SourceFormat::ClaudeJsonl,
         SourceFormat::CodexRolloutJsonl,
         SourceFormat::OpenCodeJsonl,
+        SourceFormat::OpenCodeSqliteV1,
         SourceFormat::OpenCodeSqliteV2,
+        SourceFormat::OpenCodeV2SessionExport,
         SourceFormat::PiV3Jsonl,
+        SourceFormat::OmpV3Jsonl,
         SourceFormat::CursorJsonl,
         SourceFormat::CursorCliAgentJsonl,
         SourceFormat::CursorCliStoreDb,
@@ -174,6 +177,7 @@ mod tests {
         SourceFormat::WindsurfWorkspaceJson,
         SourceFormat::WindsurfMirrorJson,
         SourceFormat::WindsurfCascadeProtobuf,
+        SourceFormat::DevinLocalSqlite,
         SourceFormat::Uncharacterized,
     ];
 
@@ -208,7 +212,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(supported.len(), 42);
+        assert_eq!(supported.len(), 49);
     }
 
     #[test]

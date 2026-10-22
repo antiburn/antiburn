@@ -264,10 +264,16 @@ fn source_supports_finding(detector: DetectorId, format: crate::analysis::Source
                 | DetectorId::OveruseOfFastMode
                 | DetectorId::CacheChurn,
         ) | (
-            SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV1,
             DetectorId::SessionsOverDepth
                 | DetectorId::OverpoweredSubagents
                 | DetectorId::UnusedSkills
+                | DetectorId::OldModelUsage
+                | DetectorId::CacheChurn,
+        ) | (
+            SourceFormat::OpenCodeSqliteV2,
+            DetectorId::SessionsOverDepth
+                | DetectorId::OverpoweredSubagents
                 | DetectorId::OldModelUsage
                 | DetectorId::CacheChurn,
         ) | (
@@ -341,7 +347,7 @@ fn source_supports_clean(detector: DetectorId, format: crate::analysis::SourceFo
             SourceFormat::ClaudeJsonl
                 | SourceFormat::CodexRolloutJsonl
                 | SourceFormat::OpenCodeJsonl
-                | SourceFormat::OpenCodeSqliteV2
+                | SourceFormat::OpenCodeSqliteV1
                 | SourceFormat::PiV3Jsonl,
             _,
         ) | (

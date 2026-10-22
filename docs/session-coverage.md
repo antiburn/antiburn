@@ -42,6 +42,11 @@ local page reader before committed desktop publication. Delivery
 cursors remain separate from native source order and engine positions. A watcher
 notification is not a result event.
 
+Quality gaps preserve accepted assessments when their saved input is unchanged.
+Continuity resets also preserve these assessments but cancel pending work and
+clear the affected selection window. An unsafe source update revokes that
+branch's assessments and pending work and resets its window.
+
 Live Burn Checks attach to supported active native main sessions when definitions
 are enabled and configured. New scopes and cold source bindings use the existing
 180-second activity window and require an enabled live activation for the exact
@@ -99,7 +104,7 @@ new results remain eligible; deletion alone does not make their order unsafe.
 Removal expansion shares the page's 4,096-observation and 4 MiB publication limits.
 Exceeding either limit rejects the whole page without advancing its cursor.
 Strict historical replay still does not support whole-message deletion.
-Parser revision 59 rebuilds older live receipts from the bounded recent window;
+Parser revision 62 rebuilds older live receipts from the bounded recent window;
 it does not audit or repair results outside that window.
 
 The current runtime admits native session evidence under the four fixture-backed
@@ -372,8 +377,8 @@ Request-history records include message metadata and user text parts.
 
 | Limit                        |   Value | Scope                                                           |
 | ---------------------------- | ------: | --------------------------------------------------------------- |
-| Parser revision              |      59 | Accepted source and journal cursor revision                     |
-| Resume snapshot revision     |      20 | File-reader resume state                                        |
+| Parser revision              |      62 | Accepted source and journal cursor revision                     |
+| Resume snapshot revision     |      21 | File-reader resume state                                        |
 | Result observations          |    4096 | Retained results per strict journal page or legacy sink window  |
 | Result payload bytes         | 4194304 | Serialized result payload per strict page or legacy sink window |
 | Request history records      |    4096 | Combined message metadata and retained user text parts          |
@@ -435,8 +440,9 @@ producer evidence does not establish support in the consumed session sources:
   compared with **v1.2.0**, commit
   [`ffc000de8e446c63d41a2e352d119d9ff43530d0`](https://github.com/anomalyco/opencode/tree/ffc000de8e446c63d41a2e352d119d9ff43530d0):
   [structured terminal writes](https://github.com/anomalyco/opencode/blob/733b2c627e5aec39cb33cc22373bdce33053ef2c/packages/opencode/src/session/prompt.ts#L1288-L1346)
-  are narrow evidence. A development `session_message` schema is not the accepted
-  SQLite source. Revalidate released producer behavior before adding a claim.
+  are narrow evidence for V1. Development V1 `session_message` work is not the
+  accepted SQLite contract. V2 has a separate reader for the pinned v2.0.32
+  `session_v2`/`session_message` schema; see its source row below.
 
 ## Retained-root smart-check inputs
 
@@ -486,7 +492,7 @@ These narrower check gates do not add a native source shape or release range.
   Unqualified lookalikes, multi-environment/delta forms, inherited/clipped records,
   and other producer versions cannot justify omission from human scope history.
   See the [Codex fixture contract](../crates/antiburn-local/tests/fixtures/codex_characterization/README.md#paginated-completed-work-contract).
-- OpenCode / `OpenCodeSqliteV2`: native message/part and skill producer
+- OpenCode / `OpenCodeSqliteV1`: native message/part and skill producer
   `772392050500e0ddcd2ad2193411a22a3824372f`, with numbered Read renderer
   `652c090dc119b5f3dc1e5e0bf1c4b40d9721f0ef`. Exact native identities and lifecycle
   joins are required. Text-only retained roots can carry partial-context limits.
@@ -571,7 +577,7 @@ The accepted request contracts are:
   The read fixture uses the accepted version-3 journal header. Offsets and limits
   use lines; this does not characterize all historical tool versions or migrated
   journals for read-extent semantics.
-- `OpenCodeSqliteV2`: exact native `read` calls with `filePath`, `offset`, and
+- `OpenCodeSqliteV1`: exact native `read` calls with `filePath`, `offset`, and
   `limit`, pinned to [OpenCode read.ts at `652c090`](https://github.com/anomalyco/opencode/blob/652c090dc119b5f3dc1e5e0bf1c4b40d9721f0ef/packages/opencode/src/tool/read.ts).
   File requests use lines. A matched directory result resets the requested unit
   to unknown because its offsets count entries, not file lines.
@@ -643,7 +649,7 @@ remain outside the shared Jev source gate.
 ### Local skill opportunity reference inputs
 
 The check-owned `SkillUseSnapshot` adapter consumes selected private content for
-`ClaudeJsonl`, `OpenCodeSqliteV2`, `CodexRolloutJsonl`, and `PiV3Jsonl`. It retains
+`ClaudeJsonl`, `OpenCodeSqliteV1`, `CodexRolloutJsonl`, and `PiV3Jsonl`. It retains
 source/thread digests, native record and call IDs, request/result references,
 roles, record positions, available timestamps, and the publication fence. The
 [synthetic native characterization contract](../crates/antiburn-local/tests/fixtures/skill_use_characterization/README.md)
@@ -747,7 +753,7 @@ metadata in private turn content. Explicit field selection and source-bound
 retrieval preserve those records without a schema migration. OpenCode extraction
 accepts the message/part shapes pinned at `anomalyco/opencode` commit
 `772392050500e0ddcd2ad2193411a22a3824372f`, with synthetic SQLite and wrapped
-JSONL characterization. The Jev projection accepts `OpenCodeSqliteV2`; its
+JSONL characterization. The Jev projection accepts `OpenCodeSqliteV1`; its
 existing gate excludes `OpenCodeJsonl`. Conditional typed records also come from
 `ClaudeJsonl`, `CodexRolloutJsonl`, and `PiV3Jsonl` under the producer pins below.
 Cursor and Antigravity do not emit typed question-answer or plan-reference forms.
@@ -883,7 +889,7 @@ and Pi can bind matched call and result strings to different known records.
 Codex retains both encoded argument and output string ranges; absent native IDs
 remain absent. Headers, context, comments, skipped lifecycle, and acceptance order
 survive explicit selected storage and contribute to its digest. Parser revision
-58 and resume snapshot revision 20 fence incompatible parser and scope snapshots.
+58 and resume snapshot revision 21 fence incompatible parser and scope snapshots.
 
 The Ignored Instructions preparation and its agent-specific file discovery live
 under `checks::ignored_instructions`; `analysis::ignored_instructions` remains a
@@ -973,7 +979,7 @@ cannot produce Clean. Its retained 7-day or 30-day history-window semantics do n
 create a historical instruction snapshot, and enrollment is suspended.
 No additional `SourceFormat` is accepted by this request
 path. Ignored Instructions supports `ClaudeJsonl`, `CodexRolloutJsonl`,
-`OpenCodeSqliteV2`, `PiV3Jsonl`, `CursorCliAgentJsonl`, `CursorCliStoreDb`,
+`OpenCodeSqliteV1`, `PiV3Jsonl`, `CursorCliAgentJsonl`, `CursorCliStoreDb`,
 `CursorChatStoreDb`, `CursorIdeComposer`, `AntigravityBrainJsonl`, and
 `AntigravitySqlite`. OpenCode JSONL and other Cursor and Antigravity formats
 are unavailable. Cursor store/composer sources retain normalized user and
@@ -1128,7 +1134,7 @@ Dedicated reader registration alone does not establish usable session analysis.
 
 ## Source Matrix
 
-The table lists all 33 `SourceFormat` names from
+The table lists all 35 `SourceFormat` names from
 `crates/antiburn-local/src/analysis/evidence.rs`, each exactly once.
 
 Journal page membership does not establish source-history coverage. Missing
@@ -1136,6 +1142,79 @@ optional metadata or bounded request history can leave safe results usable;
 sequence discontinuity and unknown identity, order, or main-session ownership
 remain unsafe. See [OpenCode journal delivery](#opencode-journal-delivery) for
 atomic publication, baseline, restart, and recovery limits.
+
+`OpenCodeSqliteV1` keeps the historical serialized value
+`open_code_sqlite_v2` and old saved watch spelling `OpenCodeSqliteV2`. Both map
+to V1. True V2 uses the distinct `open_code_v2_sqlite` value and
+`OpenCodeSqliteV2` source row; its V2 reader and bounded live event route stay
+separate from the V1 parser and journal cursor.
+
+OpenCode 2 releases use the V2 reader by default. The `v2.0.32` producer pin
+below defines the characterized data shape, not a release allowlist. Native
+stored reads validate the SQLite schema. Live capture, current config reads,
+and WSL exports accept other 2.x releases when their data shapes and identity
+checks pass. Readers accept extra fields only where their shape checks permit
+them; WSL export envelopes remain fixed. Missing required fields, unsafe
+bindings, and unsupported shapes remain unavailable.
+This policy does not extend clean-result or remediation capabilities.
+
+Once the native index selects V2 for a session ID, it remembers that choice
+across deletion and restart. Deleting the V2 row does not restore its retained
+V1 migration copy. New V1-only IDs remain eligible. Clear Local Data removes
+the saved selection along with local session evidence.
+
+Native discovery groups V2 children by `parent_id` and keeps forks separate.
+It reads fork parents from `fork_session_id`, not titles or transcript text.
+Archived rows remain available for stored analysis. Native row deletion removes
+that source. Session metadata keeps the exact native CWD, including later moves.
+Source preference checks candidate IDs in batches of 256 across the bounded
+database roots. An older V2 copy still takes precedence over a recent V1 copy.
+Title refresh queries only requested IDs, in batches of 256, and retains at most
+1 MiB of title text per database read. An oversized V2 title does not restore a
+V1 title.
+
+Fast native admission reads at most 256 related sessions, eight recent message
+headers per session, and 1 MiB of metadata. It does not read message bodies.
+Strict reconciliation hashes mutable rows, deleted rows, descendants, archive
+state, and database file identity. Fork hashes also include the exact external
+parent-boundary sequence that the parser uses to exclude copied work. They do
+not include unrelated parent usage. Strict hashing rejects work above 500,000
+rows, 256 MiB total, or 8 MiB per row. These limits do not guarantee a fixed SQL
+execution time. Native discovery and admission also stop after five million
+SQLite VM instructions, or at the next progress check after one second. Progress
+checks run every 1,000 instructions and observe discovery cancellation. Strict
+hashing allows 25 million instructions and ten seconds. SQL projections guard
+combined row sizes before returning fields, and these reads limit SQLite values
+to 9 MiB. File-system waits can exceed the progress-check interval.
+
+The pinned V2 snapshot contract covers public message types, direct tool inputs,
+outer Code Mode results, and recorded nested activity. It includes bounded child
+sessions and excludes copied fork work when the native boundary resolves.
+Malformed row JSON makes the result partial without discarding later valid rows.
+Compaction usage contributes once. Durable rows retain native variants and keep
+reasoning tokens separate from visible output tokens. Session aggregates that do
+not match retained assistant usage remain explicitly unallocated. Costs retain
+their native calculated-cost provenance and are not billing claims. These facts
+do not establish a complete accounting result. No companion output files are read.
+
+Unavailable shell output and migration-cleared tool output remain partial in
+stored selected content, even when the native tool completed. The program exit
+state stays separate from that content limit. Typed file-read ranges require the
+returned filename to match the requested path. An alternate filename can leave
+the text useful but does not prove which requested file lines were read.
+
+Native live V2 checks use captured durable terminal order, not stored message
+order. A cold attachment writes an empty marker and starts from future results.
+Request history before attachment stays partial. Disconnects reset only the
+affected selection segments and cancel their pending work. Accepted assessments
+retain their status and saved input across quality gaps and continuity resets
+when that input is unchanged. Corrections and removals can still invalidate
+affected evidence. A matching receipt can drain already captured work after its
+lease expires; this does not report a live connection. D/S/O/C findings
+and prompts have partial support and cannot produce clean results. Model and
+worker edits require an exact current-consumer target. O verification stays
+unavailable because saved evidence does not prove the provider API route. M/B/K
+resource findings and native smart checks remain unsupported.
 
 Before a production session enters the local index, its CWD must resolve to a
 Git repository. When a file transcript's CWD is a parent folder of
@@ -1159,7 +1238,7 @@ Newly discovered repositories remain enabled by default.
 | `ClaudeJsonl`                  | Claude Code   | `~/.claude/projects/<workspace>/*.jsonl`; Claude Desktop Cowork `<app-config>/Claude/{local-agent-mode-sessions,claude-code-sessions}/**/.claude/projects/<workspace>/*.jsonl` (at most four levels for `**`; observed with Claude Desktop 2.2553.1 and embedded Claude Code 2.1.275); `audit*.jsonl` is excluded | Native discovery; bounded JSONL with source claims; resume supported; fixture-bounded child sidecars use a unique `toolUseId` join. YAML result/context contract uses the synthetic local CLI 2.1.278 accepted-log shape; private producer, no public schema pin.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Usage (including the nested one-hour/five-minute cache-write split), token classes, time, models, request controls/routes, calls, observed resource injection, thread links, compactions, exact Task/Agent child pairing, quota/provider incidents, and conditional question/recorded-plan metadata. Native tool-result observations preserve UUID/block and physical record positions, unique direct-parent assistant-call binding, explicit error state, and content completeness. User-slot text outside tool envelopes includes unmarked/API input without relaxing native human proofs.                                                                                    | Characterized accepted subset; no historical release range; known lifecycle-only records are inert; unknown evidence-bearing records deny clean. Direct-parent/inherited-result, duplicate/replay, partial-write/resume, and frozen-prefix claims need exact-version evidence.                                                                                                                                                                                                                                                                                                                                       |
 | `CodexRolloutJsonl`            | Codex         | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`                                                                                                                                                                                                                                                                    | Native discovery with child rollouts; bounded JSONL; resume supported; recorder source pin defines `session_meta`, `turn_context`, `event_msg`, `response_item`, ordinal, and `compacted` rows; legacy reverted forks use a bounded metadata/timestamp boundary. YAML result/context contract uses synthetic 0.160.1 at `d27764b82f7118f674371e6d6e76271d9d606edb`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Per-response usage and context window, time, models, provider/control inheritance, service tier, tools, harness version, spawn records, selected skill documents, exact tool-search MCP exposure, compactions, quota and provider incidents from `task_complete` errors. Recognized linked response-item outputs and accepted completed command/file-change items retain native line order, available status, and completeness. Complete retained root `user.text` supplies context; UI echoes are not extra requests.                                                                                                                                                          | Characterized accepted core; protocol lifecycle echoes are inert; ambiguous fork boundaries remain partial. Output/completed-item, cross-projection deduplication, call/result/status, and retained-prefix claims need exact-version evidence.                                                                                                                                                                                                                                                                                                                                                                       |
 | `OpenCodeJsonl`                | OpenCode      | Legacy exported session JSONL                                                                                                                                                                                                                                                                                     | Native persisted export or WSL CLI export; bounded JSONL with validated history wrappers/order                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Usage, time, models, provider/API fields where saved, task proof, selected skills, tools, compactions, session/message identities; cache episodes use validated order and distinct message IDs, with a five-minute default Anthropic lifetime unless a prior write records one-hour TTL evidence; that lifetime carries across hits, which refresh it at request start                                                                                                                                                                                                                                                                                                          | Characterized accepted export; WSL is not disk-only; variant labels do not prove effort or speed; no resource inventory                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `OpenCodeSqliteV2`             | OpenCode      | `~/.local/share/opencode/opencode.db` or platform equivalent                                                                                                                                                                                                                                                      | Legacy metrics read `session`, `message`, and `part` snapshots. Native YAML live delivery reads bounded recent `event`/`event_sequence` input, then indexed suffixes, under the fixture-backed 1.18.35 contract at `53d1eabb61e21162157817bf677da0a4ad3332e3`. Cursor, outbox, and attachment state persist atomically. Live integrity uses bounded identity/boundary checks; strict replay retains full-prefix validation. See [journal delivery](#opencode-journal-delivery).                                                                                                                                                                                                                                                                                                                                                                   | Native messages, parts, task/child models, selected skills, usage, provider/API fields, compactions, and tool errors. Journal results retain exact ownership, mutation order, first-terminal position, corrections/removals, and frozen request context. Synthetic user text is excluded; mixed messages keep real parts. Cold request history is partial. Page absence does not prove removal or whole-session absence. Missing optional content can remain usable; unsafe identity/order/ownership cannot.                                                                                                                                                                    | Synthetic characterization, not live certification, CoreV2 `session_message`, or a historical release range. Live reads do not audit all old payloads. Detected boundary changes require recovery; strict replay rejects consumed-prefix rewrites. Corrections reuse retained frozen context; evicted context remains unavailable. Missing journals cannot use timestamp/row-ID fallback.                                                                                                                                                                                                                            |
+| `OpenCodeSqliteV1`             | OpenCode      | `~/.local/share/opencode/opencode.db` or platform equivalent                                                                                                                                                                                                                                                      | Legacy metrics read `session`, `message`, and `part` snapshots. Native YAML live delivery reads bounded recent `event`/`event_sequence` input, then indexed suffixes, under the fixture-backed 1.18.35 contract at `53d1eabb61e21162157817bf677da0a4ad3332e3`. Cursor, outbox, and attachment state persist atomically. Live integrity uses bounded identity/boundary checks; strict replay retains full-prefix validation. See [journal delivery](#opencode-journal-delivery).                                                                                                                                                                                                                                                                                                                                                                   | Native messages, parts, task/child models, selected skills, usage, provider/API fields, compactions, and tool errors. Journal results retain exact ownership, mutation order, first-terminal position, corrections/removals, and frozen request context. Synthetic user text is excluded; mixed messages keep real parts. Cold request history is partial. Page absence does not prove removal or whole-session absence. Missing optional content can remain usable; unsafe identity/order/ownership cannot.                                                                                                                                                                    | Synthetic characterization, not live certification, CoreV2 `session_message`, or a historical release range. Live reads do not audit all old payloads. Detected boundary changes require recovery; strict replay rejects consumed-prefix rewrites. Corrections reuse retained frozen context; evicted context remains unavailable. Missing journals cannot use timestamp/row-ID fallback.                                                                                                                                                                                                                            |
 | `PiV3Jsonl`                    | Pi            | `~/.pi/agent/sessions/**/*.jsonl`, `PI_AGENT_DIR`, or `PI_CODING_AGENT_DIR`                                                                                                                                                                                                                                       | Native discovery; version 1, 2, and 3 headers with documented read-time metric migrations; bounded JSONL; resume supported. YAML result/context contract uses synthetic core V3 0.84.4 at `b79e4cc834970cca69daebffab7df1da7d1e52c4`; V1/V2 metric migration does not establish this support.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Usage at the nested request-start timestamp, top-level event time, provider/API/model, agent-selected thinking policy paired with positive same-record usage, branch/fork state, tools, links, compactions, cache hit/miss/recovery episodes on continuous native routes; empty zero-usage aborts update branch-local model/provider state but add no effort or token evidence; official example-extension nested worker results; native V3 tool-result observations preserve physical record order, exact call/tool/parent joins, status, and completeness. Main-session user-slot context needs no sender-origin proof; branch or partial-record gaps block complete context. | Characterized migrated core; bounded legacy migration overflow is partial; extension delegation is finding-only. Linear/branch, call/result, user-prefix, partial-write, and resume claims need exact-version evidence.                                                                                                                                                                                                                                                                                                                                                                                              |
 | `OmpV3Jsonl`                   | Oh My Pi      | `~/.omp/agent/sessions/**/*.jsonl`, renamed by `PI_CONFIG_DIR`, or a default-profile `PI_CODING_AGENT_DIR` inside the OMP root                                                                                                                                                                                    | Native discovery; the fixed-width 256-byte `type: "title"` slot is dropped as the OMP prologue, then an exact version 3 header and an allowlisted core (`message` with role `user`/`assistant`/`toolResult`/`bashExecution`, `model_change`, `thinking_level_change`, `compaction`, and `custom` with `customType` `tool_execution_start`/`session_exit`/`todo_hud_state`/`user_todo_edit`/`goal-completed`) stream through the shared Pi-family scaffolding; `title_change`, `credential_pin`, `ttsr_injection`, and `session_init` are admitted as signal-free housekeeping rows that keep their thread link; the `<skills>` listing in a `session_init` system prompt is the startup context, and a `read` of a `skill://<name>` path is a skill use; bounded JSONL; resume supported; named profiles and the XDG redirects are not discovered | Usage at the nested request-start timestamp, top-level event time, provider/API/model, agent-selected thinking policy, tools, links, and compactions from the allowlisted core                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Characterized OMP core only; startup context lists skills only, from subagent journals that have `session_init`, because OMP records no tool or MCP definitions and top-level journals have no `session_init`; `custom` and housekeeping rows with a shared parser signal, other `customType` values, Pi-only rows, other OMP record types (including `custom_message`, `model_usage`, `service_tier_change`, and `reset_boundary`), and pre-v3 headers stay unrecognized; in-file branches are not resolved to an active leaf and sibling subagent files are not opened, so D/T/O findings only and no clean result |
 | `CursorJsonl`                  | Cursor        | In-memory or compatibility JSONL without a source marker                                                                                                                                                                                                                                                          | Dedicated reader with bounded JSONL; native surface is unknown                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Generic Cursor role, content, timestamp, model, tool call, and record ID fields                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Uncharacterized compatibility format                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -1189,6 +1268,8 @@ Newly discovered repositories remain enabled by default.
 | `WindsurfCascadeProtobuf`      | Windsurf      | Cascade `.pb` data                                                                                                                                                                                                                                                                                                | Discovery walks `~/.codeium/windsurf/cascade`; no bounded protobuf session parser                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | No parsed session facts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Uncharacterized                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `DevinLocalSqlite`             | Devin         | `~/.local/share/devin/cli/sessions.db`                                                                                                                                                                                                                                                                            | Read-only WAL-visible transaction; requires migration 17 and the reviewed `sessions`, `message_nodes`, `subagent_heads`, and `tool_call_state` columns; one source per `sessions.id`; active path follows `main_chain_id`; freshness fingerprints include all reader inputs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Timestamped messages, models, deduplicated tool calls, and exact `run_subagent` child relations when child agent ID, child chain node, and actual child model agree; ACP schema 6 is optional child-only context                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Partial; S findings only, no D/C or clean result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `Uncharacterized`              | Unknown agent | Generic JSONL fallback                                                                                                                                                                                                                                                                                            | No native source contract; bounded generic framing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | No detector-grade fact contract                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Uncharacterized                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `OpenCodeSqliteV2`             | OpenCode      | Core V2 `session_v2` / `session_message` database | Read-only snapshot of the pinned shape, including its unique session sequence index; OpenCode v2.0.32 producer commit `843a6c514e606b436a7fe713422ace0a93ad3d61`. Caps at 100,000 rows, 128 MiB total row data, and 8 MiB per row; a cap makes coverage partial. Live reads use the registered local `/api/event` feed only when the server process has the selected database open. Admission is native, main-session, recent-activity, exact-CWD Live scope, and limited to one bound database and 256 active sessions; larger scopes fail closed. | Bounded public text, per-step model and variant, separate input/output/reasoning/cache token classes, native calculated cost, and direct terminal results after the per-session `event_sequence` boundary. Aggregate usage not assigned to retained messages stays unallocated. Request history before attach, missing attachments, and missing result content stay partial. The feed has no replay; disconnects and overflow publish a gap. Outer `execute` stays one result; nested activities do not become results. | Partial D/S/O/C findings and prompts for the pinned schema; no clean-result support. Model and worker edits need an exact current-consumer target. O verification is unavailable because saved evidence does not prove the provider API route. M/B/K and native smart checks remain unsupported. Stored costs are not billing claims. Unsupported schemas remain unavailable. WSL uses the separate transfer format below. |
+| `OpenCodeV2SessionExport`      | OpenCode      | V2 `SessionTransfer.Data` JSON from a registered WSL service | OpenCode v2.0.32 producer commit `843a6c514e606b436a7fe713422ace0a93ad3d61`; existing Linux curl and default `.local/state/opencode/service.json` registration with `url` and matching PID/version. Direct numeric-loopback GET requests reject redirects and proxies and stream into bounded pipes. Selects at most 100 recent exports from at most 500 metadata rows. Caps at 16 MiB/export, 100,000 messages/export, 32 MiB/batch, 15 seconds/request, and 60 seconds/V2 batch. | Bounded stored public text and direct tool content through a dedicated partial transfer reader. Validates required session fields and all 11 pinned message tags. No detector-grade facts or native live-result order. | Bounded WSL stored-session support, not a complete history or hierarchy claim. No service auto-start, offline V2 database read, custom state root, or native live eligibility. Synthetic producer-shaped and command-harness tests; real WSL runtime is not verified on the macOS test host. |
 
 Claude Desktop Cowork (agent mode) sessions use the same `ClaudeJsonl`
 format. `<app-config>` is `~/Library/Application Support` on macOS,
@@ -1284,7 +1365,7 @@ compactions, or incomplete history prevent clean. OpenCode uses validated
 ordered history, not `parentID` as a fabricated predecessor link.
 
 The route columns use engine turn migration 7 and desktop migration 39. Current
-parser/analyzer/evidence/coverage/resume revisions are 53/25/22/6/14. Existing
+parser/analyzer/evidence/coverage/resume revisions are 62/25/22/6/21. Existing
 revision gates invalidate old projections and snapshots; JSON and binary
 evidence round trips and full/resumed replay are covered by tests.
 
@@ -1319,7 +1400,7 @@ coverage and resume round trips within that ceiling.
 | Claude Code | `subagents/agent-*.meta.json` and child transcripts                         | Exact Task/Agent call ID to unique `toolUseId` pairing; actual child models                        | Scan cursors and analysis/publication fingerprints include sidecar presence and bounded content. Changed claims are rejoined on resume; source changes reject publication. Missing, invalid, duplicate, or nested-parent claims stay partial. |
 | Codex       | Child rollout files                                                         | Discovery relates owned child rollouts                                                             | Preserve parent, child, model, effort, and speed inheritance.                                                                                                                                                                                 |
 | Codex       | `state_5.sqlite` thread data                                                | Not part of the current rollout reader contract                                                    | Use only thread-scoped historical rows with a stable schema and snapshot contract.                                                                                                                                                            |
-| OpenCode    | SQLite `session`, `message`, and `part` rows                                | Read together in one snapshot; native task metadata must agree with child ancestry and model       | CoreV2 `session_message` is a different schema and is not read by the existing SQLite path.                                                                                                                                                   |
+| OpenCode    | V1 SQLite `session`, `message`, and `part` rows; V2 `session_v2` and `session_message` rows | Read in separate versioned snapshots; V1 task metadata must agree with child ancestry and model | V2 uses a separate pinned reader, capture epoch, and event route. It does not enter the V1 SQLite reader or reuse its journal cursor. |
 | Pi          | Fork source named by the version 3 header                                   | Removes inherited usage while retaining explicit policy state; branch links select their own state | Fork ancestry is not delegation. Unresolved ownership remains partial.                                                                                                                                                                        |
 | Pi          | Official example-extension nested `toolResult` messages in the session      | Passive parsing of actual worker models and native call identity                                   | Finding-only; no installation or execution of the extension, no clean for arbitrary extension output.                                                                                                                                         |
 | Cursor      | Chat metadata, workspace metadata, and paired `state.vscdb` databases       | Used during synthesis                                                                              | Fingerprint every contributing source and preserve structured data instead of display-only text.                                                                                                                                              |
@@ -1416,7 +1497,7 @@ verification is unavailable in the product.
 
 For native sessions, the desktop can add nullable model and reasoning remediation
 metadata when it publishes `Ready` evidence. This applies to `ClaudeJsonl`,
-`CodexRolloutJsonl`, `OpenCodeJsonl`, `OpenCodeSqliteV2`, and `PiV3Jsonl` as the
+`CodexRolloutJsonl`, `OpenCodeJsonl`, `OpenCodeSqliteV1`, and `PiV3Jsonl` as the
 vendor matrix allows. It hashes the physical setting and saves the effective
 scope and value only when complete model evidence matches the effective setting.
 Claude Code and Codex require their reviewed fixed routes. OpenCode and Pi
@@ -1508,10 +1589,12 @@ and are not covered.
 
 ## Known Contract Gaps
 
-- OpenCode WSL discovery launches the OpenCode executable for bounded metadata
-  queries and session export. This is supported discovery, but it is not
-  disk-only passive file access and does not establish a normal persisted-store
-  contract for a new source format.
+- OpenCode WSL discovery launches child processes. V1 uses the OpenCode executable
+  for bounded DB queries and exports. V2 uses existing Linux curl for bounded
+  read requests to an already-running registered service and a separate
+  characterized transfer format. Neither route is
+  disk-only passive file access. The V2 limits above do not establish full WSL
+  history, hierarchy, or native live-check support.
 - Cursor store and IDE synthesis drops structured calls, arguments, usage,
   settings, and relation fields that can exist in native records.
 - Antigravity private protobuf parsing does not yet preserve stable request
@@ -1526,8 +1609,9 @@ and are not covered.
   resource, scope, value, and physical key. Other targets remain prompt-only.
 - Selected OpenCode skills and Codex skill documents are observed injection and
   invocation, not unused listing overhead. Claude M/K also remain subset-scoped.
-- OpenCode CoreV2 `session_message` is not the current `OpenCodeSqliteV2` table
-  contract. Pinned schema research does not add a production reader.
+- OpenCode CoreV2 `session_message` is not the `OpenCodeSqliteV1` table contract.
+  The pinned V2 reader does not establish detector support for retained-root
+  smart checks.
 - OpenCode variants have no historical effort map. Pi policy is characterized
   as agent-selected, not translated provider effort.
 - Cursor permits direct O findings; Antigravity permits D/O findings where

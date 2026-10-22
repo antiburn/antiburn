@@ -130,7 +130,69 @@ pub(crate) fn recover_uncertain_write(
         );
     };
     context.runtime_override_present = runtime_override_present(agent);
+    context.source_format = Some(definition.source_format.value());
     context.managed_configuration_present = managed_configuration_present(agent, &home);
+    if agent == AgentKind::OpenCode {
+        let subject = opencode_recovery_subject(&definition, setting);
+        let resolved = context.workspace_cwd.as_deref().zip(subject).and_then(|(cwd, subject)| {
+            let authority = crate::agent_config::opencode_config_authority::CurrentConfigAuthority::registered(cwd).ok()?;
+            AgentConfigEditor::new().resolve_opencode(&context, &authority, subject).ok()
+        });
+        let Some(resolved) = resolved else {
+            return store.defer_remediation_recovery(
+                &record.remediation_id,
+                "verificationUnavailable",
+                now,
+            );
+        };
+        let key = physical_key(
+            store,
+            agent,
+            resolved.physical_identity(),
+            resolved.selector_qualifier(),
+        )?;
+        if !recovery_target_matches(
+            definition.physical_target_key.as_deref(),
+            &record.scope_kind,
+            &key,
+            resolved.scope(),
+        ) {
+            return store.mark_remediation_recovery_checked(
+                &record.remediation_id,
+                "physicalTargetChanged",
+                now,
+            );
+        }
+        let current = resolved.current_value_display().or_else(|| {
+            resolved
+                .current_value()
+                .as_bool()
+                .zip(definition.resource.as_deref())
+                .map(|(value, resource)| format!("{resource}={value}"))
+        });
+        if current.as_deref() == Some(&replacement) {
+            let verification_available =
+                DetectorId::from_key(&definition.detector).is_some_and(|detector| {
+                    super::watch_verification_available(
+                        &definition,
+                        &record.scope_kind,
+                        &record.agent,
+                        detector,
+                    )
+                });
+            return store.finalize_remediation_write(
+                &record.remediation_id,
+                now.saturating_mul(1_000),
+                now,
+                verification_available,
+            );
+        }
+        return store.mark_remediation_recovery_checked(
+            &record.remediation_id,
+            "writeOutcomeUnknown",
+            now,
+        );
+    }
     let expected_target = match setting {
         ConfigSetting::McpServer | ConfigSetting::BuiltInTool | ConfigSetting::Skill => {
             definition.resource.as_deref()

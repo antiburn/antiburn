@@ -6,7 +6,7 @@ use antiburn_local::analysis::{
     SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
     SourceCapabilities, SourceKind, ToolResultChange, ToolResultCompleteness,
     ToolResultObservation, ToolResultPosition, ToolResultStatus, TurnContent, TurnRowSink,
-    TurnRowStore, VisitOutcome, reader_for,
+    TurnRowStore, VisitOutcome, reader_for, reader_for_input,
 };
 use antiburn_local::discovery::Explorers;
 use antiburn_local::insights::{
@@ -73,7 +73,7 @@ fn scope_sources(records: &str) -> (TempDir, Vec<SessionInput>) {
     }
     drop(connection);
     let sqlite = SessionInput {
-        source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+        source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
         ..sqlite_input(&path, "root")
     };
     let jsonl = SessionInput {
@@ -142,11 +142,11 @@ fn persisted_scope_field_availability_requires_supported_source_and_explicit_sel
                         .unwrap();
                     assert!(availability.selected);
                     let (capability, state) = match (input.source_format, observed) {
-                        (SourceFormat::OpenCodeSqliteV2, true) => (
+                        (SourceFormat::OpenCodeSqliteV1, true) => (
                             JevFieldCapability::Conditional,
                             JevFieldAvailabilityState::Observed,
                         ),
-                        (SourceFormat::OpenCodeSqliteV2, false) => (
+                        (SourceFormat::OpenCodeSqliteV1, false) => (
                             JevFieldCapability::Conditional,
                             JevFieldAvailabilityState::NotObserved,
                         ),
@@ -160,7 +160,7 @@ fn persisted_scope_field_availability_requires_supported_source_and_explicit_sel
                     assert_eq!(availability.state, state);
                     assert_eq!(
                         availability.observed_parts > 0,
-                        input.source_format == SourceFormat::OpenCodeSqliteV2 && observed
+                        input.source_format == SourceFormat::OpenCodeSqliteV1 && observed
                     );
                 }
                 for selection in [
@@ -239,7 +239,7 @@ fn scope_workflows_survive_storage_and_explicit_field_selection() {
                 .map(|a| a.source.call_id.as_deref().unwrap())
                 .collect();
             let expected = if input.source_format
-                == antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2
+                == antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1
             {
                 vec![
                     "call_fallback",
@@ -912,7 +912,7 @@ fn sqlite_input(path: &std::path::Path, session_id: &str) -> SessionInput {
         session_id: session_id.to_owned(),
         source: RawSource::Sqlite(path.to_owned()),
         fork_parent_session_id: None,
-        source_format: Default::default(),
+        source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
     }
 }
 
@@ -924,8 +924,21 @@ fn opencode_formats_keep_distinct_native_source_contracts() {
     let sqlite = sqlite_input(&path, "root");
     assert_eq!(
         reader_for("opencode").capabilities(&sqlite).source_format,
+        SourceFormat::OpenCodeSqliteV1
+    );
+    let v2 = SessionInput {
+        source_format: SourceFormat::OpenCodeSqliteV2,
+        ..sqlite.clone()
+    };
+    let v2_reader = reader_for_input(&v2);
+    let v2_capabilities = v2_reader.capabilities(&v2);
+    assert_eq!(
+        v2_capabilities.source_format,
         SourceFormat::OpenCodeSqliteV2
     );
+    assert!(v2_capabilities.model_identity);
+    assert!(v2_capabilities.tool_invocations);
+    assert!(v2_reader.normalize(&v2).is_err());
 
     let jsonl = SessionInput {
         agent: "opencode".to_owned(),
@@ -1057,7 +1070,7 @@ fn sqlite_tool_lifecycle_keeps_requests_distinct_from_results() {
         let selected = antiburn_local::analysis::jev_evidence::select_session_content(
             &antiburn_local::analysis::jev_evidence::prepare_session_content(
                 "root",
-                antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+                antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
                 published,
                 Vec::new(),
             ),
@@ -1117,7 +1130,7 @@ fn sqlite_tool_lifecycle_keeps_requests_distinct_from_results() {
         let selected = select_session_content(
             &prepare_session_content(
                 "root",
-                antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+                antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
                 published,
                 Vec::new(),
             ),
@@ -1325,7 +1338,7 @@ fn sqlite_human_history_binds_exact_decoded_text_and_rejects_injected_or_wrong_i
             )
             .unwrap();
             let prepared =
-                prepare_session_content("root", SourceFormat::OpenCodeSqliteV2, published, vec![]);
+                prepare_session_content("root", SourceFormat::OpenCodeSqliteV1, published, vec![]);
             if control != "native" {
                 assert!(
                     prepared.actions.iter().all(|action| action
@@ -1443,7 +1456,7 @@ fn sqlite_command_results_abstain_for_incomplete_or_ambiguous_native_calls() {
             )
             .unwrap();
             let prepared =
-                prepare_session_content("root", SourceFormat::OpenCodeSqliteV2, published, vec![]);
+                prepare_session_content("root", SourceFormat::OpenCodeSqliteV1, published, vec![]);
             let prepared = select_session_content(
                 &prepared,
                 JevInputSelection::from_fields(&[
@@ -1574,7 +1587,7 @@ fn legacy_shell_results_stay_unknown_while_native_sqlite_read_has_observed_exten
         )
         .unwrap();
         let prepared =
-            prepare_session_content("root", SourceFormat::OpenCodeSqliteV2, published, vec![]);
+            prepare_session_content("root", SourceFormat::OpenCodeSqliteV1, published, vec![]);
         let action = prepared
             .actions
             .iter()
@@ -1865,14 +1878,20 @@ fn native_repeated_context_reaches_reports_without_capability_overrides() {
             if case == "duplicate_export" {
                 export[4]["messageID"] = json!("m1");
             }
-            for source in [
-                RawSource::Sqlite(path.clone()),
-                RawSource::Jsonl(
-                    export
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
+            for (source, source_format) in [
+                (
+                    RawSource::Sqlite(path.clone()),
+                    antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
+                ),
+                (
+                    RawSource::Jsonl(
+                        export
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    ),
+                    antiburn_local::analysis::SourceFormat::OpenCodeJsonl,
                 ),
             ] {
                 let export_only_gap = matches!(source, RawSource::Jsonl(_))
@@ -1882,6 +1901,7 @@ fn native_repeated_context_reaches_reports_without_capability_overrides() {
                     );
                 let input = SessionInput {
                     source,
+                    source_format,
                     fork_parent_session_id: (case == "known_fork").then(|| "parent".to_owned()),
                     ..sqlite_input(&path, "root")
                 };
@@ -2081,9 +2101,19 @@ fn completed_skill_results_publish_identity_without_inventory() {
                 json!({"type":"message","messageID":"m1","sessionID":"root","time":{"created":10},"payload":message}),
                 json!({"type":"part","messageID":"m1","payload":part}),
             ].iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-            for source in [RawSource::Sqlite(path.clone()), RawSource::Jsonl(export)] {
+            for (source, source_format) in [
+                (
+                    RawSource::Sqlite(path.clone()),
+                    antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
+                ),
+                (
+                    RawSource::Jsonl(export),
+                    antiburn_local::analysis::SourceFormat::OpenCodeJsonl,
+                ),
+            ] {
                 let input = SessionInput {
                     source,
+                    source_format,
                     ..sqlite_input(&path, "root")
                 };
                 let (evidence, _) = evidence_and_rows(&input);
@@ -2517,9 +2547,19 @@ fn native_task_requires_child_identity_and_both_models() {
             json!({"type":"part","messageID":"r1","payload":task}),
             json!({"type":"message","sessionID":"child","messageID":"c1","time":{"created":30},"payload":child}),
         ].iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-        for source in [RawSource::Sqlite(path.clone()), RawSource::Jsonl(export)] {
+        for (source, source_format) in [
+            (
+                RawSource::Sqlite(path.clone()),
+                antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
+            ),
+            (
+                RawSource::Jsonl(export),
+                antiburn_local::analysis::SourceFormat::OpenCodeJsonl,
+            ),
+        ] {
             let input = SessionInput {
                 source,
+                source_format,
                 ..sqlite_input(&path, "root")
             };
             let (evidence, store) = evidence_and_rows(&input);
@@ -2617,18 +2657,25 @@ fn child_model_changes_and_missing_tasks_do_not_pollute_parent_totals() {
             }
         }
         drop(connection);
-        for source in [
-            RawSource::Sqlite(path.clone()),
-            RawSource::Jsonl(
-                export
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join("\n"),
+        for (source, source_format) in [
+            (
+                RawSource::Sqlite(path.clone()),
+                antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
+            ),
+            (
+                RawSource::Jsonl(
+                    export
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ),
+                antiburn_local::analysis::SourceFormat::OpenCodeJsonl,
             ),
         ] {
             let input = SessionInput {
                 source,
+                source_format,
                 ..sqlite_input(&path, "root")
             };
             let (evidence, store) = evidence_and_rows(&input);
@@ -2962,7 +3009,7 @@ fn part_event(part_id: &str, call_id: &str, status: &str, created: i64) -> Value
 
 async fn visit_claimed_native(path: &std::path::Path) -> NativeResultCapturingSink {
     let input = SessionInput {
-        source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+        source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
         ..sqlite_input(path, "root")
     };
     let (latest, rows) = Explorers::DISK
@@ -3431,7 +3478,7 @@ async fn recent_results_continue_after_both_native_and_shared_byte_and_count_lim
         }
         connection.execute_batch("COMMIT").unwrap();
         let input = SessionInput {
-            source_format: SourceFormat::OpenCodeSqliteV2,
+            source_format: SourceFormat::OpenCodeSqliteV1,
             ..sqlite_input(&path, "root")
         };
         let (hash, rows) = Explorers::DISK
@@ -5222,7 +5269,7 @@ async fn wal_appends_and_descendant_changes_during_a_claimed_read_keep_the_pinne
         .unwrap();
     let claim = format!("sv1:db:{hash}:{rows}");
     let input = SessionInput {
-        source_format: SourceFormat::OpenCodeSqliteV2,
+        source_format: SourceFormat::OpenCodeSqliteV1,
         ..sqlite_input(&path, "root")
     };
     let changed = Cell::new(false);

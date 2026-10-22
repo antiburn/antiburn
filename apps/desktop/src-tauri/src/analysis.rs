@@ -28,7 +28,8 @@ use antiburn_local::analysis::{
     SourceChangedReason, SourceClaim, SourceFormat, SourceKind, StoredResume, StreamSnapshot,
     ToolResultObservation, TurnRow, TurnRowSink, TurnRowStore, TurnScope, VisitOutcome,
     aggregate_metrics, append_only_guarantee, evidence_from_facts, merge_metrics,
-    metrics_by_source, metrics_from_rows, price_breakdown, pricing_generation, reader_for_input,
+    metrics_by_source_with_summaries, metrics_from_rows_with_summaries, price_breakdown,
+    pricing_generation, reader_for_input,
 };
 use antiburn_local::discovery::source_version::claude_sidecar_fingerprint;
 use antiburn_local::discovery::{
@@ -52,6 +53,8 @@ use crate::store::{
     AnalysisRecord, ProjectionRevisions, RelationKind, SessionKey, SourcePublishMode,
     SourcePublishOutcome, Store,
 };
+
+mod opencode_v2;
 
 /// Minimum sub-agents before a session reads as an orchestrator. One delegated
 /// task is ordinary; two or more is genuine fan-out. Mirrors the webview's
@@ -232,6 +235,7 @@ pub(crate) async fn read_opencode_journal_page(
 ) -> anyhow::Result<Option<OpenCodeToolResultPage>> {
     let SessionSource::ProviderDb {
         agent: AgentKind::OpenCode,
+        source_format: Some(SourceFormat::OpenCodeSqliteV1),
         db_path,
         session_id,
     } = source
@@ -907,7 +911,19 @@ pub(crate) fn source_format(agent: AgentKind, source: &SessionSource) -> SourceF
         (AgentKind::Codex, _) => SourceFormat::CodexRolloutJsonl,
         (AgentKind::Pi, _) => SourceFormat::PiV3Jsonl,
         (AgentKind::Omp, _) => SourceFormat::OmpV3Jsonl,
-        (AgentKind::OpenCode, SessionSource::ProviderDb { .. }) => SourceFormat::OpenCodeSqliteV2,
+        (
+            AgentKind::OpenCode,
+            SessionSource::ProviderDb {
+                source_format: Some(format),
+                ..
+            },
+        ) => *format,
+        (AgentKind::OpenCode, SessionSource::Inline { label, .. })
+            if label.starts_with("opencode-v2-export:") =>
+        {
+            SourceFormat::OpenCodeV2SessionExport
+        }
+        (AgentKind::OpenCode, SessionSource::ProviderDb { .. }) => SourceFormat::Uncharacterized,
         (AgentKind::OpenCode, _) => SourceFormat::OpenCodeJsonl,
         (AgentKind::Cursor, SessionSource::ProviderDb { db_path, .. })
             if db_path
@@ -1150,7 +1166,12 @@ fn stream_vendor_with_claim_hook(
 /// `Unsupported` state; this function's job is only to describe the source,
 /// never to decide whether it is good enough.
 fn adapter_supports_provider_db(agent: &str, source_format: SourceFormat) -> bool {
-    matches!(agent, "opencode" | "antigravity")
+    (agent == "opencode"
+        && matches!(
+            source_format,
+            SourceFormat::OpenCodeSqliteV1 | SourceFormat::OpenCodeSqliteV2
+        ))
+        || agent == "antigravity"
         || (agent == "windsurf" && source_format == SourceFormat::DevinLocalSqlite)
 }
 
@@ -1433,6 +1454,8 @@ fn stream_vendor_with_delivery(
     // see `stream_snapshot_to_attempt`. Threaded to `Store::publish_projections`
     // through `StreamedSession::source_outcomes`.
     let mut source_outcomes: Vec<SourcePublishOutcome> = Vec::new();
+    let mut database_children = Vec::new();
+    let mut database_outcome = VisitOutcome::Unvalidated;
     let mut tool_result_observations = Vec::new();
     let mut tool_result_observations_complete = true;
     let current_revisions = resume_revisions();
@@ -1656,21 +1679,41 @@ fn stream_vendor_with_delivery(
                 continue;
             }
             RawSource::Sqlite(_) if index == 0 => {
-                let outcome = match (input.source_format, database_claim, journal_delivery) {
-                    (SourceFormat::OpenCodeSqliteV2, Some(fingerprint), true) => adapter
-                        .visit_db_claimed(
+                let outcome = if input.source_format == SourceFormat::OpenCodeSqliteV2 {
+                    let mut grouped = opencode_v2::SourceSink::new(
+                        &input.session_id,
+                        accumulator,
+                        capabilities,
+                        turn_row_store.clone(),
+                    );
+                    let outcome = match database_claim {
+                        Some(fingerprint) => {
+                            adapter.visit_db_claimed(input, fingerprint, cancelled, &mut grouped)
+                        }
+                        None => adapter.visit(input, &mut grouped),
+                    };
+                    (accumulator, database_children) = grouped.into_parts();
+                    outcome
+                } else {
+                    match (input.source_format, database_claim, journal_delivery) {
+                        (SourceFormat::OpenCodeSqliteV1, Some(fingerprint), true) => adapter
+                            .visit_db_claimed(
+                                input,
+                                fingerprint,
+                                cancelled,
+                                &mut JournalProjectionSink(&mut accumulator),
+                            ),
+                        (SourceFormat::OpenCodeSqliteV1, None, true) => {
+                            adapter.visit(input, &mut JournalProjectionSink(&mut accumulator))
+                        }
+                        (_, Some(fingerprint), _) => adapter.visit_db_claimed(
                             input,
                             fingerprint,
                             cancelled,
-                            &mut JournalProjectionSink(&mut accumulator),
+                            &mut accumulator,
                         ),
-                    (SourceFormat::OpenCodeSqliteV2, None, true) => {
-                        adapter.visit(input, &mut JournalProjectionSink(&mut accumulator))
+                        (_, None, _) => adapter.visit(input, &mut accumulator),
                     }
-                    (_, Some(fingerprint), _) => {
-                        adapter.visit_db_claimed(input, fingerprint, cancelled, &mut accumulator)
-                    }
-                    (_, None, _) => adapter.visit(input, &mut accumulator),
                 };
                 if database_claim.is_some() {
                     parent_fingerprint = database_claim.map(str::to_owned);
@@ -1775,6 +1818,9 @@ fn stream_vendor_with_delivery(
                 return StreamOutcome::SourceChanged;
             }
             Ok(outcome) => {
+                if index == 0 {
+                    database_outcome = outcome;
+                }
                 accumulator.observe_source_outcome(outcome);
                 if cancelled() {
                     return StreamOutcome::ParentUnreadable(UnreadableReason::Cancelled);
@@ -1859,17 +1905,42 @@ fn stream_vendor_with_delivery(
             }
         }
     }
+    for (session_id, mut child) in database_children {
+        if cancelled() {
+            return StreamOutcome::ParentUnreadable(UnreadableReason::Cancelled);
+        }
+        child.observe_source_outcome(database_outcome);
+        if child.turn_row_write_failed() {
+            return StreamOutcome::ParentUnreadable(UnreadableReason::RowsWriteFailed);
+        }
+        if turn_row_store.is_some()
+            && let Some(summary) = child.summary()
+        {
+            source_summaries.insert(session_id, summary.clone());
+        }
+        match child.into_parts() {
+            Some((metrics, residual)) => {
+                metrics_accumulators.push(metrics);
+                child_folds.push(ChildFold::Coverage(Box::new(residual), None));
+            }
+            None => child_folds.push(ChildFold::Unreadable),
+        }
+    }
     if cancelled() {
         return StreamOutcome::ParentUnreadable(UnreadableReason::Cancelled);
     }
     let Some((parent, children)) = metrics_accumulators.split_first() else {
         return StreamOutcome::ParentUnreadable(UnreadableReason::NoParent);
     };
-    let started_at_epoch = metrics_accumulators
-        .iter()
-        .filter_map(SessionMetricsAccumulator::started_at_ms)
-        .min()
-        .map(|timestamp| timestamp / 1000);
+    let started_at_epoch = if inputs[0].source_format == SourceFormat::OpenCodeSqliteV2 {
+        parent.started_at_ms()
+    } else {
+        metrics_accumulators
+            .iter()
+            .filter_map(SessionMetricsAccumulator::started_at_ms)
+            .min()
+    }
+    .map(|timestamp| timestamp / 1000);
     let parent_metrics = parent.metrics();
     let subagents: Vec<_> = children
         .iter()
@@ -2174,7 +2245,7 @@ pub async fn analyze_located_for_evidence(
     // through `stream_vendor_with_hooks` — there is no separate,
     // uncharacterized-vendor fallback pass any more.
     let signal_for_pass = signal.clone();
-    let computed = tauri::async_runtime::spawn_blocking(move || {
+    let task = tauri::async_runtime::spawn_blocking(move || {
         let cancelled = || signal_for_pass.observe();
         let streamed = if signal_for_pass.journal_delivery {
             stream_vendor_with_delivery(
@@ -2216,18 +2287,16 @@ pub async fn analyze_located_for_evidence(
             StreamOutcome::ParentUnsupported => ComputedAnalysis::Unsupported,
             StreamOutcome::ParentUnreadable(reason) => ComputedAnalysis::Unavailable(reason),
         }
-    })
-    .await;
-
-    debug_assert!(signal.progress() > 0);
-    let Ok(mut computed) = computed else {
-        // The blocking task itself did not return — it panicked or the
-        // runtime dropped it. The adapter never got a chance to finish.
-        return unavailable_evidence_pass(
-            PassOutcome::Unreadable(UnreadableReason::AdapterFailed),
-            source_path,
-            Some(fingerprint),
-        );
+    });
+    let mut computed = match await_computed_analysis(task, &signal).await {
+        Ok(computed) => computed,
+        Err(reason) => {
+            return unavailable_evidence_pass(
+                PassOutcome::Unreadable(reason),
+                source_path,
+                Some(fingerprint),
+            );
+        }
     };
     if agent == AgentKind::Claude
         && !subagent_paths.is_empty()
@@ -2342,6 +2411,20 @@ pub async fn analyze_located_for_evidence(
             (metrics.session_id.clone(), (metrics, started_at_epoch))
         })
         .collect();
+    let mut roster = roster;
+    if admitted_format == SourceFormat::OpenCodeSqliteV2 {
+        let child_ids: BTreeSet<_> = by_id
+            .keys()
+            .chain(
+                source_summaries
+                    .iter()
+                    .flat_map(|summaries| summaries.keys()),
+            )
+            .filter(|id| **id != parent_session_id)
+            .cloned()
+            .collect();
+        roster.extend(child_ids.into_iter().map(|id| (id, "Sub-agent".to_owned())));
+    }
     let analysis = assemble_session_analysis(AssembledMetrics {
         parent_metrics,
         merged,
@@ -2366,6 +2449,15 @@ pub async fn analyze_located_for_evidence(
         tool_result_observations_complete,
         native_tool_result_source_format: Some(admitted_format),
     }
+}
+
+async fn await_computed_analysis(
+    task: tauri::async_runtime::JoinHandle<ComputedAnalysis>,
+    signal: &PassSignal,
+) -> Result<ComputedAnalysis, UnreadableReason> {
+    let computed = task.await.map_err(|_| UnreadableReason::AdapterFailed)?;
+    debug_assert!(signal.progress() > 0);
+    Ok(computed)
 }
 
 /// Everything [`assemble_session_analysis`] needs to build one
@@ -2564,10 +2656,8 @@ fn assemble_session_analysis(input: AssembledMetrics) -> SessionAnalysis {
 /// parse": no published rows yet (evidence not `ready`), no cached
 /// analysis record, no `source_summaries_json` on that record (a legacy or
 /// scan-triggered pass, never a worker one, wrote it), that JSON failing to
-/// parse, or [`metrics_from_rows`] finding no row group for the session's
-/// own id ([`antiburn_local::analysis::MissingParentRows`] — the same
-/// "rows exist but look wrong" signal a live production command must not
-/// panic on).
+/// parse, or no parent summary at the published fence. Published summaries
+/// admit empty parent and child sources without adding transcript rows.
 pub fn analysis_from_rows(
     store: &Store,
     key: &SessionKey,
@@ -2575,8 +2665,9 @@ pub fn analysis_from_rows(
     agent: AgentKind,
 ) -> Option<SessionAnalysis> {
     let metrics_agent = vendor_label(agent);
-    let rows = store.published_turn_rows(key).ok().flatten()?;
-    let record = store.analysis(key).ok().flatten()?;
+    let published = store.published_replay(key).ok().flatten()?;
+    let rows = published.rows;
+    let record = published.record;
     let source_summaries_json = record.source_summaries_json.as_deref()?;
     let source_summaries: BTreeMap<String, SessionSummary> =
         serde_json::from_str(source_summaries_json).ok()?;
@@ -2585,15 +2676,11 @@ pub fn analysis_from_rows(
         .as_deref()
         .and_then(|json| serde_json::from_str(json).ok());
 
-    let summary_for = |source_key: &str| {
-        source_summaries
-            .get(source_key)
-            .cloned()
-            .unwrap_or_default()
-    };
-    let mut by_source = metrics_by_source(metrics_agent, session_id, &rows, summary_for);
+    source_summaries.get(session_id)?;
+    let mut by_source =
+        metrics_by_source_with_summaries(metrics_agent, session_id, &rows, &source_summaries);
     let mut parent_metrics = by_source.remove(session_id)?;
-    // `metrics_by_source` replays each source's own tool-call history from
+    // Replay derives each source's tool-call history from
     // its rows' last-tool-only summary (`replay.rs`'s module doc comment),
     // so the `initial_context` it projects is not the live pass's own — the
     // R3b parity harness excludes it from comparison for the same reason.
@@ -2604,7 +2691,9 @@ pub fn analysis_from_rows(
     if let Some(initial_context) = initial_context {
         parent_metrics.initial_context = Some(initial_context);
     }
-    let merged = metrics_from_rows(metrics_agent, session_id, &rows, summary_for).ok()?;
+    let merged =
+        metrics_from_rows_with_summaries(metrics_agent, session_id, &rows, &source_summaries)
+            .ok()?;
 
     let by_id: HashMap<String, (SessionMetrics, Option<i64>)> = by_source
         .into_iter()
@@ -2618,9 +2707,8 @@ pub fn analysis_from_rows(
     // not from rows (a row carries no label) — `publish_projections`
     // persists them as `session_relation` rows in the same transaction
     // that publishes these turn rows, so the two are never out of step.
-    let roster = store
-        .relations(key)
-        .unwrap_or_default()
+    let roster = published
+        .relations
         .into_iter()
         .filter(|relation| relation.kind == RelationKind::Subagent)
         .map(|relation| {
@@ -2636,10 +2724,8 @@ pub fn analysis_from_rows(
         merged,
         by_id,
         roster,
-        // The accumulator's own model breakdown and runs are what
-        // `metrics_by_source`/`metrics_from_rows` just derived — there is
-        // no separate row-store query to reconcile against here, unlike
-        // the worker pass's own `RowProjections`.
+        // Replay derives model breakdowns and runs from the accumulators.
+        // The worker pass uses separate row-store queries for `RowProjections`.
         row_projections: None,
         agent_slug: agent.slug().to_string(),
         parent_session_id: session_id.to_string(),
@@ -2842,14 +2928,12 @@ fn standalone_session_analysis(
 }
 
 /// Rebuilds one sub-agent's `SessionAnalysis` from the parent session's
-/// last-published turn rows and persisted per-source summaries — the same
+/// last-published turn rows and persisted per-source summaries. Uses the same
 /// data [`analysis_from_rows`] reads, assembled as a standalone view of
-/// just that sub-agent's own rows (`source_key == subagent_id`).
+/// just that sub-agent's rows and summary (`source_key == subagent_id`).
 ///
 /// Returns `None` under the same conditions [`analysis_from_rows`] does,
-/// plus one more: no row group in `rows` carries `subagent_id` as its own
-/// `source_key` (the child transcript's rows are not among what this pass
-/// published — a session with sub-agents this worker pass could not read).
+/// plus one more: neither a row group nor a summary identifies `subagent_id`.
 pub fn subagent_analysis_from_rows(
     store: &Store,
     parent_key: &SessionKey,
@@ -2858,19 +2942,19 @@ pub fn subagent_analysis_from_rows(
     agent: AgentKind,
 ) -> Option<SessionAnalysis> {
     let metrics_agent = vendor_label(agent);
-    let rows = store.published_turn_rows(parent_key).ok().flatten()?;
-    let record = store.analysis(parent_key).ok().flatten()?;
+    let published = store.published_replay(parent_key).ok().flatten()?;
+    let rows = published.rows;
+    let record = published.record;
     let source_summaries_json = record.source_summaries_json.as_deref()?;
     let source_summaries: BTreeMap<String, SessionSummary> =
         serde_json::from_str(source_summaries_json).ok()?;
 
-    let summary_for = |source_key: &str| {
-        source_summaries
-            .get(source_key)
-            .cloned()
-            .unwrap_or_default()
-    };
-    let mut by_source = metrics_by_source(metrics_agent, parent_session_id, &rows, summary_for);
+    let mut by_source = metrics_by_source_with_summaries(
+        metrics_agent,
+        parent_session_id,
+        &rows,
+        &source_summaries,
+    );
     let metrics = by_source.remove(subagent_id)?;
     let started_at_epoch = source_started_at_epoch(&source_summaries, &rows, subagent_id);
 
@@ -2970,6 +3054,7 @@ fn model_runs_for_metrics(metrics: &SessionMetrics) -> Vec<ModelRun> {
         return sorted_models(&metrics.model_breakdown)
             .into_iter()
             .map(|model| ModelRun {
+                native_variant: None,
                 model,
                 thinking_mode: None,
             })
@@ -2996,6 +3081,7 @@ fn normalize_model_run(run: &ModelRun) -> Option<ModelRun> {
         .filter(|mode| !mode.is_empty());
     Some(ModelRun {
         model: model.to_string(),
+        native_variant: run.native_variant.clone(),
         thinking_mode: mode.map(str::to_string),
     })
 }
@@ -3056,3 +3142,7 @@ pub fn cached_total_tokens(model_breakdown_json: &str) -> u64 {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "analysis/opencode_v2_tests.rs"]
+mod opencode_v2_tests;

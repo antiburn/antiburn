@@ -24,7 +24,7 @@ fn format(name: &str) -> SourceFormat {
     match name {
         "ClaudeJsonl" => SourceFormat::ClaudeJsonl,
         "CodexRolloutJsonl" => SourceFormat::CodexRolloutJsonl,
-        "OpenCodeSqliteV2" => SourceFormat::OpenCodeSqliteV2,
+        "OpenCodeSqliteV2" => SourceFormat::OpenCodeSqliteV1,
         "PiV3Jsonl" => SourceFormat::PiV3Jsonl,
         "CursorCliAgentJsonl" => SourceFormat::CursorCliAgentJsonl,
         "AntigravityBrainJsonl" => SourceFormat::AntigravityBrainJsonl,

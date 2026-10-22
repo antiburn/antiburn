@@ -2,6 +2,16 @@ use super::*;
 use antiburn_local::analysis::ignored_instructions::InstructionScope;
 
 pub(super) fn watch_definition(target: &CachedTarget) -> WatchDefinition {
+    let passive_operation = (target.finding().source_format == SourceFormat::OpenCodeSqliteV2
+        && target.physical_target_key.is_some()
+        && target.finding().detector == DetectorId::OldModelUsage)
+        .then(|| reviewed_config_operation(target.agent, target.finding().cause()))
+        .flatten();
+    let operation = target
+        .config
+        .as_ref()
+        .map(|config| &config.operation)
+        .or(passive_operation.as_ref());
     let (provider, api, old_model, replacement) = match target.finding().cause() {
         FindingCause::OldModelUsage {
             provider,
@@ -58,18 +68,10 @@ pub(super) fn watch_definition(target: &CachedTarget) -> WatchDefinition {
             _ => None,
         },
         physical_target_key: target.physical_target_key.clone(),
-        config_setting: target
-            .config
-            .as_ref()
-            .map(|config| config_setting_name(config.operation.setting).to_owned()),
-        config_expected_value: target
-            .config
-            .as_ref()
-            .map(|config| config.operation.expected_value.display_value()),
-        config_proposed_value: target
-            .config
-            .as_ref()
-            .map(|config| config.operation.proposed_value.display_value()),
+        config_setting: operation
+            .map(|operation| config_setting_name(operation.setting).to_owned()),
+        config_expected_value: operation.map(|operation| operation.expected_value.display_value()),
+        config_proposed_value: operation.map(|operation| operation.proposed_value.display_value()),
         verification_method_revision: VERIFICATION_METHOD_REVISION,
         remediation_policy_revision: Some(REMEDIATION_POLICY_REVISION),
         savings_method_revision: SAVINGS_METHOD_REVISION,
@@ -105,11 +107,22 @@ pub(super) fn target_identity(
         workspace_key.as_deref(),
     );
     let mut physical_target_key = None;
+    let attribution_supported = |setting| {
+        vendor_policy(agent).is_some_and(|policy| {
+            policy.action_support(
+                RemediationAction::PublicationAttribution(setting),
+                finding.finding.source_format,
+            ) == ActionSupport::Supported
+        })
+    };
     let attributed = match finding.finding.cause() {
         FindingCause::OldModelUsage { .. }
-            if reviewed_config_operation(agent, finding.finding.cause()).is_some_and(
-                |operation| finding.effective_model.as_deref() == operation.expected_value.scalar(),
-            ) =>
+            if attribution_supported(ConfigSetting::Model)
+                && reviewed_config_operation(agent, finding.finding.cause()).is_some_and(
+                    |operation| {
+                        finding.effective_model.as_deref() == operation.expected_value.scalar()
+                    },
+                ) =>
         {
             Some((
                 finding.effective_model_target_hash.as_ref(),
@@ -117,7 +130,8 @@ pub(super) fn target_identity(
             ))
         }
         FindingCause::ModelOverthinking { reasoning, .. }
-            if finding.effective_reasoning.as_deref() == Some(reasoning) =>
+            if attribution_supported(ConfigSetting::Reasoning)
+                && finding.effective_reasoning.as_deref() == Some(reasoning) =>
         {
             Some((
                 finding.effective_reasoning_target_hash.as_ref(),
@@ -408,7 +422,11 @@ pub(super) fn reviewed_config_operation(
     cause: &FindingCause,
 ) -> Option<ConfigOperation> {
     match cause {
-        FindingCause::OverpoweredSubagents { worker_model, .. } => {
+        FindingCause::OverpoweredSubagents {
+            worker_model,
+            config_binding,
+            ..
+        } => {
             let replacement = if worker_model.starts_with("claude-") {
                 "claude-sonnet-5"
             } else if worker_model.starts_with("gpt-") {
@@ -418,10 +436,26 @@ pub(super) fn reviewed_config_operation(
             } else {
                 return None;
             };
+            let config_value = |model: &str| {
+                if agent != AgentKind::OpenCode {
+                    return Some(model.to_owned());
+                }
+                let binding = config_binding.as_ref()?;
+                if binding.model_id != *worker_model || binding.agent_id.is_empty() {
+                    return None;
+                }
+                let target =
+                    model_control_target(agent.slug(), Some(&binding.provider_id), None, model);
+                matches!(
+                    ReviewedModelCatalog::default().resolve(&target),
+                    Support::Supported(_)
+                )
+                .then(|| format!("{}/{}", binding.provider_id, model))
+            };
             Some(ConfigOperation {
                 setting: ConfigSetting::SubagentModel,
-                expected_value: worker_model.clone().into(),
-                proposed_value: replacement.into(),
+                expected_value: config_value(worker_model)?.into(),
+                proposed_value: config_value(replacement)?.into(),
             })
         }
         FindingCause::UnusedMcpServer { server, .. } => Some(ConfigOperation {

@@ -513,7 +513,13 @@ async fn blocked_journal_delivery_is_unavailable_regardless_of_legacy_projection
                     .any(|log| log.contains("state=\"source_unavailable\""))
             );
 
-            store.lock().execute("UPDATE session SET source_label = 'opencode:replacement' WHERE agent = 'opencode'", []).unwrap();
+            store
+                .lock()
+                .execute(
+                    "UPDATE session SET incarnation = 8 WHERE agent = 'opencode'",
+                    [],
+                )
+                .unwrap();
             assert!(run_page(&store, source.source(), 110).await);
             catch_up(&mut host);
             let repaired = read_installed_checks(&store, &host.definitions).unwrap();

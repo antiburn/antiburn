@@ -50,4 +50,37 @@ describe("check row projection", () => {
     expect(row.clean).toBe(0)
     expect(checksHeroPresentation(presentation).result).toBe("No checks assessed")
   })
+
+  it.each([
+    { finding: 0, clean: 0, checkingCount: 0, passed: 0, failed: 0 },
+    { finding: 0, clean: 0, checkingCount: 1, passed: 0, failed: 0 },
+    { finding: 0, clean: 1, checkingCount: 0, passed: 1, failed: 0 },
+    { finding: 1, clean: 0, checkingCount: 0, passed: 0, failed: 1 },
+  ])("keeps eligible results separate from a blocked V2 source: %j", (facts) => {
+    const presentation = checksPresentation({
+      ...report,
+      categories: [],
+      installedChecks: [
+        {
+          ...installed,
+          ...facts,
+          hasStarted: true,
+          diagnostics: [
+            {
+              code: "opencode-v2-source-mismatch",
+              severity: "error",
+              title: "Check the OpenCode V2 source",
+              message: "The service database could not be verified.",
+              source: null,
+              details: [],
+              affectedSessionCount: 1,
+            },
+          ],
+        },
+      ],
+    })
+    expect(presentation.wins).toHaveLength(facts.passed)
+    expect(presentation.failures).toHaveLength(facts.failed)
+    expect(presentation.unavailable).toHaveLength(1 - facts.passed - facts.failed)
+  })
 })

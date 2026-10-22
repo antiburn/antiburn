@@ -40,6 +40,13 @@ pub enum JevNativeFieldContainer {
 pub struct JevOperationMetadata {
     pub state: JevOperationState,
     pub bindings: Vec<JevNativeFieldRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<crate::analysis::NativeToolOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_executed: Option<bool>,
+    /// Bind result facts to one output field, including clipped text without ranges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_output_field: Option<JevInputField>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub user_answers: Vec<super::JevUserAnswer>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -75,7 +82,21 @@ pub struct UserTextHistoryProof {
 
 impl JevOperationMetadata {
     pub fn selected(&self, selection: JevInputSelection) -> Self {
+        let output_selected = self.tool_output_field.is_some_and(|field| {
+            matches!(
+                field,
+                JevInputField::BashCommandOutput
+                    | JevInputField::ReadFileOutput
+                    | JevInputField::SearchFilesOutput
+                    | JevInputField::OtherToolOutput
+            ) && (selection.includes(field)
+                || field == JevInputField::ReadFileOutput
+                    && selection.includes(JevInputField::ReadFileResult))
+        });
         Self {
+            outcome: self.outcome.clone().filter(|_| output_selected),
+            provider_executed: self.provider_executed.filter(|_| output_selected),
+            tool_output_field: self.tool_output_field.filter(|_| output_selected),
             non_authorizing_context_proof: self
                 .non_authorizing_context_proof
                 .clone()

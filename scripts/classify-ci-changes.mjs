@@ -201,8 +201,8 @@ export const CROSS_WORKSPACE_INPUTS = {
   "apps/desktop/src/views/settings/PrivacyPane.tsx": ["shell"],
   "docs/analytics.md": ["shell"],
   "docs/burn-check/examples/failed-retry-loop.yml": ["checks", "shell"],
-  "docs/burn-check/examples/over-exploring.yml": ["checks"],
-  "docs/burn-check/examples/scope-creep.yml": ["checks"],
+  "docs/burn-check/examples/over-exploring.yml": ["checks", "shell"],
+  "docs/burn-check/examples/scope-creep.yml": ["checks", "shell"],
   "docs/check-coverage.md": ["engine", "shell"],
   "docs/privacy-policy.md": ["shell"],
   "docs/session-coverage.md": ["engine"],
@@ -386,6 +386,12 @@ export function routeChanges(files) {
     ) {
       route.ci_scripts = true;
       route.licenses = true;
+    } else if (
+      file === "scripts/run-opencode-wsl-acceptance.ps1" ||
+      file === "scripts/opencode-wsl-acceptance.test.mjs"
+    ) {
+      direct.add("engine");
+      route.ci_scripts = true;
     } else if (file.startsWith("scripts/")) {
       route.ci_scripts = true;
     } else {

@@ -5,7 +5,10 @@ import type {
 } from "../insightsIpc"
 import { isInstalledCheck, type CheckRow } from "./checkRows"
 import { smartCheckReviewPresentation } from "./smartCheckReview"
-import { installedCheckErrorStatus } from "./installedCheckDiagnostics"
+import {
+  installedCheckErrorStatus,
+  installedCheckSourceBlocked,
+} from "./installedCheckDiagnostics"
 
 type StatusKind = "failed" | "passed" | "checking" | "waiting" | "neutral"
 
@@ -28,6 +31,7 @@ export interface CheckStatusFacts {
   waitingForEvents?: InstalledCheckReportPayload["waitingForEvents"]
   installedAvailability?: InstalledCheckAvailability
   diagnosticStatus?: string | null
+  sourceBlocked?: boolean
   terminalLabel?: string | null
 }
 
@@ -47,7 +51,10 @@ function installedCheckStatus(facts: CheckStatusFacts, snoozed: boolean): CheckR
   }
   const parts: CheckResultStatus["parts"] = []
   if (facts.finding > 0) parts.push({ kind: "failed", text: `${facts.finding} failed` })
-  if (facts.clean > 0 || (facts.finding === 0 && (facts.hasStarted || facts.checking))) {
+  if (
+    facts.clean > 0 ||
+    (facts.finding === 0 && !facts.sourceBlocked && (facts.hasStarted || facts.checking))
+  ) {
     parts.push({
       kind: "passed",
       text: facts.clean > 1 || facts.finding > 0 ? `${facts.clean} passed` : "Passed",
@@ -132,6 +139,7 @@ export function checkStatusFacts(check: CheckRow): CheckStatusFacts {
           waitingForEvents: check.installed.waitingForEvents,
           installedAvailability: check.installed.availability,
           diagnosticStatus: installedCheckErrorStatus(check.installed.diagnostics),
+          sourceBlocked: installedCheckSourceBlocked(check.installed.diagnostics),
         }
       : {}),
     terminalLabel: review.terminalLabel,

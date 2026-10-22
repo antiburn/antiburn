@@ -192,7 +192,7 @@ fn publish_tool(
         agent: "opencode".into(),
         session_id: "input".into(),
         source: RawSource::Sqlite(path),
-        source_format: SourceFormat::OpenCodeSqliteV2,
+        source_format: SourceFormat::OpenCodeSqliteV1,
         fork_parent_session_id: None,
     };
     let reader = reader_for("opencode");

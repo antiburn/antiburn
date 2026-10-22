@@ -598,21 +598,26 @@ pub fn run_pass(
         }
         let writer: Arc<dyn TurnRowStore> =
             Arc::new(FencedTurnRowStore::new(store, record.key.clone(), fence));
-        analysis::analyze_located_for_evidence(
-            agent,
-            &record.key.session_id,
-            analysis::ClaimedSource {
-                fingerprint: record.source_fingerprint,
-                generation: 0,
-            },
-            signal,
-            Some(writer),
-            parent,
-            analysis::LocatedTranscripts {
-                source: SessionSource::File(PathBuf::from(record.source_label)),
-                children,
-            },
-        )
+        crate::insights_worker::run_pass_with_writer(signal.clone(), writer, |writer| {
+            Box::pin(async move {
+                analysis::analyze_located_for_evidence(
+                    agent,
+                    &record.key.session_id,
+                    analysis::ClaimedSource {
+                        fingerprint: record.source_fingerprint,
+                        generation: 0,
+                    },
+                    signal,
+                    Some(writer),
+                    parent,
+                    analysis::LocatedTranscripts {
+                        source: SessionSource::File(PathBuf::from(record.source_label)),
+                        children,
+                    },
+                )
+                .await
+            })
+        })
         .await
     })
 }

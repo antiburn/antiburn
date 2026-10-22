@@ -57,8 +57,9 @@ pub(crate) fn next_live_source_in(
                             s.source_generation
                        FROM session s LEFT JOIN opencode_journal_delivery d
                          USING(environment_key, agent, session_id)
-                      WHERE s.environment_key = 'native' AND s.agent = 'opencode'
-                        AND s.source_kind = 'providerDb' AND s.wsl_distro IS NULL
+                       WHERE s.environment_key = 'native' AND s.agent = 'opencode'
+                         AND s.source_kind = 'providerDb' AND s.wsl_distro IS NULL
+                         AND s.source_label = 'opencode:' || s.session_id
                         AND s.cwd IS NOT NULL AND s.cwd <> ''
                         AND NOT EXISTS(SELECT 1 FROM session_relation r
                           WHERE r.environment_key = s.environment_key AND r.agent = s.agent
@@ -98,3 +99,5 @@ pub(crate) fn next_live_source_in(
         )
         .optional()?)
 }
+#[path = "opencode_v2.rs"]
+pub(crate) mod opencode_v2;

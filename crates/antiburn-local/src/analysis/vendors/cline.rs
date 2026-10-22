@@ -175,6 +175,7 @@ fn visit_bundle(
                 parent_call_id: None,
                 child_model: Some(child.model.clone()),
                 provenance: RelationProvenance::SessionParentLink,
+                config_binding: None,
             },
         )));
         let (_, child_model, _) = parse_messages(
@@ -400,6 +401,7 @@ fn parse_messages(
         };
         summary.started_at_ms.get_or_insert(ts);
         sink.record(NormalizedRecord::MetricsEvent(Box::new(NormalizedEvent {
+            accounting: None,
             ts_ms: Some(ts),
             usage_ts_ms: None,
             role: Role::Assistant,
@@ -424,6 +426,7 @@ fn parse_messages(
             parent_uuid: None,
             logical_parent_uuid: None,
             thread_id: (source == EventSource::Subagent).then(|| session_id.to_owned()),
+            proven_subagent_launches: None,
         })));
     }
     Ok((summary, observed_model, usage_totals))

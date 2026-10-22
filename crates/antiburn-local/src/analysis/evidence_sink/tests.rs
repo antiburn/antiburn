@@ -758,6 +758,7 @@ fn subagents_overflow() -> SessionEvidence {
                 parent_call_id: None,
                 child_model: None,
                 provenance: crate::analysis::RelationProvenance::TaskToolUse,
+                config_binding: None,
             },
         )));
     }
@@ -1074,6 +1075,7 @@ fn native_child_models_require_one_exact_call_and_reject_truncated_identities() 
                 Some(&id),
                 None,
                 crate::analysis::RelationProvenance::TaskToolUse,
+                None,
             );
         }
         accumulator.observe_child_models(joined_id.as_deref(), std::iter::once("claude-opus-4-6"));
@@ -1100,6 +1102,7 @@ fn native_child_model_pairs_are_bounded_and_survive_json_and_binary_replay() {
         Some("call-1"),
         None,
         crate::analysis::RelationProvenance::TaskToolUse,
+        None,
     );
     accumulator.observe_child_models(Some("call-1"), std::iter::once(long_string().as_str()));
     assert!(
@@ -1154,6 +1157,7 @@ fn subagent_string_overflow() -> SessionEvidence {
             parent_call_id: None,
             child_model: None,
             provenance: crate::analysis::RelationProvenance::TaskToolUse,
+            config_binding: None,
         },
     )));
     accumulator.evidence(&TurnFacts::default())
@@ -1509,6 +1513,8 @@ fn native_result(result_id: &str, content: &str) -> ToolResultObservation {
     use crate::analysis::ToolResultChange;
 
     ToolResultObservation {
+        outcome: None,
+        provider_executed: None,
         context: None,
         source_format: crate::analysis::SourceFormat::ClaudeJsonl,
         session_id: "s1".to_owned(),

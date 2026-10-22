@@ -104,6 +104,7 @@ impl SessionReader for CodexSessionReader {
             ContextWindowSource::Inferred
         };
         Ok(NormalizedSession {
+            accounting: None,
             agent: input.agent.clone(),
             session_id: input.session_id.clone(),
             events,
@@ -727,6 +728,7 @@ impl CodexStreamState {
                         parent_call_id: None,
                         child_model: None,
                         provenance: RelationProvenance::SpawnAgentCall,
+                        config_binding: None,
                     },
                 )));
             }
@@ -940,6 +942,8 @@ impl CodexStreamState {
                     && content_complete;
                 sink.record(NormalizedRecord::ToolResult(Box::new(
                     ToolResultObservation {
+                        outcome: None,
+                        provider_executed: None,
                         context: Some(crate::analysis::ToolResultContext::pending(
                             ToolResultPosition::Jsonl {
                                 record_index,
@@ -1096,6 +1100,7 @@ impl CodexStreamState {
             ContextWindowSource::Inferred
         };
         SessionSummary {
+            accounting: None,
             cache_write_tokens_available: self.cache_write_tokens_available,
             context_window: self.context_window,
             context_window_source,
@@ -1191,6 +1196,8 @@ fn completed_native_result(
         && !input.truncated
         && !result.truncated;
     Some(ToolResultObservation {
+        outcome: None,
+        provider_executed: None,
         context: None,
         source_format,
         session_id: session_id.to_owned(),
@@ -3232,7 +3239,9 @@ mod tests {
         // output records and do not change the eventless or inertness gates.
         // Source facts use the new type names and bounded user-slot callback.
         // These changes do not change the eventless or inertness gates.
-        const EXPECTED_FINGERPRINT: u64 = 1_643_323_657_805_475_238;
+        // Default accounting and tool-outcome fields read no new Codex keys.
+        // They do not change the eventless or inertness gates.
+        const EXPECTED_FINGERPRINT: u64 = 11_159_898_115_951_436_820;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();

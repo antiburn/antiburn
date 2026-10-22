@@ -225,7 +225,7 @@ fn user_message(
         completeness: UserMessageCompleteness::Complete,
         parts: vec![UserMessagePart {
             item_index: 0,
-            native_part_id: (source_format == SourceFormat::OpenCodeSqliteV2)
+            native_part_id: (source_format == SourceFormat::OpenCodeSqliteV1)
                 .then(|| "part-1".to_owned()),
             text: format!("Request for {message_id}."),
         }],
@@ -581,6 +581,8 @@ fn tool_result_observations_survive_snapshot_resume_and_remain_private() {
         ),
     );
     let result = ToolResultObservation {
+        outcome: None,
+        provider_executed: None,
         context: None,
         source_format: SourceFormat::ClaudeJsonl,
         session_id: session_id.to_owned(),
@@ -709,7 +711,7 @@ fn user_messages_keep_native_identity_and_position_across_snapshot_resume() {
             SourceKind::Sqlite,
             SourceCapabilities::opencode(),
             user_message(
-                SourceFormat::OpenCodeSqliteV2,
+                SourceFormat::OpenCodeSqliteV1,
                 "native-request-opencode",
                 "opencode-message",
                 UserMessagePosition::OpenCodeSqlite {

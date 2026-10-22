@@ -16,7 +16,7 @@ fn first_tier_matrix_matches_reachable_desktop_capabilities() {
         (
             "OpenCode",
             AgentKind::OpenCode,
-            SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::OpenCodeSqliteV1,
         ),
         ("Pi", AgentKind::Pi, SourceFormat::PiV3Jsonl),
         ("Cursor", AgentKind::Cursor, SourceFormat::CursorJsonl),

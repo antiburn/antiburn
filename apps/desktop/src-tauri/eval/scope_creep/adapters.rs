@@ -86,7 +86,7 @@ pub fn cases(cohort: &str, task: &str, work: &str, path: &str) -> Vec<Case> {
                 id: format!("{cohort}-adapter-{agent}-{index}"), scenario: "adapter".into(),
                 expected: if proposal { "finding" } else { "unassessed" }.into(), policy_admitted: false, authority_fixture: !proposal,
                 task: format!("{task} The retained question or plan is not approved. Do not implement any additional feature."),
-                work: work.into(), path: path.into(), format: if agent == "opencode" { SourceFormat::OpenCodeSqliteV2 } else { format },
+                work: work.into(), path: path.into(), format: if agent == "opencode" { SourceFormat::OpenCodeSqliteV1 } else { format },
                 metadata: Some(metadata),
                 family: String::new(), events: vec![], judgments: Default::default(),
                 source_limit: format!("Production {agent} parser, pinned synthetic {fixture}. Metadata is inserted into a separate synthetic published task. This is adapter-output conformance, not end-to-end store ancestry. OpenCode wrapped JSONL characterizes shared extraction; Jev accepts only OpenCodeSqliteV2. Claude/Codex/Pi question origin stays unknown; plans do not infer approved versions. See docs/session-coverage.md for exact pins."),

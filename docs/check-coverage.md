@@ -4,7 +4,7 @@ This document covers local passive session evidence and the desktop's read-only
 current resource inventory. Session evidence supports historical claims. Current
 inventory supports claims about what is enabled now. It cannot prove what a past
 session exposed. Existing persisted output from the reviewed Pi example extension
-is a passive input. The current OpenCode WSL discovery conflict is recorded in
+is a passive input. The OpenCode WSL discovery limits are recorded in
 `session-coverage.md`.
 
 See [`session-coverage.md`](session-coverage.md) for discovery, framing, parsing,
@@ -12,7 +12,7 @@ companion-source, and provider-route coverage for the same source formats.
 
 ## Burn Check definitions
 
-The four accepted native readers emit `ToolResultObservation` and `UserMessage` facts under
+Accepted native readers emit `ToolResultObservation` and `UserMessage` facts under
 their characterized contracts. Local parsing freezes the user-message prefix
 and main-session admission in each result's `ToolResultContext`. The desktop
 publication store retains it, and `StorePublishedEvidenceReader` converts it to
@@ -64,6 +64,11 @@ unfinished work and accepted evidence atomically, including earlier-page work
 without a direct dependency on the corrected identity. Other branches stay
 valid. Stale or duplicate updates acknowledge delivery without replacing newer
 observations or creating an assessment. None of these transitions writes success.
+
+Quality gaps preserve accepted assessments when their saved input is unchanged.
+Continuity resets also preserve these assessments but cancel pending work and
+clear the affected selection window. An unsafe source update revokes that
+branch's assessments and pending work and resets its window.
 
 Native file and journal checks follow committed source publication. Their report
 readiness uses the committed delivery receipt and current scope, not
@@ -149,6 +154,12 @@ fields remain assessable when optional context is missing or source history is
 partial. `message.quality`, `session.requests_complete`, and
 `session.source_coverage` tell the model which limits apply. Unknown identity,
 scope, or ordering is still not promoted as reliable evidence.
+
+For the pinned V2 snapshot reader, missing shell output and migration-cleared
+results keep a result-level content limit through selected publication. Native
+completion and program exit facts do not make missing output complete. A file
+read with a different returned filename does not prove a range in the requested
+file. These retained helper facts do not resume suspended native smart checks.
 
 `ToolResultAdmission` gates source identity, native order, and main-session
 ownership separately from content completeness. Missing frozen context and unsafe
@@ -374,7 +385,7 @@ does not mean every source byte or candidate was reviewed. These policy limits
 do not widen parser or native source-format support.
 
 The native skill-use adapter is fixture-characterized for `ClaudeJsonl`,
-`OpenCodeSqliteV2`, `CodexRolloutJsonl`, and `PiV3Jsonl` under the
+`OpenCodeSqliteV1`, `CodexRolloutJsonl`, and `PiV3Jsonl` under the
 [accepted shapes and limits](../crates/antiburn-local/tests/fixtures/skill_use_characterization/README.md).
 Exact references preserve selected event identity, lifecycle, source roles,
 timestamps/order when present, and session/publication fences. Adapters persist
@@ -398,7 +409,7 @@ session-wide or equivalent-use absence.
 
 Optional `UserAnswer` and `PlanReference` fields have shared engine types and
 private storage/query contracts. They require explicit selection. Both are
-conditional for `OpenCodeSqliteV2`, `ClaudeJsonl`, `CodexRolloutJsonl`, and
+conditional for `OpenCodeSqliteV1`, `ClaudeJsonl`, `CodexRolloutJsonl`, and
 `PiV3Jsonl` under the pinned contracts in `session-coverage.md`; other sources,
 including Cursor and Antigravity, remain unavailable for these typed forms. OpenCode plan content
 remains unresolved. Claude retains exact recorded plan text/content digests but
@@ -511,7 +522,7 @@ old work as a target. Publication validation remains exact. Missing or partial
 task, work, outcome, or relevant use evidence cannot establish a complete result.
 
 Requested line units are characterized for exact Claude `Read`, Pi `read`, and
-OpenCode SQLite `read` calls under the schema and producer pins in
+OpenCode V1 SQLite `read` calls under the schema and producer pins in
 [`session-coverage.md`](session-coverage.md#private-file-read-evidence). Other
 accepted read aliases retain native range arguments with unknown units.
 Returned extents cover pinned OpenCode numbered output, Claude 2.1.278 matched
@@ -560,7 +571,7 @@ Antigravity. These capabilities do not make the suspended checks runnable.
 
 ## Source Inventory
 
-The tables list all 33 `SourceFormat` keys. Known source shape and release
+The tables list all 35 `SourceFormat` keys. Known source shape and release
 version are separate facts. A version range is not always available; an accepted
 schema, header, or pinned producer commit with synthetic fixtures can establish
 a bounded contract. No row promises parity across all historical versions.
@@ -570,7 +581,7 @@ a bounded contract. No row promises parity across all historical versions.
 | `ClaudeJsonl`                  | Claude Code session JSONL and child sidecars, including Claude Desktop Cowork transcripts from nested `.claude/projects` roots | Private producer; fixture-bounded core/sidecars and optional decoder pins; no public schema pin. Smart retained roots/results use local CLI 2.1.278 accepted-log shape, including its informational prelude and explicit human markers; not SDK/GC or historical release support. YAML result context separately admits unmarked/API user-slot text outside tool envelopes, with unique direct-parent assistant-call joins, UUID/block/physical positions, explicit error state, and completeness; it does not relax native human proofs. A synthetic fixture characterizes Cowork main JSONL observed with Claude Desktop 2.2553.1 (embedded Claude Code 2.1.275); this does not widen the pinned range. Cowork `audit*.jsonl` is excluded. See session coverage. | Dedicated                             |
 | `CodexRolloutJsonl`            | Codex rollout JSONL with discovered children                                                                                   | Legacy recorder `e7637306bc9246a3e42e407cb94f96b7ed345e3e`; smart retained roots/completed items and synthetic YAML result/context shapes use 0.160.1 at `d27764b82f7118f674371e6d6e76271d9d606edb`. YAML observations require recognized linked response-item outputs or accepted completed command/file-change items, native line order, available status, and complete retained root `user.text`; UI echoes are not extra requests. Qualified environment context is single-local and non-authorizing. No historical release range.                                                                                                                                                                                                                             | Dedicated                             |
 | `OpenCodeJsonl`                | OpenCode legacy exported session data                                                                                          | Accepted export wrappers and native message/part shapes; pinned research below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Dedicated                             |
-| `OpenCodeSqliteV2`             | OpenCode `session`/`message`/`part` snapshots; native YAML uses the 1.18.35 `event`/`event_sequence` journal                   | Fixture-backed exact-ID snapshot. Smart message/skill producer `772392050500e0ddcd2ad2193411a22a3824372f`; Read renderer `652c090dc119b5f3dc1e5e0bf1c4b40d9721f0ef`. YAML pins 1.18.35 at `53d1eabb61e21162157817bf677da0a4ad3332e3`. Live delivery uses bounded recent input, indexed suffixes, and atomic cursor/outbox state. Corrections retain first-terminal order and frozen requests. Synthetic text is excluded; cold requests are partial. Page absence is not removal. Optional content can remain usable; unsafe identity/order/ownership cannot. Live validation samples boundaries; strict replay audits the prefix. See [journal limits](session-coverage.md#opencode-journal-delivery). No live certification or historical-release claim.         | Dedicated                             |
+| `OpenCodeSqliteV1`             | OpenCode `session`/`message`/`part` snapshots; native YAML uses the 1.18.35 `event`/`event_sequence` journal                   | Fixture-backed exact-ID snapshot. Smart message/skill producer `772392050500e0ddcd2ad2193411a22a3824372f`; Read renderer `652c090dc119b5f3dc1e5e0bf1c4b40d9721f0ef`. YAML pins 1.18.35 at `53d1eabb61e21162157817bf677da0a4ad3332e3`. Live delivery uses bounded recent input, indexed suffixes, and atomic cursor/outbox state. Corrections retain first-terminal order and frozen requests. Synthetic text is excluded; cold requests are partial. Page absence is not removal. Optional content can remain usable; unsafe identity/order/ownership cannot. Live validation samples boundaries; strict replay audits the prefix. See [journal limits](session-coverage.md#opencode-journal-delivery). No live certification or historical-release claim.         | Dedicated                             |
 | `PiV3Jsonl`                    | Pi session JSONL                                                                                                               | Header V1/V2/V3 metric migrations; smart retained core V3 roots/results and synthetic YAML result/context shapes use 0.84.4 at `b79e4cc834970cca69daebffab7df1da7d1e52c4`. YAML observations retain physical order, exact call/tool/parent joins, status, and completeness; main-session user-slot content needs no sender-origin proof. Branch/partial-record gaps block complete context. V1/V2 metric migration does not establish YAML support. Optional extension question/plan pins are separate. Headerless/unsupported sources reject; no historical release range.                                                                                                                                                                                        | Dedicated                             |
 | `OmpV3Jsonl`                   | Oh My Pi session JSONL behind the title slot                                                                                   | Fixed-width 256-byte `type: "title"` slot, then an exact version 3 header; synthetic fixtures pin the accepted shape, an allowlist admits only the OMP core rows, characterized `custom` rows, and signal-free `title_change`/`credential_pin`/`ttsr_injection`/`session_init` housekeeping rows, and every other record type or header version fails closed                                                                                                                                                                                                                                                                                                                                                                                                       | Shared Pi-family reader               |
 | `CursorJsonl`                  | Cursor compatibility JSONL without a surface marker                                                                            | Unversioned and uncharacterized                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Dedicated shared Cursor reader        |
@@ -600,12 +611,38 @@ a bounded contract. No row promises parity across all historical versions.
 | `WindsurfCascadeProtobuf`      | Windsurf Cascade `.pb` data                                                                                                    | Private and uncharacterized                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Dedicated fail-closed when discovered |
 | `DevinLocalSqlite`             | Devin Local migration-17 `sessions.db`                                                                                         | Migration 17 and required table columns are fixture-pinned; WAL-visible read-only snapshots; ACP schema 6 is optional child companion only                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Dedicated S-only reader               |
 | `Uncharacterized`              | Unknown-agent generic fallback                                                                                                 | No source contract                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Generic fail-closed                   |
+| `OpenCodeSqliteV2` | OpenCode Core V2 `session_v2` / `session_message` SQLite | OpenCode v2.0.32 producer commit `843a6c514e606b436a7fe713422ace0a93ad3d61`; bounded read-only parser for the pinned shape. Caps at 100,000 rows, 128 MiB aggregate row data, and 8 MiB per row; partial on cap. Live direct-result delivery uses the registered local event feed, one verified database, and the exact native main-session Live CWD scope. It admits at most 256 active sessions and fails closed above that cap. It has no replay; request history before attach stays partial, and reconnect publishes a gap at a new sequence boundary. | D/S/O/C finding support is partial and has bounded estimates. M/B/K resource findings, T/F, clean results, and native smart checks are unsupported. Model and worker edits need an exact current-consumer target. O verification stays unavailable because the saved evidence does not prove the provider API route. |
+| `OpenCodeV2SessionExport` | V2 `SessionTransfer.Data` JSON from WSL | Pinned OpenCode v2.0.32 transfer DTO from an already-running default registered service; existing Linux curl, bounded streaming reads without redirects or proxies, exact session IDs, and stdin-only authentication. Selects at most 100 exports from 500 metadata rows, with 16 MiB/export and 32 MiB/batch limits. | Dedicated partial stored parser. No detector-grade facts, native live eligibility, remediation, or clean-result support. Custom state roots, offline reads, and real WSL runtime validation remain outside this characterized support. |
+
+OpenCode 2 releases enter the V2 reader by default, without an exact-release
+allowlist. The producer pins above define characterized shapes, not version
+gates. Required schema, protocol fields, size limits, and identity checks still
+apply to native stored reads, live capture, current config reads, and WSL exports.
+This policy does not add clean results or remediation capabilities.
+
+V2 live YAML execution is separate from the native check matrix below. The
+registered OpenCode 2 service must be bound to one native database before
+capture starts. Fresh attachments do not seed historical terminal results.
+Captured results retain native terminal order and partial request history.
+Continuity loss resets the affected branch window without clearing other
+sessions or retrying uncertain provider attempts. Quality gaps and continuity
+resets preserve accepted status and its saved input when that evidence is
+unchanged. A reset cancels pending work from the affected selection segment;
+corrections and removals still invalidate affected assessments.
+Empty attachment receipts let already captured work drain after disconnect.
+Stored snapshots do not prove complete terminal history, historical tool exposure,
+or current config targets.
+V2 static D/S/O/C findings have partial support and bounded estimates. Their
+prompts are reachable, but they cannot produce clean results. Model and worker
+edits need an exact current-consumer target. O verification stays unavailable
+because saved evidence does not prove the provider API route. M/B/K resource
+findings and native smart checks remain unsupported.
 
 ## Coverage Matrix
 
 This matrix records implemented eligibility and source limits. Skill Opportunities
 and Over-exploring, plus Scope Creep, use persisted assessments, not synchronous metric gates.
-Their conditional native Claude Code, Codex, OpenCode SQLite, and Pi support
+Their conditional native Claude Code, Codex, OpenCode V1 SQLite, and Pi support
 requires accepted retained-root history and pinned native evidence. Other sources
 remain unavailable. `Partial` marks source-scoped support; a complete eligible
 assessment can report clean within reviewed scope, not exhaustive history.
@@ -619,7 +656,7 @@ in this matrix.
 | `ClaudeJsonl`                  | Assessable  | Assessable  | Assessable  | Partial     | Partial     | Partial     | Assessable  | Assessable  | Assessable  | Partial             | Partial        | Partial     |
 | `CodexRolloutJsonl`            | Assessable  | Assessable  | Assessable  | Partial     | Partial     | Partial     | Assessable  | Assessable  | Assessable  | Partial             | Partial        | Partial     |
 | `OpenCodeJsonl`                | Assessable  | Unsupported | Assessable  | Unsupported | Unsupported | Partial     | Assessable  | Unsupported | Assessable  | Unsupported         | Unsupported    | Unsupported |
-| `OpenCodeSqliteV2`             | Assessable  | Unsupported | Assessable  | Unsupported | Unsupported | Partial     | Assessable  | Unsupported | Assessable  | Partial             | Partial        | Partial     |
+| `OpenCodeSqliteV1`             | Assessable  | Unsupported | Assessable  | Unsupported | Unsupported | Partial     | Assessable  | Unsupported | Assessable  | Partial             | Partial        | Partial     |
 | `PiV3Jsonl`                    | Assessable  | Assessable  | Partial     | Unsupported | Unsupported | Unsupported | Assessable  | Unsupported | Assessable  | Partial             | Partial        | Partial     |
 | `OmpV3Jsonl`                   | Partial     | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Partial     | Unsupported | Unsupported | Unsupported         | Unsupported    | Unsupported |
 | `CursorJsonl`                  | Unsupported | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Partial     | Unknown     | Unknown     | Unsupported         | Unsupported    | Unsupported |
@@ -649,6 +686,8 @@ in this matrix.
 | `WindsurfCascadeProtobuf`      | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unsupported         | Unsupported    | Unsupported |
 | `DevinLocalSqlite`             | Unsupported | Unsupported | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported         | Unsupported    | Unsupported |
 | `Uncharacterized`              | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unsupported         | Unsupported    | Unsupported |
+| `OpenCodeSqliteV2`             | Partial     | Unsupported | Partial     | Unsupported | Unsupported | Unsupported | Partial     | Unsupported | Partial     | Unsupported         | Unsupported    | Unsupported |
+| `OpenCodeV2SessionExport`      | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported         | Unsupported    | Unsupported |
 
 ## Smart Check Review Coverage
 
@@ -734,7 +773,7 @@ Creep scheduling, including completed assessments with no runnable targets.
 The first-tier product matrix is the source of truth for reachable check
 support. Ignored Instructions execution is suspended. Its retained selected-input
 loader accepts `ClaudeJsonl`, `CodexRolloutJsonl`,
-`OpenCodeSqliteV2`, `PiV3Jsonl`, `CursorCliAgentJsonl`, `CursorCliStoreDb`,
+`OpenCodeSqliteV1`, `PiV3Jsonl`, `CursorCliAgentJsonl`, `CursorCliStoreDb`,
 `CursorChatStoreDb`, `CursorIdeComposer`, `AntigravityBrainJsonl`, and
 `AntigravitySqlite`. Cursor store and composer routes retain normalized user
 and assistant text but do not supply the typed tool anchors required by the
@@ -883,7 +922,7 @@ limits; they do not establish complete history outside the selected window.
 | ----------- | ------------------ | ------- | ------ | -------- | ------------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Claude Code | I                  | N       | N      | N        | N            | N        | Execution suspended. Retained `ClaudeJsonl` evidence covers sampled post-observation comparisons only.                                                                                    |
 | Codex       | I                  | N       | N      | N        | N            | N        | Execution suspended. Retained `CodexRolloutJsonl` evidence covers sampled post-observation comparisons only.                                                                              |
-| OpenCode    | I                  | N       | N      | N        | N            | N        | Execution suspended. Retained evidence uses `OpenCodeSqliteV2`; JSONL export is unavailable.                                                                                              |
+| OpenCode    | I                  | N       | N      | N        | N            | N        | Execution suspended. Retained evidence uses `OpenCodeSqliteV1`; JSONL export is unavailable.                                                                                              |
 | Pi          | I                  | N       | N      | N        | N            | N        | Execution suspended. Retained evidence uses `PiV3Jsonl`.                                                                                                                                  |
 | Cursor      | I                  | N       | N      | N        | N            | N        | Execution suspended. Retained tool anchors require `CursorCliAgentJsonl`; store/composer text alone is insufficient.                                                                      |
 | Antigravity | I                  | N       | N      | N        | N            | N        | Execution suspended. Retained evidence uses `AntigravityBrainJsonl` or `AntigravitySqlite` with assessable companion content.                                                             |
@@ -943,19 +982,19 @@ limits; they do not establish complete history outside the selected window.
 | Antigravity | C                  | N       | N      | N        | N            | N        | No compatible request-accounting contract exists.                                                                                                                                         |
 | Claude Code | SkillOpportunities | N       | N      | N        | N            | N        | Execution suspended. Retained CLI 2.1.278 contract does not prove historical skill visibility or execution.                                                                               |
 | Codex       | SkillOpportunities | N       | N      | N        | N            | N        | Execution suspended. Retained 0.160.1 contract distinguishes document selection from successful execution.                                                                                |
-| OpenCode    | SkillOpportunities | N       | N      | N        | N            | N        | Execution suspended. Retained `OpenCodeSqliteV2` contract uses pinned skill-use metadata and current inventory, not historical availability.                                              |
+| OpenCode    | SkillOpportunities | N       | N      | N        | N            | N        | Execution suspended. Retained `OpenCodeSqliteV1` contract uses pinned skill-use metadata and current inventory, not historical availability.                                              |
 | Pi          | SkillOpportunities | N       | N      | N        | N            | N        | Execution suspended. Retained 0.84.4 core V3 contract does not prove extension identity or historical visibility.                                                                         |
 | Cursor      | SkillOpportunities | N       | N      | N        | N            | N        | No accepted source format or product descriptor/report path is available.                                                                                                                 |
 | Antigravity | SkillOpportunities | N       | N      | N        | N            | N        | No accepted source format or product descriptor/report path is available.                                                                                                                 |
 | Claude Code | OverExploring      | N       | N      | N        | N            | N        | Execution suspended. Retained CLI 2.1.278 read contract requires bound complete results and exact extents/output equality.                                                                |
 | Codex       | OverExploring      | N       | N      | N        | N            | N        | Execution suspended. Retained 0.160.1 contract accepts the pinned numbered single-file shell slice, not general shell reads.                                                              |
-| OpenCode    | OverExploring      | N       | N      | N        | N            | N        | Execution suspended. Retained `OpenCodeSqliteV2` contract requires bound complete reads and pinned numbered extents.                                                                      |
+| OpenCode    | OverExploring      | N       | N      | N        | N            | N        | Execution suspended. Retained `OpenCodeSqliteV1` contract requires bound complete reads and pinned numbered extents.                                                                      |
 | Pi          | OverExploring      | N       | N      | N        | N            | N        | Execution suspended. Retained 0.84.4 core V3 read contract excludes truncated results.                                                                                                    |
 | Cursor      | OverExploring      | N       | N      | N        | N            | N        | Complete task history and observed-result support are unavailable.                                                                                                                        |
 | Antigravity | OverExploring      | N       | N      | N        | N            | N        | Complete task history and observed-result support are unavailable.                                                                                                                        |
 | Claude Code | ScopeCreep         | N       | N      | N        | N            | N        | Execution suspended. Retained CLI 2.1.278 authority needs explicit human markers; tool permission cannot authorize scope.                                                                 |
 | Codex       | ScopeCreep         | N       | N      | N        | N            | N        | Execution suspended. Retained 0.160.1 contract treats environment context and unknown-origin answers as non-authorizing.                                                                  |
-| OpenCode    | ScopeCreep         | N       | N      | N        | N            | N        | Execution suspended. Retained `OpenCodeSqliteV2` contract needs intact task/authorization and bound performed work/outcomes.                                                              |
+| OpenCode    | ScopeCreep         | N       | N      | N        | N            | N        | Execution suspended. Retained `OpenCodeSqliteV1` contract needs intact task/authorization and bound performed work/outcomes.                                                              |
 | Pi          | ScopeCreep         | N       | N      | N        | N            | N        | Execution suspended. Retained 0.84.4 core V3 contract separates user arguments from skill documents; extension answers do not prove human origin.                                         |
 | Cursor      | ScopeCreep         | N       | N      | N        | N            | N        | Current retained root scope proof is unavailable.                                                                                                                                         |
 | Antigravity | ScopeCreep         | N       | N      | N        | N            | N        | Current retained root scope proof is unavailable.                                                                                                                                         |
@@ -1385,7 +1424,7 @@ publication-time scope and physical target.
 | Codex                            | Named subagent model        | Auto Fix                      | `CodexRolloutJsonl` S findings only. The current scan must locate exactly one named agent TOML file whose `model` equals the observed worker model.                                                                                                                                                                                                                                                                                                                                                 |
 | Codex                            | MCP enablement              | Auto Fix or prompt only       | Auto Fix requires indexed provenance and one exact active trusted project or global `mcp_servers.<name>` table. Inventory-only, duplicate, or untrusted targets remain prompt-only.                                                                                                                                                                                                                                                                                                                 |
 | Codex                            | Skill enablement            | Auto Fix or prompt only       | Auto Fix requires indexed provenance and one current trusted standard `SKILL.md` winner with one matching `skills.config.<name>.enabled` control. Other targets remain prompt-only.                                                                                                                                                                                                                                                                                                                 |
-| OpenCode                         | Model default               | Auto Fix                      | `OpenCodeJsonl` and `OpenCodeSqliteV2` O findings only. Direct `openai`, `anthropic`, and `google` provider IDs use their reviewed native API when OpenCode omits it. Publication must bind the observed `provider/model` route to the effective merged `model` value. Dynamic, remote, agent, mode, and managed overrides are rejected.                                                                                                                                                            |
+| OpenCode                         | Model default               | Auto Fix                      | `OpenCodeJsonl` and `OpenCodeSqliteV1` O findings only. Direct `openai`, `anthropic`, and `google` provider IDs use their reviewed native API when OpenCode omits it. Publication must bind the observed `provider/model` route to the effective merged `model` value. Dynamic, remote, agent, mode, and managed overrides are rejected.                                                                                                                                                            |
 | OpenCode                         | Named subagent model        | Auto Fix                      | S findings only. The current scan must locate exactly one named Markdown agent whose frontmatter `model` equals the observed worker model. Variant-only workers remain unavailable.                                                                                                                                                                                                                                                                                                                 |
 | OpenCode                         | Reasoning control           | Unavailable                   | The accepted sources have no historical effort map. A variant label is not an effective reasoning control.                                                                                                                                                                                                                                                                                                                                                                                          |
 | OpenCode                         | MCP control                 | Auto Fix or prompt only       | Current inventory can create a named target. Auto Fix requires indexed provenance and one exact effective V2 MCP control; other targets remain prompt-only.                                                                                                                                                                                                                                                                                                                                         |
@@ -1415,7 +1454,7 @@ has a durable action attempt.
 | --------------------------------------------------------------------------------------------------------- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Claude Code, `ClaudeJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Codex, `CodexRolloutJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| OpenCode, `OpenCodeJsonl` or `OpenCodeSqliteV2`                                                           | Yes | No  | Yes | Yes | Yes | Yes | Yes | No  | Yes | Yes |
+| OpenCode, `OpenCodeJsonl` or `OpenCodeSqliteV1`                                                           | Yes | No  | Yes | Yes | Yes | Yes | Yes | No  | Yes | Yes |
 | Pi, `PiV3Jsonl`                                                                                           | Yes | Yes | Yes | Yes | No  | Yes | Yes | No  | Yes | No  |
 | Cursor, `CursorCliAgentJsonl`                                                                             | No  | No  | No  | No  | No  | No  | No  | No  | No  | Yes |
 | Antigravity, `AntigravityJson`, `AntigravityBrainJsonl`, `AntigravityCascadeJson`, or `AntigravitySqlite` | Yes | No  | No  | No  | No  | No  | Yes | No  | No  | No  |
@@ -1433,7 +1472,7 @@ each operation still needs an exact target binding at runtime.
 | `ClaudeJsonl`                  | D/T/S/M/B/K/O/F/C | O              | T                  | D/S/M/B/K/F           | T/O/F               |
 | `CodexRolloutJsonl`            | D/T/S/M/B/K/O/F/C | O              | T                  | D/S/M/K/F             | T/O/F               |
 | `OpenCodeJsonl`                | D/S/M/B/K/O/C     | O              | None               | D/S/M/K               | O                   |
-| `OpenCodeSqliteV2`             | D/S/M/B/K/O/C     | O              | None               | D/S/M/K               | O                   |
+| `OpenCodeSqliteV1`             | D/S/M/B/K/O/C     | O              | None               | D/S/M/K               | O                   |
 | `PiV3Jsonl`                    | D/T/S/M/K/O/C     | O              | T                  | D                     | T/O                 |
 | `OmpV3Jsonl`                   | None              | None           | None               | None                  | None                |
 | `CursorJsonl`                  | O                 | None           | None               | None                  | None                |
@@ -1463,6 +1502,8 @@ each operation still needs an exact target binding at runtime.
 | `WindsurfCascadeProtobuf`      | None              | None           | None               | None                  | None                |
 | `DevinLocalSqlite`             | None              | None           | None               | None                  | None                |
 | `Uncharacterized`              | None              | None           | None               | None                  | None                |
+| `OpenCodeSqliteV2`             | D/S/O/C           | O              | None               | S                     | None                |
+| `OpenCodeV2SessionExport`      | None              | None           | None               | None                  | None                |
 
 | Scope and environment              | macOS       | Linux       | Native Windows        | WSL         |
 | ---------------------------------- | ----------- | ----------- | --------------------- | ----------- |

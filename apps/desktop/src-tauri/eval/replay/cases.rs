@@ -206,6 +206,8 @@ impl Fixture {
                     item_index: 0,
                 };
                 ToolResultObservation {
+                    outcome: None,
+                    provider_executed: None,
                     source_format: SourceFormat::ClaudeJsonl,
                     session_id: "synthetic".into(),
                     record_id: Some(format!("record-{index}")),

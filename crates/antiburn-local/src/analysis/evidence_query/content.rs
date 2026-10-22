@@ -164,11 +164,13 @@ const TEXT_SELECTION_SQL: &str = "CASE
         WHEN lower(content.tool_name) IN ('bash','shell','terminal','run_command','command','exec_command','run_terminal_command','execute_command')
           OR lower(content.tool_name) GLOB '*__bash' OR lower(content.tool_name) GLOB '*__shell' OR lower(content.tool_name) GLOB '*__terminal' OR lower(content.tool_name) GLOB '*__run_command' OR lower(content.tool_name) GLOB '*__command' OR lower(content.tool_name) GLOB '*__exec_command' OR lower(content.tool_name) GLOB '*__run_terminal_command' OR lower(content.tool_name) GLOB '*__execute_command' OR lower(content.tool_name) LIKE '%/bash' OR lower(content.tool_name) LIKE '%.bash' OR lower(content.tool_name) LIKE '%:bash' THEN (:selection & 4) != 0
         WHEN lower(content.tool_name) IN ('edit','write','edit_file','write_file','multi_edit','multiedit','apply_patch','applypatch','patch')
-          OR lower(content.tool_name) LIKE '%__edit' OR lower(content.tool_name) LIKE '%__write' OR lower(content.tool_name) LIKE '%__apply_patch' THEN (:selection & 48) != 0
+          OR lower(content.tool_name) GLOB '*__edit' OR lower(content.tool_name) GLOB '*__write' OR lower(content.tool_name) GLOB '*__apply_patch'
+          OR lower(content.tool_name) GLOB '*[./:]edit' OR lower(content.tool_name) GLOB '*[./:]write' OR lower(content.tool_name) GLOB '*[./:]apply_patch' THEN (:selection & 48) != 0
         WHEN lower(content.tool_name) IN ('read','read_file','readfile','view_file')
           OR lower(content.tool_name) GLOB '*__read' OR lower(content.tool_name) GLOB '*__view_file' THEN (:selection & 49216) != 0
         WHEN lower(content.tool_name) IN ('grep','glob','find','search','code_search','file_search','search_files','grep_search','codebase_search','list_files')
-          OR lower(content.tool_name) GLOB '*__grep' OR lower(content.tool_name) GLOB '*__glob' OR lower(content.tool_name) GLOB '*__search' THEN (:selection & 256) != 0
+          OR lower(content.tool_name) GLOB '*__grep' OR lower(content.tool_name) GLOB '*__glob' OR lower(content.tool_name) GLOB '*__search'
+          OR lower(content.tool_name) GLOB '*[./:]grep' OR lower(content.tool_name) GLOB '*[./:]glob' OR lower(content.tool_name) GLOB '*[./:]search' THEN (:selection & 256) != 0
         ELSE (:selection & 1024) != 0 AND content.tool_name IS NOT NULL AND trim(content.tool_name) <> ''
     END
     WHEN content.kind = 'tool_result' THEN CASE
@@ -177,7 +179,8 @@ const TEXT_SELECTION_SQL: &str = "CASE
         WHEN lower(content.tool_name) IN ('read','read_file','readfile','view_file')
           OR lower(content.tool_name) GLOB '*__read' OR lower(content.tool_name) GLOB '*__read_file' OR lower(content.tool_name) GLOB '*__readfile' OR lower(content.tool_name) GLOB '*__view_file' OR lower(content.tool_name) LIKE '%/read' OR lower(content.tool_name) LIKE '%.read' OR lower(content.tool_name) LIKE '%:read' OR lower(content.tool_name) LIKE '%/read_file' OR lower(content.tool_name) LIKE '%.read_file' OR lower(content.tool_name) LIKE '%:read_file' OR lower(content.tool_name) LIKE '%/readfile' OR lower(content.tool_name) LIKE '%.readfile' OR lower(content.tool_name) LIKE '%/view_file' OR lower(content.tool_name) LIKE '%.view_file' OR lower(content.tool_name) LIKE '%:view_file' THEN (:selection & 32896) != 0
         WHEN lower(content.tool_name) IN ('grep','glob','find','search','code_search','file_search','search_files','grep_search','codebase_search','list_files')
-          OR lower(content.tool_name) LIKE '%__grep' OR lower(content.tool_name) LIKE '%__glob' OR lower(content.tool_name) LIKE '%__find' OR lower(content.tool_name) LIKE '%__search' OR lower(content.tool_name) LIKE '%__code_search' OR lower(content.tool_name) LIKE '%__file_search' OR lower(content.tool_name) LIKE '%__search_files' OR lower(content.tool_name) LIKE '%__grep_search' OR lower(content.tool_name) LIKE '%__codebase_search' OR lower(content.tool_name) LIKE '%__list_files' THEN (:selection & 512) != 0
+          OR lower(content.tool_name) GLOB '*__grep' OR lower(content.tool_name) GLOB '*__glob' OR lower(content.tool_name) GLOB '*__find' OR lower(content.tool_name) GLOB '*__search' OR lower(content.tool_name) GLOB '*__code_search' OR lower(content.tool_name) GLOB '*__file_search' OR lower(content.tool_name) GLOB '*__search_files' OR lower(content.tool_name) GLOB '*__grep_search' OR lower(content.tool_name) GLOB '*__codebase_search' OR lower(content.tool_name) GLOB '*__list_files'
+          OR lower(content.tool_name) GLOB '*[./:]grep' OR lower(content.tool_name) GLOB '*[./:]glob' OR lower(content.tool_name) GLOB '*[./:]find' OR lower(content.tool_name) GLOB '*[./:]search' OR lower(content.tool_name) GLOB '*[./:]code_search' OR lower(content.tool_name) GLOB '*[./:]file_search' OR lower(content.tool_name) GLOB '*[./:]search_files' OR lower(content.tool_name) GLOB '*[./:]grep_search' OR lower(content.tool_name) GLOB '*[./:]codebase_search' OR lower(content.tool_name) GLOB '*[./:]list_files' THEN (:selection & 512) != 0
         ELSE (:selection & 2048) != 0 AND content.tool_name IS NOT NULL AND trim(content.tool_name) <> ''
     END
     ELSE 0
@@ -194,6 +197,9 @@ pub(super) fn content_query_sql(
     include_rowid: bool,
     scope_predicate: &str,
 ) -> String {
+    let outcome = selected_tool_output_metadata_sql("outcome");
+    let provider_executed = selected_tool_output_metadata_sql("provider_executed");
+    let tool_output_field = selected_tool_output_metadata_sql("tool_output_field");
     let query = format!("SELECT turn.source_key, turn.thread_id, turn.turn_index, turn.role,
                       turn.scope, turn.ts_ms, turn.uuid, turn.message_id,
                       content.part_index, content.kind,
@@ -217,7 +223,10 @@ pub(super) fn content_query_sql(
                                     + COALESCE(length(CAST(CASE WHEN (:selection & 1) != 0 THEN json_extract(content.normalized_fields_json, '$.metadata.selected_skill') END AS BLOB)), 0)
                                     + COALESCE(length(CAST(CASE WHEN (:selection & 1) != 0 THEN json_extract(content.normalized_fields_json, '$.metadata.non_authorizing_context_proof') END AS BLOB)), 0)
                                     + COALESCE(length(CAST(CASE WHEN (:selection & 1) != 0 THEN json_extract(content.normalized_fields_json, '$.metadata.non_authorizing_context') END AS BLOB)), 0)
-                                    + length(CAST({selected_bindings} AS BLOB))
+                                     + length(CAST({selected_bindings} AS BLOB))
+                                     + COALESCE(length(CAST({outcome} AS BLOB)), 0)
+                                     + COALESCE(length(CAST({provider_executed} AS BLOB)), 0)
+                                     + COALESCE(length(CAST({tool_output_field} AS BLOB)), 0)
                                    + COALESCE(length(CAST(CASE WHEN (:selection & CASE json_extract(content.normalized_fields_json, '$.metadata.recorded_skill_result.field') WHEN 'other_tool_input' THEN 1024 WHEN 'other_tool_output' THEN 2048 WHEN 'user_message' THEN 1 ELSE 0 END) != 0 THEN json_extract(content.normalized_fields_json, '$.metadata.recorded_skill_result') END AS BLOB)), 0)
                                   + CASE WHEN json_extract(content.normalized_fields_json, '$.category') IS NULL AND ({text_selection}) THEN length(content.content) ELSE 0 END
                        END,
@@ -242,7 +251,8 @@ pub(super) fn content_query_sql(
                               CASE WHEN (:selection & 32768) != 0 THEN json_extract(content.normalized_fields_json, '$.metadata.read_result') END,
                               CASE WHEN (:selection & 1) != 0 THEN json_extract(content.normalized_fields_json, '$.metadata.selected_skill') END,
                               CASE WHEN (:selection & 1) != 0 THEN json_extract(content.normalized_fields_json, '$.metadata.non_authorizing_context_proof') END,
-                               CASE WHEN (:selection & 1) != 0 THEN json_extract(content.normalized_fields_json, '$.metadata.non_authorizing_context') END
+                                CASE WHEN (:selection & 1) != 0 THEN json_extract(content.normalized_fields_json, '$.metadata.non_authorizing_context') END,
+                                {outcome}, {provider_executed}, {tool_output_field}
                                {rowid_projection}
                   FROM turn_content AS content
                   JOIN turn ON turn.rowid = content.turn_rowid
@@ -273,6 +283,18 @@ pub(super) fn content_query_sql(
         },
     );
     query
+}
+
+fn selected_tool_output_metadata_sql(field: &str) -> String {
+    format!("CASE WHEN content.kind = 'tool_result' AND
+       (:selection & CASE json_extract(content.normalized_fields_json, '$.metadata.tool_output_field')
+         WHEN 'bash_command_output' THEN 8
+         WHEN 'read_file_output' THEN 32896
+         WHEN 'read_file_result' THEN 32768
+         WHEN 'search_files_output' THEN 512
+         WHEN 'other_tool_output' THEN 2048
+         ELSE 0 END) != 0
+       THEN json_extract(content.normalized_fields_json, '$.metadata.{field}') END")
 }
 
 const SELECTED_BINDINGS_SQL: &str = "(SELECT json_group_array(json(binding.value))
@@ -580,6 +602,19 @@ pub(super) fn query_content_range_with_sql(
             tool_call_id: row.get(15)?,
             normalized_fields,
             metadata: crate::analysis::jev_evidence::JevOperationMetadata {
+                outcome: decode_scope_metadata(row, 36)?,
+                provider_executed: row.get(37)?,
+                tool_output_field: row
+                    .get::<_, Option<String>>(38)?
+                    .map(|field| serde_json::from_value(serde_json::Value::String(field)))
+                    .transpose()
+                    .map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            38,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?,
                 selected_skill: decode_scope_metadata(row, 33)?,
                 non_authorizing_context_proof: decode_scope_metadata(row, 34)?,
                 non_authorizing_context: decode_scope_metadata(row, 35)?,

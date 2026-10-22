@@ -59,6 +59,15 @@ filter. For example, `RUST_LOG=trace pnpm --filter @antiburn/desktop dev`
 enables trace output. Logs can contain local diagnostic values. Check them
 before you share them.
 
+If a session stays on **Running Burn Checks**, compare metadata scans with
+evidence publication in the logs. A fresh title or activity timestamp does not
+prove that parsing or checks completed. Failed local parse attempts show
+**Burn Checks unavailable** during retry backoff when no earlier result exists.
+Earlier published results remain visible as stale. Live OpenCode connection
+errors are separate from stored-session parsing errors. Do not clear either
+database to recover a failed worker; the worker retries local evidence without
+resending provider requests whose outcome is unknown.
+
 Claude usage recovery emits local `claude_credential_reread` and
 `claude_refresh_outcome` debug events. Their fixed outcome values distinguish
 changed credentials, deferred background recovery, cooldown, missing CLI,

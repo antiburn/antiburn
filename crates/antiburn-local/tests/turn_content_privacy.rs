@@ -118,7 +118,7 @@ fn run_pipeline(
     let source_format = match (agent, &source) {
         ("claude", _) => SourceFormat::ClaudeJsonl,
         ("codex", _) => SourceFormat::CodexRolloutJsonl,
-        ("opencode", RawSource::Sqlite(_)) => SourceFormat::OpenCodeSqliteV2,
+        ("opencode", RawSource::Sqlite(_)) => SourceFormat::OpenCodeSqliteV1,
         ("opencode", _) => SourceFormat::OpenCodeJsonl,
         ("pi", _) => SourceFormat::PiV3Jsonl,
         ("cursor", _) => SourceFormat::CursorCliAgentJsonl,

@@ -303,7 +303,7 @@ impl RequestHistory {
                 }
             }
             let request = UserMessage {
-                source_format: SourceFormat::OpenCodeSqliteV2,
+                source_format: SourceFormat::OpenCodeSqliteV1,
                 session_id: session.to_owned(),
                 message_id: id.clone(),
                 position: UserMessagePosition::OpenCodeEvent {

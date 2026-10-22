@@ -386,7 +386,7 @@ fn provider_db_backed_source_flows_end_to_end_into_a_report() {
         session_id: session.session_id.clone(),
         source: RawSource::Sqlite(db_path),
         fork_parent_session_id: None,
-        source_format: Default::default(),
+        source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
     };
     let mut composite = composite_for(&input);
     let outcome = reader_for(&input.agent)

@@ -1660,7 +1660,7 @@ fn reconciliation_pages_equal_session_ids_across_agents_once() {
 #[test]
 fn accepted_agent_source_pairs_have_skill_source_support() {
     for (agent, format) in [
-        ("opencode", SourceFormat::OpenCodeSqliteV2),
+        ("opencode", SourceFormat::OpenCodeSqliteV1),
         ("codex", SourceFormat::CodexRolloutJsonl),
         ("claude", SourceFormat::ClaudeJsonl),
         ("pi", SourceFormat::PiV3Jsonl),

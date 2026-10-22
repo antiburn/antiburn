@@ -443,6 +443,7 @@ fn visit_connection(
                                 parent_call_id: Some(id.to_owned()),
                                 child_model: Some(child_model),
                                 provenance: RelationProvenance::TaskToolUse,
+                                config_binding: None,
                             },
                         ))),
                         None => incomplete = true,

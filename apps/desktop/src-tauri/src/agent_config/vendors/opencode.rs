@@ -226,6 +226,13 @@ impl VendorConfig for OpenCode {
         bytes: &[u8],
         operation: &OperationSelector,
     ) -> Result<Option<String>, ConfigUnavailableReason> {
+        if let Some(value) =
+            crate::agent_config::opencode_current::write::read_value(bytes, operation)?
+        {
+            return serde_json::to_string(&value)
+                .map(Some)
+                .map_err(|_| ConfigUnavailableReason::MalformedConfig);
+        }
         match operation {
             OperationSelector::JsonKey("model") => model(bytes),
             OperationSelector::JsonPath(path)
@@ -480,6 +487,20 @@ impl OpenCode {
 
 fn mcp_value(bytes: &[u8], name: &str) -> Result<Option<String>, ConfigUnavailableReason> {
     let document = parse(bytes)?;
+    if document
+        .get("mcp")
+        .and_then(|mcp| mcp.get("servers"))
+        .and_then(serde_json::Value::as_object)
+        .filter(|servers| {
+            !servers
+                .get("type")
+                .is_some_and(serde_json::Value::is_string)
+        })
+        .and_then(|servers| servers.get(name))
+        .is_some()
+    {
+        return Err(ConfigUnavailableReason::InvalidPrecedence);
+    }
     let Some(server) = document
         .get("mcp")
         .and_then(serde_json::Value::as_object)
@@ -543,6 +564,15 @@ fn opencode_skill_value(
     name: &str,
 ) -> Result<Option<String>, ConfigUnavailableReason> {
     let document = parse(bytes)?;
+    reject_agent_overrides(&document)?;
+    if document.get("policies").is_some()
+        || document
+            .get("experimental")
+            .and_then(|value| value.get("policies"))
+            .is_some()
+    {
+        return Err(ConfigUnavailableReason::InvalidPrecedence);
+    }
     let Some(rules) = document.get("permissions") else {
         return Ok(None);
     };
@@ -783,6 +813,10 @@ fn operation_for(
     else {
         return Ok(None);
     };
+    if compaction.contains_key("buffer") || compaction.contains_key("keep") {
+        // A native buffer is not a depth limit.
+        return Err(ConfigUnavailableReason::InvalidPrecedence);
+    }
     match compaction.get("auto") {
         Some(serde_json::Value::Bool(false)) => Ok(Some(OperationSelector::JsonPath(vec![
             "compaction",
@@ -820,7 +854,10 @@ fn model(bytes: &[u8]) -> Result<Option<String>, ConfigUnavailableReason> {
 }
 
 fn reject_agent_overrides(document: &serde_json::Value) -> Result<(), ConfigUnavailableReason> {
-    if document.get("agent").is_some() || document.get("mode").is_some() {
+    if ["agent", "mode", "agents"]
+        .iter()
+        .any(|key| document.get(key).is_some())
+    {
         Err(ConfigUnavailableReason::InvalidPrecedence)
     } else {
         Ok(())

@@ -133,7 +133,7 @@ fn rich_scenario_inventory_has_240_labeled_cases_and_a_frozen_heldout_split() {
     let source_formats = [
         SourceFormat::ClaudeJsonl,
         SourceFormat::CodexRolloutJsonl,
-        SourceFormat::OpenCodeSqliteV2,
+        SourceFormat::OpenCodeSqliteV1,
         SourceFormat::PiV3Jsonl,
         SourceFormat::CursorCliAgentJsonl,
         SourceFormat::AntigravityBrainJsonl,
@@ -142,7 +142,7 @@ fn rich_scenario_inventory_has_240_labeled_cases_and_a_frozen_heldout_split() {
         source_formats.iter().any(|format| match format {
             SourceFormat::ClaudeJsonl => name == "ClaudeJsonl",
             SourceFormat::CodexRolloutJsonl => name == "CodexRolloutJsonl",
-            SourceFormat::OpenCodeSqliteV2 => name == "OpenCodeSqliteV2",
+            SourceFormat::OpenCodeSqliteV1 => name == "OpenCodeSqliteV2",
             SourceFormat::PiV3Jsonl => name == "PiV3Jsonl",
             SourceFormat::CursorCliAgentJsonl => name == "CursorCliAgentJsonl",
             SourceFormat::AntigravityBrainJsonl => name == "AntigravityBrainJsonl",

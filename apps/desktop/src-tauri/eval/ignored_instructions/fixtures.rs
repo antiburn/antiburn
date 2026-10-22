@@ -101,7 +101,7 @@ pub(crate) struct Case {
 }
 
 const AGENTS: [(&str, SourceFormat); 4] = [
-    ("opencode", SourceFormat::OpenCodeSqliteV2),
+    ("opencode", SourceFormat::OpenCodeSqliteV1),
     ("codex", SourceFormat::CodexRolloutJsonl),
     ("claude", SourceFormat::ClaudeJsonl),
     ("pi", SourceFormat::PiV3Jsonl),

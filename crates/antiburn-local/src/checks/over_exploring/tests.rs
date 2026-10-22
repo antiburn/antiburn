@@ -70,7 +70,7 @@ fn source(parts: Vec<PublishedContentPart>) -> (SessionContentEvidence, SessionS
         ..Default::default()
     };
     let mut builder = SessionScopeBuilder::new(
-        SourceFormat::OpenCodeSqliteV2,
+        SourceFormat::OpenCodeSqliteV1,
         SessionScopeBoundary {
             source_key: "transcript".into(),
             thread_id: "branch".into(),
@@ -86,7 +86,7 @@ fn source(parts: Vec<PublishedContentPart>) -> (SessionContentEvidence, SessionS
     builder.push_page(page.clone(), false).unwrap();
     let task = builder.finish().unwrap();
     let mut content =
-        prepare_session_content("session", SourceFormat::OpenCodeSqliteV2, page, Vec::new());
+        prepare_session_content("session", SourceFormat::OpenCodeSqliteV1, page, Vec::new());
     content.complete = true;
     (content, task)
 }

@@ -19,6 +19,7 @@ pub(crate) struct PublicationPolicy<'a> {
     pub(crate) history_complete: Option<bool>,
     pub(crate) gap_reason: Option<&'a str>,
     pub(crate) suppress_coverage: bool,
+    pub(crate) live_eligible: Option<bool>,
 }
 
 /// One parent-session snapshot supplied to a winning projection publication.
@@ -316,16 +317,19 @@ pub(crate) fn reconcile_with_policy(
             result.completeness == antiburn_local::analysis::ToolResultCompleteness::Complete,
             source_generation,
             claim_fence,
-            policy.baseline.map(|boundary| {
-                let position = result
-                    .context
-                    .as_ref()
-                    .map_or(result.position, |context| context.result_position);
-                match position {
-                    ToolResultPosition::OpenCodeEvent { sequence, .. } => sequence > boundary,
-                    ToolResultPosition::FileBytes { record_end, .. } => record_end > boundary,
-                    ToolResultPosition::Jsonl { .. } => false,
-                }
+            policy.live_eligible.or_else(|| {
+                policy.baseline.map(|boundary| {
+                    let position = result
+                        .context
+                        .as_ref()
+                        .map_or(result.position, |context| context.result_position);
+                    match position {
+                        ToolResultPosition::OpenCodeEvent { sequence, .. } => sequence > boundary,
+                        ToolResultPosition::OpenCodeV2Event { sequence, .. } => sequence > boundary,
+                        ToolResultPosition::FileBytes { record_end, .. } => record_end > boundary,
+                        ToolResultPosition::Jsonl { .. } => false,
+                    }
+                })
             }),
             None,
         )?;

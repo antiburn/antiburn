@@ -186,6 +186,7 @@ mod tests {
                     child_model: EvidenceValue::Unsupported,
                     confidence: RelationConfidence::Observed,
                     provenance: RelationProvenance::TaskToolUse,
+                    config_binding: None,
                 });
                 if partial {
                     evidence.subagents = make_partial(evidence.subagents);

@@ -20,6 +20,7 @@ import type {
 /** One row of the activity list, before it is shaped for presentation. */
 interface ModelRunPayload {
   model: string
+  nativeVariant?: string
   thinkingMode?: string
 }
 

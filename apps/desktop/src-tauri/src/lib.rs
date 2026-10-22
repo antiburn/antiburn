@@ -85,6 +85,7 @@ mod main_window;
 mod memory_probe;
 mod notifications;
 mod nudges;
+mod opencode_live;
 mod over_exploring_worker;
 mod popover;
 mod popover_peek;

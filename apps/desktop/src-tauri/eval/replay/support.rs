@@ -58,6 +58,8 @@ impl ReplayEventSource for Events {
             | SourceEvent::Observation { cursor, .. }
             | SourceEvent::Removal { cursor, .. }
             | SourceEvent::Gap { cursor, .. }
+            | SourceEvent::UnsafeUpdate { cursor, .. }
+            | SourceEvent::SegmentReset { cursor, .. }
             | SourceEvent::CoverageRestored { cursor, .. } => cursor.0,
         });
         Ok(event)
@@ -177,7 +179,7 @@ fn read_published_events(
     for (event, result) in events.iter().zip(&batch.results) {
         if result.context.is_none() {
             ensure!(
-                matches!(event, SourceEvent::Gap { .. }),
+                matches!(event, SourceEvent::UnsafeUpdate { .. }),
                 "missing result context must remain unavailable"
             );
             continue;

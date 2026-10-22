@@ -547,6 +547,9 @@ pub(super) fn prompt_parts(cause: &FindingCause) -> (String, &'static str, &'sta
                 super::BuiltInToolTokens::Replicated(tokens) => format!(
                     "A built-in tool definition repeated {tokens} context tokens across compatible main turns and was not invoked."
                 ),
+                super::BuiltInToolTokens::Unavailable => {
+                    "An optional built-in tool was not observed in the current session evidence. Its token cost is unavailable.".to_owned()
+                }
             },
             "Audit only the supported observed tool surface for this task.",
             "Require complete targeted exposure evidence; a permission denial does not prove definition removal.",
@@ -607,12 +610,26 @@ fn recommendation_support(
     if !source_matches_agent(agent, source) {
         return Err(RemediationUnavailableReason::UnsupportedSourceFormat);
     }
+    if source == SourceFormat::OpenCodeSqliteV2
+        && !matches!(
+            detector,
+            DetectorId::SessionsOverDepth
+                | DetectorId::OverpoweredSubagents
+                | DetectorId::UnusedMcpServers
+                | DetectorId::UnusedBuiltInTools
+                | DetectorId::UnusedSkills
+                | DetectorId::OldModelUsage
+                | DetectorId::CacheChurn
+        )
+    {
+        return Err(RemediationUnavailableReason::CheckUnsupportedForAgent);
+    }
     if detector == DetectorId::IgnoredInstructions {
         return if matches!(
             (agent, source),
             (AgentKind::Claude, SourceFormat::ClaudeJsonl)
                 | (AgentKind::Codex, SourceFormat::CodexRolloutJsonl)
-                | (AgentKind::OpenCode, SourceFormat::OpenCodeSqliteV2)
+                | (AgentKind::OpenCode, SourceFormat::OpenCodeSqliteV1)
                 | (AgentKind::Pi, SourceFormat::PiV3Jsonl)
                 | (AgentKind::Cursor, SourceFormat::CursorCliAgentJsonl)
                 | (AgentKind::Antigravity, SourceFormat::AntigravityBrainJsonl)
@@ -699,7 +716,9 @@ fn source_matches_agent(agent: AgentKind, source: SourceFormat) -> bool {
         AgentKind::Codex => source == SourceFormat::CodexRolloutJsonl,
         AgentKind::OpenCode => matches!(
             source,
-            SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV2
+            SourceFormat::OpenCodeJsonl
+                | SourceFormat::OpenCodeSqliteV1
+                | SourceFormat::OpenCodeSqliteV2
         ),
         AgentKind::Pi => source == SourceFormat::PiV3Jsonl,
         AgentKind::Antigravity => matches!(
@@ -756,6 +775,32 @@ fn coverage_limitation(
     cause: &FindingCause,
 ) -> &'static str {
     let detector = cause.detector();
+    if source == SourceFormat::OpenCodeSqliteV2 {
+        return match detector {
+            DetectorId::SessionsOverDepth => {
+                "Native V2 records request depth, not the active compaction policy. Enable only an existing disabled automatic compaction control after verified current-consumer proof. Do not change numeric limits or claim that past depth was removed."
+            }
+            DetectorId::OverpoweredSubagents => {
+                "Native V2 binds observed worker activity to a parent call and child model. Model names alone do not identify a configured agent. Prove the exact named-agent target before editing. This finding does not verify a fix."
+            }
+            DetectorId::UnusedMcpServers => {
+                "Native V2 current inventory does not prove past model exposure or schema cost. Prove the exact current server and consumer before disabling its complete winning entry. Preserve servers that other work needs. This finding cannot prove a clean session."
+            }
+            DetectorId::UnusedBuiltInTools => {
+                "Native V2 supports advice only for optional web tools. Current availability does not prove past model exposure or measured cost. There is no automatic tool edit or whole-session clean result."
+            }
+            DetectorId::UnusedSkills => {
+                "Native V2 current inventory does not prove past skill exposure. Prompt injection and explicit invocation count as use. Hide only the exact skill's model advertising after current-consumer proof, and preserve explicit use. This finding does not verify removal."
+            }
+            DetectorId::OldModelUsage => {
+                "Native V2 model edits change only the verified winning future model default. Active sessions keep their selected model. Verify later replacement use in a new session with fresh attribution to the same exact target and reviewed provider route. Config readback is not verification."
+            }
+            DetectorId::CacheChurn => {
+                "Native V2 cache evidence covers compatible ordered requests on the same provider, API, and model route. Token totals alone do not prove the cause. There is no generic automatic cache edit or verified saving."
+            }
+            _ => "Native V2 does not support this recommendation.",
+        };
+    }
     if detector == DetectorId::ScopeCreep {
         return "This result uses the current retained root snapshot. It does not prove that original historical records were never removed.";
     }
@@ -800,7 +845,7 @@ fn coverage_limitation(
         (AgentKind::OpenCode, DetectorId::CacheChurn) => {
             "OpenCode requires compatible ordered requests. Its parentID is not request-predecessor evidence."
         }
-        _ if source == SourceFormat::OpenCodeSqliteV2 => {
+        _ if source == SourceFormat::OpenCodeSqliteV1 => {
             "This applies only to the accepted OpenCode session/message/part schema, not CoreV2 session_message."
         }
         _ => {
@@ -823,7 +868,7 @@ mod native_smart_prompt_tests {
     #[test]
     fn selected_skill_advice_is_source_bound_and_does_not_claim_past_success() {
         for (agent, format) in [
-            ("opencode", SourceFormat::OpenCodeSqliteV2),
+            ("opencode", SourceFormat::OpenCodeSqliteV1),
             ("codex", SourceFormat::CodexRolloutJsonl),
             ("claude", SourceFormat::ClaudeJsonl),
             ("claude-code", SourceFormat::ClaudeJsonl),

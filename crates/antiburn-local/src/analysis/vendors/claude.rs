@@ -1304,6 +1304,8 @@ impl ClaudeStreamState {
                         .and_then(|arguments| serde_json::from_str(arguments).ok());
                     sink.record(NormalizedRecord::ToolResult(Box::new(
                         ToolResultObservation {
+                            outcome: None,
+                            provider_executed: None,
                             context: Some(crate::analysis::ToolResultContext::pending(
                                 ToolResultPosition::Jsonl {
                                     record_index,
@@ -1441,6 +1443,7 @@ impl ClaudeStreamState {
             coverage_gaps.push(PartialReason::AttributionIncomplete);
         }
         SessionSummary {
+            accounting: None,
             cache_write_tokens_available: true,
             context_window: self.context_window,
             context_window_source: self

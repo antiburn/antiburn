@@ -152,10 +152,30 @@ pub(crate) fn credentials_restored(app: &tauri::AppHandle) {
 
 pub(crate) fn live_delivery_ready(app: &tauri::AppHandle) -> bool {
     app.try_state::<InstalledChecks>().is_some_and(|state| {
-        state.delivery_ready.load(Ordering::Acquire)
-            && crate::jev::settings::yaml_discovery_enabled(&app.state::<Store>())
-            && admission(app) == Admission::Ready
+        live_delivery_permitted(
+            &app.state::<Store>(),
+            state.delivery_ready.load(Ordering::Acquire),
+            state.stopping.load(Ordering::Acquire),
+            admission(app) == Admission::Ready,
+        )
     })
+}
+
+pub(crate) fn live_delivery_permitted(
+    store: &Store,
+    definitions_ready: bool,
+    stopping: bool,
+    provider_ready: bool,
+) -> bool {
+    !stopping
+        && definitions_ready
+        && provider_ready
+        && crate::jev::settings::yaml_discovery_enabled(store)
+}
+
+pub(crate) fn live_delivery_stopping(app: &tauri::AppHandle) -> bool {
+    app.try_state::<InstalledChecks>()
+        .is_some_and(|state| state.stopping.load(Ordering::Acquire))
 }
 
 /// Stop new work and let numbered attempts settle. The final bound preserves
@@ -750,7 +770,12 @@ impl<E: DecisionEvaluator + 'static> InstalledCheckHost<E> {
                     .events
                     .iter()
                     .filter(|event| {
-                        matches!(event, antiburn_checks::source::SourceEvent::Gap { .. })
+                        matches!(
+                            event,
+                            antiburn_checks::source::SourceEvent::Gap { .. }
+                                | antiburn_checks::source::SourceEvent::SegmentReset { .. }
+                                | antiburn_checks::source::SourceEvent::UnsafeUpdate { .. }
+                        )
                     })
                     .count();
                 let outcome = project.engine.apply_source_page(activation, &page)?;
@@ -981,7 +1006,9 @@ fn live_projects(store: &Store) -> Result<Vec<ActivationScope>> {
         "SELECT DISTINCT s.environment_key, s.cwd FROM session s
          WHERE s.environment_key = 'native' AND s.wsl_distro IS NULL
            AND ((s.agent IN ('claude-code', 'codex', 'pi') AND s.source_kind = 'file')
-             OR (s.agent = 'opencode' AND s.source_kind = 'providerDb'))
+              OR (s.agent = 'opencode' AND s.source_kind = 'providerDb'
+                AND s.source_label IN ('opencode:' || s.session_id,
+                  'opencode:' || s.session_id || ':open_code_v2_sqlite')))
            AND s.cwd IS NOT NULL AND s.cwd <> '' AND s.updated_at_epoch >= ?1
            AND NOT EXISTS(SELECT 1 FROM session_relation r
              WHERE r.environment_key = s.environment_key AND r.agent = s.agent

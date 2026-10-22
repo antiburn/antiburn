@@ -360,10 +360,10 @@ fn learn_and_notify(app: &AppHandle) {
 
 /// Learn factors once the first run publishes its turns.
 ///
-/// The insights worker calls this when its backlog drains. Only the first
-/// drain at or after the checks step does work: before it, learning waits.
-pub(crate) fn learn_after_first_publish(app: &AppHandle) {
-    if !app.state::<FirstRunGate>().mark_turns_published() {
+/// The insights worker passes the publication's first-run generation when its
+/// backlog drains. Stale generations and batches before Checks cannot start learning.
+pub(crate) fn learn_after_first_publish(app: &AppHandle, generation: u64) {
+    if !app.state::<FirstRunGate>().mark_turns_published(generation) {
         return;
     }
     let app = app.clone();

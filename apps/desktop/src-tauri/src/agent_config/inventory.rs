@@ -277,7 +277,49 @@ pub fn advisory_resource_inventory<'a>(
     context: &ConfigContext,
     indexed: impl IntoIterator<Item = IndexedResourceEvidence<'a>>,
 ) -> Result<ResourceInventory, ConfigUnavailableReason> {
-    Ok(discover_inventory(context, indexed, false)?.finish())
+    ResourceInventory::discover_with_authority(context, indexed, None)
+}
+
+impl ResourceInventory {
+    pub(crate) fn discover_with_authority<'a>(
+        context: &ConfigContext,
+        indexed: impl IntoIterator<Item = IndexedResourceEvidence<'a>>,
+        authority: Option<&super::opencode_config_authority::CurrentConfigAuthority>,
+    ) -> Result<ResourceInventory, ConfigUnavailableReason> {
+        let indexed = indexed.into_iter().collect::<Vec<_>>();
+        if context.source_format.is_some_and(|source| {
+            indexed
+                .iter()
+                .any(|item| item.evidence.capabilities.source_format != source)
+        }) {
+            return Err(ConfigUnavailableReason::InvalidPrecedence);
+        }
+        if context.agent == AgentKind::OpenCode
+            && (context.source_format
+                == Some(antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2)
+                || indexed.iter().any(|indexed| {
+                    indexed.evidence.capabilities.source_format
+                        == antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2
+                }))
+        {
+            let cwd = context
+                .workspace_cwd
+                .as_deref()
+                .ok_or(ConfigUnavailableReason::UnsafePath)?;
+            let registered;
+            let authority = match authority {
+                Some(authority) => authority,
+                None => {
+                    registered =
+                        super::opencode_config_authority::CurrentConfigAuthority::registered(cwd)
+                            .map_err(|_| ConfigUnavailableReason::RuntimeOverride)?;
+                    &registered
+                }
+            };
+            return super::opencode_current::current_inventory(context, authority);
+        }
+        Ok(discover_inventory(context, indexed, false)?.finish())
+    }
 }
 
 fn discover_inventory<'a>(
@@ -288,6 +330,7 @@ fn discover_inventory<'a>(
     if !context.native_environment {
         return Err(ConfigUnavailableReason::UnsupportedEnvironment);
     }
+    context.validate_source_format()?;
     if !matches!(
         context.agent,
         AgentKind::Claude
@@ -2078,6 +2121,16 @@ fn merge_indexed<'a>(
 ) {
     for indexed in indexed {
         if !evidence_agent_matches(builder.agent, &indexed.evidence.identity.agent) {
+            continue;
+        }
+        if builder.agent == AgentKind::OpenCode
+            && matches!(
+                indexed.evidence.capabilities.source_format,
+                antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2
+                    | antiburn_local::analysis::SourceFormat::OpenCodeV2SessionExport
+            )
+        {
+            builder.issue(None, indexed.scope, InventoryIssueReason::UnsupportedShape);
             continue;
         }
         let sources = match &indexed.evidence.context_sources {

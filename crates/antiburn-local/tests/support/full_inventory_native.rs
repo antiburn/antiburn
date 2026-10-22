@@ -15,7 +15,7 @@ pub fn project(
     let agent = match format {
         SourceFormat::ClaudeJsonl => "claude",
         SourceFormat::CodexRolloutJsonl => "codex",
-        SourceFormat::OpenCodeSqliteV2 => "opencode",
+        SourceFormat::OpenCodeSqliteV1 => "opencode",
         SourceFormat::PiV3Jsonl => "pi",
         SourceFormat::CursorCliAgentJsonl => "cursor",
         SourceFormat::AntigravityBrainJsonl => "antigravity",

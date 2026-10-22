@@ -13,9 +13,9 @@ use crate::analysis::evidence::{
     ProviderIncident, QuotaIncident, RelationConfidence, RepeatedContext,
     RepeatedContextAccounting, SessionCoverageRecord, SessionEvidence, SessionEvidenceIdentity,
     SessionProvenance, SessionProviderEvidence, SessionQuotaEvidence, SourceAcceptance,
-    SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass,
-    ToolDefinition, ToolEvidence, ToolUse, cap_string, insert_diagnostic_field,
-    record_diagnostic_set_cap,
+    SourceCapabilities, SourceKind, SubagentChild, SubagentConfigBinding, SubagentEvidence,
+    SubagentExample, ToolClass, ToolDefinition, ToolEvidence, ToolUse, cap_string,
+    insert_diagnostic_field, record_diagnostic_set_cap,
 };
 use crate::analysis::evidence_query::TurnFacts;
 use crate::analysis::initial_context::{InitialContextTokenSource, SourceOrigin};
@@ -424,12 +424,14 @@ impl SessionEvidenceAccumulator {
                 parent_call_id,
                 child_model,
                 provenance,
+                config_binding,
             } => self.observe_subagent_spawn(
                 *ts_ms,
                 parent_model.as_deref(),
                 parent_call_id.as_deref(),
                 child_model.as_deref(),
                 *provenance,
+                config_binding.as_ref(),
             ),
             EvidenceObservation::SubagentModel {
                 parent_call_id,
@@ -553,6 +555,7 @@ impl SessionEvidenceAccumulator {
         parent_call_id: Option<&str>,
         child_model: Option<&str>,
         provenance: crate::analysis::interface::RelationProvenance,
+        config_binding: Option<&SubagentConfigBinding>,
     ) {
         self.subagent_spawn_count = self.subagent_spawn_count.saturating_add(1);
         let child_parent_model = parent_model.and_then(|model| {
@@ -580,6 +583,15 @@ impl SessionEvidenceAccumulator {
                 }
                 Some(capped)
             });
+        let mut duplicate_call = false;
+        if let Some(id) = &parent_call_id {
+            for child in &mut self.subagent_children {
+                if child.parent_call_id.as_ref() == Some(id) {
+                    child.config_binding = None;
+                    duplicate_call = true;
+                }
+            }
+        }
         if self.subagent_children.len() == MAX_SUBAGENT_CHILDREN {
             self.subagents_cap_exceeded = true;
             self.note_collection_cap("subagents.children");
@@ -593,9 +605,24 @@ impl SessionEvidenceAccumulator {
                 child_model: EvidenceValue::Unsupported,
                 confidence: RelationConfidence::Observed,
                 provenance,
+                config_binding: None,
             });
             if let Some(model) = child_model {
                 self.insert_child_model(index, model);
+            }
+            if !duplicate_call
+                && self.capabilities.source_format
+                    == crate::analysis::SourceFormat::OpenCodeSqliteV2
+                && provenance == crate::analysis::RelationProvenance::SessionParentLink
+                && let Some(binding) = config_binding
+                && self.subagent_children[index].parent_call_id.is_some()
+                && self.subagent_children[index].observed_child_models.len() == 1
+                && self.subagent_children[index]
+                    .observed_child_models
+                    .contains(&binding.model_id)
+                && self.config_binding_is_bounded(binding)
+            {
+                self.subagent_children[index].config_binding = Some(binding.clone());
             }
         }
         if let Some(ts_ms) = ts_ms {
@@ -620,6 +647,32 @@ impl SessionEvidenceAccumulator {
                 });
             }
         }
+    }
+
+    fn config_binding_is_bounded(&mut self, binding: &SubagentConfigBinding) -> bool {
+        let mut valid = true;
+        for (field, value) in [
+            (
+                "subagents.children.config_binding.agent_id",
+                &binding.agent_id,
+            ),
+            (
+                "subagents.children.config_binding.provider_id",
+                &binding.provider_id,
+            ),
+            (
+                "subagents.children.config_binding.model_id",
+                &binding.model_id,
+            ),
+        ] {
+            if value.len() > EVIDENCE_STRING_CAP {
+                cap_string(field, value, &mut self.diagnostics);
+                self.subagents_cap_exceeded = true;
+                valid = false;
+            }
+            valid &= !value.trim().is_empty() && !value.chars().any(char::is_control);
+        }
+        valid
     }
 
     /// Adds models only when exactly one native parent call matches the child metadata.
@@ -654,6 +707,13 @@ impl SessionEvidenceAccumulator {
     }
 
     fn insert_child_model(&mut self, index: usize, model: &str) {
+        if self.subagent_children[index]
+            .config_binding
+            .as_ref()
+            .is_some_and(|binding| binding.model_id != model)
+        {
+            self.subagent_children[index].config_binding = None;
+        }
         let capped = cap_string(
             "subagents.children.observed_child_models",
             model,
@@ -1760,6 +1820,11 @@ fn subagent_children_retained_bytes(children: &[SubagentChild], capacity: usize)
                 .map(|child| {
                     child.parent_model.as_ref().map_or(0, String::capacity)
                         + child.parent_call_id.as_ref().map_or(0, String::capacity)
+                        + child.config_binding.as_ref().map_or(0, |binding| {
+                            binding.agent_id.capacity()
+                                + binding.provider_id.capacity()
+                                + binding.model_id.capacity()
+                        })
                         + child
                             .observed_child_models
                             .iter()

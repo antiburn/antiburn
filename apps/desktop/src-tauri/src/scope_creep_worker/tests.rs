@@ -1616,7 +1616,7 @@ impl NativeFixture {
             agent: "opencode".into(),
             session_id: key.session_id.clone(),
             source: RawSource::Sqlite(self.source_path.clone()),
-            source_format: SourceFormat::OpenCodeSqliteV2,
+            source_format: SourceFormat::OpenCodeSqliteV1,
             fork_parent_session_id: None,
         };
         let reader = reader_for("opencode");
@@ -2714,7 +2714,7 @@ fn scope_explanation_requires_exact_prepared_refs_digests_ranges_and_authority()
             8 => excerpt.source.source_key_digest.push_str("-wrong"),
             9 => excerpt.scope_field = Some(antiburn_local::analysis::jev::JevInputField::UserAnswer),
             10 => excerpt.native_source = Some(antiburn_local::analysis::jev_evidence::JevScopeEvidenceSource {
-                source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+                source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
                 role: antiburn_local::analysis::jev_evidence::JevScopeEvidenceRole::User,
                 native_record_id: Some("wrong-record".into()), call_id: None, question_id: None,
                 order: 0, acceptance_order: None,

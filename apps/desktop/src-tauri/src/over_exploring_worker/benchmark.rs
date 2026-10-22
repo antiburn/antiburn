@@ -493,7 +493,7 @@ fn instruction_case(
         candidate,
         expected_choice,
         expected_finding,
-        instruction_format: Some(SourceFormat::OpenCodeSqliteV2),
+        instruction_format: Some(SourceFormat::OpenCodeSqliteV1),
         instruction_content: None,
         skill_input: None,
         _keep_alive: FixtureKeepAlive {

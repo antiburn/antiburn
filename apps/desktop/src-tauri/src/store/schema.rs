@@ -91,7 +91,69 @@ pub const MIGRATIONS: &[&str] = &[
     V78,
     V79,
     V80,
+    V81,
+    V82,
+    antiburn_local::analysis::TURN_SCHEMA_V12_SQL,
 ];
+
+const V82: &str = r#"
+ALTER TABLE opencode_v2_capture ADD COLUMN admitted_source_json TEXT
+    CHECK (admitted_source_json IS NULL OR json_valid(admitted_source_json));
+ALTER TABLE opencode_v2_capture ADD COLUMN retirement_reason TEXT
+    CHECK (retirement_reason IS NULL OR retirement_reason IN
+        ('session-moved', 'session-deleted', 'source-scope-changed'));
+"#;
+
+const V81: &str = r#"
+-- Selection history survives session deletion so retained V1 copies stay hidden.
+CREATE TABLE opencode_v2_selection (
+    environment_key TEXT NOT NULL CHECK (environment_key = 'native'),
+    agent TEXT NOT NULL CHECK (agent = 'opencode'),
+    session_id TEXT NOT NULL,
+    PRIMARY KEY (environment_key, agent, session_id)
+) STRICT;
+INSERT INTO opencode_v2_selection (environment_key, agent, session_id)
+SELECT environment_key, agent, session_id FROM session
+WHERE environment_key = 'native' AND agent = 'opencode' AND source_kind = 'providerDb'
+  AND source_label = 'opencode:' || session_id || ':open_code_v2_sqlite';
+CREATE TABLE opencode_v2_capture (
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL CHECK (agent = 'opencode'),
+    session_id TEXT NOT NULL,
+    incarnation INTEGER NOT NULL,
+    source_generation INTEGER NOT NULL,
+    source_label TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    capture_epoch TEXT NOT NULL,
+    claim_fence INTEGER NOT NULL CHECK (claim_fence > 0),
+    baseline_sequence INTEGER,
+    last_sequence INTEGER,
+    history_gap INTEGER NOT NULL CHECK (history_gap IN (0, 1)),
+    lease_expires_at_epoch INTEGER,
+    PRIMARY KEY (environment_key, agent, session_id),
+    FOREIGN KEY (environment_key, agent, session_id)
+        REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE,
+    CHECK (baseline_sequence IS NULL OR baseline_sequence >= 0),
+    CHECK (last_sequence IS NULL OR last_sequence >= 0)
+) STRICT;
+CREATE INDEX opencode_v2_capture_lease
+    ON opencode_v2_capture (lease_expires_at_epoch);
+CREATE TABLE opencode_v2_source_status (
+    environment_key TEXT NOT NULL CHECK (environment_key = 'native'),
+    agent TEXT NOT NULL CHECK (agent = 'opencode'),
+    session_id TEXT NOT NULL,
+    incarnation INTEGER NOT NULL,
+    source_generation INTEGER NOT NULL,
+    source_label TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    code TEXT NOT NULL CHECK (code IN ('service-unavailable', 'authentication-rejected',
+        'source-mismatch', 'version-unsupported', 'capture-gap', 'source-limit', 'live')),
+    observed_at_epoch INTEGER NOT NULL CHECK (observed_at_epoch >= 0),
+    PRIMARY KEY (environment_key, agent, session_id),
+    FOREIGN KEY (environment_key, agent, session_id)
+        REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+"#;
 
 pub(super) const FINGERPRINT_WORK: &str = include_str!("source_fingerprint_work.sql");
 

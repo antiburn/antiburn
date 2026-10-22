@@ -1,4 +1,4 @@
-//! A startup attachment seeds one current window, not historical windows.
+//! Startup seeds one current window only when the source proves result order.
 
 use antiburn_checks::domain::{BranchId, EvidenceDependency};
 use antiburn_checks::selection::SelectionOutcome;
@@ -7,10 +7,18 @@ use antiburn_checks::source::SourceEvent;
 use super::*;
 use crate::store::SessionKey;
 
+const V2_RECEIPT_SQL: &str = "json_array(v.incarnation, v.source_label, v.cwd,
+    v.capture_epoch, v.claim_fence, v.baseline_sequence)";
+const V2_CAPTURE_MATCH_SQL: &str = "v.environment_key = s.environment_key
+    AND v.agent = s.agent AND v.session_id = s.session_id
+    AND v.incarnation = s.incarnation AND v.source_label = s.source_label AND v.cwd = s.cwd
+    AND v.capture_epoch <> '' AND v.claim_fence > 0";
+
 pub(crate) struct StartupSession {
     pub key: SessionKey,
     pub incarnation: i64,
     pub receipt: String,
+    v2: bool,
 }
 
 impl StoreCheckStore {
@@ -20,29 +28,38 @@ impl StoreCheckStore {
         active_since: i64,
     ) -> Result<Vec<StartupSession>> {
         let ready = crate::insights_report::installed_checks::source_ready_sql(4, 5, 6);
+        let v2 = crate::store::native_tool_results::opencode_v2_status::SOURCE_SQL;
         let connection = self.store.lock();
         let mut statement = connection.prepare(&format!(
             "WITH eligible AS (
                SELECT s.agent, s.session_id, s.incarnation,
-                 CASE WHEN s.agent = 'opencode' THEN j.cursor_json ELSE f.cursor_json END AS receipt,
-                 s.updated_at_epoch
+                  CASE WHEN ({v2}) THEN {V2_RECEIPT_SQL}
+                    WHEN s.agent = 'opencode'
+                    AND s.source_label = 'opencode:' || s.session_id
+                    THEN j.cursor_json ELSE f.cursor_json END AS receipt,
+                 s.updated_at_epoch, ({v2}) AS v2
                 FROM session s LEFT JOIN session_evidence e USING(environment_key, agent, session_id)
                 LEFT JOIN opencode_journal_delivery j USING(environment_key, agent, session_id)
                 LEFT JOIN native_file_delivery f USING(environment_key, agent, session_id)
+                LEFT JOIN opencode_v2_capture v USING(environment_key, agent, session_id)
                WHERE s.environment_key = ?1 AND s.cwd = ?2 AND s.wsl_distro IS NULL
-                 AND s.agent IN ('claude-code', 'codex', 'pi', 'opencode') AND ({ready})
-                 AND CASE WHEN s.agent = 'opencode' THEN j.pending = 0 ELSE f.pending = 0 END
-                 AND (s.updated_at_epoch >= ?3 OR EXISTS(SELECT 1 FROM native_tool_result_publication p
+                  AND s.agent IN ('claude-code', 'codex', 'pi', 'opencode')
+                  AND CASE WHEN ({v2}) THEN ({V2_CAPTURE_MATCH_SQL})
+                    AND json_extract(?9, '$.run') = 'Live' ELSE ({ready}) END
+                  AND CASE WHEN ({v2}) THEN 1 WHEN s.agent = 'opencode'
+                    AND s.source_label = 'opencode:' || s.session_id
+                    THEN j.pending = 0 ELSE f.pending = 0 END
+                  AND (({v2}) OR s.updated_at_epoch >= ?3 OR EXISTS(SELECT 1 FROM native_tool_result_publication p
                      WHERE p.environment_key = s.environment_key AND p.agent = s.agent
                        AND p.session_id = s.session_id AND p.publication_sequence > ?7
                        AND (p.session_incarnation IS NULL OR
                          (p.session_incarnation = s.incarnation AND p.project_cwd IS s.cwd))))
-                 AND NOT EXISTS(SELECT 1 FROM native_tool_result_publication p
+                  AND (({v2}) OR NOT EXISTS(SELECT 1 FROM native_tool_result_publication p
                    JOIN burn_check_activation a ON a.check_id = ?8 AND a.activation_scope_key = ?9 AND a.generation = ?10
                    WHERE p.environment_key = s.environment_key AND p.agent = s.agent AND p.session_id = s.session_id
                      AND p.publication_sequence > a.applied_sequence
                      AND (p.session_incarnation IS NULL OR
-                       (p.session_incarnation = s.incarnation AND p.project_cwd IS s.cwd)))
+                        (p.session_incarnation = s.incarnation AND p.project_cwd IS s.cwd))))
                  AND NOT EXISTS(SELECT 1 FROM burn_check_session_attachment a
                      WHERE a.check_id = ?8 AND a.activation_scope_key = ?9 AND a.generation = ?10
                        AND a.branch_key = json_array(s.environment_key, s.agent, s.session_id)
@@ -55,7 +72,7 @@ impl StoreCheckStore {
                    AND recent.session_id = eligible.session_id)
                ORDER BY updated_at_epoch ASC, agent, session_id LIMIT 1
              )
-             SELECT agent, session_id, incarnation, receipt FROM (
+              SELECT agent, session_id, incarnation, receipt, v2 FROM (
                SELECT * FROM recent UNION ALL SELECT * FROM oldest
              ) ORDER BY updated_at_epoch DESC, agent, session_id LIMIT 128"
         ))?;
@@ -82,6 +99,7 @@ impl StoreCheckStore {
                         ),
                         incarnation: row.get(2)?,
                         receipt: row.get(3)?,
+                        v2: row.get(4)?,
                     })
                 },
             )?
@@ -94,6 +112,8 @@ impl StoreCheckStore {
         session: &StartupSession,
         events: &[SourceEvent],
     ) -> Result<Option<antiburn_checks::engine::BatchOutcome>> {
+        // Stored V2 message order does not prove native tool completion order.
+        let events = if session.v2 { &[][..] } else { events };
         ensure!(events.len() <= 40, "startup window exceeds its bound");
         let saved = self.progress(activation)?;
         let mut next = saved.clone();
@@ -159,25 +179,30 @@ impl StoreCheckStore {
             .map_err(|error| anyhow::anyhow!(error.message))?;
         let mut connection = self.store.lock();
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let v2 = crate::store::native_tool_results::opencode_v2_status::SOURCE_SQL;
         let current: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM burn_check_activation a JOIN session s
+            &format!("SELECT EXISTS(SELECT 1 FROM burn_check_activation a JOIN session s
                 ON s.environment_key = ?4 AND s.agent = ?5 AND s.session_id = ?6
               WHERE a.check_id = ?1 AND a.activation_scope_key = ?2 AND a.generation = ?3 AND a.enabled = 1
                 AND a.checkpoint_json = ?7 AND s.incarnation = ?8 AND s.cwd = ?9
                 AND NOT EXISTS(SELECT 1 FROM burn_check_session_attachment t
                   WHERE t.check_id = a.check_id AND t.activation_scope_key = a.activation_scope_key
                     AND t.generation = a.generation AND t.branch_key = ?10 AND t.incarnation = s.incarnation)
-                AND ((s.agent = 'opencode' AND EXISTS(SELECT 1 FROM opencode_journal_delivery d
+                AND ((?12 = 1 AND ({v2})
+                  AND json_extract(a.activation_scope_key, '$.run') = 'Live'
+                  AND EXISTS(SELECT 1 FROM opencode_v2_capture v
+                    WHERE {V2_CAPTURE_MATCH_SQL} AND {V2_RECEIPT_SQL} = ?11))
+                  OR (?12 = 0 AND s.agent = 'opencode' AND EXISTS(SELECT 1 FROM opencode_journal_delivery d
                   WHERE d.environment_key = s.environment_key AND d.agent = s.agent AND d.session_id = s.session_id
                     AND d.incarnation = s.incarnation AND d.source_label = s.source_label AND d.cwd IS s.cwd
                     AND d.blocked = 0 AND d.pending = 0 AND d.cursor_json = ?11))
-                  OR (s.agent <> 'opencode' AND EXISTS(SELECT 1 FROM native_file_delivery d
+                  OR (?12 = 0 AND s.agent <> 'opencode' AND EXISTS(SELECT 1 FROM native_file_delivery d
                     WHERE d.environment_key = s.environment_key AND d.agent = s.agent AND d.session_id = s.session_id
                       AND d.incarnation = s.incarnation AND d.source_label = s.source_label AND d.cwd IS s.cwd
-                      AND d.blocked = 0 AND d.pending = 0 AND d.cursor_json = ?11))))",
+                      AND d.blocked = 0 AND d.pending = 0 AND d.cursor_json = ?11))))"),
             params![activation.id.definition_id, self.activation_scope_key, activation.id.generation.0,
                 session.key.environment_key, session.key.agent, session.key.session_id, expected,
-                session.incarnation, self.scope.session_cwd, branch.0, session.receipt], |row| row.get(0),
+                session.incarnation, self.scope.session_cwd, branch.0, session.receipt, session.v2], |row| row.get(0),
         )?;
         if !current {
             return Ok(None);
@@ -288,15 +313,19 @@ impl StoreCheckStore {
         activation: &EffectiveActivation,
     ) -> Result<std::collections::BTreeSet<BranchId>> {
         let ready = crate::insights_report::installed_checks::source_ready_sql(4, 5, 6);
+        let v2 = crate::store::native_tool_results::opencode_v2_status::SOURCE_SQL;
         let connection = self.store.lock();
         let mut statement = connection.prepare(&format!(
             "SELECT t.branch_key FROM burn_check_session_attachment t
              JOIN session s ON s.environment_key = json_extract(t.branch_key, '$[0]')
                AND s.agent = json_extract(t.branch_key, '$[1]') AND s.session_id = json_extract(t.branch_key, '$[2]')
-             LEFT JOIN session_evidence e USING(environment_key, agent, session_id)
+              LEFT JOIN session_evidence e USING(environment_key, agent, session_id)
+              LEFT JOIN opencode_v2_capture v USING(environment_key, agent, session_id)
               WHERE t.check_id = ?1 AND t.activation_scope_key = ?2 AND t.generation = ?3
                 AND s.environment_key = ?7 AND s.cwd = ?8 AND s.wsl_distro IS NULL
-                AND t.incarnation = s.incarnation AND ({ready})
+                AND t.incarnation = s.incarnation
+                AND CASE WHEN ({v2}) THEN ({V2_CAPTURE_MATCH_SQL})
+                  AND json_extract(?2, '$.run') = 'Live' ELSE ({ready}) END
                AND NOT EXISTS(SELECT 1 FROM native_tool_result_publication p
                  JOIN burn_check_activation a ON a.check_id = t.check_id AND a.activation_scope_key = t.activation_scope_key
                  WHERE p.environment_key = s.environment_key AND p.agent = s.agent AND p.session_id = s.session_id
@@ -321,3 +350,7 @@ impl StoreCheckStore {
             .collect::<rusqlite::Result<_>>()?)
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_startup_v2_tests.rs"]
+mod v2_tests;

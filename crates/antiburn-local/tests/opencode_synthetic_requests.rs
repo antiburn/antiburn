@@ -99,7 +99,7 @@ fn snapshot_and_journal_exclude_synthetic_text_and_preserve_real_parts() {
             agent: "opencode".to_owned(),
             session_id: "root".to_owned(),
             source: RawSource::Sqlite(path.clone()),
-            source_format: SourceFormat::OpenCodeSqliteV2,
+            source_format: SourceFormat::OpenCodeSqliteV1,
             fork_parent_session_id: None,
         };
         let mut snapshot = Requests::default();

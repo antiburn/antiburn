@@ -34,14 +34,14 @@ fn request_ranges_keep_native_values_and_unknown_semantics() {
     for (source, tool, expected) in [
         (SourceFormat::ClaudeJsonl, "Read", JevReadUnit::Lines),
         (SourceFormat::PiV3Jsonl, "read", JevReadUnit::Lines),
-        (SourceFormat::OpenCodeSqliteV2, "read", JevReadUnit::Lines),
+        (SourceFormat::OpenCodeSqliteV1, "read", JevReadUnit::Lines),
         (
             SourceFormat::CodexRolloutJsonl,
             "read_file",
             JevReadUnit::Unknown,
         ),
         (
-            SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::OpenCodeSqliteV1,
             "mcp__custom__read",
             JevReadUnit::Unknown,
         ),
@@ -177,16 +177,16 @@ fn result_extent_requires_the_accepted_producer_shape() {
         (SourceFormat::ClaudeJsonl, complete.to_owned(), false),
         (SourceFormat::PiV3Jsonl, complete.to_owned(), false),
         (
-            SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::OpenCodeSqliteV1,
             complete.replace("4: four", "6: six"),
             false,
         ),
         (
-            SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::OpenCodeSqliteV1,
             complete.replace("total 4", "total 400"),
             false,
         ),
-        (SourceFormat::OpenCodeSqliteV2, complete.to_owned(), true),
+        (SourceFormat::OpenCodeSqliteV1, complete.to_owned(), true),
     ] {
         let mut result = action("result", "tool_result", "read", &text);
         result.truncated = truncated;
@@ -208,7 +208,7 @@ fn result_extent_requires_the_accepted_producer_shape() {
         "read",
         "<path>/project/empty</path>\n<type>file</type>\n<content>\n\n\n(End of file - total 0 lines)\n</content>",
     )];
-    normalize_read_evidence(SourceFormat::OpenCodeSqliteV2, &mut actions);
+    normalize_read_evidence(SourceFormat::OpenCodeSqliteV1, &mut actions);
     let result = actions[0].metadata.read_result.as_ref().unwrap();
     assert_eq!(result.kind, JevReadResultKind::File);
     assert_eq!(result.returned_extent, None);
@@ -225,10 +225,10 @@ fn selected_read_metadata_changes_evidence_identity_only_when_opted_in() {
         "read",
         r#"{"filePath":"a.rs","offset":1,"limit":2}"#,
     )];
-    normalize_read_evidence(SourceFormat::OpenCodeSqliteV2, &mut actions);
+    normalize_read_evidence(SourceFormat::OpenCodeSqliteV1, &mut actions);
     let mut evidence = SessionContentEvidence {
         session_identity_digest: "session".into(),
-        source_format: SourceFormat::OpenCodeSqliteV2,
+        source_format: SourceFormat::OpenCodeSqliteV1,
         publication_fence: 1,
         selected_input_digest: String::new(),
         actions,

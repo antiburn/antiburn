@@ -122,7 +122,7 @@ fn source_cases(cohort: &str, base: &[Case]) -> Vec<Case> {
         ("claude", SourceFormat::ClaudeJsonl),
         ("codex", SourceFormat::CodexRolloutJsonl),
         ("pi", SourceFormat::PiV3Jsonl),
-        ("opencode", SourceFormat::OpenCodeSqliteV2),
+        ("opencode", SourceFormat::OpenCodeSqliteV1),
         ("cursor", SourceFormat::CursorCliAgentJsonl),
         ("antigravity", SourceFormat::AntigravityBrainJsonl),
     ] {

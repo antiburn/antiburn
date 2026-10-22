@@ -546,12 +546,20 @@ impl SessionScopeBuilder {
                 }
             }
             if action.kind == "user" && action.authority == "user" {
+                let authority = if matches!(
+                    self.source_format,
+                    SourceFormat::OpenCodeSqliteV2 | SourceFormat::OpenCodeV2SessionExport
+                ) {
+                    ScopeAuthority::UnknownInfluence
+                } else {
+                    ScopeAuthority::User
+                };
                 add_occurrence(
                     &mut snapshot,
                     &mut dictionary,
                     action,
                     JevInputField::UserMessage,
-                    ScopeAuthority::User,
+                    authority,
                     Value::String(action.text.clone()),
                     None,
                 )?;

@@ -211,6 +211,7 @@ impl Store {
                 history_complete: Some(history_complete),
                 gap_reason: (!history_complete).then_some("file-history-incomplete"),
                 suppress_coverage: false,
+                live_eligible: None,
             },
         )?;
         let changed = claim.cursor_json.as_deref() != Some(cursor_json.as_str());

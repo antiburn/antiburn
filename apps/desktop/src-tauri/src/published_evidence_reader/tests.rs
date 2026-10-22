@@ -19,6 +19,8 @@ fn result(finality: bool, format: SourceFormat) -> ToolResultObservation {
         item_index: 0,
     };
     ToolResultObservation {
+        outcome: None,
+        provider_executed: None,
         source_format: format,
         session_id: "session".into(),
         record_id: Some("record".into()),
@@ -73,6 +75,66 @@ fn insert_project_session(connection: &Connection) {
     ).unwrap();
 }
 
+fn insert_opencode_v2_session(connection: &Connection) {
+    connection
+        .execute(
+            "INSERT INTO session (environment_key, agent, session_id, source_kind,
+                 source_label, cwd, first_seen_at, last_seen_at, incarnation)
+             VALUES ('native', 'opencode', 'ses_v2', 'providerDb',
+                 'opencode:ses_v2:open_code_v2_sqlite', '/synthetic', 'now', 'now', 7)",
+            [],
+        )
+        .unwrap();
+}
+
+fn insert_opencode_v2_result(connection: &Connection, sequence: u64) {
+    let mut result = result(true, SourceFormat::OpenCodeSqliteV2);
+    result.session_id = "ses_v2".into();
+    result.record_id = Some(format!("message-{sequence}"));
+    result.call_id = Some(format!("call-{sequence}"));
+    result.result_id = Some(format!("result-{sequence}"));
+    let position = ToolResultPosition::OpenCodeV2Event {
+        sequence,
+        item_index: 0,
+    };
+    result.position = position;
+    result.context.as_mut().unwrap().result_position = position;
+    let source_format = serde_json::to_string(&SourceFormat::OpenCodeSqliteV2).unwrap();
+    let identity = format!("v2-result-{sequence}");
+    let position_json = serde_json::to_string(&position).unwrap();
+    let payload = serde_json::to_string(&result).unwrap();
+    connection
+        .execute(
+            "INSERT INTO native_tool_result_publication (
+                 outcome, environment_key, agent, session_id, source_format,
+                 native_identity, native_position_json, native_revision, payload_json,
+                 complete, source_generation, claim_fence, live_eligible,
+                 session_incarnation, project_cwd)
+             VALUES ('update', 'native', 'opencode', 'ses_v2', ?1, ?2, ?3, 1, ?4,
+                 1, 1, 1, 1, 7, '/synthetic')",
+            params![source_format, identity, position_json, payload],
+        )
+        .unwrap();
+    let publication_sequence = connection.last_insert_rowid();
+    connection
+        .execute(
+            "INSERT INTO native_tool_result_current (
+                 environment_key, agent, session_id, source_format, native_identity,
+                 native_position_json, native_revision, payload_json, complete,
+                 is_removed, publication_sequence, source_generation, claim_fence)
+             VALUES ('native', 'opencode', 'ses_v2', ?1, ?2, ?3, 1, ?4,
+                 1, 0, ?5, 1, 1)",
+            params![
+                serde_json::to_string(&SourceFormat::OpenCodeSqliteV2).unwrap(),
+                identity,
+                position_json,
+                payload,
+                publication_sequence,
+            ],
+        )
+        .unwrap();
+}
+
 fn publication(store: &Store, sequence: i64) -> ToolResultPublication {
     let publication = store
         .native_tool_result_publications_after(sequence - 1, 1)
@@ -118,6 +180,43 @@ fn nonterminal_removal_and_coverage_events_do_not_query_first_terminal_history()
         );
         assert_eq!(converted.branch, event.session.to_identity_json());
     }
+}
+
+#[test]
+fn startup_window_orders_more_than_forty_v2_results_by_event_sequence() {
+    let store = store();
+    {
+        let connection = store.lock();
+        insert_opencode_v2_session(&connection);
+        for sequence in 1..=45 {
+            insert_opencode_v2_result(&connection, sequence);
+        }
+    }
+
+    let events = StorePublishedEvidenceReader::for_project(&store, "native", "/synthetic")
+        .recent_results(&SessionKey::new("native", "opencode", "ses_v2"))
+        .unwrap();
+
+    assert_eq!(events.len(), 40);
+    let positions: Vec<_> = events
+        .iter()
+        .map(|event| {
+            let SourceEvent::Observation { observation, .. } = event else {
+                panic!("expected a V2 result observation");
+            };
+            observation.native_order.0.clone()
+        })
+        .collect();
+    let expected: Vec<_> = (6_u64..=45)
+        .map(|sequence| {
+            serde_json::to_string(&ToolResultPosition::OpenCodeV2Event {
+                sequence,
+                item_index: 0,
+            })
+            .unwrap()
+        })
+        .collect();
+    assert_eq!(positions, expected);
 }
 
 #[test]

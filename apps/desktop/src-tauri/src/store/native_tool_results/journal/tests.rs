@@ -62,6 +62,105 @@ fn seed_results(store: &Store, key: &SessionKey, results: Vec<ToolResultObservat
     tx.commit().unwrap();
 }
 
+#[test]
+fn v2_source_label_is_not_claimed_by_the_v1_opencode_journal() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory(directory.path()).unwrap();
+    let source = SyntheticJournal::new(16);
+    source.index(&store, "/synthetic");
+    store
+        .lock()
+        .execute(
+            "UPDATE session SET source_label = 'opencode:native-session:open_code_v2_sqlite'
+              WHERE environment_key = 'native' AND agent = 'opencode'
+                AND session_id = 'native-session'",
+            [],
+        )
+        .unwrap();
+
+    assert!(
+        store
+            .claim_next_opencode_journal(100, 60)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn v2_selection_retires_the_v1_cursor_without_deleting_immutable_publications() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory(directory.path()).unwrap();
+    SyntheticJournal::enable_live(&store, "/synthetic");
+    let mut source = SyntheticJournal::new(16);
+    source.result(0);
+    let (initial, page) = next_live_page(&store, &source, 100);
+    assert!(
+        store
+            .publish_opencode_journal_page(&initial, &page, 100)
+            .unwrap()
+    );
+    let publications_before: i64 = store
+        .lock()
+        .query_row(
+            "SELECT COUNT(*) FROM native_tool_result_publication",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(publications_before > 0);
+
+    let mut v2 = source.record("/synthetic");
+    v2.source_label = "opencode:native-session:open_code_v2_sqlite".to_owned();
+    store
+        .upsert_sessions(&[v2], &crate::agents::evidence_cohort())
+        .unwrap();
+    assert_eq!(
+        store
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM opencode_journal_delivery",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM native_tool_result_publication",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
+            .unwrap(),
+        publications_before
+    );
+
+    assert!(
+        store
+            .upsert_sessions(
+                &[source.record("/synthetic")],
+                &crate::agents::evidence_cohort()
+            )
+            .is_err()
+    );
+    assert!(
+        store
+            .claim_next_opencode_journal(101, 60)
+            .unwrap()
+            .is_none()
+    );
+
+    store.clear_local_session_data().unwrap();
+    SyntheticJournal::enable_live(&store, "/synthetic");
+    source.index(&store, "/synthetic");
+    let fresh = store.claim_next_opencode_journal(101, 60).unwrap().unwrap();
+    assert!(fresh.cursor().unwrap().is_none());
+    assert!(fresh.baseline_sequence.is_none());
+    assert!(fresh.requires_full_read);
+}
+
 fn publication_head(store: &Store) -> i64 {
     store
         .lock()

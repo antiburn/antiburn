@@ -148,6 +148,13 @@ pub struct SessionCost {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionMetrics {
+    /// Native recorded totals remain separate from the catalog cost estimate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accounting: Option<super::SourceAccounting>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_reconciliation: Option<super::UsageReconciliation<super::TokenClasses>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_reconciliation: Option<super::UsageReconciliation<super::CalculatedCost>>,
     pub agent: String,
     pub session_id: String,
     pub duration_secs: u64,
@@ -194,7 +201,7 @@ pub struct SessionMetrics {
     /// mixed). `None` when no adapter could extract it.
     #[serde(default)]
     pub model: Option<String>,
-    /// Distinct model and thinking-mode pairs that produced billable tokens.
+    /// Distinct model selections with recorded modes and native variants.
     #[serde(default)]
     pub model_runs: Vec<ModelRun>,
     /// Billable token components used for the cost estimate: fresh input, generated
@@ -306,6 +313,7 @@ impl ActiveSessionsSummary {
 /// events only (a sub-agent has its own context window).
 pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
     let summary = crate::analysis::interface::SessionSummary {
+        accounting: session.accounting,
         cache_write_tokens_available: session.cache_write_tokens_available,
         context_window: session.context_window,
         context_window_source: session.context_window_source,

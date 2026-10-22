@@ -36,7 +36,7 @@ impl InstructionAdapter {
             ("claude", SourceFormat::ClaudeJsonl) => Some(Self::Claude),
             ("codex", SourceFormat::CodexRolloutJsonl) => Some(Self::Codex),
             ("pi", SourceFormat::PiV3Jsonl) => Some(Self::Pi),
-            ("opencode", SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV2) => {
+            ("opencode", SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV1) => {
                 Some(Self::OpenCode)
             }
             (
@@ -1025,7 +1025,7 @@ mod tests {
             ("claude", SourceFormat::ClaudeJsonl),
             ("codex", SourceFormat::CodexRolloutJsonl),
             ("pi", SourceFormat::PiV3Jsonl),
-            ("opencode", SourceFormat::OpenCodeSqliteV2),
+            ("opencode", SourceFormat::OpenCodeSqliteV1),
             ("cursor", SourceFormat::CursorCliAgentJsonl),
             ("cursor", SourceFormat::CursorCliStoreDb),
             ("cursor", SourceFormat::CursorChatStoreDb),

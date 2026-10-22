@@ -1069,7 +1069,7 @@ pub(super) fn mark_remediations_dirty_in(
     )?)
 }
 
-/// Activates copied prompts only when their full marker appears in this pass's new user text.
+/// Activates copied prompts only from new text with accepted user authority.
 pub(super) fn activate_waiting_prompt_remediations_in(
     connection: &rusqlite::Connection,
     environment: &str,
@@ -1096,7 +1096,8 @@ pub(super) fn activate_waiting_prompt_remediations_in(
         "SELECT CAST(content.content AS TEXT) FROM turn
           JOIN turn_content AS content ON content.turn_rowid = turn.rowid
          WHERE turn.environment_key = ?1 AND turn.agent = ?2 AND turn.session_id = ?3
-            AND turn.claim_fence = ?4 AND turn.role = 'user' AND content.kind = 'user'",
+            AND turn.claim_fence = ?4 AND turn.role = 'user' AND content.kind = 'user'
+            AND content.authority = 'user'",
     )?;
     let content = statement
         .query_map(

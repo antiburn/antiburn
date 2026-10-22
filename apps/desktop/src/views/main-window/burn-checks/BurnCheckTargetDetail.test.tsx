@@ -1192,7 +1192,7 @@ describe("BurnCheckTargetDetail", () => {
             ...target().finding,
             detector: "scopeCreep",
             agent: "opencode",
-            sourceFormat: "openCodeSqliteV2",
+            sourceFormat: "openCodeSqliteV1",
           },
           promptFix: { status: "available" },
         })}
@@ -1248,7 +1248,7 @@ describe("BurnCheckTargetDetail", () => {
         ...target().finding,
         detector: "scopeCreep",
         agent: "opencode",
-        sourceFormat: "openCodeSqliteV2",
+        sourceFormat: "openCodeSqliteV1",
       },
       evidenceAvailable: true,
     })
@@ -1385,7 +1385,7 @@ describe("BurnCheckTargetDetail", () => {
             ...target().finding,
             detector: "skillOpportunities",
             agent: "opencode",
-            sourceFormat: "openCodeSqliteV2",
+            sourceFormat: "openCodeSqliteV1",
           },
           display: {
             ...target().display,
@@ -1861,7 +1861,7 @@ describe("BurnCheckTargetDetail", () => {
     "claudeJsonl",
     "codexRolloutJsonl",
     "piV3Jsonl",
-    "openCodeSqliteV2",
+    "openCodeSqliteV1",
     "cursorCliAgentJsonl",
     "antigravityBrainJsonl",
   ] as const)("renders cited instruction and action for %s", async (sourceFormat) => {

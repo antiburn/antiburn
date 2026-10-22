@@ -109,7 +109,7 @@ source_formats! {
     ClaudeJsonl => "claude_jsonl",
     CodexRolloutJsonl => "codex_rollout_jsonl",
     OpenCodeJsonl => "open_code_jsonl",
-    OpenCodeSqliteV2 => "open_code_sqlite_v2",
+    OpenCodeSqliteV1 => "open_code_sqlite_v2",
     PiV3Jsonl => "pi_v3_jsonl",
     OmpV3Jsonl => "omp_v3_jsonl",
     CursorJsonl => "cursor_jsonl",
@@ -139,6 +139,8 @@ source_formats! {
     WindsurfCascadeProtobuf => "windsurf_cascade_protobuf",
     DevinLocalSqlite => "devin_local_sqlite",
     Uncharacterized => "uncharacterized",
+    OpenCodeSqliteV2 => "open_code_v2_sqlite",
+    OpenCodeV2SessionExport => "open_code_v2_session_export",
 }
 
 fn complete_evidence(format: SourceFormat) -> SessionEvidence {
@@ -173,7 +175,7 @@ fn source_capabilities(format: SourceFormat) -> SourceCapabilities {
     let mut capabilities = match format {
         SourceFormat::ClaudeJsonl => SourceCapabilities::claude(),
         SourceFormat::CodexRolloutJsonl => SourceCapabilities::codex(),
-        SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV2 => {
+        SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV1 => {
             SourceCapabilities::opencode()
         }
         SourceFormat::PiV3Jsonl => SourceCapabilities::pi(),
@@ -202,6 +204,8 @@ fn source_capabilities(format: SourceFormat) -> SourceCapabilities {
         | SourceFormat::WindsurfMirrorJson
         | SourceFormat::WindsurfCascadeProtobuf
         | SourceFormat::DevinLocalSqlite
+        | SourceFormat::OpenCodeSqliteV2
+        | SourceFormat::OpenCodeV2SessionExport
         | SourceFormat::Uncharacterized => SourceCapabilities::uncharacterized(format),
         SourceFormat::CopilotCliJsonl => SourceCapabilities::copilot(),
         SourceFormat::ClineMessagesContractV1 => SourceCapabilities::cline_messages_contract_v1(),
@@ -286,7 +290,7 @@ fn source_formats_outside_the_clean_allowlist_deny_clean_with_synthetic_complete
             SourceFormat::ClaudeJsonl
                 | SourceFormat::CodexRolloutJsonl
                 | SourceFormat::OpenCodeJsonl
-                | SourceFormat::OpenCodeSqliteV2
+                | SourceFormat::OpenCodeSqliteV1
                 | SourceFormat::PiV3Jsonl
                 | SourceFormat::CopilotCliJsonl
         ) {
@@ -505,7 +509,7 @@ fn opencode_source_rows_link_to_the_bounded_journal_contract() {
     ] {
         let row = rows
             .iter()
-            .find(|row| row[0] == "OpenCodeSqliteV2")
+            .find(|row| row[0] == "OpenCodeSqliteV1")
             .expect("OpenCode source contract");
         assert!(row[column].contains(link), "journal contract link: {row:?}");
         assert!(
@@ -598,7 +602,7 @@ fn first_tier_matrix_matches_engine_gates_and_reachable_routes() {
         (
             "OpenCode",
             AgentKind::OpenCode,
-            SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::OpenCodeSqliteV1,
         ),
         ("Pi", AgentKind::Pi, SourceFormat::PiV3Jsonl),
         (

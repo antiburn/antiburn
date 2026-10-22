@@ -140,6 +140,10 @@ describe("sessionBurnCheckPresentation", () => {
     const value = sessionBurnCheckPresentation([], lifecycle)
     expect(value.headline).toBe(expected)
     expect(value.compactPhrase).toEqual({ outcome: "status", text: expected })
+    if (lifecycle === "failed") {
+      expect(value.state).toBe("unavailable")
+      expect(value.indicator.kind).toBe("neutral")
+    }
   })
 
   it("preserves results and discloses stale, growing, and failed refreshes", () => {

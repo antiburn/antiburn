@@ -922,6 +922,18 @@ test("runs the readers of files read outside the workspaces", () => {
   }
 });
 
+test("runs desktop readers and the validator for V2 YAML examples", () => {
+  for (const file of [
+    "docs/burn-check/examples/over-exploring.yml",
+    "docs/burn-check/examples/scope-creep.yml",
+  ]) {
+    const outputs = plan("ready", [file]);
+    assert.equal(outputs.engine_workspaces, "checks", file);
+    assert.equal(desktopWorkspaces(outputs), "shell", file);
+    assert.equal(outputs.run_validator, "true", file);
+  }
+});
+
 test("prefers the live draft state over the event payload", () => {
   const eventSaysDraft = () => true;
   const eventSaysReady = () => false;

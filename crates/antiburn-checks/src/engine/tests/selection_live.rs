@@ -51,6 +51,8 @@ fn publication(
             category: Some("shell".into()),
             arguments: Some(json!({"command": "cargo check"})),
             content: terminal.map(|_| format!("{identity} output revision {revision}")),
+            outcome: None,
+            provider_executed: None,
             status: PublishedResultStatus::Error,
             finality: terminal.is_some(),
             payload_complete: terminal.is_some(),

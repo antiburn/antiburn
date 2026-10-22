@@ -675,7 +675,7 @@ fn fixture_in_store_records(
         agent: "opencode".into(),
         session_id: key.session_id.clone(),
         source: RawSource::Sqlite(source_path),
-        source_format: SourceFormat::OpenCodeSqliteV2,
+        source_format: SourceFormat::OpenCodeSqliteV1,
         fork_parent_session_id: None,
     };
     let reader = reader_for("opencode");

@@ -600,6 +600,7 @@ impl SourceState {
                 "SELECT COUNT(*) FROM session s WHERE s.environment_key = ?1 AND s.cwd = ?2
               AND ({main_session})
               AND ((s.agent = 'opencode' AND s.source_kind = 'providerDb'
+                AND s.source_label = 'opencode:' || s.session_id
                 AND NOT EXISTS(SELECT 1 FROM opencode_journal_delivery d
                   WHERE d.environment_key = s.environment_key AND d.agent = s.agent
                     AND d.session_id = s.session_id))

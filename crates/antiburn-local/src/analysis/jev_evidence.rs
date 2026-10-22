@@ -131,6 +131,7 @@ pub fn select_session_content(
                 | "some_content_authority_is_unknown"
                 | "some_tool_parts_lack_native_call_identity"
                 | "truncated_selected_scope_evidence"
+                | "incomplete_native_skill_body"
         )
     });
     if selected.actions.iter().any(|action| {
@@ -166,6 +167,11 @@ pub fn select_session_content(
         selected
             .limitations
             .push("some_content_authority_is_unknown".to_owned());
+    }
+    if selected.actions.iter().any(native_skill_body_is_incomplete) {
+        selected
+            .limitations
+            .push("incomplete_native_skill_body".to_owned());
     }
     if selected.actions.iter().any(|action| {
         matches!(action.kind.as_str(), "tool_input" | "tool_result")
@@ -245,6 +251,14 @@ pub fn select_session_content(
     .expect("serialize the selected evidence identity");
     selected.selected_input_digest = sha256_hex(&digest);
     selected
+}
+
+fn native_skill_body_is_incomplete(action: &ContentAction) -> bool {
+    action
+        .metadata
+        .recorded_skill_result
+        .as_ref()
+        .is_some_and(|fact| fact.native_skill.is_some() && !fact.complete)
 }
 
 fn selected_action(action: &ContentAction, selection: JevInputSelection) -> Option<ContentAction> {
@@ -804,7 +818,9 @@ pub const fn source_supported(source_format: SourceFormat) -> bool {
         SourceFormat::ClaudeJsonl
             | SourceFormat::CodexRolloutJsonl
             | SourceFormat::PiV3Jsonl
+            | SourceFormat::OpenCodeSqliteV1
             | SourceFormat::OpenCodeSqliteV2
+            | SourceFormat::OpenCodeV2SessionExport
             | SourceFormat::CursorCliAgentJsonl
             | SourceFormat::CursorCliStoreDb
             | SourceFormat::CursorChatStoreDb
@@ -856,7 +872,7 @@ pub const fn field_capability(
         JevInputField::UserAnswer | JevInputField::PlanReference => {
             if matches!(
                 source_format,
-                SourceFormat::OpenCodeSqliteV2
+                SourceFormat::OpenCodeSqliteV1
                     | SourceFormat::ClaudeJsonl
                     | SourceFormat::CodexRolloutJsonl
                     | SourceFormat::PiV3Jsonl
@@ -1124,6 +1140,10 @@ pub fn prepare_session_content(
     }
     normalize_read_evidence(source_format, &mut actions);
     normalize_context(&mut actions, source_format);
+
+    if actions.iter().any(native_skill_body_is_incomplete) {
+        limitations.push("incomplete_native_skill_body".to_owned());
+    }
 
     if published.coverage.parts_capped {
         limitations.push("content_part_limit".to_owned());
@@ -2207,7 +2227,9 @@ mod tests {
         for format in [
             SourceFormat::ClaudeJsonl,
             SourceFormat::CodexRolloutJsonl,
+            SourceFormat::OpenCodeSqliteV1,
             SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::OpenCodeV2SessionExport,
             SourceFormat::PiV3Jsonl,
             SourceFormat::CursorCliAgentJsonl,
             SourceFormat::CursorCliStoreDb,

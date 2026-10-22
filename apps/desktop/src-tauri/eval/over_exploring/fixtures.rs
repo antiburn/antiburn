@@ -97,7 +97,7 @@ pub(crate) fn assemble(
         ..Default::default()
     };
     let mut builder = SessionScopeBuilder::new(
-        SourceFormat::OpenCodeSqliteV2,
+        SourceFormat::OpenCodeSqliteV1,
         SessionScopeBoundary {
             source_key: "synthetic-transcript".into(),
             thread_id: "main".into(),
@@ -123,7 +123,7 @@ pub(crate) fn assemble(
         .expect("Fixture page matches the session scope");
     let task = builder.finish().expect("Fixture session scope is complete");
     let mut content =
-        prepare_session_content(&id, SourceFormat::OpenCodeSqliteV2, page, Vec::new());
+        prepare_session_content(&id, SourceFormat::OpenCodeSqliteV1, page, Vec::new());
     let start = content
         .actions
         .iter()

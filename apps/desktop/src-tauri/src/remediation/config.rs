@@ -1,5 +1,74 @@
 use super::*;
 
+pub(super) fn opencode_subject(cause: &FindingCause) -> Option<OpenCodeConfigSubject> {
+    match cause {
+        FindingCause::OldModelUsage { .. } => Some(OpenCodeConfigSubject::FutureDefaultModel),
+        FindingCause::SessionsOverDepth { .. } => Some(OpenCodeConfigSubject::AutomaticCompaction),
+        FindingCause::OverpoweredSubagents {
+            worker_model,
+            config_binding: Some(binding),
+            ..
+        } if worker_model == &binding.model_id => {
+            Some(OpenCodeConfigSubject::AgentModel(binding.agent_id.clone()))
+        }
+        FindingCause::UnusedMcpServer { server, .. } => {
+            Some(OpenCodeConfigSubject::McpServer(server.clone()))
+        }
+        FindingCause::UnusedSkill { skill, .. } => {
+            Some(OpenCodeConfigSubject::SkillAdvertising(skill.clone()))
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn opencode_recovery_subject(
+    definition: &WatchDefinition,
+    setting: ConfigSetting,
+) -> Option<OpenCodeConfigSubject> {
+    match setting {
+        ConfigSetting::Model => Some(OpenCodeConfigSubject::FutureDefaultModel),
+        ConfigSetting::SubagentModel => {
+            let identity: serde_json::Value =
+                serde_json::from_str(&definition.canonical_identity).ok()?;
+            let binding: antiburn_local::analysis::SubagentConfigBinding =
+                serde_json::from_value(identity.get("configuredAgent")?.clone()).ok()?;
+            let expected = format!("{}/{}", binding.provider_id, binding.model_id);
+            (definition.config_expected_value.as_deref() == Some(expected.as_str()))
+                .then_some(OpenCodeConfigSubject::AgentModel(binding.agent_id))
+        }
+        ConfigSetting::Compaction => Some(OpenCodeConfigSubject::AutomaticCompaction),
+        ConfigSetting::McpServer => definition
+            .resource
+            .clone()
+            .map(OpenCodeConfigSubject::McpServer),
+        ConfigSetting::Skill => definition
+            .resource
+            .clone()
+            .map(OpenCodeConfigSubject::SkillAdvertising),
+        _ => None,
+    }
+}
+
+pub(super) fn opencode_proposed_value(operation: &ConfigOperation) -> Option<serde_json::Value> {
+    match (&operation.setting, &operation.proposed_value) {
+        (ConfigSetting::Model, crate::agent_config::ConfigOperationValue::Scalar(value)) => {
+            Some(serde_json::Value::String(value.clone()))
+        }
+        (ConfigSetting::Compaction, crate::agent_config::ConfigOperationValue::Boolean(value)) => {
+            Some(serde_json::Value::Bool(*value))
+        }
+        (
+            ConfigSetting::SubagentModel,
+            crate::agent_config::ConfigOperationValue::Scalar(value),
+        ) => Some(serde_json::Value::String(value.clone())),
+        (
+            ConfigSetting::McpServer | ConfigSetting::Skill,
+            crate::agent_config::ConfigOperationValue::MapEntry { value, .. },
+        ) if value == "false" => Some(serde_json::Value::Bool(false)),
+        _ => None,
+    }
+}
+
 pub(super) fn trusted_workspace(store: &Store, candidate: &Path) -> Result<Option<PathBuf>> {
     trusted_workspace_in(&store.lock(), candidate)
 }
@@ -51,15 +120,52 @@ pub(crate) fn publication_config_attribution(
     let Some(home) = antiburn_local::paths::home_dir() else {
         return Ok(PublicationConfigAttribution::default());
     };
-    publication_config_attribution_with_home(store, key, status, evidence_json, &home)
+    let authority = if key.agent == "opencode"
+        && key.environment_key == "native"
+        && status == crate::store::PublishedEvidence::Ready
+    {
+        store
+            .session(key)?
+            .and_then(|session| session.cwd)
+            .and_then(|cwd| {
+                let cwd = Path::new(&cwd);
+                trusted_workspace(store, cwd).ok().flatten()?;
+                crate::agent_config::opencode_config_authority::CurrentConfigAuthority::registered(
+                    cwd,
+                )
+                .ok()
+            })
+    } else {
+        None
+    };
+    publication_config_attribution_with_authority(
+        store,
+        key,
+        status,
+        evidence_json,
+        &home,
+        authority.as_ref(),
+    )
 }
 
+#[cfg(test)]
 pub(crate) fn publication_config_attribution_with_home(
     store: &Store,
     key: &crate::store::SessionKey,
     status: crate::store::PublishedEvidence,
     evidence_json: &str,
     home: &Path,
+) -> Result<PublicationConfigAttribution> {
+    publication_config_attribution_with_authority(store, key, status, evidence_json, home, None)
+}
+
+pub(crate) fn publication_config_attribution_with_authority(
+    store: &Store,
+    key: &crate::store::SessionKey,
+    status: crate::store::PublishedEvidence,
+    evidence_json: &str,
+    home: &Path,
+    authority: Option<&crate::agent_config::opencode_config_authority::CurrentConfigAuthority>,
 ) -> Result<PublicationConfigAttribution> {
     if status != crate::store::PublishedEvidence::Ready {
         return Ok(PublicationConfigAttribution::default());
@@ -73,6 +179,17 @@ pub(crate) fn publication_config_attribution_with_home(
     let Some(policy) = vendor_policy(agent) else {
         return Ok(PublicationConfigAttribution::default());
     };
+    let evidence: antiburn_local::analysis::SessionEvidence = serde_json::from_str(evidence_json)?;
+    let source = evidence.capabilities.source_format;
+    if [ConfigSetting::Model, ConfigSetting::Reasoning]
+        .into_iter()
+        .all(|setting| {
+            policy.action_support(RemediationAction::PublicationAttribution(setting), source)
+                == ActionSupport::Unsupported
+        })
+    {
+        return Ok(PublicationConfigAttribution::default());
+    }
     let Some(session) = store.session(key)? else {
         return Ok(PublicationConfigAttribution::default());
     };
@@ -89,15 +206,18 @@ pub(crate) fn publication_config_attribution_with_home(
         return Ok(PublicationConfigAttribution::default());
     };
     context.runtime_override_present = runtime_override_present(agent);
+    context.source_format = Some(source);
     context.managed_configuration_present =
         managed_configuration_present(agent, &context.home_root);
     let editor = AgentConfigEditor::new();
+    if agent == AgentKind::OpenCode {
+        return opencode_publication_attribution(store, &context, &evidence, authority);
+    }
     let effective_model = editor.effective(&context, ConfigSetting::Model).ok();
     let effective_reasoning = editor.effective(&context, ConfigSetting::Reasoning).ok();
     if effective_model.is_none() && effective_reasoning.is_none() {
         return Ok(PublicationConfigAttribution::default());
     }
-    let evidence: antiburn_local::analysis::SessionEvidence = serde_json::from_str(evidence_json)?;
     let antiburn_local::analysis::EvidenceValue::Complete(models) = &evidence.models else {
         return Ok(PublicationConfigAttribution::default());
     };
@@ -130,6 +250,55 @@ pub(crate) fn publication_config_attribution_with_home(
         model: model.map(|value| value.legacy),
         reasoning: reasoning.map(|value| value.legacy),
         records,
+    })
+}
+
+fn opencode_publication_attribution(
+    store: &Store,
+    context: &ConfigContext,
+    evidence: &antiburn_local::analysis::SessionEvidence,
+    authority: Option<&crate::agent_config::opencode_config_authority::CurrentConfigAuthority>,
+) -> Result<PublicationConfigAttribution> {
+    let Some(authority) = authority else {
+        return Ok(PublicationConfigAttribution::default());
+    };
+    let Ok(resolved) = AgentConfigEditor::new().resolve_opencode(
+        context,
+        authority,
+        OpenCodeConfigSubject::FutureDefaultModel,
+    ) else {
+        return Ok(PublicationConfigAttribution::default());
+    };
+    let Some(value) = resolved.current_value_display() else {
+        return Ok(PublicationConfigAttribution::default());
+    };
+    let antiburn_local::analysis::EvidenceValue::Complete(models) = &evidence.models else {
+        return Ok(PublicationConfigAttribution::default());
+    };
+    let policy = vendor_policy(AgentKind::OpenCode).expect("OpenCode has a remediation policy");
+    if !resolved.reviewed_default_route()
+        || !policy.publication_setting_observed(
+            ConfigSetting::Model,
+            &value,
+            Some(&value),
+            &models.control_observations,
+        )
+    {
+        return Ok(PublicationConfigAttribution::default());
+    }
+    let (path, selector) = resolved.physical_identity();
+    let target_hash = physical_key(store, AgentKind::OpenCode, (path, selector), None)?;
+    let scope = scope_name(resolved.scope()).to_owned();
+    Ok(PublicationConfigAttribution {
+        model: Some((target_hash, scope, value.clone())),
+        reasoning: None,
+        records: vec![PublicationSettingAttribution {
+            setting: ConfigSetting::Model,
+            path: path.to_string_lossy().into_owned(),
+            selector: selector.to_owned(),
+            expected_value_json: serde_json::to_string(&value)?,
+            precedence_hash: hex(&resolved.resolution_digest()),
+        }],
     })
 }
 
@@ -318,15 +487,20 @@ pub(super) fn recovery_workspace_cwd(root: &Path, relative: Option<&str>) -> Res
 #[cfg(not(windows))]
 pub(super) fn apply_prepared_change(
     editor: &AgentConfigEditor,
-    prepared: &crate::agent_config::PreparedOperation,
+    prepared: &super::PreparedConfigOperation,
 ) -> Result<(), crate::agent_config::ApplyError> {
-    editor.apply(prepared)
+    match prepared {
+        super::PreparedConfigOperation::Generic(prepared) => editor.apply(prepared),
+        super::PreparedConfigOperation::OpenCode(prepared) => {
+            editor.apply_opencode_operation(prepared)
+        }
+    }
 }
 
 #[cfg(windows)]
 pub(super) fn apply_prepared_change(
     _: &AgentConfigEditor,
-    _: &crate::agent_config::PreparedOperation,
+    _: &super::PreparedConfigOperation,
 ) -> Result<(), crate::agent_config::ApplyError> {
     Err(crate::agent_config::ApplyError::Unavailable(
         crate::agent_config::ConfigUnavailableReason::AutomaticApplyUnsupported,

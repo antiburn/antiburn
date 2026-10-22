@@ -378,6 +378,7 @@ pub(super) fn display_estimate_input(cause: &FindingCause) -> Option<SavingsEsti
             replicated_tokens: match tokens {
                 BuiltInToolTokens::Definition(_) => None,
                 BuiltInToolTokens::Replicated(value) => u64::try_from(*value).ok(),
+                BuiltInToolTokens::Unavailable => None,
             },
             replicated_cost_usd: *cost_usd,
             pricing_revision: pricing_revision.clone(),
@@ -441,13 +442,16 @@ pub(super) fn finding_quantity(
         | FindingCause::UnusedMcpServer { .. }
         | FindingCause::UnusedSkill { .. } => (Some(1), Some(BurnCheckQuantityUnit::Resources)),
         FindingCause::SkillOpportunity { .. } => (Some(1), Some(BurnCheckQuantityUnit::Resources)),
-        FindingCause::UnusedBuiltInTool { tokens, .. } => (
-            Some(match tokens {
-                BuiltInToolTokens::Definition(value) => *value,
-                BuiltInToolTokens::Replicated(value) => u64::try_from(*value).unwrap_or(u64::MAX),
-            }),
-            Some(BurnCheckQuantityUnit::Tokens),
-        ),
+        FindingCause::UnusedBuiltInTool { tokens, .. } => match tokens {
+            BuiltInToolTokens::Definition(value) => {
+                (Some(*value), Some(BurnCheckQuantityUnit::Tokens))
+            }
+            BuiltInToolTokens::Replicated(value) => (
+                Some(u64::try_from(*value).unwrap_or(u64::MAX)),
+                Some(BurnCheckQuantityUnit::Tokens),
+            ),
+            BuiltInToolTokens::Unavailable => (None, None),
+        },
         FindingCause::OveruseOfFastMode {
             delegated_turns, ..
         } => (Some(*delegated_turns), Some(BurnCheckQuantityUnit::Turns)),

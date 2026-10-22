@@ -118,6 +118,13 @@ a mixed message remains available. A generated-only message or replacement
 leaves request history partial when no real request remains. These records do
 not prove literal-human origin or relax native detectors' approval gates.
 
+OpenCode V2 can supply recorded program facts in `message.tool.result.outcome`
+and the optional `message.tool.provider_executed` flag. Result `status` describes
+tool execution, not whether a shell command or child task succeeded. For example,
+a completed shell tool can report a nonzero `outcome.exit`, and a completed
+background launch can report work still running. Missing facts remain absent.
+These optional fields do not add status filters or new YAML syntax.
+
 ## Identity and installation
 
 The lowercase filename stem is the logical ID. It starts with a letter and
@@ -162,6 +169,17 @@ attached dormant sources use a 30-second resume sweep.
 
 Bounded recent startup is the only automatic historical seed. Later corrections
 retain the original first-terminal order and do not become new attempts after activation.
+
+OpenCode V2 is an exception to recent snapshot seeding. For the pinned stock
+`v2.0.32` source, retained rows do not prove tool completion order. The native
+adapter subscribes to the registered local service before reading a SQLite
+sequence boundary. It starts checks from safe terminal events after that
+boundary, not the latest 40 stored rows. Request history before attachment stays
+partial. A disconnect creates a gap and resets affected windows; a new live
+boundary permits later safe results. Antiburn does not start the service, change
+event persistence, or require a plugin. Stored sessions still work when the
+service or its database binding is unavailable.
+
 A retained pending result can enter when it first becomes terminal. Source
 delivery and report readiness do not wait for legacy metric indexing or other
 sessions. Historical assessment requires explicit isolated replay.
@@ -367,6 +385,9 @@ block native journal review. A bounded page is not a complete result inventory;
 missing page membership does not mean that results were removed.
 
 Unsafe identity, scope, bindings, or source order blocks the affected evidence.
+An unsafe source update revokes saved assessments and pending work for its
+branch and resets its window. Quality gaps preserve accepted assessments when
+their saved input is unchanged.
 Reading an unavailable required expression value makes that candidate not
 assessable without a provider call; later candidates remain eligible. A model
 answer cannot repair unsafe bindings. Partial or complete input can yield an

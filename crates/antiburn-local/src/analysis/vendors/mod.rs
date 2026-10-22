@@ -16,6 +16,8 @@ mod generic_jsonl;
 mod kiro;
 pub(crate) mod omp;
 pub(crate) mod opencode;
+mod opencode_v2_reader;
+pub mod opencode_v2_snapshot;
 mod passive;
 pub(crate) mod pi;
 
@@ -26,6 +28,8 @@ static GENERIC: generic_jsonl::GenericJsonlSessionReader = generic_jsonl::Generi
 static CODEX: codex::CodexSessionReader = codex::CodexSessionReader;
 static CURSOR: cursor::CursorSessionReader = cursor::CursorSessionReader;
 static OPENCODE: opencode::OpenCodeSessionReader = opencode::OpenCodeSessionReader;
+static OPENCODE_V2: opencode_v2_reader::OpenCodeV2SessionReader =
+    opencode_v2_reader::OpenCodeV2SessionReader;
 static PI: pi::PiSessionReader = pi::PiSessionReader;
 static OMP: omp::OmpSessionReader = omp::OmpSessionReader;
 static ANTIGRAVITY: antigravity::AntigravitySessionReader = antigravity::AntigravitySessionReader;
@@ -40,10 +44,17 @@ static WINDSURF: passive::PassiveSessionReader = passive::PassiveSessionReader {
 static DEVIN: devin::DevinLocalSessionReader = devin::DevinLocalSessionReader;
 
 pub fn reader_for_input(input: &crate::analysis::SessionInput) -> &'static dyn SessionReader {
-    if input.source_format == crate::analysis::SourceFormat::DevinLocalSqlite {
-        &DEVIN
-    } else {
-        reader_for(&input.agent)
+    match (
+        input.agent.to_ascii_lowercase().as_str(),
+        input.source_format,
+    ) {
+        (
+            "opencode",
+            crate::analysis::SourceFormat::OpenCodeSqliteV2
+            | crate::analysis::SourceFormat::OpenCodeV2SessionExport,
+        ) => &OPENCODE_V2,
+        (_, crate::analysis::SourceFormat::DevinLocalSqlite) => &DEVIN,
+        _ => reader_for(&input.agent),
     }
 }
 

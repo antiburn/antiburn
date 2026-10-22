@@ -23,7 +23,8 @@ const CANDIDATES: &str = "WITH source_sessions AS (
            AND ((r.session_id = s.session_id AND r.kind = 'forkParent')
              OR (r.related_id = s.session_id AND r.kind = 'subagent'))) AS main_session
        FROM session s WHERE s.environment_key = 'native' AND s.agent = 'opencode'
-         AND s.source_kind = 'providerDb' AND s.wsl_distro IS NULL
+          AND s.source_kind = 'providerDb' AND s.wsl_distro IS NULL
+          AND s.source_label = 'opencode:' || s.session_id
          AND s.cwd IS NOT NULL AND s.cwd <> ''
          AND EXISTS(SELECT 1 FROM burn_check_activation a
            WHERE a.enabled = 1 AND json_extract(a.activation_scope_key, '$.environment') = s.environment_key
@@ -35,9 +36,9 @@ const CANDIDATES: &str = "WITH source_sessions AS (
            d.cursor_json, d.baseline_sequence, d.retry_count, d.observed_generation,
            d.pending, d.blocked, d.lease_expires_at_epoch, d.next_attempt_at_epoch,
               d.service_ticket, d.history_gap, d.last_error, s.main_session,
-           (d.incarnation IS NULL OR d.incarnation <> s.incarnation
-               OR d.source_label <> s.source_label OR d.cwd IS NOT s.cwd
-               OR d.parser_revision <> ?1 OR d.main_session <> s.main_session) AS reset
+            (d.incarnation IS NULL OR d.incarnation <> s.incarnation
+                OR d.source_label <> s.source_label OR d.cwd IS NOT s.cwd
+                OR d.parser_revision <> ?1 OR d.main_session <> s.main_session) AS reset
       FROM source_sessions s LEFT JOIN opencode_journal_delivery d
         ON d.environment_key = s.environment_key AND d.agent = s.agent
        AND d.session_id = s.session_id
@@ -286,7 +287,7 @@ impl Store {
             .or(claim.baseline_sequence)
             .unwrap_or(page.snapshot_end);
         let mut batch = ToolResultBatch {
-            source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+            source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
             results: page.results.clone(),
             complete: false,
         };
@@ -321,6 +322,7 @@ impl Store {
                 history_complete: Some(history_complete),
                 gap_reason,
                 suppress_coverage: false,
+                live_eligible: None,
             },
         )?;
         let pending = page.has_more || generation != claim.source_generation;
@@ -381,7 +383,7 @@ impl Store {
                 generation,
                 claim.claim_fence,
                 &ToolResultBatch {
-                    source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+                    source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
                     results: Vec::new(),
                     complete: false,
                 },

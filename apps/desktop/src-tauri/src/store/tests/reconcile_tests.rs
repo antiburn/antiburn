@@ -64,7 +64,7 @@ fn parser_50_requeues_legacy_path_only_reads_and_rejects_their_resume_state() {
     }
     let before = store.session_source_state(&record.key).unwrap().unwrap();
     let revisions = projection_revisions();
-    assert_eq!(revisions.parser_revision, 59);
+    assert_eq!(revisions.parser_revision, 62);
     assert_eq!(revisions.evidence_schema_revision, 22);
     assert_eq!(
         store
@@ -107,7 +107,7 @@ fn parser_53_requeues_completed_omp_sessions() {
         )
         .unwrap();
     let revisions = crate::analysis::projection_revisions();
-    assert_eq!(revisions.parser_revision, 59);
+    assert_eq!(revisions.parser_revision, 62);
     store
         .lock()
         .execute(
@@ -175,7 +175,7 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
         ProjectionRevisions {
             parser_revision: crate::analysis::projection_revisions().parser_revision,
             analyzer_revision: 25,
-            metrics_schema_revision: 9,
+            metrics_schema_revision: antiburn_local::analysis::METRICS_SCHEMA_REVISION,
             evidence_schema_revision: 22,
         }
     );

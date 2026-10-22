@@ -251,7 +251,12 @@ fn identity(log: &SessionLog) -> String {
             db_path,
             session_id,
             ..
-        } => serde_json::json!(["database", db_path, session_id]),
+        } => serde_json::json!([
+            "database",
+            db_path,
+            session_id,
+            crate::analysis::source_format(log.agent_type, &log.source)
+        ]),
         SessionSource::Inline { label, .. } => serde_json::json!(["inline", label]),
     };
     serde_json::json!([log.environment.key(), log.agent_type.slug(), binding]).to_string()
@@ -294,7 +299,7 @@ async fn run_with_titles(
     let mut owners: HashMap<Id, TaskOwner> = HashMap::new();
     let mut finite_closed = false;
     let mut finite_keys = HashSet::new();
-    let mut selected: HashMap<SessionKey, (Option<i64>, String)> = HashMap::new();
+    let mut selected: HashMap<SessionKey, (Option<i64>, String, bool)> = HashMap::new();
     let mut gate = GateCounts::default();
     let mut probes = JoinSet::new();
     let mut hints = JoinSet::new();
@@ -344,6 +349,7 @@ async fn run_with_titles(
                                         .expect("claimed source has a path"),
                                 ),
                                 session_id: key.session_id.clone(),
+                                source_format: Some(pending.source_format),
                             },
                             updated_at: pending.updated_at_epoch,
                             environment: DiscoveryEnvironment::Native,
@@ -618,12 +624,21 @@ async fn run_with_titles(
                 let mut owner = owners.remove(&id).expect("each preparation task has an owner");
                 match result {
                     Ok((_, PreparedTask::Identity(Some(description), previous))) => {
-                        let rank = (owner.activity, owner.key.clone());
+                        let source_format = crate::analysis::source_format(description.log.agent_type, &description.log.source);
+                        match writer.store.session_source_is_allowed(&description.key, source_format) {
+                            Ok(true) => {},
+                            Ok(false) => { queue.release(&owner.key, owner.generation); continue; },
+                            Err(error) => { writer.fail(error); queue.release(&owner.key, owner.generation); continue; },
+                        }
+                        let is_v2 = fingerprint::uses_bounded_admission(&description.log)
+                            && source_format == antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2;
+                        let rank = (owner.activity, owner.key.clone(), is_v2);
                         let already_finite = finite_keys.contains(&description.key);
                         if owner.origin == WorkOrigin::Pass { finite_keys.insert(description.key.clone()); }
                         if selected.get(&description.key).is_some_and(|current| current.1 != owner.key &&
-                            (owner.origin == WorkOrigin::Live && already_finite ||
-                             already_finite && (current.0 > rank.0 || current.0 == rank.0 && current.1 < rank.1))) {
+                            (current.2 && !is_v2 || current.2 == is_v2 &&
+                             (owner.origin == WorkOrigin::Live && already_finite ||
+                              already_finite && (current.0 > rank.0 || current.0 == rank.0 && current.1 < rank.1)))) {
                             queue.release(&owner.key, owner.generation);
                             continue;
                         }
@@ -917,3 +932,7 @@ fn spawn_agent_probe(
 #[cfg(test)]
 #[path = "tests_owner.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "owner_v2_tests.rs"]
+mod v2_tests;

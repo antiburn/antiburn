@@ -217,6 +217,7 @@ pub(crate) fn work_observations(value: &Value) -> Vec<EvidenceObservation> {
                     .flatten(),
                     child_model: None,
                     provenance: RelationProvenance::TaskToolUse,
+                    config_binding: None,
                 });
             }
         }

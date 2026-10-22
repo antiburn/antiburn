@@ -58,6 +58,18 @@ version that includes this event.
 
 ## Coverage at the audited revision
 
+### OpenCode V2 source review (2026-10-20)
+
+V1 and V2 retain one `opencode` agent category. Existing session-open,
+session-filter, and visible-surface events cover use of their shared product
+surfaces. They do not distinguish source versions or measure live V2 connection
+success. Source binding, authentication, continuity, and schema diagnostics stay
+local. This is an intentional measurement gap: the event contract has no reviewed
+V2 connection event, and arbitrary YAML check IDs must not enter native check
+events. No session IDs, native IDs, source paths, endpoint URLs, registration
+credentials, or event payloads enter analytics. A future connection metric needs
+its own closed states, deduplication rule, and event review before instrumentation.
+
 The closed catalog had nine events. Envelope fields provided event IDs, rotating
 installation IDs, application analytics session IDs, capture and send times,
 app version, OS, and architecture. Properties were fixed labels and coarse

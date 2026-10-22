@@ -175,6 +175,7 @@ fn exact_backend_identities_do_not_enter_display_data() {
         worker_model: "claude-opus-worker".to_owned(),
         worker_ordinal: 4,
         parent_call_id: Some("call-private-identity".to_owned()),
+        config_binding: None,
     };
     let finding = finding(&evidence, cause.clone());
     assert_eq!(finding.session_id(), "session-private-identity");
@@ -264,18 +265,21 @@ fn all_checks_group_only_matching_target_policies() {
                 worker_model: "worker-a".to_owned(),
                 worker_ordinal: 1,
                 parent_call_id: Some("call-a".to_owned()),
+                config_binding: None,
             },
             FindingCause::OverpoweredSubagents {
                 parent_model: "parent-a".to_owned(),
                 worker_model: "worker-a".to_owned(),
                 worker_ordinal: 9,
                 parent_call_id: Some("call-b".to_owned()),
+                config_binding: None,
             },
             FindingCause::OverpoweredSubagents {
                 parent_model: "parent-a".to_owned(),
                 worker_model: "worker-b".to_owned(),
                 worker_ordinal: 1,
                 parent_call_id: Some("call-a".to_owned()),
+                config_binding: None,
             },
         ),
         (

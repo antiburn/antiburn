@@ -505,7 +505,7 @@ async fn persisted_opencode_pages_preserve_order_and_expose_projection_limits() 
         .expect("one synthetic session exceeds the persisted content page size");
     assert_eq!(
         paged.first_page.content.source_format,
-        SourceFormat::OpenCodeSqliteV2
+        SourceFormat::OpenCodeSqliteV1
     );
     assert!(paged.first_page.more_content);
     assert_eq!(paged.later_pages.len(), 1);
@@ -1698,7 +1698,7 @@ fn publish_synthetic_source(
         "opencode",
         id,
         RawSource::Sqlite(path.to_path_buf()),
-        SourceFormat::OpenCodeSqliteV2,
+        SourceFormat::OpenCodeSqliteV1,
         fingerprint,
         now,
     )
