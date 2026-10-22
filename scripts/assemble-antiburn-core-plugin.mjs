@@ -16,7 +16,7 @@ import { instructions } from '../packages/antiburn-plugin-core/content.mjs'
 import { releaseFiles } from './assemble-claude-mod.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-export const defaultOutput = join(root, '.agent-artifacts/antiburn-shell')
+export const defaultOutput = join(root, '.agent-artifacts/antiburn-core-plugin')
 const hosts = ['claude', 'codex', 'cursor', 'opencode', 'pi']
 const json = (value) => JSON.stringify(value, null, 2) + '\n'
 const hash = (value) => createHash('sha256').update(value).digest('hex')
@@ -59,7 +59,7 @@ async function rejectSymlinkParents(destination) {
 export async function verify(output = defaultOutput) {
   await rejectSymlinkParents(output)
   const manifest = JSON.parse(await readFile(join(output, 'artifact-manifest.json'), 'utf8'))
-  if (manifest.owner !== 'antiburn-shell-assembler-v1' || !Array.isArray(manifest.files))
+  if (manifest.owner !== 'antiburn-core-plugin-assembler-v1' || !Array.isArray(manifest.files))
     throw new Error('Unowned artifact output')
   const actual = (await inventory(output)).filter(
     (name) => !['artifact-manifest.json', 'SHA256SUMS'].includes(name),
@@ -89,7 +89,7 @@ export async function assemble(output = defaultOutput) {
   }
   if (exists) await verify(output)
   await mkdir(dirname(output), { recursive: true })
-  const stage = await mkdtemp(join(dirname(output), '.antiburn-shell-stage-'))
+  const stage = await mkdtemp(join(dirname(output), '.antiburn-core-plugin-stage-'))
   const files = new Map()
   const add = (name, content) => {
     if (files.has(name)) throw new Error(`Duplicate artifact: ${name}`)
@@ -101,7 +101,7 @@ export async function assemble(output = defaultOutput) {
     for (const host of hosts.filter((name) => name !== 'claude')) {
       add(`${host}/LICENSE`, license)
       add(
-        `${host}/shell.json`,
+        `${host}/core-plugin.json`,
         json({
           id: 'antiburn',
           version: VERSION,
@@ -112,7 +112,7 @@ export async function assemble(output = defaultOutput) {
       )
       add(
         `${host}/README.md`,
-        `# antiburn ${VERSION}\n\nLocal ${host} candidate; runtime certification is unverified. See docs/plugins in the source repository for installation and lifecycle gates.\n\n${host === 'claude' ? 'Claude mods API target: 2.1.301. This candidate is generated from the public usage plugin and does not include the separate development checks mod.' : host === 'pi' ? 'Pi API target: 0.80.3. Register extensions/antiburn.mjs. Native TUI startup and explicit TUI/RPC command use the host notification API. User prompts receive Antiburn context before the model call; print/JSON output is unsupported.' : host === 'opencode' ? 'The commands/antiburn.md asset is the explicit model-mediated help/status command. Runtime API target: @opencode-ai/plugin 1.19.2; runtime/antiburn.mjs adds session checks to the session-bound system prompt on loopback hosts.' : host === 'codex' ? 'The native UserPromptSubmit hook reads staged Antiburn findings and adds them as context without starting a model turn. Codex requires reviewing and trusting plugin hooks. Run node hooks/session-check-status.mjs --host codex --session SESSION_ID for a read-only delivery status.' : 'The native postToolUse hook adds staged Antiburn findings after a tool result. It does not start a new turn. Run node hooks/session-check-status.mjs --host cursor --session SESSION_ID for a read-only delivery status.'}\n\nThe default brand uses a flame emoji and code delimiters around antiburn. Use status --ascii to omit the emoji; --flame remains a default-style alias. No automatic font detection or orange color certification is claimed.\n`,
+        `# antiburn ${VERSION}\n\nLocal ${host} candidate; runtime certification is unverified. See docs/plugins in the source repository for installation and lifecycle gates.\n\n${host === 'claude' ? 'Claude mods API target: 2.1.301. This candidate is generated from the public usage plugin and does not include the separate development checks mod.' : host === 'pi' ? 'Pi API target: 0.80.3. Register extensions/antiburn.mjs. Native TUI startup and explicit TUI/RPC command use the host notification API. User prompts receive Antiburn context before the model call; print/JSON output is unsupported.' : host === 'opencode' ? 'The commands/antiburn.md asset is the explicit model-mediated help/status command. Runtime API target: @opencode-ai/plugin 1.19.2; runtime/antiburn.mjs adds checks to main-session messages with experimental.chat.messages.transform on loopback hosts.' : host === 'codex' ? 'The packaged UserPromptSubmit hook reads staged Antiburn findings and adds them as context without starting a model turn. Codex CLI catalog installation did not activate bundled hooks on tested builds. Run `node hooks/session-check-config.mjs --host codex` to print the native hooks.json fragment, merge it into Codex hooks.json, and review/trust it through the normal host flow. Run `node hooks/session-check-status.mjs --host codex --session SESSION_ID` for read-only delivery status.' : 'The packaged postToolUse hook adds staged Antiburn findings after a tool result. It does not start a new turn. Cursor plugin discovery alone did not activate bundled hooks on tested builds. Run `node hooks/session-check-config.mjs --host cursor` to print the native hooks.json fragment, merge it into Cursor hooks.json, and review/trust it through the normal host flow. Run `node hooks/session-check-status.mjs --host cursor --session SESSION_ID` for read-only delivery status.'}\n\nThe default brand uses a flame emoji and code delimiters around antiburn. Use status --ascii to omit the emoji; --flame remains a default-style alias. No automatic font detection or orange color certification is claimed.\n`,
       )
     }
     for (const host of ['pi', 'opencode', 'codex', 'cursor']) {
@@ -233,6 +233,10 @@ export async function assemble(output = defaultOutput) {
       await adapter('integrations/antiburn/codex/session-check-hook.mjs'),
     )
     add(
+      'codex/hooks/session-check-config.mjs',
+      await adapter('integrations/antiburn/native-hook-config.mjs'),
+    )
+    add(
       'codex/hooks/session-check-status.mjs',
       await adapter('integrations/antiburn/status-command.mjs'),
     )
@@ -250,6 +254,10 @@ export async function assemble(output = defaultOutput) {
     add(
       'cursor/hooks/session-check-hook.mjs',
       await adapter('integrations/antiburn/cursor/session-check-hook.mjs'),
+    )
+    add(
+      'cursor/hooks/session-check-config.mjs',
+      await adapter('integrations/antiburn/native-hook-config.mjs'),
     )
     add(
       'cursor/hooks/session-check-status.mjs',
@@ -277,7 +285,7 @@ export async function assemble(output = defaultOutput) {
         license: 'MIT',
         type: 'module',
         exports: './runtime/antiburn.mjs',
-        files: ['runtime', 'lib', 'commands', 'LICENSE', 'README.md', 'shell.json'],
+        files: ['runtime', 'lib', 'commands', 'LICENSE', 'README.md', 'core-plugin.json'],
       }),
     )
     add('pi/extensions/antiburn.mjs', await adapter('integrations/antiburn/pi/antiburn.mjs'))
@@ -291,7 +299,7 @@ export async function assemble(output = defaultOutput) {
         type: 'module',
         keywords: ['pi-package'],
         pi: { extensions: ['./extensions/antiburn.mjs'] },
-        files: ['extensions', 'lib', 'LICENSE', 'README.md', 'shell.json'],
+        files: ['extensions', 'lib', 'LICENSE', 'README.md', 'core-plugin.json'],
       }),
     )
     for (const host of ['claude', 'codex', 'cursor']) {
@@ -302,8 +310,8 @@ export async function assemble(output = defaultOutput) {
         add(
           'catalogs/codex/.agents/plugins/marketplace.json',
           json({
-            name: 'antiburn-shell-local',
-            interface: { displayName: 'antiburn shell local candidates' },
+            name: 'antiburn-core-plugin-local',
+            interface: { displayName: 'antiburn core plugin local candidates' },
             plugins: [
               {
                 name: 'antiburn',
@@ -339,7 +347,7 @@ export async function assemble(output = defaultOutput) {
         add(
           `catalogs/${host}/.${host}-plugin/marketplace.json`,
           json({
-            name: 'antiburn-shell-local',
+            name: 'antiburn-core-plugin-local',
             description: 'Local antiburn executable availability shell candidates.',
             owner: { name: 'antiburn' },
             plugins: [
@@ -373,7 +381,7 @@ export async function assemble(output = defaultOutput) {
     )
     const entries = [...files].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     const manifest = {
-      owner: 'antiburn-shell-assembler-v1',
+      owner: 'antiburn-core-plugin-assembler-v1',
       version: VERSION,
       contractVersion: CONTRACT_VERSION,
       files: entries.map(([path, content]) => ({
@@ -414,7 +422,7 @@ export async function assemble(output = defaultOutput) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2)
   if (args.length > 1 || (args.length && args[0] !== '--verify'))
-    throw new Error('Usage: node scripts/assemble-antiburn-shell.mjs [--verify]')
+    throw new Error('Usage: node scripts/assemble-antiburn-core-plugin.mjs [--verify]')
   const result = args[0] === '--verify' ? await verify() : await assemble()
   console.log(
     `antiburn ${result.version}: ${result.files.length} verified files in ${defaultOutput}`,

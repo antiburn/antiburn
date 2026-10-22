@@ -98,32 +98,267 @@ test('OpenCode candidate only handles root session creation on loopback and dedu
   assert.equal(notices.length, 1)
 })
 
-test('OpenCode appends context at the session-bound system transform', async () => {
+test('OpenCode appends context to the primary user message before model conversion', async () => {
   const module = await loadAdapter('opencode/antiburn.mjs')
   const helpers = await loadAdapter('opencode/session-checks.mjs')
   assert.deepEqual(Object.keys(module), ['Antiburn'])
   assert.equal(Object.values(module).filter((value) => typeof value === 'function').length, 1)
-  const { opencodeSessionCheckContext } = helpers
+  const { opencodeSessionCheckMessages } = helpers
   const calls = []
-  const output = { system: ['You are an agent.'] }
+  const messages = [
+    {
+      info: { id: 'user-1', sessionID: 'session-1', role: 'user', agent: 'build' },
+      parts: [{ id: 'part-1', type: 'text', text: 'Please inspect this fixture.' }],
+    },
+  ]
+  const originalMessage = messages[0]
+  const originalPart = messages[0].parts[0]
+  const output = { messages }
   const acknowledgements = []
-  await opencodeSessionCheckContext(
-    'session-1',
+  await opencodeSessionCheckMessages(
+    messages,
     output,
+    new Set(),
     async (options) => {
       calls.push(options)
       return { message: 'Antiburn context', receipt: 'd'.repeat(64) }
     },
     (options) => acknowledgements.push(options),
   )
-  assert.deepEqual(output.system, ['You are an agent.', 'Antiburn context'])
+  assert.equal(output.messages, messages)
+  assert.equal(output.messages[0].parts.length, 2)
+  assert.notEqual(output.messages[0], originalMessage)
+  assert.equal(output.messages[0].parts[0], originalPart)
+  assert.equal(output.messages[0].parts[1].synthetic, true)
+  assert.match(output.messages[0].parts[1].text, /untrusted data/)
+  assert.match(output.messages[0].parts[1].text, /Antiburn context/)
   assert.deepEqual(calls, [{ host: 'opencode', sessionId: 'session-1', consumer: 'context' }])
   assert.deepEqual(acknowledgements, [
     { host: 'opencode', sessionId: 'session-1', consumer: 'context', receipt: 'd'.repeat(64) },
   ])
-  await opencodeSessionCheckContext(undefined, output, async () => {
-    throw new Error('must not poll without a session id')
+})
+
+test('OpenCode retains handed-off advice through tool steps without another receipt', async () => {
+  const { opencodeSessionCheckMessages } = await loadAdapter('opencode/session-checks.mjs')
+  const handoffs = new Map()
+  let reads = 0
+  let acks = 0
+  const read = async () => {
+    reads += 1
+    return reads === 1
+      ? { message: 'Antiburn retained context', receipt: 'h'.repeat(64) }
+      : undefined
+  }
+  const acknowledge = () => {
+    acks += 1
+  }
+  const user = {
+    info: { id: 'retained-user', sessionID: 'retained-session', role: 'user', agent: 'build' },
+    parts: [{ type: 'text', text: 'Read the fixture.' }],
+  }
+  const first = { messages: [JSON.parse(JSON.stringify(user))] }
+  await opencodeSessionCheckMessages(
+    first.messages,
+    first,
+    new Set(),
+    read,
+    acknowledge,
+    handoffs,
+  )
+  await opencodeSessionCheckMessages(
+    [],
+    { messages: [] },
+    new Set(),
+    read,
+    acknowledge,
+    handoffs,
+  )
+  const next = {
+    messages: [
+      JSON.parse(JSON.stringify(user)),
+      {
+        info: {
+          id: 'tool-step',
+          sessionID: 'retained-session',
+          role: 'assistant',
+          agent: 'build',
+        },
+        parts: [{ type: 'tool', tool: 'read' }],
+      },
+    ],
+  }
+  await opencodeSessionCheckMessages(
+    next.messages,
+    next,
+    new Set(),
+    read,
+    acknowledge,
+    handoffs,
+  )
+  assert.match(next.messages[0].parts[1]?.text ?? '', /Antiburn retained context/)
+  await opencodeSessionCheckMessages(
+    next.messages,
+    next,
+    new Set(),
+    read,
+    acknowledge,
+    handoffs,
+  )
+  assert.equal(next.messages[0].parts.length, 2)
+  assert.equal(reads, 1)
+  assert.equal(acks, 1)
+  const later = {
+    messages: [
+      ...next.messages,
+      {
+        info: { id: 'next-user', sessionID: 'retained-session', role: 'user', agent: 'build' },
+        parts: [{ type: 'text', text: 'Continue.' }],
+      },
+    ],
+  }
+  await opencodeSessionCheckMessages(
+    later.messages,
+    later,
+    new Set(),
+    read,
+    acknowledge,
+    handoffs,
+  )
+  assert.equal(later.messages.at(-1).parts.length, 1)
+  assert.equal(handoffs.size, 0)
+  assert.equal(reads, 2)
+  assert.equal(acks, 1)
+})
+
+test('OpenCode bounds retained turns and discards context during compaction', async () => {
+  const { opencodeSessionCheckMessages } = await loadAdapter('opencode/session-checks.mjs')
+  const handoffs = new Map()
+  const read = async () => ({ message: 'Bounded advice', receipt: 'i'.repeat(64) })
+  const makeMessages = (sessionID) => [
+    {
+      info: { id: 'user', sessionID, role: 'user', agent: 'build' },
+      parts: [{ type: 'text', text: 'Read the fixture.' }],
+    },
+  ]
+  for (let i = 0; i < 257; i += 1) {
+    const messages = makeMessages(`bounded-${i}`)
+    await opencodeSessionCheckMessages(
+      messages,
+      { messages },
+      new Set(),
+      read,
+      () => {},
+      handoffs,
+    )
+  }
+  assert.equal(handoffs.size, 256)
+  assert.equal(handoffs.has('bounded-0'), false)
+  const messages = makeMessages('bounded-256')
+  await opencodeSessionCheckMessages(
+    messages,
+    { messages },
+    new Set(['bounded-256']),
+    read,
+    () => {},
+    handoffs,
+  )
+  assert.equal(handoffs.has('bounded-256'), false)
+  assert.equal(messages[0].parts.length, 1)
+})
+
+test('OpenCode does not read title requests or synthetic-only messages', async () => {
+  const { opencodeSessionCheckMessages } = await loadAdapter('opencode/session-checks.mjs')
+  let reads = 0
+  const read = async () => {
+    reads += 1
+    return { message: 'Antiburn context', receipt: 'e'.repeat(64) }
+  }
+  const titleOutput = { messages: [] }
+  // OpenCode title generation does not call experimental.chat.messages.transform.
+  await opencodeSessionCheckMessages([], titleOutput, new Set(), read)
+  const syntheticOnly = [
+    {
+      info: { id: 'user-2', sessionID: 'session-2', role: 'user', agent: 'build' },
+      parts: [{ id: 'part-2', type: 'text', text: 'prior synthetic advice', synthetic: true }],
+    },
+  ]
+  await opencodeSessionCheckMessages(
+    syntheticOnly,
+    { messages: syntheticOnly },
+    new Set(),
+    read,
+  )
+  assert.equal(reads, 0)
+})
+
+test('OpenCode skips a pending compaction transform and clears its session guard', async () => {
+  const { opencodeSessionCheckMessages } = await loadAdapter('opencode/session-checks.mjs')
+  const compactingSessions = new Set(['session-3'])
+  const read = async () => ({ message: 'Antiburn context', receipt: 'g'.repeat(64) })
+  const messages = [
+    {
+      info: { id: 'user-3', sessionID: 'session-3', role: 'user', agent: 'build' },
+      parts: [{ id: 'part-3', type: 'text', text: 'normal prompt' }],
+    },
+  ]
+  const output = { messages }
+  await opencodeSessionCheckMessages(messages, output, compactingSessions, read)
+  assert.equal(output.messages, messages)
+  assert.equal(compactingSessions.size, 0)
+  await opencodeSessionCheckMessages(messages, output, compactingSessions, read)
+  assert.equal(output.messages, messages)
+  assert.equal(output.messages[0].parts.length, 2)
+})
+
+test('OpenCode rejects mixed-session prompt messages before reading or acknowledging', async () => {
+  const { opencodeSessionCheckMessages } = await loadAdapter('opencode/session-checks.mjs')
+  const messages = [
+    { info: { id: 'old', sessionID: 'old-session', role: 'assistant' }, parts: [] },
+    {
+      info: { id: 'user-4', sessionID: 'new-session', role: 'user', agent: 'build' },
+      parts: [{ id: 'part-4', type: 'text', text: 'prompt' }],
+    },
+  ]
+  let reads = 0
+  let acks = 0
+  await opencodeSessionCheckMessages(
+    messages,
+    { messages },
+    new Set(),
+    async () => {
+      reads += 1
+      return { message: 'Antiburn context', receipt: 'f'.repeat(64) }
+    },
+    () => {
+      acks += 1
+    },
+  )
+  assert.equal(reads, 0)
+  assert.equal(acks, 0)
+})
+
+test('OpenCode leaves subagent sessions to the CLI root-session gate', async () => {
+  const { opencodeSessionCheckMessages } = await loadAdapter('opencode/session-checks.mjs')
+  const acknowledgements = []
+  const read = async (options) => {
+    assert.deepEqual(options, {
+      host: 'opencode',
+      sessionId: 'session-5',
+      consumer: 'context',
+    })
+    return undefined
+  }
+  const makeUser = (id, agent) => ({
+    info: { id, sessionID: 'session-5', role: 'user', agent },
+    parts: [{ id: `${id}-part`, type: 'text', text: 'prompt' }],
   })
+  const subagent = [makeUser('subagent-user', 'explore')]
+  const subagentOutput = { messages: subagent }
+  await opencodeSessionCheckMessages(subagent, subagentOutput, new Set(), read, (receipt) =>
+    acknowledgements.push(receipt),
+  )
+  assert.equal(subagentOutput.messages, subagent)
+  assert.equal(acknowledgements.length, 0)
 })
 
 test('Pi RPC notifies without stdout and unsupported print avoids discovery', async () => {

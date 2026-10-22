@@ -130,15 +130,15 @@ in this diagram are beneath ignored `.agent-artifacts/`.
 
 Run commands from the repository root:
 
-| Command                                             | Output or check                                                                                                           |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `node scripts/assemble-claude-mod.mjs`              | Generates the tracked `plugins/antiburn/` artifact from the selected sources.                                             |
-| `node scripts/assemble-claude-mod.mjs --check`      | Compares that artifact with source-derived bytes without writing it.                                                      |
-| `node scripts/assemble-claude-mod.mjs --test`       | Verifies the public artifact, then stages it with selected tests at `.agent-artifacts/claude-mod/test/`.                  |
-| `node scripts/assemble-claude-mod.mjs --dev`        | Generates the local marketplace and `plugins/antiburn-dev/` beneath `.agent-artifacts/claude-mod/dev/`.                   |
-| `node scripts/assemble-claude-mod.mjs --dev-test`   | Generates the development test build beneath `.agent-artifacts/claude-mod/dev-test/`, including a release-reference tree. |
-| `node scripts/assemble-antiburn-shell.mjs`          | Generates local vendor candidates and catalogs beneath `.agent-artifacts/antiburn-shell/`.                                |
-| `node scripts/assemble-antiburn-shell.mjs --verify` | Checks that output's ownership, inventory and recorded hashes.                                                            |
+| Command                                                   | Output or check                                                                                                           |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `node scripts/assemble-claude-mod.mjs`                    | Generates the tracked `plugins/antiburn/` artifact from the selected sources.                                             |
+| `node scripts/assemble-claude-mod.mjs --check`            | Compares that artifact with source-derived bytes without writing it.                                                      |
+| `node scripts/assemble-claude-mod.mjs --test`             | Verifies the public artifact, then stages it with selected tests at `.agent-artifacts/claude-mod/test/`.                  |
+| `node scripts/assemble-claude-mod.mjs --dev`              | Generates the local marketplace and `plugins/antiburn-dev/` beneath `.agent-artifacts/claude-mod/dev/`.                   |
+| `node scripts/assemble-claude-mod.mjs --dev-test`         | Generates the development test build beneath `.agent-artifacts/claude-mod/dev-test/`, including a release-reference tree. |
+| `node scripts/assemble-antiburn-core-plugin.mjs`          | Generates local vendor candidates and catalogs beneath `.agent-artifacts/antiburn-core-plugin/`.                          |
+| `node scripts/assemble-antiburn-core-plugin.mjs --verify` | Checks that output's ownership, inventory and recorded hashes.                                                            |
 
 The current public artifact is frozen. Its version and inventory are recorded
 in [distribution](distribution.md), and the authoritative commit selection is in
@@ -154,7 +154,7 @@ state identities to `antiburn-dev`. Its marketplace is `antiburn-local-dev`.
 The public/development capability handshake prevents duplicate quota reads and
 usage strips when both are loaded. Keep the development catalog local.
 
-The [cross-vendor assembler](../../scripts/assemble-antiburn-shell.mjs) calls
+The [cross-vendor assembler](../../scripts/assemble-antiburn-core-plugin.mjs) calls
 `releaseFiles()` for Claude; it does not maintain a second public runtime.
 It copies shared JavaScript into the native adapter packages, rewrites their
 relative imports and generates Codex/Cursor hooks, explicit skill content and
@@ -195,23 +195,23 @@ There are no older-plugin users requiring a migration path. The obsolete
 All paths below are relative to the repository root. Grouped child folders share
 the role of their parent; they are not additional distribution products.
 
-| Directory group                                               | Role                                                                                                                |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `.claude-plugin/`                                             | Hosted Claude marketplace selection, separate from each plugin's manifest.                                          |
-| `integrations/antiburn/{claude,codex,cursor,pi,opencode}/`    | Maintained host adapter entries under the `integrations/` source root.                                              |
-| `packages/antiburn-plugin-core/` and `test/`                  | Private shared package and packaging/adapter contract tests under `packages/`.                                      |
-| `plugins/`                                                    | Plugin entry page, maintained sources, public artifact and presentation assets.                                     |
-| `plugins/antiburn-live/{.claude-plugin,hooks,types}/`         | Development manifest, runtime/tests and declarations. Host-generated `.claude-plugin/types/` stays ignored.         |
-| `plugins/antiburn-live/assets/bitcount/`                      | Shared typography license and source notes beneath `assets/`.                                                       |
-| `plugins/antiburn-live/release/{.claude-plugin,hooks,types}/` | Public-specific source inputs and release-only tests; not a separately installed plugin.                            |
-| `plugins/antiburn/{.claude-plugin,hooks,lib,types}/`          | Generated public manifest, runtime, shared metadata and declarations. Do not hand-edit.                             |
-| `plugins/antiburn/assets/bitcount/`                           | Generated asset/license subtree; the parent `assets/` also contains the icon.                                       |
-| `plugins/assets/`                                             | Repository demonstration GIFs, separate from installed plugin assets. Keep published GIF links commit-pinned.       |
-| `docs/plugins/`                                               | Maintained architecture, installation, adapter, distribution and validation guides.                                 |
-| `docs/antiburn-shell/`                                        | Forwarding documentation for links retained in the immutable artifact.                                              |
-| `.agent-artifacts/claude-mod/`                                | Ignored development and public/development test stages; generated, not maintained source.                           |
-| `.agent-artifacts/antiburn-shell/`                            | Ignored local vendor candidates, catalogs and hash inventories. The older internal name is retained by the scripts. |
-| `.agent-artifacts/assembler-ownership/`                       | Ignored Claude assembler ownership records used to guard output replacement.                                        |
+| Directory group                                               | Role                                                                                                              |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `.claude-plugin/`                                             | Hosted Claude marketplace selection, separate from each plugin's manifest.                                        |
+| `integrations/antiburn/{claude,codex,cursor,pi,opencode}/`    | Maintained host adapter entries under the `integrations/` source root.                                            |
+| `packages/antiburn-plugin-core/` and `test/`                  | Private shared package and packaging/adapter contract tests under `packages/`.                                    |
+| `plugins/`                                                    | Plugin entry page, maintained sources, public artifact and presentation assets.                                   |
+| `plugins/antiburn-live/{.claude-plugin,hooks,types}/`         | Development manifest, runtime/tests and declarations. Host-generated `.claude-plugin/types/` stays ignored.       |
+| `plugins/antiburn-live/assets/bitcount/`                      | Shared typography license and source notes beneath `assets/`.                                                     |
+| `plugins/antiburn-live/release/{.claude-plugin,hooks,types}/` | Public-specific source inputs and release-only tests; not a separately installed plugin.                          |
+| `plugins/antiburn/{.claude-plugin,hooks,lib,types}/`          | Generated public manifest, runtime, shared metadata and declarations. Do not hand-edit.                           |
+| `plugins/antiburn/assets/bitcount/`                           | Generated asset/license subtree; the parent `assets/` also contains the icon.                                     |
+| `plugins/assets/`                                             | Repository demonstration GIFs, separate from installed plugin assets. Keep published GIF links commit-pinned.     |
+| `docs/plugins/`                                               | Maintained architecture, installation, adapter, distribution and validation guides.                               |
+| `docs/antiburn-shell/`                                        | Forwarding documentation for links retained in the immutable artifact.                                            |
+| `.agent-artifacts/claude-mod/`                                | Ignored development and public/development test stages; generated, not maintained source.                         |
+| `.agent-artifacts/antiburn-core-plugin/`                      | Ignored local vendor candidates, catalogs and hash inventories. The assembler uses the internal core plugin name. |
+| `.agent-artifacts/assembler-ownership/`                       | Ignored Claude assembler ownership records used to guard output replacement.                                      |
 
 The shared package is outside the pnpm workspace's `apps/*` membership. Plugin
 assembly does not install dependencies or change the workspace lockfile. The
@@ -243,7 +243,7 @@ icon and root license are build inputs only.
   temporary profiles, projects and Git fixtures for public/development install,
   disable/enable, update, removal and reinstall checks. It does not establish
   hosted delivery or native rendering.
-- [The audit script](../../scripts/audit-antiburn-shell.mjs) verifies assembled
+- [The audit script](../../scripts/audit-antiburn-core-plugin.mjs) verifies assembled
   candidates, copies them into a temporary audit directory and prepares separate
   vendor profiles/projects. Launching a selected host records exit status;
   visual acceptance stays pending until manually assessed. These profiles are

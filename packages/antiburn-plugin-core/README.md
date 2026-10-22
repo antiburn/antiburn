@@ -9,11 +9,11 @@ From the repository root:
 
 ```sh
 node --test packages/antiburn-plugin-core/test/*.test.mjs
-node scripts/assemble-antiburn-shell.mjs
-node scripts/assemble-antiburn-shell.mjs --verify
+node scripts/assemble-antiburn-core-plugin.mjs
+node scripts/assemble-antiburn-core-plugin.mjs --verify
 ```
 
-The build script and output path retain the earlier internal `antiburn-shell` name; the product is the antiburn plugin. The ignored output is `.agent-artifacts/antiburn-shell/`, with one Claude release candidate delegated to `releaseFiles()` and local-only candidates for deferred hosts. The manifest and `SHA256SUMS` record deterministic bytes. Reassembly refuses unowned, changed, or symlinked output. No archive or published package is produced.
+The build script and output path use the internal `antiburn-core-plugin` name; the product is the antiburn plugin. The ignored output is `.agent-artifacts/antiburn-core-plugin/`, with one Claude release candidate delegated to `releaseFiles()` and local-only candidates for deferred hosts. The manifest and `SHA256SUMS` record deterministic bytes. Reassembly refuses unowned, changed, or symlinked output. No archive or published package is produced.
 
 Use the package scripts for formatting, lint, and JSDoc type checks. Tool binaries can be supplied through `ANTIBURN_PRETTIER`, `ANTIBURN_ESLINT`, and `ANTIBURN_TSC`; otherwise the corresponding executable must be on PATH. No tool is downloaded by these scripts.
 

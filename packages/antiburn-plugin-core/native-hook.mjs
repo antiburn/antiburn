@@ -1,4 +1,4 @@
-import { pathToFileURL } from 'node:url'
+import { realpathSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { acknowledgeSessionChecks } from './session-checks.mjs'
 
@@ -55,9 +55,10 @@ export async function runJsonHook(handler) {
 
 /** @param {string} filename */
 export function isDirectExecution(filename) {
-  return (
-    typeof filename === 'string' &&
-    !!process.argv[1] &&
-    pathToFileURL(resolve(process.argv[1])).href === pathToFileURL(resolve(filename)).href
-  )
+  if (typeof filename !== 'string' || !process.argv[1]) return false
+  try {
+    return realpathSync(resolve(process.argv[1])) === realpathSync(resolve(filename))
+  } catch {
+    return false
+  }
 }

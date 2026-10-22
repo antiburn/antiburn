@@ -6,7 +6,7 @@ For the current Claude rollout, use the [installation guide](installation.md). F
 
 ## Prepare local candidates
 
-Build with `node scripts/assemble-antiburn-shell.mjs` and review package contents and hashes before enabling executable adapters. The build scripts and default `.agent-artifacts/antiburn-shell/` output retain an earlier internal name; the product name is antiburn plugin.
+Build with `node scripts/assemble-antiburn-core-plugin.mjs` and review package contents and hashes before enabling executable adapters. The build scripts and default `.agent-artifacts/antiburn-core-plugin/` output use the internal core plugin name; the product name is antiburn plugin.
 
 Examples use `/absolute/path/to/generated-plugins` as a placeholder for that generated output directory. Replace it with the actual absolute path. Choose one source and scope; use temporary profiles and disposable projects. Preserve unrelated installations, settings, skills and credentials.
 
@@ -19,7 +19,11 @@ results. Reads do not launch the app or evaluate checks. See
 
 The local package includes a `UserPromptSubmit` command hook for automatic
 check delivery, plus a skill for explicit help. Review and trust the executable
-hooks in the isolated profile. No startup turn is created.
+hooks in the isolated profile. CLI 0.163.0 requires separate native hook
+registration: run `node /absolute/path/to/generated-plugins/codex/hooks/session-check-config.mjs --host codex`,
+then review and merge the printed fragment into that profile’s `hooks.json`.
+Package enablement alone did not activate its bundled hooks in native acceptance.
+No startup turn is created.
 
 ```sh
 codex plugin marketplace add /absolute/path/to/generated-plugins/catalogs/codex
@@ -44,6 +48,11 @@ Once a verified listing exists, use Customize → listing → Install → user o
 Update only the owned local artifact; remove only that directory and reload. Marketplace installs use Customize controls, subject to policy. The local candidate includes a `postToolUse` command hook. It can deliver saved
 check updates after a tool result; it does not wake an idle conversation. Actual
 native-route acceptance is recorded separately from explicit command use.
+For Cursor Agent 2026.05.24-dda726e, run
+`node /absolute/path/to/generated-plugins/cursor/hooks/session-check-config.mjs --host cursor`
+and review/merge the fragment into the disposable project’s `.cursor/hooks.json`.
+Plugin discovery alone did not register bundled hooks in that CLI build.
+Preserve existing hooks and use normal host trust controls.
 
 ## OpenCode
 
@@ -58,16 +67,14 @@ For the opt-in runtime candidate, merge this entry into the selected scope's exi
 
 ```json
 {
-  "plugin": [
-    "file:///absolute/path/to/generated-plugins/opencode/runtime/antiburn.mjs"
-  ]
+  "plugin": ["file:///absolute/path/to/generated-plugins/opencode/runtime/antiburn.mjs"]
 }
 ```
 
 Preserve the adjacent `session-checks.mjs` and `lib/` files. Keep the runtime
 outside auto-discovered plugin directories so helper modules are not loaded as
-plugin factories. The candidate targets `@opencode-ai/plugin` SDK 1.19.2 and uses the session-bound
-`experimental.chat.system.transform` callback on loopback servers. Runtime
+plugin factories. The candidate targets `@opencode-ai/plugin` SDK 1.19.2 and uses the primary-session
+`experimental.chat.messages.transform` callback on loopback servers. Runtime
 acceptance uses the host build recorded in [session checks](session-checks.md);
 SDK validation and TUI visibility remain separate gates. Use a dedicated `HOME` and XDG config/data/cache/state directories for acceptance. Remove only this array entry to disable the candidate. For npm installation, merge only the verified pinned package into the existing `plugin` array; no published package is assumed here. An npm plugin does not automatically install command assets.
 
@@ -109,16 +116,16 @@ Sources: [Claude plugins](https://code.claude.com/docs/en/discover-plugins), [Co
 
 ## Cross-vendor visual audit launcher
 
-Run `node scripts/audit-antiburn-shell.mjs prepare` from the source checkout after assembly. It verifies the source inventory and creates a unique temporary audit directory with artifact copies, separate projects/profiles, a Cursor Git catalog, `audit.json`, and `CHECKLIST.md`. Cursor's copied catalog receives a unique name; source hashes describe the original artifacts before this fixture metadata change.
+Run `node scripts/audit-antiburn-core-plugin.mjs prepare` from the source checkout after assembly. It verifies the source inventory and creates a unique temporary audit directory with artifact copies, separate projects/profiles, a Cursor Git catalog, `audit.json`, and `CHECKLIST.md`. Cursor's copied catalog receives a unique name; source hashes describe the original artifacts before this fixture metadata change.
 
 Launch one vendor at a time from an interactive terminal:
 
 ```sh
-node scripts/audit-antiburn-shell.mjs launch /absolute/audit-dir claude
-node scripts/audit-antiburn-shell.mjs launch /absolute/audit-dir codex
-node scripts/audit-antiburn-shell.mjs launch /absolute/audit-dir cursor
-node scripts/audit-antiburn-shell.mjs launch /absolute/audit-dir opencode
-node scripts/audit-antiburn-shell.mjs launch /absolute/audit-dir pi
+node scripts/audit-antiburn-core-plugin.mjs launch /absolute/audit-dir claude
+node scripts/audit-antiburn-core-plugin.mjs launch /absolute/audit-dir codex
+node scripts/audit-antiburn-core-plugin.mjs launch /absolute/audit-dir cursor
+node scripts/audit-antiburn-core-plugin.mjs launch /absolute/audit-dir opencode
+node scripts/audit-antiburn-core-plugin.mjs launch /absolute/audit-dir pi
 ```
 
 An optional final argument supplies the vendor binary path when it is not on PATH. A per-audit `hosts.<vendor>.binary` entry in `audit.json` selects a persistent local binary; an explicit argument takes precedence. An absolute binary path also puts its directory first on the child's PATH, for runtimes installed beside that binary. No host package is downloaded. Codex's launcher installs the local catalog/plugin into its temporary `CODEX_HOME`. Claude and Pi use one-session flags. OpenCode receives a project command and runtime configuration with isolated HOME/XDG paths. Cursor receives separate user-data and extension directories plus a local plugin candidate. Its local discovery still needs host verification; the checklist includes the manual Git-catalog fallback.
@@ -129,7 +136,7 @@ Each launch writes its own `<vendor>-launch.json`; zero exit status never change
 
 ## Claude checks candidate
 
-The shell assembler emits `claude-session-checks/` and a separate local
+The core plugin assembler emits `claude-session-checks/` and a separate local
 `catalogs/claude-session-checks/` marketplace. Load the candidate with
 `claude --plugin-dir /absolute/path/to/generated-plugins/claude-session-checks`
 in an isolated profile. It uses `UserPromptSubmit` to deliver saved results

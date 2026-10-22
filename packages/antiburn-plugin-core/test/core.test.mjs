@@ -52,7 +52,7 @@ test('presentation is truthful, bounded, and contains no terminal controls', () 
 })
 
 test('real executable discovery follows links but never executes its candidate', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'antiburn-shell-test-'))
+  const dir = await mkdtemp(join(tmpdir(), 'antiburn-core-plugin-test-'))
   try {
     const bin = join(dir, 'bin with spaces;$(never)')
     await mkdir(bin)

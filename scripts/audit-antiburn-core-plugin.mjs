@@ -3,10 +3,10 @@ import { cp, mkdir, mkdtemp, readFile, realpath, writeFile, rm } from 'node:fs/p
 import { tmpdir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { defaultOutput, verify } from './assemble-antiburn-shell.mjs'
+import { defaultOutput, verify } from './assemble-antiburn-core-plugin.mjs'
 
 const hosts = ['claude', 'codex', 'cursor', 'opencode', 'pi']
-const owner = 'antiburn-shell-visual-audit-v1'
+const owner = 'antiburn-core-plugin-visual-audit-v1'
 const json = (value) => JSON.stringify(value, null, 2) + '\n'
 
 function run(binary, args, options) {
@@ -115,7 +115,7 @@ export async function launch(directory, host, binary) {
       env,
       stdio: 'inherit',
     })
-    run(binary, ['plugin', 'add', 'antiburn@antiburn-shell-local'], {
+    run(binary, ['plugin', 'add', 'antiburn@antiburn-core-plugin-local'], {
       cwd: project,
       env,
       stdio: 'inherit',
@@ -168,7 +168,7 @@ async function main(args) {
     await launch(args[1], args[2], args[3])
   } else {
     throw new Error(
-      'Usage: audit-antiburn-shell.mjs prepare [artifacts] | launch <audit-dir> <claude|codex|cursor|opencode|pi> [binary]',
+      'Usage: audit-antiburn-core-plugin.mjs prepare [artifacts] | launch <audit-dir> <claude|codex|cursor|opencode|pi> [binary]',
     )
   }
 }

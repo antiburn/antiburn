@@ -48,21 +48,21 @@ A startup event, explicit command, and model-mediated skill have different guara
 
 ## Build and check
 
-The product name is **antiburn plugin**; **mod** describes the host-native runtime. Build script names and the generated output path below retain the earlier internal `antiburn-shell` name. Use these exact paths when running the tools.
+The product name is **antiburn plugin**; **mod** describes the host-native runtime. Build scripts and generated output use the internal `antiburn-core-plugin` name.
 
 From the repository root:
 
 ```sh
-node scripts/assemble-antiburn-shell.mjs
+node scripts/assemble-antiburn-core-plugin.mjs
 node --test packages/antiburn-plugin-core/test/*.test.mjs
-node scripts/assemble-antiburn-shell.mjs --verify
+node scripts/assemble-antiburn-core-plugin.mjs --verify
 ```
 
 For formatter, linter, and pinned host SDK type checks, follow [development checks](../../packages/antiburn-plugin-core/README.md).
 
 For output locations, source ownership and catalog boundaries, see the
-[architecture map](architecture.md#from-source-to-runnable-artifacts). The older
-internal `antiburn-shell` name remains in these commands.
+[architecture map](architecture.md#from-source-to-runnable-artifacts). These commands use the internal
+`antiburn-core-plugin` name.
 
 Use the generated artifact for host validation. A simulated host does not prove native UI, trusted loading, marketplace approval, Windows/Linux behavior, or remote-host support. Record those separately in the compatibility ledger.
 

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { test } from 'node:test'
 import { mkdtemp, realpath, readFile, writeFile, rm, mkdir, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { assemble, verify } from '../../../scripts/assemble-antiburn-shell.mjs'
+import { assemble, verify } from '../../../scripts/assemble-antiburn-core-plugin.mjs'
 
 test('assembly is reproducible, self-contained, licensed, and refuses altered ownership', async () => {
   const temp = await realpath(await mkdtemp(join(tmpdir(), 'antiburn-assembly-test-')))
@@ -11,6 +12,8 @@ test('assembly is reproducible, self-contained, licensed, and refuses altered ow
     const output = join(temp, 'bundles')
     await assemble(output)
     const first = await readFile(join(output, 'SHA256SUMS'), 'utf8')
+    assert.ok(first.includes('codex/hooks/session-check-config.mjs'))
+    assert.ok(first.includes('cursor/hooks/session-check-config.mjs'))
     assert.match(first, /claude\/hooks\/register.ts/)
     assert.match(first, /pi\/extensions\/antiburn.mjs/)
     assert.match(first, /opencode\/runtime\/session-checks\.mjs/)
@@ -59,6 +62,53 @@ test('assembly is reproducible, self-contained, licensed, and refuses altered ow
       await readFile(join(output, 'codex/.codex-plugin/plugin.json'), 'utf8'),
     )
     assert.equal(codexManifest.hooks, './hooks/hooks.json')
+    for (const host of ['codex', 'cursor']) {
+      const configScript = join(output, host, 'hooks/session-check-config.mjs')
+      const catalogScript = join(
+        output,
+        'catalogs',
+        host,
+        'plugins/antiburn/hooks/session-check-config.mjs',
+      )
+      const configResult = spawnSync(process.execPath, [configScript, '--host', host], {
+        encoding: 'utf8',
+      })
+      assert.equal(configResult.status, 0, configResult.stderr)
+      const catalogResult = spawnSync(process.execPath, [catalogScript, '--host', host], {
+        encoding: 'utf8',
+      })
+      assert.equal(catalogResult.status, 0, catalogResult.stderr)
+      const config = JSON.parse(configResult.stdout)
+      const catalogConfig = JSON.parse(catalogResult.stdout)
+      const command =
+        host === 'codex'
+          ? config.hooks.UserPromptSubmit[0].hooks[0].command
+          : config.hooks.postToolUse[0].command
+      assert.ok(command.includes(`${host}/hooks/session-check-hook.mjs`))
+      const catalogCommand =
+        host === 'codex'
+          ? catalogConfig.hooks.UserPromptSubmit[0].hooks[0].command
+          : catalogConfig.hooks.postToolUse[0].command
+      assert.ok(
+        catalogCommand.includes(
+          `catalogs/${host}/plugins/antiburn/hooks/session-check-hook.mjs`,
+        ),
+      )
+      const readme = await readFile(join(output, `${host}/README.md`), 'utf8')
+      assert.ok(readme.includes(`node hooks/session-check-config.mjs --host ${host}`))
+      assert.match(readme, /merge it into/)
+    }
+    assert.match(
+      await readFile(join(output, 'codex/README.md'), 'utf8'),
+      /CLI catalog installation did not activate bundled hooks on tested builds/,
+    )
+    assert.match(
+      await readFile(join(output, 'cursor/README.md'), 'utf8'),
+      /plugin discovery alone did not activate bundled hooks on tested builds/,
+    )
+    const opencodeReadme = await readFile(join(output, 'opencode/README.md'), 'utf8')
+    assert.match(opencodeReadme, /experimental\.chat\.messages\.transform/)
+    assert.doesNotMatch(opencodeReadme, /experimental\.chat\.system\.transform/)
     const claudeChecksManifest = JSON.parse(
       await readFile(join(output, 'claude-session-checks/.claude-plugin/plugin.json'), 'utf8'),
     )

@@ -58,8 +58,8 @@ response contains a snapshot and meaningful `finding`, `cleared`, or
 times and checking activity can update the pane without repeating advice.
 
 Consumers acknowledge a receipt at their native handoff boundary. Command hooks
-acknowledge after the stdout write completes. Pi and OpenCode schedule an
-acknowledgement after constructing the callback result. These APIs do not
+acknowledge after the stdout write completes. Pi schedules an acknowledgement after constructing the callback result.
+OpenCode mutates the host message array before scheduling its acknowledgement. These APIs do not
 confirm host consumption or model acceptance.
 Pending batches can replay before acknowledgement, including after a crash.
 An obsolete receipt cannot overwrite newer pending state. If acknowledgement
@@ -89,11 +89,15 @@ and [session coverage](../session-coverage.md) for those separate contracts.
 | Codex       | UserPromptSubmit command hook                  | Existing supported native file contract                                   |
 | Cursor      | postToolUse command hook                       | Unsupported; synthetic delivery tests do not establish evaluation support |
 | Pi          | before_agent_start for user messages           | Existing supported native file contract                                   |
-| OpenCode    | Session-bound system context transformation    | Existing supported local provider-database contract                       |
+| OpenCode    | Main-session message transformation            | Existing supported local provider-database contract                       |
 
 No adapter wakes an idle agent, starts another model turn, blocks Stop to force
 continuation, or relies on skill invocation for automatic delivery. Unsupported
 host schemas or ambiguous ownership remain unavailable.
+
+OpenCode retains handed-off advice for the current user turn across tool steps.
+The bounded in-memory cache clears on a new user turn, compaction, or session deletion.
+Reattachment does not read another receipt or acknowledge the same handoff again.
 
 ## Development and distribution
 
@@ -102,9 +106,31 @@ understand the versioned flags. Use its JSON configuration to select a disposabl
 database for tests. Do not test against production session data.
 
 The plugin assembler emits local candidates under the ignored
-`.agent-artifacts/antiburn-shell/` tree. The published Claude artifact and its
+`.agent-artifacts/antiburn-core-plugin/` tree. The published Claude artifact and its
 immutable marketplace pin remain separate. Native candidate validation is not
 permission to publish, promote a marketplace entry, tag, or release.
+
+### Codex and Cursor hook registration
+
+Generate a native hook configuration fragment from the assembled package:
+
+```sh
+node .agent-artifacts/antiburn-core-plugin/codex/hooks/session-check-config.mjs --host codex
+node .agent-artifacts/antiburn-core-plugin/cursor/hooks/session-check-config.mjs --host cursor
+```
+
+On macOS and Linux, these commands print JSON with the absolute packaged hook
+path. They do not change configuration or trust hooks. Review and merge the
+fragment into the host's native configuration, preserving existing hooks:
+Codex uses `~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`); Cursor supports
+project `.cursor/hooks.json`. Use each host's normal hook enablement and trust
+review. Keep the generated package at its registered path; regenerate the
+fragment after moving it. The preview rejects unsupported platforms.
+
+The tested Codex and Cursor CLI builds did not activate bundled hooks merely
+because the plugin was discovered or enabled. Their native configuration route
+must be registered separately. Codex desktop plugin installation and hook trust
+are separate from this CLI acceptance record.
 
 The runtime support record must distinguish unit tests, SDK type checks,
 package loading, and actual native context delivery. A host accepting a manifest
@@ -115,21 +141,22 @@ before claiming native acceptance.
 ## Local native acceptance record
 
 The following development checks use synthetic CLI responses and disposable
-profiles on macOS. A loopback mock model endpoint captures the host request;
-these checks do not establish real app evaluation or public installation.
+profiles on macOS. Loopback endpoints capture native handoff; these checks do
+not establish real app evaluation or public installation.
 
-| Host build                                      | Surface and observation                                                                                                                      | Remaining boundary                                                                                                          |
-| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Claude Code 2.1.307                             | CLI print mode; packaged UserPromptSubmit hook placed the synthetic assessment in the captured request, then acknowledged it                 | PostToolUse has unit and packaging proof only; desktop and public distribution remain separate                              |
-| Codex CLI 0.163.0                               | CLI native UserPromptSubmit configured in isolated hooks.json; packaged hook placed the assessment in a loopback request and acknowledged it | Bundled-plugin hook trust and desktop installation are not proven by direct hook configuration                              |
-| Pi 1.3.0                                        | CLI with packaged extension and offline configuration; before_agent_start placed the assessment in a loopback request and acknowledged it    | Type validation targets SDK 0.80.3; TUI and other runtime versions require separate checks                                  |
-| OpenCode 1.19.3                                 | Isolated server health passed; prompt API runs did not produce observed plugin CLI calls or advisory context                                 | Native system-transform delivery remains unverified; a final guarded prompt API run stalled before a captured model request |
-| Cursor 3.25.6 / Cursor Agent 2026.05.24-dda726e | Synthetic adapter and packaging tests; isolated CLI attempted api2.cursor.sh before any hook, and the local guard denied it                  | Actual native postToolUse route remains unverified; YAML evidence coverage is unsupported                                   |
+| Host build                      | Surface and observation                                                                                                                                                                                            | Remaining boundary                                                                                                              |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| Claude Code 2.1.307             | CLI print mode; packaged UserPromptSubmit and PostToolUse hooks placed the assessment in captured model requests and acknowledged it                                                                               | Desktop and public distribution require separate checks                                                                         |
+| Codex CLI 0.163.0               | Native UserPromptSubmit registered in isolated hooks.json; packaged hook placed the assessment in a loopback Responses request and acknowledged it                                                                 | Bundled-plugin hook trust and desktop installation are separate from native CLI configuration                                   |
+| Pi 1.3.0                        | CLI with packaged extension and offline configuration; before_agent_start placed the assessment in a loopback model request and acknowledged it                                                                    | Type validation targets SDK 0.80.3; TUI and other runtime versions require separate checks                                      |
+| OpenCode 1.19.3                 | Packaged plugin with an isolated offline dependency profile; messages transform placed the assessment in the primary build model request, then acknowledged it; the preceding title request received no assessment | Type validation targets SDK 1.19.2; native handoff requires mutating the host message array in place                            |
+| Cursor Agent 2026.05.24-dda726e | Native project postToolUse configuration referenced the unmodified packaged hook; after a real shell tool, the native Connect hook response carried the assessment and the CLI acknowledged it                     | The loopback protocol fixture observes native context handoff, not a cloud model request; YAML evidence coverage is unsupported |
 
 There is no claim of Windows, Linux, remote-host or GUI parity from these
 checks. Command-hook acknowledgement confirms a completed stdout write, not
-model consumption. Pi uses a callback-result handoff boundary. OpenCode native
-delivery remains unverified.
+model consumption. Pi uses a callback-result handoff boundary. OpenCode changes
+the transient primary-session prompt before the host converts it to model
+messages. Title and compaction requests do not consume its delivery receipts.
 
 ## Validation and privacy
 
