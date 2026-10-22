@@ -27,6 +27,7 @@ type Fake = {
   presentationTimers: { ms: number; fire: () => void }[]
   readUsage?: () => Promise<RateLimitReading[]>
   clockRead?: () => Promise<number>
+  readSurfaces?: () => Promise<readonly RenderSurface[]>
   stateWrites: string[]
   submits: string[]
   fills: string[]
@@ -108,7 +109,9 @@ function fakeEngine(on: On, surfaces: readonly RenderSurface[] = ["terminal"]): 
   on("session.start", () => ({ cwd: "/work" }))
   on("classic.UserPromptSubmit", () => ({}) as never)
   on("classic.Stop", () => ({}) as never)
-  on("session.surfaces", () => ({ value: surfaces }))
+  on("session.surfaces", async () => ({
+    value: fake.readSurfaces ? await fake.readSurfaces() : surfaces,
+  }))
   on("command.register", (_$, e) => {
     fake.commands.push(e)
     return { value: { command: e.name } }
@@ -659,6 +662,262 @@ test("/antiburn-dev opens checks and the explicit checks argument remains suppor
     presentation,
   } as never)
   expect(fake.opens).toEqual(["checks", "checks"])
+})
+
+test("the Claude pane shows Antiburn-authored checks and acknowledges only after applying them", async ($, on) => {
+  const fake = fakeEngine(on)
+  const commands: string[][] = []
+  let sessionReads = 0
+  const delivery = {
+    protocol_version: 1,
+    session_id: "test-session",
+    identity: { environment_key: "native", agent: "claude-code", session_id: "test-session" },
+    session_scope: "main",
+    freshness_evaluated: false,
+    state: "ready",
+    snapshot: [{
+      id: "dynamic-check-42",
+      check_id: "predefined-yaml-check",
+      name: "Review the risky change",
+      message: "Check the affected files before continuing.",
+      status: "failure",
+      assessed_at_epoch: 1_800_000_000,
+      checking: false,
+      eligibility: "ready",
+    }],
+    updates: [{
+      id: "dynamic-check-42",
+      kind: "finding",
+      name: "Review the risky change",
+      message: "Check the affected files before continuing.",
+    }],
+    receipt: "a".repeat(64),
+  }
+  on("process.run", (_$, event) => {
+    const argv = [...event.argv]
+    commands.push(argv)
+    let stdout = '{"state":"found"}'
+    if (argv.includes("--ack")) {
+      stdout = JSON.stringify({ protocol_version: 1, acknowledged: true })
+    } else if (argv[0] === "antiburn") {
+      sessionReads += 1
+      stdout = JSON.stringify(sessionReads === 1 ? delivery : {
+        ...delivery,
+        state: "waiting",
+        snapshot: [{
+          ...delivery.snapshot[0],
+          name: "dynamic-check-42",
+          message: null,
+          status: null,
+          assessed_at_epoch: null,
+          eligibility: "waiting",
+        }],
+        updates: [{
+          id: "dynamic-check-42",
+          kind: "invalidated",
+          name: "dynamic-check-42",
+          message: null,
+        }],
+        receipt: "c".repeat(64),
+      })
+    }
+    return {
+      value: {
+        exitCode: 0,
+        stdout,
+        stderr: "",
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    }
+  })
+  await startSession($)
+  const pane = await $.ui.mount({
+    plugin: "antiburn-live",
+    surface: "desktop",
+    component: "Pane",
+    requestId: "checks",
+    props: PANE_PROPS,
+  })
+  const displayed = {
+    advice: (await pane.find({ text: /^Check the affected files before continuing\.$/ })) !== undefined,
+    assessedTime: (await pane.findAll({ type: "Svg" })).some((node) =>
+      String(node.props.alt ?? "").includes("Assessed"),
+    ),
+    connectedLabel: (await pane.find({ text: /Connected · freshness not evaluated/ })) !== undefined,
+    noFix: await pane.find({ key: "card-fix-dynamic-check-42" }) === undefined,
+    uiConsumer: commands.some((argv) => argv.includes("claude-code:ui")),
+    receiptAck: commands.some((argv) => argv.includes("--ack")),
+  }
+  expect(displayed).toEqual({
+    advice: true,
+    assessedTime: true,
+    connectedLabel: true,
+    noFix: true,
+    uiConsumer: true,
+    receiptAck: true,
+  })
+  expect(fake.submits).toEqual([])
+  expect(fake.compacts).toEqual([])
+  await pane.press({ key: "row-dynamic-check-42" })
+  expect((await pane.find({ key: "hide-dynamic-check-42" }))?.props.label).toBe("Dismiss this check")
+  await pane.press({ key: "hide-dynamic-check-42" })
+  await turn($, fake)
+  expect(await pane.find({ text: /^Review the risky change$/ })).toBeUndefined()
+  expect(commands.filter((argv) => argv.includes("--ack"))).toHaveLength(2)
+  expect(fake.submits).toEqual([])
+  expect(fake.compacts).toEqual([])
+})
+
+test("a late failed session-check read cannot overwrite an active demo", async ($, on) => {
+  fakeEngine(on)
+  let reads = 0
+  let entered!: () => void
+  let rejectRead!: (reason: Error) => void
+  const readStarted = new Promise<void>((resolve) => {
+    entered = resolve
+  })
+  on("process.run", (_$, event) => {
+    if (event.argv[0] !== "antiburn") {
+      return {
+        value: {
+          exitCode: 0,
+          stdout: '{"state":"found"}',
+          stderr: "",
+          isStdoutTruncated: false,
+          isStderrTruncated: false,
+        },
+      }
+    }
+    reads += 1
+    entered()
+    return new Promise((_resolve, reject) => {
+      rejectRead = reject
+    })
+  })
+  const starting = $.session.start({
+    cwd: "/work",
+    surface: "terminal",
+    isInteractive: true,
+  })
+  await readStarted
+  await $.command.run({
+    command: "antiburn-dev",
+    args: "demo",
+    presentation: { isFullscreen: false, columns: 100 },
+  } as never)
+  rejectRead(new Error("stale session read failed"))
+  await starting
+  await $.turn.complete({
+    answer: "",
+    durationMs: 1,
+    isAborted: false,
+    turnId: "child-turn",
+    reason: "answer",
+    agentId: "child-agent",
+  } as never)
+  expect(reads).toBe(1)
+  const pane = await $.ui.mount({
+    plugin: "antiburn-live",
+    surface: "terminal",
+    component: "Pane",
+    requestId: "checks",
+    props: PANE_PROPS,
+  })
+  expect((await pane.find({ text: /Reading spiral/ })) !== undefined).toBe(true)
+  expect((await pane.find({ text: /Antiburn disconnected/ })) !== undefined).toBe(false)
+})
+
+test("a stale session-check read cannot write status after a newer read", async ($, on) => {
+  const fake = fakeEngine(on, ["mobile"])
+  const emptyDelivery = {
+    protocol_version: 1,
+    session_id: "test-session",
+    identity: { environment_key: "native", agent: "claude-code", session_id: "test-session" },
+    session_scope: "main",
+    freshness_evaluated: false,
+    state: "ready",
+    snapshot: [],
+    updates: [],
+    receipt: null,
+  }
+  const failure = {
+    id: "async-race-check",
+    check_id: "predefined-yaml-check",
+    name: "Old warning",
+    message: "This result must not replace the newer state.",
+    status: "failure",
+    assessed_at_epoch: 1_800_000_000,
+    checking: false,
+    eligibility: "ready",
+  }
+  let reads = 0
+  on("process.run", (_$, event) => {
+    if (event.argv[0] !== "antiburn") {
+      return { value: { exitCode: 0, stdout: "{}", stderr: "", isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    if (event.argv.includes("--ack")) {
+      return { value: { exitCode: 0, stdout: JSON.stringify({ protocol_version: 1, acknowledged: true }), stderr: "", isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    reads += 1
+    const delivery = reads === 1
+      ? emptyDelivery
+      : reads === 2
+        ? {
+            ...emptyDelivery,
+            receipt: "a".repeat(64),
+            snapshot: [failure],
+            updates: [{ id: failure.id, kind: "finding", name: failure.name, message: failure.message }],
+          }
+        : {
+            ...emptyDelivery,
+            snapshot: [{ ...failure, name: "Recovered", message: "The current snapshot has no warning.", status: "success" }],
+            updates: [],
+          }
+    return {
+      value: {
+        exitCode: 0,
+        stdout: JSON.stringify(delivery),
+        stderr: "",
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    }
+  })
+
+  await startSession($)
+
+  let surfaceCalls = 0
+  let releaseFirstSurface!: () => void
+  let firstSurfaceEntered!: () => void
+  const firstSurfaceReady = new Promise<void>((resolve) => { firstSurfaceEntered = resolve })
+  const firstSurface = new Promise<readonly RenderSurface[]>((resolve) => { releaseFirstSurface = () => resolve(["mobile"]) })
+  fake.readSurfaces = async () => {
+    surfaceCalls += 1
+    if (surfaceCalls === 1) {
+      firstSurfaceEntered()
+      return firstSurface
+    }
+    return ["mobile"]
+  }
+
+  const complete = (turnId: string) => $.turn.complete({
+    answer: "",
+    durationMs: 1,
+    isAborted: false,
+    turnId,
+    reason: "answer",
+  })
+  const staleRead = complete("old-read")
+  await firstSurfaceReady
+  await complete("new-read")
+  const statusAfterNewRead = fake.statuses.at(-1)
+  releaseFirstSurface()
+  await staleRead
+
+  expect(reads).toBe(3)
+  expect(statusAfterNewRead).toBe(undefined)
+  expect(fake.statuses.at(-1)).toBe(statusAfterNewRead)
 })
 
 test("/antiburn-dev demo shows all five checks and keeps them until demo off", async ($, on) => {
@@ -1682,7 +1941,27 @@ for (const [state, message] of [
     fake.liveMode = "checks"
     fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
     let probes = 0
-    on("process.run", () => {
+    on("process.run", (_$, event) => {
+      if (event.argv[0] === "antiburn") {
+        return {
+          value: {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              protocol_version: 1,
+              session_id: "test-session",
+              session_scope: "unsupported",
+              freshness_evaluated: false,
+              state: "waiting",
+              snapshot: [],
+              updates: [],
+              receipt: null,
+            }),
+            stderr: "",
+            isStdoutTruncated: false,
+            isStderrTruncated: false,
+          },
+        }
+      }
       probes += 1
       if (state === "unavailable") throw new Error("probe failed")
       return {
@@ -1713,7 +1992,27 @@ for (const [state, message] of [
 test("startup notice probes once when the same session starts again", async ($, on) => {
   const fake = fakeEngine(on)
   let probes = 0
-  on("process.run", () => {
+  on("process.run", (_$, event) => {
+    if (event.argv[0] === "antiburn") {
+      return {
+        value: {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            protocol_version: 1,
+            session_id: "test-session",
+            session_scope: "unsupported",
+            freshness_evaluated: false,
+            state: "waiting",
+            snapshot: [],
+            updates: [],
+            receipt: null,
+          }),
+          stderr: "",
+          isStdoutTruncated: false,
+          isStderrTruncated: false,
+        },
+      }
+    }
     probes += 1
     return {
       value: {
@@ -1736,7 +2035,7 @@ test("startup notice probes once when the same session starts again", async ($, 
 })
 
 test(
-  "disabling the dev usage UI avoids automatic usage reads and local checks",
+  "disabling the dev usage UI avoids automatic usage reads while Antiburn checks remain separate",
   { options: { usageUiEnabled: false, startupNoticeEnabled: false } },
   async ($, on) => {
     const fake = fakeEngine(on)
@@ -1757,7 +2056,8 @@ test(
     fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
     await startSession($)
     expect(fake.usageReads).toBe(0)
-    expect(processes).toEqual([])
+    expect(processes.some((argv) => argv[0] === "node")).toBe(false)
+    expect(processes.some((argv) => argv[0] === "antiburn" && argv.includes("claude-code:ui"))).toBe(true)
     await turn($, fake, { failures: 3 })
     const band = await $.ui.mount({
       plugin: "antiburn-live",
@@ -1973,6 +2273,47 @@ test("a late usage failure cannot replace a newer measurement", async ($, on) =>
 
 test("reload into usage mode clears prior check UI and disables stale actions", async ($, on) => {
   const fake = fakeEngine(on, ["mobile"])
+  on("process.run", (_$, event) => {
+    const argv = [...event.argv]
+    const stdout = argv.includes("--ack")
+      ? JSON.stringify({ protocol_version: 1, acknowledged: true })
+      : argv[0] === "antiburn"
+        ? JSON.stringify({
+            protocol_version: 1,
+            session_id: "test-session",
+            identity: { environment_key: "native", agent: "claude-code", session_id: "test-session" },
+            session_scope: "main",
+            freshness_evaluated: false,
+            state: "ready",
+            snapshot: [{
+              id: "dynamic-status-check",
+              check_id: "predefined-yaml-check",
+              name: "Review the risky change",
+              message: "Check the affected files before continuing.",
+              status: "failure",
+              assessed_at_epoch: 1_800_000_000,
+              checking: false,
+              eligibility: "ready",
+            }],
+            updates: [{
+              id: "dynamic-status-check",
+              kind: "finding",
+              name: "Review the risky change",
+              message: "Check the affected files before continuing.",
+            }],
+            receipt: "b".repeat(64),
+          })
+        : '{"state":"found"}'
+    return {
+      value: {
+        exitCode: 0,
+        stdout,
+        stderr: "",
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    }
+  })
   await startSession($)
   await turn($, fake, { failures: 3 })
   expect(fake.statuses.length > 0).toBe(true)

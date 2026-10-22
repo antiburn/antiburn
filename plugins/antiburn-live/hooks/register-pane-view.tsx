@@ -61,6 +61,7 @@ type PaneViewInput = {
   fullPromptId: LiveCheckId | null;
   armedId: LiveCheckId | null;
   tourBeat: number | null;
+  connectionText?: string;
   actions: PaneActions;
 };
 
@@ -75,6 +76,7 @@ export function renderChecksPaneView({
   fullPromptId,
   armedId,
   tourBeat,
+  connectionText,
   actions,
 }: PaneViewInput): RenderElement {
   const shown = checks.filter((check) => !check.isHidden);
@@ -94,6 +96,7 @@ export function renderChecksPaneView({
     selected?.id ?? null,
     turned,
     entered,
+    connectionText,
     fullPromptId,
     actions,
   );

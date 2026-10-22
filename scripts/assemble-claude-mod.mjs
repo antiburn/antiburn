@@ -329,6 +329,10 @@ function devFiles(root, tests = false) {
     const rewrittenText = rewriteDevSource(text)
       .replaceAll('../../../packages/antiburn-plugin-core/product.mjs', '../lib/product.mjs')
       .replaceAll('../../../packages/antiburn-plugin-core/core.mjs', '../lib/core.mjs')
+      .replaceAll(
+        '../../../packages/antiburn-plugin-core/session-checks-validation.mjs',
+        '../lib/session-checks-validation.mjs',
+      )
     files.set(
       path,
       /\.(?:ts|tsx|md|json)$/.test(path)
@@ -344,7 +348,7 @@ function devFiles(root, tests = false) {
     )
   }
   files.set('lib/product.mjs', containedFile(root, 'packages/antiburn-plugin-core/product.mjs'))
-  for (const path of ['core.mjs', 'discovery.mjs', 'probe.mjs'])
+  for (const path of ['core.mjs', 'discovery.mjs', 'probe.mjs', 'session-checks-validation.mjs'])
     files.set(`lib/${path}`, containedFile(root, `packages/antiburn-plugin-core/${path}`))
   const manifest = JSON.parse(files.get('.claude-plugin/plugin.json'))
   manifest.name = 'antiburn-dev'
