@@ -746,30 +746,7 @@ fn preparation_details(
 
 // Journal receipts stay current when discovery observes later appends.
 pub(crate) fn source_ready_sql(parser: usize, analyzer: usize, evidence: usize) -> String {
-    format!("CASE WHEN s.environment_key = 'native' AND s.agent = 'opencode'
-          AND s.source_kind = 'providerDb' THEN EXISTS (
-            SELECT 1 FROM opencode_journal_delivery d
-             WHERE d.environment_key = s.environment_key AND d.agent = s.agent AND d.session_id = s.session_id
-               AND d.incarnation = s.incarnation AND d.source_label = s.source_label AND d.cwd IS s.cwd
-               AND d.parser_revision = ?{parser} AND d.cursor_json IS NOT NULL
-               AND d.blocked = 0 AND d.main_session = 1
-               AND (d.last_error IS NULL OR d.last_error IN ('journal-history-incomplete', 'journal-cancelled'))
-               AND NOT EXISTS(SELECT 1 FROM session_relation r WHERE r.environment_key = s.environment_key
-                   AND r.agent = s.agent AND r.session_id = s.session_id AND r.kind = 'forkParent'))
-           WHEN s.environment_key = 'native' AND s.agent IN ('claude-code', 'codex', 'pi')
-             AND s.source_kind = 'file' THEN EXISTS (
-             SELECT 1 FROM native_file_delivery d
-              WHERE d.environment_key = s.environment_key AND d.agent = s.agent AND d.session_id = s.session_id
-                AND d.incarnation = s.incarnation AND d.source_label = s.source_label AND d.cwd IS s.cwd
-                AND d.parser_revision = ?{parser} AND d.cursor_json IS NOT NULL
-                AND d.blocked = 0 AND d.last_error IS NULL
-                AND NOT EXISTS(SELECT 1 FROM session_relation r
-                  WHERE r.environment_key = s.environment_key AND r.agent = s.agent
-                    AND ((r.session_id = s.session_id AND r.kind = 'forkParent')
-                      OR (r.related_id = s.session_id AND r.kind = 'subagent'))))
-           ELSE COALESCE(e.status = 'ready' AND e.analyzed_generation = s.source_generation
-              AND e.parser_revision = ?{parser} AND e.analyzer_revision = ?{analyzer}
-              AND e.evidence_schema_revision = ?{evidence}, 0) END")
+    antiburn_checks_store::source_ready_sql(parser, analyzer, evidence)
 }
 
 pub(crate) fn source_can_arrive_sql(parser: usize, active_since: usize) -> String {
@@ -1072,31 +1049,7 @@ pub(crate) enum InstalledCheckStatus {
 }
 
 fn status_message(actions: Option<&str>, status: &str) -> Result<Option<String>> {
-    let Some(actions) = actions else {
-        return Ok(None);
-    };
-    let plan: StoredPlan = serde_json::from_str(actions).context("decode stored status actions")?;
-    for action in plan.outcomes.into_iter().rev() {
-        match action.outcome {
-            StoredActionOutcome::Applied { result, message } => {
-                ensure!(
-                    matches!(
-                        (result, status),
-                        (InstalledCheckStatus::Failure, "failure")
-                            | (InstalledCheckStatus::Success, "success")
-                    ),
-                    "status write does not match its action"
-                );
-                return Ok(message);
-            }
-            StoredActionOutcome::Failed { message } => {
-                drop(message);
-            }
-            StoredActionOutcome::SkippedConditionFalse
-            | StoredActionOutcome::SkippedConditionUnavailable => {}
-        }
-    }
-    anyhow::bail!("current status has no applied action")
+    antiburn_checks_store::status_message(actions, status)
 }
 
 #[derive(Default)]
@@ -1114,21 +1067,14 @@ fn current_activation(
     connection: &Connection,
     definition: &InstalledCheckDefinition,
 ) -> Result<bool> {
-    Ok(
-        definition.availability == InstalledCheckAvailability::Available
-            && connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM burn_check_activation
-              WHERE check_id = ?1 AND activation_scope_key = ?2 AND generation = ?3
-                AND definition_revision = ?4 AND enabled = 1)",
-                params![
-                    definition.check_id,
-                    definition.activation_scope_key,
-                    definition.generation,
-                    definition.definition_revision
-                ],
-                |row| row.get::<_, bool>(0),
-            )?,
-    )
+    Ok(antiburn_checks_store::is_current_activation(
+        connection,
+        &definition.check_id,
+        &definition.activation_scope_key,
+        definition.generation.unwrap_or_default(),
+        &definition.definition_revision,
+        definition.availability == InstalledCheckAvailability::Available,
+    )?)
 }
 
 fn read_row(
@@ -1230,10 +1176,19 @@ fn read_row(
                         .context("latest assessment actions missing")?,
                 )
                 .context("decode latest assessment actions")?;
-                counts.reviewed_without_status |= !plan
-                    .outcomes
-                    .iter()
-                    .any(|action| matches!(action.outcome, StoredActionOutcome::Applied { .. }));
+                counts.reviewed_without_status |=
+                    !plan.outcomes.iter().any(|action| match &action.outcome {
+                        StoredActionOutcome::Applied { result, message } => {
+                            let _ = (result, message);
+                            true
+                        }
+                        StoredActionOutcome::Failed { message } => {
+                            let _ = message;
+                            false
+                        }
+                        StoredActionOutcome::SkippedConditionFalse
+                        | StoredActionOutcome::SkippedConditionUnavailable => false,
+                    });
             }
             if let Some(status) = branch.status.as_deref() {
                 let message = status_message(branch.actions.as_deref(), status)?;

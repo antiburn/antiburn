@@ -91,6 +91,7 @@ pub const MIGRATIONS: &[&str] = &[
     V78,
     V79,
     V80,
+    V81,
 ];
 
 pub(super) const FINGERPRINT_WORK: &str = include_str!("source_fingerprint_work.sql");
@@ -103,6 +104,24 @@ ALTER TABLE session ADD COLUMN strict_fingerprint_pending INTEGER NOT NULL DEFAU
 "#,
     include_str!("source_fingerprint_work.sql")
 );
+
+const V81: &str = r#"
+CREATE TABLE burn_check_runtime_definition (
+    check_id TEXT NOT NULL,
+    activation_scope_key TEXT NOT NULL,
+    generation INTEGER CHECK (generation IS NULL OR generation > 0),
+    definition_revision TEXT NOT NULL,
+    name TEXT NOT NULL,
+    availability TEXT NOT NULL CHECK (availability IN ('available', 'paused', 'invalid', 'unsupported')),
+    PRIMARY KEY (check_id, activation_scope_key)
+) STRICT;
+CREATE TABLE burn_check_runtime_definition_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    protocol_version INTEGER NOT NULL CHECK (protocol_version = 1),
+    initialized INTEGER NOT NULL CHECK (initialized IN (0, 1))
+) STRICT;
+INSERT INTO burn_check_runtime_definition_state VALUES (1, 1, 0);
+"#;
 
 const V79: &str = r#"
 CREATE TABLE work_queue_schedule (

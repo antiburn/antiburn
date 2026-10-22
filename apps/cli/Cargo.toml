@@ -15,6 +15,7 @@ name = "antiburn"
 path = "src/main.rs"
 
 [dependencies]
+antiburn-checks-store = { path = "../../crates/antiburn-checks-store" }
 antiburn-local = { path = "../../crates/antiburn-local" }
 clap = { version = "4.5", features = ["derive"] }
 dirs = "7"

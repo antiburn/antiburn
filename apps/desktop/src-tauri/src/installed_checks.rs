@@ -100,6 +100,38 @@ fn publish_metadata(state: &InstalledChecks, definitions: &[InstalledCheckDefini
     true
 }
 
+fn persist_runtime_definitions(
+    store: &Store,
+    definitions: &[InstalledCheckDefinition],
+) -> Result<()> {
+    let runtime_definitions = definitions
+        .iter()
+        .map(|definition| antiburn_checks_store::RuntimeDefinition {
+            check_id: definition.check_id.clone(),
+            activation_scope_key: definition.activation_scope_key.clone(),
+            generation: definition.generation,
+            definition_revision: definition.definition_revision.clone(),
+            name: definition.name.clone(),
+            availability: match definition.availability {
+                InstalledCheckAvailability::Available => {
+                    antiburn_checks_store::DefinitionAvailability::Available
+                }
+                InstalledCheckAvailability::Paused { .. } => {
+                    antiburn_checks_store::DefinitionAvailability::Paused
+                }
+                InstalledCheckAvailability::Invalid { .. } => {
+                    antiburn_checks_store::DefinitionAvailability::Invalid
+                }
+                InstalledCheckAvailability::Unsupported { .. } => {
+                    antiburn_checks_store::DefinitionAvailability::Unsupported
+                }
+            },
+        })
+        .collect::<Vec<_>>();
+    antiburn_checks_store::replace_runtime_definitions(&mut store.lock(), &runtime_definitions)?;
+    Ok(())
+}
+
 pub(crate) fn wake(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<InstalledChecks>() {
         state.requested_turn.fetch_add(1, Ordering::AcqRel);
@@ -663,6 +695,7 @@ impl<E: DecisionEvaluator + 'static> InstalledCheckHost<E> {
                 );
             }
         }
+        persist_runtime_definitions(&self.store, &self.definitions)?;
         Ok(())
     }
 
@@ -1606,6 +1639,7 @@ async fn run(app: &tauri::AppHandle) -> Result<()> {
         if !crate::jev::settings::yaml_discovery_enabled(&app.state::<Store>()) {
             state.delivery_ready.store(false, Ordering::Release);
             host.deactivate_active()?;
+            persist_runtime_definitions(&host.store, &host.definitions)?;
             if publish_metadata(&state, &host.definitions) {
                 crate::jev::settings::progress_changed(app);
                 let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());

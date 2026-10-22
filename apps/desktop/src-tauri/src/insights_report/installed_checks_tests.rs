@@ -87,6 +87,46 @@ fn activate(store: &Arc<Store>, definition: &InstalledCheckDefinition) {
             Some(&activation),
         )
         .unwrap();
+    let mut connection = store.lock();
+    let mut runtime_definitions = connection
+        .prepare(
+            "SELECT check_id, activation_scope_key, generation, definition_revision, name, availability
+             FROM burn_check_runtime_definition",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            let availability: String = row.get(5)?;
+            Ok(antiburn_checks_store::RuntimeDefinition {
+                check_id: row.get(0)?,
+                activation_scope_key: row.get(1)?,
+                generation: row.get(2)?,
+                definition_revision: row.get(3)?,
+                name: row.get(4)?,
+                availability: match availability.as_str() {
+                    "paused" => antiburn_checks_store::DefinitionAvailability::Paused,
+                    "invalid" => antiburn_checks_store::DefinitionAvailability::Invalid,
+                    "unsupported" => antiburn_checks_store::DefinitionAvailability::Unsupported,
+                    _ => antiburn_checks_store::DefinitionAvailability::Available,
+                },
+            })
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    runtime_definitions.retain(|saved| {
+        saved.check_id != definition.check_id
+            || saved.activation_scope_key != definition.activation_scope_key
+    });
+    runtime_definitions.push(antiburn_checks_store::RuntimeDefinition {
+        check_id: definition.check_id.clone(),
+        activation_scope_key: definition.activation_scope_key.clone(),
+        generation: definition.generation,
+        definition_revision: definition.definition_revision.clone(),
+        name: definition.name.clone(),
+        availability: antiburn_checks_store::DefinitionAvailability::Available,
+    });
+    antiburn_checks_store::replace_runtime_definitions(&mut connection, &runtime_definitions)
+        .unwrap();
 }
 
 fn session(store: &Store, id: &str, epoch: i64) {

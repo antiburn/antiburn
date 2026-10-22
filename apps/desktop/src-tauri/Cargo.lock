@@ -98,6 +98,7 @@ version = "0.10.0"
 dependencies = [
  "antiburn-anchored-window",
  "antiburn-checks",
+ "antiburn-checks-store",
  "antiburn-hud",
  "antiburn-local",
  "antiburn-main-window",
@@ -174,6 +175,17 @@ version = "0.1.0"
 dependencies = [
  "saphyr-parser",
  "serde",
+ "serde_json",
+ "sha2 0.11.0",
+]
+
+[[package]]
+name = "antiburn-checks-store"
+version = "0.1.0"
+dependencies = [
+ "antiburn-local",
+ "anyhow",
+ "rusqlite",
  "serde_json",
  "sha2 0.11.0",
 ]

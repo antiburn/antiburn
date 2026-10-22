@@ -1,9 +1,5 @@
 import { liveMode, type LiveMode } from "./mode";
-import {
-  enteredStages,
-  needsPublish,
-  renderChecksPaneView,
-} from "./register-pane-view";
+import { enteredStages, renderChecksPaneView } from "./register-pane-view";
 import { renderUsageDetailsView } from "./register-usage-details";
 import {
   buildDesktopUsageAssets,
@@ -34,7 +30,6 @@ import {
   renderUsageMarkView,
   renderDesktopBrandLinkView,
   centredLineView,
-  callKey,
 } from "./register-visuals";
 import { atom, read, update } from "claude-code";
 import {
@@ -1196,13 +1191,8 @@ function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
 }
 
 let tracker = new LiveChecks();
-let hasResolvedLine = false;
 // While a demo shows, publish leaves the sample checks in place until /antiburn-dev demo off.
 let isDemo = false;
-
-function setResolvedLine(isShown: boolean): void {
-  hasResolvedLine = isShown;
-}
 
 /**
  * The permission mode comes from the classic hook input, which carries
@@ -1221,10 +1211,6 @@ let tour: { checks: LiveChecks; beat: number } | null = null;
 // After the person closes the pane by hand, a new check does not open it again in this session.
 let isPaneClosedByPerson = false;
 
-function trackerOf(): LiveChecks {
-  return tracker;
-}
-
 /** The tracker that the strip, the chip and the pane show: the tour tracker while the tour runs. */
 function shownTracker(): LiveChecks {
   return tour?.checks ?? tracker;
@@ -1232,7 +1218,6 @@ function shownTracker(): LiveChecks {
 
 function resetTracker(): void {
   tracker = new LiveChecks();
-  hasResolvedLine = false;
   isUnattended = true;
   isDemo = false;
   tour = null;
@@ -1335,7 +1320,6 @@ async function publish($: EngineInterface): Promise<void> {
   const next = shownTracker().takeView();
   const live = liveChecks(next);
   const resolvedLine = live.length === 0 ? next.resolvedNow : [];
-  setResolvedLine(resolvedLine.length > 0);
   await update($, view, (current) => ({
     checks: next.checks,
     resolvedLine,
@@ -1881,12 +1865,6 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
     if (!checksEnabled()) return next(e);
     noteMode(e.permission_mode);
     await disarm($);
-    // Machine prompts, such as a loop wake-up, are not a request from the person.
-    if (
-      (e.source === undefined || e.source === "user" || e.source === "sdk") &&
-      trackerOf().prompt(e.prompt)
-    )
-      await publish($);
     return next(e);
   }).catch(($, e, next) => next(e));
 
@@ -1979,7 +1957,9 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
           `CLI: ${availability.state === "found" ? "Found" : availability.state === "not-found" ? "Not found" : "Check unavailable"}`,
           "App connection: Not checked",
           ...(parsed.command === "diagnostics"
-            ? [`Live checks: ${checksEnabled() ? "enabled" : "disabled"}`]
+            ? [
+                `Checks pane: ${checksEnabled() ? "enabled" : "disabled"}; local detectors: disabled`,
+              ]
             : []),
         ].join("\n"),
       };
@@ -1996,11 +1976,8 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
   }).catch(($, e, next) => next(e));
 
   on("turn.step", async function* ($, e, next) {
-    const active = checksEnabled() ? trackerOf() : undefined;
     if (!BURN_ANIMATION_ENABLED) {
       const result = yield* next(e);
-      if (active !== undefined && checksEnabled() && active === trackerOf())
-        active.step(e.agentId, e.model, e.effort, result.usage);
       return result;
     }
     const generation = burnGeneration;
@@ -2065,8 +2042,6 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
           /* Missing measurements do not change the result. */
         }
       }
-      if (active !== undefined && checksEnabled() && active === trackerOf())
-        active.step(e.agentId, e.model, e.effort, result.usage);
       return result;
     } finally {
       try {
@@ -2092,97 +2067,25 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
   });
 
   on("tool.call", async ($, e, next) => {
-    const active = checksEnabled() ? trackerOf() : undefined;
-    const ran = await next(e);
-    if (
-      active !== undefined &&
-      checksEnabled() &&
-      active === trackerOf() &&
-      ran.deny === undefined
-    ) {
-      const tracker = trackerOf();
-      tracker.toolCall(
-        e.agentId,
-        String(e.tool),
-        `${String(e.tool)}:${callKey(e)}`,
-        ran.isError === true,
-      );
-      tracker.toolResult(
-        e.agentId,
-        String(e.tool),
-        e,
-        ran.isReadOnly === true,
-        ran.isError === true,
-        ran.text?.length ?? 0,
-      );
-      // The ExitPlanMode result arrives after the person approves the plan.
-      if (
-        e.agentId === undefined &&
-        e.tool === "ExitPlanMode" &&
-        ran.isError !== true
-      ) {
-        const plan: unknown = (ran.result as { plan?: unknown } | undefined)
-          ?.plan;
-        if (typeof plan === "string") tracker.planApproved(plan);
-      }
-    }
-    return ran;
+    return next(e);
   }).catch(($, e, next) => next(e));
 
   on("turn.complete", async ($, e, next) => {
-    const active = checksEnabled() ? trackerOf() : undefined;
-    const result = await next(e);
-    if (active === undefined || !checksEnabled() || active !== trackerOf())
-      return result;
-    // K1 reads the command list only after a long turn, so an idle session pays nothing.
-    if (e.agentId === undefined && trackerOf().needsSkills()) {
-      const commands = await $.command.list();
-      if (!checksEnabled() || active !== trackerOf()) return result;
-      active.skills(
-        commands.filter(
-          (command) =>
-            command.source !== "builtin" && command.name !== commandName,
-        ),
-      );
-    }
-    if (
-      needsPublish(trackerOf().turnEnd(e.agentId), hasResolvedLine) &&
-      e.agentId === undefined
-    )
-      await publish($);
-    return result;
+    return next(e);
   }).catch(($, e, next) => next(e));
 
   on("session.measure", async ($, e, next) => {
-    const active = checksEnabled() ? trackerOf() : undefined;
     needsUsageReconciliation = false;
     if (usageUiEnabled && !releaseOwnsUsage) {
       const ticket = usageOrder.acceptEvent();
       const now = await $.clock.now();
       await commitUsage($, normalizeUsage(e.rateLimits, now), ticket);
     }
-    if (
-      active !== undefined &&
-      checksEnabled() &&
-      active === trackerOf() &&
-      active.measure(e.context.percent)
-    )
-      await publish($);
     return next(e);
   }).catch(($, e, next) => next(e));
 
   on("session.compact", async ($, e, next) => {
-    const active = checksEnabled() ? trackerOf() : undefined;
-    const result = await next(e);
-    if (
-      active !== undefined &&
-      checksEnabled() &&
-      active === trackerOf() &&
-      e.agentId === undefined &&
-      active.compact()
-    )
-      await publish($);
-    return result;
+    return next(e);
   }).catch(($, e, next) => next(e));
 
   on("ui.message", async ($, e, next) => {
