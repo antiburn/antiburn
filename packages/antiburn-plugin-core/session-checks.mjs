@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { accessSync, constants, statSync } from 'node:fs'
 import { delimiter, isAbsolute, resolve, win32 } from 'node:path'
 import {
+  formatSessionCheckUpdates,
   formatSessionChecksContext,
   validateSessionChecksDelivery,
 } from './session-checks-validation.mjs'
@@ -18,22 +19,6 @@ function safeSessionId(value) {
   return (
     value.length > 0 && value.length <= MAX_SESSION_ID_LENGTH && !/[\x00-\x1f\x7f]/.test(value)
   )
-}
-
-/** @param {string} value */
-function safeText(value) {
-  return value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').trim()
-}
-
-/** @param {{kind:string,name:string,message?:string|null}} update */
-function formatUpdate(update) {
-  const name = safeText(update.name)
-  if (update.kind === 'cleared')
-    return `Antiburn assessment cleared: ${name}\nThe prior warning is no longer reported. This does not confirm a repair.`
-  if (update.kind === 'invalidated')
-    return `Antiburn assessment withdrawn: ${name}\nThe prior advice is unavailable because current eligibility could not be confirmed.`
-  const message = typeof update.message === 'string' ? safeText(update.message) : ''
-  return `Antiburn assessment: ${name}\n${message}\nReview this assessment before acting on it.`
 }
 
 /**
@@ -137,12 +122,10 @@ export async function readSessionChecks(options) {
     const message =
       consumer === 'context'
         ? formatSessionChecksContext(result)
-        : updates.map(formatUpdate).join('\n\n')
+        : formatSessionCheckUpdates(updates)
     if (consumer === 'context' && !message.trim()) return undefined
     const delivery = {
-      message: result.freshness_evaluated
-        ? message
-        : `${message}\n\nAntiburn has not evaluated result freshness for this session.`,
+      message,
       updates,
       snapshot: result.snapshot,
       state: result.state,

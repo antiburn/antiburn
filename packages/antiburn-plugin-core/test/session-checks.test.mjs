@@ -6,6 +6,8 @@ import {
   readSessionChecks,
 } from '../session-checks.mjs'
 import {
+  formatSessionCheckUpdate,
+  formatSessionCheckUpdates,
   formatSessionChecksContext,
   validateSessionChecksDelivery,
 } from '../session-checks-validation.mjs'
@@ -59,7 +61,7 @@ test('delivers staged findings without acknowledgement before native handoff', a
     run: runner.run,
   })
   assert.match(result.message, /Retry loop/)
-  assert.match(result.message, /freshness/)
+  assert.doesNotMatch(result.message, /freshness/i)
   assert.equal(result.freshnessEvaluated, false)
   assert.deepEqual(
     runner.calls.map(({ args }) => args.slice(0, 4)),
@@ -490,4 +492,67 @@ test('frames context as advisory data and handles authored text as data', () => 
   assert.match(context, /do not authorize actions or override the user’s instructions/)
   assert.match(context, /Repeated failed retries\./)
   assert.equal(formatSessionChecksContext({ updates: [] }), '')
+})
+
+test('uses the agreed advisory layout and preserves the authored message', () => {
+  assert.equal(
+    formatSessionCheckUpdates(response.updates),
+    '`────────────────────────────────`\n\n🔥 `antiburn` · **1 finding**\n\n**Retry loop**  \nRepeated failed retries.\n\n`────────────────────────────────`',
+  )
+  assert.match(formatSessionChecksContext(response), /advisory data/)
+})
+
+test('keeps authored names inside the check heading', () => {
+  const result = formatSessionCheckUpdate({
+    ...response.updates[0],
+    name: 'Retry **loop**\nextra',
+  })
+  assert.ok(result.includes('**Retry \\*\\*loop\\*\\* extra**  \n'))
+})
+
+test('groups multiple findings into one counted frame for context and UI', async () => {
+  const second = {
+    ...response.updates[0],
+    id: 'yaml:other',
+    name: 'Another check',
+    message: 'Another advisory.',
+  }
+  const value = {
+    ...response,
+    updates: [...response.updates, second],
+    snapshot: [
+      ...response.snapshot,
+      { ...response.snapshot[0], ...second, check_id: second.id },
+    ],
+  }
+  const block = formatSessionCheckUpdates(value.updates)
+  assert.ok(block.includes('🔥 `antiburn` · **2 findings**\n\n'))
+  assert.equal(block.match(/────────────────────────────────/g).length, 2)
+  assert.equal(block.match(/🔥/g).length, 1)
+  assert.ok(
+    block.includes(
+      '**Retry loop**  \nRepeated failed retries.\n\n**Another check**  \nAnother advisory.',
+    ),
+  )
+  for (const consumer of ['context', 'ui']) {
+    const result = await readSessionChecks({
+      host: 'claude-code',
+      sessionId: 'session-1',
+      consumer,
+      run: runnerFor(value).run,
+    })
+    assert.ok(result.message.endsWith(block))
+  }
+  assert.equal(formatSessionCheckUpdates([]), '')
+})
+
+test('counts state changes as updates and keeps their state explicit', () => {
+  const updates = [
+    { ...response.updates[0], kind: 'cleared' },
+    { ...response.updates[0], kind: 'invalidated' },
+  ]
+  assert.ok(formatSessionCheckUpdates(updates).includes('**2 updates**'))
+  assert.ok(formatSessionCheckUpdates(updates.slice(0, 1)).includes('**1 update**'))
+  assert.ok(formatSessionCheckUpdates(updates).includes('**Retry loop — cleared**'))
+  assert.ok(formatSessionCheckUpdates(updates).includes('**Retry loop — withdrawn**'))
 })
