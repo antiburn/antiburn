@@ -634,7 +634,8 @@ impl PiStreamState {
         let mut value = value;
         self.migrate_entry(&mut value);
         if self.scope_enabled {
-            self.native.observe_entry(&value, sink);
+            self.native
+                .observe_entry(&value, is_inert_shape(&value), sink);
         }
         if let Some(reason) = pi_lineage_reason(&value) {
             sink.record(NormalizedRecord::Unusable(reason));

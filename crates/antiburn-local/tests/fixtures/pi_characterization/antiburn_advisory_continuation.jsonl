@@ -1,0 +1,7 @@
+{"type":"session","version":3,"id":"synthetic-session","timestamp":"2026-01-01T00:00:00Z"}
+{"type":"model_change","id":"model-row","parentId":null,"timestamp":"2026-01-01T00:00:01Z","provider":"synthetic-provider","modelId":"synthetic-model"}
+{"type":"message","id":"user-row","parentId":"model-row","timestamp":"2026-01-01T00:00:02Z","message":{"role":"user","content":"Run the fixture check."}}
+{"type":"message","id":"call-row","parentId":"user-row","timestamp":"2026-01-01T00:00:03Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"failed-call","name":"bash","arguments":{"command":"false"}}]}}
+{"type":"message","id":"result-row","parentId":"call-row","timestamp":"2026-01-01T00:00:04Z","message":{"role":"toolResult","toolCallId":"failed-call","toolName":"bash","isError":true,"content":[{"type":"text","text":"synthetic command failed"}]}}
+{"type":"custom_message","id":"antiburn-row","parentId":"result-row","timestamp":"2026-01-01T00:00:05Z","customType":"antiburn-session-checks","display":false,"content":"Synthetic Antiburn advisory."}
+{"type":"message","id":"assistant-row","parentId":"antiburn-row","timestamp":"2026-01-01T00:00:06Z","message":{"role":"assistant","provider":"synthetic-provider","model":"synthetic-model","content":[{"type":"text","text":"I received the advisory."}]}}

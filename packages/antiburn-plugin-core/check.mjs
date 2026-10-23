@@ -18,8 +18,8 @@ async function collect(directory) {
 const files = [
   ...(await collect(own)),
   ...integrations.filter((path) => /\.(?:mjs|d\.ts)$/.test(path)),
-  join(root, 'scripts/assemble-antiburn-shell.mjs'),
-  join(root, 'scripts/audit-antiburn-shell.mjs'),
+  join(root, 'scripts/assemble-antiburn-core-plugin.mjs'),
+  join(root, 'scripts/audit-antiburn-core-plugin.mjs'),
 ]
 function run(command, args) {
   const result = spawnSync(command, args, { cwd: root, stdio: 'inherit' })
@@ -62,7 +62,7 @@ else if (mode === 'typecheck') {
       throw new Error(
         `Set ${name} to the pinned SDK/type location; see packages/antiburn-plugin-core/README.md`,
       )
-  const temp = await mkdtemp(join(tmpdir(), 'antiburn-shell-types-'))
+  const temp = await mkdtemp(join(tmpdir(), 'antiburn-core-plugin-types-'))
   try {
     const config = {
       compilerOptions: {

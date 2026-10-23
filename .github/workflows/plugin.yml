@@ -41,8 +41,8 @@ jobs:
         run: |
           node --test scripts/assemble-claude-mod.test.mjs
           node --test packages/antiburn-plugin-core/test/*.test.mjs
-          node scripts/assemble-antiburn-shell.mjs
-          node scripts/assemble-antiburn-shell.mjs --verify
+          node scripts/assemble-antiburn-core-plugin.mjs
+          node scripts/assemble-antiburn-core-plugin.mjs --verify
           node scripts/assemble-claude-mod.mjs --check
 
       - name: Validate the release and marketplace

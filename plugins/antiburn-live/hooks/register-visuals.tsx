@@ -514,7 +514,7 @@ export const CHEVRON_HIT = '\u2003';
 // right margin of one cell puts the glyph center where the host's close control is.
 
 export function tileSvg(id: LiveCheckId, isLive: boolean): string {
-  const tile = TILE[id];
+  const tile = TILE[id] ?? { tint: '#A8A8A8', paths: ['M12 3v18', 'M3 12h18'] };
   const tint = isLive ? tile.tint : TILE_NEUTRAL;
   const icon = tile.paths.map((d) => `<path d="${d}"/>`).join('');
   return (
@@ -529,7 +529,7 @@ export function tileSvg(id: LiveCheckId, isLive: boolean): string {
 // in one area do not look the same in the terminal.
 export function dotColor(check: LiveCheckView): string {
   return check.stage === 'active' || check.stage === 'watching'
-    ? TILE[check.id].tint
+    ? (TILE[check.id]?.tint ?? 'subtle')
     : 'subtle';
 }
 
@@ -538,6 +538,7 @@ export function areaOf(check: LiveCheckView): { label: string; color: string } {
 }
 
 export function metricText(check: LiveCheckView): string {
+  if (check.source === 'session') return check.metric;
   if (check.stage === 'building') return check.progress ?? '';
   // A resolved row names the outcome in place of the metric. The pane shows this session only, so it does not say so.
   if (check.stage === 'resolved')
@@ -647,7 +648,7 @@ export function renderStripView(
     );
   }
 
-  const count = `${active.length} to fix`;
+  const count = `${active.length}${top.source === 'session' ? ' checks' : ' to fix'}`;
   // A hotkey presses a strip Button only from the terminal: from a focused band, or as a bare
   // digit in an empty prompt. The desktop prompt sends a digit to Claude, so the desktop gets no hotkeys.
   const hotkeyFor = (digit: string) => (e.surface === 'terminal' ? digit : undefined);
@@ -789,13 +790,15 @@ export function renderStripView(
   function stripButtons(top: LiveCheckView) {
     return (
       <Box flexDirection="row" gap={1} flexShrink={0}>
-        <Button
-          key="fix"
-          hotkey={hotkeyFor('1')}
-          variant="primary"
-          label={keyed('1', fixLabel(top, armedId))}
-          onPress={() => actions.act(top.id)}
-        />
+        {top.source !== 'session' && (
+          <Button
+            key="fix"
+            hotkey={hotkeyFor('1')}
+            variant="primary"
+            label={keyed('1', fixLabel(top, armedId))}
+            onPress={() => actions.act(top.id)}
+          />
+        )}
         <Button
           key="view"
           hotkey={hotkeyFor('2')}
@@ -1035,6 +1038,7 @@ export function renderListView(
   openId: LiveCheckId | null,
   turned: string | null,
   entered: readonly LiveStage[],
+  connectionText: string | undefined,
   fullPromptId: LiveCheckId | null,
   actions: PaneActions,
 ) {
@@ -1087,6 +1091,7 @@ export function renderListView(
           {(shown.length > 0 || hasHidden) && <Text dimColor> {live.length}</Text>}
         </Text>
       )}
+      {connectionText && <Text key="session-checks-connection" dimColor>{connectionText}</Text>}
       {shown.length === 0 && !hasHidden ? (
         // The empty pane says what the pane is for, a little above the middle of the free space:
         // a block at the exact middle looks low. Text has no alignment, so each line is its own centred Text.
@@ -1225,7 +1230,7 @@ export function renderListView(
                       const isOpenCard = openId === check.id;
                       // No hotkeys on cards: four cards would share one F key.
                       const fix =
-                        check.stage === 'active' ? (
+                        check.stage === 'active' && check.source !== 'session' ? (
                           <Button
                             key={`card-fix-${check.id}`}
                             // The armed button takes the primary style, because its press sends the prompt.
@@ -1240,7 +1245,7 @@ export function renderListView(
                             key={`hide-${check.id}`}
                             plain
                             dimColor
-                            label="Ignore this session"
+                            label={check.source === 'session' ? 'Dismiss this check' : 'Ignore this session'}
                             onPress={() => actions.hide(check.id)}
                           />
                         ) : null;
@@ -1257,7 +1262,7 @@ export function renderListView(
                         14,
                       );
                       // The reason takes one line. Show more gives the full sentence.
-                      const reason = isOpenCard ? (
+                      const reason = isOpenCard || check.source === 'session' ? (
                         <Text dimColor>{check.sentence}</Text>
                       ) : (
                         <Text dimColor wrap="truncate-end">
@@ -1268,8 +1273,10 @@ export function renderListView(
                       const status =
                         check.stage === 'watching' ? (
                           <Text key={`note-${check.id}`} dimColor>
-                            {WATCHING_STATUS}
+                            {check.checking ? 'Checking this assessment' : check.source === 'session' ? 'Waiting for an assessment' : WATCHING_STATUS}
                           </Text>
+                        ) : check.checking ? (
+                          <Text key={`note-${check.id}`} dimColor>Checking for an updated result</Text>
                         ) : null;
                       const title = (
                         <Text bold dimColor={group.isFolded}>
@@ -1346,7 +1353,7 @@ export function renderListView(
                             ))}
                           </Box>
                         );
-                      const more = isOpenCard
+                      const more = check.source !== 'session' && isOpenCard
                         ? renderCardDetailView(
                             ui,
                             e,
@@ -1458,7 +1465,7 @@ export function renderListView(
                             </Text>
                           )}
                         </Box>
-                        {(check.stage === 'active' || check.stage === 'watching') &&
+                        {(check.stage === 'active' || check.stage === 'watching') && check.source !== 'session' &&
                           renderFixView(
                             ui,
                             e,
@@ -1466,7 +1473,7 @@ export function renderListView(
                             fullPromptId === check.id,
                             actions.toggleFullPrompt,
                           )}
-                        {check.stage === 'active' && (
+                        {check.stage === 'active' && check.source !== 'session' && (
                           <Box flexDirection="row" gap={1}>
                             <Button
                               key={`card-fix-${check.id}`}
@@ -1485,14 +1492,25 @@ export function renderListView(
                           </Box>
                         )}
                       </Box>
+                    ) : check.source === 'session' ? (
+                      <Text dimColor wrap="truncate-end">{check.sentence}</Text>
                     ) : (
                       <Text dimColor wrap="truncate-end">
                         {splitSentence(check.sentence).reason}
                       </Text>
                     )}
-                    {check.stage === 'watching' && (
-                      <Text dimColor>{WATCHING_STATUS}</Text>
-                    )}
+                        {check.stage === 'watching' && (
+                          <Text dimColor>{check.checking ? 'Checking this assessment' : check.source === 'session' ? 'Waiting for an assessment' : WATCHING_STATUS}</Text>
+                        )}
+                        {check.stage === 'active' && check.checking && <Text dimColor>Checking for an updated result</Text>}
+                        {check.source === 'session' && isOpenCard && (
+                          <Button
+                            key={`hide-${check.id}`}
+                            hotkey="h"
+                            label="h Dismiss this check"
+                            onPress={() => actions.hide(check.id)}
+                          />
+                        )}
                   </Box>
                 );
               })}

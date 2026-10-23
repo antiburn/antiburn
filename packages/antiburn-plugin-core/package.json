@@ -9,8 +9,8 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "assemble": "node ../../scripts/assemble-antiburn-shell.mjs",
-    "verify": "node ../../scripts/assemble-antiburn-shell.mjs --verify",
+    "assemble": "node ../../scripts/assemble-antiburn-core-plugin.mjs",
+    "verify": "node ../../scripts/assemble-antiburn-core-plugin.mjs --verify",
     "lint": "node check.mjs lint",
     "format:check": "node check.mjs format",
     "typecheck": "node check.mjs typecheck"

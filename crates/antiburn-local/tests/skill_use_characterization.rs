@@ -420,39 +420,50 @@ fn claude_text_or_missing_conflicting_and_batched_native_results_do_not_prove_la
 
 #[test]
 fn matched_explicit_native_failure_stays_failed() {
-    let mut records = parsed_records(CLAUDE);
-    records[0]["version"] = json!("2.1.278");
-    records[1]["version"] = json!("2.1.278");
-    records[1]["toolUseResult"]["success"] = json!(false);
-    records[1]["message"]["content"][0]["is_error"] = json!(true);
-    records[1]["message"]["content"][0]["content"] = json!("Skill permission denied.");
-    assert_eq!(
-        claude_snapshot(&records, false).events()[1].lifecycle,
-        SkillUseLifecycle::Failed
-    );
-    let (_, published) = jsonl_content("claude", SourceFormat::ClaudeJsonl, &jsonl(&records));
-    assert_eq!(
-        published.actions[1].metadata.state,
-        antiburn_local::analysis::jev_evidence::JevOperationState::Error
-    );
-    for case in 0..3 {
-        let mut content = published.clone();
-        match case {
-            0 => content.actions[1].metadata.bindings.clear(),
-            1 => content.actions[1].metadata.bindings[0].end -= 1,
-            _ => content.actions[1].truncated = true,
+    for (version, entrypoint) in [
+        ("2.1.278", None),
+        ("2.1.278", Some("cli")),
+        ("2.1.309", Some("cli")),
+    ] {
+        let mut records = parsed_records(CLAUDE);
+        for record in &mut records {
+            record["version"] = json!(version);
+            if let Some(entrypoint) = entrypoint {
+                record["entrypoint"] = json!(entrypoint);
+            }
         }
-        let snapshot = SkillUseSnapshot::from_published_content(
-            &content,
-            &boundary(&content, AgentKind::Claude),
-        )
-        .unwrap();
-        assert!(
-            snapshot
-                .events()
-                .iter()
-                .all(|event| event.lifecycle != SkillUseLifecycle::Failed)
+        records[1]["toolUseResult"]["success"] = json!(false);
+        records[1]["message"]["content"][0]["is_error"] = json!(true);
+        records[1]["message"]["content"][0]["content"] = json!("Skill permission denied.");
+        assert_eq!(
+            claude_snapshot(&records, false).events()[1].lifecycle,
+            SkillUseLifecycle::Failed,
+            "version {version}, entrypoint {entrypoint:?}"
         );
+        let (_, published) = jsonl_content("claude", SourceFormat::ClaudeJsonl, &jsonl(&records));
+        assert_eq!(
+            published.actions[1].metadata.state,
+            antiburn_local::analysis::jev_evidence::JevOperationState::Error
+        );
+        for case in 0..3 {
+            let mut content = published.clone();
+            match case {
+                0 => content.actions[1].metadata.bindings.clear(),
+                1 => content.actions[1].metadata.bindings[0].end -= 1,
+                _ => content.actions[1].truncated = true,
+            }
+            let snapshot = SkillUseSnapshot::from_published_content(
+                &content,
+                &boundary(&content, AgentKind::Claude),
+            )
+            .unwrap();
+            assert!(
+                snapshot
+                    .events()
+                    .iter()
+                    .all(|event| event.lifecycle != SkillUseLifecycle::Failed)
+            );
+        }
     }
 }
 

@@ -99,7 +99,7 @@ new results remain eligible; deletion alone does not make their order unsafe.
 Removal expansion shares the page's 4,096-observation and 4 MiB publication limits.
 Exceeding either limit rejects the whole page without advancing its cursor.
 Strict historical replay still does not support whole-message deletion.
-Parser revision 59 rebuilds older live receipts from the bounded recent window;
+Parser revision 61 rebuilds older live receipts from the bounded recent window;
 it does not audit or repair results outside that window.
 
 The current runtime admits native session evidence under the four fixture-backed
@@ -372,7 +372,7 @@ Request-history records include message metadata and user text parts.
 
 | Limit                        |   Value | Scope                                                           |
 | ---------------------------- | ------: | --------------------------------------------------------------- |
-| Parser revision              |      59 | Accepted source and journal cursor revision                     |
+| Parser revision              |      63 | Accepted source and journal cursor revision                     |
 | Resume snapshot revision     |      20 | File-reader resume state                                        |
 | Result observations          |    4096 | Retained results per strict journal page or legacy sink window  |
 | Result payload bytes         | 4194304 | Serialized result payload per strict page or legacy sink window |
@@ -437,6 +437,30 @@ producer evidence does not establish support in the consumed session sources:
   [structured terminal writes](https://github.com/anomalyco/opencode/blob/733b2c627e5aec39cb33cc22373bdce33053ef2c/packages/opencode/src/session/prompt.ts#L1288-L1346)
   are narrow evidence. A development `session_message` schema is not the accepted
   SQLite source. Revalidate released producer behavior before adding a claim.
+
+## Cursor Desktop YAML tool evidence
+
+Parser revision 63 retains native `toolFormerData` from an ordered desktop
+composer snapshot. The snapshot reads composer headers and bubble records in one
+SQLite read transaction. Bubble keys retain their full native IDs, including
+colons and newlines. A tool bubble must match its recorded header identity.
+Empty legacy conversation maps do not invalidate an otherwise recorded order.
+
+The characterized `run_terminal_command_v2` result supplies its JSON arguments,
+recorded output, exit code, terminal state, and accepted user-slot prefix. Native
+user slots do not imply human authorship. Unknown tool result shapes remain
+partial. Binary tool payloads and unrelated composer fields are excluded.
+
+Missing first-record metadata, conflicting identities, unproven order, incomplete
+records, forks, and child sessions cannot establish complete root evidence.
+Winning full snapshots reconcile through the existing native-result outbox.
+Startup attachment binds the exact current source generation and incarnation;
+later result publications use the existing activation and receipt fences.
+
+This contract applies to `CursorIdeComposer` only. It does not widen Cursor CLI,
+legacy stores, generic selected-input tool anchors, or retained built-in check
+capabilities. Real desktop assessment and receipt evidence remain a separate
+visual audit gate.
 
 ## Retained-root smart-check inputs
 

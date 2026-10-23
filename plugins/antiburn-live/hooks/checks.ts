@@ -738,7 +738,7 @@ export function liveChecks(view: LiveView): CheckView[] {
   )
 }
 
-const DEMO_METRICS: Readonly<Record<CheckId, string>> = {
+const DEMO_METRICS: Readonly<Record<(typeof DEFINITIONS)[number]['id'], string>> = {
   X1: '3 tries · Bash',
   E1: '24 reads · 0 edits · 17 files',
   D: '182k tokens per request',
@@ -761,7 +761,7 @@ const DEMO_FILLS: Readonly<Record<string, string>> = {
  * a check that its fix resolved and a check that resolved by itself. The pane hides building checks, so no card builds.
  */
 export function demoView(): CheckView[] {
-  const stages: Record<CheckId, LiveStage> = {
+  const stages: Record<(typeof DEFINITIONS)[number]['id'], LiveStage> = {
     X1: 'watching',
     E1: 'active',
     D: 'active',

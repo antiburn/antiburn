@@ -357,7 +357,13 @@ test("chooses platforms per stage", () => {
 });
 
 test("selects transitive dependents of a changed workspace", () => {
-  assert.deepEqual(withDependents(["engine"]), ["engine", "remote", "shell"]);
+  assert.deepEqual(withDependents(["engine"]), [
+    "engine",
+    "remote",
+    "shell",
+    "checks-store",
+    "cli",
+  ]);
   assert.deepEqual(withDependents(["remote"]), ["remote", "shell"]);
   assert.deepEqual(withDependents(["hud"]), ["shell", "hud"]);
   assert.deepEqual(withDependents(["tray-icon"]), ["shell", "tray-icon"]);
@@ -366,7 +372,11 @@ test("selects transitive dependents of a changed workspace", () => {
 
 test("routes Rust paths to their workspaces", () => {
   const cases = [
-    ["crates/antiburn-local/src/lib.rs", "engine,remote", "shell"],
+    [
+      "crates/antiburn-local/src/lib.rs",
+      "engine,remote,checks-store,cli",
+      "shell",
+    ],
     ["crates/antiburn-remote/src/main.rs", "remote", "shell"],
     ["apps/desktop/src-tauri/src/lib.rs", "", "shell"],
     ["apps/desktop/src-tauri/tauri.conf.json", "", "shell"],
@@ -404,8 +414,16 @@ test("routes Rust paths to their workspaces", () => {
 
 test("routes a lockfile change to its workspace and the license checks", () => {
   for (const [file, engine, desktop] of [
-    ["crates/antiburn-local/Cargo.lock", "engine,remote", "shell"],
-    ["crates/antiburn-local/deny.toml", "engine,remote", "shell"],
+    [
+      "crates/antiburn-local/Cargo.lock",
+      "engine,remote,checks-store,cli",
+      "shell",
+    ],
+    [
+      "crates/antiburn-local/deny.toml",
+      "engine,remote,checks-store,cli",
+      "shell",
+    ],
     ["crates/antiburn-remote/Cargo.toml", "remote", "shell"],
     ["apps/desktop/src-tauri/Cargo.lock", "", "shell"],
     ["apps/desktop/src-tauri/about.toml", "", "shell"],
@@ -792,7 +810,7 @@ test("routes engine fixtures that other workspaces embed to those workspaces", (
   const outputs = plan("ready", [
     "crates/antiburn-local/tests/fixtures/codex_characterization/task_complete_errors.jsonl",
   ]);
-  assert.equal(outputs.engine_workspaces, "engine,remote");
+  assert.equal(outputs.engine_workspaces, "engine,remote,checks-store,cli");
   assert.equal(desktopWorkspaces(outputs), "shell");
 });
 
@@ -908,11 +926,15 @@ test("lists every file that a workspace reads outside the Cargo workspaces", () 
 test("runs the readers of files read outside the workspaces", () => {
   for (const [file, engine, desktop] of [
     [".antiburn/checks/failed-retry-loop.yml", "checks", "shell"],
-    ["docs/support.md", "engine,remote", "shell"],
-    ["docs/session-coverage.md", "engine,remote", "shell"],
-    ["docs/check-coverage.md", "engine,remote", "shell"],
+    ["docs/support.md", "engine,remote,checks-store,cli", "shell"],
+    ["docs/session-coverage.md", "engine,remote,checks-store,cli", "shell"],
+    ["docs/check-coverage.md", "engine,remote,checks-store,cli", "shell"],
     ["docs/privacy-policy.md", "", "shell"],
-    ["plugins/antiburn-live/hooks/catalog.ts", "engine,remote", "shell"],
+    [
+      "plugins/antiburn-live/hooks/catalog.ts",
+      "engine,remote,checks-store,cli",
+      "shell",
+    ],
     ["apps/desktop/src/views/settings/PrivacyPane.tsx", "", "shell"],
   ]) {
     const outputs = plan("ready", [file]);
@@ -1015,4 +1037,18 @@ test("checks advisories after draft when a pull request changes a Cargo.lock", (
   ]) {
     assert.equal(plan("ready", [file]).run_advisories, "false", file);
   }
+});
+
+test("routes the session check reader and CLI to their dependent workspaces", () => {
+  assert.deepEqual(withDependents(["checks-store"]), [
+    "shell",
+    "checks-store",
+    "cli",
+  ]);
+  const reader = plan("ready", ["crates/antiburn-checks-store/src/lib.rs"]);
+  assert.equal(reader.engine_workspaces, "checks-store,cli");
+  assert.equal(desktopWorkspaces(reader), "shell");
+  const cli = plan("ready", ["apps/cli/src/delivery.rs"]);
+  assert.equal(cli.engine_workspaces, "cli");
+  assert.equal(desktopWorkspaces(cli), "");
 });

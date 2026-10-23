@@ -4,13 +4,14 @@ Procedures that are followed under time pressure, written down before the
 pressure arrives. Each one states what it is for, what it assumes, and what
 "done" looks like.
 
-| Runbook                                              | Read it when                                                                    |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------- |
-| [`release.md`](release.md)                           | Cutting a release, or setting the repository up so a release is possible at all |
-| [`rollback.md`](rollback.md)                         | A published release is bad and readers need to stop landing on it               |
-| [`compromised-release.md`](compromised-release.md)   | A signing key, a build, or a published asset may be in someone else's hands     |
-| [`updater-key-recovery.md`](updater-key-recovery.md) | The updater signing key is lost, rotated, or suspected exposed                  |
-| [`security-releases.md`](security-releases.md)       | A vulnerability report has arrived and a fix has to ship                        |
+| Runbook                                                  | Read it when                                                                    |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| [`release.md`](release.md)                               | Cutting a release, or setting the repository up so a release is possible at all |
+| [`rollback.md`](rollback.md)                             | A published release is bad and readers need to stop landing on it               |
+| [`compromised-release.md`](compromised-release.md)       | A signing key, a build, or a published asset may be in someone else's hands     |
+| [`updater-key-recovery.md`](updater-key-recovery.md)     | The updater signing key is lost, rotated, or suspected exposed                  |
+| [`security-releases.md`](security-releases.md)           | A vulnerability report has arrived and a fix has to ship                        |
+| [`session-advisory-audit.md`](session-advisory-audit.md) | Verifying real YAML advisories in native vendor sessions and capturing evidence |
 
 ## The rule these all rest on
 

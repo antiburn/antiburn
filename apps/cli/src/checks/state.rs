@@ -174,7 +174,9 @@ fn update_session(
 
 fn is_problematic(check: &CheckAssessment) -> bool {
     match check.source {
-        CheckAssessmentSource::SessionEvidenceBadge => check.status == "finding",
+        CheckAssessmentSource::SessionEvidenceBadge | CheckAssessmentSource::PredefinedYaml => {
+            check.status == "finding"
+        }
         CheckAssessmentSource::BurnCheckAssessment => {
             check.status == "completed"
                 && check
@@ -191,13 +193,14 @@ fn check_key(check: &CheckAssessment) -> String {
     let source = match check.source {
         CheckAssessmentSource::BurnCheckAssessment => "burn_check_assessment",
         CheckAssessmentSource::SessionEvidenceBadge => "session_evidence_badge",
+        CheckAssessmentSource::PredefinedYaml => "predefined_yaml",
     };
     format!("{source}:{}", check.check_id)
 }
 
 fn check_fingerprint(check: &CheckAssessment) -> Result<String, String> {
     let payload = match check.source {
-        CheckAssessmentSource::SessionEvidenceBadge => {
+        CheckAssessmentSource::SessionEvidenceBadge | CheckAssessmentSource::PredefinedYaml => {
             serde_json::to_vec(&(check.source, &check.check_id, &check.status, &check.result))
         }
         CheckAssessmentSource::BurnCheckAssessment => {

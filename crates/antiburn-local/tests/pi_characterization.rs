@@ -140,11 +140,14 @@ fn fixture(name: &str) -> &'static str {
         "official_entry_families" => {
             include_str!("fixtures/pi_characterization/official_entry_families.jsonl")
         }
+        "antiburn_advisory_continuation" => {
+            include_str!("fixtures/pi_characterization/antiburn_advisory_continuation.jsonl")
+        }
         _ => panic!("unknown Pi characterization fixture: {name}"),
     }
 }
 
-fn fixture_names() -> [&'static str; 44] {
+fn fixture_names() -> [&'static str; 45] {
     [
         "minimal_session",
         "role_ordering",
@@ -190,6 +193,7 @@ fn fixture_names() -> [&'static str; 44] {
         "v1_migrated",
         "v2_migrated",
         "official_entry_families",
+        "antiburn_advisory_continuation",
     ]
 }
 
@@ -655,6 +659,38 @@ fn models_thinking_levels_and_compaction_preserve_transitions() {
     assert_eq!(compacted.events[0].compaction_pre_tokens, Some(100));
     assert_eq!(compacted.events[0].compaction_post_tokens, None);
     assert_eq!(compacted.events[0].compaction_trigger, None);
+}
+
+#[test]
+fn antiburn_custom_message_preserves_pi_v3_native_continuation() {
+    use antiburn_local::analysis::SourceFormat;
+
+    let mut input = input("antiburn_advisory_continuation");
+    input.source_format = SourceFormat::PiV3Jsonl;
+    let (coverage, reasons, session) = collect(&input);
+
+    assert_eq!(coverage, RecordCoverage::Complete);
+    assert!(reasons.is_empty());
+    assert!(session.events.iter().any(|event| !event.tools.is_empty()));
+}
+
+#[test]
+fn custom_message_with_native_signals_still_breaks_pi_retained_order() {
+    use antiburn_local::analysis::SourceFormat;
+
+    let source = format!(
+        "{}{{\"type\":\"custom_message\",\"id\":\"signal-row\",\"parentId\":\"assistant-row\",\"timestamp\":\"2026-01-01T00:00:07Z\",\"usage\":{{\"input\":1}},\"customType\":\"antiburn-session-checks\",\"content\":\"Synthetic advisory.\"}}\n",
+        fixture("antiburn_advisory_continuation")
+    );
+    let input = SessionInput {
+        source: RawSource::Jsonl(source),
+        source_format: SourceFormat::PiV3Jsonl,
+        ..input("antiburn_advisory_continuation")
+    };
+    let (coverage, reasons, _) = collect(&input);
+
+    assert_eq!(coverage, RecordCoverage::Partial);
+    assert!(reasons.contains(&PartialReason::AttributionIncomplete));
 }
 
 #[test]

@@ -244,3 +244,333 @@ fn create_fixture_database(path: &std::path::Path) {
         )
         .unwrap();
 }
+
+fn delivery_fixture(
+    root: &std::path::Path,
+) -> (Connection, std::path::PathBuf, std::path::PathBuf) {
+    let data_root = platform_data_root(root);
+    let database_dir = data_root.join("ai.antiburn.desktop");
+    std::fs::create_dir_all(&database_dir).unwrap();
+    let database_path = database_dir.join("antiburn.sqlite3");
+    let connection = Connection::open(&database_path).unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../../../crates/antiburn-checks-store/tests/fixtures/session.sql"
+        ))
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE native_file_delivery SET parser_revision = ?1",
+            [antiburn_local::analysis::PARSER_REVISION],
+        )
+        .unwrap();
+    let scope = r#"{"environment":"native","session_cwd":"/repo","run":"Live"}"#;
+    connection
+        .execute(
+            "INSERT INTO burn_check_activation VALUES ('retry-loop',?1,2,1,'revision')",
+            [scope],
+        )
+        .unwrap();
+    connection.execute("INSERT INTO burn_check_runtime_definition VALUES ('retry-loop',?1,2,'revision','Retry loop','available')", [scope]).unwrap();
+    connection.execute("INSERT INTO burn_check_current_status VALUES ('retry-loop',?1,2,'[\"native\",\"claude-code\",\"s1\"]','failure','a1',1)", [scope]).unwrap();
+    connection.execute("INSERT INTO burn_check_assessment_history VALUES ('a1',2,'assessed',1,?1,123)", [r#"{"outcomes":[{"outcome":{"Applied":{"result":"Failure","message":"Try another approach."}}}]}"#]).unwrap();
+    let config_path = root.join("delivery-config.json");
+    std::fs::write(
+        &config_path,
+        serde_json::to_vec(
+            &json!({"data_root":data_root,"state_file":root.join("cli-state.json")}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    (connection, database_path, config_path)
+}
+
+fn delivery_call(
+    root: &std::path::Path,
+    config: &std::path::Path,
+    consumer: &str,
+    receipt: Option<&str>,
+) -> Value {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_antiburn"));
+    configure_data_directory(&mut command, root, &platform_data_root(root));
+    command.arg("--config").arg(config).args([
+        "checks",
+        "s1",
+        "--delivery-v1",
+        "--consumer",
+        consumer,
+    ]);
+    if let Some(receipt) = receipt {
+        command.args(["--ack", receipt]);
+    }
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn cursor_desktop_delivery_reports_ready_and_excludes_other_sources() {
+    let temp = tempdir().unwrap();
+    let (connection, _, config) = delivery_fixture(temp.path());
+    connection.execute("UPDATE session SET agent = 'cursor', source_kind = 'inline', source_label = 'cursor-desktop:workspace:s1'", []).unwrap();
+    connection
+        .execute(
+            "INSERT INTO session_evidence VALUES ('native','cursor','s1','ready',1,?1,?2,?3)",
+            rusqlite::params![
+                antiburn_local::analysis::PARSER_REVISION,
+                antiburn_local::analysis::ANALYZER_REVISION,
+                antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE burn_check_current_status SET branch_key = '[\"native\",\"cursor\",\"s1\"]'",
+            [],
+        )
+        .unwrap();
+    let response = delivery_call(temp.path(), &config, "cursor:context", None);
+    assert_eq!(response["state"], "ready");
+    assert_eq!(response["snapshot"][0]["status"], "failure");
+    assert_eq!(response["updates"][0]["kind"], "finding");
+    connection
+        .execute("UPDATE session SET source_label = 'cursor-cli:s1'", [])
+        .unwrap();
+    let response = delivery_call(temp.path(), &config, "cursor:status", None);
+    assert_eq!(response["state"], "unsupported");
+    assert_eq!(response["snapshot"], json!([]));
+}
+
+#[test]
+fn delivery_command_acknowledges_independent_consumers_without_database_writes() {
+    let temp = tempdir().unwrap();
+    let (connection, database, config) = delivery_fixture(temp.path());
+    let before = std::fs::read(&database).unwrap();
+    let status = delivery_call(temp.path(), &config, "claude-code:status", None);
+    assert_eq!(status["state"], "ready");
+    assert_eq!(status["updates"], json!([]));
+    assert!(status["receipt"].is_null());
+    assert!(!temp.path().join("cli-state.json.delivery-v1").exists());
+    let first = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert_eq!(first["protocol_version"], 1);
+    assert_eq!(first["session_scope"], "main");
+    assert_eq!(first["freshness_evaluated"], false);
+    assert_eq!(first["updates"][0]["kind"], "finding");
+    assert_eq!(first["updates"][0]["message"], "Try another approach.");
+    assert!(first.get("evidence").is_none());
+    let repeated = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert_eq!(first["receipt"], repeated["receipt"]);
+    let ack = delivery_call(
+        temp.path(),
+        &config,
+        "claude-code:context",
+        first["receipt"].as_str(),
+    );
+    assert_eq!(ack["acknowledged"], true);
+    assert_eq!(
+        delivery_call(temp.path(), &config, "claude-code:context", None)["updates"],
+        json!([])
+    );
+    assert_eq!(
+        delivery_call(temp.path(), &config, "claude-code:ui", None)["updates"][0]["kind"],
+        "finding"
+    );
+    assert_eq!(std::fs::read(&database).unwrap(), before);
+    connection
+        .execute(
+            "UPDATE burn_check_current_status SET status = 'success'",
+            [],
+        )
+        .unwrap();
+    connection.execute("UPDATE burn_check_assessment_history SET actions_json = ?1", [r#"{"outcomes":[{"outcome":{"Applied":{"result":"Success","message":"Assessment cleared."}}}]}"#]).unwrap();
+    let clear = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert_eq!(clear["updates"][0]["kind"], "cleared");
+    delivery_call(
+        temp.path(),
+        &config,
+        "claude-code:context",
+        clear["receipt"].as_str(),
+    );
+    assert_eq!(
+        delivery_call(temp.path(), &config, "claude-code:context", None)["updates"],
+        json!([])
+    );
+}
+
+#[test]
+fn delivery_rejects_stale_definitions_and_reports_incompatible_schema() {
+    let temp = tempdir().unwrap();
+    let (connection, _, config) = delivery_fixture(temp.path());
+    connection
+        .execute(
+            "UPDATE burn_check_runtime_definition_state SET initialized = 0",
+            [],
+        )
+        .unwrap();
+    let initial = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert_eq!(initial["state"], "waiting");
+    assert!(initial["receipt"].is_null());
+    connection
+        .execute(
+            "UPDATE burn_check_runtime_definition_state SET initialized = 1",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE burn_check_runtime_definition SET definition_revision = 'obsolete'",
+            [],
+        )
+        .unwrap();
+    let obsolete = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert_eq!(obsolete["updates"], json!([]));
+    assert_eq!(obsolete["snapshot"], json!([]));
+    connection
+        .execute("DROP TABLE burn_check_runtime_definition", [])
+        .unwrap();
+    let incompatible = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert_eq!(incompatible["state"], "incompatible");
+    assert!(incompatible["receipt"].is_null());
+}
+
+#[test]
+fn ordinary_yaml_reads_do_not_consume_native_delivery() {
+    let temp = tempdir().unwrap();
+    let (connection, _, config) = delivery_fixture(temp.path());
+    connection
+        .execute_batch(
+            "ALTER TABLE session_evidence ADD COLUMN processed_fingerprint TEXT;
+        ALTER TABLE session_evidence ADD COLUMN evidence_json TEXT;
+        ALTER TABLE session_evidence ADD COLUMN diagnostics_json TEXT;
+        ALTER TABLE session_evidence ADD COLUMN published_fence INTEGER;
+        CREATE TABLE burn_check_assessment AS SELECT
+            NULL AS environment_key, NULL AS agent, NULL AS session_id, NULL AS check_id,
+            NULL AS status, NULL AS input_revision, NULL AS evaluator_revision,
+            NULL AS result_revision, NULL AS incarnation, NULL AS boundary_generation,
+            NULL AS boundary_activity_cursor, NULL AS boundary_at_epoch, NULL AS source_generation,
+            NULL AS source_fingerprint, NULL AS published_fence, NULL AS request_count,
+            NULL AS created_at_epoch, NULL AS updated_at_epoch, NULL AS last_error_category,
+            NULL AS progress_json, NULL AS result_json WHERE 0;",
+        )
+        .unwrap();
+    let ordinary = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_antiburn"));
+        configure_data_directory(&mut command, temp.path(), &platform_data_root(temp.path()));
+        let output = command
+            .arg("--config")
+            .arg(&config)
+            .args(["checks", "s1"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let first = ordinary();
+    assert_eq!(first["checks"][0]["source"], "predefined_yaml");
+    assert_eq!(
+        first["checks"][0]["result"]["message"],
+        "Try another approach."
+    );
+    assert_eq!(ordinary()["checks"], json!([]));
+    let delivery = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert_eq!(delivery["updates"][0]["kind"], "finding");
+}
+
+#[test]
+fn saved_ready_findings_remain_deliverable_during_reassessment() {
+    let temp = tempdir().unwrap();
+    let (connection, _, config) = delivery_fixture(temp.path());
+    connection.execute("INSERT INTO burn_check_candidate SELECT check_id, activation_scope_key, generation, '[\"native\",\"claude-code\",\"s1\"]', 'pending' FROM burn_check_activation", []).unwrap();
+    let first = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert_eq!(first["state"], "ready");
+    assert_eq!(first["snapshot"][0]["eligibility"], "ready");
+    assert_eq!(first["snapshot"][0]["checking"], true);
+    assert_eq!(first["freshness_evaluated"], false);
+    assert_eq!(first["updates"][0]["kind"], "finding");
+    delivery_call(
+        temp.path(),
+        &config,
+        "claude-code:context",
+        first["receipt"].as_str(),
+    );
+    connection
+        .execute(
+            "UPDATE burn_check_assessment_history SET accepted_at_epoch = 456",
+            [],
+        )
+        .unwrap();
+    let repeated = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert_eq!(repeated["snapshot"][0]["assessed_at_epoch"], 456);
+    assert_eq!(repeated["updates"], json!([]));
+}
+
+#[test]
+fn source_invalidation_withdraws_advice_and_recovery_retriggers_it() {
+    let temp = tempdir().unwrap();
+    let (connection, _, config) = delivery_fixture(temp.path());
+    let first = delivery_call(temp.path(), &config, "claude-code:context", None);
+    delivery_call(
+        temp.path(),
+        &config,
+        "claude-code:context",
+        first["receipt"].as_str(),
+    );
+    connection
+        .execute("UPDATE native_file_delivery SET blocked = 1", [])
+        .unwrap();
+    let unavailable = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert!(unavailable["snapshot"][0]["message"].is_null());
+    assert!(unavailable["snapshot"][0]["status"].is_null());
+    assert_eq!(unavailable["updates"][0]["kind"], "invalidated");
+    delivery_call(
+        temp.path(),
+        &config,
+        "claude-code:context",
+        unavailable["receipt"].as_str(),
+    );
+    connection
+        .execute("UPDATE native_file_delivery SET blocked = 0", [])
+        .unwrap();
+    let recovered = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert_eq!(recovered["updates"][0]["kind"], "finding");
+    assert_eq!(recovered["updates"][0]["message"], "Try another approach.");
+}
+
+#[test]
+fn delivery_at_capacity_reclaims_legacy_state_without_database_writes() {
+    let temp = tempdir().unwrap();
+    let (connection, database, config) = delivery_fixture(temp.path());
+    drop(connection);
+    let before = std::fs::read(&database).unwrap();
+    let consumers: serde_json::Map<String, Value> = (0..1024)
+        .map(|index| {
+            (
+                format!("legacy-{index}"),
+                json!({
+                    "acknowledged": {}, "exposed": {}, "pending": null, "last_receipt": null
+                }),
+            )
+        })
+        .collect();
+    std::fs::write(
+        temp.path().join("cli-state.json.delivery-v1"),
+        serde_json::to_vec(&json!({"version": 1, "consumers": consumers})).unwrap(),
+    )
+    .unwrap();
+    let first = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert_eq!(first["updates"].as_array().unwrap().len(), 1);
+    let receipt = first["receipt"].as_str().unwrap();
+    delivery_call(temp.path(), &config, "claude-code:context", Some(receipt));
+    let repeated = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert!(repeated["updates"].as_array().unwrap().is_empty());
+    assert_eq!(std::fs::read(database).unwrap(), before);
+}

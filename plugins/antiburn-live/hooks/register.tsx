@@ -1,9 +1,5 @@
 import { liveMode, type LiveMode } from "./mode";
-import {
-  enteredStages,
-  needsPublish,
-  renderChecksPaneView,
-} from "./register-pane-view";
+import { enteredStages, renderChecksPaneView } from "./register-pane-view";
 import { renderUsageDetailsView } from "./register-usage-details";
 import {
   buildDesktopUsageAssets,
@@ -34,7 +30,6 @@ import {
   renderUsageMarkView,
   renderDesktopBrandLinkView,
   centredLineView,
-  callKey,
 } from "./register-visuals";
 import { atom, read, update } from "claude-code";
 import {
@@ -62,6 +57,13 @@ import type {
   LiveBurnState,
 } from "../types";
 import { demoView, LiveChecks, liveChecks, type LiveView } from "./checks";
+import {
+  applySessionChecks,
+  disconnectedSessionChecks,
+  parseSessionChecks,
+  sessionConnectionText,
+  type SessionCheckConnection,
+} from "./session-checks-ui";
 import { TOUR } from "./tour";
 import {
   normalizeUsage,
@@ -478,7 +480,7 @@ let needsUsageReconciliation = false;
 let usageUiEnabled = true;
 let releaseOwnsUsage = false;
 let releaseOwnershipResolved = false;
-let startupNoticeEnabled = true;
+let startupNoticeEnabled = false;
 let startupNoticeSessionId: string | undefined;
 const usageEntrance = new EntranceOwner();
 let usageMount: string | undefined;
@@ -875,6 +877,7 @@ async function renderUsageDetails($: EngineInterface, e: PaneEvent) {
 
 async function showCheckDemo($: EngineInterface): Promise<void> {
   if (!checksEnabled()) return;
+  invalidateSessionCheckReads();
   isDemo = true;
   tour = null;
   const checks = demoView();
@@ -892,10 +895,26 @@ async function setDebugMode(
   nextMode: LiveMode,
 ): Promise<void> {
   if (mode === nextMode) return;
+  invalidateSessionCheckReads();
   mode = nextMode;
+  const generation = sessionCheckGeneration;
+  const isCurrent = () =>
+    sessionCheckGeneration === generation && mode === nextMode && checksEnabled();
   resetTracker();
   await clearDisabledChecks($);
-  if (checksEnabled()) await publish($);
+  if (checksEnabled()) {
+    await restoreSessionChecks($, isCurrent);
+    if (!isCurrent()) return;
+    await showStatus($, (await read($, view)).checks, isCurrent);
+    if (!isCurrent()) return;
+    let sessionId: string | undefined;
+    try {
+      sessionId = await $.session.id();
+    } catch {
+      sessionId = undefined;
+    }
+    await refreshSessionChecks($, sessionId);
+  }
   else await $.ui.status(undefined);
   const registered = await $.command.register({
     name: "antiburn-dev",
@@ -1196,12 +1215,16 @@ function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
 }
 
 let tracker = new LiveChecks();
-let hasResolvedLine = false;
 // While a demo shows, publish leaves the sample checks in place until /antiburn-dev demo off.
 let isDemo = false;
+let sessionCheckCache: LiveViewState | undefined;
+let sessionCheckSessionId: string | undefined;
+let sessionCheckGeneration = 0;
+let sessionCheckReadSequence = 0;
 
-function setResolvedLine(isShown: boolean): void {
-  hasResolvedLine = isShown;
+function invalidateSessionCheckReads(): void {
+  sessionCheckGeneration += 1;
+  sessionCheckReadSequence += 1;
 }
 
 /**
@@ -1221,10 +1244,6 @@ let tour: { checks: LiveChecks; beat: number } | null = null;
 // After the person closes the pane by hand, a new check does not open it again in this session.
 let isPaneClosedByPerson = false;
 
-function trackerOf(): LiveChecks {
-  return tracker;
-}
-
 /** The tracker that the strip, the chip and the pane show: the tour tracker while the tour runs. */
 function shownTracker(): LiveChecks {
   return tour?.checks ?? tracker;
@@ -1232,11 +1251,122 @@ function shownTracker(): LiveChecks {
 
 function resetTracker(): void {
   tracker = new LiveChecks();
-  hasResolvedLine = false;
   isUnattended = true;
   isDemo = false;
   tour = null;
   isPaneClosedByPerson = false;
+}
+
+async function resetSessionChecks(
+  $: EngineInterface,
+  sessionId?: string,
+  activeReadSequence?: number,
+): Promise<void> {
+  if (activeReadSequence === undefined) invalidateSessionCheckReads();
+  else sessionCheckGeneration += 1;
+  sessionCheckSessionId = sessionId;
+  sessionCheckCache = undefined;
+  await update($, view, () => ({
+    checks: [],
+    resolvedLine: [],
+    entered: [],
+    connection: "waiting" as const,
+  }));
+  await update($, strip, () => ({ isDismissed: false, newCount: 0, armedId: null }));
+}
+
+async function setSessionConnection(
+  $: EngineInterface,
+  connection: SessionCheckConnection,
+  isCurrent: () => boolean = () => true,
+): Promise<void> {
+  const current = await read($, view);
+  if (!isCurrent()) return;
+  const next = disconnectedSessionChecks(current);
+  await update($, view, (latest) => isCurrent() ? { ...next, connection } : latest);
+  if (!isCurrent()) return;
+  sessionCheckCache = { ...next, connection };
+}
+
+async function refreshSessionChecks(
+  $: EngineInterface,
+  sessionId: string | undefined,
+): Promise<void> {
+  if (!checksEnabled() || isDemo || sessionId === undefined) return;
+  const sequence = ++sessionCheckReadSequence;
+  if (sessionCheckSessionId !== sessionId)
+    await resetSessionChecks($, sessionId, sequence);
+  const generation = sessionCheckGeneration;
+  const isCurrent = () =>
+    sessionCheckGeneration === generation &&
+    sessionCheckReadSequence === sequence &&
+    sessionCheckSessionId === sessionId &&
+    checksEnabled() &&
+    !isDemo;
+  let result;
+  try {
+    result = await $.process.run(
+      ["antiburn", "checks", sessionId, "--delivery-v1", "--consumer", "claude-code:ui"],
+      { timeoutMs: 1500 },
+    );
+  } catch {
+    if (isCurrent()) await setSessionConnection($, "disconnected", isCurrent);
+    return;
+  }
+  if (!isCurrent()) return;
+  if (
+    result.exitCode !== 0 || result.isStdoutTruncated || result.stdout.length > 256 * 1024
+  ) {
+    if (isCurrent()) await setSessionConnection($, "disconnected", isCurrent);
+    return;
+  }
+  const delivery = parseSessionChecks(result.stdout, sessionId);
+  if (delivery === undefined) {
+    if (isCurrent()) await setSessionConnection($, "disconnected", isCurrent);
+    return;
+  }
+  const current = await read($, view);
+  if (!isCurrent()) return;
+  const next = applySessionChecks(current, delivery);
+  if (!isCurrent()) return;
+  await update($, view, (latest) => isCurrent() ? next : latest);
+  if (!isCurrent()) return;
+  sessionCheckCache = next;
+  await showStatus($, next.checks, isCurrent);
+  if (!isCurrent()) return;
+  if (delivery.receipt !== null) {
+    if (!isCurrent()) return;
+    try {
+      const ack = await $.process.run(
+        ["antiburn", "checks", sessionId, "--delivery-v1", "--consumer", "claude-code:ui", "--ack", delivery.receipt],
+        { timeoutMs: 1500 },
+      );
+      if (!isCurrent() || ack.exitCode !== 0 || ack.isStdoutTruncated) return;
+      const accepted = JSON.parse(ack.stdout) as { protocol_version?: unknown; acknowledged?: unknown };
+      if (isCurrent() && (accepted.protocol_version !== 1 || accepted.acknowledged !== true))
+        await $.ui.log("Antiburn checks were shown, but the delivery receipt was not accepted.", { to: "debug" });
+    } catch {
+      if (isCurrent())
+        await $.ui.log("Antiburn checks were shown, but the delivery receipt was not accepted.", { to: "debug" });
+    }
+  }
+}
+
+async function restoreSessionChecks(
+  $: EngineInterface,
+  isCurrent: () => boolean = () => true,
+): Promise<void> {
+  if (!isCurrent()) return;
+  const cached = sessionCheckCache;
+  const next = cached ?? {
+    checks: [],
+    resolvedLine: [],
+    entered: [],
+    connection: "waiting" as const,
+  };
+  await update($, view, (current) => isCurrent() ? next : current);
+  if (!isCurrent()) return;
+  await showStatus($, next.checks, isCurrent);
 }
 
 function isUnattendedMode(): boolean {
@@ -1331,11 +1461,10 @@ async function showPane($: EngineInterface, view: LiveView): Promise<void> {
 /** Writes the tracker's view to state. Call it only at a turn boundary or after a press. */
 async function publish($: EngineInterface): Promise<void> {
   if (!checksEnabled()) return;
-  if (isDemo) return;
-  const next = shownTracker().takeView();
+  if (isDemo || tour === null) return;
+  const next = tour.checks.takeView();
   const live = liveChecks(next);
   const resolvedLine = live.length === 0 ? next.resolvedNow : [];
-  setResolvedLine(resolvedLine.length > 0);
   await update($, view, (current) => ({
     checks: next.checks,
     resolvedLine,
@@ -1356,15 +1485,18 @@ async function publish($: EngineInterface): Promise<void> {
 async function showStatus(
   $: EngineInterface,
   checks: readonly LiveCheckView[],
+  isCurrent: () => boolean = () => true,
 ): Promise<void> {
-  if (!checksEnabled()) return;
+  if (!checksEnabled() || !isCurrent()) return;
   const surfaces = await $.session.surfaces();
+  if (!checksEnabled() || !isCurrent()) return;
   const hasNoStrip = surfaces.some(
     (surface) => surface === "vscode" || surface === "mobile",
   );
   if (!hasNoStrip) return;
   const hasLive =
     liveChecks({ checks: [...checks], newIds: [], resolvedNow: [] }).length > 0;
+  if (!checksEnabled() || !isCurrent()) return;
   $.ui.status(hasLive ? chipLabel(checks) : undefined);
 }
 
@@ -1429,6 +1561,7 @@ async function act(
   const { checks } = await read($, view);
   const check = checks.find((one) => one.id === id);
   if (check === undefined) return;
+  if (check.source === "session") return;
   const { armedId } = await read($, strip);
   if (check.actionKind === "advise") {
     await disarm($);
@@ -1506,6 +1639,7 @@ async function disarm($: EngineInterface): Promise<void> {
 /** Starts the demo tour on an empty tracker and opens the pane. */
 async function startTour($: EngineInterface): Promise<void> {
   if (!checksEnabled()) return;
+  invalidateSessionCheckReads();
   isDemo = false;
   tour = { checks: new LiveChecks(), beat: 0 };
   await update($, strip, () => ({
@@ -1541,15 +1675,32 @@ async function nextTourStep($: EngineInterface): Promise<string | null> {
 /** Ends the sample view and the tour, and shows the live checks again. */
 async function endDemo($: EngineInterface): Promise<void> {
   if (!checksEnabled()) return;
+  invalidateSessionCheckReads();
   isDemo = false;
   tour = null;
   await update($, pane, (current) => ({ ...current, selectedId: null }));
-  await publish($);
+  if (tour === null) await restoreSessionChecks($);
+  else await publish($);
 }
 
 async function hide($: EngineInterface, id: LiveCheckId): Promise<void> {
   if (!checksEnabled()) return;
   await disarm($);
+  const currentView = await read($, view);
+  const target = currentView.checks.find((check) => check.id === id);
+  if (target?.source === "session") {
+    const next = {
+      ...currentView,
+      checks: currentView.checks.map((check) =>
+        check.id === id ? { ...check, isHidden: true } : check,
+      ),
+    };
+    sessionCheckCache = next;
+    await update($, view, () => next);
+    await showStatus($, next.checks);
+    await update($, pane, (current) => ({ ...current, selectedId: null }));
+    return;
+  }
   if (isDemo) {
     await update($, view, (current) => ({
       ...current,
@@ -1634,7 +1785,7 @@ async function toggleFullPrompt($: EngineInterface, id: LiveCheckId) {
 // An Svg image still runs its own CSS animation.
 async function renderPane($: EngineInterface, e: PaneEvent) {
   const ui = $.ui.resolve(e);
-  const { checks, entered } = await read($, view);
+  const { checks, entered, connection, freshnessEvaluated } = await read($, view);
   const { selectedId, openGroups, turned, fullPromptId } = await read($, pane);
   const { armedId } = await read($, strip);
   return renderChecksPaneView({
@@ -1648,6 +1799,9 @@ async function renderPane($: EngineInterface, e: PaneEvent) {
     fullPromptId,
     armedId,
     tourBeat: tour?.beat ?? null,
+    connectionText: isDemo || tour !== null
+      ? undefined
+      : sessionConnectionText(connection, freshnessEvaluated),
     actions: {
       centredLine: (event, key, line) => centredLineView(ui, event, key, line),
       toggleGroup: (title) => toggleGroupOpen($, title),
@@ -1727,7 +1881,7 @@ async function usageReply(
 
 export const register: Register = (on, options: DevRegisterOptions = {}) => {
   usageUiEnabled = options.usageUiEnabled !== false;
-  startupNoticeEnabled = options.startupNoticeEnabled !== false;
+  startupNoticeEnabled = options.startupNoticeEnabled === true;
   on("engine.create", async ($, e, next) => {
     const built = await next(e);
     return {
@@ -1794,12 +1948,18 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
         presentationSessionId: sessionId,
       }));
     mode = liveMode(await $.env.get("ANTIBURN_LIVE_MODE"));
+    invalidateSessionCheckReads();
     await clearDisabledChecks($);
     if ((await $.ui.panes()).some((open) => open.id === "usage"))
       await $.ui.close({ id: "usage" });
     usageOrder.reset();
     needsUsageReconciliation = false;
     resetTracker();
+    if (checksEnabled()) await resetSessionChecks($, sessionId);
+    else {
+      sessionCheckSessionId = sessionId;
+      sessionCheckCache = undefined;
+    }
     if (usageUiEnabled && !releaseOwnsUsage) await readUsage($);
     await publish($);
     const registered = await $.command.register({
@@ -1822,6 +1982,7 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
       const availability = await checkCli($);
       $.ui.log(renderNotice(availability));
     }
+    await refreshSessionChecks($, sessionId);
     return started;
   }).catch(($, e, next) => next(e));
 
@@ -1881,12 +2042,6 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
     if (!checksEnabled()) return next(e);
     noteMode(e.permission_mode);
     await disarm($);
-    // Machine prompts, such as a loop wake-up, are not a request from the person.
-    if (
-      (e.source === undefined || e.source === "user" || e.source === "sdk") &&
-      trackerOf().prompt(e.prompt)
-    )
-      await publish($);
     return next(e);
   }).catch(($, e, next) => next(e));
 
@@ -1979,7 +2134,9 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
           `CLI: ${availability.state === "found" ? "Found" : availability.state === "not-found" ? "Not found" : "Check unavailable"}`,
           "App connection: Not checked",
           ...(parsed.command === "diagnostics"
-            ? [`Live checks: ${checksEnabled() ? "enabled" : "disabled"}`]
+            ? [
+                `Checks pane: ${checksEnabled() ? "enabled" : "disabled"}; local detectors: disabled`,
+              ]
             : []),
         ].join("\n"),
       };
@@ -1996,11 +2153,8 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
   }).catch(($, e, next) => next(e));
 
   on("turn.step", async function* ($, e, next) {
-    const active = checksEnabled() ? trackerOf() : undefined;
     if (!BURN_ANIMATION_ENABLED) {
       const result = yield* next(e);
-      if (active !== undefined && checksEnabled() && active === trackerOf())
-        active.step(e.agentId, e.model, e.effort, result.usage);
       return result;
     }
     const generation = burnGeneration;
@@ -2065,8 +2219,6 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
           /* Missing measurements do not change the result. */
         }
       }
-      if (active !== undefined && checksEnabled() && active === trackerOf())
-        active.step(e.agentId, e.model, e.effort, result.usage);
       return result;
     } finally {
       try {
@@ -2092,97 +2244,34 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
   });
 
   on("tool.call", async ($, e, next) => {
-    const active = checksEnabled() ? trackerOf() : undefined;
-    const ran = await next(e);
-    if (
-      active !== undefined &&
-      checksEnabled() &&
-      active === trackerOf() &&
-      ran.deny === undefined
-    ) {
-      const tracker = trackerOf();
-      tracker.toolCall(
-        e.agentId,
-        String(e.tool),
-        `${String(e.tool)}:${callKey(e)}`,
-        ran.isError === true,
-      );
-      tracker.toolResult(
-        e.agentId,
-        String(e.tool),
-        e,
-        ran.isReadOnly === true,
-        ran.isError === true,
-        ran.text?.length ?? 0,
-      );
-      // The ExitPlanMode result arrives after the person approves the plan.
-      if (
-        e.agentId === undefined &&
-        e.tool === "ExitPlanMode" &&
-        ran.isError !== true
-      ) {
-        const plan: unknown = (ran.result as { plan?: unknown } | undefined)
-          ?.plan;
-        if (typeof plan === "string") tracker.planApproved(plan);
-      }
-    }
-    return ran;
+    return next(e);
   }).catch(($, e, next) => next(e));
 
   on("turn.complete", async ($, e, next) => {
-    const active = checksEnabled() ? trackerOf() : undefined;
     const result = await next(e);
-    if (active === undefined || !checksEnabled() || active !== trackerOf())
-      return result;
-    // K1 reads the command list only after a long turn, so an idle session pays nothing.
-    if (e.agentId === undefined && trackerOf().needsSkills()) {
-      const commands = await $.command.list();
-      if (!checksEnabled() || active !== trackerOf()) return result;
-      active.skills(
-        commands.filter(
-          (command) =>
-            command.source !== "builtin" && command.name !== commandName,
-        ),
-      );
+    if (e.agentId !== undefined) return result;
+    let sessionId: string | undefined;
+    try {
+      sessionId = await $.session.id();
+    } catch {
+      sessionId = undefined;
     }
-    if (
-      needsPublish(trackerOf().turnEnd(e.agentId), hasResolvedLine) &&
-      e.agentId === undefined
-    )
-      await publish($);
+    await refreshSessionChecks($, sessionId);
     return result;
   }).catch(($, e, next) => next(e));
 
   on("session.measure", async ($, e, next) => {
-    const active = checksEnabled() ? trackerOf() : undefined;
     needsUsageReconciliation = false;
     if (usageUiEnabled && !releaseOwnsUsage) {
       const ticket = usageOrder.acceptEvent();
       const now = await $.clock.now();
       await commitUsage($, normalizeUsage(e.rateLimits, now), ticket);
     }
-    if (
-      active !== undefined &&
-      checksEnabled() &&
-      active === trackerOf() &&
-      active.measure(e.context.percent)
-    )
-      await publish($);
     return next(e);
   }).catch(($, e, next) => next(e));
 
   on("session.compact", async ($, e, next) => {
-    const active = checksEnabled() ? trackerOf() : undefined;
-    const result = await next(e);
-    if (
-      active !== undefined &&
-      checksEnabled() &&
-      active === trackerOf() &&
-      e.agentId === undefined &&
-      active.compact()
-    )
-      await publish($);
-    return result;
+    return next(e);
   }).catch(($, e, next) => next(e));
 
   on("ui.message", async ($, e, next) => {

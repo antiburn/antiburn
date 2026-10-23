@@ -12,6 +12,10 @@ use crate::analysis::jev_evidence::{
 
 const READ_CONTRACT: &str = "claude-code/2.1.278:retained-cli-text-read";
 
+pub(super) fn supports_result(record: &Value) -> bool {
+    record["version"] == "2.1.278" || super::retained_root::is_characterized_cli(record)
+}
+
 pub(super) fn capture_result(
     record: &Value,
     block: &Value,
@@ -21,7 +25,7 @@ pub(super) fn capture_result(
     order: u32,
     parts: &mut [ContentPart],
 ) {
-    if record["version"] != "2.1.278" || !matches!(name, "Read" | "Bash" | "Skill") {
+    if !supports_result(record) || !matches!(name, "Read" | "Bash" | "Skill") {
         return;
     }
     let id = block["tool_use_id"].as_str();

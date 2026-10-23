@@ -4,8 +4,8 @@ import { mkdtemp, readFile, readdir, rm, writeFile, chmod, realpath } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { assemble } from '../../../scripts/assemble-antiburn-shell.mjs'
-import { prepare, launch } from '../../../scripts/audit-antiburn-shell.mjs'
+import { assemble } from '../../../scripts/assemble-antiburn-core-plugin.mjs'
+import { prepare, launch } from '../../../scripts/audit-antiburn-core-plugin.mjs'
 
 test('audit prepares independent profiles and launches only the selected vendor', async () => {
   const temp = await realpath(await mkdtemp(join(tmpdir(), 'antiburn-audit-test-')))

@@ -372,7 +372,13 @@ test('assembly is deterministic and isolates private, development, and test file
     { recursive: true },
   )
   mkdirSync(join(path, 'packages/antiburn-plugin-core'), { recursive: true })
-  for (const file of ['product.mjs', 'core.mjs', 'discovery.mjs', 'probe.mjs'])
+  for (const file of [
+    'product.mjs',
+    'core.mjs',
+    'discovery.mjs',
+    'probe.mjs',
+    'session-checks-validation.mjs',
+  ])
     cpSync(
       join(root, 'packages/antiburn-plugin-core', file),
       join(path, 'packages/antiburn-plugin-core', file),
@@ -415,11 +421,12 @@ test('assembly is deterministic and isolates private, development, and test file
   )
   assert.equal(devManifest.name, 'antiburn-dev')
   assert.equal(devManifest.userConfig.usageUiEnabled.default, true)
-  assert.equal(devManifest.userConfig.startupNoticeEnabled.default, true)
+  assert.equal(devManifest.userConfig.startupNoticeEnabled.default, false)
   assert.equal(existsSync(join(plugin, 'release')), false)
   assert.equal(existsSync(join(plugin, '.claude-plugin/types')), false)
   assert.equal(existsSync(join(plugin, 'hooks/register.test.ts')), false)
   assert.equal(existsSync(join(plugin, 'hooks/checks.ts')), true)
+  assert.equal(existsSync(join(plugin, 'lib/session-checks-validation.mjs')), true)
   const dev = readFileSync(join(plugin, 'hooks/register.tsx'), 'utf8')
   assert.doesNotMatch(dev, /plugin: 'antiburn-live'|name: 'antiburn'/)
   assert.match(dev, /commandName = registered.command/)
