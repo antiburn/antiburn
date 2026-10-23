@@ -372,7 +372,7 @@ Request-history records include message metadata and user text parts.
 
 | Limit                        |   Value | Scope                                                           |
 | ---------------------------- | ------: | --------------------------------------------------------------- |
-| Parser revision              |      61 | Accepted source and journal cursor revision                     |
+| Parser revision              |      63 | Accepted source and journal cursor revision                     |
 | Resume snapshot revision     |      20 | File-reader resume state                                        |
 | Result observations          |    4096 | Retained results per strict journal page or legacy sink window  |
 | Result payload bytes         | 4194304 | Serialized result payload per strict page or legacy sink window |
