@@ -1,0 +1,4 @@
+{
+  "single": "`────────────────────────────────`\n\n🔥 `antiburn` · **1 finding**\n\n**Failed retry loop**  \nThe agent may be stuck repeating a failed operation. Review the latest attempts before it continues.\n\n`────────────────────────────────`",
+  "multiple": "`────────────────────────────────`\n\n🔥 `antiburn` · **2 findings**\n\n**Failed retry loop**  \nThe agent may be stuck repeating a failed operation. Review the latest attempts before it continues.\n\n**Over-exploring**  \nThe selected activity may include investigation unrelated to your task.\n\n`────────────────────────────────`"
+}

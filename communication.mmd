@@ -1,0 +1,6 @@
+flowchart LR
+    S[Vendor session] -->|Native activity| A[Antiburn app: YAML checks]
+    A -->|Saved results, read only| C[Antiburn CLI]
+    P[Vendor plugin] -->|Read and acknowledge| C
+    C -->|Changed findings| P
+    P -->|Context or checks pane| S
