@@ -2287,7 +2287,7 @@ fn quota_history_index_upgrade_preserves_timed_usage() {
         .unwrap();
     store.migrate().unwrap();
     store.migrate().unwrap();
-    assert_eq!(store.schema_version().unwrap(), 81);
+    assert_eq!(store.schema_version().unwrap(), 82);
     let after = store.quota_turn_input(0, 1_000).unwrap().unwrap();
     assert_eq!(after.rows.len(), before.rows.len());
     for (after, before) in after.rows.iter().zip(&before.rows) {

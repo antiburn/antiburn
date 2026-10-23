@@ -123,8 +123,9 @@ No private transcript text, paths, IDs, or command output is copied here.
 The private producer has no public schema pin. This is an accepted-log shape,
 not a supported historical release range.
 
-The root contract requires `version:2.1.278`, `entrypoint:cli`, a bounded
-`sessionId`, `isSidechain:false`, no `agentId`, and an explicit null root parent.
+The retained-root contract accepts the characterized CLI versions 2.1.278 and
+2.1.309. Each record requires `entrypoint:cli`, a bounded `sessionId`,
+`isSidechain:false`, no `agentId`, and an explicit null root parent.
 Every subsequent identity must link directly to the previous retained identity.
 The root can be human text or the observed `system/informational` prelude with
 `level:notice`, `isMeta:false`, and string `content`. Human messages must carry
@@ -148,6 +149,12 @@ corrected prelude without copying private text or identities. Later ambiguous
 links still reject the source; this correction does not admit arbitrary system,
 meta, or SDK roots. Local SDK roots have `promptSource:sdk`, `turnOrigin:sdk`,
 and no human-origin marker, so they do not receive human history proof.
+
+The unit characterization for a 2.1.278-to-2.1.309 resume follows a
+`system/bridge_status` row through the existing parent chain. The bridge row
+advances native order without becoming human text. User history proof still
+requires the current human-origin markers. Other versions, entrypoints, and
+broken links remain outside the accepted subset and deny later proofs.
 
 Native non-human origins, system prompt sources, meta messages, synthetic
 messages, and `planContent` do not become human authority. Unknown origin in the

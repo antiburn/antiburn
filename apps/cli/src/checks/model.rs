@@ -62,6 +62,7 @@ pub struct CheckAssessment {
 pub enum CheckAssessmentSource {
     BurnCheckAssessment,
     SessionEvidenceBadge,
+    PredefinedYaml,
 }
 
 #[derive(Debug, Clone, Serialize)]

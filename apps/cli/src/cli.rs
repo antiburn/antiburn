@@ -22,5 +22,13 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    Checks { session_id: String },
+    Checks {
+        session_id: String,
+        #[arg(long)]
+        delivery_v1: bool,
+        #[arg(long, requires = "delivery_v1")]
+        consumer: Option<String>,
+        #[arg(long, requires = "consumer")]
+        ack: Option<String>,
+    },
 }

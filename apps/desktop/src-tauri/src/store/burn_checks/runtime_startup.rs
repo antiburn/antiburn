@@ -24,14 +24,22 @@ impl StoreCheckStore {
         let mut statement = connection.prepare(&format!(
             "WITH eligible AS (
                SELECT s.agent, s.session_id, s.incarnation,
-                 CASE WHEN s.agent = 'opencode' THEN j.cursor_json ELSE f.cursor_json END AS receipt,
+                 CASE WHEN s.agent = 'cursor' THEN CAST(s.source_generation AS TEXT)
+                   WHEN s.agent = 'opencode' THEN j.cursor_json ELSE f.cursor_json END AS receipt,
                  s.updated_at_epoch
                 FROM session s LEFT JOIN session_evidence e USING(environment_key, agent, session_id)
                 LEFT JOIN opencode_journal_delivery j USING(environment_key, agent, session_id)
                 LEFT JOIN native_file_delivery f USING(environment_key, agent, session_id)
                WHERE s.environment_key = ?1 AND s.cwd = ?2 AND s.wsl_distro IS NULL
-                 AND s.agent IN ('claude-code', 'codex', 'pi', 'opencode') AND ({ready})
-                 AND CASE WHEN s.agent = 'opencode' THEN j.pending = 0 ELSE f.pending = 0 END
+                 AND s.agent IN ('claude-code', 'codex', 'pi', 'opencode', 'cursor') AND ({ready})
+                 AND (s.agent <> 'cursor' OR (s.source_kind = 'inline'
+                   AND s.source_label GLOB 'cursor-desktop:*'
+                   AND NOT EXISTS(SELECT 1 FROM session_relation r
+                     WHERE r.environment_key = s.environment_key AND r.agent = s.agent
+                       AND ((r.session_id = s.session_id AND r.kind = 'forkParent')
+                         OR (r.related_id = s.session_id AND r.kind = 'subagent')))))
+                 AND CASE WHEN s.agent = 'cursor' THEN 1
+                   WHEN s.agent = 'opencode' THEN j.pending = 0 ELSE f.pending = 0 END
                  AND (s.updated_at_epoch >= ?3 OR EXISTS(SELECT 1 FROM native_tool_result_publication p
                      WHERE p.environment_key = s.environment_key AND p.agent = s.agent
                        AND p.session_id = s.session_id AND p.publication_sequence > ?7
@@ -171,13 +179,28 @@ impl StoreCheckStore {
                   WHERE d.environment_key = s.environment_key AND d.agent = s.agent AND d.session_id = s.session_id
                     AND d.incarnation = s.incarnation AND d.source_label = s.source_label AND d.cwd IS s.cwd
                     AND d.blocked = 0 AND d.pending = 0 AND d.cursor_json = ?11))
-                  OR (s.agent <> 'opencode' AND EXISTS(SELECT 1 FROM native_file_delivery d
+                  OR (s.agent NOT IN ('opencode', 'cursor') AND EXISTS(SELECT 1 FROM native_file_delivery d
                     WHERE d.environment_key = s.environment_key AND d.agent = s.agent AND d.session_id = s.session_id
                       AND d.incarnation = s.incarnation AND d.source_label = s.source_label AND d.cwd IS s.cwd
-                      AND d.blocked = 0 AND d.pending = 0 AND d.cursor_json = ?11))))",
+                      AND d.blocked = 0 AND d.pending = 0 AND d.cursor_json = ?11))
+                  OR (s.agent = 'cursor' AND s.source_kind = 'inline'
+                    AND s.source_label GLOB 'cursor-desktop:*'
+                    AND CAST(s.source_generation AS TEXT) = ?11
+                    AND EXISTS(SELECT 1 FROM session_evidence e
+                      WHERE e.environment_key = s.environment_key AND e.agent = s.agent
+                        AND e.session_id = s.session_id AND e.status = 'ready'
+                        AND e.analyzed_generation = s.source_generation
+                        AND e.parser_revision = ?12 AND e.analyzer_revision = ?13
+                        AND e.evidence_schema_revision = ?14)
+                    AND NOT EXISTS(SELECT 1 FROM session_relation r
+                      WHERE r.environment_key = s.environment_key AND r.agent = s.agent
+                        AND ((r.session_id = s.session_id AND r.kind = 'forkParent')
+                          OR (r.related_id = s.session_id AND r.kind = 'subagent'))))))",
             params![activation.id.definition_id, self.activation_scope_key, activation.id.generation.0,
                 session.key.environment_key, session.key.agent, session.key.session_id, expected,
-                session.incarnation, self.scope.session_cwd, branch.0, session.receipt], |row| row.get(0),
+                session.incarnation, self.scope.session_cwd, branch.0, session.receipt,
+                antiburn_local::analysis::PARSER_REVISION, antiburn_local::analysis::ANALYZER_REVISION,
+                antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION], |row| row.get(0),
         )?;
         if !current {
             return Ok(None);

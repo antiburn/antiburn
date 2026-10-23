@@ -137,3 +137,52 @@ The generated configuration enables Aislop telemetry, matching `init --strict`. 
 The state file defaults to `dirs::config_dir()/antiburn/cli-state.json`. Set `state_file` in `cli.json` to override it. The state path is independent of `--config PATH` unless the config sets `state_file`. The CLI keys each session by `(environment_key, agent, session_id)` and each check by `(source, check_id)`, so matching IDs from different stores or sources do not collide. On each successful lookup, it records the current Unix time as `last_checked_at_epoch` and fingerprints each check result. It returns a finding only on the first observation or when the returned result changes. Evidence badges currently contain only an outcome, so a new evidence snapshot with the same outcome does not repeat the finding. A resolved finding is suppressed, and a later recurrence is reported again.
 
 The state file stores check statuses, SHA-256 fingerprints, the last triggered status/fingerprint/time, and the last-check time. It does not store raw evidence or full check results. State writes use a lock and atomic replacement. A database or state error fails the command and does not advance the state. Stdout omits raw session evidence. The CLI still does not evaluate the desktop's full result-currentness rules. The canonical harness-neutral skill is `skills/antiburn/SKILL.md`; the release-package helper copies it to the archive root as `SKILL.md`. Installation and support in other harnesses remain separate work.
+
+## Predefined check delivery (development)
+
+The CLI reads saved predefined YAML check outcomes in addition to existing
+assessment and badge sources. Their source label is `predefined_yaml`. The
+ordinary command still returns only new or changed problematic results and
+keeps its existing JSON envelope and state file. It does not return clean
+results or raw evidence.
+
+Native plugins use a separate versioned protocol:
+
+```sh
+antiburn checks example-session --delivery-v1 --consumer claude-code:context
+antiburn checks example-session --delivery-v1 --consumer claude-code:context --ack RECEIPT
+```
+
+The first call returns `protocol_version: 1`, the database-resolved `identity`,
+`session_scope`, a `state`, a `snapshot`, `updates`, and an optional `receipt`.
+The snapshot includes safe check metadata, authored status messages, assessment
+times, and checking activity. Updates contain `finding`, `cleared`, or
+`invalidated`; unchanged failures and routine passing assessments do not create
+context updates. A finding requires an authored message. Invalidated results
+are withdrawn without claiming repair.
+
+A consumer acknowledges its receipt only after handing the update to its native
+host. Until acknowledgement, retries can replay the batch. A crash between
+handoff and acknowledgement can also replay it. An obsolete receipt cannot
+replace newer pending state. UI and context use distinct consumer names;
+ordinary CLI reads do not consume either stream. Consumers ending in `:status`
+read diagnostic snapshots without staging or acknowledging delivery updates. The separate, locked state
+file is the configured state filename plus `.delivery-v1`; it stores only
+fingerprints and receipts. A bounded lock wait fails rather than blocking a
+host callback indefinitely.
+
+The read-only shared projection applies activation, definition revision,
+generation, scope, source readiness, and evidence validity gates. Its runtime
+metadata is written by Antiburn, never by the CLI. Older databases continue to
+support ordinary CLI checks; the delivery protocol requires the new projection
+schema. Before the app saves its first discovery snapshot, delivery reports
+`waiting`; an initialized empty snapshot reports `unconfigured`.
+The CLI does not discover YAML files, evaluate providers, start the
+app, or expose an HTTP/IPC service.
+
+`freshness_evaluated` remains false. Saved eligible results do not prove the
+app is running, that definitions on disk are unchanged, or that an assessment
+covers the latest activity. Native context must identify this limitation.
+Missing databases, incompatible projection schemas, unsupported session scopes,
+disabled checks, unconfigured checks, and waiting states are distinct from a
+successful empty assessment. Ambiguous or unknown IDs fail closed.

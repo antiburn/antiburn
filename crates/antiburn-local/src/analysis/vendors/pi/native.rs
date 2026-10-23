@@ -69,7 +69,7 @@ impl PiNativeState {
         self.invalid = true;
     }
 
-    pub(super) fn observe_entry(&mut self, value: &Value, sink: &mut dyn RecordSink) {
+    pub(super) fn observe_entry(&mut self, value: &Value, inert: bool, sink: &mut dyn RecordSink) {
         if !self.active {
             return;
         }
@@ -83,7 +83,7 @@ impl PiNativeState {
         let supported = matches!(
             kind,
             Some("model_change" | "thinking_level_change" | "message" | "session_info" | "label")
-        );
+        ) || (inert && matches!(kind, Some("custom" | "custom_message")));
         let invalid_order =
             id.is_none() || !parent_matches || id == self.last_id.as_deref() || !supported;
         self.publication_order_invalid |= invalid_order;

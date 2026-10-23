@@ -21,7 +21,9 @@ pub(super) fn capture_result(
     order: u32,
     parts: &mut [ContentPart],
 ) {
-    if record["version"] != "2.1.278" || !matches!(name, "Read" | "Bash" | "Skill") {
+    if !super::retained_root::is_characterized_cli(record)
+        || !matches!(name, "Read" | "Bash" | "Skill")
+    {
         return;
     }
     let id = block["tool_use_id"].as_str();

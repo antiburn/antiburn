@@ -100,6 +100,38 @@ fn publish_metadata(state: &InstalledChecks, definitions: &[InstalledCheckDefini
     true
 }
 
+fn persist_runtime_definitions(
+    store: &Store,
+    definitions: &[InstalledCheckDefinition],
+) -> Result<()> {
+    let runtime_definitions = definitions
+        .iter()
+        .map(|definition| antiburn_checks_store::RuntimeDefinition {
+            check_id: definition.check_id.clone(),
+            activation_scope_key: definition.activation_scope_key.clone(),
+            generation: definition.generation,
+            definition_revision: definition.definition_revision.clone(),
+            name: definition.name.clone(),
+            availability: match definition.availability {
+                InstalledCheckAvailability::Available => {
+                    antiburn_checks_store::DefinitionAvailability::Available
+                }
+                InstalledCheckAvailability::Paused { .. } => {
+                    antiburn_checks_store::DefinitionAvailability::Paused
+                }
+                InstalledCheckAvailability::Invalid { .. } => {
+                    antiburn_checks_store::DefinitionAvailability::Invalid
+                }
+                InstalledCheckAvailability::Unsupported { .. } => {
+                    antiburn_checks_store::DefinitionAvailability::Unsupported
+                }
+            },
+        })
+        .collect::<Vec<_>>();
+    antiburn_checks_store::replace_runtime_definitions(&mut store.lock(), &runtime_definitions)?;
+    Ok(())
+}
+
 pub(crate) fn wake(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<InstalledChecks>() {
         state.requested_turn.fetch_add(1, Ordering::AcqRel);
@@ -663,6 +695,7 @@ impl<E: DecisionEvaluator + 'static> InstalledCheckHost<E> {
                 );
             }
         }
+        persist_runtime_definitions(&self.store, &self.definitions)?;
         Ok(())
     }
 
@@ -981,7 +1014,9 @@ fn live_projects(store: &Store) -> Result<Vec<ActivationScope>> {
         "SELECT DISTINCT s.environment_key, s.cwd FROM session s
          WHERE s.environment_key = 'native' AND s.wsl_distro IS NULL
            AND ((s.agent IN ('claude-code', 'codex', 'pi') AND s.source_kind = 'file')
-             OR (s.agent = 'opencode' AND s.source_kind = 'providerDb'))
+             OR (s.agent = 'opencode' AND s.source_kind = 'providerDb')
+             OR (s.agent = 'cursor' AND s.source_kind = 'inline'
+               AND s.source_label GLOB 'cursor-desktop:*'))
            AND s.cwd IS NOT NULL AND s.cwd <> '' AND s.updated_at_epoch >= ?1
            AND NOT EXISTS(SELECT 1 FROM session_relation r
              WHERE r.environment_key = s.environment_key AND r.agent = s.agent
@@ -1029,7 +1064,9 @@ fn scope_has_work(store: &Store, scope: &ActivationScope) -> Result<bool> {
         &format!("SELECT EXISTS(SELECT 1 FROM session s
             LEFT JOIN session_evidence e USING(environment_key, agent, session_id)
            WHERE s.environment_key = ?1 AND s.cwd = ?2
-              AND s.agent IN ('claude-code', 'codex', 'pi', 'opencode')
+              AND s.agent IN ('claude-code', 'codex', 'pi', 'opencode', 'cursor')
+              AND (s.agent <> 'cursor' OR (s.source_kind = 'inline'
+                AND s.source_label GLOB 'cursor-desktop:*'))
               AND NOT EXISTS(SELECT 1 FROM session_relation r
                 WHERE r.environment_key = s.environment_key AND r.agent = s.agent
                   AND ((r.session_id = s.session_id AND r.kind = 'forkParent')
@@ -1606,6 +1643,7 @@ async fn run(app: &tauri::AppHandle) -> Result<()> {
         if !crate::jev::settings::yaml_discovery_enabled(&app.state::<Store>()) {
             state.delivery_ready.store(false, Ordering::Release);
             host.deactivate_active()?;
+            persist_runtime_definitions(&host.store, &host.definitions)?;
             if publish_metadata(&state, &host.definitions) {
                 crate::jev::settings::progress_changed(app);
                 let _ = app.emit(crate::commands::CHECKS_REPORT_CHANGED_EVENT, ());

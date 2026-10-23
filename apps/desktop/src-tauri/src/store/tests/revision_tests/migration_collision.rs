@@ -26,7 +26,7 @@ fn prerelease_upgrade_preserves_incarnations_and_applies_main_migrations() {
         )
         .unwrap();
     let store = Store::from_connection(connection, Path::new("/tmp/legacy-v49").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 81);
+    assert_eq!(store.schema_version().unwrap(), 82);
     assert_eq!(counter(&store), 57);
     let key = SessionKey {
         environment_key: "native".into(),
@@ -85,7 +85,7 @@ fn prerelease_repair_rolls_back_if_a_main_migration_fails() {
         .execute_batch("DROP TRIGGER fail_history_delete")
         .unwrap();
     store.migrate().unwrap();
-    assert_eq!(store.schema_version().unwrap(), 81);
+    assert_eq!(store.schema_version().unwrap(), 82);
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn branch_allowance_versions_receive_main_quota_schema() {
         let store =
             Store::from_connection(connection, Path::new("/tmp/branch-allowance-schema").into())
                 .unwrap();
-        assert_eq!(store.schema_version().unwrap(), 81);
+        assert_eq!(store.schema_version().unwrap(), 82);
         let connection = store.lock();
         let table_exists = |name: &str| -> bool {
             connection
@@ -140,6 +140,72 @@ fn branch_allowance_versions_receive_main_quota_schema() {
         assert!(factor_sql.contains("lane LIKE 'model:%'"));
         drop(connection);
         store.migrate().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 81);
+        assert_eq!(store.schema_version().unwrap(), 82);
+    }
+}
+
+#[test]
+fn both_version_81_schemas_upgrade_without_losing_runtime_definitions() {
+    const FEATURE_V81: &str = r#"
+CREATE TABLE burn_check_runtime_definition (
+    check_id TEXT NOT NULL,
+    activation_scope_key TEXT NOT NULL,
+    generation INTEGER CHECK (generation IS NULL OR generation > 0),
+    definition_revision TEXT NOT NULL,
+    name TEXT NOT NULL,
+    availability TEXT NOT NULL CHECK (availability IN ('available', 'paused', 'invalid', 'unsupported')),
+    PRIMARY KEY (check_id, activation_scope_key)
+) STRICT;
+CREATE TABLE burn_check_runtime_definition_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    protocol_version INTEGER NOT NULL CHECK (protocol_version = 1),
+    initialized INTEGER NOT NULL CHECK (initialized IN (0, 1))
+) STRICT;
+INSERT INTO burn_check_runtime_definition_state VALUES (1, 1, 0);
+"#;
+    for feature_schema in [false, true] {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in &super::super::schema::MIGRATIONS[..80] {
+            connection.execute_batch(sql).unwrap();
+        }
+        if feature_schema {
+            connection.execute_batch(FEATURE_V81).unwrap();
+            connection
+                .execute_batch(
+                    "INSERT INTO burn_check_runtime_definition VALUES
+                 ('retry-loop', 'main', 1, 'r1', 'Retry loop', 'available');
+                 UPDATE burn_check_runtime_definition_state SET initialized = 1;",
+                )
+                .unwrap();
+        } else {
+            connection
+                .execute_batch(super::super::schema::MIGRATIONS[80])
+                .unwrap();
+        }
+        connection.pragma_update(None, "user_version", 81).unwrap();
+        let store =
+            Store::from_connection(connection, Path::new("/tmp/version-81-collision").into())
+                .unwrap();
+        assert_eq!(store.schema_version().unwrap(), 82);
+        store.migrate().unwrap();
+        let connection = store.lock();
+        let initialized: i64 = connection
+            .query_row(
+                "SELECT initialized FROM burn_check_runtime_definition_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(initialized, i64::from(feature_schema));
+        let definitions: i64 = connection.query_row(
+            "SELECT count(*) FROM burn_check_runtime_definition WHERE check_id = 'retry-loop' AND definition_revision = 'r1'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(definitions, i64::from(feature_schema));
+        let indexes: i64 = connection.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'turn_quota_published'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(indexes, 1);
     }
 }

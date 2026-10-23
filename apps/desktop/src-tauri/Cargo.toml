@@ -80,6 +80,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # Strict installed-check parsing, runtime selection, and decision contracts.
 antiburn-checks = { path = "../../../crates/antiburn-checks" }
+antiburn-checks-store = { path = "../../../crates/antiburn-checks-store" }
 # The local engine. The shell adds windows, tray, and IPC around it and owns
 # no analysis logic of its own.
 antiburn-local = { path = "../../../crates/antiburn-local" }

@@ -1,5 +1,5 @@
-mod database;
-mod discovery;
+pub(crate) mod database;
+pub(crate) mod discovery;
 mod evidence;
 mod model;
 mod state;
