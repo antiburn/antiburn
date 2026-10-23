@@ -265,7 +265,7 @@ pub use vendors::{has_dedicated_reader, reader_for, reader_for_input};
 // continue native lineage. Reparse sessions to restore current vendor proofs.
 // +1 for inert Pi extension rows in live continuation roots. Reparse sessions
 // to restore current native-check eligibility after an Antiburn advisory.
-pub const PARSER_REVISION: i64 = 61;
+pub const PARSER_REVISION: i64 = 63;
 
 /// Source admission still requires a validated retained-root snapshot.
 pub fn smart_check_source_supported(agent: &str, format: SourceFormat) -> bool {

@@ -194,7 +194,7 @@ pub fn read_session_checks(
     }
     let session = connection
         .query_row(
-            "SELECT cwd, source_kind FROM session
+            "SELECT cwd, source_kind, source_label FROM session
              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
                AND wsl_distro IS NULL AND cwd IS NOT NULL AND cwd <> ''
                AND NOT EXISTS(SELECT 1 FROM session_relation r
@@ -202,14 +202,25 @@ pub fn read_session_checks(
                    AND ((r.session_id = session.session_id AND r.kind = 'forkParent')
                      OR (r.related_id = session.session_id AND r.kind = 'subagent'))) ",
             params![environment, agent, session_id],
-            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
         )
         .optional()
         .context("read session identity")?;
-    let Some((cwd, _source_kind)) = session else {
+    let Some((cwd, source_kind, source_label)) = session else {
         return Ok(Vec::new());
     };
-    if environment != "native" || !matches!(agent, "claude-code" | "codex" | "pi" | "opencode") {
+    if environment != "native"
+        || !(matches!(agent, "claude-code" | "codex" | "pi" | "opencode")
+            || (agent == "cursor"
+                && source_kind == "inline"
+                && source_label.starts_with("cursor-desktop:")))
+    {
         return Ok(Vec::new());
     }
 
@@ -510,7 +521,9 @@ fn source_can_arrive(
                    OR (r.related_id = s.session_id AND r.kind = 'subagent')))
          FROM session s WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
            AND ((s.agent = 'opencode' AND s.source_kind = 'providerDb')
-             OR (s.agent IN ('claude-code', 'codex', 'pi') AND s.source_kind = 'file'))",
+             OR (s.agent IN ('claude-code', 'codex', 'pi') AND s.source_kind = 'file')
+             OR (s.agent = 'cursor' AND s.source_kind = 'inline'
+               AND s.source_label GLOB 'cursor-desktop:*'))",
             params![environment, agent, session_id],
             |row| row.get(0),
         )
@@ -541,6 +554,16 @@ pub fn source_ready_sql(parser: usize, analyzer: usize, evidence: usize) -> Stri
                   WHERE r.environment_key = s.environment_key AND r.agent = s.agent
                     AND ((r.session_id = s.session_id AND r.kind = 'forkParent')
                       OR (r.related_id = s.session_id AND r.kind = 'subagent'))))
+           WHEN s.agent = 'cursor' THEN s.environment_key = 'native'
+             AND s.source_kind = 'inline' AND s.source_label GLOB 'cursor-desktop:*'
+             AND s.wsl_distro IS NULL
+             AND NOT EXISTS(SELECT 1 FROM session_relation r
+               WHERE r.environment_key = s.environment_key AND r.agent = s.agent
+                 AND ((r.session_id = s.session_id AND r.kind = 'forkParent')
+                   OR (r.related_id = s.session_id AND r.kind = 'subagent')))
+             AND COALESCE(e.status = 'ready' AND e.analyzed_generation = s.source_generation
+               AND e.parser_revision = ?{parser} AND e.analyzer_revision = ?{analyzer}
+               AND e.evidence_schema_revision = ?{evidence}, 0)
            ELSE COALESCE(e.status = 'ready' AND e.analyzed_generation = s.source_generation
               AND e.parser_revision = ?{parser} AND e.analyzer_revision = ?{analyzer}
               AND e.evidence_schema_revision = ?{evidence}, 0) END")
@@ -772,6 +795,23 @@ mod tests {
             .unwrap();
         connection
             .execute("UPDATE session SET agent = 'cursor'", [])
+            .unwrap();
+        assert!(
+            read_session_checks(&connection, "native", "cursor", "s1")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn cursor_desktop_projection_requires_native_inline_source() {
+        let connection = database();
+        seed_activation(&connection, true);
+        connection.execute("UPDATE session SET agent = 'cursor', source_kind = 'inline', source_label = 'cursor-desktop:workspace:s1'", []).unwrap();
+        let checks = read_session_checks(&connection, "native", "cursor", "s1").unwrap();
+        assert_eq!(checks.len(), 1);
+        connection
+            .execute("UPDATE session SET source_label = 'cursor-cli:s1'", [])
             .unwrap();
         assert!(
             read_session_checks(&connection, "native", "cursor", "s1")

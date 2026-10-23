@@ -117,6 +117,7 @@ fn read(
     };
     let main = connection.query_row(
         "SELECT environment_key = 'native' AND wsl_distro IS NULL AND cwd IS NOT NULL AND cwd <> ''
+         AND (s.agent <> 'cursor' OR (s.source_kind = 'inline' AND s.source_label GLOB 'cursor-desktop:*'))
          AND NOT EXISTS(SELECT 1 FROM session_relation r
            WHERE r.environment_key = s.environment_key AND r.agent = s.agent
            AND ((r.session_id = s.session_id AND r.kind = 'forkParent')
@@ -199,7 +200,7 @@ fn read(
         || identity.environment_key != "native"
         || !matches!(
             identity.agent.as_str(),
-            "claude-code" | "codex" | "pi" | "opencode"
+            "claude-code" | "codex" | "pi" | "opencode" | "cursor"
         ) {
         "unsupported"
     } else if response.snapshot.is_empty()

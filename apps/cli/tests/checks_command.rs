@@ -314,6 +314,39 @@ fn delivery_call(
 }
 
 #[test]
+fn cursor_desktop_delivery_reports_ready_and_excludes_other_sources() {
+    let temp = tempdir().unwrap();
+    let (connection, _, config) = delivery_fixture(temp.path());
+    connection.execute("UPDATE session SET agent = 'cursor', source_kind = 'inline', source_label = 'cursor-desktop:workspace:s1'", []).unwrap();
+    connection
+        .execute(
+            "INSERT INTO session_evidence VALUES ('native','cursor','s1','ready',1,?1,?2,?3)",
+            rusqlite::params![
+                antiburn_local::analysis::PARSER_REVISION,
+                antiburn_local::analysis::ANALYZER_REVISION,
+                antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE burn_check_current_status SET branch_key = '[\"native\",\"cursor\",\"s1\"]'",
+            [],
+        )
+        .unwrap();
+    let response = delivery_call(temp.path(), &config, "cursor:context", None);
+    assert_eq!(response["state"], "ready");
+    assert_eq!(response["snapshot"][0]["status"], "failure");
+    assert_eq!(response["updates"][0]["kind"], "finding");
+    connection
+        .execute("UPDATE session SET source_label = 'cursor-cli:s1'", [])
+        .unwrap();
+    let response = delivery_call(temp.path(), &config, "cursor:status", None);
+    assert_eq!(response["state"], "unsupported");
+    assert_eq!(response["snapshot"], json!([]));
+}
+
+#[test]
 fn delivery_command_acknowledges_independent_consumers_without_database_writes() {
     let temp = tempdir().unwrap();
     let (connection, database, config) = delivery_fixture(temp.path());

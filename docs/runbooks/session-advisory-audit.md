@@ -24,13 +24,13 @@ Create this table in the local report before starting. Record installed versions
 these are the surfaces covered by the current implementation, not a permanent
 vendor support promise.
 
-| Vendor      | Terminal                                | Desktop                                 | Receipt evidence                                                  |
-| ----------- | --------------------------------------- | --------------------------------------- | ----------------------------------------------------------------- |
-| Claude Code | Native CLI                              | Desktop Remote Control view             | UserPromptSubmit hook context and actual assistant text           |
-| Codex       | Native CLI                              | Separate manual gate                    | Developer hook context and actual assistant text                  |
-| OpenCode    | Native TUI                              | Native desktop                          | Actual assistant text in the receiving native session             |
-| Pi          | Native TUI                              | Not applicable                          | Antiburn custom message and actual assistant text                 |
-| Cursor      | Separate runtime acceptance needed      | Retry tool evidence unavailable         | Capture the blocked desktop result; never count synthetic markers |
+| Vendor      | Terminal                           | Desktop                        | Receipt evidence                                                  |
+| ----------- | ---------------------------------- | ------------------------------ | ----------------------------------------------------------------- |
+| Claude Code | Native CLI                         | Desktop Remote Control view    | UserPromptSubmit hook context and actual assistant text           |
+| Codex       | Native CLI                         | Separate manual gate           | Developer hook context and actual assistant text                  |
+| OpenCode    | Native TUI                         | Native desktop                 | Actual assistant text in the receiving native session             |
+| Pi          | Native TUI                         | Not applicable                 | Antiburn custom message and actual assistant text                 |
+| Cursor      | Separate runtime acceptance needed | Native desktop acceptance gate | Ordered native tool-result evidence, real assessment, and receipt |
 
 A desktop view of a terminal receipt is view coverage, not a second independent
 delivery. If automation denies access to an app, request a manual screenshot;
@@ -42,11 +42,48 @@ off. Explicit status commands still expose installation diagnostics. Check that
 missing CLI, missing app/database, and both missing return no model advisory and do
 not interrupt the vendor session. Record bounded timeout coverage separately.
 
-Cursor Desktop chat readers currently expose chat text without the tool evidence
-required by this retry-loop YAML check. Audit its fresh native result and mark it
-blocked until the source and runtime provide that evidence. A successful synthetic
-hook test does not close this gate. Do not write Cursor database rows to fabricate
-retry evidence.
+Cursor Desktop uses the ordered native composer snapshot for YAML result evidence
+from parser revision 63. Native terminal results retain recorded arguments,
+output, exit status, and the user-message prefix. Missing metadata, ambiguous
+order, forks, malformed records, and missing result identities cannot establish
+complete root evidence. Other tool payloads can remain partial. Cursor CLI and
+other Cursor store formats do not inherit this desktop contract.
+
+A successful reader test does not close the desktop audit gate. Capture an
+actual assessment and plugin receipt before marking that surface passed. The
+fixture generator does not currently create Cursor sessions. Do not write Cursor
+database rows to fabricate retry evidence.
+
+## Cursor Desktop delivery probe
+
+When a native retry fixture is unavailable, keep the retry-loop definition unchanged.
+Use a temporary, clearly named YAML delivery check in the disposable repository.
+Restrict its top-level condition to the receiving `session.id` and one exact shell
+command. A one-result window can ask Jev whether the recorded result contains the
+chosen audit token, then write a failure with an explicit test-only explanation.
+This tests authored YAML evaluation and native delivery without claiming the agent
+is stuck or asking it to repeat failures. Keep this evidence separate from a
+positive retry-loop audit.
+
+1. Open a fresh Cursor desktop chat and record its native composer ID.
+2. Install the temporary YAML check through the normal watched project directory.
+   Use `if: session.id == '<composer ID>' && message.tool.arguments.command == 'echo CURSOR_YAML_DELIVERY_AUDIT'`.
+   Confirm its availability before running the command. Do not seed assessments,
+   provider responses, or Cursor database rows.
+3. Ask the agent to run that exact command once. Wait for the real assessment using
+   the non-consuming `cursor:status` CLI consumer.
+4. Ask for one different harmless shell call, then the new advisory verbatim.
+   The native `postToolUse` hook reads and delivers the saved finding.
+5. Capture the expanded chat. Retain the YAML hash, native result and response IDs,
+   evidence-valid assessment, acknowledged `cursor:context` receipt, and screenshot hash.
+6. Archive the temporary definition outside the watched directory. Confirm the
+   unchanged retry-loop check assesses the successful calls as success.
+
+The 2026-10-23 run passed this native transport probe and the retry-loop negative
+control. It did not establish a positive, unscripted Cursor retry-loop case.
+Cursor can omit a shell exit code when `additionalData.status` records success;
+parser revision 63 preserves that status. A present malformed exit code stays
+incomplete. The CLI also restricts Cursor delivery to native inline desktop sources.
 
 ## Protect the current released Claude Mod
 
@@ -150,6 +187,27 @@ subsequent real evaluation proof belongs in a separate record.
   merely copying a file into `.opencode/plugins` did not load it in the audited
   desktop backend. If the installed API differs, record a blocker rather than
   writing vendor database rows or guessing a compatible event shape.
+
+### Codex Desktop manual capture
+
+Use a fresh fixture identity for an independent desktop delivery test. A desktop
+view of an already consumed CLI session proves view coverage only.
+
+1. Install the candidate project hooks in the disposable fixture CWD. Pin the
+   audit CLI and Node executable if the desktop app does not inherit shell PATH.
+2. In that CWD, start the installed Codex CLI and open `/hooks`. Review and trust
+   the exact project hook definition. Changed hook definitions require another
+   review. Exit without sending a model prompt, which could consume the receipt.
+3. Register the fixture through `thread/resume` as described above, then open that
+   returned native thread in Codex Desktop. Keep its exact CWD and session ID.
+4. Wait for the real eligible failure through the non-consuming status command.
+   Send the receiving prompt below in that desktop thread, without expected text.
+5. Capture the actual response. Save the retained developer hook context and
+   assistant text for that same session, plus the real assessment proof. Record
+   user-supplied captures as user captures rather than automation captures.
+
+Hook review follows the [Codex hook documentation](https://learn.chatgpt.com/docs/hooks).
+Never disable trust checks or copy receipt text into the receiving prompt.
 
 Do not instruct a real agent to repeat failures to manufacture a positive case:
 requested retries are a clear case under the authored definition. Scripted

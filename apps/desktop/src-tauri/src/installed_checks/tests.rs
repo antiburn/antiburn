@@ -21,6 +21,7 @@ use crate::store::{
 };
 
 mod analytics;
+mod cursor_desktop;
 mod journal_delivery;
 mod selection_live;
 mod session_identity;

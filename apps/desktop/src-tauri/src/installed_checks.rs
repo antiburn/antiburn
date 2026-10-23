@@ -1014,7 +1014,9 @@ fn live_projects(store: &Store) -> Result<Vec<ActivationScope>> {
         "SELECT DISTINCT s.environment_key, s.cwd FROM session s
          WHERE s.environment_key = 'native' AND s.wsl_distro IS NULL
            AND ((s.agent IN ('claude-code', 'codex', 'pi') AND s.source_kind = 'file')
-             OR (s.agent = 'opencode' AND s.source_kind = 'providerDb'))
+             OR (s.agent = 'opencode' AND s.source_kind = 'providerDb')
+             OR (s.agent = 'cursor' AND s.source_kind = 'inline'
+               AND s.source_label GLOB 'cursor-desktop:*'))
            AND s.cwd IS NOT NULL AND s.cwd <> '' AND s.updated_at_epoch >= ?1
            AND NOT EXISTS(SELECT 1 FROM session_relation r
              WHERE r.environment_key = s.environment_key AND r.agent = s.agent
@@ -1062,7 +1064,9 @@ fn scope_has_work(store: &Store, scope: &ActivationScope) -> Result<bool> {
         &format!("SELECT EXISTS(SELECT 1 FROM session s
             LEFT JOIN session_evidence e USING(environment_key, agent, session_id)
            WHERE s.environment_key = ?1 AND s.cwd = ?2
-              AND s.agent IN ('claude-code', 'codex', 'pi', 'opencode')
+              AND s.agent IN ('claude-code', 'codex', 'pi', 'opencode', 'cursor')
+              AND (s.agent <> 'cursor' OR (s.source_kind = 'inline'
+                AND s.source_label GLOB 'cursor-desktop:*'))
               AND NOT EXISTS(SELECT 1 FROM session_relation r
                 WHERE r.environment_key = s.environment_key AND r.agent = s.agent
                   AND ((r.session_id = s.session_id AND r.kind = 'forkParent')

@@ -824,7 +824,9 @@ fn current_sessions(
                           AND (p.session_incarnation IS NULL OR
                             (p.session_incarnation = s.incarnation AND p.project_cwd = s.cwd))))
                       AND ((s.agent = 'opencode' AND s.source_kind = 'providerDb')
-                       OR (s.agent IN ('claude-code', 'codex', 'pi') AND s.source_kind = 'file'))
+                       OR (s.agent IN ('claude-code', 'codex', 'pi') AND s.source_kind = 'file')
+             OR (s.agent = 'cursor' AND s.source_kind = 'inline'
+               AND s.source_label GLOB 'cursor-desktop:*'))
                      AND NOT EXISTS(SELECT 1 FROM burn_check_session_attachment t
                        WHERE t.check_id = ?8 AND t.activation_scope_key = ?9 AND t.generation = ?10
                          AND t.branch_key = json_array(s.environment_key, s.agent, s.session_id)
