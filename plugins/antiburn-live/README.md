@@ -6,11 +6,11 @@
 # antiburn development source
 
 Burn animation and its preview controls are temporarily disabled until refined.
-Live checks, actions, static branding, quota controls and loading indicators
-remain available. Animation algorithms remain in the source for later work.
+App-backed predefined checks, development previews, static branding, quota
+controls and loading indicators remain available. Animation algorithms remain in the source for later work.
 
 This folder contains the maintained development implementation, including
-experimental checks and debug tools. Selected shared usage files and the
+the app-backed Checks pane and debug tools. Selected shared usage files and the
 public-specific inputs in `release/` also feed the generated
 [`antiburn`](../antiburn/README.md) artifact. The public entry points come from
 `integrations/antiburn/claude`; the development entry is `hooks/register.tsx`.
@@ -24,13 +24,12 @@ local development artifact, so it can coexist with the release and core.
 
 A Claude Code mod that shows account usage above the prompt. Usage is the
 default mode. Set `ANTIBURN_LIVE_MODE=checks` before launching Claude Code to
-add the existing token-burn checks and their fixes. Other values select usage.
+add the app-backed predefined Checks pane. Other values select usage.
 Changing the flag requires a reload or restart; `/clear` retains the selected
 mode. The mod makes no network calls.
 
-In this README, "desktop" means the Claude desktop app. The mod does not
-connect to the antiburn app (`apps/desktop`). See
-"Privacy and resources" below.
+In this README, "desktop" means the Claude desktop app. The development mod reads saved antiburn app results through the CLI;
+"desktop" does not refer to that evaluator. See "Privacy and resources" below.
 
 ## Install and run
 
@@ -45,6 +44,11 @@ claude --settings '{"tui":"fullscreen"}' \
 The development launch above selects fullscreen for this process so panes dock
 on the right when the terminal is at least 110 columns wide. It does not change
 the user settings. Narrower terminals use the inline fallback.
+
+Automatic CLI discovery notices are disabled by default. Enable the development
+option **Debug: show CLI discovery at startup** only when diagnosing installation.
+Explicit status commands remain available. Missing CLI or app data must not block
+the coding session; the checks pane may report unavailable or retain last-known results.
 
 Regenerate after changing source files. The host can reload changes in the
 emitted folder; it does not run the assembler for you. Use a separate test
@@ -120,118 +124,57 @@ support, pixel cell dimensions, or an unavailable reduced-motion signal. Both
 adapters reduce dot counts as space shrinks. The desktop's 80-column threshold
 uses the tested 8px-per-column scale; other host scales still need validation.
 
-### Optional checks strip (`ANTIBURN_LIVE_MODE=checks`)
+### Optional checks (`ANTIBURN_LIVE_MODE=checks`)
 
-The strip shows when at least one check is active. It names the top active
-check (the first in catalog order: X1, D, O, T, E1, K1, C1, K2) and counts the
-active checks as `N to fix`. While Claude works, or while a survey shows, the
-strip gives its place back to Claude Code.
+Antiburn's desktop app evaluates installed YAML checks. The development mod
+reads saved results through `antiburn checks SESSION --delivery-v1` and displays
+them in the existing checks strip, footer indicator and expandable pane. It
+never detects problems from prompts, tools, token counts or turn events.
 
-| Control | Label                                                        | Terminal hotkey | Action                                                              |
-| ------- | ------------------------------------------------------------ | --------------- | ------------------------------------------------------------------- |
-| Fix     | The fix label of the top check, such as `Ask Claude to fix`  | `1`             | Runs the fix of the top check.                                      |
-| View    | `View checks` (`View` below 80 columns)                      | `2`             | Opens the checks pane and tries to move the focus to its first row. |
-| Dismiss | `×`: a close glyph on the desktop, a dim `×` in the terminal | none            | Hides the strip until a new check arrives.                          |
+Build the new CLI from `apps/cli` before testing this mode. The app must run and
+be configured to produce new assessments. A CLI read can return saved results
+while the app is closed; it does not prove freshness or recent evaluation.
+See [session checks](../../docs/plugins/session-checks.md) for the protocol,
+coverage and native context-delivery adapters.
 
-In the terminal, the labels start with the digit (`1 Ask Claude to fix`,
-`2 View checks`). The desktop prompt sends a digit to Claude, so the desktop
-strip has no hotkeys and no digits.
+### Checks pane and indicator
 
-The checks strip has four forms. Each keeps the top check name because its
-fix button acts on that check. The persistent usage row owns the brand mark.
+Open the pane with `/antiburn-dev checks`, the footer indicator or the strip's
+View control. The existing expandable cards, section navigation and keyboard
+controls remain. Cards use dynamic identities from Antiburn, so adding a YAML
+check requires no matching local detector or fixed catalog entry.
 
-| Width (columns) | Form                                                                                                  |
-| --------------- | ----------------------------------------------------------------------------------------------------- |
-| 100 and more    | Count with `(N new)`, check name and its metric.                                                      |
-| 80 to 99        | The metric goes. `(N new)` stays.                                                                     |
-| 56 to 79        | The `View` label is shorter. The desktop drops `(N new)`. The terminal keeps `(N new)` while it fits. |
-| Less than 56    | The buttons move to a second row.                                                                     |
+Each real card displays the authored assessment message, assessment time and
+checking activity. It offers local dismissal only. It provides no fix prompt,
+verification action, repair claim or savings estimate. A saved eligible finding
+can remain visible while another assessment runs.
 
-The terminal also moves the buttons to a second row when the check name does
-not fit beside them. It shows the count in a box only while the check name
-still fits.
+Connection labels distinguish these states:
 
-After a dismiss, the strip stays hidden until a check becomes new: a check
-appears for the first time, comes back after it stopped, or reaches a higher
-retry step. The strip then shows `(N new)` beside the count. The same check
-in a later turn does not bring the strip back.
+- `Connected · freshness not evaluated` means the CLI protocol returned results.
+- `Waiting for Antiburn to discover this session` retains prior warnings while
+  the app has not produced an authoritative discovery snapshot.
+- `Antiburn disconnected · showing last known checks` retains previous cards
+  after a failed process call.
+- `Antiburn could not read the latest checks · showing last known checks`
+  retains previous cards for unavailable or incompatible saved results.
+- `Antiburn checks are inactive for this session` removes cards when checks are
+  disabled, unconfigured or unsupported.
 
-When a check resolves and no check is active or watched, the strip shows
-`✓ <Check name> resolved` for one turn (`+N` counts the other checks that
-resolved). A watched check does not show in the strip.
+An explicit `cleared` update moves a prior warning into the resolved group.
+It means the saved assessment no longer reports the warning; it does not prove
+repair. An `invalidated` update removes advice whose eligibility is no longer
+confirmed. Connection failures never simulate either transition.
 
-### Footer chip
+`Dismiss this check` hides a card locally. The pane's `claude-code:ui` consumer
+is independent from `claude-code:context`; dismissing or viewing a card cannot
+consume the model's advice. Usage meters remain available when the CLI or app
+is unavailable.
 
-The chip is in the session mode footer, after any mode labels. Press it to
-open the checks pane.
-
-| Chip             | Meaning                                                       |
-| ---------------- | ------------------------------------------------------------- |
-| `antiburn · N ●` | N checks are active.                                          |
-| `antiburn · N ⧗` | No check is active. N checks are watched after a fix.         |
-| `antiburn · N`   | No check is active or watched. N checks still build evidence. |
-| `antiburn ✓`     | No open check.                                                |
-
-The chip does not count a check that you ignore. On a VS Code or mobile
-surface, which draws no strip, the mod puts the same text in the status line
-while a check is active or watched. The terminal gets no status line text.
-
-### Checks pane
-
-The pane opens with the title `antiburn` and asks for 48 columns and 24 rows.
-These actions open it in checks mode: `/antiburn-dev checks`, the demo commands, the chip, the View
-button, and the first press of a send fix in the strip when it needs a
-confirm.
-
-A new active check also opens the pane, without the keyboard, so the next
-prompt still goes to the composer. The mod does not open it when it is already
-open, or after the person closes it by hand in this session (`/clear` resets
-this). The host draws a pane that opens this way only from 144 terminal columns
-(110 if the person opened it before). Below that, the pane waits undrawn, and
-the strip and the chip still show the check.
-
-In the terminal, the host docks the pane on the right only in the fullscreen
-layout (`/tui fullscreen`, or `"tui": "fullscreen"` in the user settings). In
-the classic layout, the pane shows inline below the output. The launch flag
-`--setting-sources project,local` skips the user settings, so it also skips that
-setting.
-
-In the focused Claude Code 2.1.304 classic-layout check inside Claude Desktop's
-shell pane, mouse clicks on debug buttons did not activate them. Keyboard Tab
-navigation highlighted controls and scrolled hidden controls into view; Enter
-switched modes and started the usage preview sequence. Use the fullscreen
-development launch above for the pointer-driven demo. The classic mouse path
-remains under investigation; this check does not establish behavior in other
-terminal emulators.
-
-- **Heading.** `Checks` with the count of active checks.
-- **Groups.** Active checks show first. `Awaiting verification` holds the
-  watched checks. `✓ Resolved` (`Resolved` on the desktop) is folded. To open
-  it, press its heading in the terminal or its chevron on the desktop. The pane leaves out checks that build
-  evidence, checks that are quiet, and checks that you ignore.
-- **Cards.** Each card shows the check name, its metric and the first sentence
-  of its reason. Only one card is open at a time. An open card shows the full
-  reason, a `Cause` line when the check has one, the fix block, and the
-  actions. A watched card shows `Checking the next turns.` in place of the
-  actions. A resolved card shows `✓ Fixed` or `✓ Stopped by itself`.
-- **Fix block.** A fill fix that is one command shows one line, such as
-  `Fills /model claude-opus-5. You send it.` The K1 advice shows
-  `Next time, start with /<skill>. It may take fewer steps.` Other fixes show
-  their text under `Fix prompt`, `Prompt` or `Compact instructions`. Text
-  longer than about 180 characters shows `Show all` and `Show less`.
-- **Empty pane.** Before the first check: `No checks yet`. After a check showed
-  and none is active: `Nothing to fix right now.`
-- **Footer.** A link: `Get more from every session with antiburn app ↗`, to
-  https://antiburn.com. While the demo tour runs, the footer also shows
-  `Demo tour · step N of 4` and a `Next step` or `End tour` button.
-
-|              | Terminal                                                                                                                                                    | Desktop                                                                              |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| Rows         | A coloured `●` and the check name, a metric line, the reason.                                                                                               | A card with a tinted icon tile. Metrics and skill names draw as SVG.                 |
-| Open a card  | The `▸` button at the right (`▾` when open). The first row has the focus when the pane opens, so Enter opens it. The pane scrolls the open card to the top. | The chevron at the top right of the card (`Show more`, `Show less`).                 |
-| Card actions | `f <fix label>` and `h Ignore this session`. The `f` and `h` keys work on the open card.                                                                    | The fix button. `Ignore this session` shows on the open card. Cards have no hotkeys. |
-| Counts       | Dim numbers.                                                                                                                                                | Round badges beside each section heading.                                            |
-| Background   | none                                                                                                                                                        | The antiburn mark, behind an empty pane or under the cards.                          |
+The terminal docks the pane on the right in fullscreen layout (`/tui fullscreen`
+or `"tui": "fullscreen"`). Classic layout shows the pane inline. Use the
+isolated fullscreen development launch above for pointer testing. Desktop,
+terminal and narrow surfaces still need separate visual acceptance.
 
 ## Commands
 
@@ -262,150 +205,42 @@ The tour steps are:
 4. A skill goes unused, and edits leave the plan (K1, C1).
 
 The tour does not show O, because O fires only on the first turn. The tour
-uses its own set of checks. The real hooks keep feeding the live checks while
-a demo shows.
+uses its own set of checks. The app-result consumer remains separate from the synthetic demo tracker.
 
 **Caution:** a fix in a demo or a tour acts for real. It sends the prompt to
 Claude, fills the prompt box, or compacts the session.
 
-## Checks
+## Runtime checks and development samples
 
-The thresholds come from `CATALOG.live` and `CATALOG.policy` in
-`hooks/catalog.ts`. Only the main thread counts, except for X1. A check is
-tested at the end of each main turn.
+Real-session checks come only from Antiburn's installed YAML definitions. The
+old `LiveChecks` rules receive no real prompts, tool results, steps, usage,
+completion or compaction events. There is no local detector fallback.
 
-| ID  | Name              | Fires when                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Fix                                                                                                                                                                                                                                                 |
-| --- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| X1  | Retry loop        | The same tool call fails 3 or more times in one turn of the main thread or of a subagent. A success of the same call resets its count. The call matches on its input, without the `description`, `tool_use_id`, `agentId` and `consent` fields. Metric: `3 tries · Bash`, with `· subagent` for a subagent. The check comes back as new at 5, 10 and 20 tries.                                                                                                                                                                                                                                                         | `Ask Claude to fix`: sends a prompt that asks Claude to stop the retry, name the cause and change the approach.                                                                                                                                     |
-| D   | Context heavy     | One request in the turn carries more than 400,000 tokens (input, cache read and cache creation), or two context readings in a row are at 90% or more. A context reading between turns also updates it. Metric: `Nk tokens per request` or `N% of context used`. When file reads are 50% or more of the context (an estimate at 4 characters per token, since the last compaction), the card adds `Cause · File reads are about N% of it (Nk tokens).`                                                                                                                                                                  | `Compact now`: compacts the session with instructions to keep the task, the decisions, the open questions and the files in progress. With a file-read cause, the instructions also keep the findings and file paths and drop the raw file contents. |
-| O   | Obsolete model    | At the end of the first main turn, the main model has a newer replacement in `policy.modelReplacements` (for example `claude-opus-4-8` to `claude-opus-5`). The model key ignores a provider prefix, a date suffix and case. After the first turn, an open O goes quiet. Metric: `opus-4-8 → opus-5`.                                                                                                                                                                                                                                                                                                                  | `Switch model`: fills `/model <replacement>` in the prompt box.                                                                                                                                                                                     |
-| T   | Overthinking      | After 3 or more main turns, at least 5 main requests use an effort above the cap (`max`, `ultra` or `xhigh`), these are at least 50% of the requests that name an effort, and the latest request is still above the cap. A numeric effort does not count. Until then, T builds evidence. Metric: `6 of 8 requests at max`.                                                                                                                                                                                                                                                                                             | `Lower effort`: fills `/effort high`.                                                                                                                                                                                                               |
-| E1  | Reading spiral    | In one main turn, Claude makes 20 or more successful read calls over 10 or more files or folders, and no successful edit. Reads are `Read`, `Grep`, `Glob`, `LS`, `NotebookRead`, and a `Bash` call that Claude Code marks read-only or whose every part runs a read program (`cat`, `head`, `tail`, `less`, `nl`, `wc`, `ls`, `tree`, `find`, `fd`, `rg`, `grep`, `ag`, or `sed -n` without `-i`) with no redirect into a file. Metric: `24 reads · 0 edits · 17 files`.                                                                                                                                              | `Ask Claude to focus`: sends a prompt that asks Claude to state its findings, its hypothesis and the files it will change, then change them or ask one question.                                                                                    |
-| K1  | Skill not used    | The first main turn after your request takes 10 or more steps, the request does not start with `/`, and no skill or slash command ran for it. The mod then reads the list of installed commands (without the built-in commands and `/antiburn-dev`) and looks for a match: the request names the skill as `/name`, names a dashed skill name in words, or shares 3 or more keywords with the skill description. Metric: `/name fits · N steps`. When the request names `/name` after its first word, the metric is `/name named · not run`, and the reason says that a skill name runs only at the start of a message. | `Got it`: advice only. It sends nothing and sets the check quiet. The card says `Next time, start with /name.`                                                                                                                                      |
-| C1  | Outside the plan  | After you approve a plan (`ExitPlanMode`), Claude edits 3 or more files whose names are not in the plan text or in your requests from that point. Test files do not count. Metric: `N files outside the plan`.                                                                                                                                                                                                                                                                                                                                                                                                         | `Ask about extras`: fills a prompt that asks Claude to list each change outside the plan with its reason, and to keep only the ones you approve.                                                                                                    |
-| K2  | Repeated workflow | The same 3 or more shell commands, in the same order, run in 3 or more main turns. A command is named by its program and first word, such as `cargo test` or `npm run build`. `cd`, `echo` and read programs do not count. Metric: `same 3 commands × 3`.                                                                                                                                                                                                                                                                                                                                                              | `Draft a skill`: fills a prompt that asks Claude to write `.claude/skills/<name>/SKILL.md` for these commands and to show it before it saves it.                                                                                                    |
-
-Before K1 matches, the mod removes the context blocks that Claude Code adds to
-a message, such as `<system-reminder>`. A machine prompt, such as a loop
-wake-up, is not a request.
-
-## Check lifecycle
-
-| Stage    | Meaning                                                                        | Shown in                                                 |
-| -------- | ------------------------------------------------------------------------------ | -------------------------------------------------------- |
-| building | The check collects evidence (T only).                                          | Nowhere.                                                 |
-| active   | The check fired and offers its fix.                                            | Strip, chip, pane.                                       |
-| watching | The fix ran. The mod checks the next turns.                                    | Chip (`⧗`), `Awaiting verification`.                     |
-| resolved | The pattern stopped.                                                           | `✓ Resolved` group, and the resolved strip for one turn. |
-| quiet    | The check no longer applies to the current task. A later match shows it again. | Nowhere.                                                 |
-
-A fix moves a check from active to watching:
-
-- **Send and compact fixes** (X1, E1, D) move to watching when the fix runs.
-- **Fill fixes** move to watching only when a later request shows the change.
-  O moves when a request uses a model with no replacement. T moves when a
-  request uses an effort at or below the cap. C1 moves when you send the
-  filled prompt unchanged. K2 moves when you send its filled prompt unchanged.
-
-A watched check resolves when its rule clears. Its card then shows
-`✓ Fixed`. A check that clears without a fix shows `✓ Stopped by itself`.
-If the rule still fires for 3 more turns, the check goes back to active.
-
-Each check clears on its own rule:
-
-| ID  | Resolves when                                                      |
-| --- | ------------------------------------------------------------------ |
-| X1  | A main turn ends with no call that failed 3 times.                 |
-| D   | The main session compacts, or the context falls below both limits. |
-| O   | A request uses a model that has no replacement.                    |
-| T   | The latest request uses an effort at or below the cap.             |
-| E1  | A main turn edits a file.                                          |
-| K1  | A later request runs the skill.                                    |
-| C1  | 3 turns in a row add no file outside the plan.                     |
-| K2  | Claude writes a `skills/<name>/SKILL.md` file.                     |
-
-Some checks go quiet: O after the first turn, K1 after `Got it` or a new
-request, and C1 after a new request.
-
-## Fix actions and safety
-
-| Kind    | Checks       | What the press does                                           |
-| ------- | ------------ | ------------------------------------------------------------- |
-| Send    | X1, E1       | Sends the fix prompt to Claude as your message.               |
-| Compact | D            | Compacts the session with the compact instructions.           |
-| Fill    | O, T, C1, K2 | Replaces the text in the prompt box. You read it and send it. |
-| Advice  | K1           | Sends nothing.                                                |
-
-The mod sends to Claude only the fix text from the catalog. It fills in the
-replacement model (O), the skill name (K1) or the command names (K2).
-
-**Two-press confirm.**
-
-- A send fix needs two presses when the permission mode is `auto` or
-  `bypassPermissions`. It also needs two presses before the mod has seen the
-  first permission mode. On a host that an organization manages, Claude Code
-  does not run the classic hooks for this mod, so the mod never sees the
-  permission mode and every send fix needs two presses. The first press opens the card on its prompt and
-  changes the label to `Confirm send`. A first press in the strip also opens
-  the pane. The second press sends.
-- A compact fix on a card always needs two presses, because a compaction
-  cannot be undone. The label changes to `Confirm compact`. The
-  `Compact now` button in the strip compacts on one press.
-- The armed button takes the primary style. A new prompt, a press on
-  `Ignore this session`, or a press that opens or closes a card or a group
-  cancels an armed fix.
-
-**Compact.** If the session has too few messages to compact, the mod logs
-`Compaction did not run. This session has too few messages to compact yet.`
-and the check stays active.
-
-**Ignore this session.** This button on an open active card hides the check
-for the rest of the session. The check leaves the strip, the chip count and
-the pane. `/clear` or a new session shows all checks again.
-
-**Dismiss.** The `×` button hides the strip only. The chip and the pane still
-show the checks.
-
-**Fail open.** Each hook that can block an action has a `.catch` that runs the
-rest of the chain. An error in the mod does not block a tool call, a command
-or a turn.
+The eight fixed catalog samples remain in the development demo and tour. They
+exercise the existing visual states and keyboard navigation; they do not
+establish app evaluation or check coverage. Sample verification and savings
+labels are not claims about the current session. See `hooks/catalog.ts` and
+`hooks/checks.ts` for the retained sample implementation.
 
 ## Privacy and resources
 
-- **No network, processes, model calls or polling.** The hooks module does not
-  call `$.http`, `$.process` or `$.model`. It reads `$.clock.now` to calculate
-  reset and pace labels on redraw; no countdown polling runs. CI permits `clock.now` and one-shot `clock.after` for the explicit finite debug sequence; it rejects other clock calls in the validator call list. Terminal draws statically.
-  The footer link to https://antiburn.com is a plain link. The mod does not
-  fetch it.
-- **The host runs the model, and only after a press.** A fix with a prompt
-  calls `$.prompt.submit`, and a compact fix calls `$.session.compact`. Both
-  ask Claude Code to act. The mod never starts a model call by itself.
-- **No files.** The mod writes no file and does not use `$.store`. A test
-  checks that a check, its fix and its resolve make no `fs.write`. CI does not
-  check `$.store` or `$.fs`. All state ends with the session.
-- **No link to the antiburn app.** The mod and the antiburn app share no
-  socket, file or call. The app reads the session transcripts that Claude Code
-  writes to disk. It does not read the mod state. The two share one thing: the
-  policy values in `hooks/catalog.ts` and in `ReportCatalogs` (see
-  [Development](#development)).
-- **What it keeps.** Usage readings and interaction state live in
-  `antiburn-live.usage`. In checks mode, the check counts live in memory in `LiveChecks`
-  (`hooks/checks.ts`). The pane, strip and view state are three session state
-  values: `antiburn-live.view`, `antiburn-live.strip` and `antiburn-live.pane`.
-  For K1, the mod keeps the first 2,000 characters of your latest request in
-  memory. For C1, it keeps the approved plan and the requests after it.
-- **What it reads.** Native account rate limits in both modes. In checks mode:
-  tool call inputs and the size of each result (not its
-  text), the model, the effort, token usage, context readings, your prompts,
-  the permission mode, and the approved plan. It reads the installed commands
-  only after a main turn of 10 or more steps that runs no skill.
-- **When it writes state.** At the end of a main turn when a check changed,
-  at a prompt or a context reading that changes a check, after a compaction,
-  and after a press. The per-step hook makes no engine call and writes no
-  state. The `LiveChecks` methods are synchronous and do no I/O.
-- **Bounds.** The mod keeps at most 1,000 read targets per turn and 200
-  command sets per session. A call key keeps the first 200 characters of a
-  long input value.
+- **Evaluation.** The app is the sole evaluator. The mod starts no provider
+  evaluation, network request, model turn or idle polling loop for checks.
+- **CLI reads.** At session start and turn completion, the mod uses the host's
+  sandboxed process API with an argument vector and bounded execution/output.
+  It reads the versioned CLI response, applies UI state, then acknowledges the
+  UI receipt. It never runs a shell or launches the desktop interface.
+- **Data.** The pane receives authored messages and safe result metadata, not
+  YAML definitions, provider credentials or raw evidence. It validates session
+  identity, main-session scope and protocol before applying results.
+- **Persistence.** UI and dismissal state belong to the local session. The CLI
+  keeps bounded consumer receipt/fingerprint state separately from its
+  read-only product database. It does not store message text in that state.
+- **Independent usage.** Native account-usage readings and usage interaction
+  state retain their existing behavior. A check-connection failure does not
+  stop those readings.
+- **Failure.** Bounded read errors retain last-known cards. They do not block a
+  coding action, run a local detector or claim that a warning cleared.
 
 ## Development
 
@@ -460,8 +295,8 @@ a release or replace native acceptance. See the
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.claude-plugin/plugin.json`  | The manifest: name, version, description, and the state types.                                                                                                      |
 | `hooks/hooks.json`            | Loads `register.tsx`.                                                                                                                                               |
-| `hooks/register.tsx`          | The hooks, the `/antiburn-dev` command, the strip, the chip, the pane, the fix actions and the demo.                                                                |
-| `hooks/checks.ts`             | `LiveChecks`, the check rules and stages. It takes no `$` and does no I/O.                                                                                          |
+| `hooks/register.tsx`          | The hooks, the `/antiburn-dev` command, the strip, the chip, the pane, the app-result bridge and the demo.                                                          |
+| `hooks/checks.ts`             | `LiveChecks`, retained rules and stages for development samples only. It takes no `$` and does no I/O.                                                              |
 | `hooks/catalog.ts`            | The check catalog: ids, names, sentences, fixes, thresholds and model replacements. Keep the text between the `catalog:begin` and `catalog:end` markers valid JSON. |
 | `hooks/tour.ts`               | The 4 demo tour steps.                                                                                                                                              |
 | `hooks/*.test.ts`             | Tests for the checks, the surfaces and the tour.                                                                                                                    |

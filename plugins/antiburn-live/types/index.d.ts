@@ -20,7 +20,7 @@ export type LiveUsageState = {
   activated: string | null
 }
 
-export type LiveCheckId = 'X1' | 'E1' | 'D' | 'O' | 'T' | 'K1' | 'C1' | 'K2'
+export type LiveCheckId = string
 
 export type LiveStage = 'building' | 'active' | 'watching' | 'resolved' | 'quiet'
 
@@ -42,6 +42,9 @@ export type LiveCheckView = {
   prompt: string
   isHidden: boolean
   isStoppedAfterFix: boolean
+  source?: 'session'
+  checking?: boolean
+  assessedAt?: number | null
 }
 
 export type LiveViewState = {
@@ -50,6 +53,9 @@ export type LiveViewState = {
   resolvedLine: LiveCheckId[]
   /** The stages that took a new check at the last publish. Their section icons draw in once. */
   entered: LiveStage[]
+  connection?: 'connected' | 'waiting' | 'disconnected' | 'unavailable' | 'inactive'
+  freshnessEvaluated?: boolean
+  newSessionCount?: number
 }
 
 export type LiveStripState = {

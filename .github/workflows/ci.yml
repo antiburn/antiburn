@@ -280,6 +280,8 @@ jobs:
             crates/antiburn-checks -> ../../target/ci
             crates/antiburn-local
             crates/antiburn-remote
+            crates/antiburn-checks-store
+            apps/cli
           shared-key: ci-engine-${{ matrix.name }}
           cache-bin: false
           # Pull requests run only the x64 and macOS platforms, so only those
