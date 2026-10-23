@@ -26,8 +26,8 @@ async function loadAdapter(name, stub = '', denyDiscovery = false) {
   return import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'))
 }
 
-test('Pi registers without discovery, uses session_start and no model messages', async () => {
-  const mod = await loadAdapter('pi/antiburn.mjs')
+test('Pi startup stays quiet without discovery and help remains available', async () => {
+  const mod = await loadAdapter('pi/antiburn.mjs', '', true)
   const events = new Map(),
     commands = new Map(),
     notices = []
@@ -47,7 +47,7 @@ test('Pi registers without discovery, uses session_start and no model messages',
   await events.get('session_start')({}, ctx)
   mod.default(pi)
   await events.get('session_start')({}, ctx)
-  assert.equal(notices.length, 1)
+  assert.equal(notices.length, 0)
   await commands.get('antiburn').handler('help --ascii', ctx)
   assert.match(notices.at(-1), /^`antiburn`/)
   assert.match(notices.at(-1), /App connection: Not checked/)
@@ -74,8 +74,8 @@ test('Pi adds hidden context only while preparing a user-started run', async () 
   assert.deepEqual(calls, [{ host: 'pi', sessionId: 'session-1', consumer: 'context' }])
 })
 
-test('OpenCode candidate only handles root session creation on loopback and deduplicates', async () => {
-  const { Antiburn } = await loadAdapter('opencode/antiburn.mjs')
+test('OpenCode startup stays quiet without discovery on local and remote servers', async () => {
+  const { Antiburn } = await loadAdapter('opencode/antiburn.mjs', '', true)
   const notices = []
   const client = { tui: { showToast: async (value) => notices.push(value) } }
   const hooks = await Antiburn({ client, serverUrl: new URL('http://127.0.0.1:1234') })
@@ -92,10 +92,10 @@ test('OpenCode candidate only handles root session creation on loopback and dedu
   await hooks.event({ event })
   const reload = await Antiburn({ client, serverUrl: new URL('http://localhost:1234') })
   await reload.event({ event })
-  assert.equal(notices.length, 1)
+  assert.equal(notices.length, 0)
   const remote = await Antiburn({ client, serverUrl: new URL('https://example.com') })
   await remote.event({ event: { ...event, properties: { info: { id: 'remote' } } } })
-  assert.equal(notices.length, 1)
+  assert.equal(notices.length, 0)
 })
 
 test('OpenCode appends context to the primary user message before model conversion', async () => {
@@ -379,7 +379,7 @@ test('Pi RPC notifies without stdout and unsupported print avoids discovery', as
   assert.equal(notices.length, 1)
 })
 
-test('Pi first RPC help reports availability once and status always rechecks', async () => {
+test('Pi help stays quiet and explicit status always checks availability', async () => {
   const mod = await loadAdapter(
     'pi/antiburn.mjs',
     '',
@@ -396,18 +396,54 @@ test('Pi first RPC help reports availability once and status always rechecks', a
   }
   const run = (args) => commands.get('antiburn').handler(args, ctx)
   await run('help --ascii')
-  assert.equal(mod.countChecks(), 1)
-  assert.match(notices[0], /^`antiburn` CLI found\n/)
+  assert.equal(mod.countChecks(), 0)
+  assert.doesNotMatch(notices[0], /CLI found/)
   await run('help')
-  assert.equal(mod.countChecks(), 1)
+  assert.equal(mod.countChecks(), 0)
   assert.doesNotMatch(notices[1], /CLI found/)
   await run('status')
   await run('status')
-  assert.equal(mod.countChecks(), 3)
+  assert.equal(mod.countChecks(), 2)
   assert.match(notices.at(-1), /CLI: Found/)
   const second = { ...ctx, sessionManager: { getSessionId: () => 'fixture-pi-first-status' } }
   await commands.get('antiburn').handler('status', second)
   await commands.get('antiburn').handler('help', second)
-  assert.equal(mod.countChecks(), 4)
+  assert.equal(mod.countChecks(), 3)
   assert.doesNotMatch(notices.at(-1), /CLI found/)
+})
+
+test('Pi and OpenCode startup discovery is opt-in and deduplicated in debug mode', async () => {
+  const previous = process.env.ANTIBURN_DEBUG
+  process.env.ANTIBURN_DEBUG = '1'
+  try {
+    const stub = "const discover = async () => ({state: 'found'})"
+    const pi = await loadAdapter('pi/antiburn.mjs', '', stub)
+    const events = new Map(),
+      notices = []
+    pi.default({ registerCommand() {}, on: (name, handler) => events.set(name, handler) })
+    const ctx = {
+      mode: 'tui',
+      hasUI: true,
+      ui: { notify: (text) => notices.push(text) },
+      sessionManager: { getSessionId: () => 'debug-pi' },
+    }
+    await events.get('session_start')({}, ctx)
+    await events.get('session_start')({}, ctx)
+    assert.equal(notices.length, 1)
+    assert.match(notices[0], /CLI found/)
+    const { Antiburn } = await loadAdapter('opencode/antiburn.mjs', '', stub)
+    const toasts = []
+    const hooks = await Antiburn({
+      client: { tui: { showToast: async (value) => toasts.push(value) } },
+      serverUrl: new URL('http://127.0.0.1:1234'),
+    })
+    const event = { type: 'session.created', properties: { info: { id: 'debug-opencode' } } }
+    await hooks.event({ event })
+    await hooks.event({ event })
+    assert.equal(toasts.length, 1)
+    assert.match(toasts[0].body.message, /CLI found/)
+  } finally {
+    if (previous === undefined) delete process.env.ANTIBURN_DEBUG
+    else process.env.ANTIBURN_DEBUG = previous
+  }
 })

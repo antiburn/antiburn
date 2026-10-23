@@ -45,6 +45,11 @@ The development launch above selects fullscreen for this process so panes dock
 on the right when the terminal is at least 110 columns wide. It does not change
 the user settings. Narrower terminals use the inline fallback.
 
+Automatic CLI discovery notices are disabled by default. Enable the development
+option **Debug: show CLI discovery at startup** only when diagnosing installation.
+Explicit status commands remain available. Missing CLI or app data must not block
+the coding session; the checks pane may report unavailable or retain last-known results.
+
 Regenerate after changing source files. The host can reload changes in the
 emitted folder; it does not run the assembler for you. Use a separate test
 session and normally enable only one usage strip per session.

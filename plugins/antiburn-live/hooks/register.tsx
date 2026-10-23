@@ -480,7 +480,7 @@ let needsUsageReconciliation = false;
 let usageUiEnabled = true;
 let releaseOwnsUsage = false;
 let releaseOwnershipResolved = false;
-let startupNoticeEnabled = true;
+let startupNoticeEnabled = false;
 let startupNoticeSessionId: string | undefined;
 const usageEntrance = new EntranceOwner();
 let usageMount: string | undefined;
@@ -1881,7 +1881,7 @@ async function usageReply(
 
 export const register: Register = (on, options: DevRegisterOptions = {}) => {
   usageUiEnabled = options.usageUiEnabled !== false;
-  startupNoticeEnabled = options.startupNoticeEnabled !== false;
+  startupNoticeEnabled = options.startupNoticeEnabled === true;
   on("engine.create", async ($, e, next) => {
     const built = await next(e);
     return {

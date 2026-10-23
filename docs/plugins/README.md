@@ -26,7 +26,7 @@ below retain the development discovery contract and existing documentation ancho
 
 ## Development adapter output
 
-The default marker is 🔥, followed by the brand name in code delimiters. A startup notice is one line:
+Automatic CLI discovery notices are disabled by default. Explicit status commands remain available. For Pi and OpenCode, set `ANTIBURN_DEBUG=1` to enable startup diagnostics. The Claude development Mod has an opt-in **Debug: show CLI discovery at startup** setting. A debug notice is one line:
 
 ```text
 🔥 `antiburn` · CLI found

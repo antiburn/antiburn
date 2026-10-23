@@ -348,7 +348,12 @@ function devFiles(root, tests = false) {
     )
   }
   files.set('lib/product.mjs', containedFile(root, 'packages/antiburn-plugin-core/product.mjs'))
-  for (const path of ['core.mjs', 'discovery.mjs', 'probe.mjs', 'session-checks-validation.mjs'])
+  for (const path of [
+    'core.mjs',
+    'discovery.mjs',
+    'probe.mjs',
+    'session-checks-validation.mjs',
+  ])
     files.set(`lib/${path}`, containedFile(root, `packages/antiburn-plugin-core/${path}`))
   const manifest = JSON.parse(files.get('.claude-plugin/plugin.json'))
   manifest.name = 'antiburn-dev'
@@ -363,10 +368,10 @@ function devFiles(root, tests = false) {
     },
     startupNoticeEnabled: {
       type: 'boolean',
-      title: 'Show the startup notice',
+      title: 'Debug: show CLI discovery at startup',
       description:
         'Show the local CLI availability notice once per session. This does not affect commands or live checks. Reload after changing this option.',
-      default: true,
+      default: false,
     },
   }
   files.set('.claude-plugin/plugin.json', json(manifest))

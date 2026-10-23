@@ -420,7 +420,7 @@ test('assembly is deterministic and isolates private, development, and test file
   )
   assert.equal(devManifest.name, 'antiburn-dev')
   assert.equal(devManifest.userConfig.usageUiEnabled.default, true)
-  assert.equal(devManifest.userConfig.startupNoticeEnabled.default, true)
+  assert.equal(devManifest.userConfig.startupNoticeEnabled.default, false)
   assert.equal(existsSync(join(plugin, 'release')), false)
   assert.equal(existsSync(join(plugin, '.claude-plugin/types')), false)
   assert.equal(existsSync(join(plugin, 'hooks/register.test.ts')), false)

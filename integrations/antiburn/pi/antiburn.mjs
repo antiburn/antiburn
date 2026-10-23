@@ -62,20 +62,11 @@ export default function antiburn(pi) {
         ctx.ui.notify(`${discovery}\n${checks}`, 'info')
         return
       }
-      let firstNotice = ''
-      if (parsed.command === 'help') {
-        await sessionOnce(sessions, sessionId, async () => {
-          firstNotice = renderNotice({ state: 'unavailable' }, parsed.style)
-          firstNotice = renderNotice(await discover(), parsed.style)
-        })
-      }
-      const help = renderHelp(meta, parsed.style, parsed.command === 'usage')
-      const text = firstNotice ? [firstNotice, ...help.split('\n').slice(1)].join('\n') : help
-      ctx.ui.notify(text, 'info')
+      ctx.ui.notify(renderHelp(meta, parsed.style, parsed.command === 'usage'), 'info')
     },
   })
   pi.on('session_start', async (_event, ctx) => {
-    if (ctx.mode !== 'tui' || !ctx.hasUI) return
+    if (process.env.ANTIBURN_DEBUG !== '1' || ctx.mode !== 'tui' || !ctx.hasUI) return
     await sessionOnce(sessions, ctx.sessionManager.getSessionId(), async () => {
       ctx.ui.notify(renderNotice(await discover()), 'info')
     })

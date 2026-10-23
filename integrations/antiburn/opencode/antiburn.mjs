@@ -40,7 +40,13 @@ export const Antiburn = async ({ client, serverUrl }) => {
         compactingSessions.delete(event.properties.info.id)
         return
       }
-      if (!local || event.type !== 'session.created' || event.properties.info.parentID) return
+      if (
+        process.env.ANTIBURN_DEBUG !== '1' ||
+        !local ||
+        event.type !== 'session.created' ||
+        event.properties.info.parentID
+      )
+        return
       await sessionOnce(sessions, event.properties.info.id, async () => {
         const checkStatus = await opencodeSessionCheckStatus(event.properties.info.id)
         await client.tui.showToast({

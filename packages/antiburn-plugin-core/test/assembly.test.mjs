@@ -40,11 +40,8 @@ test('assembly is reproducible, self-contained, licensed, and refuses altered ow
       'opencode/commands/antiburn.md',
     ]) {
       const command = await readFile(join(output, file), 'utf8')
-      assert.match(
-        command,
-        /On the first help invocation only, display the verified availability result/,
-      )
-      assert.match(command, /Do not repeat the check or notice for subsequent help/)
+      assert.match(command, /Do not display CLI discovery notices automatically or above help/)
+      assert.match(command, /Help does not perform discovery/)
     }
     const cursorSkill = await readFile(join(output, 'cursor/skills/antiburn/SKILL.md'), 'utf8')
     assert.match(cursorSkill, /name: antiburn\ndisable-model-invocation: true/)

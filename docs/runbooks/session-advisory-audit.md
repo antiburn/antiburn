@@ -24,17 +24,41 @@ Create this table in the local report before starting. Record installed versions
 these are the surfaces covered by the current implementation, not a permanent
 vendor support promise.
 
-| Vendor      | Terminal                                | Desktop                                 | Receipt evidence                                        |
-| ----------- | --------------------------------------- | --------------------------------------- | ------------------------------------------------------- |
-| Claude Code | Native CLI                              | Desktop Remote Control view             | UserPromptSubmit hook context and actual assistant text |
-| Codex       | Native CLI                              | Separate manual gate                    | Developer hook context and actual assistant text        |
-| OpenCode    | Native TUI                              | Native desktop                          | Actual assistant text in the receiving native session   |
-| Pi          | Native TUI                              | Not applicable                          | Antiburn custom message and actual assistant text       |
-| Cursor      | Unsupported by the current YAML runtime | Unsupported by the current YAML runtime | Do not infer support from plugin installation           |
+| Vendor      | Terminal                                | Desktop                                 | Receipt evidence                                                  |
+| ----------- | --------------------------------------- | --------------------------------------- | ----------------------------------------------------------------- |
+| Claude Code | Native CLI                              | Desktop Remote Control view             | UserPromptSubmit hook context and actual assistant text           |
+| Codex       | Native CLI                              | Separate manual gate                    | Developer hook context and actual assistant text                  |
+| OpenCode    | Native TUI                              | Native desktop                          | Actual assistant text in the receiving native session             |
+| Pi          | Native TUI                              | Not applicable                          | Antiburn custom message and actual assistant text                 |
+| Cursor      | Separate runtime acceptance needed      | Retry tool evidence unavailable         | Capture the blocked desktop result; never count synthetic markers |
 
 A desktop view of a terminal receipt is view coverage, not a second independent
 delivery. If automation denies access to an app, request a manual screenshot;
 do not bypass the restriction or mark that surface passed.
+
+CLI discovery notices are debug-only. Keep `ANTIBURN_DEBUG` unset for Pi and
+OpenCode captures and leave the Claude development Mod's startup discovery option
+off. Explicit status commands still expose installation diagnostics. Check that
+missing CLI, missing app/database, and both missing return no model advisory and do
+not interrupt the vendor session. Record bounded timeout coverage separately.
+
+Cursor Desktop chat readers currently expose chat text without the tool evidence
+required by this retry-loop YAML check. Audit its fresh native result and mark it
+blocked until the source and runtime provide that evidence. A successful synthetic
+hook test does not close this gate. Do not write Cursor database rows to fabricate
+retry evidence.
+
+## Protect the current released Claude Mod
+
+Resolve the installed public Mod's exact version and immutable commit before
+claiming release regression coverage. A feature branch can generate an older
+public artifact. Rebuild tests from the installed release commit in isolation,
+compare its public payload bytes to the installed cache, and run native-host
+tests, strict SDK type checks, and manifest validation. Exclude runtime lock
+files and generated SDK metadata from payload hashes. Verify the installed
+payload stays unchanged. Separately compare this branch's release output before
+and after the change. Do not install, downgrade, or replace the public Mod to test
+a development candidate.
 
 ## 1. Prepare and bound the run
 

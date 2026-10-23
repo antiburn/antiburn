@@ -1936,7 +1936,7 @@ for (const [state, message] of [
   ["not-found", "CLI not found"],
   ["unavailable", "CLI check unavailable"],
 ] as const) {
-  test(`startup notice reports ${state} CLI without blocking live checks`, async ($, on) => {
+  test(`startup notice reports ${state} CLI without blocking live checks`, { options: { startupNoticeEnabled: true } }, async ($, on) => {
     const fake = fakeEngine(on)
     fake.liveMode = "checks"
     fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
@@ -1989,7 +1989,7 @@ for (const [state, message] of [
   })
 }
 
-test("startup notice probes once when the same session starts again", async ($, on) => {
+test("startup notice probes once when the same session starts again", { options: { startupNoticeEnabled: true } }, async ($, on) => {
   const fake = fakeEngine(on)
   let probes = 0
   on("process.run", (_$, event) => {
@@ -4609,3 +4609,12 @@ for (const surface of ["desktop", "terminal"] as const) {
     expect(await band.find({ key: "usage-band" })).toBeDefined()
   })
 }
+
+
+test("startup discovery is quiet by default when the CLI is absent", async ($, on) => {
+  const fake = fakeEngine(on)
+  on("process.run", () => { throw new Error("CLI unavailable") })
+  await startSession($)
+  expect(fake.logs.some((line) => /CLI found|CLI not found|CLI check unavailable/.test(line))).toBe(false)
+  expect(fake.usageReads).toBe(1)
+})

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { mkdtemp, writeFile, chmod, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   acknowledgeSessionChecks,
   formatSessionCheckStatus,
@@ -555,4 +558,54 @@ test('counts state changes as updates and keeps their state explicit', () => {
   assert.ok(formatSessionCheckUpdates(updates.slice(0, 1)).includes('**1 update**'))
   assert.ok(formatSessionCheckUpdates(updates).includes('**Retry loop — cleared**'))
   assert.ok(formatSessionCheckUpdates(updates).includes('**Retry loop — withdrawn**'))
+})
+
+for (const host of ['claude-code', 'codex', 'cursor', 'opencode', 'pi']) {
+  test(`${host} silently skips delivery without the CLI, with or without the app`, async () => {
+    for (const env of [
+      { PATH: '' },
+      { PATH: '', ANTIBURN_EXECUTABLE: '/nonexistent/antiburn' },
+    ]) {
+      assert.equal(
+        await readSessionChecks({ host, sessionId: 'missing-install', env }),
+        undefined,
+      )
+    }
+  })
+}
+
+test('unavailable app and unresponsive CLI fail silently within the request deadline', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antiburn-absent-app-'))
+  const cli = join(directory, 'antiburn')
+  try {
+    await writeFile(
+      cli,
+      `#!${process.execPath}\nprocess.stderr.write('App unavailable'); process.exit(1)\n`,
+    )
+    await chmod(cli, 0o700)
+    for (const host of ['claude-code', 'codex', 'cursor', 'opencode', 'pi']) {
+      assert.equal(
+        await readSessionChecks({
+          host,
+          sessionId: 'offline-app',
+          env: { ANTIBURN_EXECUTABLE: cli },
+        }),
+        undefined,
+      )
+    }
+    await writeFile(cli, `#!${process.execPath}\nsetInterval(() => {}, 1000)\n`)
+    const start = Date.now()
+    assert.equal(
+      await readSessionChecks({
+        host: 'claude-code',
+        sessionId: 'offline-timeout',
+        env: { ANTIBURN_EXECUTABLE: cli },
+        timeoutMs: 100,
+      }),
+      undefined,
+    )
+    assert.ok(Date.now() - start < 1500)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
