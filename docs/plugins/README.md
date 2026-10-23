@@ -5,18 +5,19 @@ host adapters, maintained sources, assembly outputs and marketplace selection.
 That document owns the system map. The guides below own operational procedures
 and acceptance records.
 
-| Guide                                                        | Use it for                                                                      |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------- |
-| [Plugin page](../../plugins/README.md)                       | Current public scope, installation and usage.                                   |
-| [Architecture](architecture.md)                              | Where to change code and how it reaches an artifact.                            |
-| [Script tooling](script-tooling.md)                          | JavaScript/TypeScript execution, extension decisions and type-check boundaries. |
-| [Installation](installation.md)                              | Claude source loading and isolated lifecycle validation.                        |
-| [Development adapters](development-adapters.md)              | Contributor testing of unpublished vendor candidates and visual audits.         |
-| [Distribution](distribution.md)                              | Catalog selection, immutable pins and promotion gates.                          |
-| [Compatibility](compatibility.md)                            | Host contracts and the limits of candidate certification.                       |
-| [Validation](validation.md)                                  | Recorded Claude acceptance evidence and outstanding limits.                     |
-| [Development source](../../plugins/antiburn-live/README.md)  | Local development build, checks and debug controls.                             |
-| [Shared core](../../packages/antiburn-plugin-core/README.md) | Package checks and actual SDK type prerequisites.                               |
+| Guide                                                        | Use it for                                                                       |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| [Plugin page](../../plugins/README.md)                       | Current public scope, installation and usage.                                    |
+| [Session checks](session-checks.md)                          | App-owned evaluation, CLI delivery, native adapters and Claude development pane. |
+| [Architecture](architecture.md)                              | Where to change code and how it reaches an artifact.                             |
+| [Script tooling](script-tooling.md)                          | JavaScript/TypeScript execution, extension decisions and type-check boundaries.  |
+| [Installation](installation.md)                              | Claude source loading and isolated lifecycle validation.                         |
+| [Development adapters](development-adapters.md)              | Contributor testing of unpublished vendor candidates and visual audits.          |
+| [Distribution](distribution.md)                              | Catalog selection, immutable pins and promotion gates.                           |
+| [Compatibility](compatibility.md)                            | Host contracts and the limits of candidate certification.                        |
+| [Validation](validation.md)                                  | Recorded Claude acceptance evidence and outstanding limits.                      |
+| [Development source](../../plugins/antiburn-live/README.md)  | Local development build, checks and debug controls.                              |
+| [Shared core](../../packages/antiburn-plugin-core/README.md) | Package checks and actual SDK type prerequisites.                                |
 
 Claude Code is the first rollout. Its public artifact contains usage UI and
 native help/refresh commands; CLI discovery, live checks and debug previews stay
@@ -25,7 +26,7 @@ below retain the development discovery contract and existing documentation ancho
 
 ## Development adapter output
 
-The default marker is 🔥, followed by the brand name in code delimiters. A startup notice is one line:
+Automatic CLI discovery notices are disabled by default. Explicit status commands remain available. For Pi and OpenCode, set `ANTIBURN_DEBUG=1` to enable startup diagnostics. The Claude development Mod has an opt-in **Debug: show CLI discovery at startup** setting. A debug notice is one line:
 
 ```text
 🔥 `antiburn` · CLI found
@@ -47,21 +48,21 @@ A startup event, explicit command, and model-mediated skill have different guara
 
 ## Build and check
 
-The product name is **antiburn plugin**; **mod** describes the host-native runtime. Build script names and the generated output path below retain the earlier internal `antiburn-shell` name. Use these exact paths when running the tools.
+The product name is **antiburn plugin**; **mod** describes the host-native runtime. Build scripts and generated output use the internal `antiburn-core-plugin` name.
 
 From the repository root:
 
 ```sh
-node scripts/assemble-antiburn-shell.mjs
+node scripts/assemble-antiburn-core-plugin.mjs
 node --test packages/antiburn-plugin-core/test/*.test.mjs
-node scripts/assemble-antiburn-shell.mjs --verify
+node scripts/assemble-antiburn-core-plugin.mjs --verify
 ```
 
 For formatter, linter, and pinned host SDK type checks, follow [development checks](../../packages/antiburn-plugin-core/README.md).
 
 For output locations, source ownership and catalog boundaries, see the
-[architecture map](architecture.md#from-source-to-runnable-artifacts). The older
-internal `antiburn-shell` name remains in these commands.
+[architecture map](architecture.md#from-source-to-runnable-artifacts). These commands use the internal
+`antiburn-core-plugin` name.
 
 Use the generated artifact for host validation. A simulated host does not prove native UI, trusted loading, marketplace approval, Windows/Linux behavior, or remote-host support. Record those separately in the compatibility ledger.
 
@@ -69,6 +70,10 @@ Use the generated artifact for host validation. A simulated host does not prove 
 
 Discovery inspects only candidate paths and bounded executable search locations. It must never run `antiburn --version` or another guessed flag: today's executable may launch the desktop app. App-bundle presence alone is insufficient. GUI-launched hosts can have a different PATH from a terminal.
 
-No analytics events are added: these discovery adapters have no app bridge and transmit no availability, paths, or host information. Future communication needs a separately designed CLI interface and local security boundary. No success message says “Connected” in this milestone.
+Discovery adds no analytics and does not establish app connectivity. The separate
+[session-check delivery mode](session-checks.md) invokes the existing CLI with a
+versioned protocol and reads saved app results. Its explicit status can report
+protocol connectivity, with freshness always unevaluated. It adds no analytics
+containing session IDs, check messages or evidence.
 
 See [distribution channels](distribution.md) for public, team, private, and local release gates.
