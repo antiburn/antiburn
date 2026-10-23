@@ -99,7 +99,7 @@ new results remain eligible; deletion alone does not make their order unsafe.
 Removal expansion shares the page's 4,096-observation and 4 MiB publication limits.
 Exceeding either limit rejects the whole page without advancing its cursor.
 Strict historical replay still does not support whole-message deletion.
-Parser revision 59 rebuilds older live receipts from the bounded recent window;
+Parser revision 61 rebuilds older live receipts from the bounded recent window;
 it does not audit or repair results outside that window.
 
 The current runtime admits native session evidence under the four fixture-backed
@@ -372,7 +372,7 @@ Request-history records include message metadata and user text parts.
 
 | Limit                        |   Value | Scope                                                           |
 | ---------------------------- | ------: | --------------------------------------------------------------- |
-| Parser revision              |      59 | Accepted source and journal cursor revision                     |
+| Parser revision              |      61 | Accepted source and journal cursor revision                     |
 | Resume snapshot revision     |      20 | File-reader resume state                                        |
 | Result observations          |    4096 | Retained results per strict journal page or legacy sink window  |
 | Result payload bytes         | 4194304 | Serialized result payload per strict page or legacy sink window |

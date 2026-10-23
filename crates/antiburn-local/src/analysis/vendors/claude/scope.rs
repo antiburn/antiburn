@@ -222,7 +222,7 @@ impl ClaudeScopeState {
                 input,
                 native_record_id: record["uuid"].as_str().map(str::to_owned),
                 order,
-                native_results: record["version"] == "2.1.278",
+                native_results: super::retained_root::is_characterized_cli(record),
             }),
         );
         let source = source(record, id, order, true, name == "AskUserQuestion");

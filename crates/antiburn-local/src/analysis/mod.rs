@@ -261,7 +261,11 @@ pub use vendors::{has_dedicated_reader, reader_for, reader_for_input};
 // `skill://` reads. Reparse completed OMP sessions to collect them.
 // Reparse bounded native call joins and chained OpenCode journal prefixes.
 // Refresh native delivery bindings and exclude generated OpenCode request text.
-pub const PARSER_REVISION: i64 = 59;
+// +1 for the characterized Claude CLI upgrade and inert Pi extension rows that
+// continue native lineage. Reparse sessions to restore current vendor proofs.
+// +1 for inert Pi extension rows in live continuation roots. Reparse sessions
+// to restore current native-check eligibility after an Antiburn advisory.
+pub const PARSER_REVISION: i64 = 61;
 
 /// Source admission still requires a validated retained-root snapshot.
 pub fn smart_check_source_supported(agent: &str, format: SourceFormat) -> bool {

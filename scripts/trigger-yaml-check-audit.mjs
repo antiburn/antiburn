@@ -171,6 +171,8 @@ const codexRows = [
     timestamp: new Date(start).toISOString(),
     cwd,
     cli_version: "0.160.1",
+    originator: "antiburn_scripted_yaml_audit",
+    model_provider: "openai",
     source: "cli",
     thread_source: "user",
     history_mode: "legacy",
@@ -258,7 +260,19 @@ for (let attempt = 1; attempt <= 3; attempt++) {
     piRecord("message", request, piParent, {
       message: {
         role: "assistant",
+        api: "scripted-audit-fixture",
+        provider: "synthetic",
         model: "scripted-audit-fixture",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "toolUse",
+        timestamp: start + attempt * 2000,
         content: [
           {
             type: "toolCall",

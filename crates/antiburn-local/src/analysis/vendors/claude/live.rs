@@ -136,11 +136,114 @@ impl State {
 }
 
 fn root_record(record: &Value, session: &str) -> bool {
-    record["version"] == "2.1.278"
-        && record["entrypoint"] == "cli"
+    retained_root::is_characterized_cli(record)
         && record["sessionId"] == session
         && record["isSidechain"] == false
         && record.get("agentId").is_none()
         && (!matches!(record["type"].as_str(), Some("user" | "assistant"))
             || record.pointer("/message/role") == record.get("type"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::interface::{
+        NormalizedRecord, ToolResultCompleteness, ToolResultObservation, ToolResultStatus,
+    };
+
+    #[derive(Default)]
+    struct ResultSink {
+        results: Vec<ToolResultObservation>,
+    }
+
+    impl RecordSink for ResultSink {
+        fn record(&mut self, record: NormalizedRecord) {
+            if let NormalizedRecord::ToolResult(result) = record {
+                self.results.push(*result);
+            }
+        }
+
+        fn finish(&mut self, _summary: SessionSummary) {}
+    }
+
+    fn record(kind: &str, id: &str, parent: Value, message: Value) -> Value {
+        serde_json::json!({
+            "type": kind,
+            "version": "2.1.309",
+            "entrypoint": "cli",
+            "sessionId": "session",
+            "isSidechain": false,
+            "uuid": id,
+            "parentUuid": parent,
+            "message": message
+        })
+    }
+
+    #[test]
+    fn current_cli_resume_keeps_native_result_delivery() {
+        let input = SessionInput {
+            agent: "claude".to_owned(),
+            session_id: "session".to_owned(),
+            source: RawSource::Jsonl(String::new()),
+            fork_parent_session_id: None,
+            source_format: crate::analysis::SourceFormat::ClaudeJsonl,
+        };
+        let header = serde_json::json!({
+            "type": "user",
+            "version": "2.1.278",
+            "entrypoint": "cli",
+            "sessionId": "session",
+            "isSidechain": false,
+            "uuid": "root",
+            "parentUuid": null,
+            "message": {"role": "user", "content": "Original request."}
+        });
+        let mut state = State::new(&input, &header);
+        let mut sink = ResultSink::default();
+
+        state.observe(
+            record(
+                "system",
+                "bridge",
+                Value::String("root".into()),
+                Value::Null,
+            ),
+            1,
+            &mut sink,
+        );
+        state.observe(
+            record(
+                "assistant",
+                "call-row",
+                Value::String("bridge".into()),
+                serde_json::json!({
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "call", "name": "Bash", "input": {"command": "false"}}]
+                }),
+            ),
+            2,
+            &mut sink,
+        );
+        state.observe(
+            record(
+                "user",
+                "result-row",
+                Value::String("call-row".into()),
+                serde_json::json!({
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "call", "content": "synthetic failure", "is_error": true}]
+                }),
+            ),
+            3,
+            &mut sink,
+        );
+
+        assert!(state.main_session());
+        assert_eq!(sink.results.len(), 1);
+        assert_eq!(sink.results[0].status, ToolResultStatus::Error);
+        assert_eq!(
+            sink.results[0].completeness,
+            ToolResultCompleteness::Complete
+        );
+    }
 }
