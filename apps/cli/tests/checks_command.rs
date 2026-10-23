@@ -544,3 +544,33 @@ fn source_invalidation_withdraws_advice_and_recovery_retriggers_it() {
     assert_eq!(recovered["updates"][0]["kind"], "finding");
     assert_eq!(recovered["updates"][0]["message"], "Try another approach.");
 }
+
+#[test]
+fn delivery_at_capacity_reclaims_legacy_state_without_database_writes() {
+    let temp = tempdir().unwrap();
+    let (connection, database, config) = delivery_fixture(temp.path());
+    drop(connection);
+    let before = std::fs::read(&database).unwrap();
+    let consumers: serde_json::Map<String, Value> = (0..1024)
+        .map(|index| {
+            (
+                format!("legacy-{index}"),
+                json!({
+                    "acknowledged": {}, "exposed": {}, "pending": null, "last_receipt": null
+                }),
+            )
+        })
+        .collect();
+    std::fs::write(
+        temp.path().join("cli-state.json.delivery-v1"),
+        serde_json::to_vec(&json!({"version": 1, "consumers": consumers})).unwrap(),
+    )
+    .unwrap();
+    let first = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert_eq!(first["updates"].as_array().unwrap().len(), 1);
+    let receipt = first["receipt"].as_str().unwrap();
+    delivery_call(temp.path(), &config, "claude-code:context", Some(receipt));
+    let repeated = delivery_call(temp.path(), &config, "claude-code:context", None);
+    assert!(repeated["updates"].as_array().unwrap().is_empty());
+    assert_eq!(std::fs::read(database).unwrap(), before);
+}

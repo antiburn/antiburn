@@ -71,6 +71,11 @@ Context, pane, and explicit status consumers are independent. Status consumers
 ending in `:status` do not stage or acknowledge updates. Separate locked CLI
 state stores fingerprints and receipts, not evidence or authored messages.
 The CLI never migrates or writes the product database.
+At the 1,024-consumer bound, new consumers replace the least recently used
+settled consumer. Pending findings and withdrawals remain protected. If every
+consumer has an outstanding handoff, delivery fails closed until one settles.
+Eviction can cause an old session to receive its saved finding again; recent
+retained consumers keep acknowledgement and deduplication state.
 
 Subprocess execution uses argument vectors and bounded input, output, lock,
 and execution limits. Malformed or incompatible responses fail closed.
@@ -83,13 +88,22 @@ A native adapter is a delivery mechanism. It does not add an evidence reader
 or expand the app's check coverage. See [check coverage](../check-coverage.md)
 and [session coverage](../session-coverage.md) for those separate contracts.
 
-| Host        | Natural boundary                               | App YAML evidence coverage                                                |
-| ----------- | ---------------------------------------------- | ------------------------------------------------------------------------- |
-| Claude Code | UserPromptSubmit and PostToolUse command hooks | Existing supported native file contract                                   |
-| Codex       | UserPromptSubmit command hook                  | Existing supported native file contract                                   |
-| Cursor      | postToolUse command hook                       | Unsupported; synthetic delivery tests do not establish evaluation support |
-| Pi          | before_agent_start for user messages           | Existing supported native file contract                                   |
-| OpenCode    | Main-session message transformation            | Existing supported local provider-database contract                       |
+| Host             | Natural boundary                               | App YAML evidence coverage                                                                     |
+| ---------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Claude Code      | UserPromptSubmit and PostToolUse command hooks | Existing supported native file contract                                                        |
+| Codex            | UserPromptSubmit command hook                  | Existing supported native file contract                                                        |
+| Cursor Desktop   | postToolUse command hook                       | Bounded ordered inline `cursor-desktop:*` native main sessions                                 |
+| Cursor Agent CLI | postToolUse command hook                       | Native YAML evidence acceptance remains unverified; delivery-only fixtures do not establish it |
+| Pi               | before_agent_start for user messages           | Existing supported native file contract                                                        |
+| OpenCode         | Main-session message transformation            | Existing supported local provider-database contract                                            |
+
+Cursor Desktop supports bounded shell arguments, output, recorded result status,
+and available user-prefix text under parser revision 63. Unsafe identity, order,
+or ownership remains unavailable; other tools retain partial evidence. The
+[audit runsheet](../runbooks/session-advisory-audit.md#cursor-desktop-delivery-probe)
+records a real YAML transport probe and a successful-call retry-loop negative
+control. A positive Cursor retry-loop capture remains unverified. Desktop
+support does not extend to Cursor CLI or other store formats.
 
 No adapter wakes an idle agent, starts another model turn, blocks Stop to force
 continuation, or relies on skill invocation for automatic delivery. Unsupported

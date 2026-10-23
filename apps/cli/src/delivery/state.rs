@@ -24,6 +24,8 @@ struct Consumer {
     exposed: BTreeMap<String, String>,
     pending: Option<Pending>,
     last_receipt: Option<String>,
+    #[serde(default)]
+    last_used: u64,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,9 +56,22 @@ pub(super) fn stage(
 ) -> Result<(Vec<Update>, Option<String>), String> {
     edit(path, |state| {
         if state.consumers.len() >= LIMIT && !state.consumers.contains_key(key) {
-            return Err("delivery consumer state limit reached".into());
+            let oldest = state
+                .consumers
+                .iter()
+                .filter(|(_, consumer)| {
+                    consumer.pending.is_none() && consumer.exposed == consumer.acknowledged
+                })
+                .min_by_key(|(_, consumer)| consumer.last_used)
+                .map(|(key, _)| key.clone())
+                .ok_or(
+                    "delivery consumer state limit reached: all consumers have pending handoffs",
+                )?;
+            state.consumers.remove(&oldest);
         }
+        let last_used = next_use(state);
         let consumer = state.consumers.entry(key.into()).or_default();
+        consumer.last_used = last_used;
         let mut fingerprints = BTreeMap::new();
         let mut updates = Vec::new();
         for check in checks.iter().filter(|c| {
@@ -107,10 +122,12 @@ pub(super) fn stage(
 }
 pub(super) fn acknowledge(path: &Path, key: &str, receipt: &str) -> Result<(), String> {
     edit(path, |state| {
+        let last_used = next_use(state);
         let consumer = state
             .consumers
             .get_mut(key)
             .ok_or("unknown delivery consumer")?;
+        consumer.last_used = last_used;
         if consumer.last_receipt.as_deref() == Some(receipt) {
             return Ok(());
         }
@@ -127,6 +144,15 @@ pub(super) fn acknowledge(path: &Path, key: &str, receipt: &str) -> Result<(), S
         consumer.last_receipt = Some(pending.receipt);
         Ok(())
     })
+}
+fn next_use(state: &State) -> u64 {
+    state
+        .consumers
+        .values()
+        .map(|consumer| consumer.last_used)
+        .max()
+        .unwrap_or_default()
+        .saturating_add(1)
 }
 fn edit<T>(
     path: &Path,
@@ -219,6 +245,76 @@ mod tests {
             eligibility: "ready".into(),
         }
     }
+    #[test]
+    fn capacity_reclaims_legacy_settled_consumers_and_preserves_recent_receipts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state");
+        let consumers: serde_json::Map<String, serde_json::Value> = (0..LIMIT)
+            .map(|index| {
+                (
+                    format!("legacy-{index}"),
+                    serde_json::json!({
+                        "acknowledged": {}, "exposed": {}, "pending": null, "last_receipt": null
+                    }),
+                )
+            })
+            .collect();
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1, "consumers": consumers
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let failure = check("failure", "Try another approach");
+        let (_, token) = stage(&path, "recent", std::slice::from_ref(&failure)).unwrap();
+        let token = token.unwrap();
+        acknowledge(&path, "recent", &token).unwrap();
+        for index in 0..LIMIT - 1 {
+            stage(&path, &format!("new-{index}"), &[]).unwrap();
+        }
+        acknowledge(&path, "recent", &token).unwrap();
+        stage(&path, "one-more", &[]).unwrap();
+        assert!(stage(&path, "recent", &[failure]).unwrap().0.is_empty());
+        let state: State = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(state.consumers.len(), LIMIT);
+        assert!(!state.consumers.keys().any(|key| key.starts_with("legacy-")));
+    }
+
+    #[test]
+    fn capacity_preserves_pending_findings_and_withdrawals() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state");
+        let failure = check("failure", "Try another approach");
+        let (_, finding) = stage(&path, "finding", std::slice::from_ref(&failure)).unwrap();
+        let (_, receipt) = stage(&path, "withdrawal", &[failure]).unwrap();
+        acknowledge(&path, "withdrawal", receipt.as_deref().unwrap()).unwrap();
+        let (_, withdrawal) = stage(&path, "withdrawal", &[]).unwrap();
+        edit(&path, |state| {
+            for index in 0..LIMIT - 2 {
+                state.consumers.insert(
+                    format!("pending-{index}"),
+                    Consumer {
+                        pending: Some(Pending {
+                            receipt: "pending".into(),
+                            fingerprints: BTreeMap::new(),
+                        }),
+                        ..Consumer::default()
+                    },
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+        let before = fs::read(&path).unwrap();
+        assert!(stage(&path, "new", &[]).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        acknowledge(&path, "finding", finding.as_deref().unwrap()).unwrap();
+        stage(&path, "new", &[]).unwrap();
+        acknowledge(&path, "withdrawal", withdrawal.as_deref().unwrap()).unwrap();
+    }
+
     #[test]
     fn acknowledgement_is_independent_and_clear_retriggers() {
         let dir = tempfile::tempdir().unwrap();
