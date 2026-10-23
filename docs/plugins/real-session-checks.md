@@ -5,6 +5,10 @@ one Claude Code main session through the real Antiburn app and CLI.
 Do not add another audit definition or a new communication service. The initial
 Claude acceptance and the later cross-vendor visual audit have separate results.
 
+For the reusable engineer and agent procedure, follow the
+[session advisory screenshot audit runsheet](../runbooks/session-advisory-audit.md).
+It includes clean framing, native continuation, evidence, and coverage gates.
+
 ## Setup
 
 Use matching candidate app, CLI, and `antiburn-core-plugin` builds. The app and
