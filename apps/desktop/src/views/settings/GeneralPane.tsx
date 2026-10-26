@@ -1,3 +1,4 @@
+import { CliSection } from "./CliSection"
 import { SettingsToggleRow } from "./SettingsSearchRows"
 
 import { Card } from "../../components/ui/Card"
@@ -61,6 +62,7 @@ export function GeneralPane({ settings, update, loaded }: GeneralPaneProps) {
           />
         </Card>
       </SectionGroup>
+      <CliSection />
     </Pane>
   )
 }

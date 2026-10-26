@@ -5,7 +5,7 @@ description: At the end of each turn, report new Antiburn findings that matter t
 
 # Antiburn findings
 
-At the end of each turn, call `antiburn checks <session_id>` exactly once. Replace `<session_id>` with the active session ID supplied by the harness. Do not ask the user for it or read a harness-specific environment variable. If the harness cannot provide the ID, skip the call.
+At the end of each turn, call `antiburn-cli checks <session_id>` exactly once. Replace `<session_id>` with the active session ID supplied by the harness. Do not ask the user for it or read a harness-specific environment variable. If the harness cannot provide the ID, skip the call.
 
 The CLI returns only new or changed problematic checks. Read the `checks` array. If it is empty, do not mention Antiburn. If it contains findings relevant to the current work, summarize them briefly. Do not inspect raw evidence, infer findings, report clean results, or print the JSON.
 

@@ -1,8 +1,10 @@
 # Antiburn CLI
 
+Desktop distribution builds package the native `antiburn-cli` executable and prepare its durable per-user runtime automatically. See [installation, ownership and acceptance](../../docs/cli-installation.md). Probe `antiburn-cli capabilities --json` without opening any database. The existing `antiburn` command remains the desktop launcher.
+
 The CLI gives agent harnesses a small JSON interface for Antiburn check updates.
 
-**Current status:** `antiburn checks <session_id>` reads Antiburn's local SQLite database in read-only mode, derives six evidence-based checks with `antiburn-local`, synthesizes a bounded priced-session outlier from cached analysis, and returns only new or changed problematic findings. It omits raw evidence from stdout and tracks per-session changes in a separate local state file.
+**Current status:** `antiburn-cli checks <session_id>` reads Antiburn's local SQLite database in read-only mode, derives six evidence-based checks with `antiburn-local`, synthesizes a bounded priced-session outlier from cached analysis, and returns only new or changed problematic findings. It omits raw evidence from stdout and tracks per-session changes in a separate local state file.
 
 The CLI starts a Tokio current-thread runtime. Stdout and stderr use Tokio async I/O. The SQLite lookup runs in `spawn_blocking` because rusqlite is synchronous. The low-volume JSON Lines tracing subscriber uses its synchronous file writer for diagnostics. Argument parsing, validation, and JSON serialization remain synchronous.
 
@@ -17,10 +19,10 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
 
-The executable is `target/debug/antiburn`:
+The executable is `target/debug/antiburn-cli`:
 
 ```sh
-./target/debug/antiburn checks example-session-id
+./target/debug/antiburn-cli checks example-session-id
 ```
 
 The successful response is one JSON object on stdout. The CLI returns only new or changed problematic checks. It omits raw evidence from the response:
@@ -79,17 +81,15 @@ The optional JSON config lives at `dirs::config_dir()/antiburn/cli.json`. Pass `
 
 The CLI initializes a JSON Lines tracing subscriber during startup. It appends structured events to `target/debug/calls.log` beside the executable. A successful lookup records the explicit session ID, evidence status, and number of new findings returned. It does not log evidence JSON, check results, prompts, or transcripts. If file tracing is unavailable, the CLI warns on stderr and continues. Do not commit this generated log.
 
-To put the debug binary before the Bash POC stub in `~/projects/antiburn-cli-test`:
+Run the debug binary by its full path from this crate:
 
 ```sh
-cd ~/projects/antiburn/apps/cli
 cargo build
-cd ~/projects/antiburn-cli-test
-export PATH="$HOME/projects/antiburn/apps/cli/target/debug:$PWD/bin:$PATH"
-command -v antiburn
+./target/debug/antiburn-cli capabilities --json
 ```
 
-`command -v antiburn` must print the `apps/cli/target/debug/antiburn` path. The Bash stub and its `bin/calls.log` remain unchanged; Rust writes its separate log under `apps/cli/target/debug/`.
+Checks write their own local diagnostic log. Capabilities does not initialize file
+logging or load config. Source builds do not install a shell command automatically.
 
 ## Agent session identity: harness findings
 
@@ -109,11 +109,11 @@ Research snapshot: **2026-10-16**. These entries describe current official docum
 | Google Antigravity | No conversation-ID environment variable is documented for hook commands. | Hook stdin includes `conversationId`. The status-line API uses `conversation_id` and documents `session_id` as a backward-compatible alias. [Hooks](https://antigravity.google/docs/hooks), [status line](https://antigravity.google/docs/cli/statusline/) |
 | Windsurf Cascade | No session-ID environment variable is documented for hooks. | Hook stdin includes `trajectory_id` for the conversation and `execution_id` for the current turn. [Cascade hooks](https://docs.windsurf.com/windsurf/cascade/hooks) |
 
-The reusable Antiburn skill should stay simple: call `antiburn checks <session_id>` with the active session ID supplied by the harness. The positional argument is the CLI's source of truth; do not read a harness-specific session environment variable. Do not make the skill guess an agent name or Antiburn environment key. The CLI resolves agent and environment from Antiburn's local store and fails closed if the ID is missing or ambiguous. The CLI returns only new or changed findings; an empty `checks` array means the skill has nothing to report.
+The reusable Antiburn skill should stay simple: call `antiburn-cli checks <session_id>` with the active session ID supplied by the harness. The positional argument is the CLI's source of truth; do not read a harness-specific session environment variable. Do not make the skill guess an agent name or Antiburn environment key. The CLI resolves agent and environment from Antiburn's local store and fails closed if the ID is missing or ambiguous. The CLI returns only new or changed findings; an empty `checks` array means the skill has nothing to report.
 
 ## Hook input is not one shared contract
 
-Command hooks often receive JSON on stdin, but field names and output rules differ. A CLI that runs under a hook needs a small harness adapter: read the documented input, select the correct ID, call `antiburn checks <id>`, then translate the result into that harness's hook response. Do not return Antiburn's JSON unchanged unless that hook explicitly accepts it as context. Hook stdout may be interpreted as a control response, not displayed text.
+Command hooks often receive JSON on stdin, but field names and output rules differ. A CLI that runs under a hook needs a small harness adapter: read the documented input, select the correct ID, call `antiburn-cli checks <id>`, then translate the result into that harness's hook response. Do not return Antiburn's JSON unchanged unless that hook explicitly accepts it as context. Hook stdout may be interpreted as a control response, not displayed text.
 
 | Harness | End-of-turn hook input | What to extract |
 | --- | --- | --- |
@@ -161,8 +161,8 @@ results or raw evidence.
 Native plugins use a separate versioned protocol:
 
 ```sh
-antiburn checks example-session --delivery-v1 --consumer claude-code:context
-antiburn checks example-session --delivery-v1 --consumer claude-code:context --ack RECEIPT
+antiburn-cli checks example-session --delivery-v1 --consumer claude-code:context
+antiburn-cli checks example-session --delivery-v1 --consumer claude-code:context --ack RECEIPT
 ```
 
 The first call returns `protocol_version: 1`, the database-resolved `identity`,

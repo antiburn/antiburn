@@ -338,6 +338,13 @@ Settings and native macOS hover previews have dedicated HTML and
 TypeScript entries. The resident shell uses URL fragments for the nudge and overlay, with the popover
 as its default. Each window owns one surface until the shell releases it.
 
+## CLI runtime
+
+Distribution builds package and automatically stage a durable per-user `antiburn-cli`.
+General → Command line reports runtime and terminal export status and offers Repair
+and Remove terminal command. Shell PATH setup stays separate. See the
+[CLI ownership and acceptance contract](../../docs/cli-installation.md).
+
 ## Known gaps
 
 These build-level limits affect desktop development:

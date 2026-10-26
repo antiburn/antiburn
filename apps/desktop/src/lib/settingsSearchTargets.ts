@@ -3,6 +3,11 @@ import { isSettingsPane, type SettingsPane } from "./settingsPanes"
 
 /** Stable targets keep navigation independent of translated or edited labels. */
 export const SETTINGS_SEARCH_TARGETS = {
+  cliCommand: {
+    pane: "general",
+    label: "antiburn-cli",
+    aliases: ["command line", "terminal", "repair CLI", "remove CLI"],
+  },
   trayIcon: {
     pane: "general",
     label: "Show in menubar",
