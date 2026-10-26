@@ -9,7 +9,8 @@
         "popover-peek",
         "popover-peek-anchor",
         "checks-remediation",
-        "checks-settings"
+        "checks-settings",
+        "cli-settings"
       ]
     }
   },

@@ -56,6 +56,7 @@ mod analysis;
 mod analytics;
 mod app_presence;
 pub mod check_store;
+pub mod cli_install;
 mod commands;
 mod consent;
 mod diagnostics_export;
@@ -425,6 +426,7 @@ pub fn run() {
             usage_alerts::LiveUsage::from_store(&store)
         };
         app.manage(live_usage);
+        cli_install::start(app.handle());
         // Only file metadata, but keep it off the launch path.
         tauri::async_runtime::spawn_blocking(provider_usage::live::sources::log_cli_location);
         let settings = app.state::<store::Store>().settings().ok();
