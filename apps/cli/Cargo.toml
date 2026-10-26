@@ -11,7 +11,7 @@ license = "MIT"
 publish = false
 
 [[bin]]
-name = "antiburn"
+name = "antiburn-cli"
 path = "src/main.rs"
 
 [dependencies]

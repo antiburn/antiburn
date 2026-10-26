@@ -81,7 +81,10 @@ jobs:
           }
           deny crates/antiburn-local
           deny crates/antiburn-remote --config ../antiburn-local/deny.toml
-          if [[ "$DESKTOP" == "true" ]]; then deny apps/desktop/src-tauri; fi
+          if [[ "$DESKTOP" == "true" ]]; then
+            deny apps/desktop/src-tauri
+            deny apps/cli --config ../desktop/src-tauri/deny.toml
+          fi
 
       - name: Verify third-party notices
         run: pnpm notices:check

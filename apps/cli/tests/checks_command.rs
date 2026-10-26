@@ -203,7 +203,7 @@ fn config_file_can_override_the_release_database_location() {
     )
     .unwrap();
 
-    let mut command = Command::new(env!("CARGO_BIN_EXE_antiburn"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_antiburn-cli"));
     configure_data_directory(&mut command, temp.path(), &data_root);
     let output = command
         .arg("--config")
@@ -222,7 +222,7 @@ fn config_file_can_override_the_release_database_location() {
 }
 
 fn default_lookup_command(home: &std::path::Path, data_root: &std::path::Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_antiburn"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_antiburn-cli"));
     configure_data_directory(&mut command, home, data_root);
     #[cfg(target_os = "windows")]
     {
@@ -427,7 +427,7 @@ fn delivery_call(
     consumer: &str,
     receipt: Option<&str>,
 ) -> Value {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_antiburn"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_antiburn-cli"));
     configure_data_directory(&mut command, root, &platform_data_root(root));
     command.arg("--config").arg(config).args([
         "checks",
@@ -594,7 +594,7 @@ fn ordinary_yaml_reads_do_not_consume_native_delivery() {
         )
         .unwrap();
     let ordinary = || {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_antiburn"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_antiburn-cli"));
         configure_data_directory(&mut command, temp.path(), &platform_data_root(temp.path()));
         let output = command
             .arg("--config")
@@ -708,4 +708,29 @@ fn delivery_at_capacity_reclaims_legacy_state_without_database_writes() {
     let repeated = delivery_call(temp.path(), &config, "claude-code:context", None);
     assert!(repeated["updates"].as_array().unwrap().is_empty());
     assert_eq!(std::fs::read(database).unwrap(), before);
+}
+
+#[test]
+fn capabilities_is_database_free_and_has_no_profile_side_effects() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_antiburn-cli"))
+        .args(["--config", "missing-config.json", "capabilities", "--json"])
+        .env("HOME", temp.path())
+        .env("USERPROFILE", temp.path())
+        .env("XDG_DATA_HOME", temp.path())
+        .env("XDG_STATE_HOME", temp.path())
+        .env("APPDATA", temp.path())
+        .env("LOCALAPPDATA", temp.path())
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        value["delivery_protocols"],
+        serde_json::json!(["delivery-v1"])
+    );
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
 }

@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "antiburn",
+    name = "antiburn-cli",
     version,
     about = "Read Antiburn check updates for an agent session"
 )]
@@ -22,6 +22,10 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    Capabilities {
+        #[arg(long, required = true)]
+        json: bool,
+    },
     Checks {
         session_id: String,
         #[arg(long)]

@@ -265,6 +265,11 @@ alloc-stdlib@0.3.0 | BSD-3-Clause | https://github.com/dropbox/rust-alloc-no-std
 allocator-api2@0.2.21 | MIT OR Apache-2.0 | https://github.com/zakarumych/allocator-api2
 alsa-sys@0.4.0 | MIT | https://github.com/diwic/alsa-sys
 alsa@0.11.0 | Apache-2.0 OR MIT | https://github.com/diwic/alsa-rs
+anstream@1.0.0 | MIT OR Apache-2.0 | https://github.com/rust-cli/anstyle.git
+anstyle-parse@1.0.0 | MIT OR Apache-2.0 | https://github.com/rust-cli/anstyle.git
+anstyle-query@1.1.5 | MIT OR Apache-2.0 | https://github.com/rust-cli/anstyle.git
+anstyle-wincon@3.0.11 | MIT OR Apache-2.0 | https://github.com/rust-cli/anstyle.git
+anstyle@1.0.14 | MIT OR Apache-2.0 | https://github.com/rust-cli/anstyle.git
 anyhow@1.0.104 | MIT OR Apache-2.0 | https://github.com/dtolnay/anyhow
 arboard@3.6.1 | MIT OR Apache-2.0 | https://github.com/1Password/arboard
 arraydeque@0.5.1 | MIT OR Apache-2.0 | https://github.com/andylokandy/arraydeque
@@ -290,6 +295,7 @@ bit-set@0.8.0 | Apache-2.0 OR MIT | https://github.com/contain-rs/bit-set
 bit-vec@0.8.0 | Apache-2.0 OR MIT | https://github.com/contain-rs/bit-vec
 bitflags@1.3.2 | MIT OR Apache-2.0 | https://github.com/bitflags/bitflags
 bitflags@2.13.1 | MIT OR Apache-2.0 | https://github.com/bitflags/bitflags
+bitflags@2.13.2 | MIT OR Apache-2.0 | https://github.com/bitflags/bitflags
 block-buffer@0.10.4 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils
 block-buffer@0.12.1 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils
 block-padding@0.3.3 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils
@@ -309,15 +315,22 @@ cargo_metadata@0.19.2 | MIT | https://github.com/oli-obk/cargo_metadata
 cargo_toml@1.0.1 | Apache-2.0 OR MIT | https://gitlab.com/lib.rs/cargo_toml
 cbc@0.1.2 | MIT OR Apache-2.0 | https://github.com/RustCrypto/block-modes
 cc@1.4.2 | MIT OR Apache-2.0 | https://github.com/rust-lang/cc-rs
+cc@1.8.0 | MIT OR Apache-2.0 | https://github.com/rust-lang/cc-rs
 cfb@0.14.0 | MIT | https://github.com/mdsteele/rust-cfb
 cfg-expr@0.15.8 | MIT OR Apache-2.0 | https://github.com/EmbarkStudios/cfg-expr
 cfg-expr@0.20.9 | MIT OR Apache-2.0 | https://github.com/EmbarkStudios/cfg-expr
 cfg-if@1.0.4 | MIT OR Apache-2.0 | https://github.com/rust-lang/cfg-if
+cfg-if@1.0.5 | MIT OR Apache-2.0 | https://github.com/rust-lang/cfg-if
 cfg_aliases@0.1.1 | MIT | https://github.com/katharostech/cfg_aliases
 cipher@0.4.4 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits
+clap@4.6.7 | MIT OR Apache-2.0 | https://github.com/clap-rs/clap
+clap_builder@4.6.7 | MIT OR Apache-2.0 | https://github.com/clap-rs/clap
+clap_derive@4.6.7 | MIT OR Apache-2.0 | https://github.com/clap-rs/clap
+clap_lex@1.1.1 | MIT OR Apache-2.0 | https://github.com/clap-rs/clap
 clipboard-win@5.4.1 | BSL-1.0 | https://github.com/DoumanAsh/clipboard-win
 cmov@0.5.4 | Apache-2.0 OR MIT | https://github.com/RustCrypto/utils
 cobs@0.3.0 | MIT OR Apache-2.0 | https://github.com/jamesmunns/cobs.rs
+colorchoice@1.0.5 | MIT OR Apache-2.0 | https://github.com/rust-cli/anstyle.git
 concurrent-queue@2.5.0 | Apache-2.0 OR MIT | https://github.com/smol-rs/concurrent-queue
 const-oid@0.10.2 | Apache-2.0 OR MIT | https://github.com/RustCrypto/formats
 cookie@0.18.2 | MIT OR Apache-2.0 | https://github.com/SergioBenitez/cookie-rs
@@ -346,6 +359,7 @@ dasp_sample@0.11.0 | MIT OR Apache-2.0 | https://github.com/rustaudio/sample.git
 dbus-secret-service@4.1.0 | MIT OR Apache-2.0 | https://github.com/brotskydotcom/dbus-secret-service.git
 dbus@0.9.12 | Apache-2.0 OR MIT | https://github.com/diwic/dbus-rs
 deranged@0.5.8 | MIT OR Apache-2.0 | https://github.com/jhpratt/deranged
+deranged@0.5.9 | MIT OR Apache-2.0 | https://github.com/jhpratt/deranged
 derive_more-impl@2.1.1 | MIT | https://github.com/JelteF/derive_more
 derive_more@2.1.1 | MIT | https://github.com/JelteF/derive_more
 digest@0.10.7 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits
@@ -387,6 +401,7 @@ field-offset@0.3.6 | MIT OR Apache-2.0 | https://github.com/Diggsey/rust-field-o
 filedescriptor@0.8.3 | MIT | https://github.com/wezterm/wezterm
 filetime@0.2.29 | MIT OR Apache-2.0 | https://github.com/alexcrichton/filetime
 find-msvc-tools@0.1.10 | MIT OR Apache-2.0 | https://github.com/rust-lang/cc-rs
+find-msvc-tools@0.1.14 | MIT OR Apache-2.0 | https://github.com/rust-lang/cc-rs
 fixedbitset@0.5.7 | MIT OR Apache-2.0 | https://github.com/petgraph/fixedbitset
 flate2@1.1.9 | MIT OR Apache-2.0 | https://github.com/rust-lang/flate2-rs
 fnv@1.0.7 | Apache-2.0  OR  MIT | https://github.com/servo/rust-fnv
@@ -489,6 +504,7 @@ inout@0.1.4 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils
 ipnet@2.12.1 | MIT OR Apache-2.0 | https://github.com/krisprice/ipnet
 is-docker@0.2.0 | MIT | https://github.com/TheLarkInn/is-docker
 is-wsl@0.4.0 | MIT | https://github.com/TheLarkInn/is-wsl
+is_terminal_polyfill@1.70.2 | MIT OR Apache-2.0 | https://github.com/polyfill-rs/is_terminal_polyfill
 itertools@0.15.0 | MIT OR Apache-2.0 | https://github.com/rust-itertools/itertools
 itoa@1.0.18 | MIT OR Apache-2.0 | https://github.com/dtolnay/itoa
 javascriptcore-rs-sys@1.1.1 | MIT | https://github.com/tauri-apps/javascriptcore-rs
@@ -502,6 +518,7 @@ jsonptr@0.7.1 | MIT OR Apache-2.0 | https://github.com/chanced/jsonptr
 keyboard-types@0.8.3 | MIT OR Apache-2.0 | https://github.com/rust-windowing/keyboard-types
 keyring@3.6.3 | MIT OR Apache-2.0 | https://github.com/hwchen/keyring-rs.git
 lazy_static@1.5.0 | MIT OR Apache-2.0 | https://github.com/rust-lang-nursery/lazy-static.rs
+lazy_static@1.5.1 | MIT OR Apache-2.0 | https://github.com/rust-lang-nursery/lazy-static.rs
 libappindicator-sys@0.9.0 | Apache-2.0 OR MIT | https://crates.io/crates/libappindicator-sys/0.9.0
 libappindicator@0.9.0 | Apache-2.0 OR MIT | https://crates.io/crates/libappindicator/0.9.0
 libc@0.2.190 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc
@@ -524,6 +541,7 @@ mime@0.3.17 | MIT OR Apache-2.0 | https://github.com/hyperium/mime
 minisign-verify@0.2.5 | MIT | https://github.com/jedisct1/rust-minisign-verify
 miniz_oxide@0.8.9 | MIT OR Zlib OR Apache-2.0 | https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
 mio@1.2.2 | MIT | https://github.com/tokio-rs/mio
+mio@1.2.4 | MIT | https://github.com/tokio-rs/mio
 moxcms@0.8.1 | BSD-3-Clause OR Apache-2.0 | https://github.com/awxkee/moxcms.git
 muda@0.20.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/muda
 new_debug_unreachable@1.0.6 | MIT | https://github.com/mbrubeck/rust-debug-unreachable
@@ -566,6 +584,7 @@ objc2-user-notifications@0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/
 objc2-web-kit@0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2
 objc2@0.6.5 | MIT | https://github.com/madsmtm/objc2
 once_cell@1.21.4 | MIT OR Apache-2.0 | https://github.com/matklad/once_cell
+once_cell_polyfill@1.70.2 | MIT OR Apache-2.0 | https://github.com/polyfill-rs/once_cell_polyfill
 open@5.4.1 | MIT | https://github.com/Byron/open-rs
 openssl-probe@0.2.1 | MIT OR Apache-2.0 | https://github.com/rustls/openssl-probe
 option-ext@0.2.0 | MPL-2.0 | https://github.com/soc/option-ext.git
@@ -600,6 +619,7 @@ postcard@1.1.3 | MIT OR Apache-2.0 | https://github.com/jamesmunns/postcard
 potential_utf@0.1.5 | Unicode-3.0 | https://github.com/unicode-org/icu4x
 potential_utf@0.1.6 | Unicode-3.0 | https://github.com/unicode-org/icu4x
 powerfmt@0.2.0 | MIT OR Apache-2.0 | https://github.com/jhpratt/powerfmt
+powerfmt@0.2.1 | MIT OR Apache-2.0 | https://github.com/jhpratt/powerfmt
 precomputed-hash@0.1.1 | MIT | https://github.com/emilio/precomputed-hash
 primal-check@0.3.4 | MIT OR Apache-2.0 | https://github.com/huonw/primal
 proc-macro-crate@1.3.1 | MIT OR Apache-2.0 | https://github.com/bkchr/proc-macro-crate
@@ -609,6 +629,7 @@ proc-macro-error-attr@1.0.4 | MIT OR Apache-2.0 | https://gitlab.com/CreepySkele
 proc-macro-error@1.0.4 | MIT OR Apache-2.0 | https://gitlab.com/CreepySkeleton/proc-macro-error
 proc-macro2@1.0.107 | MIT OR Apache-2.0 | https://github.com/dtolnay/proc-macro2
 pulldown-cmark@0.13.4 | MIT | https://github.com/raphlinus/pulldown-cmark
+pulldown-cmark@0.13.5 | MIT | https://github.com/raphlinus/pulldown-cmark
 pxfm@0.1.30 | BSD-3-Clause OR Apache-2.0 | https://github.com/awxkee/pxfm
 quick-error@2.0.1 | MIT OR Apache-2.0 | http://github.com/tailhook/quick-error
 quick-xml@0.41.0 | MIT | https://github.com/tafia/quick-xml
@@ -655,6 +676,7 @@ serde_core@1.0.229 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde
 serde_derive@1.0.229 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde
 serde_derive_internals@0.29.1 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde
 serde_json@1.0.151 | MIT OR Apache-2.0 | https://github.com/serde-rs/json
+serde_json@1.0.154 | MIT OR Apache-2.0 | https://github.com/serde-rs/json
 serde_repr@0.1.21 | MIT OR Apache-2.0 | https://github.com/dtolnay/serde-repr
 serde_spanned@0.6.9 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
 serde_spanned@1.1.2 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
@@ -668,6 +690,7 @@ serialize-to-javascript@0.1.2 | MIT OR Apache-2.0 | https://github.com/chippers/
 servo_arc@0.4.3 | MIT OR Apache-2.0 | https://github.com/servo/stylo
 sha2@0.10.9 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes
 sha2@0.11.0 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes
+sha2@0.11.1 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes
 sharded-slab@0.1.7 | MIT | https://github.com/hawkw/sharded-slab
 shared_library@0.1.9 | Apache-2.0 OR MIT | https://github.com/tomaka/shared_library/
 shell-words@1.1.1 | MIT OR Apache-2.0 | https://github.com/tmiasko/shell-words
@@ -677,6 +700,7 @@ simd-adler32@0.3.10 | MIT | https://github.com/mcountryman/simd-adler32
 siphasher@1.0.3 | MIT OR Apache-2.0 | https://github.com/jedisct1/rust-siphash
 slab@0.4.12 | MIT | https://github.com/tokio-rs/slab
 smallvec@1.15.2 | MIT OR Apache-2.0 | https://github.com/servo/rust-smallvec
+smallvec@1.16.3 | MIT OR Apache-2.0 | https://github.com/servo/rust-smallvec
 smappservice-rs@0.1.3 | MIT | https://github.com/gethopp/smappservice-rs
 socket2@0.6.5 | MIT OR Apache-2.0 | https://github.com/rust-lang/socket2
 softbuffer@0.4.8 | MIT OR Apache-2.0 | https://github.com/rust-windowing/softbuffer
@@ -711,6 +735,7 @@ symphonia@0.5.5 | MPL-2.0 | https://github.com/pdeljanov/Symphonia
 syn@1.0.109 | MIT OR Apache-2.0 | https://github.com/dtolnay/syn
 syn@2.0.119 | MIT OR Apache-2.0 | https://github.com/dtolnay/syn
 syn@3.0.3 | MIT OR Apache-2.0 | https://github.com/dtolnay/syn
+syn@3.0.9 | MIT OR Apache-2.0 | https://github.com/dtolnay/syn
 sync_wrapper@1.0.2 | Apache-2.0 | https://github.com/Actyx/sync_wrapper
 synstructure@0.13.2 | MIT | https://github.com/mystor/synstructure
 synstructure@0.14.0 | MIT | https://github.com/mystor/synstructure
@@ -761,6 +786,7 @@ tokio-util@0.7.19 | MIT | https://github.com/tokio-rs/tokio
 tokio@1.53.3 | MIT | https://github.com/tokio-rs/tokio
 toml@0.8.2 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
 toml@1.1.7+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
+toml@1.1.8+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
 toml_datetime@0.6.3 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
 toml_datetime@1.1.2+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
 toml_edit@0.19.15 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml
@@ -786,13 +812,16 @@ typenum@1.20.1 | MIT OR Apache-2.0 | https://github.com/paholg/typenum
 uds_windows@1.2.1 | MIT | https://github.com/haraldh/rust_uds_windows
 unicase@2.10.0 | MIT OR Apache-2.0 | https://github.com/seanmonstar/unicase
 unicode-ident@1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 | https://github.com/dtolnay/unicode-ident
+unicode-ident@1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 | https://github.com/dtolnay/unicode-ident
 unicode-segmentation@1.13.3 | MIT OR Apache-2.0 | https://github.com/unicode-rs/unicode-segmentation
 unsafe-libyaml@0.2.11 | MIT | https://github.com/dtolnay/unsafe-libyaml
 untrusted@0.9.0 | ISC | https://github.com/briansmith/untrusted
 url@2.5.8 | MIT OR Apache-2.0 | https://github.com/servo/rust-url
 urlpattern@0.6.0 | MIT | https://github.com/denoland/rust-urlpattern
 utf8_iter@1.0.4 | Apache-2.0 OR MIT | https://github.com/hsivonen/utf8_iter
+utf8parse@0.2.2 | Apache-2.0 OR MIT | https://github.com/alacritty/vte
 uuid@1.27.0 | Apache-2.0 OR MIT | https://github.com/uuid-rs/uuid
+uuid@1.28.0 | Apache-2.0 OR MIT | https://github.com/uuid-rs/uuid
 vcpkg@0.2.15 | MIT OR Apache-2.0 | https://github.com/mcgoo/vcpkg-rs
 version-compare@0.2.1 | MIT | https://gitlab.com/timvisee/version-compare
 version_check@0.9.5 | MIT OR Apache-2.0 | https://github.com/SergioBenitez/version_check
@@ -867,6 +896,7 @@ zbus_names@4.3.4 | MIT | https://github.com/z-galaxy/zbus/
 zcheapstr@1.1.0 | MIT | https://github.com/z-galaxy/zcheapstr/
 zerocopy-derive@0.8.56 | BSD-2-Clause OR Apache-2.0 OR MIT | https://github.com/google/zerocopy
 zerocopy@0.8.56 | BSD-2-Clause OR Apache-2.0 OR MIT | https://github.com/google/zerocopy
+zerocopy@0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT | https://github.com/google/zerocopy
 zerofrom-derive@0.1.7 | Unicode-3.0 | https://github.com/unicode-org/icu4x
 zerofrom-derive@0.1.8 | Unicode-3.0 | https://github.com/unicode-org/icu4x
 zerofrom@0.1.8 | Unicode-3.0 | https://github.com/unicode-org/icu4x
@@ -1522,6 +1552,7 @@ Used by:
   futures-lite@2.6.1
   glam@0.28.0
   itoa@1.0.18
+  lazy_static@1.5.1
   linux-raw-sys@0.12.1
   once_cell@1.21.4
   ordered-stream@0.2.0
@@ -1547,11 +1578,13 @@ Used by:
   serde_derive@1.0.229
   serde_derive_internals@0.29.1
   serde_json@1.0.151
+  serde_json@1.0.154
   serde_repr@0.1.21
   servo_arc@0.4.3
   syn@1.0.109
   syn@2.0.119
   syn@3.0.3
+  syn@3.0.9
   system-deps@6.2.2
   system-deps@9.0.0
   thiserror-impl@1.0.69
@@ -1560,6 +1593,7 @@ Used by:
   thiserror@2.0.21
   typeid@1.0.3
   unicode-ident@1.0.24
+  unicode-ident@1.0.27
   unsafe-libyaml@0.2.11
   x11-dl@2.21.0
   x11@2.21.0
@@ -1758,6 +1792,53 @@ Used by:
 MIT License
 
 Copyright (c) 2015-2021 David Henningsson, and other contributors.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+========================================
+
+Used by:
+  anstream@1.0.0
+  anstyle-parse@1.0.0
+  anstyle-query@1.1.5
+  anstyle-wincon@3.0.11
+  anstyle@1.0.14
+  clap@4.6.7
+  clap_builder@4.6.7
+  clap_derive@4.6.7
+  clap_lex@1.1.1
+  colorchoice@1.0.5
+  is_terminal_polyfill@1.70.2
+  once_cell_polyfill@1.70.2
+  serde_spanned@0.6.9
+  serde_spanned@1.1.2
+  toml@0.8.2
+  toml@1.1.7+spec-1.1.0
+  toml@1.1.8+spec-1.1.0
+  toml_datetime@1.1.2+spec-1.1.0
+  toml_edit@0.19.15
+  toml_edit@0.20.2
+  toml_edit@0.25.16+spec-1.1.0
+  toml_parser@1.1.5+spec-1.1.0
+  toml_writer@1.1.3+spec-1.1.0
+
+Copyright (c) Individual contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -2145,6 +2226,7 @@ DEALINGS IN THE SOFTWARE.
 Used by:
   bitflags@1.3.2
   bitflags@2.13.1
+  bitflags@2.13.2
   glob@0.3.4
   log@0.4.33
   num-bigint@0.4.8
@@ -2449,9 +2531,12 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
   cc@1.4.2
+  cc@1.8.0
   cfg-if@1.0.4
+  cfg-if@1.0.5
   filetime@0.2.29
   find-msvc-tools@0.1.10
+  find-msvc-tools@0.1.14
   openssl-probe@0.2.1
   pkg-config@0.3.33
   pkg-config@0.3.34
@@ -3912,6 +3997,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Used by:
   deranged@0.5.8
+  deranged@0.5.9
 
 Copyright (c) 2024 Jacob Pratt et al.
 
@@ -7017,6 +7103,7 @@ SOFTWARE.
 
 Used by:
   mio@1.2.2
+  mio@1.2.4
 
 Copyright (c) 2014 Carl Lerche and other MIO contributors
 
@@ -8119,6 +8206,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
   powerfmt@0.2.0
+  powerfmt@0.2.1
 
 Copyright (c) 2023 Jacob Pratt et al.
 
@@ -8230,6 +8318,7 @@ SOFTWARE.
 
 Used by:
   pulldown-cmark@0.13.4
+  pulldown-cmark@0.13.5
 
 The MIT License
 
@@ -9688,40 +9777,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ========================================
 
 Used by:
-  serde_spanned@0.6.9
-  serde_spanned@1.1.2
-  toml@0.8.2
-  toml@1.1.7+spec-1.1.0
-  toml_datetime@1.1.2+spec-1.1.0
-  toml_edit@0.19.15
-  toml_edit@0.20.2
-  toml_edit@0.25.16+spec-1.1.0
-  toml_parser@1.1.5+spec-1.1.0
-  toml_writer@1.1.3+spec-1.1.0
-
-Copyright (c) Individual contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-========================================
-
-Used by:
   serde_urlencoded@0.7.1
 
 Copyright (c) 2016 Anthony Ramine
@@ -9843,6 +9898,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
   sha2@0.11.0
+  sha2@0.11.1
 
 Copyright (c) 2016-2026 The RustCrypto Project Developers
 Copyright (c) 2016 Artyom Pavlov
@@ -10116,6 +10172,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
   smallvec@1.15.2
+  smallvec@1.16.3
 
 Copyright (c) 2018 The Servo Project Developers
 
@@ -11331,6 +11388,7 @@ MIT License
 
 Used by:
   unicode-ident@1.0.24
+  unicode-ident@1.0.27
 
 UNICODE LICENSE V3
 
@@ -11421,7 +11479,39 @@ SOFTWARE.
 ========================================
 
 Used by:
+  utf8parse@0.2.2
+
+Copyright (c) 2016 Joe Wilm
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+========================================
+
+Used by:
   uuid@1.27.0
+  uuid@1.28.0
 
 Copyright (c) 2014 The Rust Project Developers
 Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon
@@ -12124,6 +12214,7 @@ DEALINGS IN THE SOFTWARE.
 Used by:
   zerocopy-derive@0.8.56
   zerocopy@0.8.56
+  zerocopy@0.8.63
 
 Copyright 2023 The Fuchsia Authors
 

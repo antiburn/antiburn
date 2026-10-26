@@ -44,7 +44,14 @@ pub fn init_tracing() -> std::io::Result<()> {
     logging::init()
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct Capabilities {
+    pub version: &'static str,
+    pub delivery_protocols: [&'static str; 1],
+}
+
 pub enum Response {
+    Capabilities(Capabilities),
     Checks(checks::PendingChecks),
     Delivery(delivery::DeliveryResponse),
 }
@@ -58,6 +65,12 @@ impl Response {
 
         match self {
             Self::Checks(pending) => pending.write_json(writer).await,
+            Self::Capabilities(response) => {
+                let mut output = serde_json::to_vec(&response).map_err(|e| e.to_string())?;
+                output.push(b'\n');
+                writer.write_all(&output).await.map_err(|e| e.to_string())?;
+                writer.flush().await.map_err(|e| e.to_string())
+            }
             Self::Delivery(response) => {
                 let mut output = serde_json::to_vec(&response)
                     .map_err(|error| format!("could not serialize delivery response: {error}"))?;
@@ -77,12 +90,21 @@ impl Response {
 
 pub async fn run(cli: cli::Cli) -> Result<Response, CliError> {
     let cli::Cli { config, command } = cli;
+    if matches!(command, Command::Capabilities { .. }) {
+        return Ok(Response::Capabilities(Capabilities {
+            version: env!("CARGO_PKG_VERSION"),
+            delivery_protocols: ["delivery-v1"],
+        }));
+    }
     let Command::Checks {
         session_id,
         delivery_v1,
         consumer,
         ack,
-    } = command;
+    } = command
+    else {
+        unreachable!()
+    };
     validate_id(&session_id).map_err(CliError::usage)?;
     let config = config::Config::load(config)
         .await
